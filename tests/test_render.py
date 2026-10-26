@@ -27,7 +27,7 @@ def test_a_nul_in_the_text_cannot_fake_a_code_block():
 
 def test_tables_and_inline_code():
     (prose,) = render_segments("| a | b |\n|---|---|\n| `x` | 2 |\n")
-    assert "<table>" in prose.html
+    assert '<table border="1"' in prose.html  # the grid comes from attributes in Qt's rich text
     assert "<code>x</code>" in prose.html
 
 

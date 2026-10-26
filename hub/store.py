@@ -111,8 +111,14 @@ def get_title(conn: sqlite3.Connection, conversation_id: str) -> str | None:
 
 
 def list_conversations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Newest first; each with the model of its last answer (the app marks local and cloud chats)."""
     rows = conn.execute(
-        "SELECT id, kind, title, created_at, updated_at FROM conversations WHERE archived = 0 ORDER BY updated_at DESC"
+        """
+        SELECT c.id, c.kind, c.title, c.created_at, c.updated_at,
+               (SELECT m.model_id FROM messages m WHERE m.conversation_id = c.id AND m.role = 'assistant'
+                ORDER BY m.seq DESC LIMIT 1) AS last_model_id
+        FROM conversations c WHERE c.archived = 0 ORDER BY c.updated_at DESC
+        """
     ).fetchall()
     return [dict(r) for r in rows]
 

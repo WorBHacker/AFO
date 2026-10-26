@@ -72,6 +72,16 @@ _md.add_render_rule("fence", _fence)
 _md.add_render_rule("code_block", _fence)
 
 
+def _grid(prose: str) -> str:
+    """Qt's rich text draws a table's grid from the table's attributes, not from CSS on its cells."""
+    p = palette.current()
+    table = (
+        f'<table border="1" cellspacing="0" cellpadding="7" width="100%" '
+        f'style="border-collapse: collapse; border-style: solid; border-color: {p.hairline_on_card};"'
+    )
+    return prose.replace("<table", table).replace("<th>", f'<th align="left" bgcolor="{p.code_head}">')
+
+
 def render_segments(markdown_text: str) -> list[Prose | Code]:
     """The message in reading order: prose HTML between code blocks. Raw HTML from the model is escaped."""
     env: dict = {}
@@ -81,7 +91,7 @@ def render_segments(markdown_text: str) -> list[Prose | Code]:
         if i % 2:
             segments.append(env["codes"][int(part)])
         elif part.strip():
-            segments.append(Prose(part))
+            segments.append(Prose(_grid(part) if "<table" in part else part))
     return segments
 
 

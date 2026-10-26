@@ -15,6 +15,19 @@ EFFORTS = [
 STATE_NAMES = {"ready": "готова", "starting": "загружается", "stopping": "выгружается", "shutdown": "выгружается"}
 
 
+def seconds(value: float) -> str:
+    return f"{value:.1f} с" if value < 60 else f"{int(value // 60)} мин {int(value % 60)} с"
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Russian: 1 сообщение, 2 сообщения, 5 сообщений, 21 сообщение."""
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
 def money(usd: float) -> str:
     if usd == 0:
         return "$0"
