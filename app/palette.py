@@ -1,12 +1,12 @@
-"""Design tokens (D36): colours for a dark and a light theme, radii, sizes, fonts. One place for the Qt style
-sheet (theme.py) and the message HTML (render.py).
+"""Design tokens (D36): colours for a dark and a light theme, radii, sizes, fonts. One place for the QML colours
+(app/ui/theme.py) and the message HTML (render.py).
 
 Both themes follow the same rules. Neutral greys with a hint of cool; edges are 1px hairlines, not shadows.
 - dark: no pure black (#000 smears when scrolling on many panels); surfaces step up in lightness:
   window < panels < cards and inputs, code a step below the card it is on
 - light: the content area a soft grey, panels a step darker, cards and inputs white, code a step below white
 
-`current()` is the palette in use; theme.apply() switches it, and widgets that draw HTML re-render on a switch.
+`current()` is the palette in use; app/ui/theme.py switches it, and whatever shows HTML renders it again.
 """
 
 from __future__ import annotations

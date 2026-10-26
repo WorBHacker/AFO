@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QSettings
+from PySide6.QtGui import QGuiApplication as QApplication  # a QML window needs no widgets
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
-from PySide6.QtWidgets import QApplication
 
 from app import palette
 from app.hub_client import HubError

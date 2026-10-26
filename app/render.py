@@ -1,7 +1,7 @@
 """Markdown -> what the chat shows: the prose as HTML (the subset Qt's rich text understands) and each code block
 apart, as (language, code), so the window gives every code block its own widget with a header and a copy button.
 
-Colours come from the current palette; after a theme switch the widgets render their HTML again.
+Colours come from the current palette; after a theme switch the window renders its HTML again.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ def render_plain(text: str) -> str:
 
 
 def page(body: str) -> str:
-    """A full document for a QLabel, which has no default style sheet of its own."""
+    """A full document for Qt's rich text (a QML TextEdit has no default style sheet of its own)."""
     return f"<html><head><style>{style_sheet()}</style></head><body>{body}</body></html>"
 
 

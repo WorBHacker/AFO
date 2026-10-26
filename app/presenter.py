@@ -1,4 +1,4 @@
-"""What the window shows, as plain text and HTML - no widgets here, so all of it is easy to test."""
+"""What the window shows, as plain text - no Qt here, so all of it is easy to test."""
 
 from __future__ import annotations
 
