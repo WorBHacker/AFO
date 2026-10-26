@@ -153,6 +153,31 @@ class HubClient:
     def stop_process(self, pid: int) -> dict:
         return self._call("POST", f"/v1/processes/{pid}/stop")
 
+    # --- terminals ---
+
+    def terminals(self, project_id: str | None = None) -> list[dict]:
+        params = {"project_id": project_id} if project_id else None
+        return self._call("GET", "/v1/terminals", params=params)["terminals"]
+
+    def start_terminal(self, project_id: str | None, *, cols: int, rows: int, path: str = "", command=None) -> dict:
+        body = {"project_id": project_id, "path": path, "command": command, "cols": cols, "rows": rows}
+        return self._call("POST", "/v1/terminals", body)
+
+    def terminal_output(self, terminal_id: str) -> dict:
+        return self._call("GET", f"/v1/terminals/{terminal_id}/output")
+
+    def terminal_input(self, terminal_id: str, data: str) -> None:
+        self._call("POST", f"/v1/terminals/{terminal_id}/input", {"data": data})
+
+    def resize_terminal(self, terminal_id: str, cols: int, rows: int) -> None:
+        self._call("POST", f"/v1/terminals/{terminal_id}/resize", {"cols": cols, "rows": rows})
+
+    def stop_terminal(self, terminal_id: str) -> None:
+        self._call("POST", f"/v1/terminals/{terminal_id}/stop")
+
+    def remove_terminal(self, terminal_id: str) -> None:
+        self._call("DELETE", f"/v1/terminals/{terminal_id}")
+
     # --- keys and the hub itself ---
 
     def secrets(self) -> list[dict]:

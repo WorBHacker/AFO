@@ -92,6 +92,11 @@ Item {
                     id: actions
                     anchors.right: parent.right
                     spacing: 2
+                    IconButton {
+                        iconName: "terminal"
+                        tip: Terminals.panelOpen ? "Скрыть терминалы (Ctrl+J)" : "Терминалы проекта (Ctrl+J)"
+                        onClicked: Terminals.setPanelOpen(!Terminals.panelOpen)
+                    }
                     IconButton { iconName: "external"; tip: "Открыть в проводнике"; onClicked: Projects.openFolder("") }
                     IconButton { iconName: "copy"; tip: "Копировать путь"; onClicked: Projects.copyPath("") }
                     IconButton { iconName: "refresh"; tip: "Обновить (F5)"; onClicked: Projects.refresh() }

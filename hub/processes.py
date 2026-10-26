@@ -31,7 +31,7 @@ log = logging.getLogger("hub.processes")
 DEFAULT_INTERVAL_S = 3.0
 STOP_WAIT_S = 3.0
 CMDLINE_MAX = 500
-HUB_HELPERS = {"git.exe", "git", "conhost.exe"}  # what the hub runs for itself
+HUB_HELPERS = {"git.exe", "git", "conhost.exe", "openconsole.exe"}  # what the hub runs for itself (consoles too)
 
 
 @dataclass(frozen=True)

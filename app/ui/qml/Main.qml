@@ -50,8 +50,15 @@ Window {
             visible: App.mode === "projects"
             y: titleBar.height
             width: parent.width
-            height: parent.height - titleBar.height
+            height: parent.height - titleBar.height - (terminalPanel.visible ? terminalPanel.height : 0)
             onAddRequested: folderDialog.open()
+        }
+        TerminalPanel {
+            id: terminalPanel
+            visible: App.mode === "projects" && Projects.currentId !== "" && Terminals.panelOpen
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: Math.min(Terminals.panelHeight, parent.height - titleBar.height - 160)
         }
         Composer {
             id: composer
@@ -142,6 +149,15 @@ Window {
     Shortcut { sequence: "Ctrl+1"; onActivated: App.setMode("chats") }
     Shortcut { sequence: "Ctrl+2"; onActivated: App.setMode("projects") }
     Shortcut { sequence: "F5"; enabled: App.mode === "projects"; onActivated: Projects.refresh() }
+    Shortcut {
+        sequences: ["Ctrl+J", "Ctrl+`"]
+        onActivated: {
+            App.setMode("projects")
+            Terminals.setPanelOpen(!Terminals.panelOpen)
+            if (Terminals.panelOpen) terminalPanel.focusScreen()
+        }
+    }
+    Shortcut { sequence: "Ctrl+Shift+`"; onActivated: { App.setMode("projects"); Terminals.newTerminal() } }
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }

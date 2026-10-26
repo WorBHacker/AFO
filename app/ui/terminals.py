@@ -1,0 +1,472 @@
+"""The terminal panel (stage 2): the open project's terminals as tabs, the chosen one on screen, typing into it.
+
+Terminals live in the hub (hub/terminals.py); the window only shows them. Each one the window knows gets its own
+emulator (term_screen.TermScreen), fed with every `terminal.output` event, so switching tabs is instant. A terminal
+opened for the first time reads its last output first and then takes the events after it (`offset` tells which it
+already has). Keys become the sequences a console expects and go to the hub through one worker thread, in order.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+import pyte
+from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
+from PySide6.QtGui import QGuiApplication
+
+from ..tasks import Background
+from .models import RowModel
+from .term_screen import TermScreen
+
+if TYPE_CHECKING:
+    from .controller import Controller
+
+LINE_ROLES = ["key", "html"]
+RESIZE_DELAY_MS = 150
+RECENT_ENDED = 5  # ended terminals shown as tabs besides the running ones
+
+K = Qt.Key
+CTRL = Qt.KeyboardModifier.ControlModifier.value
+ALT = Qt.KeyboardModifier.AltModifier.value
+SHIFT = Qt.KeyboardModifier.ShiftModifier.value
+ARROWS = {K.Key_Up.value: "A", K.Key_Down.value: "B", K.Key_Right.value: "C", K.Key_Left.value: "D"}
+HOME_END = {K.Key_Home.value: "H", K.Key_End.value: "F"}
+TILDE = {
+    K.Key_Insert.value: 2, K.Key_Delete.value: 3, K.Key_PageUp.value: 5, K.Key_PageDown.value: 6,
+    K.Key_F5.value: 15, K.Key_F6.value: 17, K.Key_F7.value: 18, K.Key_F8.value: 19, K.Key_F9.value: 20,
+    K.Key_F10.value: 21, K.Key_F11.value: 23, K.Key_F12.value: 24,
+}  # fmt: skip
+SS3 = {K.Key_F1.value: "P", K.Key_F2.value: "Q", K.Key_F3.value: "R", K.Key_F4.value: "S"}
+
+
+def key_sequence(key: int, modifiers: int, text: str, *, app_cursor: bool = False) -> str:
+    """What a console expects for a key press ('' for keys it does not take)."""
+    ctrl, alt, shift = bool(modifiers & CTRL), bool(modifiers & ALT), bool(modifiers & SHIFT)
+    mod = 1 + shift + 2 * alt + 4 * ctrl
+    if key in ARROWS or key in HOME_END:
+        letter = ARROWS.get(key) or HOME_END[key]
+        if mod > 1:
+            return f"\x1b[1;{mod}{letter}"
+        return ("\x1bO" if app_cursor else "\x1b[") + letter
+    if key in TILDE:
+        return f"\x1b[{TILDE[key]};{mod}~" if mod > 1 else f"\x1b[{TILDE[key]}~"
+    if key in SS3:
+        return f"\x1b[1;{mod}{SS3[key]}" if mod > 1 else f"\x1bO{SS3[key]}"
+    if key in (K.Key_Return.value, K.Key_Enter.value):
+        return "\r"
+    if key == K.Key_Backspace.value:
+        return "\x08" if ctrl else "\x7f"
+    if key == K.Key_Backtab.value or (key == K.Key_Tab.value and shift):
+        return "\x1b[Z"
+    if key == K.Key_Tab.value:
+        return "\t"
+    if key == K.Key_Escape.value:
+        return "\x1b"
+    if ctrl and not alt:
+        if K.Key_A.value <= key <= K.Key_Z.value:
+            return chr(key - K.Key_A.value + 1)
+        special = {K.Key_Space.value: "\x00", K.Key_BracketLeft.value: "\x1b", K.Key_Backslash.value: "\x1c",
+                   K.Key_BracketRight.value: "\x1d"}  # fmt: skip
+        if key in special:
+            return special[key]
+    if text and text.isprintable():
+        return ("\x1b" + text) if alt and not ctrl else text
+    return ""
+
+
+@dataclass(eq=False)
+class _Emu:
+    """One terminal as the window plays it."""
+
+    screen: TermScreen
+    stream: pyte.Stream
+    end: int | None = None  # the offset the next output starts at; None until the tail is read
+    loaded: bool = False
+    loading: bool = False
+    early: list[tuple[int, str]] = field(default_factory=list)  # events that came while the tail was read
+
+
+class Terminals(QObject):
+    tabsChanged = Signal()
+    currentChanged = Signal()
+    cursorChanged = Signal()
+    panelChanged = Signal()
+
+    def __init__(self, app: Controller):
+        super().__init__(app)
+        self.app = app
+        self.lines = RowModel(self, roles=LINE_ROLES)
+        self._infos: dict[str, dict[str, Any]] = {}  # the open project's terminals, as the hub describes them
+        self._emus: dict[str, _Emu] = {}
+        self._current = ""
+        self._project = ""
+        self._cols, self._rows = 120, 30
+        self._shown = (0, 0)  # scrollback lines and screen lines in the line model now
+        self._open = str(app.settings.value("terminals/open", "false")) == "true"
+        self._height = int(app.settings.value("terminals/height", 300))
+        self._sender = Background(self, threads=1)  # keys go out one after another, in order
+        self._sender.error.connect(app.show_error)
+        self._resize_timer = app._timer(RESIZE_DELAY_MS, self._send_size, single=True)
+        app.theme.changed.connect(self._restyle)
+
+    # ================= properties for QML =================
+
+    @Property(list, notify=tabsChanged)
+    def tabs(self) -> list:
+        running = [t for t in self._infos.values() if t["status"] == "running"]
+        ended = sorted((t for t in self._infos.values() if t["status"] != "running"), key=lambda t: t["created_at"])
+        shown = sorted(running, key=lambda t: t["created_at"]) + ended[-RECENT_ENDED:]
+        return [
+            {
+                "id": t["id"],
+                "title": _title(t),
+                "running": t["status"] == "running",
+                "note": _note(t),
+                "selected": t["id"] == self._current,
+            }
+            for t in shown
+        ]
+
+    @Property(str, notify=currentChanged)
+    def currentId(self) -> str:
+        return self._current
+
+    @Property(str, notify=currentChanged)
+    def currentNote(self) -> str:
+        info = self._infos.get(self._current)
+        return f"{info['command']} · {info['cwd']}" if info else ""
+
+    @Property(bool, notify=currentChanged)
+    def currentRunning(self) -> bool:
+        info = self._infos.get(self._current)
+        return bool(info) and info["status"] == "running"
+
+    @Property(QObject, constant=True)
+    def lineModel(self) -> RowModel:
+        return self.lines
+
+    @Property(int, notify=cursorChanged)
+    def cursorX(self) -> int:
+        emu = self._emus.get(self._current)
+        return emu.screen.cursor.x if emu else 0
+
+    @Property(int, notify=cursorChanged)
+    def cursorY(self) -> int:
+        emu = self._emus.get(self._current)
+        return len(emu.screen.scrolled) + emu.screen.cursor.y if emu else 0
+
+    @Property(bool, notify=cursorChanged)
+    def cursorVisible(self) -> bool:
+        emu = self._emus.get(self._current)
+        return bool(emu) and emu.loaded and emu.screen.cursor_visible and self.currentRunning
+
+    @Property(bool, notify=panelChanged)
+    def panelOpen(self) -> bool:
+        return self._open
+
+    @Property(int, notify=panelChanged)
+    def panelHeight(self) -> int:
+        return self._height
+
+    # ================= the panel =================
+
+    @Slot(bool)
+    def setPanelOpen(self, open_: bool) -> None:
+        if open_ != self._open:
+            self._open = open_
+            self.app.settings.setValue("terminals/open", "true" if open_ else "false")
+            self.panelChanged.emit()
+            if open_ and not self._current and self._project:
+                running = [t for t in self.tabs if t["running"]]
+                if running:
+                    self.openTerminal(running[0]["id"])
+
+    @Slot(int)
+    def setPanelHeight(self, height: int) -> None:
+        self._height = max(120, min(height, 2000))
+        self.app.settings.setValue("terminals/height", self._height)
+        self.panelChanged.emit()
+
+    @Slot(int, int)
+    def setViewSize(self, cols: int, rows: int) -> None:
+        """The panel's size in characters; the open terminal follows it (the hub is told after a moment)."""
+        cols, rows = max(20, min(cols, 500)), max(5, min(rows, 200))
+        if (cols, rows) == (self._cols, self._rows):
+            return
+        self._cols, self._rows = cols, rows
+        emu = self._emus.get(self._current)
+        if emu is not None:
+            self._fit(emu)
+            self._show(emu)
+        self._resize_timer.start()
+
+    def _fit(self, emu: _Emu) -> None:
+        if (emu.screen.columns, emu.screen.lines) != (self._cols, self._rows):
+            emu.screen.resize(self._rows, self._cols)
+
+    def _send_size(self) -> None:
+        if self.currentRunning:
+            tid, cols, rows = self._current, self._cols, self._rows
+            self._sender.run(lambda: self.app.client.resize_terminal(tid, cols, rows), on_error=lambda _e: None)
+
+    # ================= the list =================
+
+    def set_project(self, project_id: str) -> None:
+        """The open project changed: its terminals become the tabs."""
+        if project_id == self._project:
+            return
+        self._project = project_id
+        self._infos, self._emus, self._current = {}, {}, ""
+        self.lines.reset([])
+        self.tabsChanged.emit()
+        self.currentChanged.emit()
+        self.cursorChanged.emit()
+        self.load()
+
+    def load(self) -> None:
+        if not self._project or self.app.client is None:
+            return
+        pid = self._project
+
+        def show(found: list[dict[str, Any]]) -> None:
+            if pid != self._project:
+                return
+            self._infos = {t["id"]: t for t in found}
+            self.tabsChanged.emit()
+            if self._current not in self._infos:
+                self._current = ""
+                running = [t for t in self.tabs if t["running"]]
+                if running and self._open:
+                    self.openTerminal(running[-1]["id"])
+                else:
+                    self.lines.reset([])
+                    self.currentChanged.emit()
+
+        self.app._call(lambda: self.app.client.terminals(pid), show, lambda _e: None)
+
+    @Slot()
+    def newTerminal(self) -> None:
+        if not self._project:
+            self.app.show_error("Терминал открывается в проекте: сначала выберите проект")
+            return
+        pid, cols, rows = self._project, self._cols, self._rows
+
+        def done(info: dict[str, Any]) -> None:
+            if pid != self._project:
+                return
+            self._infos[info["id"]] = info
+            self._emus.setdefault(info["id"], self._new_emu())
+            self.tabsChanged.emit()
+            self.setPanelOpen(True)
+            self.openTerminal(info["id"])
+
+        self.app._call(
+            lambda: self.app.client.start_terminal(pid, cols=cols, rows=rows),
+            done,
+            lambda error: self.app.show_error(f"Терминал не открылся: {error}"),
+        )
+
+    def _new_emu(self) -> _Emu:
+        screen = TermScreen(self._cols, self._rows)
+        return _Emu(screen=screen, stream=pyte.Stream(screen))
+
+    @Slot(str)
+    def openTerminal(self, terminal_id: str) -> None:
+        if terminal_id not in self._infos:
+            return
+        self._current = terminal_id
+        emu = self._emus.setdefault(terminal_id, self._new_emu())
+        self.tabsChanged.emit()
+        self.currentChanged.emit()
+        if not emu.loaded and not emu.loading:
+            emu.loading = True
+            self.app._call(
+                lambda: self.app.client.terminal_output(terminal_id),
+                lambda tail: self._tail_arrived(terminal_id, emu, tail),
+                lambda _e: self._tail_arrived(terminal_id, emu, {"data": "", "end": None}),
+            )
+        self._fit(emu)
+        self._show(emu)
+        self._resize_timer.start()
+
+    def _tail_arrived(self, terminal_id: str, emu: _Emu, tail: dict[str, Any]) -> None:
+        if self._emus.get(terminal_id) is not emu:
+            return
+        emu.stream.feed(tail.get("data") or "")
+        emu.end = tail.get("end")
+        emu.loaded = True
+        early, emu.early = emu.early, []
+        for offset, data in early:
+            self._feed(emu, offset, data)
+        if terminal_id == self._current:
+            self._show(emu)
+
+    @Slot(str)
+    def closeTab(self, terminal_id: str) -> None:
+        """A running terminal is stopped (after a question); an ended one is removed with its log."""
+        info = self._infos.get(terminal_id)
+        if info is None:
+            return
+        if info["status"] == "running":
+
+            def decide(yes: bool) -> None:
+                if yes:
+                    self.app._call(lambda: self.app.client.stop_terminal(terminal_id))
+
+            self.app._ask(
+                f"Остановить терминал «{_title(info)}»?",
+                "Всё, что в нём запущено, завершится. Вывод останется в журнале.",
+                "Остановить",
+                decide,
+            )
+        else:
+            self.app._call(lambda: self.app.client.remove_terminal(terminal_id), lambda _r: self._forget(terminal_id))
+
+    def _forget(self, terminal_id: str) -> None:
+        self._infos.pop(terminal_id, None)
+        self._emus.pop(terminal_id, None)
+        if self._current == terminal_id:
+            self._current = ""
+            tabs = self.tabs
+            if tabs:
+                self.openTerminal(tabs[-1]["id"])
+            else:
+                self.lines.reset([])
+                self.currentChanged.emit()
+                self.cursorChanged.emit()
+        self.tabsChanged.emit()
+
+    # ================= output =================
+
+    def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "terminal.output":
+            emu = self._emus.get(payload.get("terminal_id", ""))
+            if emu is None:
+                return
+            if not emu.loaded:
+                emu.early.append((payload["offset"], payload["data"]))
+                return
+            news = self._feed(emu, payload["offset"], payload["data"])
+            if news and payload["terminal_id"] == self._current:
+                self._update(emu)
+        elif kind == "terminal.started":
+            info = payload.get("terminal") or {}
+            if info.get("project_id") == self._project and info.get("id") not in self._infos:
+                self._infos[info["id"]] = info
+                self._emus.setdefault(info["id"], self._new_emu())
+                self.tabsChanged.emit()
+        elif kind == "terminal.exited":
+            info = self._infos.get(payload.get("terminal_id", ""))
+            if info is not None:
+                info.update(status="exited", exit_code=payload.get("exit_code"))
+                self.tabsChanged.emit()
+                if info["id"] == self._current:
+                    self.currentChanged.emit()
+                    self.cursorChanged.emit()
+        elif kind == "terminal.removed":
+            if payload.get("terminal_id") in self._infos:
+                self._forget(payload["terminal_id"])
+
+    def _feed(self, emu: _Emu, offset: int, data: str) -> bool:
+        """Plays new output into the emulator, skipping what it already has. False when nothing was new."""
+        if emu.end is not None:
+            if offset + len(data) <= emu.end:
+                return False
+            if offset < emu.end:
+                data = data[emu.end - offset :]
+            emu.end = max(emu.end, offset) + len(data)
+        emu.stream.feed(data)
+        return True
+
+    def _show(self, emu: _Emu) -> None:
+        """The whole terminal into the line model (on opening it, or after a resize)."""
+        screen = emu.screen
+        screen.take_news()
+        base = screen.dropped
+        rows = [{"key": f"h{base + i}", "html": text} for i, text in enumerate(screen.scrolled)]
+        rows += [{"key": f"s{y}", "html": screen.html(y)} for y in range(screen.lines)]
+        self.lines.sync(rows)
+        self._shown = (len(screen.scrolled), screen.lines)
+        self.cursorChanged.emit()
+
+    def _update(self, emu: _Emu) -> None:
+        """Only what changed: new scrollback lines go in before the screen, changed screen lines are redrawn."""
+        screen = emu.screen
+        news, dirty = screen.take_news()
+        history = len(screen.scrolled)
+        if news or self._shown != (history, screen.lines):
+            self._show(emu)  # scrolled, trimmed or resized: lay it out again (rows that stay are kept)
+            return
+        for y in sorted(dirty):
+            if y < screen.lines:
+                self.lines.update(history + y, html=screen.html(y))
+        self.cursorChanged.emit()
+
+    def _restyle(self) -> None:
+        for emu in self._emus.values():
+            emu.screen.restyle()
+            emu.screen.dirty.update(range(emu.screen.lines))
+        emu = self._emus.get(self._current)
+        if emu is not None:
+            self._show(emu)
+
+    # ================= input =================
+
+    @Slot(int, int, str, result=bool)
+    def key(self, key: int, modifiers: int, text: str) -> bool:
+        """A key pressed in the terminal; True when it was sent (the view then keeps it)."""
+        emu = self._emus.get(self._current)
+        if emu is None or not self.currentRunning:
+            return False
+        if (modifiers & CTRL and key == K.Key_V.value) or (modifiers & SHIFT and key == K.Key_Insert.value):
+            self.paste()
+            return True
+        data = key_sequence(key, modifiers, text, app_cursor=emu.screen.app_cursor_keys)
+        if data:
+            self._send(data)
+        return bool(data)
+
+    @Slot()
+    def paste(self) -> None:
+        emu = self._emus.get(self._current)
+        text = QGuiApplication.clipboard().text()
+        if emu is None or not text or not self.currentRunning:
+            return
+        text = text.replace("\r\n", "\r").replace("\n", "\r")
+        self._send(f"\x1b[200~{text}\x1b[201~" if emu.screen.bracketed_paste else text)
+
+    @Slot(str)
+    def sendText(self, text: str) -> None:
+        if self.currentRunning:
+            self._send(text)
+
+    def _send(self, data: str) -> None:
+        tid = self._current
+        self._sender.run(
+            lambda: self.app.client.terminal_input(tid, data),
+            on_error=lambda error: self.app.show_error(f"Ввод не дошёл до терминала: {error}"),
+        )
+
+    @Slot()
+    def copyAll(self) -> None:
+        emu = self._emus.get(self._current)
+        if emu is not None:
+            self.app.copy(emu.screen.plain_text())
+
+    def shutdown(self) -> None:
+        self._sender.wait(2000)
+
+
+def _title(info: dict[str, Any]) -> str:
+    title = info.get("title") or "терминал"
+    return {"pwsh": "PowerShell 7", "powershell": "PowerShell", "cmd": "cmd"}.get(title, title)
+
+
+def _note(info: dict[str, Any]) -> str:
+    if info["status"] == "running":
+        return "работает"
+    if info["status"] == "lost":
+        return "прерван (хаб останавливался)"
+    code = info.get("exit_code")
+    return "завершён" if code is None else f"завершён, код {code}"

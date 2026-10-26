@@ -23,6 +23,7 @@ from ..tasks import Background
 from . import commands, rows
 from .models import RowModel
 from .projects import Projects
+from .terminals import Terminals
 from .theme import Theme
 
 log = logging.getLogger("app.ui")
@@ -121,6 +122,8 @@ class Controller(QObject):
         self._flash_timer = self._timer(FLASH_MS, lambda: self._set_flash(""), single=True)
         theme.changed.connect(self._restyle)
         self.projects = Projects(self)
+        self.terminals = Terminals(self)
+        self.projects.projectChanged.connect(lambda: self.terminals.set_project(self.projects.currentId))
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -309,6 +312,7 @@ class Controller(QObject):
         self.refresh_usage()
         self.load_secrets()
         self.projects.load()
+        self.terminals.load()
         if self.current:
             self.openChat(self.current)
 
@@ -321,6 +325,7 @@ class Controller(QObject):
     def shutdown(self) -> None:
         if self.events is not None:
             self.events.stop()
+        self.terminals.shutdown()
         self.bg.wait(3000)
         if self.client is not None:
             self.client.close()
@@ -588,6 +593,12 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
+            elif value == "new-terminal":
+                self.setMode("projects")
+                self.terminals.newTerminal()
+            elif value == "terminals":
+                self.setMode("projects")
+                self.terminals.setPanelOpen(not self.terminals.panelOpen)
             elif value == "add-project":
                 self.setMode("projects")
                 self.uiRequested.emit("add-project")
@@ -792,6 +803,8 @@ class Controller(QObject):
             self._show_status(payload)
         elif kind.startswith(("project.", "processes.")):
             self.projects.on_event(kind, payload)
+        elif kind.startswith("terminal."):
+            self.terminals.on_event(kind, payload)
         elif kind == "hub.stopping":
             self._set_hub("stopped")
 

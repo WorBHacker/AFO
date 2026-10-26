@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QGuiApplication as QApplication  # a QML window needs no widgets
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
@@ -95,6 +95,13 @@ TREE = {
     "src/deep": [{"name": "x.txt", "path": "src/deep/x.txt", "dir": False, "size": 1}],
 }
 FILES = {"src/app.py": "print('hi')\nprint('new')\n", "README.md": "# Проект\n", "src/deep/x.txt": "x"}
+TERMINAL = {
+    "id": "t1", "project_id": "p1", "title": "powershell", "command": "powershell.exe -NoLogo",
+    "cwd": "D:\\Code\\LocalChat", "cols": 120, "rows": 30, "pid": 500, "status": "running", "exit_code": None,
+    "created_by": "app", "created_at": "2026-10-27T00:00:00.000Z", "ended_at": None, "log_bytes": 10,
+    "log_deleted": False,
+}  # fmt: skip
+TAIL = "PS D:\\Code> "
 PROCESSES = {
     "p1": [
         {"pid": 10, "ppid": 1, "name": "python.exe", "exe": "C:\\py\\python.exe", "cwd": "",
@@ -142,6 +149,11 @@ class FakeClient:
         self.files = dict(FILES)
         self.tree_calls = []
         self.stopped = []
+        self.term_list = [dict(TERMINAL)]
+        self.inputs = []
+        self.resized = []
+        self.term_stopped = []
+        self.term_removed = []
 
     def models(self):
         return MODELS
@@ -239,6 +251,31 @@ class FakeClient:
         text = self.files[path]
         return {"path": path, "size": len(text.encode()), "truncated": False, "binary": False, "text": text,
                 "encoding": "utf-8"}  # fmt: skip
+
+    def terminals(self, project_id=None):
+        return [dict(t) for t in self.term_list if project_id in (None, t["project_id"])]
+
+    def start_terminal(self, project_id, *, cols, rows, path="", command=None):
+        info = {**TERMINAL, "id": f"t{len(self.term_list) + 1}", "project_id": project_id, "cols": cols, "rows": rows,
+                "created_at": "2026-10-27T01:00:00.000Z"}  # fmt: skip
+        self.term_list.append(info)
+        return dict(info)
+
+    def terminal_output(self, terminal_id):
+        return {"data": TAIL, "end": len(TAIL), "running": True}
+
+    def terminal_input(self, terminal_id, data):
+        self.inputs.append((terminal_id, data))
+
+    def resize_terminal(self, terminal_id, cols, rows):
+        self.resized.append((terminal_id, cols, rows))
+
+    def stop_terminal(self, terminal_id):
+        self.term_stopped.append(terminal_id)
+
+    def remove_terminal(self, terminal_id):
+        self.term_removed.append(terminal_id)
+        self.term_list = [t for t in self.term_list if t["id"] != terminal_id]
 
     def processes(self):
         return copy.deepcopy(PROCESSES)
@@ -801,6 +838,76 @@ def test_project_processes(app):
     assert projects.processes == [] and projects.processesSummary == ""
 
 
+def test_key_sequences():
+    from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
+
+    k = Qt.Key
+    assert key_sequence(k.Key_Up.value, 0, "") == "\x1b[A"
+    assert key_sequence(k.Key_Up.value, 0, "", app_cursor=True) == "\x1bOA"  # what vim and less ask for
+    assert key_sequence(k.Key_Left.value, CTRL, "") == "\x1b[1;5D"
+    assert key_sequence(k.Key_Delete.value, 0, "") == "\x1b[3~"
+    assert key_sequence(k.Key_F1.value, 0, "") == "\x1bOP"
+    assert key_sequence(k.Key_F5.value, 0, "") == "\x1b[15~"
+    assert key_sequence(k.Key_Return.value, 0, "\r") == "\r"
+    assert key_sequence(k.Key_Backspace.value, 0, "\x08") == "\x7f"
+    assert key_sequence(k.Key_C.value, CTRL, "\x03") == "\x03"
+    assert key_sequence(k.Key_Tab.value, SHIFT, "") == "\x1b[Z"
+    assert key_sequence(k.Key_X.value, ALT, "x") == "\x1bx"
+    assert key_sequence(0x0436, 0, "ж") == "ж"
+    assert key_sequence(k.Key_Shift.value, SHIFT, "") == ""
+
+
+def test_terminal_panel(app):
+    from app.ui.terminals import CTRL
+
+    terms, client = app.terminals, app.client
+    app.projects.openProject("p1")
+    wait_until(lambda: terms.tabs)
+    assert [(t["title"], t["running"], t["note"]) for t in terms.tabs] == [("PowerShell", True, "работает")]
+    terms.setViewSize(40, 5)
+    terms.openTerminal("t1")
+    wait_until(lambda: terms._emus["t1"].loaded)
+    assert terms.lines.rows[0]["html"] == "PS&nbsp;D:\\Code&gt;"
+    assert terms.cursorVisible and (terms.cursorX, terms.cursorY) == (len(TAIL), 0)
+
+    # an event that overlaps the tail: only its new part is played
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) - 3, "data": "e> dir\r\n"})
+    assert terms.lines.rows[0]["html"] == "PS&nbsp;D:\\Code&gt;&nbsp;dir"
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) + 5,
+                                  "data": "".join(f"\x1b[32mline {n}\x1b[0m\r\n" for n in range(8))})  # fmt: skip
+    keys = [r["key"] for r in terms.lines.rows]
+    assert len(keys) == 5 + 5 and keys[:5] == [f"h{n}" for n in range(5)]  # 5 lines scrolled into history
+    assert any("color:#0dbc79" in r["html"] for r in terms.lines.rows)  # green, from the dark palette
+
+    # keys go out in order; Ctrl+C is the interrupt
+    assert terms.key(Qt.Key.Key_A.value, 0, "a")
+    assert terms.key(Qt.Key.Key_Return.value, 0, "\r")
+    assert terms.key(Qt.Key.Key_C.value, CTRL, "\x03")
+    wait_until(lambda: len(client.inputs) == 3)
+    assert [d for _, d in client.inputs] == ["a", "\r", "\x03"]
+    terms.setViewSize(50, 6)
+    wait_until(lambda: client.resized == [("t1", 50, 6)])
+
+    # it ends: no more typing, the tab says how
+    send(app, "terminal.exited", {"terminal_id": "t1", "exit_code": 0})
+    assert terms.tabs[0]["note"] == "завершён, код 0" and not terms.currentRunning and not terms.cursorVisible
+    assert not terms.key(Qt.Key.Key_A.value, 0, "a")
+
+    # a new one; another project's terminal is not shown
+    terms.newTerminal()
+    wait_until(lambda: terms.currentId == "t2")
+    assert terms.panelOpen and [t["id"] for t in terms.tabs] == ["t2", "t1"]  # running first
+    send(app, "terminal.started", {"terminal": {**TERMINAL, "id": "x9", "project_id": "p9"}})
+    assert len(terms.tabs) == 2
+    terms.closeTab("t2")  # running: asks, then stops
+    assert "PowerShell" in app.question["title"]
+    app.answer(True)
+    wait_until(lambda: client.term_stopped == ["t2"])
+    terms.closeTab("t1")  # ended: removed with its log
+    wait_until(lambda: [t["id"] for t in terms.tabs] == ["t2"])
+    assert client.term_removed == ["t1"]
+
+
 def test_projects_mode_and_palette(app):
     asked = []
     app.uiRequested.connect(asked.append)
@@ -872,6 +979,16 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         assert not code.property("visible")
+        # the terminal panel under the project
+        app.terminals.setPanelOpen(True)
+        wait_until(lambda: app.terminals.tabs)
+        app.terminals.openTerminal("t1")
+        wait_until(lambda: app.terminals.lines.rows)
+        for _ in range(20):
+            QApplication.processEvents()
+        panel = quick.window.findChild(QObject, "terminalPanel")
+        assert panel.property("visible") and panel.property("height") > 100
+        assert quick.window.findChild(QObject, "terminalLines").property("count") == len(app.terminals.lines.rows)
         image = quick.window.grabWindow()
         assert not image.isNull()
         assert quick.warnings == []

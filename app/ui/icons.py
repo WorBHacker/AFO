@@ -54,6 +54,7 @@ PATHS = {
     "commit": '<circle cx="12" cy="12" r="3.5"/><path d="M3.5 12h5M15.5 12h5"/>',
     "external": '<path d="M14 4.5h5.5V10M19.5 4.5L11 13M17 14v4.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4.5"/>',
     "back": '<path d="M14.5 6l-6 6 6 6"/>',
+    "terminal": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/>',
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'
     '<path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
 }
