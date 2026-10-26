@@ -81,7 +81,7 @@ class OpenAICompatProvider:
         body: dict[str, Any] = {
             "model": model_ref,
             # only the visible text travels; other providers' raw messages are not for this API
-            "messages": [to_wire(m) for m in messages],
+            "messages": wire_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
             "reasoning_effort": effort,
@@ -158,6 +158,23 @@ class OpenAICompatProvider:
             stop_reason=finish_reason,
             tool_calls=[_call(index, call) for index, call in sorted(calls.items()) if call["name"]],
         )
+
+
+def wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The conversation for the chat API. A system message inside the conversation (the hub's context) joins the
+    user turn before it: many local chat templates take a system message only at the very start. The joining is
+    deterministic, so the same history gives the same prompt and the server's prompt cache keeps working."""
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if message["role"] == "system" and out:
+            text = f"<context>\n{message['content']}\n</context>"
+            if out[-1]["role"] == "user" and isinstance(out[-1]["content"], str):
+                out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + text}
+            else:
+                out.append({"role": "user", "content": text})
+            continue
+        out.append(to_wire(message))
+    return out
 
 
 def to_wire(message: dict[str, Any]) -> dict[str, Any]:

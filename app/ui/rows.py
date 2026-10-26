@@ -168,6 +168,8 @@ def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[di
     """A conversation's rows. Tool results are not rows of their own: they join the answer that asked for them."""
     out: list[dict[str, Any]] = []
     for m in messages:
+        if m["role"] == "system":  # the hub's context for the model (D22): the inspector shows it, not the chat
+            continue
         if m["role"] == "tool":
             for row in reversed(out):
                 if row.get("tools"):

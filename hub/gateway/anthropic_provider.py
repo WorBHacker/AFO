@@ -71,6 +71,8 @@ class AnthropicProvider:
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ):
         self.name = name
+        # the same tool list in every request of every conversation: rebuilding it would void earlier thinking
+        self.tools_always = True
         self._key_getter = key_getter  # read on every use: the user may add or change the key while the hub runs
         self._client_factory = client_factory
         self._max_tokens = max_tokens
@@ -137,7 +139,8 @@ class AnthropicProvider:
         key = self._key()
         if not key:
             raise ProviderError("no Anthropic API key is set (python -m hub key set anthropic_api_key)")
-        system, turns = to_wire(messages, self.name)
+        # mid-conversation system messages: Opus, Sonnet and Fable 5.x take them, Haiku does not
+        system, turns = to_wire(messages, self.name, mid_system=not model_ref.startswith("claude-haiku"))
         request: dict[str, Any] = {
             "model": model_ref,
             "max_tokens": self._max_tokens,
@@ -207,20 +210,38 @@ class AnthropicProvider:
         )
 
 
-def to_wire(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, list[dict[str, Any]]]:
+def to_wire(
+    messages: list[dict[str, Any]], provider_name: str, *, mid_system: bool = True
+) -> tuple[str, list[dict[str, Any]]]:
     """The conversation as Anthropic takes it: `system` apart, then user/assistant turns of content blocks.
 
     Claude's own earlier turns come from their stored raw message, so thinking blocks go back unchanged; any
     other turn is its visible text. Adjacent turns of one role are joined - deterministically, so the same
     history always gives the same bytes and the cached prefix and thinking signatures stay valid.
+
+    A system message inside the conversation (the hub's context, D22) stays where it is: a mid-conversation
+    system message on the models that take one (`mid_system`), else a text block at the end of the user turn
+    before it. Only system messages before the first user turn become the top-level `system`.
     """
     system_parts: list[str] = []
     turns: list[dict[str, Any]] = []
     for message in messages:
         role = message["role"]
         if role == "system":
-            if message["content"]:
-                system_parts.append(message["content"])
+            text = message["content"]
+            if not text:
+                continue
+            if not turns:
+                system_parts.append(text)
+            elif mid_system and turns[-1]["role"] == "user":
+                turns.append({"role": "system", "content": text})
+            elif turns[-1]["role"] == "system":
+                turns[-1]["content"] += "\n\n" + text
+            elif turns[-1]["role"] == "user":
+                turns[-1]["content"].append({"type": "text", "text": f"<system-reminder>\n{text}\n</system-reminder>"})
+            else:
+                turns.append({"role": "user", "content": [{"type": "text", "text": f"<system-reminder>\n{text}\n"
+                                                                                   "</system-reminder>"}]})  # fmt: skip
             continue
         blocks: list[dict[str, Any]] = []
         if role == "tool":  # the hub's answer to a tool call goes back as the user's turn

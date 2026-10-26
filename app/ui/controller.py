@@ -570,7 +570,7 @@ class Controller(QObject):
         self.messages.reset(rows.rows_for(data["messages"], self.models))
         self._set_chat_projects(data.get("projects") or [], push=False)
         last_model = next((m["model_id"] for m in reversed(data["messages"]) if m["role"] == "assistant"), None)
-        self._count = sum(1 for m in data["messages"] if m["role"] != "tool")
+        self._count = sum(1 for m in data["messages"] if m["role"] in ("user", "assistant"))
         self._spent = sum((m.get("usage") or {}).get("cost_usd", 0) for m in data["messages"])
         self._last_author = rows.model_name(self.models, last_model) if last_model else ""
         self._title = data.get("title") or "Новый чат"

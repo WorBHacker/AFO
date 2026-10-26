@@ -11,26 +11,30 @@ Deltas are not stored in the events table (too many); the finished answer lives 
 together with the provider's message as received, which the next request replays (D7).
 The app follows a run by subscribing to 'chat.*' and the conversation_id in each payload.
 
-With projects attached to the chat (stage 3, D27) the model gets the hub's reading tools (hub/tools.py) and a
-short description of those projects. A run may then take several steps: an answer that asks for tools is stored
-as its own assistant message (with its usage and cost), the hub runs the tools and stores their results as a
-message of role "tool", and the model is asked again - up to MAX_TOOL_STEPS times. chat.done ends the run with
-its totals. A cloud model reaches only projects that allow the cloud (D10); the others it sees by name only.
+With projects attached to the chat (stage 3, D27) each user message is followed by a stored system message with
+the context (hub/context.py, D22), and the model gets the hub's reading tools (hub/tools.py). A run may then take
+several steps: an answer that asks for tools is stored as its own assistant message (with its usage and cost),
+the hub runs the tools and stores their results as a message of role "tool", and the model is asked again - up to
+MAX_TOOL_STEPS times. chat.done ends the run with its totals. Nothing stored is ever rewritten, and the tool list
+of a conversation does not change, so Claude's thinking stays valid (D14). A cloud model reaches only projects that
+allow the cloud and sees the others by name (D10); it gets no chat where a local model worked with such a project.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import budgets, store
+from . import budgets, context, store
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block
-from .projects import ProjectError, get_project
+from .projects import ProjectError, get_project, list_projects
 from .tools import TOOLS, ToolContext, run_tool
 
 log = logging.getLogger("hub.chat")
@@ -39,6 +43,7 @@ DEFAULT_EFFORT = "medium"
 TITLE_LENGTH = 60
 MAX_TOOL_STEPS = 12
 NOT_RUN = "not run: the run stopped before this call"
+STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
 class ChatService:
@@ -76,6 +81,8 @@ class ChatService:
             raise GatewayError(f"unknown model {model_id!r}")
         if not model["enabled"]:
             raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
+        if model["locality"] == "cloud":
+            await self._check_cloud(conversation_id)
         if model["prices"]:  # local models are free and never held back
             await self._check_budgets(model_id, confirm_over_budget, client_id)
         user_blocks = [{"type": "text", "text": text}]
@@ -91,6 +98,7 @@ class ChatService:
         if title:
             await self._bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
+        await self._store_context(conversation_id)
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
         task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
@@ -126,17 +134,21 @@ class ChatService:
 
     async def _steps(self, conversation_id: str, model: dict, effort: str, cancel: asyncio.Event, client_id):
         provider, model_ref = self._gateway.resolve(model["id"])
-        ctx, system = await self._focus(conversation_id, model)
+        cloud = model.get("locality") == "cloud"
+        attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
+        ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
+                          processes=self.processes)  # fmt: skip
         await self._bus.publish(
             "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
         )
         run = RunTotals()
-        for step in range(MAX_TOOL_STEPS + 1):
+        for step in range(MAX_TOOL_STEPS + 2):
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
-            prompt = _to_prompt(history)
-            if system:
-                prompt.insert(0, {"role": "system", "content": system})
-            tools = TOOLS if ctx is not None and ctx.projects and step < MAX_TOOL_STEPS else None
+            prompt = _to_prompt(history, cloud=cloud)
+            # the tool list never changes within a conversation (D14): Claude always has it, others from the
+            # first context on
+            has_context = any(m.role == "system" for m in history)
+            tools = TOOLS if getattr(provider, "tools_always", False) or has_context else None
             completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools)
             if completion.refusal:
                 await self._save_refusal(conversation_id, model, completion, client_id)
@@ -147,6 +159,12 @@ class ChatService:
                 await self._save(conversation_id, model, completion, client_id, run)
                 return
             message_id = await self._save_step(conversation_id, model, completion, client_id, run)
+            if step >= MAX_TOOL_STEPS:  # it keeps asking: answer without running, and let it finish (or stop)
+                await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, refuse=STEP_LIMIT)
+                if step > MAX_TOOL_STEPS:
+                    await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
+                    return
+                continue
             await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel)
             if cancel.is_set():
                 await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion, cancelled=True))
@@ -156,33 +174,101 @@ class ChatService:
                 if over:
                     raise GatewayError("the budget ran out while the model was working; send again to go on")
 
-    async def _focus(self, conversation_id: str, model: dict) -> tuple[ToolContext | None, str]:
-        """The chat's projects as the model may see them: tools for those it may read, a prompt naming them all."""
-
-        def read(conn):
-            found = []
-            for pid in store.conversation_projects(conn, conversation_id):
-                try:
-                    found.append(get_project(conn, pid))
-                except ProjectError:
-                    continue
-            return found
-
-        attached = await self._db.acall(read)
+    async def _store_context(self, conversation_id: str) -> None:
+        """Right after a user message in a chat with projects: the context the model gets with it (D22), stored as
+        a system message - the layers that changed since the last one, and the live state."""
+        attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
         if not attached:
-            return None, ""
-        cloud = model.get("locality") == "cloud"
-        usable = [p for p in attached if p.cloud_ok or not cloud]
-        hidden = [p for p in attached if p not in usable]
-        ctx = ToolContext(usable, terminals=self.terminals, processes=self.processes)
-        return ctx, focus_prompt(usable, hidden)
+            return
 
-    async def _answer_tools(self, conversation_id: str, calls: list[dict], ctx: ToolContext, cancel) -> None:
-        """Runs the calls (or marks them not run once the user stopped) and stores the results as one message."""
+        def gather(conn):
+            history = store.get_messages(conn, conversation_id)
+            last = next((m.created_at for m in reversed(history) if m.role == "system"), None)
+            since = last or (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            ids = [p.id for p in attached]
+            rows = conn.execute(
+                f"SELECT ts, type, project_id, payload FROM events WHERE ts > ? AND project_id IN "
+                f"({', '.join('?' * len(ids))}) ORDER BY id",
+                [since, *ids],
+            ).fetchall()
+            events = [{"ts": r["ts"], "type": r["type"], "project_id": r["project_id"],
+                       "payload": json.loads(r["payload"])} for r in rows]  # fmt: skip
+            return history, list_projects(conn), events
+
+        history, everything, events = await self._db.acall(gather)
+        processes = (self.processes.latest or {}) if self.processes is not None else {}
+        live = {}
+        for p in attached:
+            terminals = await self.terminals.list(p.id, 10) if self.terminals is not None else []
+            news = [e for e in events if e["project_id"] == p.id]
+            live[p.id] = await asyncio.to_thread(
+                context.live_layer, p, processes=processes.get(p.id, []), terminals=terminals, events=news,
+                now=datetime.now(UTC),
+            )  # fmt: skip
+        blocks = await asyncio.to_thread(
+            lambda: context.context_blocks(
+                all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live
+            )
+        )
+        message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))
+        await self._bus.publish(
+            "chat.context",
+            {"conversation_id": conversation_id, "message_id": message.id,
+             "tokens": context.tokens(context.render(blocks, cloud=False))},
+            persist=False,
+        )  # fmt: skip
+
+    async def _check_cloud(self, conversation_id: str) -> None:
+        """A cloud model may not get a chat where a local model already worked with a local-only project (D10):
+        its answers and tool results may hold that project's code."""
+
+        def check(conn):
+            local_only = {p.id: p.name for p in list_projects(conn) if not p.cloud_ok}
+            by_name = {name.casefold(): name for name in local_only.values()} | {
+                pid: n for pid, n in local_only.items()
+            }
+            seen: set[str] = set()  # local-only projects whose context is in the chat
+            found: set[str] = set()
+            calls: dict[str, str] = {}  # tool call id -> the local-only project it asked about
+            for message in store.get_messages(conn, conversation_id):
+                if message.role == "system":
+                    for block in message.content:
+                        key = block.get("key", "")
+                        if ":" in key and not block.get("cloud_ok", True) and key.split(":", 1)[1] in local_only:
+                            seen.add(local_only[key.split(":", 1)[1]])
+                elif message.role == "assistant":
+                    if seen and message.model_id:  # a local model answered with that context in front of it
+                        model = store.get_model(conn, message.model_id)
+                        if model is None or model["locality"] != "cloud":
+                            found |= seen
+                    for block in message.content:
+                        args = block.get("input") if block.get("type") == "tool_call" else None
+                        project = args.get("project") if isinstance(args, dict) else None
+                        if isinstance(project, str) and (
+                            name := by_name.get(project.strip().casefold(), by_name.get(project))
+                        ):
+                            calls[block["id"]] = name
+                elif message.role == "tool":  # a tool already read that project for some model
+                    found |= {calls[b["id"]] for b in message.content if b.get("id") in calls and not b.get("error")}
+            return sorted(found)
+
+        found = await self._db.acall(check)
+        if found:
+            names = ", ".join(f"«{n}»" for n in found)
+            raise GatewayError(
+                f"this chat already holds data of {names}, which only local models may see (D10): a cloud model "
+                "may not get it. Start a new chat, or allow the cloud in the project's settings."
+            )
+
+    async def _answer_tools(
+        self, conversation_id: str, calls: list[dict], ctx: ToolContext, cancel, *, refuse: str = ""
+    ) -> None:
+        """Runs the calls (or answers them with `refuse`, or as not run once the user stopped) and stores the
+        results as one message."""
         results = []
         for call in calls:
-            if cancel.is_set():
-                results.append(tool_result_block(call["id"], call["name"], NOT_RUN, True))
+            if refuse or cancel.is_set():
+                results.append(tool_result_block(call["id"], call["name"], refuse or NOT_RUN, True))
                 continue
             await self._bus.publish(
                 "chat.tool",
@@ -365,37 +451,31 @@ class RunTotals:
         }
 
 
-def focus_prompt(usable: list, hidden: list) -> str:
-    """The system prompt of a chat with projects: which ones there are and what the tools can do with them."""
-    lines = [
-        "You are an assistant in LocalChat, a hub on the user's Windows computer that sees their projects.",
-        "The projects of this chat (look at them with the tools instead of guessing what files contain):",
-    ]
-    for p in usable:
-        lines.append(f"- {p.name}: {p.description or 'no description yet'} (folder {p.path})")
-    if hidden:
-        lines.append(
-            "Also attached, but only local models may see them, so you get nothing more than their names: "
-            + ", ".join(p.name for p in hidden)
-        )
-    lines += [
-        "The tools only read: files, search, git, terminal output, processes. You cannot change files or run "
-        "commands; say what to change and the user will do it. Secrets in files appear as [REDACTED].",
-        "Answer in the language the user writes in.",
-    ]
-    return "\n".join(lines)
+def _attached(conn, conversation_id: str) -> list:
+    found = []
+    for pid in store.conversation_projects(conn, conversation_id):
+        try:
+            found.append(get_project(conn, pid))
+        except ProjectError:
+            continue
+    return found
 
 
-def _to_prompt(history: list[store.MessageRow]) -> list[dict[str, Any]]:
+def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False) -> list[dict[str, Any]]:
     """The conversation as OpenAI-shape {role, content}: visible text only, reasoning left out (D14).
 
     An assistant turn also carries the provider's message as received, so that provider can replay its own
     blocks unchanged (Claude's thinking signatures); every other provider sends just the text. Tool calls go as
     the assistant's `tool_calls`, their results as turns of role "tool". A call left without a result (a run that
-    crashed) gets one saying it did not run: providers refuse a call with no answer.
+    crashed) gets one saying it did not run: providers refuse a call with no answer. A stored context message
+    is rendered for the kind of model (`cloud`: local-only projects hidden).
     """
     prompt: list[dict[str, Any]] = []
     for message in history:
+        if message.role == "system":
+            if any(b.get("type") == "context" for b in message.content):
+                prompt.append({"role": "system", "content": context.render(message.content, cloud=cloud)})
+            continue
         if message.role == "tool":
             prompt += [
                 {
@@ -409,7 +489,7 @@ def _to_prompt(history: list[store.MessageRow]) -> list[dict[str, Any]]:
                 if b.get("type") == "tool_result"
             ]
             continue
-        if message.role not in ("system", "user", "assistant"):
+        if message.role not in ("user", "assistant"):
             continue
         text = blocks_to_prompt_text(message.content)
         calls = [

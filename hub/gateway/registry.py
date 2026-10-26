@@ -39,7 +39,7 @@ class Gateway:
 
         total = 0
         errors: dict[str, str] = {}
-        for name, provider in self._providers.items():
+        for name, provider in list(self._providers.items()):  # one may be registered while this awaits
             try:
                 models = await provider.list_models()
             except ProviderError as exc:

@@ -253,39 +253,81 @@ def test_the_tool_loop(hub, repo):
     assert [e["payload"]["name"] for e in events if e["type"] == "chat.tool"] == ["read_file", "git_status"]
     first, second = provider.calls
     assert [t["name"] for t in first[1]] == [t["name"] for t in TOOLS]
-    assert first[0][0]["role"] == "system" and "- proj:" in first[0][0]["content"]
+    user, ctx_message = first[0][:2]  # the context comes right after the user's message, stored (D14)
+    assert user["role"] == "user" and ctx_message["role"] == "system"
+    assert "- proj [local-only]:" in ctx_message["content"] and '<project name="proj">' in ctx_message["content"]
+    assert '<live_state project="proj">' in ctx_message["content"] and "M src/app.py" in ctx_message["content"]
+    assert second[0][:2] == first[0][:2]  # the second step sees the very same start
     results = [m for m in second[0] if m["role"] == "tool"]
     assert "1| # Проект" in results[0]["content"] and "branch main" in results[1]["content"]
 
     saved = hub.get(f"/v1/conversations/{conv}").json()
     assert saved["projects"] == [pid]
-    assert [m["role"] for m in saved["messages"]] == ["user", "assistant", "tool", "assistant"]
-    assert [b["type"] for b in saved["messages"][1]["content"]] == ["text", "tool_call", "tool_call"]
-    assert saved["messages"][2]["content"][0]["output"].startswith("README.md")
-    assert saved["messages"][1]["usage"]["output_tokens"] == 2  # each step keeps its own usage
+    assert [m["role"] for m in saved["messages"]] == ["user", "system", "assistant", "tool", "assistant"]
+    assert [b["type"] for b in saved["messages"][2]["content"]] == ["text", "tool_call", "tool_call"]
+    assert saved["messages"][3]["content"][0]["output"].startswith("README.md")
+    assert saved["messages"][2]["usage"]["output_tokens"] == 2  # each step keeps its own usage
+
+    # the next message: the map and the project did not change, so only the live state comes again
+    provider.steps = []
+    hub.post(f"/v1/conversations/{conv}/messages", json={"content": "а теперь?", "model_id": "fake/echo"})
+    for _ in range(200):
+        if len(hub.get(f"/v1/conversations/{conv}").json()["messages"]) == 8:
+            break
+        hub.portal.call(asyncio.sleep, 0.02)
+    second_context = hub.get(f"/v1/conversations/{conv}").json()["messages"][6]
+    keys = [b["key"] for b in second_context["content"]]
+    assert second_context["role"] == "system" and keys == ["header", f"live:{pid}", "tools"]
 
 
 def test_no_projects_no_tools_and_cloud_models_see_only_cloud_projects(hub, repo):
     provider = ToolProvider([])
     run_chat(hub, provider)
-    assert provider.calls[0][1] is None and provider.calls[0][0][0]["role"] == "user"  # an ordinary chat
+    assert provider.calls[0][1] is None and [m["role"] for m in provider.calls[0][0]] == ["user"]  # an ordinary chat
 
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local only by default
     cloud = ToolProvider([], locality="cloud")
     hub.app.state.gateway._providers.pop("fake", None)
-    run_chat(hub, cloud, attach=[pid])
-    messages, tools = cloud.calls[0]
-    assert (
-        tools is None
-        and "only local models may see them, so you get nothing more than their names: proj" in (messages[0]["content"])
-    )
+    _conv, _events = run_chat(hub, cloud, attach=[pid])
+    messages, _tools = cloud.calls[0]
+    shown = messages[1]["content"]
+    assert "proj [local-only: you may not see more of it]" in shown
+    assert "[proj: local-only, details hidden from cloud models]" in shown and "Проект" not in shown
+    assert "src/app.py" not in shown  # neither its files nor its live state
+
+
+def test_a_cloud_model_may_not_take_over_a_chat_with_local_only_data(hub, repo):
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local only
+    local = ToolProvider([[{"id": "c1", "name": "read_file", "input": {"project": "proj", "path": "README.md"}}]])
+    conv, _events = run_chat(hub, local, attach=[pid])
+    hub.app.state.gateway._providers.pop("fake", None)
+    cloud = ToolProvider([], locality="cloud")
+    hub.app.state.gateway.register(cloud)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    refused = hub.post(f"/v1/conversations/{conv}/messages", json={"content": "дальше", "model_id": "fake/echo"})
+    assert refused.status_code >= 400 and "only local models may see" in refused.text and cloud.calls == []
+    hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})  # the user allows the cloud: it may go on
+    allowed = hub.post(f"/v1/conversations/{conv}/messages", json={"content": "дальше", "model_id": "fake/echo"})
+    assert allowed.status_code == 202
 
 
 def test_the_step_limit(hub, repo, monkeypatch):
     monkeypatch.setattr(chat_module, "MAX_TOOL_STEPS", 3)
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
-    again = [[{"id": f"c{n}", "name": "git_status", "input": {"project": "proj"}}] for n in range(10)]
-    provider = ToolProvider(again)
-    _conv, events = run_chat(hub, provider, attach=[pid])
-    assert events[-1]["payload"]["steps"] == 4  # three with tools, then one without them to finish
-    assert [tools is not None for _m, tools in provider.calls] == [True, True, True, False]
+
+    def asks(count):
+        return [[{"id": f"c{n}", "name": "git_status", "input": {"project": "proj"}}] for n in range(count)]
+
+    # three steps run their tools; the fourth call is answered "answer now", and the model then answers
+    provider = ToolProvider(asks(4))
+    conv, events = run_chat(hub, provider, attach=[pid])
+    assert events[-1]["payload"]["steps"] == 5
+    assert all(tools is not None for _m, tools in provider.calls)  # the tool list never changes in a chat
+    results = [m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool"]
+    assert results[-1]["content"][0]["output"] == chat_module.STEP_LIMIT and len(results) == 4
+
+    # a model that keeps asking even then: the run ends after one more refusal
+    stubborn = ToolProvider(asks(10))
+    hub.app.state.gateway._providers.pop("fake", None)
+    _conv, events = run_chat(hub, stubborn, attach=[pid])
+    assert events[-1]["type"] == "chat.done" and events[-1]["payload"]["steps"] == 5 and len(stubborn.calls) == 5
