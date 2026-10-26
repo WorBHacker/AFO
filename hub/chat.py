@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from . import store
@@ -112,8 +113,12 @@ class ChatService:
         completion = Completion()
         reasoning: list[str] = []
         content: list[str] = []
+        # thinking time: from the request (or the end of a model swap) to the first visible word
+        clock_from = time.monotonic()
+        answer_at: float | None = None
         async for event in provider.stream_chat(model_ref, prompt, effort, cancel):
             if event.kind == "loading":
+                clock_from = time.monotonic()
                 await self._bus.publish(
                     "chat.loading", {"conversation_id": conversation_id, "text": event.text}, persist=False
                 )
@@ -125,6 +130,7 @@ class ChatService:
                     persist=False,
                 )
             elif event.kind == "content":
+                answer_at = answer_at or time.monotonic()
                 content.append(event.text)
                 await self._bus.publish(
                     "chat.delta",
@@ -133,13 +139,15 @@ class ChatService:
                 )
             elif event.kind == "end":
                 completion.usage = event.usage or {}
-                completion.stats = event.stats or {}
+                completion.stats = dict(event.stats or {})
                 completion.stop_reason = event.stop_reason
                 completion.raw = event.raw
                 completion.refusal = event.refusal
         completion.reasoning = "".join(reasoning)
         completion.text = "".join(content)
         completion.cancelled = cancel.is_set()
+        if reasoning:
+            completion.stats["think_s"] = round((answer_at or time.monotonic()) - clock_from, 1)
         return completion
 
     async def _save(self, conversation_id: str, model: dict, completion: Completion, client_id: str | None):

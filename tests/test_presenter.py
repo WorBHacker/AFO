@@ -70,8 +70,29 @@ def test_usage_text():
     )
 
 
-def test_markdown_html_carries_the_style_and_the_code():
-    html, codes = presenter.markdown_html("```python\nprint(1)\n```")
-    assert "<style>" in html and 'href="copy:0"' in html
-    assert codes == ["print(1)"]
-    assert "&lt;b&gt;" in presenter.plain_html("<b>")
+def test_session_counter():
+    session = presenter.Session()
+    assert session.text() == "Сессия: 0 ток. · $0"
+    session.add({"input_tokens": 3000, "cached_input_tokens": 2000, "output_tokens": 250}, 0.0123)
+    session.add({"output_tokens": 10}, None)
+    assert session.text() == "Сессия: 3.3K ток. · $0.01"
+    tip = session.tooltip({"today_cost_usd": 0.5, "total_cost_usd": 2.0})
+    assert "2 запросов" in tip and "из кэша 2.0K" in tip and "сегодня $0.50" in tip
+    assert presenter.tokens_short(999) == "999"
+    assert presenter.tokens_short(2_500_000) == "2.50M"
+
+
+def test_status_bar_parts():
+    status = {
+        "gpu": {"vram_used_mib": 8192, "vram_total_mib": 16384, "util_pct": 7, "temp_c": 45},
+        "memory": {"ram_used_gib": 30, "ram_total_gib": 64, "commit_used_gib": 40.0, "commit_limit_gib": 80.0},
+        "local": {"reachable": True, "running": [{"model": "coder", "state": "starting"}]},
+    }
+    assert presenter.vram_meter(status) == (0.5, "8.0/16.0 ГБ")
+    assert presenter.commit_meter(status) == (0.5, "40/80 ГБ")
+    assert presenter.gpu_load(status) == "GPU 7% · 45°C"
+    assert presenter.local_model(status) == "coder · загружается"
+    assert presenter.local_model({"local": {"reachable": True, "running": []}}) == "видеопамять свободна"
+    assert presenter.vram_meter({"gpu": None}) is None
+    assert presenter.hub_port("http://127.0.0.1:8765") == ":8765"
+    assert presenter.hub_port(None) == ""

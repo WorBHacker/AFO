@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
-
-from .render import STYLE_SHEET, render, render_plain
 
 EFFORTS = [
     ("low", "низкая"),
@@ -116,16 +115,81 @@ def usage_text(totals: dict[str, Any] | None) -> str:
     return f"Расходы: сегодня {money(totals.get('today_cost_usd', 0))} · всего {money(totals.get('total_cost_usd', 0))}"
 
 
-def _page(body: str) -> str:
-    # QLabel has no default style sheet, so the document carries its own
-    return f"<html><head><style>{STYLE_SHEET}</style></head><body>{body}</body></html>"
+def tokens_short(count: int) -> str:
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}K"
+    return f"{count / 1_000_000:.2f}M"
 
 
-def markdown_html(text: str) -> tuple[str, list[str]]:
-    """An answer as HTML for a QLabel, and the raw text of its code blocks (the 'Копировать' links)."""
-    body, codes = render(text)
-    return _page(body), codes
+@dataclass
+class Session:
+    """What the models did since this window opened: tokens and money, for the status bar."""
+
+    input_tokens: int = 0
+    cached_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    requests: int = 0
+
+    def add(self, usage: dict[str, Any] | None, cost: float | None) -> None:
+        usage = usage or {}
+        self.input_tokens += usage.get("input_tokens", 0)
+        self.cached_tokens += usage.get("cached_input_tokens", 0)
+        self.output_tokens += usage.get("output_tokens", 0)
+        self.cost_usd += cost or 0.0
+        self.requests += 1
+
+    def text(self) -> str:
+        tokens = tokens_short(self.input_tokens + self.output_tokens)
+        return f"Сессия: {tokens} ток. · {money(self.cost_usd)}"
+
+    def tooltip(self, totals: dict[str, Any] | None) -> str:
+        lines = [
+            f"С открытия окна: {self.requests} запросов",
+            f"вход {tokens_short(self.input_tokens)} (из кэша {tokens_short(self.cached_tokens)}), "
+            f"выход {tokens_short(self.output_tokens)}",
+            f"стоимость {money(self.cost_usd)}",
+        ]
+        if totals:
+            lines.append(usage_text(totals))
+        return "\n".join(lines)
 
 
-def plain_html(text: str) -> str:
-    return _page(render_plain(text))
+def hub_port(base_url: str | None) -> str:
+    return ":" + base_url.rsplit(":", 1)[-1] if base_url else ""
+
+
+def vram_meter(status: dict[str, Any] | None) -> tuple[float, str] | None:
+    gpu = (status or {}).get("gpu")
+    if not gpu or not gpu.get("vram_total_mib"):
+        return None
+    ratio = gpu["vram_used_mib"] / gpu["vram_total_mib"]
+    return ratio, f"{gpu['vram_used_mib'] / 1024:.1f}/{gpu['vram_total_mib'] / 1024:.1f} ГБ"
+
+
+def commit_meter(status: dict[str, Any] | None) -> tuple[float, str] | None:
+    memory = (status or {}).get("memory")
+    if not memory or not memory.get("commit_limit_gib"):
+        return None
+    ratio = memory["commit_used_gib"] / memory["commit_limit_gib"]
+    return ratio, f"{memory['commit_used_gib']:.0f}/{memory['commit_limit_gib']:.0f} ГБ"
+
+
+def gpu_load(status: dict[str, Any] | None) -> str:
+    gpu = (status or {}).get("gpu") or {}
+    parts = [f"{gpu['util_pct']}%"] if gpu.get("util_pct") is not None else []
+    if gpu.get("temp_c") is not None:
+        parts.append(f"{gpu['temp_c']}°C")
+    return "GPU " + " · ".join(parts) if parts else ""
+
+
+def local_model(status: dict[str, Any] | None) -> str:
+    local = (status or {}).get("local") or {}
+    if not local.get("reachable"):
+        return "llama-swap не отвечает"
+    running = local.get("running") or []
+    if not running:
+        return "видеопамять свободна"
+    return ", ".join(f"{r['model']} · {STATE_NAMES.get(r['state'], r['state'])}" for r in running)

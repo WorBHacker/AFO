@@ -1,4 +1,4 @@
-"""The main window: chats on the left, the conversation and the composer on the right, the machine below.
+"""The main window: chats on the left, the conversation and the composer on the right, a 26px status bar below.
 
 Everything goes through the hub (D2, D31): REST calls run off the GUI thread (Background), answers stream in
 as events (EventThread). Streamed deltas are kept for every chat, so switching chats mid-answer loses nothing.
@@ -7,13 +7,16 @@ as events (EventThread). Streamed deltas are kept for every chat, so switching c
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -31,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from common.paths import DataPaths
 
-from . import presenter
+from . import palette, presenter
 from .events import EventThread
 from .hub_client import HubClient, HubError, connect
 from .tasks import Background
@@ -41,16 +45,36 @@ log = logging.getLogger("app.window")
 
 ANTHROPIC_KEY = "anthropic_api_key"
 RENDER_INTERVAL_MS = 80  # streamed text is re-rendered at most ~12 times a second
+THINK_TICK_MS = 100  # the thinking timer while a model reasons
+FLASH_MS = 6000
+VRAM_WARN = 0.98  # a loaded model fills VRAM by design; only the last couple of percent is a warning
+HUB_STATES = {
+    "connecting": (palette.MUTED, "подключение…"),
+    "up": (palette.OK, "подключён"),
+    "lost": (palette.WARN, "нет связи, переподключение…"),
+    "down": (palette.ERROR, "недоступен"),
+    "stopped": (palette.ERROR, "остановлен"),
+}
 
 
 @dataclass
 class LiveRun:
-    """An answer being streamed: what arrived so far."""
+    """An answer being streamed: what arrived so far, and when it started thinking and answering."""
 
     model_id: str
     text: str = ""
     reasoning: str = ""
     loading: str = ""
+    clock_from: float = field(default_factory=time.monotonic)
+    answer_at: float | None = None
+
+    @property
+    def think_elapsed(self) -> float:
+        return (self.answer_at or time.monotonic()) - self.clock_from
+
+    @property
+    def thinking(self) -> bool:
+        return bool(self.reasoning) and not self.text
 
 
 class MainWindow(QMainWindow):
@@ -69,15 +93,24 @@ class MainWindow(QMainWindow):
         self.current: str | None = None
         self.message_widgets: dict[int, MessageWidget] = {}
         self.live_widget: MessageWidget | None = None
+        self.session = presenter.Session()
+        self.totals: dict[str, Any] | None = None
         self._link: bool | None = None  # events connection: never up yet / up / lost
-        self._render_timer = QTimer(self)
-        self._render_timer.setSingleShot(True)
-        self._render_timer.setInterval(RENDER_INTERVAL_MS)
-        self._render_timer.timeout.connect(self._render_live)
+        self._render_timer = self._timer(RENDER_INTERVAL_MS, self._render_live, single=True)
+        self._think_timer = self._timer(THINK_TICK_MS, self._render_live)
+        self._flash_timer = self._timer(FLASH_MS, lambda: self.flash_label.clear(), single=True)
 
         self.setWindowTitle("LocalChat")
         self._build()
+        self._build_status_bar()
         self._restore_layout()
+
+    def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
+        timer = QTimer(self)
+        timer.setInterval(interval)
+        timer.setSingleShot(single)
+        timer.timeout.connect(slot)
+        return timer
 
     # --- layout ---
 
@@ -93,59 +126,127 @@ class MainWindow(QMainWindow):
         self._add_action(hub_menu, "Подключиться заново", self.connect_hub)
         self._add_action(hub_menu, "Остановить хаб и выйти", self.stop_hub_and_quit)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        self.new_button = QPushButton("+ Новый чат")
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sidebar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(8, 10, 8, 8)
+        side.setSpacing(8)
+        self.new_button = QPushButton("+  Новый чат")
+        self.new_button.setObjectName("newChat")
         self.new_button.clicked.connect(self.new_chat)
         self.chat_list = QListWidget()
+        self.chat_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.chat_list.verticalScrollBar().setSingleStep(12)
         self.chat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.chat_list.setTextElideMode(Qt.TextElideMode.ElideRight)  # long titles end in "…", full one in the tooltip
         self.chat_list.currentItemChanged.connect(self._on_chat_selected)
         self.chat_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.chat_list.customContextMenuRequested.connect(self._chat_menu)
-        left_layout.addWidget(self.new_button)
-        left_layout.addWidget(self.chat_list)
+        side.addWidget(self.new_button)
+        side.addWidget(self.chat_list)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(0, 0, 8, 8)
+        main = QWidget()
+        main.setObjectName("main")
+        column = QVBoxLayout(main)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(0)
         self.transcript = Transcript()
+        column.addWidget(self.transcript, 1)
+        column.addWidget(self._composer_card())
+
+        self.splitter = QSplitter()
+        self.splitter.setHandleWidth(1)
+        self.splitter.addWidget(sidebar)
+        self.splitter.addWidget(main)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([250, 850])
+        self.setCentralWidget(self.splitter)
+
+    def _composer_card(self) -> QWidget:
+        """The input and its controls in one card: text above, model / effort / send below."""
+        holder = QWidget()
+        outer = QVBoxLayout(holder)
+        outer.setContentsMargins(20, 4, 20, 14)
+        card = QFrame()
+        card.setObjectName("composerCard")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(10, 8, 10, 8)
+        inner.setSpacing(6)
         self.composer = Composer()
         self.composer.submitted.connect(self.on_send_clicked)
         self.model_box = QComboBox()
-        self.model_box.setMinimumWidth(280)
+        self.model_box.setMinimumWidth(260)
+        self.model_box.setToolTip("Модель для следующего сообщения")
         self.model_box.currentIndexChanged.connect(self._on_model_chosen)
         self.effort_box = QComboBox()
         for value, label in presenter.EFFORTS:
-            self.effort_box.addItem(label, value)
+            self.effort_box.addItem(f"Глубина: {label}", value)
         self.effort_box.setToolTip("Глубина размышлений модели (effort)")
+        for box in (self.model_box, self.effort_box):
+            box.view().setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.send_button = QPushButton("Отправить")
         self.send_button.setObjectName("sendButton")
+        self.send_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.send_button.clicked.connect(self.on_send_clicked)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Модель:"))
+        controls.setSpacing(8)
         controls.addWidget(self.model_box, 1)
-        controls.addWidget(QLabel("Глубина:"))
         controls.addWidget(self.effort_box)
         controls.addWidget(self.send_button)
-        right_layout.addWidget(self.transcript, 1)
-        right_layout.addWidget(self.composer)
-        right_layout.addLayout(controls)
+        inner.addWidget(self.composer)
+        inner.addLayout(controls)
+        outer.addWidget(card)
+        return holder
 
-        self.splitter = QSplitter()
-        self.splitter.addWidget(left)
-        self.splitter.addWidget(right)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([240, 760])
-        self.setCentralWidget(self.splitter)
+    def _build_status_bar(self) -> None:
+        """Hub and port · active model · this session's tokens and cost · flash messages · machine."""
+        bar = self.statusBar()
+        bar.setFixedHeight(palette.STATUS_BAR)
+        bar.setSizeGripEnabled(False)
+        bar.setContentsMargins(6, 0, 6, 0)
+        self.hub_label = QLabel()
+        self.model_label = QLabel()
+        self.session_label = QLabel(self.session.text())
+        self.flash_label = QLabel()
+        self.flash_label.setObjectName("flash")
+        for widget in (self.hub_label, self._separator(), self.model_label, self._separator(), self.session_label):
+            bar.addWidget(widget)
+        bar.addWidget(self.flash_label, 1)
 
-        self.conn_label = QLabel("Хаб: не подключён")
-        self.status_label = QLabel()
-        self.usage_label = QLabel()
-        self.statusBar().addWidget(self.conn_label)
-        self.statusBar().addWidget(self.status_label, 1)
-        self.statusBar().addPermanentWidget(self.usage_label)
+        self.local_label = QLabel()
+        self.vram_bar, self.vram_text = self._meter()
+        self.commit_bar, self.commit_text = self._meter()
+        self.gpu_label = QLabel()
+        right = [
+            self.local_label,
+            self._separator(),
+            QLabel("VRAM"),
+            self.vram_bar,
+            self.vram_text,
+            self._separator(),
+            QLabel("Память"),
+            self.commit_bar,
+            self.commit_text,
+            self._separator(),
+            self.gpu_label,
+        ]
+        for widget in right:
+            bar.addPermanentWidget(widget)
+        self._set_hub_state("connecting")
+
+    def _separator(self) -> QFrame:
+        line = QFrame()
+        line.setObjectName("statusSep")
+        line.setFixedSize(1, 12)
+        return line
+
+    def _meter(self) -> tuple[QProgressBar, QLabel]:
+        meter = QProgressBar()
+        meter.setObjectName("meter")
+        meter.setRange(0, 1000)
+        meter.setTextVisible(False)
+        return meter, QLabel("—")
 
     def _add_action(self, menu: QMenu, text: str, slot, shortcut=None) -> QAction:
         action = QAction(text, self)
@@ -160,7 +261,7 @@ class MainWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
         else:
-            self.resize(1100, 760)
+            self.resize(1180, 780)
         splitter = self.settings.value("window/splitter")
         if splitter is not None:
             self.splitter.restoreState(splitter)
@@ -168,14 +269,45 @@ class MainWindow(QMainWindow):
         index = self.effort_box.findData(effort)
         self.effort_box.setCurrentIndex(index if index >= 0 else 1)
 
+    # --- the status bar ---
+
+    def _set_hub_state(self, state: str) -> None:
+        colour, text = HUB_STATES[state]
+        port = presenter.hub_port(self.client.base_url if self.client else None)
+        self.hub_label.setText(f'<span style="color:{colour};">●</span>&nbsp;Хаб {port}'.rstrip())
+        where = self.client.base_url if self.client else "адрес ещё не известен"
+        self.hub_label.setToolTip(f"Хаб: {text}\n{where}")
+
+    def _show_active_model(self) -> None:
+        model = self.models.get(self.model_box.currentData() or "")
+        if model is None:
+            self.model_label.setText("Модель: —")
+            self.model_label.setToolTip("")
+            return
+        self.model_label.setText(f"Модель: {model['name']}")
+        self.model_label.setToolTip(presenter.model_label(model))
+
+    def _show_session(self) -> None:
+        self.session_label.setText(self.session.text())
+        self.session_label.setToolTip(self.session.tooltip(self.totals))
+
+    def flash(self, text: str, *, error: bool = False, ms: int = FLASH_MS) -> None:
+        """A short message in the status bar that clears itself; the rest of the bar stays in place."""
+        self.flash_label.setText(text)
+        self.flash_label.setToolTip(text)
+        self.flash_label.setProperty("warn", error)
+        self.flash_label.style().polish(self.flash_label)
+        self._flash_timer.start(ms)
+
     # --- connecting ---
 
     def connect_hub(self) -> None:
-        self.conn_label.setText("Хаб: подключение… (если он не запущен, приложение запускает его)")
+        self._set_hub_state("connecting")
+        self.flash("Подключение к хабу (если он не запущен, приложение запускает его)…")
         self.bg.run(lambda: connect(self.paths), self.attach, self._connect_failed)
 
     def _connect_failed(self, message: str) -> None:
-        self.conn_label.setText("Хаб: недоступен")
+        self._set_hub_state("down")
         self.show_error(f"Нет связи с хабом: {message}")
 
     def attach(self, client: HubClient, *, start_events: bool = True) -> None:
@@ -188,16 +320,14 @@ class MainWindow(QMainWindow):
             self.events.event.connect(self.on_event)
             self.events.connected.connect(self._on_connected)
             self.events.start()
-        self.conn_label.setText("Хаб: подключён")
+        self._set_hub_state("up")
+        self.flash_label.clear()
         self.reload_all()
 
     def _on_connected(self, connected: bool) -> None:
-        if connected:
-            self.conn_label.setText("Хаб: подключён")
-            if self._link is False:
-                self.reload_all()  # back after a break: deltas are not replayed, so fetch what happened
-        else:
-            self.conn_label.setText("Хаб: нет связи, переподключение…")
+        self._set_hub_state("up" if connected else "lost")
+        if connected and self._link is False:
+            self.reload_all()  # back after a break: deltas are not replayed, so fetch what happened
         self._link = connected
 
     def reload_all(self) -> None:
@@ -229,15 +359,17 @@ class MainWindow(QMainWindow):
             if i and model.get("locality") != ordered[i - 1].get("locality"):
                 self.model_box.insertSeparator(self.model_box.count())
             self.model_box.addItem(presenter.model_label(model), model["id"])
-        index = self.model_box.findData(wanted)
-        self.model_box.setCurrentIndex(index if index >= 0 else 0)
-        self.model_box.blockSignals(False)
         if not models:
             self.model_box.addItem("Нет моделей: запустите llama-swap или задайте ключ Anthropic", None)
+        index = self.model_box.findData(wanted) if wanted else -1  # findData(None) would match a separator
+        self.model_box.setCurrentIndex(index if index >= 0 else 0)
+        self.model_box.blockSignals(False)
+        self._show_active_model()
 
     def _on_model_chosen(self, _index: int) -> None:
         if self.model_box.currentData():
             self.settings.setValue("chat/model", self.model_box.currentData())
+        self._show_active_model()
 
     def _choose_model(self, model_id: str | None) -> None:
         index = self.model_box.findData(model_id) if model_id else -1
@@ -247,16 +379,15 @@ class MainWindow(QMainWindow):
     def sync_models(self) -> None:
         def done(result: dict) -> None:
             self.load_models()
-            errors = f" Ошибки: {result['errors']}" if result.get("errors") else ""
-            self.statusBar().showMessage(f"Список моделей обновлён.{errors}", 8000)
+            if result.get("errors"):
+                self.flash(f"Список моделей обновлён, ошибки: {result['errors']}", error=True)
+            else:
+                self.flash("Список моделей обновлён")
 
         self._call(lambda: self.client.sync_models(), done)
 
     def unload_local(self) -> None:
-        self._call(
-            lambda: self.client.unload_local(),
-            lambda _r: self.statusBar().showMessage("Локальная модель выгружена", 5000),
-        )
+        self._call(lambda: self.client.unload_local(), lambda _r: self.flash("Локальная модель выгружена"))
 
     def set_anthropic_key(self) -> None:
         value, ok = QInputDialog.getText(
@@ -274,7 +405,7 @@ class MainWindow(QMainWindow):
             if catalog.get("errors"):
                 self.show_error(f"Ключ сохранён, но список моделей не получен: {catalog['errors']}")
             else:
-                self.statusBar().showMessage("Ключ сохранён, модели Claude добавлены", 8000)
+                self.flash("Ключ сохранён, модели Claude добавлены")
 
         self._call(lambda: self.client.set_secret(ANTHROPIC_KEY, value.strip()), done)
 
@@ -288,19 +419,34 @@ class MainWindow(QMainWindow):
         self._call(lambda: self.client.status(), self._show_status)
 
     def _show_status(self, status: dict[str, Any]) -> None:
-        self.status_label.setText(presenter.status_text(status))
+        details = presenter.status_text(status)
+        self.local_label.setText(presenter.local_model(status))
+        for bar, text, meter, warn_at in (
+            (self.vram_bar, self.vram_text, presenter.vram_meter(status), VRAM_WARN),
+            (self.commit_bar, self.commit_text, presenter.commit_meter(status), None),
+        ):
+            ratio, label = meter if meter else (0.0, "—")
+            warn = presenter.commit_is_tight(status) if warn_at is None else ratio >= warn_at
+            bar.setValue(round(ratio * 1000))
+            text.setText(label)
+            for widget in (bar, text):
+                widget.setProperty("warn", warn)
+                widget.style().polish(widget)
+        self.gpu_label.setText(presenter.gpu_load(status))
         tight = presenter.commit_is_tight(status)
-        self.status_label.setProperty("warn", tight)
-        self.status_label.setToolTip(
-            "Память Windows почти исчерпана (ОЗУ + файл подкачки): большая модель может не загрузиться" if tight else ""
-        )
-        self.status_label.style().polish(self.status_label)
+        hint = "\nПамять Windows почти исчерпана (ОЗУ + файл подкачки): большая модель может не загрузиться"
+        for widget in (self.local_label, self.vram_bar, self.vram_text, self.commit_bar, self.commit_text):
+            widget.setToolTip(details + (hint if tight else ""))
         if "busy" in status:
             self.busy = set(status["busy"]) | set(self.live)
             self._update_send_button()
 
     def refresh_usage(self) -> None:
-        self._call(lambda: self.client.usage(), lambda totals: self.usage_label.setText(presenter.usage_text(totals)))
+        def show(totals: dict[str, Any]) -> None:
+            self.totals = totals
+            self._show_session()
+
+        self._call(lambda: self.client.usage(), show)
 
     # --- chats ---
 
@@ -366,6 +512,7 @@ class MainWindow(QMainWindow):
         self.transcript.clear()
         self.message_widgets = {}
         self.live_widget = None
+        self._think_timer.stop()
 
     def _show_conversation(self, conversation_id: str, data: dict[str, Any]) -> None:
         if conversation_id != self.current:
@@ -388,18 +535,20 @@ class MainWindow(QMainWindow):
         text, reasoning = presenter.split_blocks(message["content"])
         if message["role"] == "user":
             widget = MessageWidget("user", "Вы")
-            widget.set_text(text, markdown=False)
+            widget.set_plain(text)
         else:
+            usage = message.get("usage") or {}
             widget = MessageWidget("assistant", self._model_name(message.get("model_id")))
-            widget.set_reasoning(reasoning)
-            widget.set_text(text)
-            widget.set_footer(presenter.answer_meta(message.get("usage")))
+            if reasoning:
+                widget.set_reasoning(reasoning, (usage.get("stats") or {}).get("think_s"))
+            widget.set_markdown(text)
+            widget.set_footer(presenter.answer_meta(usage))
         self._wire(widget)
         self.message_widgets[message["id"]] = widget
         return self.transcript.add(widget)
 
     def _wire(self, widget: MessageWidget) -> None:
-        widget.copied.connect(lambda: self.statusBar().showMessage("Код скопирован", 2000))
+        widget.copied.connect(lambda: self.flash("Код скопирован", ms=2000))
         widget.link_activated.connect(self._open_link)
 
     def _open_link(self, href: str) -> None:
@@ -514,6 +663,7 @@ class MainWindow(QMainWindow):
             run = self.live.setdefault(cid, LiveRun(""))
             lines = [line for line in payload.get("text", "").splitlines() if line.strip()]
             run.loading = lines[-1].strip() if lines else run.loading
+            run.clock_from = time.monotonic()  # the thinking clock starts once the model is in VRAM
             self._schedule_render(cid)
         elif kind == "chat.delta":
             run = self.live.setdefault(cid, LiveRun(""))
@@ -521,27 +671,30 @@ class MainWindow(QMainWindow):
             if payload.get("kind") == "reasoning":
                 run.reasoning += payload.get("text", "")
             else:
+                run.answer_at = run.answer_at or time.monotonic()
                 run.text += payload.get("text", "")
             self._schedule_render(cid)
         elif kind == "chat.message":
             message = payload["message"]
-            if message["role"] == "assistant":
-                self.live.pop(cid, None)
+            run = self.live.pop(cid, None) if message["role"] == "assistant" else None
             if cid == self.current:
-                self._message_arrived(message)
+                self._message_arrived(message, run)
         elif kind == "chat.done":
             self._run_ended(cid)
+            self.session.add(payload.get("usage"), payload.get("cost_usd"))
             if cid == self.current:
                 widget = self.message_widgets.get(payload.get("message_id"))
                 if widget is not None:
+                    stats = payload.get("stats") or {}
                     usage = {
                         **(payload.get("usage") or {}),
                         "cancelled": payload.get("cancelled"),
                         "stop_reason": payload.get("stop_reason"),
                     }
-                    widget.set_footer(
-                        presenter.answer_meta(usage, stats=payload.get("stats"), cost=payload.get("cost_usd"))
-                    )
+                    widget.set_footer(presenter.answer_meta(usage, stats=stats, cost=payload.get("cost_usd")))
+                    if "think_s" in stats:
+                        widget.thinking.set_elapsed(stats["think_s"])
+            self._show_session()
             self.refresh_usage()
         elif kind == "chat.error":
             self._run_ended(cid)
@@ -551,9 +704,11 @@ class MainWindow(QMainWindow):
                 if payload.get("refusal") and payload.get("cost_usd"):
                     detail += f" Потрачено: {presenter.money(payload['cost_usd'])}."
                 widget = MessageWidget("error", "Ошибка")
-                widget.set_text(detail, markdown=False)
+                widget.set_plain(detail)
                 self.transcript.add(widget)
-            if payload.get("refusal"):
+            if payload.get("usage"):
+                self.session.add(payload.get("usage"), payload.get("cost_usd"))
+                self._show_session()
                 self.refresh_usage()
         elif kind == "chat.titled":
             self.titles[cid] = payload.get("title", "")
@@ -566,25 +721,28 @@ class MainWindow(QMainWindow):
         elif kind == "system.status":
             self._show_status(payload)
         elif kind == "hub.stopping":
-            self.conn_label.setText("Хаб: остановлен")
+            self._set_hub_state("stopped")
 
     def _run_ended(self, conversation_id: str | None) -> None:
         self.busy.discard(conversation_id)
         self.live.pop(conversation_id, None)
         self._relabel(conversation_id)
         if conversation_id == self.current:
+            self._think_timer.stop()
             self._update_send_button()
 
-    def _message_arrived(self, message: dict[str, Any]) -> None:
+    def _message_arrived(self, message: dict[str, Any], run: LiveRun | None) -> None:
         if message["id"] in self.message_widgets:
             return
         if message["role"] == "assistant" and self.live_widget is not None:
             widget, self.live_widget = self.live_widget, None
+            self._think_timer.stop()
             text, reasoning = presenter.split_blocks(message["content"])
             widget.set_header(self._model_name(message.get("model_id")))
             widget.set_notice("")
-            widget.set_reasoning(reasoning)
-            widget.set_text(text)
+            if reasoning:
+                widget.set_reasoning(reasoning, run.think_elapsed if run else None)
+            widget.set_markdown(text)
             self.message_widgets[message["id"]] = widget
             return
         self._add_message(message)
@@ -599,8 +757,9 @@ class MainWindow(QMainWindow):
         return self.live_widget
 
     def _drop_live_widget(self) -> None:
+        self._think_timer.stop()
         if self.live_widget is not None:
-            if self.live_widget.text:
+            if self.live_widget.has_content:
                 self.live_widget.set_header(self.live_widget.header.text().replace(" · отвечает…", ""))
             else:
                 self.transcript.remove(self.live_widget)
@@ -616,19 +775,27 @@ class MainWindow(QMainWindow):
         run = self.live.get(self.current)
         widget = self.live_widget
         if widget is None:
+            self._think_timer.stop()
             return
         if run is None:
             widget.set_notice("ответ идёт…")
             return
+        if run.model_id:  # the card may have been made before the run said which model answers
+            widget.set_header(f"{self._model_name(run.model_id)} · отвечает…")
         widget.set_notice(f"Загрузка модели: {run.loading}" if run.loading else "")
-        widget.set_reasoning(run.reasoning, streaming=not run.text)
-        widget.set_text(run.text)
+        if run.reasoning:
+            widget.set_reasoning(run.reasoning, run.think_elapsed, running=run.thinking)
+        widget.set_markdown(run.text)
+        if run.thinking and not self._think_timer.isActive():
+            self._think_timer.start()
+        elif not run.thinking:
+            self._think_timer.stop()
 
     # --- misc ---
 
     def show_error(self, message: str) -> None:
         log.warning("%s", message)
-        self.statusBar().showMessage(message, 10000)
+        self.flash(message, error=True, ms=10000)
 
     def _confirm(self, question: str) -> bool:
         answer = QMessageBox.question(self, "LocalChat", question)

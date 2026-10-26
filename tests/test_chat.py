@@ -297,7 +297,8 @@ def test_history_carries_each_answers_usage_and_stats(hub):
     user, assistant = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
     assert user["usage"] is None
     assert assistant["usage"]["output_tokens"] == 3
-    assert assistant["usage"]["stats"] == {"tok_s": 50.0}
+    assert assistant["usage"]["stats"]["tok_s"] == 50.0
+    assert assistant["usage"]["stats"]["think_s"] >= 0  # the fake model reasoned before answering
     assert assistant["usage"]["cancelled"] is False
     totals = hub.get("/v1/usage", headers=auth(hub)).json()
     assert totals["today_requests"] == 1
