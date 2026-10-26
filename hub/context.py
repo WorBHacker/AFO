@@ -17,6 +17,7 @@ model shows a local-only project by name only (D10, D27), and everything passes 
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime
 from typing import Any
 
@@ -27,6 +28,9 @@ from .secret_filter import clean, is_secret_file
 CHARS_PER_TOKEN = 4  # a rough estimate, good enough to keep layers within their budgets
 MAP_BUDGET = 2000  # tokens (D22)
 PROJECT_BUDGET = 3000
+LINKED_BUDGET = 1000  # per linked project, briefly (D22)
+LINKED_README_LINES = 15
+PICTURES = re.compile(r"(?:\[?!\[[^\]]*\]\([^)]*\)(?:\]\([^)]*\))?\s*)+|<img [^>]*>")
 LIVE_BUDGET = 2000
 README_LINES = 40
 AGENT_NOTES = ("CLAUDE.md", "AGENTS.md", ".clinerules", ".cursorrules", "CONVENTIONS.md")
@@ -117,7 +121,8 @@ def _head(root, rel: str, count: int) -> str:
         return ""
     if data["binary"]:
         return ""
-    lines = data["text"].replace("\r\n", "\n").split("\n")
+    # lines that are only pictures (a README's logo and badges) say nothing to a model
+    lines = [line for line in data["text"].replace("\r\n", "\n").split("\n") if not PICTURES.fullmatch(line.strip())]
     text = "\n".join(lines[:count]).strip()
     return text + ("\n[...]" if len(lines) > count else "")
 
@@ -155,6 +160,26 @@ def project_layer(project: Project, card: str | None = None, missing: list[str] 
             parts.append(f"{note} (the project's own notes for AI agents):\n{_head(root, note, AGENT_NOTE_LINES)}")
     body = clean("\n\n".join(parts))
     return fit(f'<project name="{project.name}">\n{body}\n</project>', PROJECT_BUDGET)
+
+
+def linked_layer(project: Project, card: str | None, relation: str) -> str:
+    """A project linked to an attached one, in brief (D22 L1, D25): how they relate, then its card - or, without
+    one, what the hub sees - shortened to its budget."""
+    if card:
+        body = f"Folder: {project.path}\nIts card (confirmed by the user):\n{card}"
+    else:
+        parts = [f"Folder: {project.path}", f"Description: {project.description or 'none yet'}"]
+        stack = stack_of(project.root) if project.root.is_dir() else []
+        if stack:
+            parts.append("Stack (from its files): " + ", ".join(stack))
+        readme = next((n for n in ("README.md", "README.rst", "README.txt", "README") if (project.root / n).is_file()),
+                      None)  # fmt: skip
+        if readme:
+            parts.append(f"{readme} (start):\n{_head(project.root, readme, LINKED_README_LINES)}")
+        body = "\n".join(parts)
+    relation = relation.replace('"', "'")
+    body = fit(clean(body), LINKED_BUDGET - 40)  # the tags stay whole
+    return f'<linked_project name="{project.name}" relation="{relation}">\n{body}\n</linked_project>'
 
 
 # --- L2: what is happening ---
@@ -267,6 +292,7 @@ def context_blocks(
     notes: dict[str, str] | None = None,
     links: list[dict[str, Any]] | None = None,
     linked: dict[str, tuple[Project, str]] | None = None,
+    linked_cards: dict[str, tuple[Project, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
     conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
@@ -281,6 +307,11 @@ def context_blocks(
         card, missing = (cards or {}).get(p.id, (None, []))
         text = project_layer(p, card, missing)
         key = f"project:{p.id}"
+        if previous.get(key) != digest(text):
+            blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
+                           "digest": digest(text)})  # fmt: skip
+    for pid, (p, text) in (linked_cards or {}).items():  # L1 of the linked projects, briefly (D22)
+        key = f"linked_project:{pid}"
         if previous.get(key) != digest(text):
             blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
                            "digest": digest(text)})  # fmt: skip

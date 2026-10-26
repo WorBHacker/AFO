@@ -31,6 +31,8 @@ def pair(tmp_path):
         '[project]\nname = "front"\ndependencies = ["back-api>=1"]\n' + sources, encoding="utf-8"
     )
     (front / "docker-compose.yml").write_text("services:\n  api:\n    build: ../back\n", encoding="utf-8")
+    for root, port in ((front, 8000), (back, 8123)):  # the same database and queue; PORT is everyday, not evidence
+        (root / ".env.example").write_text(f"DATABASE_URL=\nREDIS_URL=\nPORT={port}\n", encoding="utf-8")
     (front / "src" / "client.py").write_text("BASE = 'http://localhost:8123/api'\n", encoding="utf-8")
     (front / "README.md").write_text("Start back first: http://localhost:8123\n", encoding="utf-8")  # code wins
     return project(front, "f"), project(back, "b")
@@ -41,7 +43,10 @@ def test_evidence(pair, tmp_path):
     kinds = {}
     for p in links.scan([front, back], {"b": {8123: "python.exe"}}):
         kinds[(p["a_id"], p["b_id"], p["kind"])] = p["evidence"]
-    assert set(kinds) == {("f", "b", "uses"), ("f", "b", "deploys_with")}  # nothing points from back to front
+    # nothing points from back to front; sharing is one proposal per pair
+    assert set(kinds) == {("f", "b", "uses"), ("f", "b", "deploys_with"), ("b", "f", "shares")}
+    shared = "back и front называют одни и те же настройки окружения: DATABASE_URL, REDIS_URL"
+    assert kinds[("b", "f", "shares")] == [shared]
     uses = "\n".join(kinds[("f", "b", "uses")])
     assert "front/pyproject.toml:5 указывает на папку back" in uses
     assert "зависит от пакета «back-api» проекта back" in uses
@@ -62,13 +67,13 @@ def test_proposals_and_choices(pair):
             lambda c, p=p: c.execute("INSERT INTO projects (id, name, path) VALUES (?, ?, ?)", (p.id, p.name, p.path))
         )
     proposals = links.scan(list(pair), {})
-    assert db.call(lambda c: links.store_proposals(c, proposals)) == 2
+    assert db.call(lambda c: links.store_proposals(c, proposals)) == 3
     assert db.call(lambda c: links.store_proposals(c, proposals)) == 0  # known already
     uses = next(link for link in db.call(links.list_links) if link["kind"] == "uses")
     confirmed = db.call(lambda c: links.update_link(c, uses["id"], status="confirmed", description="REST /api :8123"))
     assert confirmed["status"] == "confirmed" and confirmed["description"] == "REST /api :8123"
-    other = next(link for link in db.call(links.list_links) if link["kind"] == "deploys_with")
-    db.call(lambda c: links.update_link(c, other["id"], status="rejected"))
+    for other in [link for link in db.call(links.list_links) if link["kind"] != "uses"]:
+        db.call(lambda c, other=other: links.update_link(c, other["id"], status="rejected"))
     db.call(lambda c: links.store_proposals(c, proposals))
     assert [link["kind"] for link in db.call(links.list_links)] == ["uses"]  # rejected stays rejected, hidden
     with pytest.raises(LinkError):
@@ -113,7 +118,8 @@ def test_links_api_and_a_linked_projects_state(pair):
         cline = app.state.db.call(lambda c: create_client(c, "cline"))
         assert hub.post("/v1/links/scan", headers={"Authorization": f"Bearer {cline}"}).status_code == 403
         scanned = hub.post("/v1/links/scan").json()
-        assert scanned["added"] == 2 and {(x["a_name"], x["b_name"]) for x in scanned["links"]} == {("front", "back")}
+        found = {x["kind"] for x in scanned["links"]}
+        assert scanned["added"] == 3 and found == {"uses", "deploys_with", "shares"}
         uses = next(x for x in scanned["links"] if x["kind"] == "uses")
         assert (
             hub.put(f"/v1/links/{uses['id']}", json={"status": "confirmed", "description": "REST"}).status_code == 200
@@ -138,3 +144,22 @@ def test_links_api_and_a_linked_projects_state(pair):
         assert "- front -> back: uses (REST)" in blocks["map"]
         linked = next(text for key, text in blocks.items() if key.startswith("linked:"))
         assert linked.startswith('<linked_project_state project="back">')
+        brief = next(text for key, text in blocks.items() if key.startswith("linked_project:"))  # its L1, briefly
+        assert brief.startswith('<linked_project name="back" relation="front -> back: uses (REST)">')
+        assert "Stack (from its files): Python" in brief and brief.endswith("</linked_project>")
+        keys = [b["key"] for b in messages[1]["content"]]
+        assert keys.index(next(k for k in keys if k.startswith("linked_project:"))) < keys.index(f"live:{front}")
+
+
+def test_a_linked_project_in_brief(pair):
+    back = pair[1]
+    long_card = "## Назначение\n" + "API для фронта. " * 2000
+    text = context.linked_layer(back, long_card, 'front -> back: uses (REST "v2")')
+    assert text.startswith('<linked_project name="back" relation="front -> back: uses (REST \'v2\')">\nFolder: ')
+    assert "Its card (confirmed by the user):\n## Назначение" in text and text.endswith("\n</linked_project>")
+    assert context.tokens(text) <= context.LINKED_BUDGET  # shortened, the tags whole
+    readme = "![logo](logo.png)\n[![CI](ci.svg)](ci)\n# back\nAPI сервиса\n"
+    (back.root / "README.md").write_text(readme, encoding="utf-8")
+    plain = context.linked_layer(back, None, "front -> back: uses")
+    assert "Description: none yet" in plain and "Stack (from its files): Python" in plain
+    assert "README.md (start):\n# back\nAPI сервиса" in plain and "logo" not in plain  # pictures left out

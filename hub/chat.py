@@ -200,23 +200,21 @@ class ChatService:
             ).fetchall()
             events = [{"ts": r["ts"], "type": r["type"], "project_id": r["project_id"],
                        "payload": json.loads(r["payload"])} for r in rows]  # fmt: skip
-            confirmed = {p.id: cards.confirmed_text(conn, p.id) for p in attached}
+            all_links = links.list_links(conn)
+            confirmed = {pid: cards.confirmed_text(conn, pid) for pid in [*ids, *_linked_ids(set(ids), all_links)]}
             written = {p.id: notes.list_notes(conn, p.id) for p in attached}
             return (history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed,
-                    written, links.list_links(conn))  # fmt: skip
+                    written, all_links)  # fmt: skip
 
         history, everything, events, settings, confirmed, written, all_links = await self._db.acall(gather)
         ids = {p.id for p in attached}
         by_id = {p.id: p for p in everything}
-        linked_ids = sorted(
-            {link["b_id"] if link["a_id"] in ids else link["a_id"] for link in all_links
-             if link["status"] == "confirmed" and (link["a_id"] in ids) != (link["b_id"] in ids)}
-        )  # fmt: skip
+        linked_ids = _linked_ids(ids, all_links)
         project_notes = {p.id: clean(notes.notes_layer(p.name, written[p.id])) for p in attached if written[p.id]}
         project_cards = {
-            pid: (text, await asyncio.to_thread(cards.missing_paths, next(p for p in attached if p.id == pid), text))
-            for pid, text in confirmed.items()
-            if text
+            p.id: (confirmed[p.id], await asyncio.to_thread(cards.missing_paths, p, confirmed[p.id]))
+            for p in attached
+            if confirmed[p.id]
         }
         processes = (self.processes.latest or {}) if self.processes is not None else {}
         live = {}
@@ -227,11 +225,19 @@ class ChatService:
                 context.live_layer, p, processes=processes.get(p.id, []), terminals=terminals, events=news,
                 now=datetime.now(UTC),
             )  # fmt: skip
-        linked = {}
+        linked, linked_cards = {}, {}
         for pid in linked_ids:
             other = by_id.get(pid)
             if other is None or not other.root.is_dir():
                 continue
+            relation = "; ".join(
+                f"{by_id[link['a_id']].name} -> {by_id[link['b_id']].name}: {link['kind']}"
+                + (f" ({link['description']})" if link["description"] else "")
+                for link in all_links
+                if link["status"] == "confirmed" and pid in (link["a_id"], link["b_id"])
+                and (link["a_id"] in ids or link["b_id"] in ids)
+            )  # fmt: skip
+            linked_cards[pid] = (other, await asyncio.to_thread(context.linked_layer, other, confirmed[pid], relation))
             terminals = await self.terminals.list(pid, 10) if self.terminals is not None else []
             text = await asyncio.to_thread(
                 context.live_layer, other, processes=processes.get(pid, []), terminals=terminals, events=[],
@@ -250,7 +256,7 @@ class ChatService:
             lambda: context.context_blocks(
                 all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
                 settings=settings, pinned=files, cards=project_cards, notes=project_notes, links=all_links,
-                linked=linked,
+                linked=linked, linked_cards=linked_cards,
             )
         )  # fmt: skip
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))
@@ -502,6 +508,14 @@ def _attached(conn, conversation_id: str) -> list:
         except ProjectError:
             continue
     return found
+
+
+def _linked_ids(ids: set[str], all_links: list[dict[str, Any]]) -> list[str]:
+    """Projects with a confirmed link to an attached one, themselves not attached (D25)."""
+    return sorted(
+        {link["b_id"] if link["a_id"] in ids else link["a_id"] for link in all_links
+         if link["status"] == "confirmed" and (link["a_id"] in ids) != (link["b_id"] in ids)}
+    )  # fmt: skip
 
 
 def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False) -> list[dict[str, Any]]:

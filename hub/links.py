@@ -4,7 +4,9 @@ Evidence the hub looks for, for each pair of projects A and B:
 - a path: A's dependency, build or compose files point at B's folder (a local path dependency, `file:../b`, a git
   submodule, `build: ../b` in docker-compose) - A uses B, or they deploy together;
 - a package: A depends on the package B builds (the name in B's pyproject.toml / package.json / Cargo.toml);
-- a port: something in A's files talks to localhost:P, and a process in B's folder listens on P - A uses B's API.
+- a port: something in A's files talks to localhost:P, and a process in B's folder listens on P - A uses B's API;
+- the environment: A and B name the same settings (two or more, not the everyday ones like PORT) in their
+  `.env.example` or docker-compose files - they share a database, a queue, a config.
 Each proposal keeps its evidence as lines a person can check. A confirmed link joins the map (L0) and lets a chat
 with A see B's live state too (D25); a rejected one is not proposed again.
 """
@@ -38,6 +40,14 @@ PATHLIKE = re.compile(r"""(?:file:)?((?:[A-Za-z]:[\\/]|\.\.?[\\/]|/)[^\s"'`,;)\]
 PORT_QUERY = r"(localhost|127\.0\.0\.1|0\.0\.0\.0):{port}\b"
 MAX_PORT_HITS = 50
 DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+# where a project names its settings; the real .env is a secret file and is not read
+ENV_FILES = (".env.example", ".env.sample", ".env.template", ".env.dist", *COMPOSE_FILES)
+ENV_NAME = re.compile(r"^\s*(?:export\s+|-\s*)?([A-Z][A-Z0-9_]{2,})\s*[=:]", re.M)
+EVERYDAY = {
+    "PORT", "HOST", "DEBUG", "ENV", "NODE_ENV", "APP_ENV", "ENVIRONMENT", "PATH", "HOME", "TZ", "LANG", "LOG_LEVEL",
+    "LOGLEVEL", "PYTHONPATH", "PYTHONUNBUFFERED", "VERSION", "SECRET_KEY", "TIMEOUT", "WORKERS",
+}  # fmt: skip
+MIN_SHARED = 2
 
 
 class LinkError(Exception):
@@ -128,17 +138,36 @@ def port_evidence(a: Project, b: Project, b_ports: dict[int, str]) -> list[tuple
     return found
 
 
+def env_names(project: Project) -> set[str]:
+    """The settings a project names in its example env and compose files (names only, never values)."""
+    names: set[str] = set()
+    for name in ENV_FILES:
+        names |= set(ENV_NAME.findall(_read(project.root, name)))
+    return names - EVERYDAY
+
+
+def env_evidence(a: Project, b: Project, a_names: set[str], b_names: set[str]) -> list[tuple[str, str]]:
+    shared = sorted(a_names & b_names)
+    if len(shared) < MIN_SHARED:
+        return []
+    listed = ", ".join(shared[:8]) + (f" и ещё {len(shared) - 8}" if len(shared) > 8 else "")
+    return [("shares", f"{a.name} и {b.name} называют одни и те же настройки окружения: {listed}")]
+
+
 def scan(all_projects: list[Project], ports: dict[str, dict[int, str]]) -> list[dict[str, Any]]:
     """Proposals {a_id, b_id, kind, evidence: [lines]} for every pair with evidence. `ports`: project id -> {port:
     process name} of what listens in its folder now."""
     present = [p for p in all_projects if p.root.is_dir()]
     names = {p.id: package_name(p) for p in present}
+    settings = {p.id: env_names(p) for p in present}
     proposals: dict[tuple[str, str, str], list[str]] = {}
     for a in present:
         for b in present:
             if a.id == b.id or _inside(a.root, b.root) or _inside(b.root, a.root):
                 continue  # nested folders are one tree, not two projects talking
             found = path_evidence(a, b) + package_evidence(a, b, names[b.id]) + port_evidence(a, b, ports.get(b.id, {}))
+            if a.id < b.id:  # sharing goes both ways: one proposal per pair
+                found += env_evidence(a, b, settings[a.id], settings[b.id])
             for kind, line in found:
                 proposals.setdefault((a.id, b.id, kind), []).append(line)
     return [{"a_id": a, "b_id": b, "kind": k, "evidence": lines} for (a, b, k), lines in proposals.items()]
