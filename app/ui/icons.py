@@ -45,6 +45,15 @@ PATHS = {
     "trash": '<path d="M5 7h14M10 11v6M14 11v6M7 7l1 12h8l1-12M10 7V4h4v3"/>',
     "power": '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
     "refresh": '<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4.5v4h-4"/>',
+    "folder": '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+    "folder-plus": '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'
+    '<path d="M12 10.5v5M9.5 13h5"/>',
+    "file": '<path d="M13.5 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9z"/><path d="M13.5 3.5V9H19"/>',
+    "branch": '<circle cx="7" cy="6" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="7" r="2"/>'
+    '<path d="M7 8v8M17 9c0 4.5-10 3-10 7"/>',
+    "commit": '<circle cx="12" cy="12" r="3.5"/><path d="M3.5 12h5M15.5 12h5"/>',
+    "external": '<path d="M14 4.5h5.5V10M19.5 4.5L11 13M17 14v4.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4.5"/>',
+    "back": '<path d="M14.5 6l-6 6 6 6"/>',
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'
     '<path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
 }

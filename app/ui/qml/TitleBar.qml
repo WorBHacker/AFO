@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// The window's own title bar: the chat's title, the command search, the window buttons. Drag it to move the window,
+// The window's own title bar: the chat's title (or the project's, with its git state), the command search, the window buttons. Drag it to move the window,
 // double-click to maximize.
 Item {
     id: bar
@@ -24,7 +24,7 @@ Item {
         spacing: 1
         Text {
             width: parent.width
-            text: App.currentTitle
+            text: App.mode === "projects" ? (Projects.currentName || "Проекты") : App.currentTitle
             elide: Text.ElideRight
             color: Theme.p.text
             font.family: Theme.uiFont
@@ -34,7 +34,7 @@ Item {
         Text {
             width: parent.width
             visible: text !== ""
-            text: App.currentMeta
+            text: App.mode === "projects" ? (Projects.currentId ? (Projects.git.summary || "") : "") : App.currentMeta
             elide: Text.ElideRight
             color: Theme.p.faint
             font.family: Theme.uiFont

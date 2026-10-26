@@ -14,7 +14,7 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 from app import palette
 from app.hub_client import HubError
-from app.ui import commands, rows
+from app.ui import commands, project_rows, rows
 from app.ui.controller import Controller
 from app.ui.theme import Theme, qml_colour
 from common.paths import data_paths
@@ -79,6 +79,32 @@ REACHED = {
     "spent_usd": 10.4,
     "state": "hard",
 }
+PROJECT = {"id": "p1", "name": "LocalChat", "path": "D:/Code/LocalChat", "exists": True}
+TREE = {
+    "": [
+        {"name": "src", "path": "src", "dir": True, "size": 0},
+        {"name": "logo.png", "path": "logo.png", "dir": False, "size": 2048},
+        {"name": "README.md", "path": "README.md", "dir": False, "size": 12},
+    ],
+    "src": [
+        {"name": "deep", "path": "src/deep", "dir": True, "size": 0},
+        {"name": "app.py", "path": "src/app.py", "dir": False, "size": 26},
+    ],
+    "src/deep": [{"name": "x.txt", "path": "src/deep/x.txt", "dir": False, "size": 1}],
+}
+FILES = {"src/app.py": "print('hi')\nprint('new')\n", "README.md": "# Проект\n", "src/deep/x.txt": "x"}
+GIT = {
+    "repo": True,
+    "branch": "main",
+    "ahead": 1,
+    "behind": 0,
+    "changes": [
+        {"path": "src/app.py", "index": " ", "worktree": "M"},
+        {"path": "notes.txt", "index": "?", "worktree": "?"},
+        {"path": "old.py", "index": "D", "worktree": " "},
+    ],
+    "log": [{"sha": "abc1234", "author": "Test", "when": "2 hours ago", "subject": "first"}],
+}
 
 
 class FakeClient:
@@ -96,6 +122,8 @@ class FakeClient:
         self.deleted_budgets = []
         self.secret_calls = []
         self.key = False
+        self.project_list = [dict(PROJECT)]
+        self.tree_calls = []
 
     def models(self):
         return MODELS
@@ -165,6 +193,39 @@ class FakeClient:
 
     def delete_conversation(self, cid):
         self.deleted.append(cid)
+
+    # --- projects ---
+
+    def projects(self):
+        return list(self.project_list)
+
+    def add_project(self, path, name=""):
+        if any(p["path"] == path for p in self.project_list):
+            raise HubError(f"already a project: {path}")
+        project = {"id": "p2", "name": path.rstrip("/").rsplit("/", 1)[-1], "path": path, "exists": True}
+        self.project_list.append(project)
+        return project
+
+    def remove_project(self, pid):
+        self.project_list = [p for p in self.project_list if p["id"] != pid]
+
+    def tree(self, pid, path=""):
+        self.tree_calls.append(path)
+        return TREE[path]
+
+    def file(self, pid, path):
+        if path == "logo.png":
+            return {"path": path, "size": 2048, "truncated": False, "binary": True, "text": "", "encoding": ""}
+        text = FILES[path]
+        return {"path": path, "size": len(text.encode()), "truncated": False, "binary": False, "text": text,
+                "encoding": "utf-8"}  # fmt: skip
+
+    def git(self, pid, log=20):
+        return GIT
+
+    def diff(self, pid, path="", staged=False):
+        text = "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1,2 @@\n print('hi')\n+print('new')\n"
+        return {"path": path, "staged": staged, "diff": text, "truncated": False}
 
     def close(self):
         pass
@@ -498,5 +559,173 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
                 QApplication.processEvents()
         assert quick.warnings == []
     finally:
+        quick.close()
+        quick.theme.setMode("dark")
+
+
+# --- stage 2: projects ---
+
+
+def test_project_rows():
+    marks = project_rows.marks(GIT["changes"])
+    assert marks == {"src/app.py": "M", "src": "•", "notes.txt": "U", "old.py": "D"}
+    assert project_rows.mark({"index": "R", "worktree": " "}) == "R"
+    assert project_rows.mark({"index": "U", "worktree": "U"}) == "!"
+    assert project_rows.git_summary(GIT) == "main · ↑1 ↓0 · 3 изменения"
+    assert project_rows.git_summary({"repo": False}) == "не git-репозиторий"
+    assert [(c["name"], c["folder"], c["label"]) for c in project_rows.change_rows(GIT["changes"])] == [
+        ("app.py", "src", "изменён"),
+        ("notes.txt", "", "новый"),
+        ("old.py", "", "удалён"),
+    ]
+    rows_ = project_rows.tree_rows(TREE[""], 0, marks)
+    assert [(r["name"], r["depth"], r["status"]) for r in rows_] == [
+        ("src", 0, "•"),
+        ("logo.png", 0, ""),
+        ("README.md", 0, ""),
+    ]
+    code = project_rows.code_view("".join(f"x = {n}\n" for n in range(10)), "a.py")
+    assert code["rich"] and code["lines"] == 10 and "<span" in code["code"]
+    assert " 9\n10" in code["numbers"]  # padded: the numbers line up on the right
+    plain = project_rows.code_view("<b>не html</b>", "notes.unknownext")
+    assert not plain["rich"] and plain["code"] == "<b>не html</b>" and plain["numbers"] == "1"
+    big = project_rows.code_view("x = 1\n" * 60_000, "big.py")
+    assert not big["rich"]  # too big to colour
+    diff = project_rows.diff_view("@@ -1 +1 @@\n-old <x>\n+new\n same\n")
+    assert f'<span style="color:{palette.DARK.ok};">+new</span>' in diff["code"]
+    assert f'<span style="color:{palette.DARK.error};">-old &lt;x&gt;</span>' in diff["code"]
+    assert "\n same</pre>" in diff["code"]
+    view = project_rows.file_view({"path": "src/app.py", "size": 26, "text": FILES["src/app.py"], "encoding": "utf-8"})
+    assert (view["name"], view["folder"], view["linesText"], view["sizeText"]) == ("app.py", "src", "2 строки", "26 Б")
+
+
+def test_projects_tree_files_and_git(app):
+    projects = app.projects
+    assert [p["id"] for p in projects.projectList] == ["p1"] and projects.currentId == ""
+    projects.openProject("p1")
+    wait_until(lambda: len(projects.tree.rows) == 3 and projects.git.get("repo"))
+    assert app.settings.value("projects/current") == "p1"
+    assert projects.git["summary"] == "main · ↑1 ↓0 · 3 изменения"
+    assert projects.tree.rows[0]["status"] == "•"  # a folder with a change inside
+    projects.toggleDir(0)
+    wait_until(lambda: len(projects.tree.rows) == 5)
+    assert [(r["name"], r["depth"], r["status"]) for r in projects.tree.rows[:3]] == [
+        ("src", 0, "•"),
+        ("deep", 1, ""),
+        ("app.py", 1, "M"),
+    ]
+    projects.toggleDir(1)
+    wait_until(lambda: len(projects.tree.rows) == 6)
+    assert projects.tree.rows[2]["path"] == "src/deep/x.txt" and projects.tree.rows[2]["depth"] == 2
+    projects.refresh()  # open folders stay open
+    wait_until(lambda: not app.bg.busy)
+    assert len(projects.tree.rows) == 6 and projects.tree.rows[1]["open"]
+    projects.toggleDir(0)  # closing a folder closes what is open inside it
+    assert [r["name"] for r in projects.tree.rows] == ["src", "logo.png", "README.md"]
+
+    projects.openFile("src/app.py", False)
+    wait_until(lambda: projects.file.get("path") == "src/app.py")
+    assert projects.file["rich"] and projects.file["hasDiff"] and projects.file["mark"] == "M"
+    assert projects.file["linesText"] == "2 строки"
+    projects.showDiff(True)
+    wait_until(lambda: projects.file.get("diffMode"))
+    assert "+print('new')" in projects.file["diff"] and projects.file["diffRich"]
+    projects.openFile("logo.png", False)
+    wait_until(lambda: projects.file.get("path") == "logo.png")
+    assert projects.file["binary"] and not projects.file["hasDiff"]
+    projects.openFile("old.py", True)  # deleted: only its diff
+    wait_until(lambda: projects.file.get("path") == "old.py")
+    assert projects.file["missing"] and projects.file["diffMode"]
+    app.setTheme("light")
+    assert "<span" in projects.file["diff"]  # coloured again for the new theme
+    projects.closeFile()
+    assert projects.file == {}
+
+
+def test_adding_and_removing_projects(app):
+    projects = app.projects
+    projects.addProject("file:///D:/Work/new")
+    wait_until(lambda: projects.currentId == "p2")
+    assert app.client.project_list[-1]["path"] == "D:/Work/new"
+    assert [p["name"] for p in projects.projectList] == ["LocalChat", "new"]
+    projects.addProject("D:/Work/new")
+    wait_until(lambda: app.flashError)
+    assert "already a project" in app.flashText
+    projects.askRemoveProject("p2")
+    assert "new" in app.question["title"]
+    app.answer(True)
+    wait_until(lambda: projects.currentId == "")
+    assert [p["id"] for p in projects.projectList] == ["p1"] and projects.tree.rows == []
+    projects.openProject("p1")
+    wait_until(lambda: projects.tree.rows)
+    projects.on_event("project.removed", {"id": "p1"})  # removed elsewhere
+    assert projects.currentId == "" and projects.projectList == []
+
+
+def test_projects_mode_and_palette(app):
+    asked = []
+    app.uiRequested.connect(asked.append)
+    assert app.mode == "chats"
+    app.setMode("projects")
+    assert app.mode == "projects" and app.settings.value("ui/mode") == "projects"
+    items = app.paletteItems("")
+    assert {"Проекты"} <= {i["section"] for i in items if i.get("section")}
+    assert any(i["id"] == "project:p1" for i in items)
+    app.setMode("chats")
+    app.runCommand("project:p1")
+    assert app.mode == "projects"
+    wait_until(lambda: app.projects.currentId == "p1")
+    app.runCommand("action:add-project")
+    assert asked == ["add-project"]
+    app.runCommand("action:new")
+    assert app.mode == "chats"
+    app.runCommand("action:mode:projects")
+    assert app.mode == "projects"
+    app.setMode("nonsense")
+    assert app.mode == "projects"
+
+
+def test_the_projects_view_without_warnings(qapp):
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("projects")
+        for _ in range(10):
+            QApplication.processEvents()
+        app.projects.openProject("p1")
+        wait_until(lambda: len(app.projects.tree.rows) == 3 and app.projects.git.get("repo"))
+        app.projects.toggleDir(0)
+        wait_until(lambda: len(app.projects.tree.rows) == 5)
+        for _ in range(10):
+            QApplication.processEvents()
+        tree = quick.window.findChild(QObject, "projectTree")
+        assert tree.property("count") == 5
+        overview = quick.window.findChild(QObject, "projectOverview")
+        assert overview.property("visible") and overview.property("contentHeight") > 200
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
+        for _ in range(10):
+            QApplication.processEvents()
+        code = quick.window.findChild(QObject, "codeView")
+        assert code.property("visible") and code.property("contentHeight") > 40
+        app.projects.showDiff(True)
+        wait_until(lambda: app.projects.file.get("diffMode"))
+        app.setTheme("light")
+        app.projects.openFile("logo.png", False)
+        wait_until(lambda: app.projects.file.get("path") == "logo.png")
+        for _ in range(20):
+            QApplication.processEvents()
+        assert not code.property("visible")
+        image = quick.window.grabWindow()
+        assert not image.isNull()
+        assert quick.warnings == []
+    finally:
+        quick.controller.setMode("chats")
         quick.close()
         quick.theme.setMode("dark")

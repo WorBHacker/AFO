@@ -22,6 +22,7 @@ from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
 from . import commands, rows
 from .models import RowModel
+from .projects import Projects
 from .theme import Theme
 
 log = logging.getLogger("app.ui")
@@ -30,6 +31,7 @@ ANTHROPIC_KEY = "anthropic_api_key"
 RENDER_INTERVAL_MS = 80  # a streamed answer is re-rendered at most ~12 times a second
 THINK_TICK_MS = 100
 FLASH_MS = 6000
+MODES = ("chats", "projects")
 HUB_STATES = {
     "connecting": "подключение…",
     "up": "подключён",
@@ -72,8 +74,9 @@ class Controller(QObject):
     questionChanged = Signal()
     budgetsChanged = Signal()
     keyChanged = Signal()
+    modeChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
-    uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename"
+    uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
 
     def __init__(self, paths: DataPaths, settings: QSettings, theme: Theme, parent: QObject | None = None):
@@ -111,10 +114,14 @@ class Controller(QObject):
         self._link: bool | None = None  # events connection: never up yet / up / lost
         self._model_id = str(settings.value("chat/model") or "")
         self._effort = str(settings.value("chat/effort", "medium"))
+        mode = str(settings.value("ui/mode", "chats"))
+        self._mode = mode if mode in MODES else "chats"
         self._render_timer = self._timer(RENDER_INTERVAL_MS, self._render_live, single=True)
         self._think_timer = self._timer(THINK_TICK_MS, self._render_live)
         self._flash_timer = self._timer(FLASH_MS, lambda: self._set_flash(""), single=True)
         theme.changed.connect(self._restyle)
+        self.projects = Projects(self)
+        self.projects.set_active(self._mode == "projects")
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -246,6 +253,10 @@ class Controller(QObject):
     def keySet(self) -> bool:
         return self._key_set
 
+    @Property(str, notify=modeChanged)
+    def mode(self) -> str:
+        return self._mode
+
     @Property(str, constant=True)
     def dataDir(self) -> str:
         return str(self.paths.root)
@@ -298,6 +309,7 @@ class Controller(QObject):
         self.refresh_status()
         self.refresh_usage()
         self.load_secrets()
+        self.projects.load()
         if self.current:
             self.openChat(self.current)
 
@@ -556,6 +568,7 @@ class Controller(QObject):
             models=self.model_list,
             budgets=self.budgets,
             has_current=self.current is not None,
+            projects=self.projects.items,
         )
 
     @Slot(str)
@@ -567,9 +580,18 @@ class Controller(QObject):
             self.chooseModel(value)
         elif kind == "budget":
             self.uiRequested.emit("budgets")
+        elif kind == "project":
+            self.setMode("projects")
+            self.projects.openProject(value)
         elif kind == "action":
             if value == "new":
+                self.setMode("chats")
                 self.newChat()
+            elif value.startswith("mode:"):
+                self.setMode(value.removeprefix("mode:"))
+            elif value == "add-project":
+                self.setMode("projects")
+                self.uiRequested.emit("add-project")
             elif value in ("models", "budgets", "settings", "rename"):
                 self.uiRequested.emit(value)
             elif value == "key":
@@ -769,6 +791,8 @@ class Controller(QObject):
             self.load_models()
         elif kind == "system.status":
             self._show_status(payload)
+        elif kind.startswith("project."):
+            self.projects.on_event(kind, payload)
         elif kind == "hub.stopping":
             self._set_hub("stopped")
 
@@ -873,6 +897,15 @@ class Controller(QObject):
     def openLink(self, url: str) -> None:
         if url.startswith(("http://", "https://")):
             QDesktopServices.openUrl(QUrl(url))
+
+    @Slot(str)
+    def setMode(self, mode: str) -> None:
+        """Chats or projects in the main area."""
+        if mode in MODES and mode != self._mode:
+            self._mode = mode
+            self.settings.setValue("ui/mode", mode)
+            self.modeChanged.emit()
+            self.projects.set_active(mode == "projects")
 
     @Slot(str)
     def setTheme(self, mode: str) -> None:

@@ -21,17 +21,19 @@ ROLES = [
     "streaming",
     "notice",
 ]
+TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size"]
 
 
 class RowModel(QAbstractListModel):
     """Rows are dicts; QML reads their fields as roles (model.segments, model.thinking, ...)."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, roles: list[str] | None = None):
         super().__init__(parent)
+        self._roles = roles or ROLES
         self._rows: list[dict[str, Any]] = []
 
     def roleNames(self) -> dict[int, QByteArray]:
-        return {Qt.ItemDataRole.UserRole + i: QByteArray(name.encode()) for i, name in enumerate(ROLES)}
+        return {Qt.ItemDataRole.UserRole + i: QByteArray(name.encode()) for i, name in enumerate(self._roles)}
 
     def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:  # noqa: B008
         return 0 if parent.isValid() else len(self._rows)
@@ -40,7 +42,7 @@ class RowModel(QAbstractListModel):
         if not index.isValid() or not 0 <= index.row() < len(self._rows):
             return None
         offset = role - Qt.ItemDataRole.UserRole
-        return self._rows[index.row()].get(ROLES[offset]) if 0 <= offset < len(ROLES) else None
+        return self._rows[index.row()].get(self._roles[offset]) if 0 <= offset < len(self._roles) else None
 
     # --- for the controller ---
 
@@ -54,8 +56,13 @@ class RowModel(QAbstractListModel):
         self.endResetModel()
 
     def append(self, row: dict[str, Any]) -> None:
-        self.beginInsertRows(QModelIndex(), len(self._rows), len(self._rows))
-        self._rows.append(row)
+        self.insert(len(self._rows), [row])
+
+    def insert(self, at: int, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        self.beginInsertRows(QModelIndex(), at, at + len(rows) - 1)
+        self._rows[at:at] = rows
         self.endInsertRows()
 
     def find(self, key: str) -> int:
@@ -64,10 +71,12 @@ class RowModel(QAbstractListModel):
     def update(self, index: int, **changes: Any) -> None:
         self._rows[index] = {**self._rows[index], **changes}
         model_index = self.index(index, 0)
-        roles = [Qt.ItemDataRole.UserRole + ROLES.index(name) for name in changes if name in ROLES]
+        roles = [Qt.ItemDataRole.UserRole + self._roles.index(name) for name in changes if name in self._roles]
         self.dataChanged.emit(model_index, model_index, roles)
 
-    def remove(self, index: int) -> None:
-        self.beginRemoveRows(QModelIndex(), index, index)
-        del self._rows[index]
+    def remove(self, index: int, count: int = 1) -> None:
+        if count <= 0:
+            return
+        self.beginRemoveRows(QModelIndex(), index, index + count - 1)
+        del self._rows[index : index + count]
         self.endRemoveRows()

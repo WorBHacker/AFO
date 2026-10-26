@@ -50,9 +50,9 @@ class HubClient:
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, path: str, body: dict | None = None) -> Any:
+    def _call(self, method: str, path: str, body: dict | None = None, params: dict | None = None) -> Any:
         try:
-            response = self._http.request(method, path, json=body, headers=self._headers)
+            response = self._http.request(method, path, json=body, params=params, headers=self._headers)
         except httpx.HTTPError as exc:
             raise HubError(f"хаб не отвечает ({exc})") from exc
         if response.status_code >= 400:
@@ -117,6 +117,34 @@ class HubClient:
 
     def delete_budget(self, budget_id: int) -> None:
         self._call("DELETE", f"/v1/budgets/{budget_id}")
+
+    # --- projects (stage 2) ---
+
+    def projects(self) -> list[dict]:
+        return self._call("GET", "/v1/projects")["projects"]
+
+    def add_project(self, path: str, name: str = "") -> dict:
+        return self._call("POST", "/v1/projects", {"path": path, "name": name})
+
+    def update_project(self, project_id: str, **changes) -> dict:
+        """name, description, cloud_ok."""
+        return self._call("PATCH", f"/v1/projects/{project_id}", changes)
+
+    def remove_project(self, project_id: str) -> None:
+        self._call("DELETE", f"/v1/projects/{project_id}")
+
+    def tree(self, project_id: str, path: str = "") -> list[dict]:
+        return self._call("GET", f"/v1/projects/{project_id}/tree", params={"path": path})["entries"]
+
+    def file(self, project_id: str, path: str) -> dict:
+        return self._call("GET", f"/v1/projects/{project_id}/file", params={"path": path})
+
+    def git(self, project_id: str, log: int = 20) -> dict:
+        return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
+
+    def diff(self, project_id: str, path: str = "", *, staged: bool = False) -> dict:
+        params = {"path": path, "staged": "true" if staged else "false"}
+        return self._call("GET", f"/v1/projects/{project_id}/diff", params=params)
 
     # --- keys and the hub itself ---
 

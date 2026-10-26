@@ -1,12 +1,15 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// Chats grouped by day, a new-chat button, and the hub at the bottom (theme switch beside it).
+// Chats or projects (tabs at the top): chats grouped by day with a new-chat button, or a project's file tree;
+// the hub at the bottom (theme switch beside it).
 Rectangle {
     id: sidebar
     signal themeMenuRequested(Item anchor)
     signal settingsRequested()
     signal chatMenuRequested(string chatId, point at)
+    signal projectMenuRequested(Item anchor)
+    signal addProjectRequested()
     color: Theme.p.panel
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.p.hairline }
 
@@ -39,10 +42,77 @@ Rectangle {
         DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
     }
 
+    Rectangle {
+        id: tabs
+        x: 12
+        y: 50
+        width: parent.width - 24
+        height: 32
+        radius: 6
+        color: Theme.p.window
+        border.color: Theme.p.hairline
+        Row {
+            x: 3
+            y: 3
+            Repeater {
+                model: [{ id: "chats", name: "Чаты", icon: "chat", key: "Ctrl+1" },
+                        { id: "projects", name: "Проекты", icon: "folder", key: "Ctrl+2" }]
+                delegate: AbstractButton {
+                    id: tab
+                    required property var modelData
+                    readonly property bool chosen: App.mode === modelData.id
+                    objectName: "tab-" + modelData.id
+                    width: (tabs.width - 6) / 2
+                    height: tabs.height - 6
+                    hoverEnabled: true
+                    onClicked: App.setMode(modelData.id)
+                    background: Rectangle {
+                        radius: 4
+                        color: tab.chosen ? Theme.p.card_hover : (tab.hovered ? Theme.p.item_hover : "transparent")
+                        border.color: tab.chosen ? Theme.p.hairline : "transparent"
+                    }
+                    contentItem: Item {
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Icon {
+                                name: tab.modelData.icon
+                                size: 14
+                                tint: tab.chosen ? Theme.p.text : Theme.p.muted
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: tab.modelData.name
+                                color: tab.chosen ? Theme.p.text : Theme.p.muted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                                font.weight: tab.chosen ? Font.DemiBold : Font.Normal
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 900
+                    ToolTip.text: modelData.key
+                }
+            }
+        }
+    }
+
+    ProjectsPanel {
+        visible: App.mode === "projects"
+        y: tabs.y + tabs.height + 10
+        width: parent.width
+        height: hubCard.y - y - 8
+        onProjectMenuRequested: (anchor) => sidebar.projectMenuRequested(anchor)
+        onAddRequested: sidebar.addProjectRequested()
+    }
+
     AbstractButton {
         id: newChat
+        visible: App.mode === "chats"
         x: 12
-        y: 54
+        y: tabs.y + tabs.height + 10
         width: parent.width - 24
         height: 36
         hoverEnabled: true
@@ -72,8 +142,9 @@ Rectangle {
 
     ListView {
         id: chats
+        visible: App.mode === "chats"
         x: 8
-        y: 102
+        y: newChat.y + newChat.height + 12
         width: parent.width - 16
         height: hubCard.y - y - 8
         clip: true

@@ -1,6 +1,7 @@
 """The command palette (Ctrl+K): actions, chats, models and budgets that match what was typed. No Qt here.
 
-An item's id says what to do: "action:<name>", "chat:<id>", "model:<id>", "budget:<id>" (the controller runs it).
+An item's id says what to do: "action:<name>", "chat:<id>", "model:<id>", "budget:<id>", "project:<id>" (the
+controller runs it).
 """
 
 from __future__ import annotations
@@ -13,6 +14,9 @@ from .. import presenter
 # name, title, icon, key hint; "current" - only with a chat open
 ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("new", "Новый чат", "plus", "Ctrl N", False),
+    ("mode:chats", "Перейти к чатам", "chat", "Ctrl 1", False),
+    ("mode:projects", "Перейти к проектам", "folder", "Ctrl 2", False),
+    ("add-project", "Добавить проект…", "folder-plus", "", False),
     ("models", "Выбрать модель…", "cpu", "", False),
     ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),
     ("settings", "Настройки…", "sliders", "Ctrl ,", False),
@@ -46,6 +50,7 @@ def palette_items(
     models: list[dict[str, Any]],
     budgets: list[dict[str, Any]],
     has_current: bool,
+    projects: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     q = query.strip().lower()
 
@@ -80,6 +85,20 @@ def palette_items(
             }
             for c in matched_chats[: MAX_MATCHES if q else RECENT_CHATS]
         ],
+    )
+    section(
+        "Проекты",
+        [
+            {
+                "id": f"project:{p['id']}",
+                "name": highlight(p["name"], q),
+                "icon": "folder",
+                "note": p["path"],
+                "key": "",
+            }
+            for p in projects or []
+            if hit(p["name"], p["path"])
+        ][:MAX_MATCHES],
     )
     if q:
         section(

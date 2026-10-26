@@ -1,7 +1,9 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
-// The window (D36): its own title bar, chats on the left, the conversation and the composer, a 26px status bar.
+// The window (D36): its own title bar, chats or projects on the left, the conversation and the composer (or the
+// project: its overview or a file), a 26px status bar.
 // Drawn by the CPU through Qt Quick's software scene graph (D3).
 Window {
     id: root
@@ -23,6 +25,8 @@ Window {
         onThemeMenuRequested: (anchor) => themeMenu.openAt(anchor)
         onSettingsRequested: settingsSheet.open()
         onChatMenuRequested: (chatId, at) => chatMenu.openFor(chatId, at)
+        onProjectMenuRequested: (anchor) => projectMenu.openBelow(anchor)
+        onAddProjectRequested: folderDialog.open()
     }
 
     Item {
@@ -37,12 +41,21 @@ Window {
             onSearchRequested: palette.open()
         }
         ChatView {
+            visible: App.mode === "chats"
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - composer.height
         }
+        ProjectView {
+            visible: App.mode === "projects"
+            y: titleBar.height
+            width: parent.width
+            height: parent.height - titleBar.height
+            onAddRequested: folderDialog.open()
+        }
         Composer {
             id: composer
+            visible: App.mode === "chats"
             anchors.bottom: parent.bottom
             width: parent.width
             onModelMenuRequested: (anchor) => modelMenu.openAt(anchor)
@@ -92,6 +105,19 @@ Window {
         onChosen: (id) => id === "rename" ? renameDialog.openFor(chatId) : App.askDeleteChat(chatId)
         function openFor(id, point) { chatId = id; at = point; open() }
     }
+    MenuPopup {
+        id: projectMenu
+        menuWidth: 320
+        items: Projects.projectList.map(p => ({ id: p.id, name: p.name, note: p.path, icon: "folder", selected: p.selected }))
+                   .concat([{ section: " ", id: "" }, { id: "+add", name: "Добавить проект…", icon: "folder-plus" }])
+        onChosen: (id) => id === "+add" ? folderDialog.open() : Projects.openProject(id)
+        function openBelow(item) { at = item.mapToItem(null, 0, item.height + 4); open() }
+    }
+    FolderDialog {
+        id: folderDialog
+        title: "Папка проекта"
+        onAccepted: Projects.addProject(selectedFolder.toString())
+    }
     CommandPalette { id: palette }
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
@@ -105,13 +131,17 @@ Window {
             else if (what === "settings") settingsSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
+            else if (what === "add-project") folderDialog.open()
         }
     }
 
     // ---------- keyboard ----------
 
-    Shortcut { sequence: "Ctrl+N"; onActivated: { App.newChat(); composer.focusInput() } }
-    Shortcut { sequence: "Ctrl+L"; onActivated: composer.focusInput() }
+    Shortcut { sequence: "Ctrl+N"; onActivated: { App.setMode("chats"); App.newChat(); composer.focusInput() } }
+    Shortcut { sequence: "Ctrl+L"; onActivated: { App.setMode("chats"); composer.focusInput() } }
+    Shortcut { sequence: "Ctrl+1"; onActivated: App.setMode("chats") }
+    Shortcut { sequence: "Ctrl+2"; onActivated: App.setMode("projects") }
+    Shortcut { sequence: "F5"; enabled: App.mode === "projects"; onActivated: Projects.refresh() }
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }

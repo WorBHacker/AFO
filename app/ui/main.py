@@ -94,6 +94,7 @@ class QuickApp:
         self.engine.addImageProvider("icons", IconProvider())
         context = self.engine.rootContext()
         context.setContextProperty("App", self.controller)
+        context.setContextProperty("Projects", self.controller.projects)
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))
         roots = self.engine.rootObjects()
