@@ -139,6 +139,7 @@ Window {
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
             else if (what === "add-project") folderDialog.open()
+            else if (what === "search-project") Qt.callLater(sidebar.focusProjectSearch)
         }
     }
 
@@ -158,6 +159,10 @@ Window {
         }
     }
     Shortcut { sequence: "Ctrl+Shift+`"; onActivated: { App.setMode("projects"); Terminals.newTerminal() } }
+    Shortcut {
+        sequence: "Ctrl+Shift+F"
+        onActivated: { App.setMode("projects"); Qt.callLater(sidebar.focusProjectSearch) }
+    }
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }

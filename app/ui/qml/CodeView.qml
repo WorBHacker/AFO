@@ -9,6 +9,21 @@ Flickable {
     property string numbers
     property bool rich
     property bool showNumbers: true
+    // a line to show (from a search): its offset in the text; a new `gotoSeq` asks again for the same place
+    property int gotoOffset: -1
+    property int gotoSeq: 0
+
+    function showLine() {
+        if (gotoOffset < 0 || gotoOffset > body.length) { mark.visible = false; return }
+        const r = body.positionToRectangle(gotoOffset)
+        contentX = 0
+        contentY = Math.max(0, Math.min(r.y - height / 3, contentHeight - height))
+        mark.y = r.y
+        mark.height = r.height
+        mark.visible = true
+        markFade.restart()
+    }
+    onGotoSeqChanged: Qt.callLater(showLine)
 
     contentWidth: row.width
     contentHeight: row.height
@@ -17,6 +32,16 @@ Flickable {
     flickDeceleration: 4000
     ScrollBar.vertical: ThinScrollBar {}
     ScrollBar.horizontal: ThinScrollBar {}
+
+    Rectangle {
+        id: mark
+        objectName: "gotoMark"
+        visible: false
+        width: Math.max(view.width, row.width)
+        color: Theme.p.selection
+        opacity: 0.6
+        Timer { id: markFade; interval: 2500; onTriggered: mark.visible = false }
+    }
 
     Row {
         id: row

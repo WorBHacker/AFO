@@ -99,7 +99,10 @@ Rectangle {
         }
     }
 
+    function focusProjectSearch() { projectsPanel.focusSearch() }
+
     ProjectsPanel {
+        id: projectsPanel
         visible: App.mode === "projects"
         y: tabs.y + tabs.height + 10
         width: parent.width

@@ -142,6 +142,10 @@ class HubClient:
     def git(self, project_id: str, log: int = 20) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
 
+    def search(self, project_id: str, text: str, *, regex: bool = False, case: str = "smart", limit: int = 500) -> dict:
+        params = {"q": text, "regex": "true" if regex else "false", "case": case, "limit": limit}
+        return self._call("GET", f"/v1/projects/{project_id}/search", params=params)
+
     def diff(self, project_id: str, path: str = "", *, staged: bool = False) -> dict:
         params = {"path": path, "staged": "true" if staged else "false"}
         return self._call("GET", f"/v1/projects/{project_id}/diff", params=params)

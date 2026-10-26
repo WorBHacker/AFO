@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import projects
+from .. import projects, search
 from ..auth import APP_CLIENT, Client
 from ..projects import ProjectError
 from .deps import require_client
@@ -120,6 +120,22 @@ async def project_git(
     status = await _off_loop(projects.git_status, project.root)
     commits = await _off_loop(projects.git_log, project.root, max(0, min(log, 200)))
     return {**status, "log": commits}
+
+
+@router.get("/projects/{project_id}/search")
+async def project_search(
+    project_id: str,
+    request: Request,
+    client: Annotated[Client, Depends(require_client)],
+    q: str,
+    regex: bool = False,
+    case: str = "smart",
+    glob: str = "",
+    limit: int = search.MAX_RESULTS,
+) -> dict:
+    """Lines that match `q` (text, or a regular expression with `regex`), grouped by file (hub/search.py)."""
+    project = await _project(request, project_id)
+    return await _off_loop(search.search, project.root, q, regex=regex, case=case, glob=glob, limit=limit)
 
 
 @router.get("/projects/{project_id}/diff")

@@ -497,6 +497,8 @@ Item {
             numbers: Projects.file.numbers || ""
             rich: Projects.file.diffMode ? !!Projects.file.diffRich : !!Projects.file.rich
             showNumbers: !Projects.file.diffMode
+            gotoOffset: Projects.file.gotoOffset === undefined ? -1 : Projects.file.gotoOffset
+            gotoSeq: Projects.file.gotoSeq || 0
             // another file (or the diff instead of the file) starts at the top; a refresh keeps the place
             property string shown
             onCodeChanged: {

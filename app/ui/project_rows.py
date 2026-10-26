@@ -75,7 +75,9 @@ def language_of(path: str) -> str:
 
 def code_view(text: str, path: str, *, lang: str | None = None) -> dict[str, Any]:
     """A file (or a diff) for the viewer: the code, coloured as rich text when not too big, else plain, and line
-    numbers made the same way (padded to one width, so a monospace column lines up on the right)."""
+    numbers made the same way (padded to one width, so a monospace column lines up on the right). Windows line ends
+    are shown as plain ones, so a line's offset in the text is its offset on screen."""
+    text = text.replace("\r\n", "\n")
     lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
     lang = lang if lang is not None else language_of(path)
     rich = bool(lang) and len(text.encode("utf-8", "replace")) <= HIGHLIGHT_MAX_BYTES
@@ -247,3 +249,92 @@ def processes_summary(processes: list[dict[str, Any]]) -> str:
     if ports:
         text += " · " + presenter.plural(len(ports), "порт ", "порты ", "порты ") + ", ".join(map(str, ports))
     return text
+
+
+def highlighted(text: str, ranges: list[list[int]]) -> str:
+    """A line as rich text with its matches marked (the selection colour, as an editor marks found text)."""
+    p = palette.current()
+    out, at = [], 0
+    for start, end in sorted(ranges):
+        if start < at or end > len(text):
+            continue
+        out.append(html.escape(text[at:start], quote=False))
+        out.append(f'<span style="background-color:{p.selection}; color:{p.text};">'
+                   f"{html.escape(text[start:end], quote=False)}</span>")  # fmt: skip
+        at = end
+    out.append(html.escape(text[at:], quote=False))
+    return "".join(out).replace("  ", "&nbsp; ")
+
+
+def search_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """The hub's search answer as one flat list: a row per file, then a row per matching line."""
+    rows: list[dict[str, Any]] = []
+    for item in result.get("files", []):
+        path = item["path"]
+        rows.append(
+            {
+                "kind": "file",
+                "key": f"f:{path}",
+                "path": path,
+                "name": path.rsplit("/", 1)[-1],
+                "folder": path.rsplit("/", 1)[0] if "/" in path else "",
+                "count": len(item["matches"]),
+                "line": 0,
+                "html": "",
+            }
+        )
+        rows += [
+            {
+                "kind": "match",
+                "key": f"m:{path}:{m['line']}",
+                "path": path,
+                "name": "",
+                "folder": "",
+                "count": 0,
+                "line": m["line"],
+                "html": highlighted(*_lead(m["text"].strip(), _stripped(m["text"], m["ranges"]))),
+            }
+            for m in item["matches"]
+        ]
+    return rows
+
+
+LEAD = 8  # characters kept before the first match: the sidebar is narrow, the match must show
+
+
+def _stripped(text: str, ranges: list[list[int]]) -> list[list[int]]:
+    shift = len(text) - len(text.lstrip())
+    return [[a - shift, b - shift] for a, b in ranges if a >= shift]
+
+
+def _lead(text: str, ranges: list[list[int]]) -> tuple[str, list[list[int]]]:
+    """A line cut so that it starts a little before its first match."""
+    first = min((a for a, _ in ranges), default=0)
+    if first <= LEAD + 4:
+        return text, ranges
+    cut = first - LEAD
+    return "…" + text[cut:], [[a - cut + 1, b - cut + 1] for a, b in ranges if a >= cut]
+
+
+def search_summary(result: dict[str, Any] | None) -> str:
+    if result is None:
+        return ""
+    count, files = result.get("matches", 0), len(result.get("files", []))
+    if not count:
+        return "ничего не найдено"
+    text = (
+        f"{count} {presenter.plural(count, 'совпадение', 'совпадения', 'совпадений')} в {files} "
+        f"{presenter.plural(files, 'файле', 'файлах', 'файлах')}"
+    )
+    return text + (" (показаны первые)" if result.get("truncated") else "")
+
+
+def line_offset(text: str, line: int) -> int:
+    """Where line `line` (from 1) starts in `text`, in characters."""
+    at = 0
+    for _ in range(max(0, line - 1)):
+        found = text.find("\n", at)
+        if found < 0:
+            return at
+        at = found + 1
+    return at

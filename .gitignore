@@ -12,3 +12,6 @@ dist/
 
 # Hub data: database, logs, terminal logs, file snapshots (D29)
 data/
+
+# third-party programs fetched for the hub (ripgrep); not part of the repository
+tools/

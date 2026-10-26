@@ -17,6 +17,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("mode:chats", "Перейти к чатам", "chat", "Ctrl 1", False),
     ("mode:projects", "Перейти к проектам", "folder", "Ctrl 2", False),
     ("add-project", "Добавить проект…", "folder-plus", "", False),
+    ("search-project", "Найти в файлах проекта", "search", "Ctrl Shift F", False),
     ("new-terminal", "Новый терминал в проекте", "terminal", "Ctrl Shift `", False),
     ("terminals", "Показать или скрыть терминалы", "terminal", "Ctrl `", False),
     ("models", "Выбрать модель…", "cpu", "", False),

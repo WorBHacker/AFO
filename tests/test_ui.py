@@ -154,6 +154,8 @@ class FakeClient:
         self.resized = []
         self.term_stopped = []
         self.term_removed = []
+        self.file_calls = []
+        self.searches = []
 
     def models(self):
         return MODELS
@@ -243,7 +245,21 @@ class FakeClient:
         self.tree_calls.append(path)
         return self.trees[path]
 
+    def search(self, pid, text, *, regex=False, case="smart", limit=500):
+        self.searches.append((text, regex, case))
+        found = []
+        for path, content in sorted(self.files.items()):
+            matches = [
+                {"line": n, "text": line, "ranges": [[line.find(text), line.find(text) + len(text)]]}
+                for n, line in enumerate(content.splitlines(), 1)
+                if text in line
+            ]
+            if matches:
+                found.append({"path": path, "matches": matches})
+        return {"engine": "fake", "files": found, "matches": sum(len(f["matches"]) for f in found), "truncated": False}
+
     def file(self, pid, path):
+        self.file_calls.append(path)
         if path == "logo.png":
             return {"path": path, "size": 2048, "truncated": False, "binary": True, "text": "", "encoding": ""}
         if path not in self.files:
@@ -838,6 +854,44 @@ def test_project_processes(app):
     assert projects.processes == [] and projects.processesSummary == ""
 
 
+def test_search_in_a_project(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.tree.rows)
+    projects.search("pri", False, False)
+    projects.search("print", False, False)  # typing: only the last one goes out
+    assert projects.searchActive and projects.searchSummary == "поиск…"
+    wait_until(lambda: projects.searchRows)
+    assert client.searches == [("print", False, "smart")]
+    assert [(r["kind"], r["path"], r["line"]) for r in projects.searchRows] == [
+        ("file", "src/app.py", 0),
+        ("match", "src/app.py", 1),
+        ("match", "src/app.py", 2),
+    ]
+    assert projects.searchRows[0]["count"] == 2
+    assert projects.searchRows[1]["html"].startswith('<span style="background-color:')  # the match is marked
+    assert projects.searchSummary == "2 совпадения в 1 файле"
+    projects.search("print", True, True)
+    wait_until(lambda: len(client.searches) == 2)
+    assert client.searches[-1] == ("print", True, "sensitive")
+
+    projects.openFileAt("src/app.py", 2)
+    wait_until(lambda: projects.file.get("gotoSeq"))
+    assert projects.file["gotoLine"] == 2 and projects.file["gotoOffset"] == len("print('hi')\n")
+    calls, seq = len(client.file_calls), projects.file["gotoSeq"]
+    projects.openFileAt("src/app.py", 1)  # the same file: no reload, just another place
+    assert projects.file["gotoOffset"] == 0 and projects.file["gotoSeq"] == seq + 1
+    assert len(client.file_calls) == calls
+    projects.openFile("README.md", False)  # from the tree: from the top
+    wait_until(lambda: projects.file.get("path") == "README.md")
+    assert projects.file["gotoOffset"] == -1
+
+    projects.search("nothing-here", False, False)
+    wait_until(lambda: projects.searchSummary == "ничего не найдено")
+    projects.clearSearch()
+    assert not projects.searchActive and projects.searchRows == []
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -989,6 +1043,18 @@ def test_the_projects_view_without_warnings(qapp):
         panel = quick.window.findChild(QObject, "terminalPanel")
         assert panel.property("visible") and panel.property("height") > 100
         assert quick.window.findChild(QObject, "terminalLines").property("count") == len(app.terminals.lines.rows)
+        # search: results in the sidebar, a file opened at a line with the line marked
+        app.projects.search("print", False, False)
+        wait_until(lambda: app.projects.searchRows)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "searchResults").property("count") == 3
+        app.projects.openFileAt("src/app.py", 2)
+        wait_until(lambda: app.projects.file.get("gotoLine") == 2)
+        for _ in range(20):
+            QApplication.processEvents()
+        mark = quick.window.findChild(QObject, "gotoMark")
+        assert mark.property("visible") and mark.property("y") > 10  # the second line, below the first
         image = quick.window.grabWindow()
         assert not image.isNull()
         assert quick.warnings == []
@@ -996,3 +1062,18 @@ def test_the_projects_view_without_warnings(qapp):
         quick.controller.setMode("chats")
         quick.close()
         quick.theme.setMode("dark")
+
+
+def test_search_lines_start_near_their_match():
+    rows_ = project_rows.search_rows(
+        {
+            "files": [
+                {
+                    "path": "a.py",
+                    "matches": [{"line": 3, "text": "    from .terminals import Manager", "ranges": [[27, 34]]}],
+                }
+            ]
+        }
+    )
+    html = rows_[1]["html"]
+    assert html.startswith("…") and ">Manager</span>" in html and "from" not in html

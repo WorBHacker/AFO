@@ -49,22 +49,93 @@ Item {
         }
     }
 
+    function focusSearch() { searchField.forceActiveFocus(); searchField.selectAll() }
+
+    // ---------- search in the project's files ----------
+
+    Item {
+        id: searchRow
+        visible: Projects.currentId !== ""
+        x: 12
+        y: picker.height + 8
+        width: parent.width - 24
+        height: 32
+        Field {
+            id: searchField
+            objectName: "projectSearch"
+            width: parent.width - toggles.width - 4
+            height: parent.height
+            rightPadding: clearSearch.visible ? 30 : 10
+            placeholderText: "Поиск по файлам"
+            onTextEdited: Projects.search(text, regexToggle.checked, caseToggle.checked)
+            Keys.onEscapePressed: { text = ""; Projects.clearSearch() }
+            IconButton {
+                id: clearSearch
+                visible: searchField.text !== ""
+                anchors.right: parent.right
+                anchors.rightMargin: 3
+                anchors.verticalCenter: parent.verticalCenter
+                implicitWidth: 24
+                implicitHeight: 24
+                iconName: "close"
+                tip: "Очистить (Esc)"
+                onClicked: { searchField.text = ""; Projects.clearSearch() }
+            }
+        }
+        Row {
+            id: toggles
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            component Toggle: AbstractButton {
+                id: toggle
+                property string tip
+                checkable: true
+                implicitWidth: 28
+                implicitHeight: 28
+                hoverEnabled: true
+                onToggled: Projects.search(searchField.text, regexToggle.checked, caseToggle.checked)
+                background: Rectangle {
+                    radius: 5
+                    color: toggle.checked ? Theme.p.item_selected : (toggle.hovered ? Theme.p.item_hover : "transparent")
+                    border.color: toggle.checked ? Theme.p.accent : "transparent"
+                }
+                contentItem: Text {
+                    text: toggle.text
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    color: toggle.checked ? Theme.p.text : Theme.p.muted
+                    font.family: Theme.monoFont
+                    font.pixelSize: 12
+                }
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: tip
+            }
+            Toggle { id: caseToggle; text: "Aa"; tip: "Учитывать регистр (без этого — только если в запросе есть заглавные)" }
+            Toggle { id: regexToggle; text: ".*"; tip: "Регулярное выражение" }
+        }
+    }
+
     Item {
         id: treeHead
         visible: Projects.currentId !== ""
         x: 18
-        y: picker.height + 8
+        y: searchRow.y + searchRow.height + 6
         width: parent.width - 30
         height: 28
         Text {
+            width: parent.width - 30
             anchors.verticalCenter: parent.verticalCenter
-            text: "Файлы"
+            text: Projects.searchActive ? Projects.searchSummary : "Файлы"
+            elide: Text.ElideRight
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 12
             font.weight: Font.DemiBold
         }
         IconButton {
+            visible: !Projects.searchActive
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             implicitWidth: 26
@@ -76,9 +147,105 @@ Item {
     }
 
     ListView {
+        id: results
+        objectName: "searchResults"
+        visible: Projects.currentId !== "" && Projects.searchActive
+        x: 8
+        y: treeHead.y + treeHead.height + 2
+        width: parent.width - 16
+        height: parent.height - y
+        clip: true
+        model: Projects.searchRows
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ThinScrollBar {}
+        delegate: AbstractButton {
+            id: hit
+            required property var modelData
+            readonly property bool isFile: modelData.kind === "file"
+            width: results.width
+            height: isFile ? 28 : 24
+            hoverEnabled: true
+            onClicked: Projects.openFileAt(modelData.path, isFile ? 1 : modelData.line)
+            background: Rectangle {
+                radius: 4
+                color: hit.hovered ? Theme.p.item_hover : "transparent"
+            }
+            contentItem: Item {
+                Icon {
+                    visible: hit.isFile
+                    x: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: "file"
+                    size: 14
+                    tint: Theme.p.muted
+                }
+                Text {
+                    id: hitName
+                    visible: hit.isFile
+                    x: 26
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: hit.modelData.name
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    visible: hit.isFile
+                    x: hitName.x + hitName.width + 6
+                    width: Math.max(0, parent.width - x - 34)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: hit.modelData.folder
+                    elide: Text.ElideMiddle
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
+                Text {
+                    visible: hit.isFile
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: hit.modelData.count
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
+                Text {
+                    id: lineNo
+                    visible: !hit.isFile
+                    x: 10
+                    width: 34
+                    anchors.verticalCenter: parent.verticalCenter
+                    horizontalAlignment: Text.AlignRight
+                    text: hit.modelData.line
+                    color: Theme.p.faint
+                    font.family: Theme.monoFont
+                    font.pixelSize: 11
+                }
+                Item {
+                    visible: !hit.isFile
+                    x: 52
+                    width: parent.width - x - 4
+                    height: parent.height
+                    clip: true
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: hit.modelData.html
+                        textFormat: Text.RichText
+                        color: Theme.p.text_soft
+                        font.family: Theme.monoFont
+                        font.pixelSize: 12
+                    }
+                }
+            }
+        }
+    }
+
+    ListView {
         id: tree
         objectName: "projectTree"
-        visible: Projects.currentId !== ""
+        visible: Projects.currentId !== "" && !Projects.searchActive
         x: 8
         y: treeHead.y + treeHead.height + 2
         width: parent.width - 16
@@ -154,10 +321,15 @@ Item {
         y: picker.height + 16
         width: parent.width - 36
         wrapMode: Text.Wrap
-        text: "Проект — папка с кодом. Здесь будут её файлы и git; дальше в этом же месте — процессы, порты и терминалы."
+        text: "Проект — папка с кодом: её файлы, поиск по ним, git, процессы и порты, терминалы."
         color: Theme.p.faint
         lineHeight: 1.3
         font.family: Theme.uiFont
         font.pixelSize: 12
+    }
+
+    Connections {
+        target: Projects
+        function onProjectChanged() { searchField.text = "" }
     }
 }

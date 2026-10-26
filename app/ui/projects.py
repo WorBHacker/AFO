@@ -22,6 +22,8 @@ from .models import TREE_ROLES, RowModel
 if TYPE_CHECKING:
     from .controller import Controller
 
+SEARCH_DELAY_MS = 250  # typing pauses this long before the search goes out
+
 
 class Projects(QObject):
     listChanged = Signal()
@@ -29,6 +31,7 @@ class Projects(QObject):
     gitChanged = Signal()
     fileChanged = Signal()
     processesChanged = Signal()
+    searchChanged = Signal()
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -43,6 +46,13 @@ class Projects(QObject):
         self._diff_text = ""
         self._processes: dict[str, list[dict[str, Any]]] = {}  # project id -> its processes, from the hub
         self._tree_gen = 0
+        self._search: dict[str, Any] | None = None  # the hub's last answer
+        self._search_args: tuple[str, bool, bool] = ("", False, False)
+        self._search_gen = 0
+        self._searching = False
+        self._search_timer = app._timer(SEARCH_DELAY_MS, self._run_search, single=True)
+        self._goto: tuple[str, int] | None = None  # a file to show at a line, from a search
+        self._goto_seq = 0
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
@@ -80,6 +90,18 @@ class Projects(QObject):
     @Property("QVariantMap", notify=fileChanged)
     def file(self) -> dict:
         return self._file
+
+    @Property(list, notify=searchChanged)
+    def searchRows(self) -> list:
+        return project_rows.search_rows(self._search) if self._search else []
+
+    @Property(str, notify=searchChanged)
+    def searchSummary(self) -> str:
+        return "поиск…" if self._searching else project_rows.search_summary(self._search)
+
+    @Property(bool, notify=searchChanged)
+    def searchActive(self) -> bool:
+        return bool(self._search_args[0].strip())
 
     @Property(list, notify=processesChanged)
     def processes(self) -> list:
@@ -162,6 +184,9 @@ class Projects(QObject):
 
     def _reset_view(self) -> None:
         self._tree_gen += 1
+        self._search_gen += 1
+        self._search, self._searching, self._search_args = None, False, ("", False, False)
+        self.searchChanged.emit()
         self.tree.reset([])
         self._git, self._marks = {}, {}
         self.closeFile()
@@ -291,6 +316,8 @@ class Projects(QObject):
 
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
+        if self._goto is not None and self._goto[0] != path:
+            self._goto = None  # a file opened from the tree starts at its top
         self._load_file(path, diff)
 
     def _load_file(self, path: str, diff: bool, *, reloading: bool = False) -> None:
@@ -337,6 +364,7 @@ class Projects(QObject):
         view["hasDiff"] = bool(mark) and mark != "•"
         view["mark"] = mark
         view["diffMode"] = diff
+        view.update(self._goto_fields(data) if not diff else {"gotoLine": 0, "gotoOffset": -1, "gotoSeq": 0})
         if diff:
             shown = project_rows.diff_view(self._diff_text)
             view["diff"] = shown["code"]
@@ -359,6 +387,8 @@ class Projects(QObject):
     def _restyle(self) -> None:
         if self._file_data is not None:
             self._render_file(bool(self._file.get("diffMode")))
+        if self._search:
+            self.searchChanged.emit()  # the marks carry colours
 
     # ================= what the hub says =================
 
@@ -384,6 +414,63 @@ class Projects(QObject):
         path = self._file.get("path")
         if path and (more or path in payload.get("changed", [])):
             self._load_file(path, bool(self._file.get("diffMode")), reloading=True)
+
+    # ================= search =================
+
+    @Slot(str, bool, bool)
+    def search(self, text: str, regex: bool, case_sensitive: bool) -> None:
+        """Searches the open project once typing pauses; an empty text goes back to the tree."""
+        self._search_args = (text, regex, case_sensitive)
+        self._search_gen += 1
+        if not text.strip():
+            self._search_timer.stop()
+            self._search, self._searching = None, False
+        else:
+            self._searching = True
+            self._search_timer.start()
+        self.searchChanged.emit()
+
+    def _run_search(self) -> None:
+        text, regex, case_sensitive = self._search_args
+        if not self.current or not text.strip():
+            return
+        pid, generation = self.current["id"], self._search_gen
+        case = "sensitive" if case_sensitive else "smart"
+
+        def show(result: dict[str, Any]) -> None:
+            if generation == self._search_gen:
+                self._search, self._searching = result, False
+                self.searchChanged.emit()
+
+        def failed(error: Exception) -> None:
+            if generation == self._search_gen:
+                self._search, self._searching = {"files": [], "matches": 0, "error": str(error)}, False
+                self.searchChanged.emit()
+                self.app.show_error(f"Поиск не удался: {error}")
+
+        self.app._call(lambda: self.app.client.search(pid, text, regex=regex, case=case), show, failed)
+
+    @Slot()
+    def clearSearch(self) -> None:
+        self.search("", False, False)
+
+    @Slot(str, int)
+    def openFileAt(self, path: str, line: int) -> None:
+        """Opens the file (or keeps it open) and shows the line."""
+        self._goto_seq += 1
+        self._goto = (path, line)
+        if self._file.get("path") == path and not self._file.get("diffMode") and self._file_data is not None:
+            self._file = {**self._file, **self._goto_fields(self._file_data)}
+            self.fileChanged.emit()
+        else:
+            self._load_file(path, False)
+
+    def _goto_fields(self, data: dict[str, Any]) -> dict[str, Any]:
+        if self._goto is None or self._goto[0] != data["path"]:
+            return {"gotoLine": 0, "gotoOffset": -1, "gotoSeq": 0}
+        line = self._goto[1]
+        text = data.get("text", "").replace("\r\n", "\n")
+        return {"gotoLine": line, "gotoOffset": project_rows.line_offset(text, line), "gotoSeq": self._goto_seq}
 
     # ================= processes =================
 

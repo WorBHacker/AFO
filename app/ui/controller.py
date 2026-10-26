@@ -593,6 +593,9 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
+            elif value == "search-project":
+                self.setMode("projects")
+                self.uiRequested.emit("search-project")
             elif value == "new-terminal":
                 self.setMode("projects")
                 self.terminals.newTerminal()
