@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from common import __version__
 
-from .api import budgets, conversations, events_ws, models, processes, projects, secrets, system
+from .api import budgets, conversations, events_ws, models, processes, projects, secrets, system, terminals
 from .auth import ensure_app_token
 from .chat import ChatService
 from .db import Database, migrate
@@ -25,6 +25,7 @@ from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .system_status import StatusMonitor
+from .terminals import TerminalManager
 from .watch import ProjectWatcher
 
 log = logging.getLogger("hub")
@@ -55,12 +56,14 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
         app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
+        app.state.terminals = TerminalManager(bus, db, paths.terminals)
         await bus.publish("hub.started", {"version": __version__, "migrations_applied": applied})
         # the catalog syncs in the background: the hub answers at once even if llama-swap or the network is slow
         catalog = app.state.initial_sync = asyncio.create_task(_initial_sync(app))
         app.state.status.start()
         app.state.watcher.start(db.call(list_projects))
         app.state.processes.start()
+        await app.state.terminals.start()
         log.info("hub ready, app token in %s", token_file)
         try:
             yield
@@ -71,6 +74,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.status.stop()
             await app.state.watcher.stop()
             await app.state.processes.stop()
+            await app.state.terminals.stop()
             await bus.publish("hub.stopping", {})
             db.close()
             log.info("hub stopped")
@@ -92,6 +96,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(budgets.router)
     app.include_router(projects.router)
     app.include_router(processes.router)
+    app.include_router(terminals.router)
     return app
 
 
