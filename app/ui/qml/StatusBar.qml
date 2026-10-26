@@ -5,6 +5,7 @@ import QtQuick.Controls.Basic
 // loaded local model, VRAM, Windows' commit charge and the GPU.
 Rectangle {
     id: bar
+    signal budgetsRequested()
     height: 26
     color: Theme.p.panel
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
@@ -44,7 +45,8 @@ Rectangle {
         Small {
             text: App.sessionText
             color: App.sessionWarn ? Theme.p.warn : Theme.p.muted
-            HoverHandler { id: sessionHover }
+            HoverHandler { id: sessionHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: bar.budgetsRequested() }
             ToolTip.visible: sessionHover.hovered
             ToolTip.text: App.sessionTooltip
         }

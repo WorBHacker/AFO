@@ -20,7 +20,7 @@ from .. import presenter
 from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
-from . import rows
+from . import commands, rows
 from .models import RowModel
 from .theme import Theme
 
@@ -70,7 +70,11 @@ class Controller(QObject):
     sessionChanged = Signal()
     flashChanged = Signal()
     questionChanged = Signal()
+    budgetsChanged = Signal()
+    keyChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
+    uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename"
+    budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
 
     def __init__(self, paths: DataPaths, settings: QSettings, theme: Theme, parent: QObject | None = None):
         super().__init__(parent)
@@ -91,6 +95,7 @@ class Controller(QObject):
         self.session = presenter.Session()
         self.totals: dict[str, Any] | None = None
         self.budgets: list[dict[str, Any]] = []
+        self._key_set = False
         self._status = rows.status_parts(None)
         self._hub_state = "connecting"
         self._title = "Новый чат"
@@ -221,6 +226,36 @@ class Controller(QObject):
     def question(self) -> dict:
         return self._question
 
+    @Property(list, notify=budgetsChanged)
+    def budgetItems(self) -> list:
+        return commands.budget_items(self.budgets)
+
+    @Property(list, notify=budgetsChanged)
+    def budgetScopes(self) -> list:
+        return commands.budget_scopes(self.model_list, self.budgets)
+
+    @Property(list, constant=True)
+    def budgetPeriods(self) -> list:
+        return [{"id": v, "name": label} for v, label in presenter.PERIODS]
+
+    @Property(list, constant=True)
+    def budgetActions(self) -> list:
+        return [{"id": v, "name": label} for v, label in presenter.HARD_ACTIONS]
+
+    @Property(bool, notify=keyChanged)
+    def keySet(self) -> bool:
+        return self._key_set
+
+    @Property(str, constant=True)
+    def dataDir(self) -> str:
+        return str(self.paths.root)
+
+    @Property(str, constant=True)
+    def version(self) -> str:
+        from common import __version__
+
+        return __version__
+
     # ================= connecting =================
 
     @Slot()
@@ -262,6 +297,7 @@ class Controller(QObject):
         self.load_conversations()
         self.refresh_status()
         self.refresh_usage()
+        self.load_secrets()
         if self.current:
             self.openChat(self.current)
 
@@ -347,6 +383,73 @@ class Controller(QObject):
     def _set_budgets(self, budgets: list[dict[str, Any]]) -> None:
         self.budgets = budgets
         self.sessionChanged.emit()
+        self.budgetsChanged.emit()
+
+    @Slot(str, str, str, str, str)
+    def saveBudget(self, scope_key: str, period: str, soft: str, hard: str, action: str) -> None:
+        """From the budgets panel: amounts come as text, empty means "no such limit"."""
+        try:
+            soft_usd = float(soft.replace(",", ".")) if soft.strip() else None
+            hard_usd = float(hard.replace(",", ".")) if hard.strip() else None
+        except ValueError:
+            self.budgetError.emit("Суммы — числа в долларах, например 5 или 2.50")
+            return
+        scope, _, provider = scope_key.partition(":")
+        body = {
+            "scope": scope,
+            "provider": provider,
+            "period": period,
+            "soft_usd": soft_usd,
+            "hard_usd": hard_usd,
+            "hard_action": action,
+        }
+
+        def done(_saved) -> None:
+            self.flash("Бюджет сохранён")
+            self._call(lambda: self.client.budgets(), self._set_budgets)
+
+        self._call(lambda: self.client.set_budget(**body), done, lambda e: self.budgetError.emit(str(e)))
+
+    @Slot(int)
+    def deleteBudget(self, budget_id: int) -> None:
+        self._call(
+            lambda: self.client.delete_budget(budget_id),
+            lambda _r: self._call(lambda: self.client.budgets(), self._set_budgets),
+        )
+
+    # ================= the Anthropic key (D13) =================
+
+    def load_secrets(self) -> None:
+        def show(secrets: list[dict]) -> None:
+            self._key_set = any(s["name"] == ANTHROPIC_KEY and s["set"] for s in secrets)
+            self.keyChanged.emit()
+
+        self._call(lambda: self.client.secrets(), show)
+
+    @Slot(str)
+    def setAnthropicKey(self, value: str) -> None:
+        if not value.strip():
+            return
+
+        def done(result: dict) -> None:
+            self._key_set = True
+            self.keyChanged.emit()
+            self.load_models()
+            errors = (result.get("catalog") or {}).get("errors")
+            if errors:
+                self.show_error(f"Ключ сохранён, но список моделей не получен: {errors}")
+            else:
+                self.flash("Ключ сохранён в диспетчере учётных данных Windows, модели Claude добавлены")
+
+        self._call(lambda: self.client.set_secret(ANTHROPIC_KEY, value.strip()), done)
+
+    @Slot()
+    def deleteAnthropicKey(self) -> None:
+        def decide(yes: bool) -> None:
+            if yes:
+                self._call(lambda: self.client.delete_secret(ANTHROPIC_KEY), lambda _r: self.load_secrets())
+
+        self._ask("Удалить ключ Anthropic?", "Модели Claude пропадут из списка.", "Удалить", decide)
 
     # ================= chats =================
 
@@ -411,6 +514,92 @@ class Controller(QObject):
             parts.append(presenter.money(self._spent))
         self._meta = " · ".join(parts) if self._count else ""
         self.currentChanged.emit()
+
+    @Slot(str, str)
+    def renameChat(self, conversation_id: str, title: str) -> None:
+        cid = conversation_id or self.current
+        if cid:
+            self._call(lambda: self.client.rename(cid, title.strip()))
+
+    @Slot(str)
+    def askDeleteChat(self, conversation_id: str) -> None:
+        cid = conversation_id or self.current
+        if not cid:
+            return
+        title = next((c["title"] for c in self.conversations if c["id"] == cid), "") or "Новый чат"
+
+        def decide(yes: bool) -> None:
+            if not yes:
+                return
+
+            def done(_r) -> None:
+                if self.current == cid:
+                    self.newChat()
+                self.load_conversations()
+
+            self._call(lambda: self.client.delete_conversation(cid), done)
+
+        self._ask(f"Удалить чат «{title}»?", "Расходы по нему останутся в учёте.", "Удалить", decide)
+
+    @Slot(str, result=str)
+    def chatTitle(self, conversation_id: str) -> str:
+        cid = conversation_id or self.current or ""
+        return next((c["title"] for c in self.conversations if c["id"] == cid), "")
+
+    # ================= the command palette =================
+
+    @Slot(str, result=list)
+    def paletteItems(self, query: str) -> list:
+        return commands.palette_items(
+            query,
+            chats=self.chats,
+            models=self.model_list,
+            budgets=self.budgets,
+            has_current=self.current is not None,
+        )
+
+    @Slot(str)
+    def runCommand(self, command_id: str) -> None:
+        kind, _, value = command_id.partition(":")
+        if kind == "chat":
+            self.openChat(value)
+        elif kind == "model":
+            self.chooseModel(value)
+        elif kind == "budget":
+            self.uiRequested.emit("budgets")
+        elif kind == "action":
+            if value == "new":
+                self.newChat()
+            elif value in ("models", "budgets", "settings", "rename"):
+                self.uiRequested.emit(value)
+            elif value == "key":
+                self.uiRequested.emit("settings")
+            elif value == "sync":
+                self.syncModels()
+            elif value == "unload":
+                self.unloadLocal()
+            elif value.startswith("theme:"):
+                self.setTheme(value.removeprefix("theme:"))
+            elif value == "delete":
+                self.askDeleteChat("")
+            elif value == "stop-hub":
+                self.stopHub()
+
+    @Slot()
+    def stopHub(self) -> None:
+        def decide(yes: bool) -> None:
+            if not yes:
+                return
+
+            def stop() -> None:
+                try:
+                    self.client.shutdown()
+                except HubError as exc:
+                    log.warning("shutdown: %s", exc)
+
+            self.bg.run(stop, lambda _r: QGuiApplication.quit(), lambda _e: QGuiApplication.quit())
+
+        self._ask("Остановить хаб?", "Идущие ответы прервутся. Окно закроется.", "Остановить", decide)
 
     # ================= sending =================
 

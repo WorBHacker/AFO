@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from app import palette
 from app.hub_client import HubError
-from app.ui import rows
+from app.ui import commands, rows
 from app.ui.controller import Controller
 from app.ui.theme import Theme, qml_colour
 from common.paths import data_paths
@@ -57,6 +57,17 @@ HISTORY = {
         },
     ],
 }
+BUDGET = {
+    "id": 1,
+    "scope": "total",
+    "scope_ref": "",
+    "period": "month",
+    "soft_usd": 5.0,
+    "hard_usd": 10.0,
+    "hard_action": "ask",
+    "spent_usd": 1.25,
+    "state": "ok",
+}
 REACHED = {
     "id": 1,
     "scope": "total",
@@ -80,6 +91,11 @@ class FakeClient:
         self.cancelled = []
         self.deleted = []
         self.over_budget = None
+        self.renamed = []
+        self.saved_budgets = []
+        self.deleted_budgets = []
+        self.secret_calls = []
+        self.key = False
 
     def models(self):
         return MODELS
@@ -105,7 +121,33 @@ class FakeClient:
         return {"today_cost_usd": 0.0003, "total_cost_usd": 0.5}
 
     def budgets(self):
-        return []
+        return [BUDGET]
+
+    def set_budget(self, **body):
+        if body.get("soft_usd") and body.get("hard_usd") and body["soft_usd"] > body["hard_usd"]:
+            raise HubError("the soft limit (warning) must not be above the hard limit")
+        self.saved_budgets.append(body)
+        return body
+
+    def delete_budget(self, budget_id):
+        self.deleted_budgets.append(budget_id)
+
+    def secrets(self):
+        return [{"name": "anthropic_api_key", "label": "x", "set": self.key}]
+
+    def set_secret(self, name, value):
+        self.secret_calls.append(("set", name, value))
+        self.key = True
+        return {"name": name, "set": True, "catalog": {"synced": 2}}
+
+    def delete_secret(self, name):
+        self.secret_calls.append(("delete", name))
+        self.key = False
+        return {"name": name, "set": False}
+
+    def rename(self, cid, title):
+        self.renamed.append((cid, title))
+        return {"id": cid, "title": title}
 
     def create_conversation(self):
         return "c2"
@@ -333,6 +375,127 @@ def test_the_qml_window_shows_history_and_a_stream_without_warnings(qapp, tmp_pa
         # history with code, a table and an answer being streamed: well over one screen line per message
         assert conversation.property("count") == 3
         assert conversation.property("contentHeight") > 400
+        assert quick.warnings == []
+    finally:
+        quick.close()
+        quick.theme.setMode("dark")
+
+
+# --- step 6.2: the palette, budgets, the key, chat actions ---
+
+
+def test_palette_items_and_highlight():
+    chats = [{"id": "c1", "title": "Бюджет <на> месяц", "section": "Сегодня", "cloud": True}]
+    everything = commands.palette_items("", chats=chats, models=MODELS, budgets=[BUDGET], has_current=False)
+    sections = [i["section"] for i in everything if i.get("section")]
+    assert sections == ["Действия", "Недавние чаты"]
+    ids = [i["id"] for i in everything]
+    assert "action:new" in ids and "action:rename" not in ids  # chat actions need an open chat
+    found = commands.palette_items("бюдж", chats=chats, models=MODELS, budgets=[BUDGET], has_current=True)
+    names = {i["id"]: i["name"] for i in found if i.get("id")}
+    assert names["action:budgets"] == "<b>Бюдж</b>еты…"
+    assert names["chat:c1"] == "<b>Бюдж</b>ет &lt;на&gt; месяц"  # the rest is escaped
+    assert "budget:1" in names
+    models = commands.palette_items("coder", chats=[], models=MODELS, budgets=[], has_current=False)
+    assert [i["id"] for i in models if i.get("id")] == ["model:llama-swap/coder"]
+    assert commands.palette_items("zzz", chats=chats, models=MODELS, budgets=[BUDGET], has_current=True) == []
+
+
+def test_budget_cards_and_scopes():
+    (card,) = commands.budget_items([BUDGET])
+    assert (card["title"], card["spent"], card["limit"]) == ("Все платные модели за месяц", "$1.25", "из $10.00")
+    assert card["ratio"] == 0.125 and card["softAt"] == 0.5
+    assert card["note"] == "Предупредить с $5.00 · после лимита — спрашивать"
+    assert (card["scopeKey"], card["soft"], card["hard"]) == ("total:", "5", "10")
+    scopes = commands.budget_scopes(MODELS, [BUDGET])
+    assert [s["id"] for s in scopes] == ["total:", "provider:anthropic"]
+
+
+def test_commands_open_panels_and_act(app):
+    asked = []
+    app.uiRequested.connect(asked.append)
+    app.runCommand("action:budgets")
+    app.runCommand("action:key")
+    app.runCommand("model:anthropic/claude-opus-5-5")
+    assert asked == ["budgets", "settings"] and app.modelId == "anthropic/claude-opus-5-5"
+    app.runCommand("chat:c1")
+    wait_until(lambda: len(app.messages.rows) == 2)
+    app.runCommand("action:theme:light")
+    assert app.theme.mode == "light"
+    app.runCommand("action:rename")
+    assert asked[-1] == "rename"
+
+
+def test_budgets_are_saved_checked_and_deleted(app):
+    errors = []
+    app.budgetError.connect(errors.append)
+    assert app.budgetItems[0]["title"] == "Все платные модели за месяц"
+    app.saveBudget("provider:anthropic", "day", "1,5", "3", "block")
+    wait_until(lambda: app.client.saved_budgets)
+    assert app.client.saved_budgets[0] == {
+        "scope": "provider",
+        "provider": "anthropic",
+        "period": "day",
+        "soft_usd": 1.5,
+        "hard_usd": 3.0,
+        "hard_action": "block",
+    }
+    app.saveBudget("total:", "month", "много", "", "ask")
+    assert errors == ["Суммы — числа в долларах, например 5 или 2.50"]
+    app.saveBudget("total:", "month", "9", "3", "ask")
+    wait_until(lambda: len(errors) == 2)
+    assert "soft limit" in errors[1]
+    app.deleteBudget(1)
+    wait_until(lambda: app.client.deleted_budgets == [1])
+
+
+def test_the_anthropic_key(app):
+    assert app.keySet is False
+    app.setAnthropicKey("  sk-ant-test  ")
+    wait_until(lambda: app.keySet)
+    assert app.client.secret_calls == [("set", "anthropic_api_key", "sk-ant-test")]
+    app.deleteAnthropicKey()
+    assert app.question["title"] == "Удалить ключ Anthropic?"
+    app.answer(True)
+    wait_until(lambda: not app.keySet)
+    assert app.client.secret_calls[-1] == ("delete", "anthropic_api_key")
+
+
+def test_rename_and_delete_a_chat(app):
+    opened(app)
+    app.renameChat("", "  Новое имя  ")  # "" - the open chat
+    wait_until(lambda: app.client.renamed)
+    assert app.client.renamed == [("c1", "Новое имя")]
+    assert app.chatTitle("c1") == "Первый"
+    app.askDeleteChat("c1")
+    assert app.question["title"] == "Удалить чат «Первый»?"
+    app.answer(True)
+    wait_until(lambda: app.client.deleted == ["c1"])
+    wait_until(lambda: app.current is None)  # the open chat was the deleted one
+
+
+def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog"):
+            popup = quick.window.findChild(QObject, name)
+            assert popup is not None, name
+            QMetaObject.invokeMethod(popup, "open")
+            wait_until(lambda p=popup: p.property("opened"))  # after the enter animation
+            if name == "palette":
+                items = popup.property("items")  # a QJSValue or already a list, depending on how it was set
+                assert len(items.toVariant() if hasattr(items, "toVariant") else items) > 4
+            QMetaObject.invokeMethod(popup, "close")
+            for _ in range(20):
+                QApplication.processEvents()
         assert quick.warnings == []
     finally:
         quick.close()

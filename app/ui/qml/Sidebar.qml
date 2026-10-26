@@ -5,6 +5,8 @@ import QtQuick.Controls.Basic
 Rectangle {
     id: sidebar
     signal themeMenuRequested(Item anchor)
+    signal settingsRequested()
+    signal chatMenuRequested(string chatId, point at)
     color: Theme.p.panel
     Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.p.hairline }
 
@@ -138,6 +140,11 @@ Rectangle {
                     }
                 }
             }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: (point) => sidebar.chatMenuRequested(
+                    chatRow.modelData.id, chatRow.mapToItem(null, point.position.x, point.position.y))
+            }
             ToolTip.visible: hovered && titleTooLong
             ToolTip.delay: 700
             ToolTip.text: modelData.title
@@ -169,9 +176,17 @@ Rectangle {
             }
         }
         IconButton {
-            id: themeButton
+            id: settingsButton
             anchors.right: parent.right
             anchors.rightMargin: 6
+            anchors.verticalCenter: parent.verticalCenter
+            iconName: "sliders"
+            tip: "Настройки (Ctrl+,)"
+            onClicked: sidebar.settingsRequested()
+        }
+        IconButton {
+            id: themeButton
+            anchors.right: settingsButton.left
             anchors.verticalCenter: parent.verticalCenter
             iconName: Theme.dark ? "moon" : "sun"
             tip: "Тема"

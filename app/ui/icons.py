@@ -42,6 +42,9 @@ PATHS = {
     "key": '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2"/>',
     "layers": '<path d="M12 4l8 4-8 4-8-4z"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4"/>',
     "edit": '<path d="M5 19h4l10-10-4-4L5 15z"/>',
+    "trash": '<path d="M5 7h14M10 11v6M14 11v6M7 7l1 12h8l1-12M10 7V4h4v3"/>',
+    "power": '<path d="M12 4v8"/><path d="M7.5 7.5a6.5 6.5 0 1 0 9 0"/>',
+    "refresh": '<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19 4.5v4h-4"/>',
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'
     '<path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
 }

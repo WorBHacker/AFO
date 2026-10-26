@@ -6,14 +6,17 @@ Popup {
     id: menu
     property var items: []
     property Item anchor
+    property point at: Qt.point(-1, -1)  // open at a point (a right click) instead of above `anchor`
     property int menuWidth: 300
     signal chosen(string id)
 
     parent: Overlay.overlay
     width: menuWidth
     padding: 8
-    x: anchor ? Math.max(8, anchor.mapToItem(parent, 0, 0).x - 4) : 0
-    y: anchor ? anchor.mapToItem(parent, 0, 0).y - height - 8 : 0
+    x: at.x >= 0 ? Math.min(at.x, parent.width - width - 8)
+               : anchor ? Math.max(8, anchor.mapToItem(parent, 0, 0).x - 4) : 0
+    y: at.y >= 0 ? Math.min(at.y, parent.height - height - 8)
+               : anchor ? anchor.mapToItem(parent, 0, 0).y - height - 8 : 0
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 90 } }

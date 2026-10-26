@@ -8,6 +8,7 @@ Item {
     signal effortMenuRequested(Item anchor)
     readonly property int column: Math.min(780, width - 48)
     property alias text: area.text
+    property alias modelChip: modelChip
     implicitHeight: card.height + 24
 
     function focusInput() { area.forceActiveFocus() }

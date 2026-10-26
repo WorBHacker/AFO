@@ -21,6 +21,8 @@ Window {
         width: 264
         height: parent.height - statusBar.height
         onThemeMenuRequested: (anchor) => themeMenu.openAt(anchor)
+        onSettingsRequested: settingsSheet.open()
+        onChatMenuRequested: (chatId, at) => chatMenu.openFor(chatId, at)
     }
 
     Item {
@@ -32,7 +34,7 @@ Window {
         TitleBar {
             id: titleBar
             width: parent.width
-            onSearchRequested: App.notice("Палитра команд появится в следующем шаге")
+            onSearchRequested: palette.open()
         }
         ChatView {
             y: titleBar.height
@@ -52,9 +54,10 @@ Window {
         id: statusBar
         anchors.bottom: parent.bottom
         width: parent.width
+        onBudgetsRequested: budgetsSheet.open()
     }
 
-    // ---------- menus ----------
+    // ---------- menus, panels, dialogs ----------
 
     MenuPopup {
         id: modelMenu
@@ -81,13 +84,39 @@ Window {
         onChosen: (id) => App.setTheme(id)
         function openAt(item) { anchor = item; open() }
     }
+    MenuPopup {
+        id: chatMenu
+        property string chatId
+        menuWidth: 200
+        items: [{ id: "rename", name: "Переименовать", icon: "edit" }, { id: "delete", name: "Удалить", icon: "trash" }]
+        onChosen: (id) => id === "rename" ? renameDialog.openFor(chatId) : App.askDeleteChat(chatId)
+        function openFor(id, point) { chatId = id; at = point; open() }
+    }
+    CommandPalette { id: palette }
+    BudgetsSheet { id: budgetsSheet }
+    SettingsSheet { id: settingsSheet }
+    RenameDialog { id: renameDialog }
     ConfirmDialog {}
+
+    Connections {
+        target: App
+        function onUiRequested(what) {
+            if (what === "budgets") budgetsSheet.open()
+            else if (what === "settings") settingsSheet.open()
+            else if (what === "rename") renameDialog.openFor(App.currentId)
+            else if (what === "models") modelMenu.openAt(composer.modelChip)
+        }
+    }
 
     // ---------- keyboard ----------
 
     Shortcut { sequence: "Ctrl+N"; onActivated: { App.newChat(); composer.focusInput() } }
     Shortcut { sequence: "Ctrl+L"; onActivated: composer.focusInput() }
-    Shortcut { sequence: "Ctrl+K"; onActivated: App.notice("Палитра команд появится в следующем шаге") }
+    Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
+    Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
+    Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }
+    Shortcut { sequence: "F2"; enabled: App.currentId !== ""; onActivated: renameDialog.openFor(App.currentId) }
+    Shortcut { sequence: "Ctrl+Shift+U"; onActivated: App.unloadLocal() }
 
     // ---------- resizing a frameless window from its edges ----------
 
