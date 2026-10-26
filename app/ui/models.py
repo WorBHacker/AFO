@@ -20,6 +20,7 @@ ROLES = [
     "footer",
     "streaming",
     "notice",
+    "tools",
 ]
 TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size", "secret"]
 

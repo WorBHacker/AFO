@@ -107,6 +107,28 @@ FEED = [
     {"id": 5, "ts": "2026-10-20T10:00:00.000Z", "type": "terminal.exited", "project_id": "p1",
      "payload": {"terminal_id": "t1", "exit_code": 2, "title": "npm test", "stopped": False}},
 ]  # fmt: skip
+TOOL_HISTORY = {
+    "id": "ct",
+    "title": "Про проект",
+    "busy": False,
+    "projects": ["p1"],
+    "messages": [
+        {"id": 11, "role": "user", "model_id": None, "content": [{"type": "text", "text": "что в README?"}],
+         "usage": None},
+        {"id": 12, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
+            {"type": "text", "text": "Смотрю."},
+            {"type": "tool_call", "id": "c1", "name": "read_file",
+             "input": {"project": "LocalChat", "path": "README.md"}},
+            {"type": "tool_call", "id": "c2", "name": "search_code", "input": {"project": "LocalChat", "query": "x"}},
+        ]},
+        {"id": 13, "role": "tool", "model_id": None, "usage": None, "content": [
+            {"type": "tool_result", "id": "c1", "name": "read_file", "output": "README.md (lines 1-1 of 1)\n1| # Hi"},
+            {"type": "tool_result", "id": "c2", "name": "search_code", "output": "no project 'x'", "error": True},
+        ]},
+        {"id": 14, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+         "content": [{"type": "text", "text": "В README заголовок Hi."}]},
+    ],
+}  # fmt: skip
 TERMINAL = {
     "id": "t1", "project_id": "p1", "title": "powershell", "command": "powershell.exe -NoLogo",
     "cwd": "D:\\Code\\LocalChat", "cols": 120, "rows": 30, "pid": 500, "status": "running", "exit_code": None,
@@ -169,6 +191,8 @@ class FakeClient:
         self.file_calls = []
         self.updates = []
         self.searches = []
+        self.log = []
+        self.histories = {"ct": TOOL_HISTORY}
 
     def models(self):
         return MODELS
@@ -185,7 +209,11 @@ class FakeClient:
         }
 
     def conversation(self, cid):
-        return HISTORY
+        return self.histories.get(cid, HISTORY)
+
+    def set_chat_projects(self, cid, project_ids):
+        self.log.append(("projects", cid, list(project_ids)))
+        return list(project_ids)
 
     def status(self):
         return STATUS
@@ -230,6 +258,7 @@ class FakeClient:
             data = {"code": "budget_exceeded", "budgets": [REACHED], "can_confirm": self.over_budget}
             raise HubError("budget reached", code="budget_exceeded", data=data)
         self.sent.append((cid, text, model_id, effort, confirm_over_budget))
+        self.log.append(("send", cid, text))
         return {}
 
     def cancel(self, cid):
@@ -981,6 +1010,62 @@ def test_project_settings(app):
     assert rows_[0]["secret"] is True
 
 
+def test_tool_rows():
+    assert rows.tool_label("read_file", {"path": "a.py", "start_line": 301}) == "Читаю a.py со строки 301"
+    assert rows.tool_label("search_code", {"query": "budget"}) == "Ищу «budget»"
+    assert rows.tool_label("list_files", {}) == "Смотрю файлы проекта"
+    assert rows.tool_label("terminal_output", {"terminal": "dev"}) == "Читаю терминал «dev»"
+    assert rows.tool_label("mystery", None) == "mystery"
+    built = rows.rows_for(TOOL_HISTORY["messages"], {m["id"]: m for m in MODELS})
+    assert [r["role"] for r in built] == ["user", "assistant", "assistant"]  # the results are not rows
+    first, second = built[1]["tools"]
+    assert (first["label"], first["state"], first["summary"], first["icon"]) == (
+        "Читаю README.md", "ok", "README.md (lines 1-1 of 1)", "file")  # fmt: skip
+    assert (second["state"], second["project"]) == ("error", "LocalChat")
+    assert built[2]["tools"] == []
+
+
+def test_chat_projects_and_tool_calls(app):
+    client = app.client
+    wait_until(lambda: app.projects.items)
+    assert [c["id"] for c in app.chatProjectChoices] == ["p1"] and app.chatProjects == []
+    # a new chat: the project is attached with its first message, before it goes out
+    app.toggleChatProject("p1")
+    assert [p["name"] for p in app.chatProjects] == ["LocalChat"] and client.log == []
+    app.chooseModel("anthropic/claude-opus-5-5")
+    assert app.chatProjects[0]["hidden"] is True  # a cloud model, a local-only project
+    app.chooseModel("llama-swap/coder")
+    assert app.chatProjects[0]["hidden"] is False
+    app.send("что в README?")
+    wait_until(lambda: client.sent)
+    assert client.log[:2] == [("projects", "c2", ["p1"]), ("send", "c2", "что в README?")]
+
+    # a chat with tool calls: they show under the answer that made them, results joined
+    app.openChat("ct")
+    wait_until(lambda: len(app.messages.rows) == 3)
+    assert app.chatProjects[0]["id"] == "p1" and app.currentMeta.startswith("3 сообщения")
+    tools = app.messages.rows[1]["tools"]
+    assert [t["state"] for t in tools] == ["ok", "error"]
+    app.toggleTool(1, 0)
+    assert app.messages.rows[1]["tools"][0]["open"] is True
+    app.toggleChatProject("p1")  # an existing chat: the hub hears at once
+    wait_until(lambda: client.log[-1] == ("projects", "ct", []))
+    send(app, "chat.projects", {"conversation_id": "ct", "projects": ["p1"]})
+    assert [p["id"] for p in app.chatProjects] == ["p1"]
+
+    # live: an answer asking for a tool, then its result
+    call = {"type": "tool_call", "id": "c9", "name": "git_status", "input": {"project": "LocalChat"}}
+    send(app, "chat.message", {"conversation_id": "ct", "message": {"id": 21, "role": "assistant",
+         "model_id": "llama-swap/coder", "content": [call]}})  # fmt: skip
+    assert app.messages.rows[-1]["tools"][0]["state"] == "running"
+    result = {"type": "tool_result", "id": "c9", "name": "git_status", "output": "branch main"}
+    send(app, "chat.message", {"conversation_id": "ct", "message": {"id": 22, "role": "tool", "content": [result]}})
+    assert app.messages.rows[-1]["tools"][0]["summary"] == "branch main" and len(app.messages.rows) == 4
+
+    app.newChatAbout("p1")
+    assert app.mode == "chats" and app.currentId == "" and [p["id"] for p in app.chatProjects] == ["p1"]
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1160,6 +1245,14 @@ def test_the_projects_view_without_warnings(qapp):
         QMetaObject.invokeMethod(project_sheet, "open")
         wait_until(lambda: project_sheet.property("opened"))
         assert quick.window.findChild(QObject, "projectCloud").property("value") == "local"
+        # a chat whose answer used tools: the lines render, one opens
+        app.setMode("chats")
+        app.openChat("ct")
+        wait_until(lambda: len(app.messages.rows) == 3)
+        app.toggleTool(1, 0)
+        for _ in range(20):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "chatProjects").property("visible")
         QMetaObject.invokeMethod(project_sheet, "close")
         for _ in range(20):
             QApplication.processEvents()

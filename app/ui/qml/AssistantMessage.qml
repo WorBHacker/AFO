@@ -1,6 +1,7 @@
 import QtQuick
 
-// An answer: who answered, the reasoning accordion, a status line (model loading), the text and code, a footer.
+// An answer: who answered, the reasoning accordion, a status line (model loading), what it looked at with the
+// hub's tools, the text and code, a footer.
 Column {
     id: answer
     property var row: ({})
@@ -49,6 +50,13 @@ Column {
         visible: !!answer.row.thinking
         width: answer.width
         info: answer.row.thinking || ({})
+        rowIndex: answer.rowIndex
+    }
+
+    ToolCalls {
+        visible: !!answer.row.tools && answer.row.tools.length > 0
+        width: answer.width
+        tools: answer.row.tools || []
         rowIndex: answer.rowIndex
     }
 

@@ -69,6 +69,7 @@ Window {
             width: parent.width
             onModelMenuRequested: (anchor) => modelMenu.openAt(anchor)
             onEffortMenuRequested: (anchor) => effortMenu.openAt(anchor)
+            onProjectMenuRequested: (anchor) => chatProjectMenu.openAt(anchor)
         }
     }
 
@@ -113,6 +114,13 @@ Window {
         items: [{ id: "rename", name: "Переименовать", icon: "edit" }, { id: "delete", name: "Удалить", icon: "trash" }]
         onChosen: (id) => id === "rename" ? renameDialog.openFor(chatId) : App.askDeleteChat(chatId)
         function openFor(id, point) { chatId = id; at = point; open() }
+    }
+    MenuPopup {
+        id: chatProjectMenu
+        menuWidth: 340
+        items: [{ section: "Проекты этого чата", id: "" }].concat(App.chatProjectChoices)
+        onChosen: (id) => App.toggleChatProject(id)
+        function openAt(item) { anchor = item; open() }
     }
     MenuPopup {
         id: projectMenu

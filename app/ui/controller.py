@@ -77,6 +77,7 @@ class Controller(QObject):
     budgetsChanged = Signal()
     keyChanged = Signal()
     modeChanged = Signal()
+    chatProjectsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
     uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
@@ -126,6 +127,9 @@ class Controller(QObject):
         self.terminals = Terminals(self)
         self.projects.projectChanged.connect(lambda: self.terminals.set_project(self.projects.currentId))
         self.feed = Feed(self)
+        self._chat_projects: list[str] = []  # the open chat's projects (a new chat's, until its first message)
+        self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
+        self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
@@ -261,6 +265,27 @@ class Controller(QObject):
     @Property(str, notify=modeChanged)
     def mode(self) -> str:
         return self._mode
+
+    @Property(list, notify=chatProjectsChanged)
+    def chatProjects(self) -> list:
+        """The chat's projects: {id, name, hidden} - hidden when the chosen model is a cloud one and the project
+        is local-only (the model then gets its name and nothing more, D10)."""
+        known = {p["id"]: p for p in self.projects.items}
+        cloud = self.modelCloud
+        return [
+            {"id": pid, "name": known[pid]["name"], "hidden": cloud and not known[pid].get("cloud_ok")}
+            for pid in self._chat_projects
+            if pid in known
+        ]
+
+    @Property(list, notify=chatProjectsChanged)
+    def chatProjectChoices(self) -> list:
+        attached = set(self._chat_projects)
+        return [
+            {"id": p["id"], "name": p["name"], "note": p.get("description") or p["path"], "icon": "folder",
+             "selected": p["id"] in attached}
+            for p in self.projects.items
+        ]  # fmt: skip
 
     @Property(str, constant=True)
     def dataDir(self) -> str:
@@ -488,8 +513,42 @@ class Controller(QObject):
         self._count, self._spent, self._last_author = 0, 0.0, ""
         self.messages.reset([])
         self._think_timer.stop()
+        self._set_chat_projects([], push=False)
         self.currentChanged.emit()
         self.busyChanged.emit()
+
+    @Slot(str)
+    def newChatAbout(self, project_id: str) -> None:
+        """A new chat with this project attached (from the project's overview)."""
+        self.setMode("chats")
+        self.newChat()
+        self._set_chat_projects([project_id], push=False)
+
+    @Slot(str)
+    def toggleChatProject(self, project_id: str) -> None:
+        ids = list(self._chat_projects)
+        if project_id in ids:
+            ids.remove(project_id)
+        else:
+            ids.append(project_id)
+        self._set_chat_projects(ids)
+
+    def _set_chat_projects(self, ids: list[str], *, push: bool = True) -> None:
+        """The open chat's projects; `push` tells the hub (a chat not made yet takes them with its first message)."""
+        self._chat_projects = list(ids)
+        self.chatProjectsChanged.emit()
+        if push and self.current and self.client is not None:
+            cid, wanted = self.current, list(ids)
+            self._call(lambda: self.client.set_chat_projects(cid, wanted))
+
+    @Slot(int, int)
+    def toggleTool(self, row_index: int, tool_index: int) -> None:
+        """Opens or closes a tool call's result in the transcript."""
+        if 0 <= row_index < len(self.messages.rows):
+            tools = list(self.messages.rows[row_index].get("tools") or [])
+            if 0 <= tool_index < len(tools):
+                tools[tool_index] = {**tools[tool_index], "open": not tools[tool_index]["open"]}
+                self.messages.update(row_index, tools=tools)
 
     @Slot(str)
     def openChat(self, conversation_id: str) -> None:
@@ -509,8 +568,9 @@ class Controller(QObject):
         if conversation_id != self.current:
             return  # the user moved on while this was loading
         self.messages.reset(rows.rows_for(data["messages"], self.models))
+        self._set_chat_projects(data.get("projects") or [], push=False)
         last_model = next((m["model_id"] for m in reversed(data["messages"]) if m["role"] == "assistant"), None)
-        self._count = len(data["messages"])
+        self._count = sum(1 for m in data["messages"] if m["role"] != "tool")
         self._spent = sum((m.get("usage") or {}).get("cost_usd", 0) for m in data["messages"])
         self._last_author = rows.model_name(self.models, last_model) if last_model else ""
         self._title = data.get("title") or "Новый чат"
@@ -662,9 +722,13 @@ class Controller(QObject):
     def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False) -> None:
         client = self.client
 
+        attach = list(self._chat_projects) if target is None else []
+
         def send() -> str:
             conversation_id = target or client.create_conversation()
             try:
+                if attach:  # a new chat takes the projects chosen before its first message
+                    client.set_chat_projects(conversation_id, attach)
                 client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
             except HubError as exc:
                 exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there
@@ -795,6 +859,9 @@ class Controller(QObject):
                 self.session.add(payload.get("usage"), payload.get("cost_usd"))
                 self.sessionChanged.emit()
                 self.refresh_usage()
+        elif kind == "chat.projects":
+            if cid == self.current:
+                self._set_chat_projects(payload.get("projects") or [], push=False)
         elif kind == "chat.titled":
             if cid == self.current:
                 self._title = payload.get("title", "") or "Новый чат"
@@ -827,6 +894,13 @@ class Controller(QObject):
 
     def _message_arrived(self, message: dict[str, Any], run: LiveRun | None) -> None:
         if self.messages.find(f"m{message['id']}") >= 0:
+            return
+        if message["role"] == "tool":  # results join the answer that asked for them
+            for index in range(len(self.messages.rows) - 1, -1, -1):
+                tools = self.messages.rows[index].get("tools")
+                if tools:
+                    self.messages.update(index, tools=rows.with_results(tools, message["content"]))
+                    return
             return
         self._count += 1
         if message["role"] == "assistant":

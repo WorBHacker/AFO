@@ -126,6 +126,11 @@ Item {
                     anchors.right: parent.right
                     spacing: 2
                     IconButton {
+                        iconName: "chat"
+                        tip: "Новый чат об этом проекте"
+                        onClicked: App.newChatAbout(Projects.currentId)
+                    }
+                    IconButton {
                         objectName: "projectSettings"
                         iconName: "sliders"
                         tip: "Настройки проекта: описание, облачные модели"

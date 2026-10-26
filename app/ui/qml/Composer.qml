@@ -6,6 +6,7 @@ Item {
     id: composer
     signal modelMenuRequested(Item anchor)
     signal effortMenuRequested(Item anchor)
+    signal projectMenuRequested(Item anchor)
     readonly property int column: Math.min(780, width - 48)
     property alias text: area.text
     property alias modelChip: modelChip
@@ -89,6 +90,22 @@ Item {
                     iconName: "sparkle"
                     text: "Глубина: " + App.effortLabel
                     onClicked: composer.effortMenuRequested(effortChip)
+                }
+                Chip {
+                    id: projectChip
+                    objectName: "chatProjects"
+                    readonly property var hidden: App.chatProjects.filter(p => p.hidden).map(p => p.name)
+                    visible: App.chatProjectChoices.length > 0
+                    iconName: App.chatProjects.length ? "folder" : "folder-plus"
+                    active: App.chatProjects.length > 0
+                    text: App.chatProjects.length ? App.chatProjects.map(p => p.name).join(", ") : "Проект"
+                    onClicked: composer.projectMenuRequested(projectChip)
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: hidden.length
+                                  ? "Облачная модель увидит только название: " + hidden.join(", ") + " (в настройках проекта облако не разрешено)"
+                                  : App.chatProjects.length ? "Модель читает эти проекты инструментами хаба"
+                                                            : "Прикрепить проект: модель сможет читать его файлы, git, терминалы"
                 }
             }
             Row {

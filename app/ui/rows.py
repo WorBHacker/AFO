@@ -65,7 +65,83 @@ def assistant_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str,
         "footer": presenter.answer_meta(usage),
         "streaming": False,
         "notice": "",
+        "tools": tools_of(message),
     }
+
+
+TOOL_ICONS = {
+    "list_files": "folder",
+    "read_file": "file",
+    "search_code": "search",
+    "git_status": "branch",
+    "git_diff": "diff",
+    "terminal_output": "terminal",
+    "list_processes": "cpu",
+}
+TOOL_OUTPUT_SHOWN = 6000  # characters of a result shown when opened
+
+
+def tool_label(name: str, args: Any) -> str:
+    """What a tool call does, in a few words: 'Читаю hub/chat.py', 'Ищу «budget»'."""
+    a = args if isinstance(args, dict) else {}
+    path = a.get("path") if isinstance(a.get("path"), str) else ""
+    match name:
+        case "read_file":
+            start = a.get("start_line")
+            return f"Читаю {path}" + (f" со строки {start}" if isinstance(start, int) and start > 1 else "")
+        case "list_files":
+            return f"Смотрю папку {path}" if path else "Смотрю файлы проекта"
+        case "search_code":
+            return f"Ищу «{a.get('query', '')}»"
+        case "git_status":
+            return "Смотрю состояние git"
+        case "git_diff":
+            return f"Смотрю изменения в {path}" if path else "Смотрю изменения"
+        case "terminal_output":
+            return f"Читаю терминал «{a['terminal']}»" if a.get("terminal") else "Смотрю терминалы"
+        case "list_processes":
+            return "Смотрю процессы"
+    return name
+
+
+def tools_of(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """The tool calls of an answer, waiting for their results."""
+    return [
+        {
+            "id": b["id"],
+            "icon": TOOL_ICONS.get(b["name"], "dots"),
+            "label": tool_label(b["name"], b.get("input")),
+            "project": (b.get("input") or {}).get("project", "") if isinstance(b.get("input"), dict) else "",
+            "state": "running",
+            "summary": "",
+            "output": "",
+            "open": False,
+        }
+        for b in message.get("content", [])
+        if b.get("type") == "tool_call"
+    ]
+
+
+def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The calls with their results (a message of role "tool" answers them by id)."""
+    by_id = {r["id"]: r for r in results if r.get("type") == "tool_result"}
+    out = []
+    for tool in tools:
+        result = by_id.get(tool["id"])
+        if result is None:
+            out.append(tool)
+            continue
+        output = result.get("output", "")
+        first = output.strip().splitlines()[0] if output.strip() else ""
+        out.append(
+            {
+                **tool,
+                "state": "error" if result.get("error") else "ok",
+                "summary": first if len(first) <= 120 else first[:119] + "…",
+                "output": output[:TOOL_OUTPUT_SHOWN] + ("\n…" if len(output) > TOOL_OUTPUT_SHOWN else ""),
+            }
+        )
+    return out
 
 
 def live_row(model_id: str, models: dict[str, dict]) -> dict[str, Any]:
@@ -80,6 +156,7 @@ def live_row(model_id: str, models: dict[str, dict]) -> dict[str, Any]:
         "footer": "",
         "streaming": True,
         "notice": "",
+        "tools": [],
     }
 
 
@@ -88,7 +165,17 @@ def error_row(key: str, text: str) -> dict[str, Any]:
 
 
 def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[dict[str, Any]]:
-    return [user_row(m) if m["role"] == "user" else assistant_row(m, models) for m in messages]
+    """A conversation's rows. Tool results are not rows of their own: they join the answer that asked for them."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if m["role"] == "tool":
+            for row in reversed(out):
+                if row.get("tools"):
+                    row["tools"] = with_results(row["tools"], m["content"])
+                    break
+            continue
+        out.append(user_row(m) if m["role"] == "user" else assistant_row(m, models))
+    return out
 
 
 def restyled(row: dict[str, Any]) -> dict[str, Any]:

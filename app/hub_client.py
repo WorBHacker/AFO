@@ -96,6 +96,11 @@ class HubClient:
     def rename(self, conversation_id: str, title: str) -> dict:
         return self._call("PATCH", f"/v1/conversations/{conversation_id}", {"title": title})
 
+    def set_chat_projects(self, conversation_id: str, project_ids: list[str]) -> list[str]:
+        return self._call("PUT", f"/v1/conversations/{conversation_id}/projects", {"project_ids": project_ids})[
+            "projects"
+        ]
+
     def delete_conversation(self, conversation_id: str) -> None:
         self._call("DELETE", f"/v1/conversations/{conversation_id}")
 
