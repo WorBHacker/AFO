@@ -1,7 +1,5 @@
 """Projects (stage 2): the registry, staying inside the project, trees with .gitignore, files, git."""
 
-import subprocess
-
 import pytest
 from starlette.testclient import TestClient
 
@@ -14,33 +12,6 @@ from hub.server import create_app
 from hub.settings import HubSettings
 
 BASE = "http://127.0.0.1:8765"
-
-
-def run_git(root, *args):
-    subprocess.run(
-        ["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=t@example.com", *args],
-        check=True,
-        capture_output=True,
-    )
-
-
-@pytest.fixture
-def repo(tmp_path):
-    """A small repository: committed files, an ignored file and folder, then a change and a new file."""
-    root = tmp_path / "proj"
-    (root / "src").mkdir(parents=True)
-    (root / "build").mkdir()
-    (root / "README.md").write_text("# Проект\n", encoding="utf-8", newline="\n")
-    (root / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8", newline="\n")
-    (root / ".gitignore").write_text("secret.txt\nbuild/\n", encoding="utf-8", newline="\n")
-    (root / "secret.txt").write_text("token", encoding="utf-8", newline="\n")
-    (root / "build" / "out.bin").write_bytes(b"\0\1\2")
-    run_git(root, "init", "-q", "-b", "main")
-    run_git(root, "add", ".")
-    run_git(root, "commit", "-q", "-m", "first")
-    (root / "src" / "app.py").write_text("print('hi')\nprint('new line')\n", encoding="utf-8", newline="\n")
-    (root / "notes.txt").write_text("свежий файл\n", encoding="utf-8", newline="\n")
-    return root
 
 
 @pytest.fixture

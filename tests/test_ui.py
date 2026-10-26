@@ -1,6 +1,7 @@
 """The Qt Quick window: its controller against a fake hub client, its row builders, and the real QML loaded with
 history and a streamed answer (no QML warnings allowed). Offscreen, software scene graph."""
 
+import copy
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -16,6 +17,7 @@ from app import palette
 from app.hub_client import HubError
 from app.ui import commands, project_rows, rows
 from app.ui.controller import Controller
+from app.ui.models import TREE_ROLES, RowModel
 from app.ui.theme import Theme, qml_colour
 from common.paths import data_paths
 
@@ -123,6 +125,8 @@ class FakeClient:
         self.secret_calls = []
         self.key = False
         self.project_list = [dict(PROJECT)]
+        self.trees = copy.deepcopy(TREE)
+        self.files = dict(FILES)
         self.tree_calls = []
 
     def models(self):
@@ -211,12 +215,14 @@ class FakeClient:
 
     def tree(self, pid, path=""):
         self.tree_calls.append(path)
-        return TREE[path]
+        return self.trees[path]
 
     def file(self, pid, path):
         if path == "logo.png":
             return {"path": path, "size": 2048, "truncated": False, "binary": True, "text": "", "encoding": ""}
-        text = FILES[path]
+        if path not in self.files:
+            raise HubError(f"not a file: {path}")
+        text = self.files[path]
         return {"path": path, "size": len(text.encode()), "truncated": False, "binary": False, "text": text,
                 "encoding": "utf-8"}  # fmt: skip
 
@@ -660,6 +666,86 @@ def test_adding_and_removing_projects(app):
     wait_until(lambda: projects.tree.rows)
     projects.on_event("project.removed", {"id": "p1"})  # removed elsewhere
     assert projects.currentId == "" and projects.projectList == []
+
+
+def test_the_window_subscribes_to_every_event_it_handles():
+    """An event type the controller handles but the event thread does not subscribe to never arrives (project
+    events were missed this way once): every handled type must match the subscription."""
+    import re
+    from pathlib import Path
+
+    from app import events
+    from hub.events import matches
+
+    handled = set()
+    for name in ("controller.py", "projects.py"):
+        source = (Path(events.__file__).parent / "ui" / name).read_text(encoding="utf-8")
+        for group in re.findall(r'kind (?:==|in) (\("[^)]*\)|"[^"]*")', source):
+            handled |= {k for k in re.findall(r'"([a-z_]+\.[a-z_.]+)"', group)}
+        handled |= {f"{prefix}x" for prefix in re.findall(r'kind\.startswith\("([a-z_]+\.)"\)', source)}
+    assert {"chat.delta", "project.files", "project.git", "budget.warning", "system.status"} <= handled
+    missing = sorted(k for k in handled if not matches(k, tuple(events.TOPICS)))
+    assert missing == []
+
+
+def test_row_model_sync_changes_only_what_differs(qapp):
+    model = RowModel(roles=TREE_ROLES)
+    seen = []
+    model.modelReset.connect(lambda: seen.append("reset"))
+    model.rowsInserted.connect(lambda _p, first, last: seen.append(("insert", first, last)))
+    model.rowsRemoved.connect(lambda _p, first, last: seen.append(("remove", first, last)))
+    model.dataChanged.connect(lambda top, _b, _r: seen.append(("change", top.row())))
+
+    def row(key, status=""):
+        return {"key": key, "name": key, "path": key, "depth": 0, "dir": False, "open": False, "status": status}
+
+    model.sync([row("a"), row("b"), row("c")])
+    assert seen == [("insert", 0, 2)]
+    seen.clear()
+    model.sync([row("a"), row("new"), row("b"), row("c", "M")])  # one inserted, one changed in place
+    assert seen == [("insert", 1, 1), ("change", 3)]
+    seen.clear()
+    model.sync([row("a"), row("c", "M")])
+    assert seen == [("remove", 1, 2)]
+    assert [r["key"] for r in model.rows] == ["a", "c"] and "reset" not in seen
+
+
+def test_projects_follow_the_hubs_events(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: len(projects.tree.rows) == 3 and projects.git.get("repo"))
+    projects.toggleDir(0)
+    wait_until(lambda: len(projects.tree.rows) == 5)
+    projects.openFile("src/app.py", False)
+    wait_until(lambda: projects.file.get("path") == "src/app.py")
+
+    # a new file in an open folder, and the open file changed on disk
+    client.trees["src"].append({"name": "new.py", "path": "src/new.py", "dir": False, "size": 3})
+    client.files["src/app.py"] = "print('changed')\n"
+    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/new.py", "src/app.py"],
+                                        "folders": ["src"], "more": False})  # fmt: skip
+    wait_until(lambda: any(r["path"] == "src/new.py" for r in projects.tree.rows))
+    wait_until(lambda: "changed" in projects.file["code"])
+    assert projects.file["linesText"] == "1 строка"
+
+    # a change in a closed folder or in another project costs nothing
+    calls = len(client.tree_calls)
+    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/deep/x.txt"], "folders": ["src/deep"]})
+    projects.on_event("project.files", {"project_id": "p9", "changed": [], "folders": [""]})
+    wait_until(lambda: not app.bg.busy)
+    assert len(client.tree_calls) == calls
+
+    # git says the work was committed: the marks go, the open file has no diff any more
+    projects.on_event("project.git", {**GIT, "project_id": "p1", "changes": [], "log": []})
+    assert projects.git["summary"] == "main · ↑1 ↓0 · без изменений"
+    assert all(r["status"] == "" for r in projects.tree.rows)
+    assert projects.file["hasDiff"] is False and projects.file["mark"] == ""
+
+    # the open file is deleted: shown as deleted, no error
+    del client.files["src/app.py"]
+    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/app.py"], "folders": ["src"]})
+    wait_until(lambda: projects.file.get("missing"))
+    assert projects.file["path"] == "src/app.py" and not app.flashError
 
 
 def test_projects_mode_and_palette(app):

@@ -121,7 +121,6 @@ class Controller(QObject):
         self._flash_timer = self._timer(FLASH_MS, lambda: self._set_flash(""), single=True)
         theme.changed.connect(self._restyle)
         self.projects = Projects(self)
-        self.projects.set_active(self._mode == "projects")
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -905,7 +904,6 @@ class Controller(QObject):
             self._mode = mode
             self.settings.setValue("ui/mode", mode)
             self.modeChanged.emit()
-            self.projects.set_active(mode == "projects")
 
     @Slot(str)
     def setTheme(self, mode: str) -> None:

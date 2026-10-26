@@ -320,9 +320,10 @@ Item {
                 }
                 Text {
                     width: parent.width
-                    text: [Projects.file.sizeText, Projects.file.encoding, Projects.file.lang,
-                           Projects.file.truncated ? "показаны первые 2 МБ" : "",
-                           Projects.file.linesText].filter(s => !!s).join(" · ")
+                    text: Projects.file.missing ? "удалён с диска"
+                          : [Projects.file.sizeText, Projects.file.encoding, Projects.file.lang,
+                             Projects.file.truncated ? "показаны первые 2 МБ" : "",
+                             Projects.file.linesText].filter(s => !!s).join(" · ")
                     elide: Text.ElideRight
                     color: Theme.p.faint
                     font.family: Theme.uiFont
@@ -370,7 +371,7 @@ Item {
             y: fileHead.height
             width: parent.width
             height: parent.height - fileHead.height
-            visible: !Projects.file.binary || !!Projects.file.diffMode
+            visible: !!Projects.file.diffMode || (!Projects.file.binary && !Projects.file.missing)
             code: Projects.file.diffMode ? (Projects.file.diff || "") : (Projects.file.code || "")
             numbers: Projects.file.numbers || ""
             rich: Projects.file.diffMode ? !!Projects.file.diffRich : !!Projects.file.rich
@@ -384,13 +385,14 @@ Item {
         }
 
         Text {
-            visible: (!!Projects.file.binary && !Projects.file.diffMode) || (!!Projects.file.diffMode && !!Projects.file.diffEmpty)
+            visible: Projects.file.diffMode ? !!Projects.file.diffEmpty : (!!Projects.file.binary || !!Projects.file.missing)
             anchors.centerIn: code
             width: Math.min(420, parent.width - 48)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             text: Projects.file.diffMode ? "Изменений нет: файл совпадает с последним коммитом (или изменения уже в индексе)."
-                                         : "Двоичный файл (" + (Projects.file.sizeText || "") + ") — не показывается."
+                  : Projects.file.missing ? "Файла больше нет на диске." + (Projects.file.hasDiff ? " Его удаление — во вкладке «Изменения»." : "")
+                  : "Двоичный файл (" + (Projects.file.sizeText || "") + ") — не показывается."
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13

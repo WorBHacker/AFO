@@ -19,10 +19,12 @@ from .chat import ChatService
 from .db import Database, migrate
 from .events import EventBus
 from .gateway.registry import build_default_gateway
+from .projects import list_projects
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .system_status import StatusMonitor
+from .watch import ProjectWatcher
 
 log = logging.getLogger("hub")
 
@@ -49,10 +51,13 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat = ChatService(db, bus, gateway)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
+        # the hub's own data may sit inside a project (this repository): its writes are not project changes
+        app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
         await bus.publish("hub.started", {"version": __version__, "migrations_applied": applied})
         # the catalog syncs in the background: the hub answers at once even if llama-swap or the network is slow
         catalog = app.state.initial_sync = asyncio.create_task(_initial_sync(app))
         app.state.status.start()
+        app.state.watcher.start(db.call(list_projects))
         log.info("hub ready, app token in %s", token_file)
         try:
             yield
@@ -61,6 +66,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             with contextlib.suppress(asyncio.CancelledError):
                 await catalog
             await app.state.status.stop()
+            await app.state.watcher.stop()
             await bus.publish("hub.stopping", {})
             db.close()
             log.info("hub stopped")

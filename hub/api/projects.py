@@ -1,7 +1,8 @@
 """/v1/projects - the registry, a project's tree, files and git (stage 2, D4).
 
 Reading (tree, file, git) is open to every client with a token; adding, changing and removing projects is the
-app's. File and git work runs on worker threads, so a slow `git` never holds up the hub.
+app's. File and git work runs on worker threads, so a slow `git` never holds up the hub. A project is watched from
+the moment it is added (hub/watch.py) until it is removed.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ async def add_project(body: NewProject, request: Request, client: Annotated[Clie
         project = await request.app.state.db.acall(lambda conn: projects.add_project(conn, body.path, body.name))
     except ProjectError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    request.app.state.watcher.watch(project)
     await request.app.state.bus.publish("project.added", {"project": project.to_json()}, project_id=project.id)
     return project.to_json()
 
@@ -88,6 +90,7 @@ async def remove_project(project_id: str, request: Request, client: Annotated[Cl
     _app_only(client)
     if not await request.app.state.db.acall(lambda conn: projects.remove_project(conn, project_id)):
         raise HTTPException(status_code=404, detail="no such project")
+    request.app.state.watcher.unwatch(project_id)
     await request.app.state.bus.publish("project.removed", {"id": project_id}, project_id=project_id)
 
 

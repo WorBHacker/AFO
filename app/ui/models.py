@@ -74,6 +74,24 @@ class RowModel(QAbstractListModel):
         roles = [Qt.ItemDataRole.UserRole + self._roles.index(name) for name in changes if name in self._roles]
         self.dataChanged.emit(model_index, model_index, roles)
 
+    def sync(self, rows: list[dict[str, Any]]) -> None:
+        """Becomes `rows` with as little change as it can: the same rows at the start and at the end (by key) are
+        kept and updated in place, only the middle is replaced. A view keeps its place, unlike after a reset."""
+        old = self._rows
+        start = 0
+        while start < min(len(old), len(rows)) and old[start].get("key") == rows[start].get("key"):
+            start += 1
+        end_old, end_new = len(old), len(rows)
+        while end_old > start and end_new > start and old[end_old - 1].get("key") == rows[end_new - 1].get("key"):
+            end_old -= 1
+            end_new -= 1
+        if end_old > start:
+            self.remove(start, end_old - start)
+        self.insert(start, rows[start:end_new])
+        for index, row in enumerate(rows):
+            if not start <= index < end_new and self._rows[index] != row:
+                self.update(index, **{k: v for k, v in row.items() if self._rows[index].get(k) != v})
+
     def remove(self, index: int, count: int = 1) -> None:
         if count <= 0:
             return

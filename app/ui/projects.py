@@ -1,7 +1,9 @@
 """The projects side of the window (stage 2): the project list, a lazily loaded file tree, a file or its diff, git.
 
 Everything comes from the hub (D4, D17): the window never reads the project's folder itself. Folders load when
-opened; git state is polled while the projects view is shown (file watching comes in a later step).
+opened. The hub watches the folders (hub/watch.py) and says what changed: `project.files` updates the open folders
+and the open file, `project.git` the marks and the overview. The tree is updated row by row, so the list keeps its
+place. Answers that come back late (an older file, an older tree) are dropped by a generation count.
 """
 
 from __future__ import annotations
@@ -18,8 +20,6 @@ from .models import TREE_ROLES, RowModel
 
 if TYPE_CHECKING:
     from .controller import Controller
-
-GIT_REFRESH_MS = 10_000
 
 
 class Projects(QObject):
@@ -39,8 +39,8 @@ class Projects(QObject):
         self._file: dict[str, Any] = {}
         self._file_data: dict[str, Any] | None = None  # the hub's answer, kept to colour again on a theme switch
         self._diff_text = ""
-        self._active = False
-        self._git_timer = app._timer(GIT_REFRESH_MS, self.refresh_git)
+        self._tree_gen = 0
+        self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
     # ================= properties for QML =================
@@ -80,8 +80,9 @@ class Projects(QObject):
 
     # ================= the list =================
 
-    def load(self) -> None:
-        """The project list from the hub; reopens the project open last time."""
+    def load(self, *, catch_up: bool = True) -> None:
+        """The project list from the hub; reopens the project open last time. `catch_up`: also read the open
+        project again (after a break in the event stream its changes were missed)."""
 
         def show(found: list[dict[str, Any]]) -> None:
             self.items = found
@@ -90,6 +91,8 @@ class Projects(QObject):
             if self.current and self.current["id"] in ids:
                 self.current = ids[self.current["id"]]
                 self.projectChanged.emit()
+                if catch_up:
+                    self.refresh()
             elif self.current:
                 self._clear()
             if self.current is None:
@@ -108,8 +111,9 @@ class Projects(QObject):
 
         def done(project: dict[str, Any]) -> None:
             self.app.flash(f"Проект «{project['name']}» добавлен")
-            self.items = sorted([*self.items, project], key=lambda p: p["name"].casefold())
-            self.listChanged.emit()
+            if all(p["id"] != project["id"] for p in self.items):  # the hub's event may have listed it already
+                self.items = sorted([*self.items, project], key=lambda p: p["name"].casefold())
+                self.listChanged.emit()
             self.openProject(project["id"])
 
         self.app._call(
@@ -142,13 +146,16 @@ class Projects(QObject):
     def _clear(self) -> None:
         self.current = None
         self.app.settings.setValue("projects/current", "")
+        self._reset_view()
+
+    def _reset_view(self) -> None:
+        self._tree_gen += 1
         self.tree.reset([])
         self._git, self._marks = {}, {}
         self.closeFile()
         self.projectChanged.emit()
         self.listChanged.emit()
         self.gitChanged.emit()
-        self._git_timer.stop()
 
     @Slot(str)
     def openProject(self, project_id: str) -> None:
@@ -157,14 +164,8 @@ class Projects(QObject):
             return
         self.current = project
         self.app.settings.setValue("projects/current", project_id)
-        self.tree.reset([])
-        self._git, self._marks = {}, {}
-        self.closeFile()
-        self.projectChanged.emit()
-        self.listChanged.emit()
-        self.gitChanged.emit()
+        self._reset_view()
         self.refresh()
-        self._poll()
 
     # ================= the tree =================
 
@@ -173,8 +174,16 @@ class Projects(QObject):
         """The tree again (the open folders stay open), git, and the open file."""
         if not self.current:
             return
+        self.reload_tree()
+        self.refresh_git()
+        if self._file:
+            self.openFile(self._file["path"], bool(self._file.get("diffMode")))
+
+    def reload_tree(self) -> None:
         pid = self.current["id"]
         opened = [row["path"] for row in self.tree.rows if row["dir"] and row["open"]]
+        self._tree_gen += 1
+        generation = self._tree_gen
 
         def fetch() -> dict[str, list[dict[str, Any]]]:
             folders = {"": self.app.client.tree(pid, "")}
@@ -186,13 +195,10 @@ class Projects(QObject):
             return folders
 
         def show(folders: dict[str, list[dict[str, Any]]]) -> None:
-            if self.currentId == pid:
-                self.tree.reset(self._assemble(folders, "", 0))
+            if generation == self._tree_gen:
+                self.tree.sync(self._assemble(folders, "", 0))
 
         self.app._call(fetch, show, self._tree_failed)
-        self.refresh_git()
-        if self._file:
-            self.openFile(self._file["path"], self._file.get("diffMode", False))
 
     def _assemble(self, folders: dict[str, list[dict[str, Any]]], path: str, depth: int) -> list[dict[str, Any]]:
         out = []
@@ -222,11 +228,11 @@ class Projects(QObject):
             self.tree.remove(index + 1, end - index - 1)
             self.tree.update(index, open=False)
             return
-        pid, path = self.current["id"], row["path"]
+        pid, path, generation = self.current["id"], row["path"], self._tree_gen
 
         def show(entries: list[dict[str, Any]]) -> None:
             at = self.tree.find(path)  # rows may have moved while the folder loaded
-            if self.currentId != pid or at < 0 or self.tree.rows[at]["open"]:
+            if generation != self._tree_gen or at < 0 or self.tree.rows[at]["open"]:
                 return
             self.tree.update(at, open=True)
             self.tree.insert(at + 1, project_rows.tree_rows(entries, row["depth"] + 1, self._marks))
@@ -235,54 +241,53 @@ class Projects(QObject):
 
     # ================= git =================
 
-    def set_active(self, active: bool) -> None:
-        """The projects view is shown (or not): git is polled only while it is."""
-        self._active = active
-        self._poll()
-        if active and self.current:
-            self.refresh_git()
-
-    def _poll(self) -> None:
-        if self._active and self.current:
-            self._git_timer.start()
-        else:
-            self._git_timer.stop()
-
     def refresh_git(self) -> None:
         if not self.current or self.app.client is None:
             return
         pid = self.current["id"]
 
         def show(git: dict[str, Any]) -> None:
-            if self.currentId != pid:
-                return
-            self._marks = project_rows.marks(git.get("changes", []))
-            self._git = {
-                **git,
-                "summary": project_rows.git_summary(git),
-                "changes": project_rows.change_rows(git.get("changes", [])),
-            }
-            self.gitChanged.emit()
-            for index, row in enumerate(self.tree.rows):
-                status = self._marks.get(row["path"], "")
-                if row["status"] != status:
-                    self.tree.update(index, status=status)
-            if self._file:
-                has_diff = self._file["path"] in self._marks and self._marks[self._file["path"]] != "•"
-                if has_diff != self._file.get("hasDiff"):
-                    self._file = {**self._file, "hasDiff": has_diff}
-                    self.fileChanged.emit()
+            if self.currentId == pid:
+                self._apply_git(git)
 
-        self.app._call(lambda: self.app.client.git(pid), show, lambda _e: None)  # polled: stay quiet
+        self.app._call(lambda: self.app.client.git(pid), show, lambda _e: None)  # the next change tries again
+
+    def _apply_git(self, git: dict[str, Any]) -> None:
+        before = self._marks
+        self._marks = project_rows.marks(git.get("changes", []))
+        self._git = {
+            **git,
+            "summary": project_rows.git_summary(git),
+            "changes": project_rows.change_rows(git.get("changes", [])),
+        }
+        self.gitChanged.emit()
+        for index, row in enumerate(self.tree.rows):
+            status = self._marks.get(row["path"], "")
+            if row["status"] != status:
+                self.tree.update(index, status=status)
+        path = self._file.get("path")
+        if path and before.get(path) != self._marks.get(path):
+            if self._file.get("diffMode"):  # e.g. staged: the diff against the index is another one now
+                self.openFile(path, True)
+            else:
+                mark = self._marks.get(path, "")
+                self._file = {**self._file, "mark": mark, "hasDiff": bool(mark) and mark != "•"}
+                self.fileChanged.emit()
 
     # ================= a file =================
 
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
+        self._load_file(path, diff)
+
+    def _load_file(self, path: str, diff: bool, *, reloading: bool = False) -> None:
+        """`reloading`: the open file changed on disk; if it is gone now, it shows as deleted, with no error."""
         if not self.current:
             return
         pid = self.current["id"]
         exists = self._marks.get(path) != "D"  # a deleted file has only its diff
+        self._file_gen += 1
+        generation = self._file_gen
 
         def fetch() -> tuple[dict[str, Any] | None, str]:
             data = self.app.client.file(pid, path) if exists else None
@@ -290,14 +295,24 @@ class Projects(QObject):
             return data, text
 
         def show(found: tuple[dict[str, Any] | None, str]) -> None:
-            if self.currentId != pid:
+            if generation != self._file_gen or self.currentId != pid:
                 return
             data, text = found
             self._file_data = data or {"path": path, "size": 0, "binary": False, "text": "", "missing": True}
             self._diff_text = text
             self._render_file(diff)
 
-        self.app._call(fetch, show, lambda error: self.app.show_error(f"Файл не открылся: {error}"))
+        def failed(error: Exception) -> None:
+            if generation != self._file_gen:
+                return
+            if reloading:
+                self._file_data = {"path": path, "size": 0, "binary": False, "text": "", "missing": True}
+                self._diff_text = ""
+                self._render_file(False)
+            else:
+                self.app.show_error(f"Файл не открылся: {error}")
+
+        self.app._call(fetch, show, failed)
 
     def _render_file(self, diff: bool) -> None:
         data = self._file_data
@@ -324,12 +339,36 @@ class Projects(QObject):
 
     @Slot()
     def closeFile(self) -> None:
+        self._file_gen += 1
         self._file, self._file_data, self._diff_text = {}, None, ""
         self.fileChanged.emit()
 
     def _restyle(self) -> None:
         if self._file_data is not None:
             self._render_file(bool(self._file.get("diffMode")))
+
+    # ================= what the hub says =================
+
+    def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "project.removed":
+            self._forget(payload.get("id", ""))
+        elif kind in ("project.added", "project.changed"):
+            self.load(catch_up=False)
+        elif payload.get("project_id") != self.currentId or not self.current:
+            return
+        elif kind == "project.files":
+            self._files_changed(payload)
+        elif kind == "project.git":
+            self._apply_git(payload)
+
+    def _files_changed(self, payload: dict[str, Any]) -> None:
+        more = bool(payload.get("more"))
+        opened = {""} | {row["path"] for row in self.tree.rows if row["dir"] and row["open"]}
+        if more or opened & set(payload.get("folders", [])):
+            self.reload_tree()
+        path = self._file.get("path")
+        if path and (more or path in payload.get("changed", [])):
+            self._load_file(path, bool(self._file.get("diffMode")), reloading=True)
 
     # ================= small commands =================
 
@@ -349,9 +388,3 @@ class Projects(QObject):
             full = Path(self.current["path"]) / path if path else Path(self.current["path"])
             QGuiApplication.clipboard().setText(str(full))
             self.app.flash("Путь скопирован", ms=2000)
-
-    def on_event(self, kind: str, payload: dict[str, Any]) -> None:
-        if kind == "project.removed":
-            self._forget(payload.get("id", ""))
-        elif kind in ("project.added", "project.changed"):
-            self.load()

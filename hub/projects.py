@@ -17,11 +17,13 @@ from typing import Any
 
 from .db import utc_now
 
-# folders that are never shown in a tree that is not a git repository
-NOISE = {
+# folders that are never worth watching, in any project
+CACHES = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
-    "dist", "build", "target", ".next", ".idea", ".vs",
+    ".next", ".idea", ".vs",
 }  # fmt: skip
+# folders that are never shown in a tree that is not a git repository (in a repository, .gitignore decides)
+NOISE = CACHES | {"dist", "build", "target"}
 MAX_READ_BYTES = 2 * 1024 * 1024
 BINARY_SNIFF = 8192
 GIT_TIMEOUT_S = 15
@@ -141,10 +143,13 @@ def _rel(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix() if path != root else ""
 
 
-def git(root: Path, *args: str, timeout: float = GIT_TIMEOUT_S) -> subprocess.CompletedProcess[bytes]:
+def git(
+    root: Path, *args: str, timeout: float = GIT_TIMEOUT_S, input: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C.UTF-8"}
     return subprocess.run(
         ["git", "-C", str(root), *args],
+        input=input,
         capture_output=True,
         timeout=timeout,
         env=env,
@@ -159,6 +164,17 @@ def is_repo(root: Path) -> bool:
     except OSError, subprocess.TimeoutExpired:
         return False
     return result.returncode == 0 and result.stdout.strip() == b"true"
+
+
+def git_ignored(root: Path, paths: set[str]) -> set[str]:
+    """Which of `paths` (relative, posix) git ignores; nothing outside a repository. A tracked file is never
+    ignored, whatever .gitignore says."""
+    if not paths or not is_repo(root):
+        return set()
+    result = git(root, "check-ignore", "--stdin", "-z", input="\0".join(sorted(paths)).encode("utf-8"))
+    if result.returncode not in (0, 1):  # 1: none of them is ignored
+        return set()
+    return {p for p in result.stdout.decode("utf-8", "replace").split("\0") if p}
 
 
 def _git_visible(root: Path) -> set[str] | None:
