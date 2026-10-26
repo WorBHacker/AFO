@@ -61,19 +61,56 @@ async def get_conversation(
             return None
         usage = store.usage_by_message(conn, conversation_id)
         messages = [{**m.to_json(), "usage": usage.get(m.id)} for m in store.get_messages(conn, conversation_id)]
-        return title, messages, store.conversation_projects(conn, conversation_id)
+        return (
+            title,
+            messages,
+            store.conversation_projects(conn, conversation_id),
+            store.context_settings(conn, conversation_id),
+        )
 
     found = await request.app.state.db.acall(read)
     if found is None:
         raise HTTPException(status_code=404, detail="no such conversation")
-    title, messages, attached = found
+    title, messages, attached, settings = found
     return {
         "id": conversation_id,
         "title": title,
         "messages": messages,
         "projects": attached,
+        "context": settings,
         "busy": conversation_id in request.app.state.chat.busy,
     }
+
+
+class Pinned(BaseModel):
+    project_id: str
+    path: str
+
+
+class ContextSettings(BaseModel):
+    map: bool | None = None
+    live: bool | None = None
+    pinned: list[Pinned] | None = None
+
+
+@router.put("/conversations/{conversation_id}/context")
+async def set_context(
+    conversation_id: str, body: ContextSettings, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    """What the chat's context includes from its next message on (D22): the map, the live state, pinned files."""
+    if client.name != APP_CLIENT:
+        raise HTTPException(status_code=403, detail="only the desktop app may change a chat's context")
+    pinned = [p.model_dump() for p in body.pinned] if body.pinned is not None else None
+
+    def write(conn):
+        if store.get_title(conn, conversation_id) is None:
+            return None
+        return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned)
+
+    settings = await request.app.state.db.acall(write)
+    if settings is None:
+        raise HTTPException(status_code=404, detail="no such conversation")
+    return settings
 
 
 class ProjectList(BaseModel):

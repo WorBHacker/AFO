@@ -561,6 +561,14 @@ Item {
                     onPicked: (id) => Projects.showDiff(id === "diff")
                 }
                 IconButton {
+                    objectName: "pinFile"
+                    visible: !Projects.file.binary && !Projects.file.missing && App.currentId !== ""
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "pin"
+                    tip: "Закрепить в контексте открытого чата: «" + App.currentTitle + "»"
+                    onClicked: App.pinFile(Projects.currentId, Projects.file.path)
+                }
+                IconButton {
                     visible: !Projects.file.binary && !Projects.file.diffMode && !Projects.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "copy"

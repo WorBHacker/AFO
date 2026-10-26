@@ -55,6 +55,7 @@ PATHS = {
     "external": '<path d="M14 4.5h5.5V10M19.5 4.5L11 13M17 14v4.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4.5"/>',
     "back": '<path d="M14.5 6l-6 6 6 6"/>',
     "lock": '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
+    "pin": '<path d="M9.5 4.5h5l-.8 5 2.8 3v1.5h-9V12.5l2.8-3z"/><path d="M12 14v6"/>',
     "activity": '<path d="M3.5 12h4l2.5-6.5 4 13 2.5-6.5h4"/>',
     "terminal": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/>',
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'

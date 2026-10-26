@@ -331,3 +331,31 @@ def test_the_step_limit(hub, repo, monkeypatch):
     hub.app.state.gateway._providers.pop("fake", None)
     _conv, events = run_chat(hub, stubborn, attach=[pid])
     assert events[-1]["type"] == "chat.done" and events[-1]["payload"]["steps"] == 5 and len(stubborn.calls) == 5
+
+
+def test_context_settings_shape_the_next_context(hub, repo):
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    hub.app.state.gateway.register(ToolProvider([]))
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    hub.put(f"/v1/conversations/{conv}/projects", json={"project_ids": [pid]})
+    pin = {"project_id": pid, "path": "README.md"}
+    settings = hub.put(f"/v1/conversations/{conv}/context", json={"map": False, "pinned": [pin, pin]}).json()
+    assert settings == {"map": False, "live": True, "pinned": [pin]}  # twice is once
+
+    def ask(text, count):
+        hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})
+        for _ in range(300):
+            messages = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+            if len(messages) == count:
+                return [m for m in messages if m["role"] == "system"][-1]["content"]
+            hub.portal.call(asyncio.sleep, 0.02)
+        raise AssertionError("no answer")
+
+    first = ask("раз", 3)
+    assert [b["key"] for b in first] == ["header", f"project:{pid}", f"file:{pid}:README.md", f"live:{pid}", "tools"]
+    assert "1| # Проект" in next(b["text"] for b in first if b["key"].startswith("file:"))
+    hub.put(f"/v1/conversations/{conv}/context", json={"live": False})
+    second = ask("два", 6)
+    assert [b["key"] for b in second] == ["header", "tools"]  # nothing changed, the live state is off
+    assert hub.get(f"/v1/conversations/{conv}").json()["context"]["live"] is False

@@ -101,6 +101,10 @@ class HubClient:
             "projects"
         ]
 
+    def set_context(self, conversation_id: str, **settings) -> dict:
+        """map, live (bool), pinned ([{project_id, path}]) - from the chat's next message on."""
+        return self._call("PUT", f"/v1/conversations/{conversation_id}/context", settings)
+
     def delete_conversation(self, conversation_id: str) -> None:
         self._call("DELETE", f"/v1/conversations/{conversation_id}")
 

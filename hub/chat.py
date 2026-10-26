@@ -193,9 +193,9 @@ class ChatService:
             ).fetchall()
             events = [{"ts": r["ts"], "type": r["type"], "project_id": r["project_id"],
                        "payload": json.loads(r["payload"])} for r in rows]  # fmt: skip
-            return history, list_projects(conn), events
+            return history, list_projects(conn), events, store.context_settings(conn, conversation_id)
 
-        history, everything, events = await self._db.acall(gather)
+        history, everything, events, settings = await self._db.acall(gather)
         processes = (self.processes.latest or {}) if self.processes is not None else {}
         live = {}
         for p in attached:
@@ -205,11 +205,19 @@ class ChatService:
                 context.live_layer, p, processes=processes.get(p.id, []), terminals=terminals, events=news,
                 now=datetime.now(UTC),
             )  # fmt: skip
+        known = {p.id: p for p in attached}
+        pinned = {
+            f"file:{item['project_id']}:{item['path']}": (known[item["project_id"]], item["path"])
+            for item in settings["pinned"]
+            if item["project_id"] in known  # a pinned file of a project no longer attached waits
+        }
+        files = {key: (p, await asyncio.to_thread(context.pinned_file, p, path)) for key, (p, path) in pinned.items()}
         blocks = await asyncio.to_thread(
             lambda: context.context_blocks(
-                all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live
+                all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
+                settings=settings, pinned=files,
             )
-        )
+        )  # fmt: skip
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))
         await self._bus.publish(
             "chat.context",

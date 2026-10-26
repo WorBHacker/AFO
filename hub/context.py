@@ -213,18 +213,41 @@ def live_layer(
 # --- the stored message ---
 
 
+PINNED_LINES = 200
+
+
+def pinned_file(project: Project, path: str) -> str:
+    """A file the user pinned to the chat (D22): its first lines, numbered, secret-filtered."""
+    if is_secret_file(path):
+        return f'<file project="{project.name}" path="{path}">\nholds secrets: not shown\n</file>'
+    try:
+        data = projects.read_file(project.root, path)
+    except ProjectError as exc:
+        return f'<file project="{project.name}" path="{path}">\nnot readable: {exc}\n</file>'
+    if data["binary"]:
+        return f'<file project="{project.name}" path="{path}">\na binary file\n</file>'
+    lines = data["text"].replace("\r\n", "\n").split("\n")
+    body = "\n".join(f"{n}| {line}" for n, line in enumerate(lines[:PINNED_LINES], 1))
+    more = f"\n[{len(lines) - PINNED_LINES} more lines: read them with read_file]" if len(lines) > PINNED_LINES else ""
+    return clean(f'<file project="{project.name}" path="{path}">\n{body}{more}\n</file>')
+
+
 def context_blocks(
     *,
     all_projects: list[Project],
     attached: list[Project],
     previous: dict[str, str],
     live: dict[str, str],
+    settings: dict[str, Any] | None = None,
+    pinned: dict[str, tuple[Project, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """The blocks of a new context message: the map and the projects when they differ from what the conversation
-    already holds (`previous`: block key -> digest), the live state always, and the note on tools."""
+    """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
+    conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
+    chat's settings may leave out the map or the live state."""
+    settings = settings or {"map": True, "live": True}
     blocks: list[dict[str, Any]] = [{"type": "context", "key": "header", "text": HEADER, "cloud_ok": True}]
     the_map = map_layer(all_projects)
-    if previous.get("map") != digest(the_map):
+    if settings.get("map", True) and previous.get("map") != digest(the_map):
         blocks.append({"type": "context", "key": "map", "text": the_map, "digest": digest(the_map),
                        "cloud_text": map_layer_for_cloud(all_projects), "cloud_ok": True})  # fmt: skip
     for p in attached:
@@ -233,9 +256,14 @@ def context_blocks(
         if previous.get(key) != digest(text):
             blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
                            "digest": digest(text)})  # fmt: skip
-    for p in attached:
-        blocks.append({"type": "context", "key": f"live:{p.id}", "project": p.name, "cloud_ok": p.cloud_ok,
-                       "text": live[p.id]})  # fmt: skip
+    for key, (p, text) in (pinned or {}).items():
+        if previous.get(key) != digest(text):
+            blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
+                           "digest": digest(text)})  # fmt: skip
+    if settings.get("live", True):
+        for p in attached:
+            blocks.append({"type": "context", "key": f"live:{p.id}", "project": p.name, "cloud_ok": p.cloud_ok,
+                           "text": live[p.id]})  # fmt: skip
     names = ", ".join(p.name for p in attached)
     blocks.append({"type": "context", "key": "tools", "text": f"Attached projects: {names}. {TOOLS_NOTE}",
                    "cloud_ok": True})  # fmt: skip

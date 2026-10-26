@@ -7,6 +7,7 @@ Item {
     signal modelMenuRequested(Item anchor)
     signal effortMenuRequested(Item anchor)
     signal projectMenuRequested(Item anchor)
+    signal contextRequested()
     readonly property int column: Math.min(780, width - 48)
     property alias text: area.text
     property alias modelChip: modelChip
@@ -106,6 +107,17 @@ Item {
                                   ? "Облачная модель увидит только название: " + hidden.join(", ") + " (в настройках проекта облако не разрешено)"
                                   : App.chatProjects.length ? "Модель читает эти проекты инструментами хаба"
                                                             : "Прикрепить проект: модель сможет читать его файлы, git, терминалы"
+                }
+                Chip {
+                    objectName: "contextChip"
+                    visible: App.chatProjects.length > 0 && App.currentId !== ""
+                    iconName: "layers"
+                    menu: false
+                    text: App.contextTokens > 0 ? "Контекст ≈ " + App.contextTokens : "Контекст"
+                    onClicked: composer.contextRequested()
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: "Что хаб сообщает модели о проектах: слои, размер, закреплённые файлы"
                 }
             }
             Row {

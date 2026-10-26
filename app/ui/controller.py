@@ -78,6 +78,7 @@ class Controller(QObject):
     keyChanged = Signal()
     modeChanged = Signal()
     chatProjectsChanged = Signal()
+    contextChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
     uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
@@ -128,6 +129,9 @@ class Controller(QObject):
         self.projects.projectChanged.connect(lambda: self.terminals.set_project(self.projects.currentId))
         self.feed = Feed(self)
         self._chat_projects: list[str] = []  # the open chat's projects (a new chat's, until its first message)
+        self._context_messages: list[dict[str, Any]] = []  # the open chat's stored context (system messages)
+        self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
+        self._context_rows: list[dict[str, Any]] = []
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
         self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
@@ -277,6 +281,22 @@ class Controller(QObject):
             for pid in self._chat_projects
             if pid in known
         ]
+
+    @Property(list, notify=contextChanged)
+    def contextBlocks(self) -> list:
+        return self._context_rows
+
+    @Property(int, notify=contextChanged)
+    def contextTokens(self) -> int:
+        return rows.context_total(self._context_messages)
+
+    @Property("QVariantMap", notify=contextChanged)
+    def contextSettings(self) -> dict:
+        names = {p["id"]: p["name"] for p in self.projects.items}
+        pinned = [
+            {**p, "name": f"{names.get(p['project_id'], '?')}/{p['path']}"} for p in self._context_settings["pinned"]
+        ]
+        return {**self._context_settings, "pinned": pinned}
 
     @Property(list, notify=chatProjectsChanged)
     def chatProjectChoices(self) -> list:
@@ -514,6 +534,7 @@ class Controller(QObject):
         self.messages.reset([])
         self._think_timer.stop()
         self._set_chat_projects([], push=False)
+        self._set_context([], None)
         self.currentChanged.emit()
         self.busyChanged.emit()
 
@@ -540,6 +561,66 @@ class Controller(QObject):
         if push and self.current and self.client is not None:
             cid, wanted = self.current, list(ids)
             self._call(lambda: self.client.set_chat_projects(cid, wanted))
+
+    def _set_context(self, messages: list[dict[str, Any]], settings: dict[str, Any] | None) -> None:
+        self._context_messages = [m for m in messages if m["role"] == "system"]
+        self._context_settings = settings or {"map": True, "live": True, "pinned": []}
+        self._context_rows = rows.context_rows(self._context_messages)
+        self.contextChanged.emit()
+
+    @Slot()
+    def loadContext(self) -> None:
+        """The open chat's context, read again (the inspector opens)."""
+        cid = self.current
+        if cid:
+            self._call(
+                lambda: self.client.conversation(cid),
+                lambda data: self._set_context(data["messages"], data.get("context")) if cid == self.current else None,
+            )
+
+    @Slot(int)
+    def toggleContextBlock(self, index: int) -> None:
+        if 0 <= index < len(self._context_rows):
+            row = self._context_rows[index]
+            self._context_rows = [*self._context_rows[:index], {**row, "open": not row["open"]},
+                                  *self._context_rows[index + 1:]]  # fmt: skip
+            self.contextChanged.emit()
+
+    @Slot(str, bool)
+    def setContextLayer(self, layer: str, on: bool) -> None:
+        """The map or the live state on or off for this chat, from its next message on."""
+        if layer in ("map", "live") and self.current:
+            self._save_context(**{layer: on})
+
+    @Slot(str, str)
+    def pinFile(self, project_id: str, path: str) -> None:
+        if not self.current:
+            self.show_error("Закрепить файл можно в открытом чате: откройте чат, к которому он нужен")
+            return
+        if project_id not in self._chat_projects:
+            self._set_chat_projects([*self._chat_projects, project_id])
+        pinned = [*self._context_settings["pinned"], {"project_id": project_id, "path": path}]
+        self._save_context(pinned=pinned)
+        self.flash(f"Файл {path} будет в контексте чата со следующего сообщения")
+
+    @Slot(int)
+    def unpinFile(self, index: int) -> None:
+        pinned = list(self._context_settings["pinned"])
+        if 0 <= index < len(pinned):
+            pinned.pop(index)
+            self._save_context(pinned=pinned)
+
+    def _save_context(self, **changes: Any) -> None:
+        cid = self.current
+        self._context_settings = {**self._context_settings, **changes}
+        self.contextChanged.emit()
+
+        def done(settings: dict[str, Any]) -> None:
+            if cid == self.current:
+                self._context_settings = settings
+                self.contextChanged.emit()
+
+        self._call(lambda: self.client.set_context(cid, **changes), done)
 
     @Slot(int, int)
     def toggleTool(self, row_index: int, tool_index: int) -> None:
@@ -569,6 +650,7 @@ class Controller(QObject):
             return  # the user moved on while this was loading
         self.messages.reset(rows.rows_for(data["messages"], self.models))
         self._set_chat_projects(data.get("projects") or [], push=False)
+        self._set_context(data["messages"], data.get("context"))
         last_model = next((m["model_id"] for m in reversed(data["messages"]) if m["role"] == "assistant"), None)
         self._count = sum(1 for m in data["messages"] if m["role"] in ("user", "assistant"))
         self._spent = sum((m.get("usage") or {}).get("cost_usd", 0) for m in data["messages"])
@@ -859,6 +941,9 @@ class Controller(QObject):
                 self.session.add(payload.get("usage"), payload.get("cost_usd"))
                 self.sessionChanged.emit()
                 self.refresh_usage()
+        elif kind == "chat.context":
+            if cid == self.current:
+                self.loadContext()
         elif kind == "chat.projects":
             if cid == self.current:
                 self._set_chat_projects(payload.get("projects") or [], push=False)

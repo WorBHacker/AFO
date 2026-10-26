@@ -70,6 +70,7 @@ Window {
             onModelMenuRequested: (anchor) => modelMenu.openAt(anchor)
             onEffortMenuRequested: (anchor) => effortMenu.openAt(anchor)
             onProjectMenuRequested: (anchor) => chatProjectMenu.openAt(anchor)
+            onContextRequested: contextSheet.open()
         }
     }
 
@@ -140,6 +141,7 @@ Window {
     SettingsSheet { id: settingsSheet }
     FeedSheet { id: feedSheet }
     ProjectSheet { id: projectSheet }
+    ContextSheet { id: contextSheet }
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 

@@ -115,6 +115,15 @@ TOOL_HISTORY = {
     "messages": [
         {"id": 11, "role": "user", "model_id": None, "content": [{"type": "text", "text": "что в README?"}],
          "usage": None},
+        {"id": 111, "role": "system", "model_id": None, "usage": None, "content": [
+            {"type": "context", "key": "header", "text": "[LocalChat context]"},
+            {"type": "context", "key": "map", "text": "Projects on this computer:\n- LocalChat", "digest": "a"},
+            {"type": "context", "key": "project:p1", "project": "LocalChat", "cloud_ok": False, "digest": "b",
+             "text": '<project name="LocalChat">\nStack: Python\n</project>'},
+            {"type": "context", "key": "live:p1", "project": "LocalChat", "cloud_ok": False,
+             "text": "<live_state>git: branch main</live_state>"},
+            {"type": "context", "key": "tools", "text": "Attached projects: LocalChat."},
+        ]},
         {"id": 12, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
             {"type": "text", "text": "Смотрю."},
             {"type": "tool_call", "id": "c1", "name": "read_file",
@@ -210,6 +219,10 @@ class FakeClient:
 
     def conversation(self, cid):
         return self.histories.get(cid, HISTORY)
+
+    def set_context(self, cid, **settings):
+        self.log.append(("context", cid, settings))
+        return {"map": True, "live": True, "pinned": [], **settings}
 
     def set_chat_projects(self, cid, project_ids):
         self.log.append(("projects", cid, list(project_ids)))
@@ -1066,6 +1079,31 @@ def test_chat_projects_and_tool_calls(app):
     assert app.mode == "chats" and app.currentId == "" and [p["id"] for p in app.chatProjects] == ["p1"]
 
 
+def test_the_context_inspector(app):
+    client = app.client
+    wait_until(lambda: app.projects.items)
+    blocks = rows.context_rows(TOOL_HISTORY["messages"])
+    assert [b["label"] for b in blocks] == ["Карта проектов", "Проект «LocalChat»", "Сейчас в «LocalChat»",
+                                            "Инструменты и правила"]  # fmt: skip
+    assert blocks[1]["local"] is True and blocks[0]["tokens"] == 10
+    app.openChat("ct")
+    wait_until(lambda: app.contextBlocks)
+    assert app.contextTokens > 20 and app.contextSettings["map"] is True
+    app.toggleContextBlock(1)
+    assert app.contextBlocks[1]["open"] is True
+    app.setContextLayer("live", False)
+    wait_until(lambda: ("context", "ct", {"live": False}) in client.log)
+    assert app.contextSettings["live"] is False
+    app.pinFile("p1", "src/app.py")
+    wait_until(lambda: any(e[0] == "context" and e[2].get("pinned") for e in client.log))
+    assert app.contextSettings["pinned"][0]["name"] == "LocalChat/src/app.py"
+    app.unpinFile(0)
+    wait_until(lambda: client.log[-1] == ("context", "ct", {"pinned": []}))
+    app.newChat()
+    app.pinFile("p1", "x.py")  # no chat yet: nothing to pin to
+    assert app.flashError and app.contextBlocks == []
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1253,6 +1291,16 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "chatProjects").property("visible")
+        assert quick.window.findChild(QObject, "contextChip").property("visible")
+        context_sheet = quick.window.findChild(QObject, "contextSheet")
+        QMetaObject.invokeMethod(context_sheet, "open")
+        wait_until(lambda: context_sheet.property("opened") and app.contextBlocks)
+        app.toggleContextBlock(0)
+        for _ in range(20):
+            QApplication.processEvents()
+        QMetaObject.invokeMethod(context_sheet, "close")
+        for _ in range(20):
+            QApplication.processEvents()
         QMetaObject.invokeMethod(project_sheet, "close")
         for _ in range(20):
             QApplication.processEvents()

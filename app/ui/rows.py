@@ -144,6 +144,66 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
     return out
 
 
+CONTEXT_ORDER = ("map", "project", "file", "live", "tools")
+
+
+def context_label(key: str, block: dict[str, Any]) -> str:
+    kind, _, rest = key.partition(":")
+    project = block.get("project", "")
+    match kind:
+        case "map":
+            return "Карта проектов"
+        case "project":
+            return f"Проект «{project}»"
+        case "file":
+            return f"Файл {project}/{rest.partition(':')[2]}"
+        case "live":
+            return f"Сейчас в «{project}»"
+        case "tools":
+            return "Инструменты и правила"
+    return key
+
+
+def context_rows(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The context a chat holds (stored system messages, D22): the latest version of each block, in layer order,
+    with its size and how many times it was sent."""
+    latest: dict[str, dict[str, Any]] = {}
+    sent: dict[str, int] = {}
+    for message in messages:
+        if message["role"] != "system":
+            continue
+        for block in message["content"]:
+            if block.get("type") != "context" or block.get("key") == "header":
+                continue
+            latest[block["key"]] = block
+            sent[block["key"]] = sent.get(block["key"], 0) + 1
+    rows = [
+        {
+            "key": key,
+            "label": context_label(key, block),
+            "tokens": (len(block["text"]) + 3) // 4,
+            "text": block["text"],
+            "sent": sent[key],
+            "local": not block.get("cloud_ok", True),
+            "open": False,
+        }
+        for key, block in latest.items()
+    ]
+    return sorted(rows, key=lambda r: (CONTEXT_ORDER.index(r["key"].partition(":")[0])
+                                       if r["key"].partition(":")[0] in CONTEXT_ORDER else 9, r["label"]))  # fmt: skip
+
+
+def context_total(messages: list[dict[str, Any]]) -> int:
+    """Tokens of all the context stored in the chat (each version stays in the conversation, D14)."""
+    return sum(
+        (len(b.get("text", "")) + 3) // 4
+        for m in messages
+        if m["role"] == "system"
+        for b in m["content"]
+        if b.get("type") == "context"
+    )
+
+
 def live_row(model_id: str, models: dict[str, dict]) -> dict[str, Any]:
     return {
         "key": "live",

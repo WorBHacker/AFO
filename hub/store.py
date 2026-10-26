@@ -151,6 +151,35 @@ def set_conversation_projects(conn: sqlite3.Connection, conversation_id: str, pr
     return wanted
 
 
+CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": []}
+MAX_PINNED = 10
+
+
+def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
+    """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]."""
+    row = conn.execute("SELECT * FROM conversation_context WHERE conversation_id = ?", (conversation_id,)).fetchone()
+    if row is None:
+        return {**CONTEXT_DEFAULTS, "pinned": []}
+    return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"])}
+
+
+def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **changes: Any) -> dict[str, Any]:
+    settings = {**context_settings(conn, conversation_id), **{k: v for k, v in changes.items() if v is not None}}
+    pinned = []
+    for item in settings["pinned"]:
+        entry = {"project_id": str(item["project_id"]), "path": str(item["path"]).replace("\\", "/").strip("/")}
+        if entry["path"] and entry not in pinned:
+            pinned.append(entry)
+    settings["pinned"] = pinned[:MAX_PINNED]
+    conn.execute(
+        "INSERT INTO conversation_context (conversation_id, map, live, pinned) VALUES (?, ?, ?, ?)"
+        " ON CONFLICT (conversation_id) DO UPDATE SET map = excluded.map, live = excluded.live,"
+        " pinned = excluded.pinned",
+        (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"])),
+    )
+    return settings
+
+
 def delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
     return bool(conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,)).rowcount)
 
