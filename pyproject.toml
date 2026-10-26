@@ -11,13 +11,16 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.optional-dependencies]
-# Stage 1 adds the hub server stack: fastapi, uvicorn, anthropic, keyring (ARCHITECTURE.md, section 7).
-hub = ["httpx>=0.28"]
+# The model gateway steps of stage 1 add anthropic and keyring (ARCHITECTURE.md, section 7).
+hub = ["fastapi>=0.162", "uvicorn>=0.54", "websockets>=17", "httpx>=0.28"]
 app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "markdown-it-py>=4.0", "pygments>=2.21"]
-dev = ["ruff>=0.14", "pytest>=8.4"]
+dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's TestClient wants now
 
 [tool.setuptools.packages.find]
 include = ["hub*", "app*", "common*"]
+
+[tool.setuptools.package-data]
+"hub.db" = ["migrations/*.sql"]
 
 [tool.ruff]
 line-length = 120
@@ -26,6 +29,8 @@ extend-exclude = ["localchat", "data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# the user-facing text is Russian: Cyrillic letters that look Latin are intended, not typos
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

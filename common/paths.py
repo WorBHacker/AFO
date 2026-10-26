@@ -38,9 +38,24 @@ class DataPaths:
     def backups(self) -> Path:
         return self.root / "backups"
 
+    @property
+    def tokens(self) -> Path:
+        """Client token files the hub hands to local clients (the app reads tokens/app.token)."""
+        return self.root / "tokens"
+
+    @property
+    def hub_info(self) -> Path:
+        """Written by a running hub: pid, address, version. Clients read it to find the hub."""
+        return self.root / "hub.json"
+
+    @property
+    def hub_lock(self) -> Path:
+        """Held locked by the running hub, so a second copy refuses to start."""
+        return self.root / "hub.lock"
+
     def ensure(self) -> DataPaths:
         """Creates the data folder and its subfolders if they are missing."""
-        for folder in (self.root, self.logs, self.terminals, self.snapshots, self.blobs, self.backups):
+        for folder in (self.root, self.logs, self.terminals, self.snapshots, self.blobs, self.backups, self.tokens):
             folder.mkdir(parents=True, exist_ok=True)
         return self
 

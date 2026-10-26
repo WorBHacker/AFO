@@ -12,10 +12,11 @@ def test_default_is_project_data_folder(monkeypatch):
 
 def test_ensure_creates_every_folder(isolated_data_dir):
     paths = data_paths().ensure()
-    for folder in (paths.root, paths.logs, paths.terminals, paths.snapshots, paths.blobs, paths.backups):
+    for folder in (paths.root, paths.logs, paths.terminals, paths.snapshots, paths.blobs, paths.backups, paths.tokens):
         assert folder.is_dir()
     assert paths.db == isolated_data_dir / "hub.db"
     assert not paths.db.exists()  # the database is created by the hub, not by ensure()
+    assert paths.hub_info.parent == paths.hub_lock.parent == isolated_data_dir
 
 
 def test_ensure_is_repeatable():
