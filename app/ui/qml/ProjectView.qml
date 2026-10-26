@@ -345,6 +345,58 @@ Item {
                 }
             }
 
+            // what happened here lately (from the event log)
+            Column {
+                objectName: "projectRecent"
+                visible: Feed.recent.length > 0
+                width: parent.width
+                spacing: 2
+                Text {
+                    bottomPadding: 6
+                    text: "Недавно"
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: Feed.recent
+                    delegate: Item {
+                        id: recentRow
+                        required property var modelData
+                        width: page.width
+                        height: 28
+                        Icon {
+                            x: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: recentRow.modelData.icon
+                            size: 14
+                            tint: recentRow.modelData.level === "error" ? Theme.p.error : Theme.p.faint
+                        }
+                        Text {
+                            x: 30
+                            width: parent.width - x - recentTime.width - 20
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: recentRow.modelData.title
+                            elide: Text.ElideRight
+                            color: Theme.p.text_soft
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            id: recentTime
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: recentRow.modelData.time
+                            color: Theme.p.faint
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+            }
+
             // recent commits
             Column {
                 visible: !!Projects.git.log && Projects.git.log.length > 0

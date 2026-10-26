@@ -162,3 +162,21 @@ def test_ws_ping_and_bad_frames(hub):
         assert ws.receive_json()["type"] == "error"
         ws.send_json({"op": "dance"})
         assert "unknown op" in ws.receive_json()["payload"]["detail"]
+
+
+def test_the_feed(hub):
+    for event_type, project_id in (("terminal.started", "p1"), ("port.opened", "p1"), ("chat.done", None),
+                                   ("terminal.exited", "p2")):  # fmt: skip
+        hub.portal.call(lambda t=event_type, p=project_id: hub.app.state.bus.publish(t, {"x": 1}, project_id=p))
+    hub.portal.call(lambda: hub.app.state.bus.publish("live.only", {}, persist=False))
+    headers = auth(hub.app_token)
+    events = hub.get("/v1/feed", headers=headers).json()["events"]
+    types = [e["type"] for e in events]
+    assert types[:4] == ["terminal.exited", "chat.done", "port.opened", "terminal.started"]  # newest first
+    assert "live.only" not in types
+    only = hub.get("/v1/feed", params={"types": "terminal.*,port.opened", "project_id": "p1"}, headers=headers)
+    assert [e["type"] for e in only.json()["events"]] == ["port.opened", "terminal.started"]
+    first = hub.get("/v1/feed", params={"limit": 2}, headers=headers).json()
+    assert first["more"] is True and len(first["events"]) == 2
+    rest = hub.get("/v1/feed", params={"limit": 2, "before": first["events"][-1]["id"]}, headers=headers).json()
+    assert [e["type"] for e in rest["events"]] == ["port.opened", "terminal.started"]

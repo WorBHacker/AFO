@@ -1,6 +1,7 @@
 """Processes and ports in project folders (stage 2): which project owns a process, the tree, a real server found
 with its port and stopped through the API."""
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -11,7 +12,16 @@ from starlette.testclient import TestClient
 
 from common.paths import data_paths
 from hub.auth import create_client
-from hub.processes import ProcessScanner, as_tree, owner, roots_of, stop_tree, without_launchers
+from hub.processes import (
+    ProcessMonitor,
+    ProcessScanner,
+    as_tree,
+    owner,
+    port_changes,
+    roots_of,
+    stop_tree,
+    without_launchers,
+)
 from hub.server import create_app
 from hub.settings import HubSettings
 
@@ -106,3 +116,44 @@ def test_stopping_a_project_process(repo, server):
             lambda c: c.execute("SELECT payload FROM events WHERE type = 'process.stopped'").fetchall()
         )
         assert len(logged) == 1 and '"by": "app"' in logged[0]["payload"]
+
+
+def test_ports_that_open_and_close_go_into_the_log():
+    def proc(pid, ports, hub=False):
+        return {"pid": pid, "name": f"p{pid}", "args": "-x", "ports": ports, "hub": hub}
+
+    before = {"a": [proc(1, [8000]), proc(9, [8765], hub=True)]}
+    after = {"a": [proc(1, [8000, 8001]), proc(9, [8766], hub=True)], "b": [proc(2, [3000])]}
+    assert [(k, p["project_id"], p["port"]) for k, p in port_changes(before, after)] == [
+        ("port.opened", "a", 8001),
+        ("port.opened", "b", 3000),
+    ]  # the hub's own ports are not news
+    assert [(k, p["port"]) for k, p in port_changes(after, before)] == [("port.closed", 8001), ("port.closed", 3000)]
+
+    class Scanner:
+        def __init__(self):
+            self.views = [{"a": [proc(1, [8000])]}, {"a": [proc(1, [8000, 9000])]}, {"a": [proc(1, [8000])]}]
+
+        def scan(self, projects):
+            return self.views.pop(0)
+
+    class Bus:
+        def __init__(self):
+            self.events = []
+
+        async def publish(self, event_type, payload=None, *, project_id=None, persist=True):
+            self.events.append((event_type, payload.get("port"), persist))
+
+    class Db:
+        async def acall(self, fn):
+            return []
+
+    async def scenario():
+        bus = Bus()
+        monitor = ProcessMonitor(bus, Db(), interval_s=0, scanner=Scanner())
+        for _ in range(3):
+            await monitor.sample()
+        return [e for e in bus.events if e[0] != "processes.changed"]
+
+    # the first scan is where things stand: port 8000 was already open
+    assert asyncio.run(scenario()) == [("port.opened", 9000, True), ("port.closed", 9000, True)]

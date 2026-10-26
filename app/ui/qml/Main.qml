@@ -39,6 +39,7 @@ Window {
             id: titleBar
             width: parent.width
             onSearchRequested: palette.open()
+            onFeedRequested: feedSheet.open()
         }
         ChatView {
             visible: App.mode === "chats"
@@ -128,6 +129,7 @@ Window {
     CommandPalette { id: palette }
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
+    FeedSheet { id: feedSheet }
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 
@@ -136,6 +138,7 @@ Window {
         function onUiRequested(what) {
             if (what === "budgets") budgetsSheet.open()
             else if (what === "settings") settingsSheet.open()
+            else if (what === "feed") feedSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
             else if (what === "add-project") folderDialog.open()
@@ -165,6 +168,7 @@ Window {
     }
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
+    Shortcut { sequence: "Ctrl+E"; onActivated: feedSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }
     Shortcut { sequence: "F2"; enabled: App.currentId !== ""; onActivated: renameDialog.openFor(App.currentId) }
     Shortcut { sequence: "Ctrl+Shift+U"; onActivated: App.unloadLocal() }

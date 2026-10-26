@@ -1,11 +1,12 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// The window's own title bar: the chat's title (or the project's, with its git state), the command search, the window buttons. Drag it to move the window,
-// double-click to maximize.
+// The window's own title bar: the chat's title (or the project's, with its git state), the command search, the
+// feed, the window buttons. Drag it to move the window, double-click to maximize.
 Item {
     id: bar
     signal searchRequested()
+    signal feedRequested()
     height: 52
 
     DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
@@ -78,6 +79,8 @@ Item {
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
         spacing: 2
+        IconButton { iconName: "activity"; implicitWidth: 38; tip: "Лента событий (Ctrl+E)"; onClicked: bar.feedRequested() }
+        Rectangle { width: 1; height: 18; color: Theme.p.hairline; anchors.verticalCenter: parent.verticalCenter }
         IconButton { iconName: "min"; implicitWidth: 42; tip: "Свернуть"; onClicked: Window.window.showMinimized() }
         IconButton {
             iconName: "max"

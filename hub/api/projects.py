@@ -89,11 +89,12 @@ async def change_project(
 async def remove_project(project_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> None:
     """Forgets the project; its folder is not touched."""
     _app_only(client)
+    name = (await _project(request, project_id)).name  # the log keeps it: the row is about to go
     if not await request.app.state.db.acall(lambda conn: projects.remove_project(conn, project_id)):
         raise HTTPException(status_code=404, detail="no such project")
     request.app.state.watcher.unwatch(project_id)
     request.app.state.processes.soon()
-    await request.app.state.bus.publish("project.removed", {"id": project_id}, project_id=project_id)
+    await request.app.state.bus.publish("project.removed", {"id": project_id, "name": name}, project_id=project_id)
 
 
 @router.get("/projects/{project_id}/tree")

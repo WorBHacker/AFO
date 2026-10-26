@@ -10,7 +10,7 @@ from common.paths import data_paths
 from hub.projects import Project
 from hub.server import create_app
 from hub.settings import HubSettings
-from hub.watch import ProjectWatcher, relative, sort_event
+from hub.watch import ProjectWatcher, head_change, relative, sort_event
 
 ROOT = os.path.normcase("C:\\proj")
 
@@ -48,6 +48,24 @@ def test_sorting_events():
     assert sort("created", "C:\\proj\\.git\\index.lock") == ([], [], False)
 
 
+def test_what_moved_head():
+    def state(branch, *shas):
+        return {"repo": True, "branch": branch, "log": [{"sha": s, "subject": f"s{s}", "author": "A"} for s in shas]}
+
+    assert head_change(None, state("main", "b")) is None  # nothing to compare with yet
+    assert head_change(state("main", "a"), state("main", "a")) is None
+    assert head_change(state("main", "a"), state("main", "b", "a"))["kind"] == "commit"
+    assert head_change(state("main", "b", "a"), state("main", "a"))["kind"] == "moved"  # a reset
+    switched = head_change(state("main", "a"), state("dev", "c"))
+    assert (switched["kind"], switched["from"], switched["branch"], switched["subject"]) == (
+        "branch",
+        "main",
+        "dev",
+        "sc",
+    )
+    assert head_change({"repo": False}, state("main", "a")) is None
+
+
 # --- a real watcher ---
 
 
@@ -56,7 +74,7 @@ class Bus:
         self.events = []
 
     async def publish(self, event_type, payload=None, *, project_id=None, persist=True):
-        assert persist is False  # live only
+        assert persist is (event_type == "git.head")  # only a moved HEAD goes into the log
         self.events.append((event_type, payload))
 
 
@@ -87,6 +105,9 @@ def test_watching_a_repository(repo, tmp_path):
         def gits():
             return [p for t, p in bus.events if t == "project.git"]
 
+        def heads():
+            return [p for t, p in bus.events if t == "git.head"]
+
         (root / "src" / "new.py").write_text("x = 1\n", encoding="utf-8")
         await until(lambda: any("src/new.py" in p["changed"] for p in files()))
         assert any("src" in p["folders"] for p in files())
@@ -110,6 +131,12 @@ def test_watching_a_repository(repo, tmp_path):
         await asyncio.to_thread(run_git, root, "commit", "-q", "-m", "second")
         await until(lambda: gits() and gits()[-1]["log"][0]["subject"] == "second")
         assert gits()[-1]["changes"] == []
+        await until(lambda: heads())
+        assert heads()[-1] | {"sha": ""} == {"project_id": "p1", "kind": "commit", "branch": "main", "sha": "",
+                                              "subject": "second", "author": "Test"}  # fmt: skip
+        await asyncio.to_thread(run_git, root, "checkout", "-q", "-b", "feature")
+        await until(lambda: len(heads()) == 2)
+        assert (heads()[-1]["kind"], heads()[-1]["from"], heads()[-1]["branch"]) == ("branch", "main", "feature")
         count = len(gits())
         await watcher.refresh_git("p1")  # nothing changed since: no new event
         assert len(gits()) == count

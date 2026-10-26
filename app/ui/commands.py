@@ -22,6 +22,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("terminals", "Показать или скрыть терминалы", "terminal", "Ctrl `", False),
     ("models", "Выбрать модель…", "cpu", "", False),
     ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),
+    ("feed", "Лента событий", "activity", "Ctrl E", False),
     ("settings", "Настройки…", "sliders", "Ctrl ,", False),
     ("key", "Ключ Anthropic…", "key", "", False),
     ("sync", "Обновить список моделей", "refresh", "", False),

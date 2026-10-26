@@ -21,6 +21,7 @@ from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
 from . import commands, rows
+from .feed import Feed
 from .models import RowModel
 from .projects import Projects
 from .terminals import Terminals
@@ -124,6 +125,8 @@ class Controller(QObject):
         self.projects = Projects(self)
         self.terminals = Terminals(self)
         self.projects.projectChanged.connect(lambda: self.terminals.set_project(self.projects.currentId))
+        self.feed = Feed(self)
+        self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -593,6 +596,8 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
+            elif value == "feed":
+                self.uiRequested.emit("feed")
             elif value == "search-project":
                 self.setMode("projects")
                 self.uiRequested.emit("search-project")
@@ -724,6 +729,7 @@ class Controller(QObject):
 
     @Slot(dict)
     def on_event(self, event: dict[str, Any]) -> None:
+        self.feed.on_event(event)
         kind = event.get("type", "")
         payload = event.get("payload") or {}
         cid = payload.get("conversation_id")

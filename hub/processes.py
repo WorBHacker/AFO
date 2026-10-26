@@ -163,6 +163,33 @@ class ProcessScanner:
         return {pid: as_tree(without_launchers(found[pid])) for pid in sorted(found)}
 
 
+def _ports(found: dict[str, list[dict[str, Any]]]) -> dict[tuple[str, int], dict[str, Any]]:
+    return {
+        (project_id, port): p
+        for project_id, processes in found.items()
+        for p in processes
+        if not p.get("hub")
+        for port in p["ports"]
+    }
+
+
+def port_changes(
+    before: dict[str, list[dict[str, Any]]], after: dict[str, list[dict[str, Any]]]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Ports that opened or closed in projects between two scans, as events for the log: a server started or
+    stopped is what a person wants to see later. The hub's own port is not news."""
+    old, new = _ports(before), _ports(after)
+    changes = []
+    for key in sorted(new.keys() - old.keys()):
+        p = new[key]
+        changes.append(("port.opened", {"project_id": key[0], "port": key[1], "pid": p["pid"], "name": p["name"],
+                                        "args": p.get("args", "")}))  # fmt: skip
+    for key in sorted(old.keys() - new.keys()):
+        p = old[key]
+        changes.append(("port.closed", {"project_id": key[0], "port": key[1], "pid": p["pid"], "name": p["name"]}))
+    return changes
+
+
 def without_launchers(processes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A virtual environment's python.exe only starts the real interpreter with the same arguments and waits for
     it: the pair is shown as one process, the real one (it holds the ports), under the launcher's parent."""
@@ -230,8 +257,11 @@ class ProcessMonitor:
             projects = await self._db.acall(list_projects)
             found = await asyncio.to_thread(self._scanner.scan, projects)
             if found != self.latest:
-                self.latest = found
+                before, self.latest = self.latest, found
                 await self._bus.publish("processes.changed", {"projects": found}, persist=False)
+                if before is not None:  # the first scan is where things stand, not something that happened
+                    for kind, payload in port_changes(before, found):
+                        await self._bus.publish(kind, payload, project_id=payload["project_id"])
             return found
 
     def project_of(self, pid: int) -> tuple[str, dict[str, Any]] | None:

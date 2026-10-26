@@ -167,6 +167,7 @@ class ProjectWatcher:
             return False
         self._watches[project.id] = (project, handle)
         log.info("watching project %s at %s", project.id, project.path)
+        self._spawn(self.refresh_git(project.id))  # the state to compare the first change with
         return True
 
     def unwatch(self, project_id: str) -> None:
@@ -259,15 +260,37 @@ class ProjectWatcher:
                 if entry is None:
                     return
                 state = await asyncio.to_thread(git_state, entry[0].root)
-                if state is not None and project_id in self._watches and state != self._git_last.get(project_id):
+                before = self._git_last.get(project_id)
+                if state is not None and project_id in self._watches and state != before:
                     self._git_last[project_id] = state
                     await self._bus.publish(
                         "project.git", {"project_id": project_id, **state}, project_id=project_id, persist=False
                     )
+                    moved = head_change(before, state)
+                    if moved is not None:  # a commit or a switch is worth keeping in the event log
+                        await self._bus.publish("git.head", {"project_id": project_id, **moved}, project_id=project_id)
                 if project_id not in self._git_again:
                     return
         finally:
             self._git_running.discard(project_id)
+
+
+def head_change(before: dict[str, Any] | None, after: dict[str, Any]) -> dict[str, Any] | None:
+    """What moved HEAD between two git states, for the event log: {kind: "branch" | "commit" | "moved", branch,
+    from?, sha, subject, author}; None when HEAD stayed (or there is nothing to compare with)."""
+    if not before or not before.get("repo") or not after.get("repo"):
+        return None
+    old_log, new_log = before.get("log") or [], after.get("log") or []
+    old_sha = old_log[0]["sha"] if old_log else ""
+    head = new_log[0] if new_log else {}
+    common = {"branch": after.get("branch", ""), "sha": head.get("sha", ""), "subject": head.get("subject", "")}
+    if before.get("branch") != after.get("branch"):
+        return {"kind": "branch", "from": before.get("branch", ""), **common}
+    if head.get("sha", "") == old_sha:
+        return None
+    if head and head["sha"] not in {c["sha"] for c in old_log}:
+        return {"kind": "commit", "author": head.get("author", ""), **common}
+    return {"kind": "moved", **common}  # back to a known commit: a reset or a checkout
 
 
 def git_state(root: Path) -> dict[str, Any] | None:

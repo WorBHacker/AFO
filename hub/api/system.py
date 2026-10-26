@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -47,6 +48,44 @@ async def usage(request: Request, client: Annotated[Client, Depends(require_clie
     midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
     since = midnight.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # "today" is the local day
     return await request.app.state.db.acall(lambda conn: store.usage_totals(conn, today_since=since))
+
+
+@router.get("/feed")
+async def feed(
+    request: Request,
+    client: Annotated[Client, Depends(require_client)],
+    limit: int = 100,
+    before: int | None = None,
+    project_id: str | None = None,
+    types: str = "",
+) -> dict:
+    """The event log, newest first (D29): what happened, for the window's feed. `types` - a comma list of types or
+    prefixes ("terminal.*"); `before` - an event id, for the next page."""
+    limit = max(1, min(limit, 500))
+    where, args = ["1 = 1"], []
+    if before is not None:
+        where.append("id < ?")
+        args.append(before)
+    if project_id:
+        where.append("project_id = ?")
+        args.append(project_id)
+    wanted = [t.strip() for t in types.split(",") if t.strip()]
+    if wanted:
+        where.append("(" + " OR ".join("type LIKE ?" if t.endswith("*") else "type = ?" for t in wanted) + ")")
+        args += [t[:-1] + "%" if t.endswith("*") else t for t in wanted]
+    sql = f"SELECT id, ts, type, project_id, payload FROM events WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT ?"
+    rows = await request.app.state.db.acall(lambda conn: conn.execute(sql, [*args, limit]).fetchall())
+    events = [
+        {
+            "id": r["id"],
+            "ts": r["ts"],
+            "type": r["type"],
+            "project_id": r["project_id"],
+            "payload": json.loads(r["payload"]),
+        }
+        for r in rows
+    ]
+    return {"events": events, "more": len(events) == limit}
 
 
 @router.get("/status")

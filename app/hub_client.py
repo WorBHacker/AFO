@@ -193,6 +193,15 @@ class HubClient:
     def delete_secret(self, name: str) -> dict:
         return self._call("DELETE", f"/v1/secrets/{name}")
 
+    def feed(self, *, limit: int = 100, before: int | None = None, project_id: str = "", types: str = "") -> dict:
+        """The event log, newest first: {events, more}."""
+        params: dict = {"limit": limit, "types": types}
+        if before is not None:
+            params["before"] = before
+        if project_id:
+            params["project_id"] = project_id
+        return self._call("GET", "/v1/feed", params=params)
+
     def shutdown(self) -> None:
         self._call("POST", "/v1/shutdown")
 

@@ -95,6 +95,18 @@ TREE = {
     "src/deep": [{"name": "x.txt", "path": "src/deep/x.txt", "dir": False, "size": 1}],
 }
 FILES = {"src/app.py": "print('hi')\nprint('new')\n", "README.md": "# Проект\n", "src/deep/x.txt": "x"}
+FEED = [
+    {"id": 9, "ts": "2026-10-27T01:05:00.000Z", "type": "port.opened", "project_id": "p1",
+     "payload": {"project_id": "p1", "port": 8000, "pid": 10, "name": "python.exe", "args": "-m http.server 8000"}},
+    {"id": 8, "ts": "2026-10-27T01:04:00.000Z", "type": "chat.message", "project_id": None, "payload": {}},
+    {"id": 7, "ts": "2026-10-27T01:03:00.000Z", "type": "git.head", "project_id": "p1",
+     "payload": {"project_id": "p1", "kind": "commit", "branch": "main", "sha": "abc1234", "subject": "fix",
+                 "author": "Test"}},
+    {"id": 6, "ts": "2026-10-27T01:02:00.000Z", "type": "chat.done", "project_id": None,
+     "payload": {"conversation_id": "c1", "usage": {"output_tokens": 1200}, "cost_usd": 0.0123}},
+    {"id": 5, "ts": "2026-10-20T10:00:00.000Z", "type": "terminal.exited", "project_id": "p1",
+     "payload": {"terminal_id": "t1", "exit_code": 2, "title": "npm test", "stopped": False}},
+]  # fmt: skip
 TERMINAL = {
     "id": "t1", "project_id": "p1", "title": "powershell", "command": "powershell.exe -NoLogo",
     "cwd": "D:\\Code\\LocalChat", "cols": 120, "rows": 30, "pid": 500, "status": "running", "exit_code": None,
@@ -292,6 +304,11 @@ class FakeClient:
     def remove_terminal(self, terminal_id):
         self.term_removed.append(terminal_id)
         self.term_list = [t for t in self.term_list if t["id"] != terminal_id]
+
+    def feed(self, *, limit=100, before=None, project_id="", types=""):
+        events = [e for e in FEED if before is None or e["id"] < before]
+        events = [e for e in events if not project_id or e["project_id"] == project_id]
+        return {"events": events[:limit], "more": len(events) > limit}
 
     def processes(self):
         return copy.deepcopy(PROCESSES)
@@ -757,12 +774,15 @@ def test_the_window_subscribes_to_every_event_it_handles():
     from hub.events import matches
 
     handled = set()
-    for name in ("controller.py", "projects.py"):
+    for name in ("controller.py", "projects.py", "terminals.py", "feed_rows.py"):
         source = (Path(events.__file__).parent / "ui" / name).read_text(encoding="utf-8")
+        handled |= set(re.findall(r'case "([a-z_]+\.[a-z_.]+)"', source))
+        handled |= set(re.findall(r'\| "([a-z_]+\.[a-z_.]+)"', source))
         for group in re.findall(r'kind (?:==|in) (\("[^)]*\)|"[^"]*")', source):
             handled |= {k for k in re.findall(r'"([a-z_]+\.[a-z_.]+)"', group)}
         handled |= {f"{prefix}x" for prefix in re.findall(r'kind\.startswith\("([a-z_]+\.)"\)', source)}
-    assert {"chat.delta", "project.files", "project.git", "budget.warning", "system.status"} <= handled
+    assert {"chat.delta", "project.files", "project.git", "budget.warning", "system.status", "git.head",
+            "port.opened", "terminal.output"} <= handled  # fmt: skip
     missing = sorted(k for k in handled if not matches(k, tuple(events.TOPICS)))
     assert missing == []
 
@@ -890,6 +910,54 @@ def test_search_in_a_project(app):
     wait_until(lambda: projects.searchSummary == "ничего не найдено")
     projects.clearSearch()
     assert not projects.searchActive and projects.searchRows == []
+
+
+def test_feed_rows():
+    from datetime import datetime
+
+    from app.ui import feed_rows
+
+    now = datetime.fromisoformat("2026-10-27T12:00:00+00:00")
+    rows_ = feed_rows.feed_rows(FEED, projects={"p1": "LocalChat"}, chats={"c1": "Первый"}, now=now)
+    assert [r.get("section") or r["title"] for r in rows_] == [
+        "Сегодня",
+        "Открыт порт :8000 — python.exe",
+        "Коммит в main: fix",
+        "Ответ в чате «Первый»",
+        "20 октября",
+        "Терминал «npm test» завершился с кодом 2",
+    ]  # chat.message is plumbing, not news
+    assert rows_[1]["project"] == "LocalChat" and rows_[1]["detail"] == "-m http.server 8000"
+    assert rows_[3]["detail"] == "1.2K ток. ответа · $0.01" and rows_[5]["level"] == "error"
+    git_only = feed_rows.feed_rows(FEED, projects={}, chats={}, group="git", now=now)
+    assert [r.get("section") or r["title"] for r in git_only] == ["Сегодня", "Коммит в main: fix"]
+    assert feed_rows.day_label("2025-01-03T10:00:00Z", now) == "3 января 2025"
+    assert feed_rows.describe({"type": "budget.changed", "payload": {}}, projects={}, chats={})["group"] == "budgets"
+    stopped = {"type": "terminal.exited", "payload": {"title": "dev", "stopped": True, "exit_code": 1}}
+    assert feed_rows.describe(stopped, projects={}, chats={})["title"] == "Терминал «dev» остановлен"
+
+
+def test_the_feed(app):
+    feed = app.feed
+    feed.load()
+    wait_until(lambda: feed.items)
+    assert [r["id"] for r in feed.items if not r.get("section")] == [9, 7, 6, 5]
+    feed.setGroup("processes")
+    assert [r["id"] for r in feed.items if not r.get("section")] == [9]
+    feed.setGroup("all")
+    # a stored event that comes live joins at the top; a live-only one does not
+    app.on_event({"id": 10, "ts": "2026-10-27T01:06:00.000Z", "type": "port.closed", "project_id": "p1",
+                  "payload": {"project_id": "p1", "port": 8000, "name": "python.exe"}})  # fmt: skip
+    app.on_event({"id": None, "type": "port.closed", "payload": {"port": 1}})
+    assert [r["id"] for r in feed.items if not r.get("section")][:2] == [10, 9]
+    # the open project's latest events, for its overview
+    app.projects.openProject("p1")
+    wait_until(lambda: feed.recent)
+    assert [r["id"] for r in feed.recent] == [9, 7, 5]
+    app.on_event({"id": 11, "ts": "2026-10-27T01:07:00.000Z", "type": "terminal.started", "project_id": "p1",
+                  "payload": {"terminal": {"title": "PowerShell", "cwd": "D:/x"}}})  # fmt: skip
+    assert [r["id"] for r in feed.recent][:2] == [11, 9]
+    assert feed.items[1]["title"] == "Запущен терминал: PowerShell"
 
 
 def test_key_sequences():
@@ -1055,6 +1123,18 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         mark = quick.window.findChild(QObject, "gotoMark")
         assert mark.property("visible") and mark.property("y") > 10  # the second line, below the first
+        # the feed
+        from PySide6.QtCore import QMetaObject
+
+        sheet = quick.window.findChild(QObject, "feedSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened") and app.feed.items)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "feedItems").property("height") > 4 * 30
+        QMetaObject.invokeMethod(sheet, "close")
+        for _ in range(20):
+            QApplication.processEvents()
         image = quick.window.grabWindow()
         assert not image.isNull()
         assert quick.warnings == []

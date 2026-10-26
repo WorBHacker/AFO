@@ -151,3 +151,5 @@ def test_only_the_app_changes_the_list(api, repo):
     assert api.delete(f"/v1/projects/{pid}", headers=other).status_code == 403
     assert api.delete(f"/v1/projects/{pid}").status_code == 204
     assert api.delete(f"/v1/projects/{pid}").status_code == 404
+    (removed,) = api.get("/v1/feed", params={"types": "project.removed"}).json()["events"]
+    assert removed["payload"] == {"id": pid, "name": "proj"}  # the log keeps what it was called
