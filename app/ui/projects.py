@@ -327,6 +327,7 @@ class Projects(QObject):
             **git,
             "summary": project_rows.git_summary(git),
             "changes": project_rows.change_rows(git.get("changes", [])),
+            "log": [{**c, "when": project_rows.ago(c.get("when", ""))} for c in git.get("log", [])],
         }
         self.gitChanged.emit()
         for index, row in enumerate(self.tree.rows):

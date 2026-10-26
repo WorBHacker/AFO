@@ -12,6 +12,10 @@ What it takes care of (claude-api reference, cache of 2026-10-06; re-check price
   count. Server-side fallbacks to another model are not requested: the model never changes silently (D11)
 - the catalog is the priced models below that the key can actually use (Models API)
 - Anthropic reports fresh, cache-read and cache-write input apart; usage adds them up into input_tokens
+- tools (stage 3): client tools with eager input streaming; tool_choice stays the default "auto" (forcing a call
+  is a 400 on the 5.5 models). The calls come from the final message; their inputs are checked by the hub before
+  anything runs. A tool input the SDK cannot parse at all raises ValueError from the stream: reported as an
+  error, nothing is run. Earlier tool turns go back as tool_use / tool_result blocks
 """
 
 from __future__ import annotations
@@ -123,7 +127,12 @@ class AnthropicProvider:
         return models
 
     async def stream_chat(
-        self, model_ref: str, messages: list[dict[str, Any]], effort: str, cancel: asyncio.Event
+        self,
+        model_ref: str,
+        messages: list[dict[str, Any]],
+        effort: str,
+        cancel: asyncio.Event,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         key = self._key()
         if not key:
@@ -139,6 +148,16 @@ class AnthropicProvider:
         }
         if system:
             request["system"] = system
+        if tools:
+            request["tools"] = [
+                {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "input_schema": t["parameters"],
+                    "eager_input_streaming": True,  # inputs stream as they are made; the hub checks them
+                }
+                for t in tools
+            ]
 
         started = time.monotonic()
         first_at: float | None = None
@@ -162,6 +181,8 @@ class AnthropicProvider:
                         yield StreamEvent("reasoning", event.thinking)
                 if message_started:
                     snapshot = stream.current_message_snapshot
+        except ValueError as exc:  # a tool input that is not JSON at all: nothing can be run from it
+            raise ProviderError(f"{self.name}: the model sent a tool call that could not be read; try again") from exc
         except Exception as exc:
             raise ProviderError(f"{self.name}: {_describe(exc)}") from exc
 
@@ -178,6 +199,11 @@ class AnthropicProvider:
             stop_reason=stop_reason,
             raw=snapshot.to_dict(mode="json") if snapshot is not None else None,
             refusal=_refusal_text(getattr(snapshot, "stop_details", None)) if stop_reason == "refusal" else None,
+            tool_calls=[
+                {"id": block.id, "name": block.name, "input": block.input}
+                for block in getattr(snapshot, "content", None) or []
+                if getattr(block, "type", "") == "tool_use"
+            ],
         )
 
 
@@ -197,11 +223,25 @@ def to_wire(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, li
                 system_parts.append(message["content"])
             continue
         blocks: list[dict[str, Any]] = []
+        if role == "tool":  # the hub's answer to a tool call goes back as the user's turn
+            role = "user"
+            blocks = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": message["tool_call_id"],
+                    "content": message["content"] or "(empty)",
+                    "is_error": bool(message.get("is_error")),
+                }
+            ]
         raw = message.get("provider_raw")
         if role == "assistant" and raw and message.get("provider") == provider_name:
             blocks = replay_blocks(raw.get("content") or [])
         if not blocks and message["content"]:
             blocks = [{"type": "text", "text": message["content"]}]
+        if role == "assistant" and message.get("tool_calls") and not any(b["type"] == "tool_use" for b in blocks):
+            # another model's tool calls: Claude takes them as its own tool_use blocks
+            blocks += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["input"]}
+                       for c in message["tool_calls"]]  # fmt: skip
         if not blocks:
             continue
         if turns and turns[-1]["role"] == role:
@@ -223,6 +263,8 @@ def replay_blocks(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
             out.append({"type": "redacted_thinking", "data": block["data"]})
         elif kind == "text" and block.get("text"):
             out.append({"type": "text", "text": block["text"]})
+        elif kind == "tool_use":
+            out.append({"type": "tool_use", "id": block["id"], "name": block["name"], "input": block.get("input", {})})
     return out
 
 

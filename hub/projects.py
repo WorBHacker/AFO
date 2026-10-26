@@ -282,9 +282,10 @@ def git_status(root: Path) -> dict[str, Any]:
 
 
 def git_log(root: Path, limit: int = 20) -> list[dict[str, str]]:
+    """Recent commits: sha, author, when (ISO 8601 - absolute, so the same history always reads the same), subject."""
     if not is_repo(root):
         return []
-    result = git(root, "log", f"-n{limit}", "--pretty=format:%h%x1f%an%x1f%ar%x1f%s")
+    result = git(root, "log", f"-n{limit}", "--pretty=format:%h%x1f%an%x1f%aI%x1f%s")
     if result.returncode != 0:  # no commits yet
         return []
     commits = []

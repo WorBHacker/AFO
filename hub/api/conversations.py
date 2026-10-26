@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .. import store
-from ..auth import Client
+from ..auth import APP_CLIENT, Client
 from ..chat import DEFAULT_EFFORT, BudgetReached
 from ..gateway import GatewayError
 from .deps import require_client
@@ -61,18 +61,45 @@ async def get_conversation(
             return None
         usage = store.usage_by_message(conn, conversation_id)
         messages = [{**m.to_json(), "usage": usage.get(m.id)} for m in store.get_messages(conn, conversation_id)]
-        return title, messages
+        return title, messages, store.conversation_projects(conn, conversation_id)
 
     found = await request.app.state.db.acall(read)
     if found is None:
         raise HTTPException(status_code=404, detail="no such conversation")
-    title, messages = found
+    title, messages, attached = found
     return {
         "id": conversation_id,
         "title": title,
         "messages": messages,
+        "projects": attached,
         "busy": conversation_id in request.app.state.chat.busy,
     }
+
+
+class ProjectList(BaseModel):
+    project_ids: list[str]
+
+
+@router.put("/conversations/{conversation_id}/projects")
+async def attach_projects(
+    conversation_id: str, body: ProjectList, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    """The projects this chat works with (D27): its tools reach only these, its prompt describes them."""
+    if client.name != APP_CLIENT:
+        raise HTTPException(status_code=403, detail="only the desktop app may change a chat's projects")
+
+    def write(conn):
+        if store.get_title(conn, conversation_id) is None:
+            return None
+        return store.set_conversation_projects(conn, conversation_id, body.project_ids)
+
+    attached = await request.app.state.db.acall(write)
+    if attached is None:
+        raise HTTPException(status_code=404, detail="no such conversation")
+    await request.app.state.bus.publish(
+        "chat.projects", {"conversation_id": conversation_id, "projects": attached}, persist=False
+    )
+    return {"projects": attached}
 
 
 @router.patch("/conversations/{conversation_id}")

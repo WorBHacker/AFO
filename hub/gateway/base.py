@@ -1,9 +1,12 @@
 """Shared gateway types: the model record, the unified message blocks, the stream event, providers.
 
-A message's content is a list of blocks in the hub's own format. Stage 1 uses two kinds:
+A message's content is a list of blocks in the hub's own format:
     {"type": "text", "text": "..."}        the visible answer
     {"type": "reasoning", "text": "..."}   the model's thinking (not sent back to a model as input, D14)
-Each provider adapter turns these into its own wire format and back.
+    {"type": "tool_call", "id", "name", "input"}           an assistant asks the hub to run a tool (stage 3)
+    {"type": "tool_result", "id", "name", "output", "error"}   the hub's answer, in a message of role "tool"
+Each provider adapter turns these into its own wire format and back. A tool is described to an adapter as
+{name, description, parameters (JSON schema)}.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ class StreamEvent:
     stop_reason: str | None = None
     raw: dict[str, Any] | None = None
     refusal: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None  # [{id, name, input}] the model wants run
 
 
 @dataclass
@@ -76,12 +80,15 @@ class Completion:
     raw: dict[str, Any] | None = None
     refusal: str | None = None
     cancelled: bool = False
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def blocks(self) -> list[dict[str, str]]:
-        out: list[dict[str, str]] = []
+    def blocks(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
         if self.reasoning:
             out.append(reasoning_block(self.reasoning))
-        out.append(text_block(self.text))
+        if self.text or not self.tool_calls:
+            out.append(text_block(self.text))
+        out += [tool_call_block(c["id"], c["name"], c["input"]) for c in self.tool_calls]
         return out
 
 
@@ -91,6 +98,14 @@ def text_block(text: str) -> dict[str, str]:
 
 def reasoning_block(text: str) -> dict[str, str]:
     return {"type": "reasoning", "text": text}
+
+
+def tool_call_block(call_id: str, name: str, args: Any) -> dict[str, Any]:
+    return {"type": "tool_call", "id": call_id, "name": name, "input": args}
+
+
+def tool_result_block(call_id: str, name: str, output: str, error: bool = False) -> dict[str, Any]:
+    return {"type": "tool_result", "id": call_id, "name": name, "output": output, "error": error}
 
 
 def blocks_to_prompt_text(blocks: list[dict[str, Any]]) -> str:
@@ -127,13 +142,21 @@ class Provider(Protocol):
     async def list_models(self) -> list[Model]: ...
 
     def stream_chat(
-        self, model_ref: str, messages: list[dict[str, Any]], effort: str, cancel: asyncio.Event
+        self,
+        model_ref: str,
+        messages: list[dict[str, Any]],
+        effort: str,
+        cancel: asyncio.Event,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Yields StreamEvents for one completion.
 
         `messages` are {role, content} in OpenAI shape, content being the visible text. An assistant turn may
         also carry "provider" and "provider_raw": the message exactly as that provider returned it. An adapter
         replays its own raw messages (Claude needs its thinking blocks back unchanged, D14) and ignores others.
+        An assistant turn may carry "tool_calls" [{id, name, input}]; a turn of role "tool" answers one call:
+        {tool_call_id, name, content, is_error}. With `tools`, the model may ask for them; the "end" event then
+        lists the calls it made.
 
         Must stop promptly once `cancel` is set, and must end with exactly one kind=="end" event
         (even when cancelled), so the caller always gets final usage and stats.

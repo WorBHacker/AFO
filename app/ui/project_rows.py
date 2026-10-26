@@ -187,6 +187,25 @@ def change_rows(changes: list[dict[str, str]]) -> list[dict[str, str]]:
     return rows
 
 
+def ago(iso: str, now: datetime | None = None) -> str:
+    """'только что', '5 мин назад', '3 ч назад', '2 дн назад', or the date for older; the text as is if not a date."""
+    try:
+        when = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    now = now or datetime.now(UTC)
+    seconds = (now - when).total_seconds()
+    if seconds < 60:
+        return "только что"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} мин назад"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} ч назад"
+    if seconds < 7 * 86400:
+        return f"{int(seconds // 86400)} дн назад"
+    return when.astimezone().strftime("%d.%m.%Y")
+
+
 def program_args(cmdline: str, exe: str) -> str:
     """The command line without the program itself (it is shown by name)."""
     line = cmdline.strip()

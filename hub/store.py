@@ -131,6 +131,26 @@ def set_title(conn: sqlite3.Connection, conversation_id: str, title: str) -> boo
     )
 
 
+def conversation_projects(conn: sqlite3.Connection, conversation_id: str) -> list[str]:
+    """The ids of the projects attached to a conversation (its focus, D27), in the order they were attached."""
+    rows = conn.execute(
+        "SELECT project_id FROM conversation_projects WHERE conversation_id = ? ORDER BY rowid", (conversation_id,)
+    ).fetchall()
+    return [r["project_id"] for r in rows]
+
+
+def set_conversation_projects(conn: sqlite3.Connection, conversation_id: str, project_ids: list[str]) -> list[str]:
+    """Attaches exactly these projects (unknown ids are skipped); returns what is attached now."""
+    known = {r["id"] for r in conn.execute("SELECT id FROM projects").fetchall()}
+    wanted = list(dict.fromkeys(pid for pid in project_ids if pid in known))
+    conn.execute("DELETE FROM conversation_projects WHERE conversation_id = ?", (conversation_id,))
+    conn.executemany(
+        "INSERT INTO conversation_projects (conversation_id, project_id) VALUES (?, ?)",
+        [(conversation_id, pid) for pid in wanted],
+    )
+    return wanted
+
+
 def delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
     return bool(conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,)).rowcount)
 

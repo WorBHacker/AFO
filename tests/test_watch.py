@@ -137,6 +137,7 @@ def test_watching_a_repository(repo, tmp_path):
         await asyncio.to_thread(run_git, root, "checkout", "-q", "-b", "feature")
         await until(lambda: len(heads()) == 2)
         assert (heads()[-1]["kind"], heads()[-1]["from"], heads()[-1]["branch"]) == ("branch", "main", "feature")
+        await asyncio.sleep(0.8)  # the checkout's last file events settle first
         count = len(gits())
         await watcher.refresh_git("p1")  # nothing changed since: no new event
         assert len(gits()) == count
