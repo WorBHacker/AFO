@@ -246,6 +246,7 @@ def context_blocks(
     settings: dict[str, Any] | None = None,
     pinned: dict[str, tuple[Project, str]] | None = None,
     cards: dict[str, tuple[str, list[str]]] | None = None,
+    notes: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
     conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
@@ -261,6 +262,12 @@ def context_blocks(
         text = project_layer(p, card, missing)
         key = f"project:{p.id}"
         if previous.get(key) != digest(text):
+            blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
+                           "digest": digest(text)})  # fmt: skip
+    for p in attached:  # L4: the user's notes, when there are any and they changed
+        text = (notes or {}).get(p.id)
+        key = f"notes:{p.id}"
+        if text and previous.get(key) != digest(text):
             blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,
                            "digest": digest(text)})  # fmt: skip
     for key, (p, text) in (pinned or {}).items():

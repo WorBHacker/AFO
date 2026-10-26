@@ -29,12 +29,13 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import budgets, cards, context, store
+from . import budgets, cards, context, notes, store
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block
 from .projects import ProjectError, get_project, list_projects
+from .secret_filter import clean
 from .tools import TOOLS, ToolContext, run_tool
 
 log = logging.getLogger("hub.chat")
@@ -194,9 +195,12 @@ class ChatService:
             events = [{"ts": r["ts"], "type": r["type"], "project_id": r["project_id"],
                        "payload": json.loads(r["payload"])} for r in rows]  # fmt: skip
             confirmed = {p.id: cards.confirmed_text(conn, p.id) for p in attached}
-            return history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed
+            written = {p.id: notes.list_notes(conn, p.id) for p in attached}
+            return (history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed,
+                    written)  # fmt: skip
 
-        history, everything, events, settings, confirmed = await self._db.acall(gather)
+        history, everything, events, settings, confirmed, written = await self._db.acall(gather)
+        project_notes = {p.id: clean(notes.notes_layer(p.name, written[p.id])) for p in attached if written[p.id]}
         project_cards = {
             pid: (text, await asyncio.to_thread(cards.missing_paths, next(p for p in attached if p.id == pid), text))
             for pid, text in confirmed.items()
@@ -221,7 +225,7 @@ class ChatService:
         blocks = await asyncio.to_thread(
             lambda: context.context_blocks(
                 all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
-                settings=settings, pinned=files, cards=project_cards,
+                settings=settings, pinned=files, cards=project_cards, notes=project_notes,
             )
         )  # fmt: skip
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))

@@ -343,6 +343,61 @@ Item {
                 }
             }
 
+            // notes for models (D22 L4): facts and decisions a model should always know
+            Column {
+                objectName: "projectNotes"
+                width: parent.width
+                spacing: 4
+                Text {
+                    bottomPadding: 2
+                    text: "Заметки для моделей"
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: Projects.notes
+                    delegate: Item {
+                        id: note
+                        required property var modelData
+                        width: page.width
+                        height: Math.max(30, noteText.implicitHeight + 10)
+                        HoverHandler { id: noteHover }
+                        Rectangle { anchors.fill: parent; radius: 6; color: noteHover.hovered ? Theme.p.item_hover : "transparent" }
+                        Text {
+                            id: noteText
+                            x: 10
+                            width: parent.width - 50
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "• " + note.modelData.text
+                            wrapMode: Text.Wrap
+                            color: Theme.p.text_soft
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        IconButton {
+                            visible: noteHover.hovered
+                            anchors.right: parent.right
+                            anchors.rightMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            implicitWidth: 26
+                            implicitHeight: 26
+                            iconName: "trash"
+                            tip: "Удалить заметку"
+                            onClicked: Projects.deleteNote(note.modelData.id)
+                        }
+                    }
+                }
+                Field {
+                    id: newNote
+                    objectName: "newNote"
+                    width: parent.width
+                    placeholderText: "Добавить заметку: например, «деплой только из main» — Enter"
+                    onAccepted: { Projects.addNote(text); text = "" }
+                }
+            }
+
             // what runs in the project's folder (the hub scans every few seconds)
             Column {
                 objectName: "projectProcesses"

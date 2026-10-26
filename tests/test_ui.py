@@ -202,6 +202,7 @@ class FakeClient:
         self.searches = []
         self.log = []
         self.histories = {"ct": TOOL_HISTORY}
+        self.note_list = []
         self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
 
     def models(self):
@@ -309,6 +310,22 @@ class FakeClient:
 
     def card(self, pid):
         return dict(self.card_state)
+
+    def notes(self, pid):
+        return [dict(n) for n in self.note_list]
+
+    def add_note(self, pid, text):
+        note = {"id": len(self.note_list) + 1, "project_id": pid, "text": text}
+        self.note_list.append(note)
+        return note
+
+    def update_note(self, note_id, text):
+        note = next(n for n in self.note_list if n["id"] == note_id)
+        note["text"] = text
+        return dict(note)
+
+    def delete_note(self, note_id):
+        self.note_list = [n for n in self.note_list if n["id"] != note_id]
 
     def draft_card(self, pid, model_id):
         self.log.append(("draft", pid, model_id))
@@ -1159,6 +1176,23 @@ def test_project_cards(app):
     assert shown["title"] == "Карточка «LocalChat» подтверждена, версия 3 (возвращена версия 1)"
 
 
+def test_project_notes(app):
+    projects = app.projects
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1")
+    projects.addNote("деплой только из main")
+    wait_until(lambda: projects.notes)
+    assert projects.notes[0]["text"] == "деплой только из main"
+    projects.updateNote(projects.notes[0]["id"], "деплой из main и release")
+    wait_until(lambda: projects.notes[0]["text"].endswith("release"))
+    projects.addNote("   ")  # nothing to add
+    projects.deleteNote(projects.notes[0]["id"])
+    wait_until(lambda: projects.notes == [])
+    app.client.note_list.append({"id": 9, "project_id": "p1", "text": "из другого окна"})
+    send(app, "note.changed", {"project_id": "p1"})
+    wait_until(lambda: [n["text"] for n in projects.notes] == ["из другого окна"])
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1364,6 +1398,7 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "projectCard").property("visible")
+        assert quick.window.findChild(QObject, "projectNotes").property("visible")
         card_sheet = quick.window.findChild(QObject, "cardSheet")
         QMetaObject.invokeMethod(
             card_sheet, "openWith", Q_ARG("QVariant", "## Назначение\nДемо"), Q_ARG("QVariant", True)

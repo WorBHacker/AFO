@@ -32,6 +32,7 @@ class Projects(QObject):
     fileChanged = Signal()
     processesChanged = Signal()
     cardChanged = Signal()
+    notesChanged = Signal()
     searchChanged = Signal()
 
     def __init__(self, app: Controller):
@@ -56,6 +57,7 @@ class Projects(QObject):
         self._goto_seq = 0
         self._card: dict[str, Any] = {}  # the open project's card, as the hub describes it
         self._card_error = ""
+        self._notes: list[dict[str, Any]] = []
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
@@ -134,6 +136,10 @@ class Projects(QObject):
             "error": self._card_error,
             "writer": models.get(self._card_writer(), ""),
         }
+
+    @Property(list, notify=notesChanged)
+    def notes(self) -> list:
+        return [{"id": n["id"], "text": n["text"]} for n in self._notes]
 
     @Property(list, notify=processesChanged)
     def processes(self) -> list:
@@ -239,6 +245,8 @@ class Projects(QObject):
     def _reset_view(self) -> None:
         self._card, self._card_error = {}, ""
         self.cardChanged.emit()
+        self._notes = []
+        self.notesChanged.emit()
         self._tree_gen += 1
         self._search_gen += 1
         self._search, self._searching, self._search_args = None, False, ("", False, False)
@@ -271,6 +279,7 @@ class Projects(QObject):
         self.reload_tree()
         self.refresh_git()
         self.load_card()
+        self.load_notes()
         if self._file:
             self.openFile(self._file["path"], bool(self._file.get("diffMode")))
 
@@ -457,6 +466,9 @@ class Projects(QObject):
             self.load(catch_up=False)
         elif kind == "processes.changed":
             self._set_processes(payload.get("projects") or {})
+        elif kind == "note.changed":
+            if payload.get("project_id") == self.currentId:
+                self.load_notes()
         elif kind.startswith("card."):
             if payload.get("project_id") == self.currentId:
                 if kind == "card.failed":
@@ -601,6 +613,35 @@ class Projects(QObject):
         if self.current:
             pid = self.current["id"]
             self.app._call(lambda: self.app.client.drop_card_draft(pid), lambda _r: self.load_card())
+
+    # ================= notes (D22 L4) =================
+
+    def load_notes(self) -> None:
+        if not self.current or self.app.client is None:
+            return
+        pid = self.current["id"]
+
+        def show(found: list[dict[str, Any]]) -> None:
+            if pid == self.currentId:
+                self._notes = found
+                self.notesChanged.emit()
+
+        self.app._call(lambda: self.app.client.notes(pid), show, lambda _e: None)
+
+    @Slot(str)
+    def addNote(self, text: str) -> None:
+        if self.current and text.strip():
+            pid = self.current["id"]
+            self.app._call(lambda: self.app.client.add_note(pid, text), lambda _n: self.load_notes())
+
+    @Slot(int, str)
+    def updateNote(self, note_id: int, text: str) -> None:
+        if text.strip():
+            self.app._call(lambda: self.app.client.update_note(note_id, text), lambda _n: self.load_notes())
+
+    @Slot(int)
+    def deleteNote(self, note_id: int) -> None:
+        self.app._call(lambda: self.app.client.delete_note(note_id), lambda _r: self.load_notes())
 
     # ================= processes =================
 

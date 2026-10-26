@@ -13,7 +13,19 @@ from fastapi import FastAPI
 
 from common import __version__
 
-from .api import budgets, cards, conversations, events_ws, models, processes, projects, secrets, system, terminals
+from .api import (
+    budgets,
+    cards,
+    conversations,
+    events_ws,
+    models,
+    notes,
+    processes,
+    projects,
+    secrets,
+    system,
+    terminals,
+)
 from .auth import ensure_app_token
 from .chat import ChatService
 from .db import Database, migrate
@@ -100,6 +112,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(processes.router)
     app.include_router(terminals.router)
     app.include_router(cards.router)
+    app.include_router(notes.router)
     return app
 
 
