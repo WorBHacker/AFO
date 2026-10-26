@@ -20,7 +20,8 @@ from .. import presenter
 from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
-from . import commands, rows
+from . import commands, mentions, rows
+from .composer import Mentions
 from .feed import Feed
 from .models import RowModel
 from .projects import Projects
@@ -135,6 +136,7 @@ class Controller(QObject):
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
         self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
+        self.mentions = Mentions(self)
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -803,14 +805,32 @@ class Controller(QObject):
 
     def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False) -> None:
         client = self.client
-
-        attach = list(self._chat_projects) if target is None else []
+        # @project attaches the project, @project/file also pins the file (D27) - before the message goes out, so
+        # the context stored with it already has them
+        ids, files = mentions.mentioned(text, self.projects.items)
+        added = [pid for pid in ids if pid not in self._chat_projects]
+        if added:
+            self._chat_projects = [*self._chat_projects, *added]
+            self.chatProjectsChanged.emit()
+        attach = list(self._chat_projects) if target is None or added else []
+        known = self._context_settings["pinned"] if target is not None else []
+        wanted = [{"project_id": pid, "path": path} for pid, path in files]
+        pinned = [*known, *(p for p in wanted if p not in known)] if wanted else []
+        if pinned and target is not None:
+            self._context_settings = {**self._context_settings, "pinned": pinned}
+            self.contextChanged.emit()
+        if added or wanted:
+            names = {p["id"]: p["name"] for p in self.projects.items}
+            said = [f"проект {names[pid]}" for pid in added] + [f"файл {path}" for _pid, path in files]
+            self.flash("В контексте чата: " + ", ".join(said))
 
         def send() -> str:
             conversation_id = target or client.create_conversation()
             try:
                 if attach:  # a new chat takes the projects chosen before its first message
                     client.set_chat_projects(conversation_id, attach)
+                if pinned:
+                    client.set_context(conversation_id, pinned=pinned)
                 client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
             except HubError as exc:
                 exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there

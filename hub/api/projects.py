@@ -140,6 +140,15 @@ async def project_search(
     return await _off_loop(search.search, project.root, q, regex=regex, case=case, glob=glob, limit=limit)
 
 
+@router.get("/projects/{project_id}/files")
+async def project_files(
+    project_id: str, request: Request, client: Annotated[Client, Depends(require_client)], q: str = "", limit: int = 20
+) -> dict:
+    """Files whose path matches `q`, best first - for picking a file by a few letters (hub/search.py)."""
+    project = await _project(request, project_id)
+    return {"files": await _off_loop(search.find_files, project.root, q, max(1, min(limit, 200)))}
+
+
 @router.get("/projects/{project_id}/symbols")
 async def project_symbols(
     project_id: str,

@@ -11,9 +11,18 @@ Item {
     readonly property int column: Math.min(780, width - 48)
     property alias text: area.text
     property alias modelChip: modelChip
-    implicitHeight: card.height + 24
+    property int mentionIndex: 0
+    implicitHeight: card.y + card.height + 20
 
     function focusInput() { area.forceActiveFocus() }
+    // an item of the @-menu replaces what was typed after the @ (deeper: a project with "/" to go on to its files)
+    function chooseMention(index, deeper) {
+        const item = Mentions.items[index]
+        if (!item) return
+        const insert = deeper && item.kind === "project" ? "@" + item.name + "/" : item.insert
+        area.remove(Mentions.start, area.cursorPosition)
+        area.insert(Mentions.start, insert)
+    }
     function submit() {
         const message = area.text
         if (!App.busyNow) {
@@ -28,10 +37,142 @@ Item {
         function onDraftRestored(text) { if (area.text === "") area.text = text }
     }
 
+    // a project the draft names without @: attach it?
+    Rectangle {
+        id: suggestion
+        objectName: "mentionSuggestion"
+        visible: Mentions.suggestions.length > 0
+        x: card.x
+        y: 4
+        width: composer.column
+        height: visible ? 34 : 0
+        radius: 8
+        color: Theme.p.item_hover
+        Icon {
+            id: suggestionIcon
+            x: 10
+            anchors.verticalCenter: parent.verticalCenter
+            name: "folder"
+            size: 15
+            tint: Theme.p.accent
+        }
+        Text {
+            x: suggestionIcon.x + suggestionIcon.width + 8
+            width: suggestionButtons.x - x - 8
+            anchors.verticalCenter: parent.verticalCenter
+            text: (Mentions.suggestions.length === 1 ? "В сообщении упомянут проект «" : "В сообщении упомянуты проекты «")
+                  + Mentions.suggestions.map(p => p.name).join("», «") + "» — подключить к чату?"
+            elide: Text.ElideRight
+            color: Theme.p.text_soft
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+        }
+        Row {
+            id: suggestionButtons
+            anchors.right: parent.right
+            anchors.rightMargin: 4
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+            PlainButton {
+                objectName: "attachSuggested"
+                implicitHeight: 26
+                text: "Подключить"
+                onClicked: Mentions.attachSuggested()
+            }
+            IconButton {
+                implicitWidth: 26
+                implicitHeight: 26
+                iconName: "close"
+                tip: "Не предлагать в этом чате"
+                onClicked: Mentions.waveAway()
+            }
+        }
+    }
+
+    // the @-menu: projects, or a project's files after "@project/"
+    Popup {
+        id: mentionMenu
+        objectName: "mentionMenu"
+        parent: card
+        visible: Mentions.items.length > 0 && area.activeFocus
+        x: 6
+        y: -height - 6
+        width: Math.min(460, card.width - 12)
+        padding: 6
+        closePolicy: Popup.NoAutoClose
+        background: Rectangle {
+            radius: 8
+            color: Theme.p.popup
+            border.color: Theme.p.hairline_strong
+            SoftShadow {}
+        }
+        onVisibleChanged: composer.mentionIndex = 0
+        contentItem: Column {
+            Repeater {
+                model: Mentions.items
+                delegate: AbstractButton {
+                    id: choice
+                    required property var modelData
+                    required property int index
+                    width: mentionMenu.availableWidth
+                    height: 34
+                    hoverEnabled: true
+                    onClicked: composer.chooseMention(index, false)
+                    background: Rectangle {
+                        radius: 6
+                        color: choice.index === composer.mentionIndex ? Theme.p.item_selected
+                               : (choice.hovered ? Theme.p.item_hover : "transparent")
+                    }
+                    contentItem: Item {
+                        Icon {
+                            id: choiceIcon
+                            x: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: choice.modelData.kind === "file" ? "file" : "folder"
+                            size: 15
+                            tint: Theme.p.text_soft
+                        }
+                        Text {
+                            id: choiceName
+                            x: choiceIcon.x + choiceIcon.width + 8
+                            width: Math.min(implicitWidth, parent.width - x - 8)
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: choice.modelData.name
+                            elide: Text.ElideMiddle
+                            color: Theme.p.text
+                            font.family: choice.modelData.kind === "file" ? Theme.monoFont : Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            x: choiceName.x + choiceName.width + 10
+                            width: Math.max(0, parent.width - x - 8)
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: choice.modelData.note || ""
+                            elide: Text.ElideRight
+                            color: Theme.p.faint
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                    }
+                }
+            }
+            Text {
+                width: mentionMenu.availableWidth
+                topPadding: 4
+                leftPadding: 8
+                text: "Enter — выбрать" + (Mentions.items.length && Mentions.items[0].kind === "project" ? ", Tab — файл проекта" : "")
+                      + ", Esc — закрыть"
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 11
+            }
+        }
+    }
+
     Rectangle {
         id: card
         x: (parent.width - composer.column) / 2
-        y: 4
+        y: suggestion.visible ? suggestion.height + 10 : 4
         width: composer.column
         height: input.height + controls.height + 24
         radius: 8
@@ -47,9 +188,10 @@ Item {
             ScrollBar.vertical: ThinScrollBar {}
             TextArea {
                 id: area
+                objectName: "composerInput"
                 wrapMode: TextArea.Wrap
                 placeholderText: App.busyNow ? "Пока модель отвечает, можно набирать следующий вопрос…"
-                                             : "Спросите что-нибудь…  Enter — отправить, Shift+Enter — новая строка"
+                                             : "Спросите что-нибудь…  @ — проект или файл, Enter — отправить, Shift+Enter — новая строка"
                 placeholderTextColor: Theme.p.faint
                 color: Theme.p.text
                 selectionColor: Theme.p.selection
@@ -61,7 +203,28 @@ Item {
                 topPadding: 8
                 bottomPadding: 8
                 background: null
+                onTextChanged: Mentions.typed(text, cursorPosition)
+                onCursorPositionChanged: Mentions.typed(text, cursorPosition)
+                onActiveFocusChanged: if (!activeFocus) Mentions.close()
                 Keys.onPressed: (event) => {
+                    if (mentionMenu.visible) {  // the @-menu has the keys it needs
+                        const count = Mentions.items.length
+                        if (event.key === Qt.Key_Down || event.key === Qt.Key_Up) {
+                            composer.mentionIndex = (composer.mentionIndex + (event.key === Qt.Key_Down ? 1 : count - 1)) % count
+                            event.accepted = true
+                            return
+                        }
+                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Tab) {
+                            composer.chooseMention(composer.mentionIndex, event.key === Qt.Key_Tab)
+                            event.accepted = true
+                            return
+                        }
+                        if (event.key === Qt.Key_Escape) {
+                            Mentions.close()
+                            event.accepted = true
+                            return
+                        }
+                    }
                     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                             && !(event.modifiers & Qt.ShiftModifier)) {
                         event.accepted = true

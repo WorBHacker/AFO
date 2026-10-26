@@ -382,6 +382,9 @@ class FakeClient:
                 found.append({"path": path, "matches": matches})
         return {"engine": "fake", "files": found, "matches": sum(len(f["matches"]) for f in found), "truncated": False}
 
+    def find_files(self, pid, part, limit=20):
+        return [path for path in sorted(self.files) if part.casefold() in path.casefold()][:limit]
+
     def symbols(self, pid, *, q="", path="", kind="", limit=200):
         self.symbol_calls.append((q, path))
         defs = [
@@ -1279,6 +1282,41 @@ def test_project_notes(app):
     wait_until(lambda: [n["text"] for n in projects.notes] == ["из другого окна"])
 
 
+def test_mentions_in_the_composer(app):
+    mentions, client = app.mentions, app.client
+    wait_until(lambda: app.projects.items)
+    app.newChat()
+    mentions.typed("смотри @Lo", 10)
+    assert mentions.start == 7 and [i["name"] for i in mentions.items] == ["LocalChat"]
+    mentions.typed("смотри @LocalChat/ap", 20)  # a project's files, from the hub
+    wait_until(lambda: mentions.items and mentions.items[0]["kind"] == "file")
+    assert mentions.items[0]["insert"] == "@LocalChat/src/app.py "
+    mentions.typed("смотри @LocalChat/src/app.py готово", 35)  # the cursor is past the mention
+    assert mentions.items == [] and mentions.start == -1
+
+    # a project named in passing is offered; waved away, it stays away in this chat
+    mentions.typed("почему localchat упал?", 5)
+    assert mentions.suggestions == [{"id": "p1", "name": "LocalChat"}]
+    mentions.waveAway()
+    assert mentions.suggestions == []
+    app.newChat()  # another chat: offered again
+    assert mentions.suggestions == [{"id": "p1", "name": "LocalChat"}]
+    mentions.attachSuggested()
+    assert [p["id"] for p in app.chatProjects] == ["p1"] and mentions.suggestions == []
+    assert client.log == []  # a new chat: the project goes with its first message
+
+    # @project attaches, @project/file pins the file - both before the message goes out
+    app.newChat()
+    app.send("глянь @LocalChat/src/app.py, что там?")
+    wait_until(lambda: client.sent)
+    assert client.log == [
+        ("projects", "c2", ["p1"]),
+        ("context", "c2", {"pinned": [{"project_id": "p1", "path": "src/app.py"}]}),
+        ("send", "c2", "глянь @LocalChat/src/app.py, что там?"),
+    ]
+    assert "В контексте чата: проект LocalChat, файл src/app.py" in app.flashText
+
+
 def test_links_between_projects(app):
     projects, client = app.projects, app.client
     projects.openProject("p1")
@@ -1511,6 +1549,17 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "chatProjects").property("visible")
         assert quick.window.findChild(QObject, "contextChip").property("visible")
+        # a project named in the draft: the offer to attach it shows above the composer
+        app.toggleChatProject("p1")
+        app.mentions.typed("почему LocalChat упал?", 3)
+        for _ in range(10):
+            QApplication.processEvents()
+        bar = quick.window.findChild(QObject, "mentionSuggestion")
+        assert bar.property("visible") and bar.property("height") > 20
+        app.mentions.attachSuggested()
+        for _ in range(10):
+            QApplication.processEvents()
+        assert not bar.property("visible")
         context_sheet = quick.window.findChild(QObject, "contextSheet")
         QMetaObject.invokeMethod(context_sheet, "open")
         wait_until(lambda: context_sheet.property("opened") and app.contextBlocks)

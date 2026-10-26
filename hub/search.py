@@ -181,6 +181,38 @@ def project_files(root: Path, glob: str = "") -> list[str]:
     return paths
 
 
+def _in_order(letters: str, text: str) -> bool:
+    at = 0
+    for letter in letters:
+        at = text.find(letter, at) + 1
+        if not at:
+            return False
+    return True
+
+
+def find_files(root: Path, query: str, limit: int = 20) -> list[str]:
+    """Files by a part of their path, for picking one (`@project/file` in a message): the name containing the query
+    first, then the path containing it, then its letters in order ("hcp" -> hub/chat.py); shorter paths first."""
+    wanted = query.strip().replace("\\", "/").casefold()
+    ranked = []
+    for path in project_files(root):
+        folded = path.casefold()
+        name = folded.rsplit("/", 1)[-1]
+        if not wanted:
+            rank = 0
+        elif wanted in name:
+            rank = 0 if name.startswith(wanted) else 1
+        elif wanted in folded:
+            rank = 2
+        elif _in_order(wanted, folded):
+            rank = 3
+        else:
+            continue
+        ranked.append((rank, len(path), path))
+    ranked.sort()
+    return [path for _rank, _length, path in ranked[:limit]]
+
+
 def _walk(root: Path, text: str, regex: bool, case: str, glob: str, limit: int):
     pattern = _pattern(text, regex, case)
     found: dict[str, list[dict[str, Any]]] = {}
