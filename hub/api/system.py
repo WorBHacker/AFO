@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from common import __version__
 
+from .. import store
 from ..auth import APP_CLIENT, Client
 from ..db import current_version
 from .deps import require_client
@@ -38,6 +39,11 @@ async def info(request: Request, client: Annotated[Client, Depends(require_clien
         "last_event_id": await state.bus.last_id(),
         "client": {"name": client.name, "cloud": client.cloud},
     }
+
+
+@router.get("/usage")
+async def usage(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    return await request.app.state.db.acall(store.usage_totals)
 
 
 @router.post("/shutdown", status_code=202)

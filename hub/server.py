@@ -11,10 +11,12 @@ from fastapi import FastAPI
 
 from common import __version__
 
-from .api import events_ws, system
+from .api import conversations, events_ws, models, system
 from .auth import ensure_app_token
+from .chat import ChatService
 from .db import Database, migrate
 from .events import EventBus
+from .gateway.registry import build_default_gateway
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 
@@ -31,12 +33,16 @@ def create_app(settings: HubSettings) -> FastAPI:
             log.info("database %s: applied migrations %s", paths.db, applied)
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
         bus = EventBus(db)
+        gateway = build_default_gateway(db, settings.llama_swap_url)
         app.state.settings = settings
         app.state.db = db
         app.state.bus = bus
+        app.state.gateway = gateway
+        app.state.chat = ChatService(db, bus, gateway)
         app.state.started_monotonic = time.monotonic()
         await bus.publish("hub.started", {"version": __version__, "migrations_applied": applied})
-        log.info("hub ready, app token in %s", token_file)
+        synced = await gateway.sync_catalog()  # best effort: llama-swap may be down, the hub still runs
+        log.info("hub ready, app token in %s, model catalog: %s", token_file, synced)
         try:
             yield
         finally:
@@ -55,4 +61,6 @@ def create_app(settings: HubSettings) -> FastAPI:
     app.state.request_shutdown = None
     app.include_router(system.router)
     app.include_router(events_ws.router)
+    app.include_router(models.router)
+    app.include_router(conversations.router)
     return app

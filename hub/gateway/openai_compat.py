@@ -1,0 +1,151 @@
+"""An OpenAI-compatible adapter. Serves llama-swap now (D5); OpenAI, OpenRouter and DeepSeek reuse it.
+
+llama-swap streams model-swap progress in the reasoning field, prefixed `llama-swap loading model:`
+(sendLoadingState). Those lines are separated out as "loading" events, so they never land in the saved
+reasoning, and the time-to-first-token clock starts only once loading is done.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from collections.abc import AsyncIterator
+
+import httpx
+
+from .base import Model, ProviderError, StreamEvent
+
+log = logging.getLogger("hub.gateway.openai")
+
+LOADING_PREFIX = "llama-swap loading model:"
+
+
+class OpenAICompatProvider:
+    def __init__(
+        self,
+        name: str,
+        base_url: str,
+        locality: str = "local",
+        api_key: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        self.name = name
+        self.base_url = base_url.rstrip("/")
+        self.locality = locality
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._transport = transport  # tests inject a mock; production leaves it None
+
+    async def list_models(self) -> list[Model]:
+        async with httpx.AsyncClient(timeout=5.0, transport=self._transport) as client:
+            try:
+                response = await client.get(f"{self.base_url}/v1/models", headers=self._headers)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"{self.name}: cannot list models ({exc})") from exc
+        models = []
+        for item in response.json().get("data", []):
+            ref = item["id"]
+            meta = item.get("meta") or {}
+            models.append(
+                Model(
+                    id=f"{self.name}/{ref}",
+                    provider=self.name,
+                    model_ref=ref,
+                    name=item.get("name") or ref,
+                    locality=self.locality,
+                    capabilities={
+                        "vision": bool(meta.get("vision")),
+                        "context": meta.get("context"),
+                        "description": item.get("description", ""),
+                    },
+                    prices={},  # local models are free; a cloud OpenAI-compat provider fills this in
+                )
+            )
+        return models
+
+    async def stream_chat(
+        self, model_ref: str, messages: list[dict[str, str]], effort: str, cancel: asyncio.Event
+    ) -> AsyncIterator[StreamEvent]:
+        body = {
+            "model": model_ref,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "reasoning_effort": effort,
+        }
+        started = time.monotonic()
+        first_at: float | None = None
+        in_loading = False
+        chunks = 0
+        usage: dict = {}
+        timings: dict = {}
+        # read has no timeout: a local model can be slow between tokens; connect/write still bounded
+        timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+        try:
+            async with (
+                httpx.AsyncClient(timeout=timeout, transport=self._transport) as client,
+                client.stream(
+                    "POST", f"{self.base_url}/v1/chat/completions", json=body, headers=self._headers
+                ) as response,
+            ):
+                if response.status_code != 200:
+                    detail = (await response.aread()).decode("utf-8", "replace")[:500]
+                    raise ProviderError(f"{self.name}: HTTP {response.status_code}: {detail}")
+                async for line in response.aiter_lines():
+                    if cancel.is_set():
+                        break
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    obj = json.loads(data)
+                    usage = obj.get("usage") or usage
+                    timings = obj.get("timings") or timings
+                    if not obj.get("choices"):
+                        continue
+                    delta = obj["choices"][0].get("delta") or {}
+                    think = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    text = delta.get("content") or ""
+                    if think and not in_loading and first_at is None and think.lstrip().startswith(LOADING_PREFIX):
+                        in_loading = True
+                    if in_loading:
+                        yield StreamEvent("loading", think or text)
+                        if "Done!" in (think + text):
+                            in_loading = False
+                            started = time.monotonic()  # TTFT is measured after the swap finishes
+                        continue
+                    if think or text:
+                        first_at = first_at or time.monotonic()
+                        chunks += 1
+                    if think:
+                        yield StreamEvent("reasoning", think)
+                    if text:
+                        yield StreamEvent("content", text)
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"{self.name}: {exc}") from exc
+        yield StreamEvent("end", usage=_usage(usage, chunks), stats=_stats(usage, timings, started, first_at))
+
+
+def _usage(usage: dict, chunks: int) -> dict[str, int]:
+    details = usage.get("prompt_tokens_details") or {}
+    return {
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "cached_input_tokens": details.get("cached_tokens", 0),
+        "output_tokens": usage.get("completion_tokens") or chunks,
+    }
+
+
+def _stats(usage: dict, timings: dict, started: float, first_at: float | None) -> dict[str, float]:
+    end = time.monotonic()
+    tokens = usage.get("completion_tokens") or 0
+    tok_s = timings.get("predicted_per_second")
+    if not tok_s and first_at and end > first_at:
+        tok_s = tokens / (end - first_at)
+    return {
+        "tok_s": round(tok_s or 0, 1),
+        "ttft_s": round(first_at - started, 2) if first_at else 0.0,
+        "total_s": round(end - started, 2),
+    }
