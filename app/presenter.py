@@ -193,3 +193,52 @@ def local_model(status: dict[str, Any] | None) -> str:
     if not running:
         return "видеопамять свободна"
     return ", ".join(f"{r['model']} · {STATE_NAMES.get(r['state'], r['state'])}" for r in running)
+
+
+# --- budgets (D12) ---
+
+PERIODS = [("day", "за день"), ("week", "за неделю"), ("month", "за месяц")]
+HARD_ACTIONS = [("ask", "спрашивать"), ("block", "запрещать")]
+PROVIDER_NAMES = {"anthropic": "Anthropic", "openai": "OpenAI", "openrouter": "OpenRouter", "deepseek": "DeepSeek"}
+STATE_ORDER = {"ok": 0, "soft": 1, "hard": 2}
+
+
+def provider_name(ref: str) -> str:
+    return PROVIDER_NAMES.get(ref, ref)
+
+
+def budget_title(budget: dict[str, Any]) -> str:
+    """'Все платные модели за месяц' / 'Anthropic за день'."""
+    who = provider_name(budget["scope_ref"]) if budget["scope"] == "provider" else "Все платные модели"
+    return f"{who} {dict(PERIODS).get(budget['period'], budget['period'])}"
+
+
+def budget_line(budget: dict[str, Any]) -> str:
+    """'Anthropic за день: $4.10 из $10.00 (предупреждение с $5.00)'."""
+    used = money(budget.get("spent_usd", 0))
+    if budget.get("hard_usd") is not None:
+        text = f"{used} из {money(budget['hard_usd'])}"
+        if budget.get("soft_usd") is not None:
+            text += f" (предупреждение с {money(budget['soft_usd'])})"
+    else:
+        text = f"{used}, предупреждение с {money(budget['soft_usd'])}"
+    return f"{budget_title(budget)}: {text}"
+
+
+def budgets_state(budgets: list[dict[str, Any]]) -> str:
+    """The worst state among the budgets: 'ok', 'soft' or 'hard'."""
+    return max((b.get("state", "ok") for b in budgets), key=STATE_ORDER.get, default="ok")
+
+
+def budget_question(over: list[dict[str, Any]]) -> str:
+    lines = "\n".join(f"• {budget_line(b)}" for b in over)
+    return f"Бюджет исчерпан:\n{lines}\n\nОтправить запрос всё равно? Это отметится в журнале хаба."
+
+
+def budget_event_text(kind: str, budget: dict[str, Any]) -> str:
+    """The status-bar line for budget.warning / budget.exceeded."""
+    title, used = budget_title(budget), money(budget.get("spent_usd", 0))
+    if kind == "warning":
+        return f"Бюджет «{title}»: потрачено {used}, достигнут порог предупреждения {money(budget['soft_usd'])}"
+    after = "запрещены" if budget.get("hard_action") == "block" else "только с подтверждением"
+    return f"Бюджет «{title}» исчерпан: {used} из {money(budget['hard_usd'])}. Новые платные запросы — {after}"

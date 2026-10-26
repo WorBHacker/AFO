@@ -19,7 +19,7 @@ import logging
 import time
 from typing import Any
 
-from . import store
+from . import budgets, store
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
@@ -50,8 +50,13 @@ class ChatService:
         *,
         effort: str = DEFAULT_EFFORT,
         client_id: str | None = None,
+        confirm_over_budget: bool = False,
     ) -> dict:
-        """Appends the user message and starts the assistant run. Returns the stored user message."""
+        """Appends the user message and starts the assistant run. Returns the stored user message.
+
+        A paid model whose budget is used up is refused before anything is stored (BudgetReached), unless every
+        such budget allows asking and the user confirmed (`confirm_over_budget`); the override is logged.
+        """
         if conversation_id in self._runs:
             raise GatewayError("this conversation already has a run in progress")
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
@@ -59,6 +64,8 @@ class ChatService:
             raise GatewayError(f"unknown model {model_id!r}")
         if not model["enabled"]:
             raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
+        if model["prices"]:  # local models are free and never held back
+            await self._check_budgets(model_id, confirm_over_budget, client_id)
         user_blocks = [{"type": "text", "text": text}]
 
         def write(conn):
@@ -77,6 +84,15 @@ class ChatService:
         task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
         task.add_done_callback(lambda t: t.exception())  # surface a crash to the loop's handler
         return user_msg.to_json()
+
+    async def _check_budgets(self, model_id: str, confirmed: bool, client_id: str | None) -> None:
+        over = await self._db.acall(lambda conn: budgets.reached(conn, model_id))
+        if not over:
+            return
+        can_confirm = all(b["hard_action"] == "ask" for b in over)
+        if not (confirmed and can_confirm):
+            raise BudgetReached(over, can_confirm)
+        await self._bus.publish("budget.overridden", {"model_id": model_id, "client_id": client_id, "budgets": over})
 
     def cancel(self, conversation_id: str) -> bool:
         cancel = self._runs.get(conversation_id)
@@ -177,9 +193,9 @@ class ChatService:
                     "cancelled": completion.cancelled,
                 },
             )
-            return message
+            return message, budgets.crossed(conn, model["id"], cost)
 
-        message = await self._db.acall(write)
+        message, crossings = await self._db.acall(write)
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
         await self._bus.publish(
             "chat.done",
@@ -193,12 +209,19 @@ class ChatService:
                 "cancelled": completion.cancelled,
             },
         )
+        await self._publish_crossings(model["id"], crossings)
+
+    async def _publish_crossings(self, model_id: str, crossings: list[tuple[str, dict]]) -> None:
+        """budget.warning - a soft limit was just reached; budget.exceeded - a hard one."""
+        for kind, budget in crossings:
+            await self._bus.publish(f"budget.{kind}", {"model_id": model_id, "budget": budget})
 
     async def _save_refusal(self, conversation_id: str, model: dict, completion: Completion, client_id: str | None):
         """The provider declined: no assistant message joins the history, but the spent tokens are recorded."""
         cost = cost_usd(completion.usage, model["prices"])
-        await self._db.acall(
-            lambda conn: store.record_usage(
+
+        def write(conn):
+            store.record_usage(
                 conn,
                 client_id=client_id,
                 conversation_id=conversation_id,
@@ -209,7 +232,9 @@ class ChatService:
                 estimated=bool(completion.usage.get("estimated")),
                 meta={"stats": completion.stats, "stop_reason": completion.stop_reason},
             )
-        )
+            return budgets.crossed(conn, model["id"], cost)
+
+        crossings = await self._db.acall(write)
         await self._bus.publish(
             "chat.error",
             {
@@ -220,6 +245,17 @@ class ChatService:
                 "cost_usd": cost,
             },
         )
+        await self._publish_crossings(model["id"], crossings)
+
+
+class BudgetReached(GatewayError):
+    """A budget covering the model has reached its hard limit. `can_confirm`: the user may still send."""
+
+    def __init__(self, over: list[dict], can_confirm: bool):
+        names = ", ".join(f"{b['scope_ref'] or 'all paid models'} per {b['period']}" for b in over)
+        super().__init__(f"budget reached: {names}")
+        self.budgets = over
+        self.can_confirm = can_confirm
 
 
 def _title_from(text: str) -> str:

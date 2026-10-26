@@ -96,3 +96,20 @@ def test_status_bar_parts():
     assert presenter.vram_meter({"gpu": None}) is None
     assert presenter.hub_port("http://127.0.0.1:8765") == ":8765"
     assert presenter.hub_port(None) == ""
+
+
+def test_budget_texts():
+    month = {"scope": "total", "scope_ref": "", "period": "month", "soft_usd": 5.0, "hard_usd": 10.0}
+    day = {"scope": "provider", "scope_ref": "anthropic", "period": "day", "soft_usd": 2.0, "hard_usd": None}
+    assert presenter.budget_title(month) == "Все платные модели за месяц"
+    assert presenter.budget_line({**month, "spent_usd": 3.2}) == (
+        "Все платные модели за месяц: $3.20 из $10.00 (предупреждение с $5.00)"
+    )
+    assert presenter.budget_line({**day, "spent_usd": 0.004}) == "Anthropic за день: $0.0040, предупреждение с $2.00"
+    assert presenter.budgets_state([{"state": "ok"}, {"state": "hard"}, {"state": "soft"}]) == "hard"
+    assert presenter.budgets_state([]) == "ok"
+    warn = presenter.budget_event_text("warning", {**day, "spent_usd": 2.1})
+    assert warn == "Бюджет «Anthropic за день»: потрачено $2.10, достигнут порог предупреждения $2.00"
+    hard = presenter.budget_event_text("exceeded", {**month, "spent_usd": 10.2, "hard_action": "block"})
+    assert hard.endswith("Новые платные запросы — запрещены")
+    assert "Отправить запрос всё равно?" in presenter.budget_question([{**month, "spent_usd": 11.0}])

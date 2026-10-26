@@ -17,7 +17,7 @@ class _Call(QObject):
     """Lives on the GUI thread; the worker emits its signals, its slots run the callbacks on the GUI thread."""
 
     finished = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)  # the exception: a HubError may carry a code the caller acts on
 
     def __init__(self, owner: Background, on_done: Callable | None, on_error: Callable | None):
         super().__init__()
@@ -33,10 +33,13 @@ class _Call(QObject):
         if self._on_done is not None:
             self._on_done(result)
 
-    @Slot(str)
-    def _error(self, message: str) -> None:
+    @Slot(object)
+    def _error(self, error: Exception) -> None:
         self._owner._release(self)
-        (self._on_error or self._owner.error.emit)(message)
+        if self._on_error is not None:
+            self._on_error(error)
+        else:
+            self._owner.error.emit(str(error) or error.__class__.__name__)
 
 
 class _Job(QRunnable):
@@ -51,13 +54,14 @@ class _Job(QRunnable):
         except Exception as exc:
             if not isinstance(exc, HubError):  # a hub error is expected and shown; anything else is a bug
                 log.exception("background call failed")
-            self._call.failed.emit(str(exc) or exc.__class__.__name__)
+            self._call.failed.emit(exc)
             return
         self._call.finished.emit(result)
 
 
 class Background(QObject):
-    """`run(fn, on_done, on_error)`: fn runs on a pool thread; a failure without its own handler goes to `error`."""
+    """`run(fn, on_done, on_error)`: fn runs on a pool thread. `on_error` gets the exception; a failure without
+    its own handler goes to `error` as text."""
 
     error = Signal(str)
 

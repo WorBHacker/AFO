@@ -11,6 +11,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 
 from app import theme
+from app.hub_client import HubError
 from app.window import MainWindow
 from common.paths import data_paths
 
@@ -29,6 +30,18 @@ STATUS = {
     "local": {"reachable": True, "running": [{"model": "coder", "state": "ready"}]},
     "busy": [],
 }
+BUDGET = {
+    "id": 1,
+    "scope": "total",
+    "scope_ref": "",
+    "period": "month",
+    "soft_usd": 5.0,
+    "hard_usd": 10.0,
+    "hard_action": "ask",
+    "spent_usd": 1.25,
+    "state": "ok",
+}
+REACHED = {**BUDGET, "spent_usd": 10.4, "state": "hard"}
 HISTORY = {
     "id": "c1",
     "title": "Первый",
@@ -54,6 +67,10 @@ class FakeClient:
     def __init__(self):
         self.sent = []
         self.cancelled = []
+        self.deleted = []
+        self.saved_budgets = []
+        self.over_budget = None  # None, or whether the reached budget lets the user confirm
+        self.budget_list = [BUDGET]
 
     def models(self):
         return MODELS
@@ -73,9 +90,25 @@ class FakeClient:
     def create_conversation(self):
         return "c2"
 
-    def send(self, cid, text, model_id, effort):
-        self.sent.append((cid, text, model_id, effort))
+    def send(self, cid, text, model_id, effort, confirm_over_budget=False):
+        if self.over_budget is not None and not (confirm_over_budget and self.over_budget):
+            data = {"code": "budget_exceeded", "budgets": [REACHED], "can_confirm": self.over_budget}
+            raise HubError("budget reached", code="budget_exceeded", data=data)
+        self.sent.append((cid, text, model_id, effort, confirm_over_budget))
         return {}
+
+    def delete_conversation(self, cid):
+        self.deleted.append(cid)
+
+    def budgets(self):
+        return self.budget_list
+
+    def set_budget(self, **body):
+        self.saved_budgets.append(body)
+        return {**BUDGET, **body}
+
+    def delete_budget(self, budget_id):
+        self.deleted.append(budget_id)
 
     def cancel(self, cid):
         self.cancelled.append(cid)
@@ -248,7 +281,7 @@ def test_send_creates_a_chat_and_stop_cancels(window):
     window.composer.setPlainText("  вопрос  ")
     window.on_send_clicked()
     wait_until(lambda: window.current == "c2")
-    assert window.client.sent == [("c2", "вопрос", "llama-swap/coder", "medium")]
+    assert window.client.sent == [("c2", "вопрос", "llama-swap/coder", "medium", False)]
     assert window.composer.toPlainText() == ""
     assert window.send_button.text() == "Стоп"
     window.on_send_clicked()
@@ -301,3 +334,80 @@ def test_system_mode_follows_windows(window):
     scheme = QApplication.instance().styleHints().colorScheme()
     expected = palette.LIGHT if scheme == Qt.ColorScheme.Light else palette.DARK
     assert palette.current() is expected
+
+
+def send_new(window, text="дорогой вопрос"):
+    window.new_chat()
+    window.model_box.setCurrentIndex(window.model_box.findData("anthropic/claude-opus-5-5"))
+    window.composer.setPlainText(text)
+    window.on_send_clicked()
+
+
+def test_a_reached_budget_asks_and_sends_confirmed(window, monkeypatch):
+    questions = []
+    monkeypatch.setattr(window, "_confirm", lambda q: questions.append(q) or True)
+    window.client.over_budget = True
+    send_new(window)
+    wait_until(lambda: window.current == "c2")
+    assert "Все платные модели за месяц: $10.40 из $10.00" in questions[0]
+    assert window.client.sent == [("c2", "дорогой вопрос", "anthropic/claude-opus-5-5", "medium", True)]
+    assert window.client.deleted == []
+
+
+def test_declining_keeps_the_text_and_removes_the_empty_chat(window, monkeypatch):
+    monkeypatch.setattr(window, "_confirm", lambda q: False)
+    window.client.over_budget = True
+    send_new(window)
+    wait_until(lambda: window.client.deleted == ["c2"])
+    assert window.client.sent == []
+    assert window.composer.toPlainText() == "дорогой вопрос"
+    assert window.current is None
+
+
+def test_a_blocking_budget_is_not_offered_for_confirmation(window, monkeypatch):
+    asked = []
+    monkeypatch.setattr(window, "_confirm", lambda q: asked.append(q) or True)
+    window.client.over_budget = False
+    send_new(window)
+    wait_until(lambda: "запрещены" in window.flash_label.text())
+    assert asked == [] and window.client.sent == []
+
+
+def test_budget_events_flash_and_mark_the_session(window):
+    assert "Бюджеты:" in window.session_label.toolTip()
+    assert "Все платные модели за месяц: $1.25 из $10.00" in window.session_label.toolTip()
+    assert window.session_label.property("warn") is False
+    window.client.budget_list = [{**BUDGET, "spent_usd": 6.0, "state": "soft"}]
+    window.on_event({"type": "budget.warning", "payload": {"budget": {**BUDGET, "spent_usd": 6.0}}})
+    assert "порог предупреждения $5.00" in window.flash_label.text()
+    wait_until(lambda: window.session_label.property("warn") is True)
+
+
+def test_budget_dialog_lists_saves_and_deletes(window):
+    from app.budget_dialog import BudgetDialog
+
+    dialog = BudgetDialog(window)
+    wait_until(lambda: dialog.table.rowCount() == 1)
+    assert dialog.table.item(0, 0).text() == "Все платные модели за месяц"
+    assert dialog.table.item(0, 1).text() == "$1.25"
+    dialog.table.selectRow(0)
+    assert dialog.hard_box.value() == 10.0  # the selected budget fills the form
+    dialog.scope_box.setCurrentIndex(dialog.scope_box.findData("provider:anthropic"))
+    dialog.period_box.setCurrentIndex(dialog.period_box.findData("day"))
+    dialog.soft_box.setValue(0)  # "нет"
+    dialog.hard_box.setValue(3)
+    dialog.action_box.setCurrentIndex(dialog.action_box.findData("block"))
+    dialog.save()
+    wait_until(lambda: window.client.saved_budgets)
+    assert window.client.saved_budgets[0] == {
+        "scope": "provider",
+        "provider": "anthropic",
+        "period": "day",
+        "soft_usd": None,
+        "hard_usd": 3.0,
+        "hard_action": "block",
+    }
+    dialog.table.selectRow(0)
+    dialog.delete_selected()
+    wait_until(lambda: 1 in window.client.deleted)
+    dialog.close()

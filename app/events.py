@@ -17,7 +17,7 @@ from websockets.sync.client import connect
 
 log = logging.getLogger("app.events")
 
-TOPICS = ["chat.*", "models.*", "system.*", "secrets.*", "hub.*"]
+TOPICS = ["chat.*", "models.*", "system.*", "secrets.*", "budget.*", "hub.*"]
 RECONNECT_S = 2.0
 
 

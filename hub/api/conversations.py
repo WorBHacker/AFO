@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from .. import store
 from ..auth import Client
-from ..chat import DEFAULT_EFFORT
+from ..chat import DEFAULT_EFFORT, BudgetReached
 from ..gateway import GatewayError
 from .deps import require_client
 
@@ -34,6 +34,7 @@ class SendMessage(BaseModel):
     content: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
     effort: str = DEFAULT_EFFORT
+    confirm_over_budget: bool = False  # the user saw that a budget is used up and sends anyway
 
 
 @router.get("/conversations")
@@ -107,8 +108,21 @@ async def send_message(
         raise HTTPException(status_code=404, detail="no such conversation")
     try:
         user_message = await request.app.state.chat.send(
-            conversation_id, body.content, body.model_id, effort=body.effort, client_id=client.id
+            conversation_id,
+            body.content,
+            body.model_id,
+            effort=body.effort,
+            client_id=client.id,
+            confirm_over_budget=body.confirm_over_budget,
         )
+    except BudgetReached as exc:
+        detail = {
+            "code": "budget_exceeded",
+            "message": str(exc),
+            "budgets": exc.budgets,
+            "can_confirm": exc.can_confirm,  # send again with confirm_over_budget to go ahead
+        }
+        raise HTTPException(status_code=409, detail=detail) from exc
     except GatewayError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"user_message": user_message}

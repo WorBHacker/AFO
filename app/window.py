@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self.live_widget: MessageWidget | None = None
         self.session = presenter.Session()
         self.totals: dict[str, Any] | None = None
+        self.budgets: list[dict[str, Any]] = []
         self._link: bool | None = None  # events connection: never up yet / up / lost
         self._hub_state = "connecting"
         self.theme_mode = self.settings.value("ui/theme", "system")
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         self._add_action(hub_menu, "Выгрузить локальную модель из видеопамяти", self.unload_local)
         self._add_action(hub_menu, "Ключ Anthropic…", self.set_anthropic_key)
         self._add_action(hub_menu, "Удалить ключ Anthropic", self.delete_anthropic_key)
+        self._add_action(hub_menu, "Бюджеты…", self.open_budgets)
         hub_menu.addSeparator()
         self._add_action(hub_menu, "Подключиться заново", self.connect_hub)
         self._add_action(hub_menu, "Остановить хаб и выйти", self.stop_hub_and_quit)
@@ -327,7 +329,13 @@ class MainWindow(QMainWindow):
 
     def _show_session(self) -> None:
         self.session_label.setText(self.session.text())
-        self.session_label.setToolTip(self.session.tooltip(self.totals))
+        tooltip = self.session.tooltip(self.totals)
+        if self.budgets:
+            lines = [presenter.budget_line(b) for b in self.budgets]
+            tooltip += "\n\nБюджеты:\n" + "\n".join(lines)
+        self.session_label.setToolTip(tooltip)
+        self.session_label.setProperty("warn", presenter.budgets_state(self.budgets) != "ok")
+        self.session_label.style().polish(self.session_label)
 
     def flash(self, text: str, *, error: bool = False, ms: int = FLASH_MS) -> None:
         """A short message in the status bar that clears itself; the rest of the bar stays in place."""
@@ -344,9 +352,9 @@ class MainWindow(QMainWindow):
         self.flash("Подключение к хабу (если он не запущен, приложение запускает его)…")
         self.bg.run(lambda: connect(self.paths), self.attach, self._connect_failed)
 
-    def _connect_failed(self, message: str) -> None:
+    def _connect_failed(self, error: Exception) -> None:
         self._set_hub_state("down")
-        self.show_error(f"Нет связи с хабом: {message}")
+        self.show_error(f"Нет связи с хабом: {error}")
 
     def attach(self, client: HubClient, *, start_events: bool = True) -> None:
         if self.events is not None:
@@ -485,6 +493,22 @@ class MainWindow(QMainWindow):
             self._show_session()
 
         self._call(lambda: self.client.usage(), show)
+        self.refresh_budgets()
+
+    def refresh_budgets(self) -> None:
+        self._call(lambda: self.client.budgets(), self._set_budgets)
+
+    def _set_budgets(self, budgets: list[dict[str, Any]]) -> None:
+        self.budgets = budgets
+        self._show_session()
+
+    def open_budgets(self) -> None:
+        if self.client is None:
+            self.show_error("Хаб ещё не подключён")
+            return
+        from .budget_dialog import BudgetDialog
+
+        BudgetDialog(self).exec()
 
     # --- chats ---
 
@@ -650,18 +674,35 @@ class MainWindow(QMainWindow):
         effort = self.effort_box.currentData()
         self.settings.setValue("chat/effort", effort)
         self.composer.clear()
-        target = self.current
+        self._send(text, model_id, effort, self.current)
+
+    def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False) -> None:
         client = self.client
 
         def send() -> str:
             conversation_id = target or client.create_conversation()
-            client.send(conversation_id, text, model_id, effort)
+            try:
+                client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
+            except HubError as exc:
+                exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there
+                raise
             return conversation_id
 
-        def failed(message: str) -> None:
+        def failed(error: Exception) -> None:
+            made = getattr(error, "conversation_id", None) if target is None else None
+            if getattr(error, "code", None) == "budget_exceeded":
+                over = error.data.get("budgets", [])
+                if error.data.get("can_confirm") and self._confirm(presenter.budget_question(over)):
+                    self._send(text, model_id, effort, made or target, confirmed=True)
+                    return
+                if not error.data.get("can_confirm"):
+                    self.show_error("Бюджет исчерпан, платные запросы запрещены: " + presenter.budget_line(over[0]))
+            else:
+                self.show_error(str(error))
+            if made:  # the chat made for a message that did not go out stays empty: remove it
+                self.bg.run(lambda: client.delete_conversation(made))
             if not self.composer.toPlainText():
                 self.composer.setPlainText(text)  # nothing typed is lost
-            self.show_error(message)
 
         self.bg.run(send, self._sent, failed)
 
@@ -754,6 +795,12 @@ class MainWindow(QMainWindow):
                 self.load_conversations()
             else:
                 self._relabel(cid)
+        elif kind in ("budget.warning", "budget.exceeded"):
+            text = presenter.budget_event_text(kind.removeprefix("budget."), payload["budget"])
+            self.flash(text, error=True, ms=20000)
+            self.refresh_budgets()
+        elif kind == "budget.changed":
+            self.refresh_budgets()
         elif kind in ("models.synced", "secrets.changed"):
             self.load_models()
         elif kind == "system.status":

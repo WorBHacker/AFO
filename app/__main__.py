@@ -11,7 +11,7 @@ import logging
 import sys
 
 from PySide6 import __version__ as pyside_version
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QLibraryInfo, QLocale, QTimer, QTranslator
 from PySide6.QtWidgets import QApplication
 
 from common import __version__
@@ -19,6 +19,14 @@ from common.logging_setup import setup_logging
 from common.paths import data_paths
 
 from .window import MainWindow  # it applies the saved theme (Вид → Тема)
+
+
+def install_russian(app: QApplication) -> None:
+    """Qt's own words (Да / Нет / Закрыть in standard dialogs) in Russian, like the rest of the window."""
+    translator = QTranslator(app)
+    folder = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if translator.load(QLocale(QLocale.Language.Russian), "qtbase", "_", folder):
+        app.installTranslator(translator)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.App")
     app = QApplication(sys.argv[:1])
     app.setApplicationName("LocalChat")
+    install_russian(app)
     window = MainWindow(data_paths().ensure())
     if args.smoke:
         log.info("smoke check: the window was built")

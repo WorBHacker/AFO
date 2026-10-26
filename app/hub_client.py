@@ -26,7 +26,13 @@ START_TIMEOUT_S = 30.0
 
 
 class HubError(Exception):
-    """A hub call failed; the message is fit to show to the user."""
+    """A hub call failed; the message is fit to show to the user. `code` and `data` come with errors the app
+    acts on (e.g. code "budget_exceeded" with the budgets and whether the user may still send)."""
+
+    def __init__(self, message: str, *, code: str | None = None, data: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.data = data or {}
 
 
 class HubClient:
@@ -54,6 +60,8 @@ class HubClient:
                 detail = response.json().get("detail")
             except ValueError:
                 detail = response.text[:300]
+            if isinstance(detail, dict):
+                raise HubError(str(detail.get("message") or detail), code=detail.get("code"), data=detail)
             raise HubError(str(detail or f"HTTP {response.status_code}"))
         return response.json() if response.content else None
 
@@ -91,12 +99,24 @@ class HubClient:
     def delete_conversation(self, conversation_id: str) -> None:
         self._call("DELETE", f"/v1/conversations/{conversation_id}")
 
-    def send(self, conversation_id: str, text: str, model_id: str, effort: str) -> dict:
-        body = {"content": text, "model_id": model_id, "effort": effort}
+    def send(self, conversation_id: str, text: str, model_id: str, effort: str, *, confirm_over_budget=False) -> dict:
+        body = {"content": text, "model_id": model_id, "effort": effort, "confirm_over_budget": confirm_over_budget}
         return self._call("POST", f"/v1/conversations/{conversation_id}/messages", body)
 
     def cancel(self, conversation_id: str) -> bool:
         return self._call("POST", f"/v1/conversations/{conversation_id}/cancel")["cancelled"]
+
+    # --- budgets (D12) ---
+
+    def budgets(self) -> list[dict]:
+        return self._call("GET", "/v1/budgets")["budgets"]
+
+    def set_budget(self, **budget) -> dict:
+        """scope ("total" / "provider"), provider, period, soft_usd, hard_usd, hard_action ("ask" / "block")."""
+        return self._call("PUT", "/v1/budgets", budget)
+
+    def delete_budget(self, budget_id: int) -> None:
+        self._call("DELETE", f"/v1/budgets/{budget_id}")
 
     # --- keys and the hub itself ---
 
