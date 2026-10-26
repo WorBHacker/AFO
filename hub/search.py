@@ -165,7 +165,8 @@ def _pattern(text: str, regex: bool, case: str) -> re.Pattern[str]:
         raise ProjectError(f"the search failed: {exc}") from exc
 
 
-def _files(root: Path, glob: str) -> list[str]:
+def project_files(root: Path, glob: str = "") -> list[str]:
+    """The files to look through: what git shows (without caches), or a walk without the usual noise."""
     visible = projects._git_visible(root)
     if visible is not None:
         paths = sorted(p for p in visible if not any(part in CACHES for part in p.split("/")))
@@ -185,7 +186,7 @@ def _walk(root: Path, text: str, regex: bool, case: str, glob: str, limit: int):
     found: dict[str, list[dict[str, Any]]] = {}
     total, truncated = 0, False
     deadline = time.monotonic() + TIMEOUT_S
-    for path in _files(root, glob):
+    for path in project_files(root, glob):
         if time.monotonic() > deadline:
             truncated = True
             break

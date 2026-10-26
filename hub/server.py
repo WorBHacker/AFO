@@ -72,6 +72,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.terminals = TerminalManager(bus, db, paths.terminals)
         app.state.chat.terminals, app.state.chat.processes = app.state.terminals, app.state.processes
+        app.state.symbols = app.state.chat.symbols  # one index for the window's queries and the models' tools
         await bus.publish("hub.started", {"version": __version__, "migrations_applied": applied})
         # the catalog syncs in the background: the hub answers at once even if llama-swap or the network is slow
         catalog = app.state.initial_sync = asyncio.create_task(_initial_sync(app))

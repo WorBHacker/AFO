@@ -20,6 +20,7 @@ from typing import Any
 from . import projects, search
 from .projects import Project, ProjectError
 from .secret_filter import clean, is_secret_file
+from .symbols import SymbolIndex, language_of
 
 MAX_OUTPUT_CHARS = 16_000
 FILE_LINES = 300
@@ -28,6 +29,8 @@ SEARCH_MATCHES = 50
 TERMINAL_LINES = 100
 DIFF_LINES = 400
 LIST_ENTRIES = 300
+SYMBOL_MATCHES = 30
+SYMBOL_KINDS = ("function", "method", "class", "interface", "type", "module", "constant", "macro", "impl")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHM]")
 
 PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt."}
@@ -116,8 +119,44 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Processes running in a project's folder: command, listening ports, CPU, memory.",
         "parameters": {"type": "object", "properties": {"project": PROJECT}, "required": ["project"]},
     },
+    # the symbol index (D26); conversations from before it keep the seven above (migration 010)
+    {
+        "name": "find_symbol",
+        "description": "Find where a function, class, method, interface or type is defined in a project, by name: "
+        "exact matches first, then names that start with it or contain it; Class.method finds a method of that "
+        f"class. Up to {SYMBOL_MATCHES} definitions with file, lines, kind and first line. Quicker and more exact "
+        "than search_code for finding a definition. Knows Python, JavaScript, TypeScript, Go, Rust, Java, C#, C, "
+        "C++.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project": PROJECT,
+                "name": {"type": "string", "description": "The name, or a part of it."},
+                "kind": {
+                    "type": "string",
+                    "description": f"Only definitions of this kind (optional): {', '.join(SYMBOL_KINDS)}.",
+                },
+            },
+            "required": ["project", "name"],
+        },
+    },
+    {
+        "name": "file_outline",
+        "description": "The outline of a code file: its classes, functions, methods and other definitions with their "
+        "lines, nested as in the file. Look at it before reading a long file, then read only the lines you need.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project": PROJECT,
+                "path": {"type": "string", "description": "The file, relative to the project's root."},
+            },
+            "required": ["project", "path"],
+        },
+    },
 ]
 TOOL_NAMES = {tool["name"] for tool in TOOLS}
+# what conversations got before find_symbol and file_outline (migration 010 marks them 'v1')
+FIRST_TOOLS = ("list_files", "read_file", "search_code", "git_status", "git_diff", "terminal_output", "list_processes")
 
 
 class ToolError(Exception):
@@ -131,6 +170,7 @@ class ToolContext:
     projects: list[Project]
     terminals: Any = None  # hub.terminals.TerminalManager
     processes: Any = None  # hub.processes.ProcessMonitor
+    symbols: SymbolIndex = field(default_factory=SymbolIndex)  # the hub's shared index
     by_name: dict[str, Project] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -268,6 +308,51 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
     return f"{len(lines)} matches in {project.name}:\n" + "\n".join(lines) + note + more
 
 
+def _symbol_line(symbol: dict[str, Any], *, path: str = "", indent: str = "") -> str:
+    where = f"{path}:" if path else ""
+    lines = f"{symbol['line']}" if symbol["end_line"] == symbol["line"] else f"{symbol['line']}-{symbol['end_line']}"
+    name = f"{symbol['container']}.{symbol['name']}" if symbol["container"] and path else symbol["name"]
+    return f"{indent}{where}{lines} {symbol['kind']} {name}: {symbol['signature']}"
+
+
+def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
+    project = ctx.project(args.get("project"))
+    name = _text(args.get("name"), "name", required=True).strip()
+    if not name:
+        raise ToolError("`name` must not be empty")
+    kind = _text(args.get("kind"), "kind").strip().lower()
+    if kind and kind not in SYMBOL_KINDS:
+        raise ToolError(f"`kind` must be one of {', '.join(SYMBOL_KINDS)}")
+    found = ctx.symbols.find(project, name, kind=kind, limit=SYMBOL_MATCHES)
+    partial = "" if found["complete"] else "\n[the index of this project is not complete yet: ask again for the rest]"
+    if not found["symbols"]:
+        return f"no definitions named like {name!r} in {project.name}{partial}"
+    head = f"{found['total']} definitions match {name!r} in {project.name}"
+    head += f", the first {SYMBOL_MATCHES}:" if found["total"] > SYMBOL_MATCHES else ":"
+    body = "\n".join(_symbol_line(s, path=s["path"]) for s in found["symbols"])
+    return f"{head}\n{body}{partial}"
+
+
+def _file_outline(args: dict[str, Any], ctx: ToolContext) -> str:
+    project = ctx.project(args.get("project"))
+    path = _text(args.get("path"), "path", required=True).replace("\\", "/").strip("/")
+    if is_secret_file(path):
+        raise ToolError(f"{path} holds secrets (keys, passwords); its content is not shown")
+    target = projects.resolve_inside(project.root, path)
+    if not target.is_file():
+        raise ToolError(f"no file {path} in {project.name}")
+    if language_of(path) is None:
+        raise ToolError(f"{path} is not code the outline knows (Python, JavaScript, TypeScript, Go, Rust, Java, C#, "
+                        "C, C++); read it with read_file")  # fmt: skip
+    outline = ctx.symbols.outline(project, path) or []
+    if not outline:
+        return f"{path}: no definitions found"
+    body = "\n".join(
+        _symbol_line(s, indent="  " * (s["container"].count(".") + 1 if s["container"] else 0)) for s in outline
+    )
+    return f"{path} - {len(outline)} definitions (line or lines, kind, name, first line):\n{body}"
+
+
 def _git_status(args: dict[str, Any], ctx: ToolContext) -> str:
     project = ctx.project(args.get("project"))
     status = projects.git_status(project.root)
@@ -354,4 +439,6 @@ _BLOCKING = {
     "search_code": _search,
     "git_status": _git_status,
     "git_diff": _git_diff,
+    "find_symbol": _find_symbol,
+    "file_outline": _file_outline,
 }

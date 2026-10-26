@@ -1,0 +1,288 @@
+"""The symbol index (stage 3, D26): where things are defined in a project's code, found by tree-sitter.
+
+Each language's grammar comes with a tags query (the one code navigation on GitHub uses): it marks definitions -
+functions, classes, methods, interfaces, types, modules - and their names. The hub parses the files the project
+shows (what git shows, without caches; no secret files; up to 1 MB each) and keeps what it found in memory, per
+file, with the file's size and modification time: a later query re-reads only files that changed, so only the first
+one in a big project is slow - and it stops after a time budget, saying the index is not complete yet. All on the
+processor, no embeddings (D26).
+
+A symbol: name, kind, its lines, its container ("ChatService" for the class's methods) and its first line as the
+signature.
+"""
+
+from __future__ import annotations
+
+import bisect
+import os
+import sys
+import threading
+import time
+from dataclasses import dataclass, field
+from importlib import import_module, resources
+from pathlib import Path
+from typing import Any, NamedTuple
+
+from . import search
+from .projects import Project
+from .secret_filter import is_secret_file
+
+MAX_FILE_BYTES = 1024 * 1024
+MAX_FILES = 20_000
+REFRESH_BUDGET_S = 20.0
+FRESH_S = 2.0  # a query this soon after the last look at the files trusts it
+SIGNATURE_CHARS = 160
+FIND_LIMIT = 50
+
+# language: the grammar's module and its function; TypeScript's tags build on JavaScript's
+GRAMMARS = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "csharp": ("tree_sitter_c_sharp", "language"),
+    "c": ("tree_sitter_c", "language"),
+    "cpp": ("tree_sitter_cpp", "language"),
+}
+QUERIES = {"typescript": ("tree_sitter_javascript", "tree_sitter_typescript"),
+           "tsx": ("tree_sitter_javascript", "tree_sitter_typescript")}  # fmt: skip
+SUFFIXES = {
+    ".py": "python", ".pyi": "python", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".jsx": "javascript", ".ts": "typescript", ".mts": "typescript", ".cts": "typescript", ".tsx": "tsx",
+    ".go": "go", ".rs": "rust", ".java": "java", ".cs": "csharp", ".c": "c", ".h": "cpp", ".cc": "cpp",
+    ".cpp": "cpp", ".cxx": "cpp", ".hh": "cpp", ".hpp": "cpp", ".hxx": "cpp",
+}  # fmt: skip
+# what the tags queries leave out: Rust's impl blocks hold the methods of a type, TypeScript's namespaces
+EXTRA_PATTERNS = {
+    "rust": "(impl_item type: (_) @name) @definition.impl",
+    "typescript": "(internal_module name: (_) @name) @definition.module",
+    "tsx": "(internal_module name: (_) @name) @definition.module",
+}
+CONTAINER_KINDS = {"class", "interface", "module", "type", "impl"}
+
+
+@dataclass
+class _Grammar:
+    language: Any
+    query: Any
+
+
+class Symbol(NamedTuple):
+    """One definition (a tuple: a big project has hundreds of thousands of them)."""
+
+    name: str
+    kind: str
+    line: int
+    end_line: int
+    container: str
+    signature: str
+
+
+@dataclass
+class _File:
+    size: int
+    mtime_ns: int
+    symbols: list[Symbol]
+
+
+@dataclass
+class _Project:
+    files: dict[str, _File] = field(default_factory=dict)
+    checked: float = 0.0  # when the files were last compared with the disk (monotonic)
+    complete: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+_grammars: dict[str, _Grammar | None] = {}
+_grammars_lock = threading.Lock()
+
+
+def _tags(module: str) -> str:
+    base = Path(str(resources.files(module)))
+    # tree-sitter-c-sharp installs its queries beside the package, under the distribution's name
+    for folder in (base, base.parent / base.name.replace("_c_sharp", "_c-sharp")):
+        path = folder / "queries" / "tags.scm"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    raise FileNotFoundError(f"no tags query in {module}")
+
+
+def grammar(language: str) -> _Grammar | None:
+    """The parser's language and tags query, loaded once; None when the grammar is not installed."""
+    with _grammars_lock:
+        if language not in _grammars:
+            try:
+                from tree_sitter import Language, Query
+
+                module, function = GRAMMARS[language]
+                lang = Language(getattr(import_module(module), function)())
+                queries = [_tags(m) for m in QUERIES.get(language, (module,))]
+                text = "\n".join([*queries, EXTRA_PATTERNS.get(language, "")])
+                _grammars[language] = _Grammar(lang, Query(lang, text))
+            except ImportError, OSError, ValueError, AttributeError:
+                _grammars[language] = None
+        return _grammars[language]
+
+
+def language_of(path: str) -> str | None:
+    return SUFFIXES.get(os.path.splitext(path)[1].lower())
+
+
+def _line_starts(source: bytes) -> list[int]:
+    starts = [0]
+    at = source.find(b"\n")
+    while at != -1:
+        starts.append(at + 1)
+        at = source.find(b"\n", at + 1)
+    return starts
+
+
+def parse(source: bytes, language: str) -> list[Symbol]:
+    """The definitions in one file's source, in order.
+
+    Only byte offsets are read from the tree: Node.start_point and Node.text crash the process now and then under
+    Python 3.14 (tree-sitter 0.26.0), so lines are counted here and containers found by nesting of byte ranges."""
+    found = grammar(language)
+    if found is None:
+        return []
+    from tree_sitter import Parser, QueryCursor
+
+    tree = Parser(found.language).parse(source)
+    definitions: dict[tuple[int, int], tuple[str, str]] = {}  # (start, end byte) -> kind, name
+    for _pattern, captures in QueryCursor(found.query).matches(tree.root_node):
+        names = captures.get("name")
+        if not names:
+            continue
+        name = source[names[0].start_byte : names[0].end_byte].decode("utf-8", "replace")
+        for capture, nodes in captures.items():
+            if capture.startswith("definition."):
+                definitions.setdefault((nodes[0].start_byte, nodes[0].end_byte), (capture[11:], name))
+    starts = _line_starts(source)
+    symbols = []
+    seen = set()
+    open_: list[tuple[int, str, str]] = []  # enclosing definitions, outermost first: (end byte, name, kind)
+    for (start, end), (kind, name) in sorted(definitions.items(), key=lambda item: (item[0][0], -item[0][1])):
+        while open_ and open_[-1][0] < end:
+            open_.pop()  # it ended before this one does: not a container
+        line = bisect.bisect_right(starts, start)
+        if (name, line) in seen:
+            continue  # two patterns marked the same thing (an exported function and the function)
+        seen.add((name, line))
+        nearest = open_[-1][2] if open_ else ""
+        container = sys.intern(".".join(n for _end, n, _kind in open_))
+        open_.append((end, name, kind))
+        if kind == "function" and nearest in CONTAINER_KINDS:
+            kind = "method"  # a function nested in a function stays a function
+        line_end = source.find(b"\n", start)
+        first = source[start : line_end if line_end != -1 else len(source)].decode("utf-8", "replace").strip()
+        end_line = bisect.bisect_right(starts, max(start, end - 1))
+        symbols.append(Symbol(name, sys.intern(kind), line, end_line, container, first[:SIGNATURE_CHARS]))
+    return symbols
+
+
+class SymbolIndex:
+    """What is defined where, per project, kept in memory and brought up to date on each query."""
+
+    def __init__(self, budget_s: float = REFRESH_BUDGET_S, fresh_s: float = FRESH_S):
+        self._projects: dict[str, _Project] = {}
+        self._guard = threading.Lock()
+        self._budget_s = budget_s
+        self._fresh_s = fresh_s
+
+    def _state(self, project_id: str) -> _Project:
+        with self._guard:
+            return self._projects.setdefault(project_id, _Project())
+
+    def forget(self, project_id: str) -> None:
+        with self._guard:
+            self._projects.pop(project_id, None)
+
+    def refresh(self, project: Project) -> _Project:
+        """Compares the files with the disk and parses the new and changed ones (within the time budget)."""
+        state = self._state(project.id)
+        with state.lock:
+            if state.complete and time.monotonic() - state.checked < self._fresh_s:
+                return state
+            root = project.root
+            deadline = time.monotonic() + self._budget_s
+            present: set[str] = set()
+            complete = True
+            for rel in search.project_files(root)[:MAX_FILES]:
+                language = language_of(rel)
+                if language is None or is_secret_file(rel):
+                    continue
+                try:
+                    st = (root / rel).stat()
+                except OSError:
+                    continue
+                if st.st_size > MAX_FILE_BYTES:
+                    continue
+                present.add(rel)
+                known = state.files.get(rel)
+                if known and known.size == st.st_size and known.mtime_ns == st.st_mtime_ns:
+                    continue
+                if time.monotonic() > deadline:
+                    complete = False  # the rest on the next query
+                    continue
+                try:
+                    source = (root / rel).read_bytes()
+                except OSError:
+                    continue
+                state.files[rel] = _File(st.st_size, st.st_mtime_ns, parse(source, language))
+            for rel in set(state.files) - present:
+                del state.files[rel]
+            state.checked = time.monotonic()
+            state.complete = complete
+            return state
+
+    def find(self, project: Project, query: str, kind: str = "", limit: int = FIND_LIMIT) -> dict[str, Any]:
+        """Definitions whose name matches: exact first, then by prefix, then containing it. `Class.method` matches
+        a method of that class. {symbols: [... with path], total, complete}."""
+        state = self.refresh(project)
+        query = query.strip()
+        container_part, _, name_part = query.rpartition(".")
+        wanted = name_part.casefold()
+        ranked = []
+        for path, file in state.files.items():
+            for symbol in file.symbols:
+                if kind and symbol.kind != kind:
+                    continue
+                if container_part and not symbol.container.casefold().endswith(container_part.casefold()):
+                    continue
+                name = symbol.name
+                folded = name.casefold()
+                if name == name_part:
+                    rank = 0
+                elif folded == wanted:
+                    rank = 1
+                elif folded.startswith(wanted):
+                    rank = 2
+                elif wanted in folded:
+                    rank = 3
+                else:
+                    continue
+                ranked.append((rank, len(name), path, symbol.line, symbol))
+        ranked.sort(key=lambda item: item[:4])
+        found = [{**symbol._asdict(), "path": path} for _r, _n, path, _l, symbol in ranked[:limit]]
+        return {"symbols": found, "total": len(ranked), "complete": state.complete}
+
+    def outline(self, project: Project, rel: str) -> list[dict[str, Any]] | None:
+        """The definitions of one file in order; None when it is not code the index reads."""
+        rel = rel.replace("\\", "/").strip("/")
+        if language_of(rel) is None or is_secret_file(rel):
+            return None
+        state = self.refresh(project)
+        file = state.files.get(rel)
+        if file is None:
+            # not among the project's files (ignored by git, say): read it directly, without keeping it
+            path = project.root / rel
+            try:
+                if not path.resolve().is_relative_to(project.root.resolve()) or path.stat().st_size > MAX_FILE_BYTES:
+                    return None
+                return [s._asdict() for s in parse(path.read_bytes(), language_of(rel) or "")]
+            except OSError:
+                return None
+        return [s._asdict() for s in file.symbols]

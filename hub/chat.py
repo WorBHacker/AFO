@@ -36,7 +36,8 @@ from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
-from .tools import TOOLS, ToolContext, run_tool
+from .symbols import SymbolIndex
+from .tools import FIRST_TOOLS, TOOLS, ToolContext, run_tool
 
 log = logging.getLogger("hub.chat")
 
@@ -55,6 +56,7 @@ class ChatService:
         self._runs: dict[str, asyncio.Event] = {}  # conversation_id -> cancel flag of its active run
         self.terminals = None  # set by the server: the tools read terminals and processes through them
         self.processes = None
+        self.symbols = SymbolIndex()  # the server's shared one replaces it
 
     @property
     def busy(self) -> list[str]:
@@ -138,18 +140,22 @@ class ChatService:
         cloud = model.get("locality") == "cloud"
         attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
         ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
-                          processes=self.processes)  # fmt: skip
+                          processes=self.processes, symbols=self.symbols)  # fmt: skip
         await self._bus.publish(
             "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
         )
         run = RunTotals()
+        tools = None
         for step in range(MAX_TOOL_STEPS + 2):
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             prompt = _to_prompt(history, cloud=cloud)
             # the tool list never changes within a conversation (D14): Claude always has it, others from the
-            # first context on
+            # first context on - the definitions it was first sent, even after the hub's tools changed
             has_context = any(m.role == "system" for m in history)
-            tools = TOOLS if getattr(provider, "tools_always", False) or has_context else None
+            if tools is None and (getattr(provider, "tools_always", False) or has_context):
+                tools = await self._db.acall(
+                    lambda conn: store.conversation_tools(conn, conversation_id, TOOLS, FIRST_TOOLS)
+                )
             completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools)
             if completion.refusal:
                 await self._save_refusal(conversation_id, model, completion, client_id)

@@ -14,6 +14,10 @@ dependencies = []
 hub = [
     "fastapi>=0.162", "uvicorn>=0.54", "websockets>=17", "httpx>=0.28", "anthropic>=2.3", "keyring>=25.7",
     "psutil>=7.2", "watchdog>=6.0", "pywinpty>=3.1",  # stage 2: processes and ports, file watching, terminals
+    # stage 3: the symbol index (D26) - the parser and the official grammars with their tags queries
+    "tree-sitter>=0.26", "tree-sitter-python>=0.25", "tree-sitter-javascript>=0.25", "tree-sitter-typescript>=0.23",
+    "tree-sitter-go>=0.25", "tree-sitter-rust>=0.24", "tree-sitter-java>=0.23", "tree-sitter-c-sharp>=0.23",
+    "tree-sitter-c>=0.24", "tree-sitter-cpp>=0.23",
 ]
 app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "websockets>=17", "markdown-it-py>=4.0", "pygments>=2.21", "pyte>=0.8"]
 dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's TestClient wants now

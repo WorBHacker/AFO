@@ -151,6 +151,21 @@ def set_conversation_projects(conn: sqlite3.Connection, conversation_id: str, pr
     return wanted
 
 
+def conversation_tools(
+    conn: sqlite3.Connection, conversation_id: str, current: list[dict[str, Any]], first: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """The tool definitions this conversation gets, the same in every request of it (migration 010): what it was
+    first sent, else `current` from now on - or, for a conversation marked 'v1', the `first` tools of `current`."""
+    row = conn.execute("SELECT tools FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if row is not None and row["tools"] not in (None, "v1"):
+        return json.loads(row["tools"])
+    chosen = [t for t in current if t["name"] in first] if row is not None and row["tools"] == "v1" else current
+    conn.execute(
+        "UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(chosen, ensure_ascii=False), conversation_id)
+    )
+    return chosen
+
+
 CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": []}
 MAX_PINNED = 10
 

@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .. import projects, search
+from .. import projects, search, symbols
 from ..auth import APP_CLIENT, Client
 from ..projects import ProjectError
 from .deps import require_client
@@ -93,6 +93,7 @@ async def remove_project(project_id: str, request: Request, client: Annotated[Cl
     if not await request.app.state.db.acall(lambda conn: projects.remove_project(conn, project_id)):
         raise HTTPException(status_code=404, detail="no such project")
     request.app.state.watcher.unwatch(project_id)
+    request.app.state.symbols.forget(project_id)
     request.app.state.processes.soon()
     await request.app.state.bus.publish("project.removed", {"id": project_id, "name": name}, project_id=project_id)
 
@@ -137,6 +138,29 @@ async def project_search(
     """Lines that match `q` (text, or a regular expression with `regex`), grouped by file (hub/search.py)."""
     project = await _project(request, project_id)
     return await _off_loop(search.search, project.root, q, regex=regex, case=case, glob=glob, limit=limit)
+
+
+@router.get("/projects/{project_id}/symbols")
+async def project_symbols(
+    project_id: str,
+    request: Request,
+    client: Annotated[Client, Depends(require_client)],
+    q: str = "",
+    path: str = "",
+    kind: str = "",
+    limit: int = symbols.FIND_LIMIT,
+) -> dict:
+    """Definitions in the project's code (hub/symbols.py, D26): those named like `q`, or the outline of `path`."""
+    project = await _project(request, project_id)
+    index = request.app.state.symbols
+    if path:
+        outline = await _off_loop(index.outline, project, path)
+        if outline is None:
+            raise HTTPException(status_code=400, detail="not a code file the symbol index reads")
+        return {"path": path, "symbols": outline}
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="give q (a name) or path (a file)")
+    return await _off_loop(index.find, project, q, kind=kind, limit=max(1, min(limit, 500)))
 
 
 @router.get("/projects/{project_id}/diff")
