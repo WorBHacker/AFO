@@ -19,12 +19,14 @@ class FakeProvider:
 
     name = "fake"
 
-    def __init__(self, script: list[StreamEvent], block: bool = False):
+    def __init__(self, script: list[StreamEvent], block: bool = False, end: StreamEvent | None = None, models=None):
         self.script = script
         self.block = block  # after the script, wait for cancel instead of ending (for the cancel test)
+        self.end = end or StreamEvent("end", usage={"input_tokens": 5, "output_tokens": 3}, stats={"tok_s": 50.0})
+        self.models = models if models is not None else [Model("fake/echo", "fake", "echo", "Echo", "local", {}, {})]
 
     async def list_models(self) -> list[Model]:
-        return [Model("fake/echo", "fake", "echo", "Echo", "local", {}, {})]
+        return self.models
 
     async def stream_chat(self, model_ref, messages, effort, cancel):
         self.last_prompt = messages
@@ -36,7 +38,7 @@ class FakeProvider:
         else:
             if self.block:
                 await cancel.wait()  # park until the caller cancels: makes the cancel test deterministic
-        yield StreamEvent("end", usage={"input_tokens": 5, "output_tokens": 3}, stats={"tok_s": 50.0})
+        yield self.end
 
 
 def default_script() -> list[StreamEvent]:
@@ -60,8 +62,8 @@ def auth(client):
     return {"Authorization": f"Bearer {client.token}"}
 
 
-def register_fake(hub, script=None, block=False) -> FakeProvider:
-    provider = FakeProvider(script or default_script(), block=block)
+def register_fake(hub, script=None, block=False, end=None, models=None) -> FakeProvider:
+    provider = FakeProvider(script or default_script(), block=block, end=end, models=models)
     hub.app.state.gateway.register(provider)
     hub.portal.call(hub.app.state.gateway.sync_catalog)
     return provider
@@ -206,3 +208,59 @@ def test_usage_endpoint_counts_the_run(hub):
     assert totals["requests"] == 1
     assert totals["total_output_tokens"] == 3
     assert totals["total_cost_usd"] == 0.0
+
+
+def send(hub, conv, text, model_id="fake/echo"):
+    body = {"content": text, "model_id": model_id}
+    return hub.post(f"/v1/conversations/{conv}/messages", headers=auth(hub), json=body)
+
+
+def test_provider_raw_is_stored_and_replayed_to_its_provider(hub):
+    raw = {"content": [{"type": "thinking", "thinking": "t", "signature": "s"}, {"type": "text", "text": "Привет"}]}
+    end = StreamEvent("end", usage={"input_tokens": 5, "output_tokens": 3}, stop_reason="end_turn", raw=raw)
+    provider = register_fake(hub, end=end)
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={}).json()["id"]
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        send(hub, conv, "раз")
+        assert drain_until(ws, "chat.done")[-1]["payload"]["stop_reason"] == "end_turn"
+        send(hub, conv, "два")
+        drain_until(ws, "chat.done")
+    assistant_turn = provider.last_prompt[1]
+    assert assistant_turn["role"] == "assistant"
+    assert assistant_turn["provider"] == "fake"
+    assert assistant_turn["provider_raw"] == raw  # exactly as the provider returned it (D7, D14)
+    saved = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
+    assert "provider_raw" not in saved[1]  # clients get the hub's own blocks
+
+
+def test_refusal_records_its_cost_but_not_a_message(hub):
+    priced = [Model("fake/echo", "fake", "echo", "Echo", "cloud", {}, {"input": 1.0, "output": 2.0})]
+    end = StreamEvent(
+        "end", usage={"input_tokens": 10, "output_tokens": 4}, stop_reason="refusal", refusal="Claude declined this."
+    )
+    register_fake(hub, end=end, models=priced)
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={}).json()["id"]
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        send(hub, conv, "что-то")
+        error = drain_until(ws, "chat.error")[-1]["payload"]
+    assert error["refusal"] is True
+    assert error["detail"] == "Claude declined this."
+    assert error["cost_usd"] == pytest.approx((10 * 1.0 + 4 * 2.0) / 1e6)
+    saved = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
+    assert [m["role"] for m in saved] == ["user"]  # the refused turn does not join the history
+    totals = hub.get("/v1/usage", headers=auth(hub)).json()
+    assert (totals["requests"], totals["total_output_tokens"]) == (1, 4)  # ...but the money is counted
+
+
+def test_models_a_provider_stops_listing_are_disabled(hub):
+    provider = register_fake(hub)
+    provider.models = []
+    hub.post("/v1/models/sync", headers=auth(hub))
+    ids = {m["id"] for m in hub.get("/v1/models", headers=auth(hub)).json()["models"]}
+    assert "fake/echo" not in ids
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={}).json()["id"]
+    r = send(hub, conv, "hi")
+    assert r.status_code == 409
+    assert "not available" in r.json()["detail"]

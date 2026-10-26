@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from ..db import Database
+from ..secrets import ANTHROPIC_API_KEY, SecretStore
 from .base import ModelNotFound, Provider, ProviderError
 
 log = logging.getLogger("hub.gateway")
@@ -31,8 +32,10 @@ class Gateway:
         return provider, model_ref
 
     async def sync_catalog(self) -> dict[str, int | str]:
-        """Asks every provider for its models and upserts them. One provider failing does not stop the rest."""
-        from ..store import upsert_model
+        """Asks every provider for its models: those it lists are upserted and enabled, its other models are
+        disabled (a removed API key, a model dropped from llama-swap). A provider that fails keeps its rows as
+        they were, and does not stop the rest."""
+        from ..store import disable_models_except, upsert_model
 
         total = 0
         errors: dict[str, str] = {}
@@ -43,19 +46,26 @@ class Gateway:
                 errors[name] = exc.detail
                 log.warning("catalog sync: %s failed: %s", name, exc.detail)
                 continue
-            if models:
-                await self._db.acall(lambda conn, m=models: [upsert_model(conn, model) for model in m])
-                total += len(models)
+
+            def write(conn, name=name, models=models):
+                for model in models:
+                    upsert_model(conn, model)
+                disable_models_except(conn, name, [model.id for model in models])
+
+            await self._db.acall(write)
+            total += len(models)
         result: dict[str, int | str] = {"synced": total, "providers": len(self._providers)}
         if errors:
             result["errors"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
         return result
 
 
-def build_default_gateway(db: Database, llama_swap_url: str) -> Gateway:
-    """The gateway as stage 1 configures it: the local llama-swap provider. Cloud providers join later."""
+def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStore) -> Gateway:
+    """The gateway as stage 1 configures it: local models through llama-swap, Claude by API key (D34)."""
+    from .anthropic_provider import AnthropicProvider
     from .openai_compat import OpenAICompatProvider
 
     gateway = Gateway(db)
     gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality="local"))
+    gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
     return gateway

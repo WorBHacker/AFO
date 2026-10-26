@@ -4,9 +4,11 @@ A run is started by posting a user message. It works in the background and repor
     chat.message  (persisted)  a finished message (the user's, then the assistant's)
     chat.loading  (ephemeral)  provider still getting ready (model swap)
     chat.delta    (ephemeral)  a reasoning or content delta
-    chat.done     (persisted)  the run finished: usage, stats, cancelled?
-    chat.error    (persisted)  the run failed: detail
-Deltas are not stored in the events table (too many); the finished answer lives in the messages table (D14).
+    chat.done     (persisted)  the run finished: usage, stats, cost, stop reason, cancelled?
+    chat.error    (persisted)  the run failed: detail. A refusal by the provider is an error too, but its
+                               tokens were spent, so its usage and cost are recorded and sent along.
+Deltas are not stored in the events table (too many); the finished answer lives in the messages table (D14),
+together with the provider's message as received, which the next request replays (D7).
 The app follows a run by subscribing to 'chat.*' and the conversation_id in each payload.
 """
 
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from . import store
 from .db import Database
@@ -52,6 +55,8 @@ class ChatService:
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
         if model is None:
             raise GatewayError(f"unknown model {model_id!r}")
+        if not model["enabled"]:
+            raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
         user_blocks = [{"type": "text", "text": text}]
         user_msg = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "user", user_blocks))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
@@ -86,7 +91,10 @@ class ChatService:
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
             self._runs.pop(conversation_id, None)
             return
-        await self._save(conversation_id, model, completion, client_id)
+        if completion.refusal:
+            await self._save_refusal(conversation_id, model, completion, client_id)
+        else:
+            await self._save(conversation_id, model, completion, client_id)
         self._runs.pop(conversation_id, None)
 
     async def _consume(self, conversation_id, provider, model_ref, prompt, effort, cancel) -> Completion:
@@ -115,6 +123,9 @@ class ChatService:
             elif event.kind == "end":
                 completion.usage = event.usage or {}
                 completion.stats = event.stats or {}
+                completion.stop_reason = event.stop_reason
+                completion.raw = event.raw
+                completion.refusal = event.refusal
         completion.reasoning = "".join(reasoning)
         completion.text = "".join(content)
         completion.cancelled = cancel.is_set()
@@ -124,7 +135,14 @@ class ChatService:
         cost = cost_usd(completion.usage, model["prices"])
 
         def write(conn):
-            message = store.add_message(conn, conversation_id, "assistant", completion.blocks(), model_id=model["id"])
+            message = store.add_message(
+                conn,
+                conversation_id,
+                "assistant",
+                completion.blocks(),
+                model_id=model["id"],
+                provider_raw=completion.raw,
+            )
             store.record_usage(
                 conn,
                 client_id=client_id,
@@ -133,6 +151,7 @@ class ChatService:
                 model_id=model["id"],
                 usage=completion.usage,
                 cost_usd=cost,
+                estimated=bool(completion.usage.get("estimated")),
             )
             return message
 
@@ -146,18 +165,54 @@ class ChatService:
                 "usage": completion.usage,
                 "stats": completion.stats,
                 "cost_usd": cost,
+                "stop_reason": completion.stop_reason,
                 "cancelled": completion.cancelled,
             },
         )
 
+    async def _save_refusal(self, conversation_id: str, model: dict, completion: Completion, client_id: str | None):
+        """The provider declined: no assistant message joins the history, but the spent tokens are recorded."""
+        cost = cost_usd(completion.usage, model["prices"])
+        await self._db.acall(
+            lambda conn: store.record_usage(
+                conn,
+                client_id=client_id,
+                conversation_id=conversation_id,
+                message_id=None,
+                model_id=model["id"],
+                usage=completion.usage,
+                cost_usd=cost,
+                estimated=bool(completion.usage.get("estimated")),
+            )
+        )
+        await self._bus.publish(
+            "chat.error",
+            {
+                "conversation_id": conversation_id,
+                "detail": completion.refusal,
+                "refusal": True,
+                "usage": completion.usage,
+                "cost_usd": cost,
+            },
+        )
 
-def _to_prompt(history: list[store.MessageRow]) -> list[dict[str, str]]:
-    """The conversation as OpenAI-shape {role, content}: visible text only, reasoning left out (D14)."""
-    prompt = []
+
+def _to_prompt(history: list[store.MessageRow]) -> list[dict[str, Any]]:
+    """The conversation as OpenAI-shape {role, content}: visible text only, reasoning left out (D14).
+
+    An assistant turn also carries the provider's message as received, so that provider can replay its own
+    blocks unchanged (Claude's thinking signatures); every other provider sends just the text.
+    """
+    prompt: list[dict[str, Any]] = []
     for message in history:
         if message.role not in ("system", "user", "assistant"):
             continue
         text = blocks_to_prompt_text(message.content)
-        if text or message.role == "user":
-            prompt.append({"role": message.role, "content": text})
+        if not text and message.role != "user":
+            continue
+        entry: dict[str, Any] = {"role": message.role, "content": text}
+        if message.provider_raw is not None and message.model_id:
+            entry["provider"] = message.model_id.partition("/")[0]
+            entry["provider_raw"] = message.provider_raw
+        prompt.append(entry)
     return prompt

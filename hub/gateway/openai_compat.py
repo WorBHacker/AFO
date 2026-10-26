@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -66,11 +67,12 @@ class OpenAICompatProvider:
         return models
 
     async def stream_chat(
-        self, model_ref: str, messages: list[dict[str, str]], effort: str, cancel: asyncio.Event
+        self, model_ref: str, messages: list[dict[str, Any]], effort: str, cancel: asyncio.Event
     ) -> AsyncIterator[StreamEvent]:
         body = {
             "model": model_ref,
-            "messages": messages,
+            # only the visible text travels; other providers' raw messages are not for this API
+            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
             "stream": True,
             "stream_options": {"include_usage": True},
             "reasoning_effort": effort,
@@ -81,6 +83,7 @@ class OpenAICompatProvider:
         chunks = 0
         usage: dict = {}
         timings: dict = {}
+        finish_reason: str | None = None
         # read has no timeout: a local model can be slow between tokens; connect/write still bounded
         timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
         try:
@@ -106,6 +109,7 @@ class OpenAICompatProvider:
                     timings = obj.get("timings") or timings
                     if not obj.get("choices"):
                         continue
+                    finish_reason = obj["choices"][0].get("finish_reason") or finish_reason
                     delta = obj["choices"][0].get("delta") or {}
                     think = delta.get("reasoning_content") or delta.get("reasoning") or ""
                     text = delta.get("content") or ""
@@ -126,7 +130,12 @@ class OpenAICompatProvider:
                         yield StreamEvent("content", text)
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: {exc}") from exc
-        yield StreamEvent("end", usage=_usage(usage, chunks), stats=_stats(usage, timings, started, first_at))
+        yield StreamEvent(
+            "end",
+            usage=_usage(usage, chunks),
+            stats=_stats(usage, timings, started, first_at),
+            stop_reason=finish_reason,
+        )
 
 
 def _usage(usage: dict, chunks: int) -> dict[str, int]:

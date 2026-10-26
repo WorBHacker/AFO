@@ -17,12 +17,12 @@ from .gateway import Model
 def upsert_model(conn: sqlite3.Connection, model: Model) -> None:
     conn.execute(
         """
-        INSERT INTO models (id, provider, model_ref, name, locality, capabilities, prices, updated_at)
-        VALUES (:id, :provider, :model_ref, :name, :locality, :caps, :prices, :now)
+        INSERT INTO models (id, provider, model_ref, name, locality, capabilities, prices, enabled, updated_at)
+        VALUES (:id, :provider, :model_ref, :name, :locality, :caps, :prices, 1, :now)
         ON CONFLICT (id) DO UPDATE SET
             provider = excluded.provider, model_ref = excluded.model_ref, name = excluded.name,
             locality = excluded.locality, capabilities = excluded.capabilities,
-            prices = excluded.prices, updated_at = excluded.updated_at
+            prices = excluded.prices, enabled = 1, updated_at = excluded.updated_at
         """,
         {
             "id": model.id,
@@ -35,6 +35,16 @@ def upsert_model(conn: sqlite3.Connection, model: Model) -> None:
             "now": utc_now(),
         },
     )
+
+
+def disable_models_except(conn: sqlite3.Connection, provider: str, keep_ids: list[str]) -> int:
+    """The provider's models it no longer lists stay in the table (old messages and usage name them) but are
+    no longer offered."""
+    marks = ",".join("?" * len(keep_ids))
+    where = f"provider = ? AND enabled = 1 AND id NOT IN ({marks})" if keep_ids else "provider = ? AND enabled = 1"
+    return conn.execute(
+        f"UPDATE models SET enabled = 0, updated_at = ? WHERE {where}", (utc_now(), provider, *keep_ids)
+    ).rowcount
 
 
 def list_models(conn: sqlite3.Connection, *, enabled_only: bool = True) -> list[dict[str, Any]]:
@@ -72,6 +82,7 @@ class MessageRow:
     model_id: str | None
     content: list[dict[str, Any]]
     created_at: str
+    provider_raw: dict[str, Any] | None = None  # for the gateway only; clients get `content`
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -131,16 +142,26 @@ def add_message(
         (conversation_id, seq, role, model_id, json.dumps(content, ensure_ascii=False), raw, now),
     ).lastrowid
     conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
-    return MessageRow(row_id, seq, role, model_id, content, now)
+    return MessageRow(row_id, seq, role, model_id, content, now, provider_raw)
 
 
 def get_messages(conn: sqlite3.Connection, conversation_id: str) -> list[MessageRow]:
     rows = conn.execute(
-        "SELECT id, seq, role, model_id, content, created_at FROM messages WHERE conversation_id = ? ORDER BY seq",
+        "SELECT id, seq, role, model_id, content, provider_raw, created_at FROM messages "
+        "WHERE conversation_id = ? ORDER BY seq",
         (conversation_id,),
     ).fetchall()
     return [
-        MessageRow(r["id"], r["seq"], r["role"], r["model_id"], json.loads(r["content"]), r["created_at"]) for r in rows
+        MessageRow(
+            r["id"],
+            r["seq"],
+            r["role"],
+            r["model_id"],
+            json.loads(r["content"]),
+            r["created_at"],
+            json.loads(r["provider_raw"]) if r["provider_raw"] is not None else None,
+        )
+        for r in rows
     ]
 
 

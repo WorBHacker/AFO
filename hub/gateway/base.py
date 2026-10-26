@@ -49,12 +49,19 @@ class StreamEvent:
     kind "reasoning" - a thinking delta
     kind "content"   - an answer delta
     kind "end"       - the final event: usage and stats, no text
+
+    The "end" event may also carry why the model stopped (`stop_reason`), the provider's message as received
+    (`raw`, stored as is for providers that need their own blocks back, D7/D14) and, when the provider declined
+    the request, a safe explanation (`refusal`): the tokens were still spent and must be accounted for.
     """
 
     kind: str
     text: str = ""
     usage: dict[str, int] | None = None
     stats: dict[str, float] | None = None
+    stop_reason: str | None = None
+    raw: dict[str, Any] | None = None
+    refusal: str | None = None
 
 
 @dataclass
@@ -65,6 +72,9 @@ class Completion:
     reasoning: str = ""
     usage: dict[str, int] = field(default_factory=dict)
     stats: dict[str, float] = field(default_factory=dict)
+    stop_reason: str | None = None
+    raw: dict[str, Any] | None = None
+    refusal: str | None = None
     cancelled: bool = False
 
     def blocks(self) -> list[dict[str, str]]:
@@ -89,16 +99,21 @@ def blocks_to_prompt_text(blocks: list[dict[str, Any]]) -> str:
 
 
 def cost_usd(usage: dict[str, int], prices: dict[str, float]) -> float:
-    """USD for one request from its token counts and the model's per-1M prices. Local models cost 0."""
+    """USD for one request from its token counts and the model's per-1M prices. Local models cost 0.
+
+    `input_tokens` is the whole prompt; the parts read from or written to the cache are inside it and are
+    priced at their own rates.
+    """
     if not prices:
         return 0.0
     cached = usage.get("cached_input_tokens", 0)
-    fresh_input = max(usage.get("input_tokens", 0) - cached, 0)
+    cache_write = usage.get("cache_write_tokens", 0)
+    fresh_input = max(usage.get("input_tokens", 0) - cached - cache_write, 0)
     million = 1_000_000
     return round(
         fresh_input / million * prices.get("input", 0)
         + cached / million * prices.get("cache_read", prices.get("input", 0))
-        + usage.get("cache_write_tokens", 0) / million * prices.get("cache_write", 0)
+        + cache_write / million * prices.get("cache_write", prices.get("input", 0))
         + usage.get("output_tokens", 0) / million * prices.get("output", 0),
         6,
     )
@@ -112,9 +127,13 @@ class Provider(Protocol):
     async def list_models(self) -> list[Model]: ...
 
     def stream_chat(
-        self, model_ref: str, messages: list[dict[str, str]], effort: str, cancel: asyncio.Event
+        self, model_ref: str, messages: list[dict[str, Any]], effort: str, cancel: asyncio.Event
     ) -> AsyncIterator[StreamEvent]:
-        """Yields StreamEvents for one completion. `messages` are {role, content} in OpenAI shape.
+        """Yields StreamEvents for one completion.
+
+        `messages` are {role, content} in OpenAI shape, content being the visible text. An assistant turn may
+        also carry "provider" and "provider_raw": the message exactly as that provider returned it. An adapter
+        replays its own raw messages (Claude needs its thinking blocks back unchanged, D14) and ignores others.
 
         Must stop promptly once `cancel` is set, and must end with exactly one kind=="end" event
         (even when cancelled), so the caller always gets final usage and stats.

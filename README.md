@@ -6,7 +6,7 @@
 
 | Папка | Что это |
 |---|---|
-| `hub/` | хаб — фоновый процесс (сервер появится в этапе 1) |
+| `hub/` | хаб — фоновый процесс на `127.0.0.1:8765`: API, база, шлюз моделей (llama-swap, Claude) |
 | `app/` | приложение на PySide6 |
 | `common/` | общий код: пути к данным, логирование |
 | `tests/` | тесты (pytest) |
@@ -30,11 +30,19 @@ py -3.14 -m venv .venv
 .venv/Scripts/python.exe -m pytest
 ```
 
-Запуск (пока только проверка связей):
+Запуск:
 
 ```bash
 .venv/Scripts/python.exe -m hub
+.venv/Scripts/python.exe -m hub stop
 .venv/Scripts/python.exe -m app
+```
+
+Ключ Anthropic (для моделей Claude) хранится в диспетчере учётных данных Windows, ввод скрыт:
+
+```bash
+.venv/Scripts/python.exe -m hub key set anthropic_api_key
+.venv/Scripts/python.exe -m hub key status
 ```
 
 Логи пишутся в `data/logs/<компонент>.log`. Папку данных можно переопределить переменной `LOCALCHAT_DATA_DIR`.

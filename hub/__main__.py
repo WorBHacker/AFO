@@ -6,6 +6,9 @@ python -m hub token create NAME       register a client and print its token once
 python -m hub token create NAME --local   ...for a client that only works with local models (D32)
 python -m hub token list              list clients
 python -m hub token revoke NAME       the client's token stops working
+python -m hub key status              which API keys are set (never their values)
+python -m hub key set NAME            store an API key in the Windows Credential Manager (typed hidden)
+python -m hub key delete NAME         remove it
 """
 
 from __future__ import annotations
@@ -96,18 +99,26 @@ def _port_free(host: str, port: int) -> bool:
     return True
 
 
-def stop(settings: HubSettings) -> int:
-    """Asks the running hub to stop, as the app client, and waits until it no longer answers."""
-    import httpx
-
+def _running_hub(settings: HubSettings) -> tuple[str, str] | None:
+    """The running hub's base URL and the app token, from hub.json; None when no hub has written one."""
     paths = settings.paths
     try:
         info = json.loads(paths.hub_info.read_text(encoding="utf-8"))
         token = (paths.tokens / f"{APP_CLIENT}.token").read_text(encoding="utf-8").strip()
     except OSError, ValueError:
+        return None
+    return f"http://{info['host']}:{info['port']}", token
+
+
+def stop(settings: HubSettings) -> int:
+    """Asks the running hub to stop, as the app client, and waits until it no longer answers."""
+    import httpx
+
+    hub = _running_hub(settings)
+    if hub is None:
         print("Хаб не запущен (нет hub.json или токена приложения)", file=sys.stderr)
         return 1
-    base = f"http://{info['host']}:{info['port']}"
+    base, token = hub
     try:
         response = httpx.post(f"{base}/v1/shutdown", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     except httpx.HTTPError:
@@ -155,6 +166,65 @@ def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
         db.close()
 
 
+def key_command(settings: HubSettings, args: argparse.Namespace) -> int:
+    """API keys live in the OS secret store (D13); this command never prints a value."""
+    from .secrets import KNOWN_SECRETS, KeyringSecretStore, default_secret_store
+
+    store = default_secret_store()
+    if args.action == "status":
+        for name, label in KNOWN_SECRETS.items():
+            print(f"{name:20} {'задан' if store.get(name) else 'не задан':9} {label}")
+        return 0
+    if args.name not in KNOWN_SECRETS:
+        print(f"Неизвестный ключ {args.name!r}. Известные: {', '.join(KNOWN_SECRETS)}", file=sys.stderr)
+        return 1
+    if not isinstance(store, KeyringSecretStore):
+        print("Хранилище секретов Windows недоступно, ключ не сохранён (подробности в логе)", file=sys.stderr)
+        return 1
+    if args.action == "set":
+        value = _read_secret(f"{KNOWN_SECRETS[args.name]} (ввод скрыт): ")
+        if not value:
+            print("Пустое значение, ничего не сохранено", file=sys.stderr)
+            return 1
+        store.set(args.name, value)
+        print(f"Ключ {args.name} сохранён в диспетчере учётных данных Windows")
+    else:
+        print(f"Ключ {args.name} удалён" if store.delete(args.name) else f"Ключ {args.name} и не был задан")
+    _refresh_catalog(settings)
+    return 0
+
+
+def _read_secret(prompt: str) -> str:
+    """Hidden input at a console; a plain line from a pipe (for scripts)."""
+    import getpass
+
+    if sys.stdin is not None and sys.stdin.isatty():
+        return getpass.getpass(prompt).strip()
+    return sys.stdin.readline().strip() if sys.stdin is not None else ""
+
+
+def _refresh_catalog(settings: HubSettings) -> None:
+    """A running hub re-reads its providers now; otherwise the catalog refreshes when the hub starts."""
+    import httpx
+
+    hub = _running_hub(settings)
+    if hub is None:
+        print("Хаб не запущен: каталог моделей обновится при его запуске")
+        return
+    base, token = hub
+    try:
+        response = httpx.post(f"{base}/v1/models/sync", headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        print(f"Хаб не обновил каталог ({exc}); можно повторить: POST /v1/models/sync", file=sys.stderr)
+        return
+    body = response.json()
+    enabled = [m["id"] for m in body.get("models", []) if m.get("enabled")]
+    print(f"Каталог хаба обновлён, доступно моделей: {len(enabled)}")
+    if body.get("errors"):
+        print(f"Ошибки поставщиков: {body['errors']}", file=sys.stderr)
+
+
 def _utf8_pipes() -> None:
     """Output that goes to a pipe or a file is UTF-8, not the Windows code page; a console is left alone."""
     for stream in (sys.stdout, sys.stderr):
@@ -176,11 +246,20 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_parser("list", help="list clients")
     revoke = actions.add_parser("revoke", help="stop a client's token from working")
     revoke.add_argument("name")
+    key = commands.add_parser("key", help="API keys in the Windows Credential Manager (D13)")
+    key_actions = key.add_subparsers(dest="action", required=True)
+    key_actions.add_parser("status", help="which keys are set")
+    key_set = key_actions.add_parser("set", help="store a key (typed hidden, or one line from a pipe)")
+    key_set.add_argument("name")
+    key_delete = key_actions.add_parser("delete", help="remove a key")
+    key_delete.add_argument("name")
     args = parser.parse_args(argv)
 
     settings = HubSettings.from_env()
     if args.command == "token":
         return token_command(settings, args)
+    if args.command == "key":
+        return key_command(settings, args)
     if args.command == "stop":
         return stop(settings)
     return serve(settings)
