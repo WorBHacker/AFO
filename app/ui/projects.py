@@ -2,8 +2,9 @@
 
 Everything comes from the hub (D4, D17): the window never reads the project's folder itself. Folders load when
 opened. The hub watches the folders (hub/watch.py) and says what changed: `project.files` updates the open folders
-and the open file, `project.git` the marks and the overview. The tree is updated row by row, so the list keeps its
-place. Answers that come back late (an older file, an older tree) are dropped by a generation count.
+and the open file, `project.git` the marks and the overview, `processes.changed` what runs in each project. The
+tree is updated row by row, so the list keeps its place. Answers that come back late (an older file, an older
+tree) are dropped by a generation count.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ class Projects(QObject):
     projectChanged = Signal()
     gitChanged = Signal()
     fileChanged = Signal()
+    processesChanged = Signal()
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -39,6 +41,7 @@ class Projects(QObject):
         self._file: dict[str, Any] = {}
         self._file_data: dict[str, Any] | None = None  # the hub's answer, kept to colour again on a theme switch
         self._diff_text = ""
+        self._processes: dict[str, list[dict[str, Any]]] = {}  # project id -> its processes, from the hub
         self._tree_gen = 0
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
@@ -78,6 +81,14 @@ class Projects(QObject):
     def file(self) -> dict:
         return self._file
 
+    @Property(list, notify=processesChanged)
+    def processes(self) -> list:
+        return project_rows.process_rows(self._processes.get(self.currentId, []))
+
+    @Property(str, notify=processesChanged)
+    def processesSummary(self) -> str:
+        return project_rows.processes_summary(self._processes.get(self.currentId, []))
+
     # ================= the list =================
 
     def load(self, *, catch_up: bool = True) -> None:
@@ -101,6 +112,7 @@ class Projects(QObject):
                     self.openProject(last)
 
         self.app._call(lambda: self.app.client.projects(), show)
+        self.app._call(lambda: self.app.client.processes(), self._set_processes, lambda _e: None)
 
     @Slot(str)
     def addProject(self, folder: str) -> None:
@@ -156,6 +168,7 @@ class Projects(QObject):
         self.projectChanged.emit()
         self.listChanged.emit()
         self.gitChanged.emit()
+        self.processesChanged.emit()
 
     @Slot(str)
     def openProject(self, project_id: str) -> None:
@@ -354,6 +367,8 @@ class Projects(QObject):
             self._forget(payload.get("id", ""))
         elif kind in ("project.added", "project.changed"):
             self.load(catch_up=False)
+        elif kind == "processes.changed":
+            self._set_processes(payload.get("projects") or {})
         elif payload.get("project_id") != self.currentId or not self.current:
             return
         elif kind == "project.files":
@@ -369,6 +384,43 @@ class Projects(QObject):
         path = self._file.get("path")
         if path and (more or path in payload.get("changed", [])):
             self._load_file(path, bool(self._file.get("diffMode")), reloading=True)
+
+    # ================= processes =================
+
+    def _set_processes(self, found: dict[str, list[dict[str, Any]]]) -> None:
+        before = self._processes.get(self.currentId)
+        self._processes = found
+        if found.get(self.currentId) != before:
+            self.processesChanged.emit()
+
+    @Slot(int)
+    def askStopProcess(self, pid: int) -> None:
+        process = next((p for p in self._processes.get(self.currentId, []) if p["pid"] == pid), None)
+        if process is None or process.get("hub"):
+            return
+
+        def decide(yes: bool) -> None:
+            if not yes:
+                return
+
+            def done(result: dict[str, Any]) -> None:
+                if result.get("stopped"):
+                    self.app.flash(f"Процесс {process['name']} завершён")
+                else:
+                    self.app.show_error(f"Процесс {process['name']} не завершился")
+
+            self.app._call(lambda: self.app.client.stop_process(pid), done)
+
+        self.app._ask(
+            f"Завершить {process['name']} (PID {pid})?",
+            "Вместе с его дочерними процессами. Что в нём не сохранено, пропадёт.",
+            "Завершить",
+            decide,
+        )
+
+    @Slot(int)
+    def openPort(self, port: int) -> None:
+        QDesktopServices.openUrl(QUrl(f"http://localhost:{port}/"))
 
     # ================= small commands =================
 

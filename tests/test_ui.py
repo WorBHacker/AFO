@@ -95,6 +95,19 @@ TREE = {
     "src/deep": [{"name": "x.txt", "path": "src/deep/x.txt", "dir": False, "size": 1}],
 }
 FILES = {"src/app.py": "print('hi')\nprint('new')\n", "README.md": "# Проект\n", "src/deep/x.txt": "x"}
+PROCESSES = {
+    "p1": [
+        {"pid": 10, "ppid": 1, "name": "python.exe", "exe": "C:\\py\\python.exe", "cwd": "",
+         "cmdline": "C:\\py\\python.exe -m http.server 8000", "started_at": "2026-10-27T00:00:00Z", "cpu": 1.5,
+         "memory_mb": 30, "ports": [8000], "hub": False, "depth": 0},
+        {"pid": 11, "ppid": 10, "name": "node.exe", "exe": "C:\\node\\node.exe", "cwd": "web",
+         "cmdline": '"C:\\node\\node.exe" vite', "started_at": "2026-10-27T00:00:01Z", "cpu": 0.0,
+         "memory_mb": 2048, "ports": [5173, 8000], "hub": False, "depth": 1},
+        {"pid": 99, "ppid": 1, "name": "python.exe", "exe": "C:\\py\\python.exe", "cwd": "",
+         "cmdline": "C:\\py\\python.exe -m hub", "started_at": "2026-10-27T00:00:02Z", "cpu": 0.2,
+         "memory_mb": 80, "ports": [8765], "hub": True, "depth": 0},
+    ]
+}  # fmt: skip
 GIT = {
     "repo": True,
     "branch": "main",
@@ -128,6 +141,7 @@ class FakeClient:
         self.trees = copy.deepcopy(TREE)
         self.files = dict(FILES)
         self.tree_calls = []
+        self.stopped = []
 
     def models(self):
         return MODELS
@@ -226,6 +240,13 @@ class FakeClient:
         return {"path": path, "size": len(text.encode()), "truncated": False, "binary": False, "text": text,
                 "encoding": "utf-8"}  # fmt: skip
 
+    def processes(self):
+        return copy.deepcopy(PROCESSES)
+
+    def stop_process(self, pid):
+        self.stopped.append(pid)
+        return {"stopped": True, "pids": [pid]}
+
     def git(self, pid, log=20):
         return GIT
 
@@ -267,6 +288,11 @@ def opened(app):
     app.openChat("c1")
     wait_until(lambda: len(app.messages.rows) == 2)
     return app.messages.rows
+
+
+def send(app, event_type, payload):
+    """An event from the hub, through the controller's entry point, so its routing is tested too."""
+    app.on_event({"type": event_type, "payload": payload})
 
 
 def event(event_type, **payload):
@@ -664,7 +690,7 @@ def test_adding_and_removing_projects(app):
     assert [p["id"] for p in projects.projectList] == ["p1"] and projects.tree.rows == []
     projects.openProject("p1")
     wait_until(lambda: projects.tree.rows)
-    projects.on_event("project.removed", {"id": "p1"})  # removed elsewhere
+    send(app, "project.removed", {"id": "p1"})  # removed elsewhere
     assert projects.currentId == "" and projects.projectList == []
 
 
@@ -722,7 +748,7 @@ def test_projects_follow_the_hubs_events(app):
     # a new file in an open folder, and the open file changed on disk
     client.trees["src"].append({"name": "new.py", "path": "src/new.py", "dir": False, "size": 3})
     client.files["src/app.py"] = "print('changed')\n"
-    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/new.py", "src/app.py"],
+    send(app, "project.files", {"project_id": "p1", "changed": ["src/new.py", "src/app.py"],
                                         "folders": ["src"], "more": False})  # fmt: skip
     wait_until(lambda: any(r["path"] == "src/new.py" for r in projects.tree.rows))
     wait_until(lambda: "changed" in projects.file["code"])
@@ -730,22 +756,49 @@ def test_projects_follow_the_hubs_events(app):
 
     # a change in a closed folder or in another project costs nothing
     calls = len(client.tree_calls)
-    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/deep/x.txt"], "folders": ["src/deep"]})
-    projects.on_event("project.files", {"project_id": "p9", "changed": [], "folders": [""]})
+    send(app, "project.files", {"project_id": "p1", "changed": ["src/deep/x.txt"], "folders": ["src/deep"]})
+    send(app, "project.files", {"project_id": "p9", "changed": [], "folders": [""]})
     wait_until(lambda: not app.bg.busy)
     assert len(client.tree_calls) == calls
 
     # git says the work was committed: the marks go, the open file has no diff any more
-    projects.on_event("project.git", {**GIT, "project_id": "p1", "changes": [], "log": []})
+    send(app, "project.git", {**GIT, "project_id": "p1", "changes": [], "log": []})
     assert projects.git["summary"] == "main · ↑1 ↓0 · без изменений"
     assert all(r["status"] == "" for r in projects.tree.rows)
     assert projects.file["hasDiff"] is False and projects.file["mark"] == ""
 
     # the open file is deleted: shown as deleted, no error
     del client.files["src/app.py"]
-    projects.on_event("project.files", {"project_id": "p1", "changed": ["src/app.py"], "folders": ["src"]})
+    send(app, "project.files", {"project_id": "p1", "changed": ["src/app.py"], "folders": ["src"]})
     wait_until(lambda: projects.file.get("missing"))
     assert projects.file["path"] == "src/app.py" and not app.flashError
+
+
+def test_project_processes(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: len(projects.processes) == 3)
+    rows_ = projects.processes
+    assert [(r["name"], r["depth"], r["args"]) for r in rows_[:2]] == [
+        ("python.exe", 0, "-m http.server 8000"),
+        ("node.exe", 1, "vite"),
+    ]
+    assert rows_[0]["cpu"] == "1.5%" and rows_[1]["cpu"] == "" and rows_[1]["memory"] == "2.0 ГБ"
+    assert rows_[1]["folder"] == "web" and rows_[2]["hub"]
+    assert projects.processesSummary == "3 процесса · порты 5173, 8000, 8765"
+
+    projects.askStopProcess(99)  # the hub itself: not offered
+    assert app.question == {}
+    projects.askStopProcess(11)
+    assert "node.exe" in app.question["title"]
+    app.answer(True)
+    wait_until(lambda: client.stopped == [11])
+
+    # the hub's scan arrives as an event; another project's processes do not touch this one
+    send(app, "processes.changed", {"projects": {"p1": PROCESSES["p1"][:1], "p9": PROCESSES["p1"]}})
+    assert len(projects.processes) == 1 and projects.processesSummary == "1 процесс · порт 8000"
+    send(app, "processes.changed", {"projects": {}})
+    assert projects.processes == [] and projects.processesSummary == ""
 
 
 def test_projects_mode_and_palette(app):
@@ -794,6 +847,17 @@ def test_the_projects_view_without_warnings(qapp):
         assert tree.property("count") == 5
         overview = quick.window.findChild(QObject, "projectOverview")
         assert overview.property("visible") and overview.property("contentHeight") > 200
+        wait_until(lambda: len(app.projects.processes) == 3)
+        for _ in range(10):
+            QApplication.processEvents()
+        processes = quick.window.findChild(QObject, "projectProcesses")
+        assert processes.property("visible") and processes.property("height") > 3 * 30
+        # a question answered before its dialog finished opening still closes the dialog
+        dialog = quick.window.findChild(QObject, "confirmDialog")
+        app.projects.askStopProcess(10)
+        QApplication.processEvents()
+        app.answer(False)
+        wait_until(lambda: not dialog.property("visible"))
         app.projects.openFile("src/app.py", False)
         wait_until(lambda: app.projects.file.get("path") == "src/app.py")
         for _ in range(10):

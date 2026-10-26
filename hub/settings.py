@@ -25,6 +25,7 @@ class HubSettings:
     allowed_origins: frozenset[str] = frozenset()
     llama_swap_url: str = DEFAULT_LLAMA_SWAP_URL
     status_interval_s: float = 2.0  # GPU / memory / llama-swap sampling; 0 turns the monitor off
+    process_interval_s: float = 3.0  # processes and ports in project folders; 0: only when asked
 
     @classmethod
     def from_env(cls) -> HubSettings:

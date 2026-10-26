@@ -790,7 +790,7 @@ class Controller(QObject):
             self.load_models()
         elif kind == "system.status":
             self._show_status(payload)
-        elif kind.startswith("project."):
+        elif kind.startswith(("project.", "processes.")):
             self.projects.on_event(kind, payload)
         elif kind == "hub.stopping":
             self._set_hub("stopped")

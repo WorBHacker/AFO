@@ -65,6 +65,7 @@ async def add_project(body: NewProject, request: Request, client: Annotated[Clie
     except ProjectError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     request.app.state.watcher.watch(project)
+    request.app.state.processes.soon()
     await request.app.state.bus.publish("project.added", {"project": project.to_json()}, project_id=project.id)
     return project.to_json()
 
@@ -91,6 +92,7 @@ async def remove_project(project_id: str, request: Request, client: Annotated[Cl
     if not await request.app.state.db.acall(lambda conn: projects.remove_project(conn, project_id)):
         raise HTTPException(status_code=404, detail="no such project")
     request.app.state.watcher.unwatch(project_id)
+    request.app.state.processes.soon()
     await request.app.state.bus.publish("project.removed", {"id": project_id}, project_id=project_id)
 
 

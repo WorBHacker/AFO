@@ -159,6 +159,122 @@ Item {
                 }
             }
 
+            // what runs in the project's folder (the hub scans every few seconds)
+            Column {
+                objectName: "projectProcesses"
+                visible: Projects.processes.length > 0
+                width: parent.width
+                spacing: 2
+                Text {
+                    bottomPadding: 6
+                    text: "Процессы · " + Projects.processesSummary
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: Projects.processes
+                    delegate: Item {
+                        id: proc
+                        required property var modelData
+                        width: page.width
+                        height: 34
+                        HoverHandler { id: procHover }
+                        Rectangle { anchors.fill: parent; radius: 6; color: procHover.hovered ? Theme.p.item_hover : "transparent" }
+                        Icon {
+                            id: procIcon
+                            x: 10 + proc.modelData.depth * 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            name: proc.modelData.hub ? "layers" : "cpu"
+                            size: 14
+                            tint: proc.modelData.ports.length ? Theme.p.accent : Theme.p.faint
+                        }
+                        Text {
+                            id: procName
+                            x: procIcon.x + 22
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: proc.modelData.name
+                            color: Theme.p.text
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            x: procName.x + procName.width + 8
+                            width: Math.max(0, ports.x - x - 12)
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: proc.modelData.args
+                            elide: Text.ElideRight
+                            color: Theme.p.faint
+                            font.family: Theme.monoFont
+                            font.pixelSize: 12
+                        }
+                        Row {
+                            id: ports
+                            anchors.right: stats.left
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 4
+                            Repeater {
+                                model: proc.modelData.ports
+                                delegate: AbstractButton {
+                                    id: port
+                                    required property int modelData
+                                    implicitWidth: portText.implicitWidth + 12
+                                    implicitHeight: 20
+                                    hoverEnabled: true
+                                    onClicked: Projects.openPort(modelData)
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: port.hovered ? Theme.p.item_selected : "transparent"
+                                        border.color: Theme.p.hairline_strong
+                                    }
+                                    contentItem: Text {
+                                        id: portText
+                                        text: ":" + port.modelData
+                                        color: Theme.p.accent
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.family: Theme.monoFont
+                                        font.pixelSize: 11
+                                    }
+                                    ToolTip.visible: hovered
+                                    ToolTip.delay: 600
+                                    ToolTip.text: "Открыть http://localhost:" + modelData
+                                }
+                            }
+                        }
+                        Text {
+                            id: stats
+                            anchors.right: stopButton.left
+                            anchors.rightMargin: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: [proc.modelData.cpu, proc.modelData.memory, proc.modelData.age].filter(s => !!s).join(" · ")
+                            color: Theme.p.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                        IconButton {
+                            id: stopButton
+                            anchors.right: parent.right
+                            anchors.rightMargin: 2
+                            anchors.verticalCenter: parent.verticalCenter
+                            opacity: proc.modelData.hub ? 0 : 1
+                            enabled: !proc.modelData.hub
+                            iconName: "power"
+                            hoverTint: Theme.p.error
+                            tip: "Завершить (вместе с дочерними)"
+                            onClicked: Projects.askStopProcess(proc.modelData.pid)
+                        }
+                        ToolTip.visible: procHover.hovered && !stopButton.hovered
+                        ToolTip.delay: 900
+                        ToolTip.text: (proc.modelData.hub ? "Это сам хаб LocalChat\n" : "") + "PID " + proc.modelData.pid
+                                      + (proc.modelData.folder ? " · папка " + proc.modelData.folder : "")
+                                      + "\n" + proc.modelData.cmdline
+                    }
+                }
+            }
+
             // changed files
             Column {
                 visible: !!Projects.git.changes && Projects.git.changes.length > 0

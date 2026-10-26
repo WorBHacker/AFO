@@ -7,6 +7,7 @@ changes inside gets a dot.
 from __future__ import annotations
 
 import html
+from datetime import UTC, datetime
 from typing import Any
 
 from pygments.lexers import get_lexer_for_filename
@@ -181,3 +182,68 @@ def change_rows(changes: list[dict[str, str]]) -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def program_args(cmdline: str, exe: str) -> str:
+    """The command line without the program itself (it is shown by name)."""
+    line = cmdline.strip()
+    for head in (f'"{exe}"', exe):
+        if exe and line.lower().startswith(head.lower()):
+            return line[len(head) :].strip()
+    if line.startswith('"'):
+        end = line.find('"', 1)
+        return line[end + 1 :].strip() if end > 0 else ""
+    return line.partition(" ")[2].strip()
+
+
+def memory_text(mb: float) -> str:
+    return f"{mb / 1024:.1f} ГБ" if mb >= 1024 else f"{mb:.0f} МБ"
+
+
+def age_text(started_at: str, now: datetime) -> str:
+    """'5 мин' since the process started; '' when unknown."""
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    minutes = max(0, int((now - started).total_seconds() // 60))
+    if minutes < 1:
+        return "только что"
+    if minutes < 60:
+        return f"{minutes} мин"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} ч {minutes % 60} мин"
+    return f"{minutes // (24 * 60)} дн"
+
+
+def process_rows(processes: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
+    """A project's processes as the overview shows them (the hub sends them as a tree, parents first)."""
+    now = now or datetime.now(UTC)
+    return [
+        {
+            "pid": p["pid"],
+            "name": p["name"],
+            "args": p["args"] if "args" in p else program_args(p.get("cmdline", ""), p.get("exe", "")),
+            "cmdline": p.get("cmdline", ""),
+            "folder": p.get("cwd") or "",
+            "depth": min(p.get("depth", 0), 6),
+            "ports": p.get("ports", []),
+            "cpu": f"{p['cpu']:.1f}%" if p.get("cpu", 0) >= 0.1 else "",
+            "memory": memory_text(p.get("memory_mb", 0)),
+            "age": age_text(p.get("started_at", ""), now),
+            "hub": bool(p.get("hub")),
+        }
+        for p in processes
+    ]
+
+
+def processes_summary(processes: list[dict[str, Any]]) -> str:
+    """'3 процесса · порты 8000, 5173' for the overview's heading."""
+    count = len(processes)
+    if not count:
+        return ""
+    ports = sorted({port for p in processes for port in p.get("ports", [])})
+    text = f"{count} {presenter.plural(count, 'процесс', 'процесса', 'процессов')}"
+    if ports:
+        text += " · " + presenter.plural(len(ports), "порт ", "порты ", "порты ") + ", ".join(map(str, ports))
+    return text

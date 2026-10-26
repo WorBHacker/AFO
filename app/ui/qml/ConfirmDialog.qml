@@ -4,6 +4,7 @@ import QtQuick.Controls.Basic
 // A question the controller asks (App.question): a title, the text, cancel / confirm. Answers go to App.answer().
 Popup {
     id: dialog
+    objectName: "confirmDialog"
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: 460
@@ -19,7 +20,7 @@ Popup {
         target: App
         function onQuestionChanged() {
             if (App.question.title) dialog.open()
-            else if (dialog.opened) dialog.close()
+            else if (dialog.visible) dialog.close()  // also while it is still opening
         }
     }
 

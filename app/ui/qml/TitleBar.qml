@@ -34,7 +34,8 @@ Item {
         Text {
             width: parent.width
             visible: text !== ""
-            text: App.mode === "projects" ? (Projects.currentId ? (Projects.git.summary || "") : "") : App.currentMeta
+            text: App.mode !== "projects" ? App.currentMeta
+                  : Projects.currentId ? [Projects.git.summary, Projects.processesSummary].filter(s => !!s).join(" · ") : ""
             elide: Text.ElideRight
             color: Theme.p.faint
             font.family: Theme.uiFont

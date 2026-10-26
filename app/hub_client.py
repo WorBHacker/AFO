@@ -146,6 +146,13 @@ class HubClient:
         params = {"path": path, "staged": "true" if staged else "false"}
         return self._call("GET", f"/v1/projects/{project_id}/diff", params=params)
 
+    def processes(self) -> dict[str, list[dict]]:
+        """project id -> its processes."""
+        return self._call("GET", "/v1/processes")["projects"]
+
+    def stop_process(self, pid: int) -> dict:
+        return self._call("POST", f"/v1/processes/{pid}/stop")
+
     # --- keys and the hub itself ---
 
     def secrets(self) -> list[dict]:
