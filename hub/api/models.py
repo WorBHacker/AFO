@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import store
 from ..auth import Client
@@ -25,3 +26,18 @@ async def sync_models(request: Request, client: Annotated[Client, Depends(requir
     await request.app.state.bus.publish("models.synced", result)
     rows = await request.app.state.db.acall(store.list_models)
     return {**result, "models": rows}
+
+
+@router.post("/models/unload")
+async def unload_local(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """Frees the GPU: llama-swap stops whatever local model it runs (it loads one again on the next message)."""
+    url = f"{request.app.state.settings.llama_swap_url.rstrip('/')}/api/models/unload"
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            response = await http.post(url)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"llama-swap did not unload: {exc}") from exc
+    await request.app.state.bus.publish("models.unloaded", {"by": client.name})
+    await request.app.state.status.sample()  # clients see the freed VRAM right away
+    return {"unloaded": True}

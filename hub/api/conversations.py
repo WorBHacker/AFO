@@ -26,6 +26,10 @@ class NewConversation(BaseModel):
     title: str = ""
 
 
+class ConversationPatch(BaseModel):
+    title: str = Field(max_length=200)
+
+
 class SendMessage(BaseModel):
     content: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
@@ -51,14 +55,35 @@ async def get_conversation(
     conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
     def read(conn):
-        if not store.conversation_exists(conn, conversation_id):
+        title = store.get_title(conn, conversation_id)
+        if title is None:
             return None
-        return [m.to_json() for m in store.get_messages(conn, conversation_id)]
+        usage = store.usage_by_message(conn, conversation_id)
+        messages = [{**m.to_json(), "usage": usage.get(m.id)} for m in store.get_messages(conn, conversation_id)]
+        return title, messages
 
-    messages = await request.app.state.db.acall(read)
-    if messages is None:
+    found = await request.app.state.db.acall(read)
+    if found is None:
         raise HTTPException(status_code=404, detail="no such conversation")
-    return {"id": conversation_id, "messages": messages, "busy": conversation_id in request.app.state.chat.busy}
+    title, messages = found
+    return {
+        "id": conversation_id,
+        "title": title,
+        "messages": messages,
+        "busy": conversation_id in request.app.state.chat.busy,
+    }
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str, body: ConversationPatch, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    title = body.title.strip()
+    renamed = await request.app.state.db.acall(lambda conn: store.set_title(conn, conversation_id, title))
+    if not renamed:
+        raise HTTPException(status_code=404, detail="no such conversation")
+    await request.app.state.bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
+    return {"id": conversation_id, "title": title}
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)

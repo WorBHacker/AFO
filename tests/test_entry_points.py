@@ -101,7 +101,9 @@ def test_token_cli(env):
     assert run(env, "hub", "token", "revoke", "cline").returncode == 1
 
 
-def test_app_entry_point_runs_and_logs(env, isolated_data_dir):
-    result = run(env, "app")
+def test_app_entry_point_builds_the_window(env, isolated_data_dir):
+    result = run({**env, "QT_QPA_PLATFORM": "offscreen"}, "app", "--smoke")
     assert result.returncode == 0, result.stderr
-    assert "LocalChat app" in (isolated_data_dir / "logs" / "app.log").read_text(encoding="utf-8")
+    log_text = (isolated_data_dir / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "LocalChat app" in log_text
+    assert "the window was built" in log_text

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -43,7 +44,18 @@ async def info(request: Request, client: Annotated[Client, Depends(require_clien
 
 @router.get("/usage")
 async def usage(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
-    return await request.app.state.db.acall(store.usage_totals)
+    midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    since = midnight.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # "today" is the local day
+    return await request.app.state.db.acall(lambda conn: store.usage_totals(conn, today_since=since))
+
+
+@router.get("/status")
+async def status(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """GPU, memory and the loaded local model (the latest sample, or a fresh one), plus busy chats.
+    The same picture arrives as `system.status` events whenever it changes."""
+    monitor = request.app.state.status
+    sample = monitor.latest or await monitor.sample()
+    return {**sample, "busy": request.app.state.chat.busy}
 
 
 @router.post("/shutdown", status_code=202)

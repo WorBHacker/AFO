@@ -54,7 +54,8 @@ CHARS_PER_TOKEN_ESTIMATE = 3  # only for a cancelled run, whose output count Ant
 
 
 def _default_client_factory(api_key: str) -> Any:
-    return anthropic.AsyncAnthropic(api_key=api_key)
+    # a long read timeout for slow thinking, but an unreachable API is reported in seconds, not minutes
+    return anthropic.AsyncAnthropic(api_key=api_key, timeout=anthropic.Timeout(600.0, connect=10.0))
 
 
 class AnthropicProvider:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -20,6 +22,7 @@ from .gateway.registry import build_default_gateway
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
+from .system_status import StatusMonitor
 
 log = logging.getLogger("hub")
 
@@ -44,13 +47,20 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.bus = bus
         app.state.gateway = gateway
         app.state.chat = ChatService(db, bus, gateway)
+        app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         await bus.publish("hub.started", {"version": __version__, "migrations_applied": applied})
-        synced = await gateway.sync_catalog()  # best effort: llama-swap or the network may be down
-        log.info("hub ready, app token in %s, model catalog: %s", token_file, synced)
+        # the catalog syncs in the background: the hub answers at once even if llama-swap or the network is slow
+        catalog = app.state.initial_sync = asyncio.create_task(_initial_sync(app))
+        app.state.status.start()
+        log.info("hub ready, app token in %s", token_file)
         try:
             yield
         finally:
+            catalog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await catalog
+            await app.state.status.stop()
             await bus.publish("hub.stopping", {})
             db.close()
             log.info("hub stopped")
@@ -70,3 +80,13 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(conversations.router)
     app.include_router(secrets.router)
     return app
+
+
+async def _initial_sync(app: FastAPI) -> None:
+    try:
+        result = await app.state.gateway.sync_catalog()  # best effort: llama-swap or the network may be down
+    except Exception:
+        log.exception("startup catalog sync failed")
+        return
+    log.info("model catalog: %s", result)
+    await app.state.bus.publish("models.synced", result)

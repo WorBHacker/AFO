@@ -24,6 +24,7 @@ class HubSettings:
     allowed_hostnames: frozenset[str] = LOCAL_HOSTNAMES
     allowed_origins: frozenset[str] = frozenset()
     llama_swap_url: str = DEFAULT_LLAMA_SWAP_URL
+    status_interval_s: float = 2.0  # GPU / memory / llama-swap sampling; 0 turns the monitor off
 
     @classmethod
     def from_env(cls) -> HubSettings:

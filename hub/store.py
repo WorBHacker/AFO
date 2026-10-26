@@ -105,6 +105,11 @@ def conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool:
     return conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is not None
 
 
+def get_title(conn: sqlite3.Connection, conversation_id: str) -> str | None:
+    row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    return row["title"] if row else None
+
+
 def list_conversations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT id, kind, title, created_at, updated_at FROM conversations WHERE archived = 0 ORDER BY updated_at DESC"
@@ -112,8 +117,12 @@ def list_conversations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def set_title(conn: sqlite3.Connection, conversation_id: str, title: str) -> None:
-    conn.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, utc_now(), conversation_id))
+def set_title(conn: sqlite3.Connection, conversation_id: str, title: str) -> bool:
+    return bool(
+        conn.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?", (title, utc_now(), conversation_id)
+        ).rowcount
+    )
 
 
 def delete_conversation(conn: sqlite3.Connection, conversation_id: str) -> bool:
@@ -175,12 +184,13 @@ def record_usage(
     usage: dict[str, int],
     cost_usd: float,
     estimated: bool = False,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO usage (client_id, conversation_id, message_id, model_id,
-                           input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_usd, estimated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO usage (client_id, conversation_id, message_id, model_id, input_tokens, cached_input_tokens,
+                           cache_write_tokens, output_tokens, cost_usd, estimated, meta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             client_id,
@@ -193,13 +203,38 @@ def record_usage(
             usage.get("output_tokens", 0),
             cost_usd,
             int(estimated),
+            json.dumps(meta or {}, ensure_ascii=False),
         ),
     )
 
 
-def usage_totals(conn: sqlite3.Connection) -> dict[str, Any]:
+def usage_by_message(conn: sqlite3.Connection, conversation_id: str) -> dict[int, dict[str, Any]]:
+    """message id -> what producing it cost: tokens, USD, and the run's stats (speed, stop reason)."""
+    rows = conn.execute(
+        "SELECT message_id, input_tokens, cached_input_tokens, output_tokens, cost_usd, estimated, meta "
+        "FROM usage WHERE conversation_id = ? AND message_id IS NOT NULL",
+        (conversation_id,),
+    ).fetchall()
+    return {
+        r["message_id"]: {
+            "input_tokens": r["input_tokens"],
+            "cached_input_tokens": r["cached_input_tokens"],
+            "output_tokens": r["output_tokens"],
+            "cost_usd": r["cost_usd"],
+            "estimated": bool(r["estimated"]),
+            **json.loads(r["meta"]),
+        }
+        for r in rows
+    }
+
+
+def usage_totals(conn: sqlite3.Connection, *, today_since: str | None = None) -> dict[str, Any]:
+    """Totals over all time, by model, and since `today_since` (UTC ISO time of the local midnight)."""
     row = conn.execute(
         "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COALESCE(SUM(output_tokens), 0) AS out, COUNT(*) AS n FROM usage"
+    ).fetchone()
+    today = conn.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0) AS cost, COUNT(*) AS n FROM usage WHERE ts >= ?", (today_since or "",)
     ).fetchone()
     by_model = conn.execute(
         "SELECT model_id, ROUND(SUM(cost_usd), 6) AS cost, SUM(output_tokens) AS out, COUNT(*) AS n "
@@ -209,5 +244,7 @@ def usage_totals(conn: sqlite3.Connection) -> dict[str, Any]:
         "total_cost_usd": round(row["cost"], 6),
         "total_output_tokens": row["out"],
         "requests": row["n"],
+        "today_cost_usd": round(today["cost"], 6),
+        "today_requests": today["n"],
         "by_model": [dict(r) for r in by_model],
     }

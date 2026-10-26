@@ -7,7 +7,7 @@
 | Папка | Что это |
 |---|---|
 | `hub/` | хаб — фоновый процесс на `127.0.0.1:8765`: API, база, шлюз моделей (llama-swap, Claude) |
-| `app/` | приложение на PySide6 |
+| `app/` | окно чата на PySide6 (Qt Widgets): клиент хаба, сам запускает хаб, если тот не работает |
 | `common/` | общий код: пути к данным, логирование |
 | `tests/` | тесты (pytest) |
 | `data/` | база, логи, снимки — создаётся сама, в git не попадает |
@@ -30,12 +30,17 @@ py -3.14 -m venv .venv
 .venv/Scripts/python.exe -m pytest
 ```
 
-Запуск:
+Запуск окна: двойной щелчок по `LocalChat.cmd` (без консоли) или
+
+```bash
+.venv/Scripts/python.exe -m app
+```
+
+Окно само запускает хаб, если он не работает; после закрытия окна хаб продолжает работать. Хаб вручную:
 
 ```bash
 .venv/Scripts/python.exe -m hub
 .venv/Scripts/python.exe -m hub stop
-.venv/Scripts/python.exe -m app
 ```
 
 Ключ Anthropic (для моделей Claude) хранится в диспетчере учётных данных Windows, ввод скрыт:

@@ -15,9 +15,15 @@ BASE = "http://127.0.0.1:8765"
 
 @pytest.fixture
 def hub():
-    app = create_app(HubSettings(paths=data_paths()))
+    # no status monitor, and the startup catalog sync finished: the WebSocket tests see only their own events
+    app = create_app(HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0))
     with TestClient(app, base_url=BASE) as client:
         client.app_token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+
+        async def initial_sync_done():
+            await app.state.initial_sync
+
+        client.portal.call(initial_sync_done)
         yield client
 
 

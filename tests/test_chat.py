@@ -264,3 +264,40 @@ def test_models_a_provider_stops_listing_are_disabled(hub):
     r = send(hub, conv, "hi")
     assert r.status_code == 409
     assert "not available" in r.json()["detail"]
+
+
+def test_first_message_names_the_chat_and_patch_renames_it(hub):
+    register_fake(hub)
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={}).json()["id"]
+    long_text = "Как   устроен\nхаб " + "очень " * 20
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        send(hub, conv, long_text)
+        titled = drain_until(ws, "chat.titled")[-1]["payload"]
+        drain_until(ws, "chat.done")
+        send(hub, conv, "второе сообщение")
+        drain_until(ws, "chat.done")
+    assert titled["title"].startswith("Как устроен хаб очень")
+    assert len(titled["title"]) <= 60 and titled["title"].endswith("…")
+    body = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()
+    assert body["title"] == titled["title"]  # the second message did not rename it
+    renamed = hub.patch(f"/v1/conversations/{conv}", headers=auth(hub), json={"title": "  Хаб  "})
+    assert renamed.json()["title"] == "Хаб"
+    assert hub.get("/v1/conversations", headers=auth(hub)).json()["conversations"][0]["title"] == "Хаб"
+    assert hub.patch("/v1/conversations/ghost", headers=auth(hub), json={"title": "x"}).status_code == 404
+
+
+def test_history_carries_each_answers_usage_and_stats(hub):
+    register_fake(hub)
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={}).json()["id"]
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        send(hub, conv, "hi")
+        drain_until(ws, "chat.done")
+    user, assistant = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
+    assert user["usage"] is None
+    assert assistant["usage"]["output_tokens"] == 3
+    assert assistant["usage"]["stats"] == {"tok_s": 50.0}
+    assert assistant["usage"]["cancelled"] is False
+    totals = hub.get("/v1/usage", headers=auth(hub)).json()
+    assert totals["today_requests"] == 1

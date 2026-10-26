@@ -27,6 +27,7 @@ from .gateway.base import cost_usd
 log = logging.getLogger("hub.chat")
 
 DEFAULT_EFFORT = "medium"
+TITLE_LENGTH = 60
 
 
 class ChatService:
@@ -58,7 +59,17 @@ class ChatService:
         if not model["enabled"]:
             raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
         user_blocks = [{"type": "text", "text": text}]
-        user_msg = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "user", user_blocks))
+
+        def write(conn):
+            title = None
+            if not store.get_title(conn, conversation_id):  # an untitled chat is named after its first message
+                title = _title_from(text)
+                store.set_title(conn, conversation_id, title)
+            return store.add_message(conn, conversation_id, "user", user_blocks), title
+
+        user_msg, title = await self._db.acall(write)
+        if title:
+            await self._bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
@@ -152,6 +163,11 @@ class ChatService:
                 usage=completion.usage,
                 cost_usd=cost,
                 estimated=bool(completion.usage.get("estimated")),
+                meta={
+                    "stats": completion.stats,
+                    "stop_reason": completion.stop_reason,
+                    "cancelled": completion.cancelled,
+                },
             )
             return message
 
@@ -183,6 +199,7 @@ class ChatService:
                 usage=completion.usage,
                 cost_usd=cost,
                 estimated=bool(completion.usage.get("estimated")),
+                meta={"stats": completion.stats, "stop_reason": completion.stop_reason},
             )
         )
         await self._bus.publish(
@@ -195,6 +212,11 @@ class ChatService:
                 "cost_usd": cost,
             },
         )
+
+
+def _title_from(text: str) -> str:
+    line = " ".join(text.split())
+    return line if len(line) <= TITLE_LENGTH else line[: TITLE_LENGTH - 1].rstrip() + "…"
 
 
 def _to_prompt(history: list[store.MessageRow]) -> list[dict[str, Any]]:

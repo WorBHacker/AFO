@@ -75,7 +75,9 @@ def _run_uvicorn(settings: HubSettings) -> None:
 
     from .server import create_app
 
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # per-request lines would flood the log: the status monitor asks llama-swap every couple of seconds
+    for noisy in ("uvicorn.access", "httpx", "httpx2", "anthropic"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     app = create_app(settings)
     config = uvicorn.Config(
         app,

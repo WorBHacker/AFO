@@ -12,7 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 hub = ["fastapi>=0.162", "uvicorn>=0.54", "websockets>=17", "httpx>=0.28", "anthropic>=2.3", "keyring>=25.7"]
-app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "markdown-it-py>=4.0", "pygments>=2.21"]
+app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "websockets>=17", "markdown-it-py>=4.0", "pygments>=2.21"]
 dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's TestClient wants now
 
 [tool.setuptools.packages.find]
