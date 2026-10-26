@@ -18,8 +18,7 @@ from common import __version__
 from common.logging_setup import setup_logging
 from common.paths import data_paths
 
-from . import theme
-from .window import MainWindow
+from .window import MainWindow  # it applies the saved theme (Вид → Тема)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,7 +34,6 @@ def main(argv: list[str] | None = None) -> int:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.App")
     app = QApplication(sys.argv[:1])
     app.setApplicationName("LocalChat")
-    theme.apply(app)
     window = MainWindow(data_paths().ensure())
     if args.smoke:
         log.info("smoke check: the window was built")

@@ -1,40 +1,138 @@
-"""Design tokens: colours, radii, fonts. One place for the Qt style sheet (theme.py) and the HTML (render.py).
+"""Design tokens (D36): colours for a dark and a light theme, radii, sizes, fonts. One place for the Qt style
+sheet (theme.py) and the message HTML (render.py).
 
-A deep neutral dark theme with no pure black (#000 smears when scrolling on many panels). Surfaces step up in
-lightness: window < panels < cards and inputs; code sits a step below the card it is on. Edges are 1px hairlines,
-not shadows.
+Both themes follow the same rules. Neutral greys with a hint of cool; edges are 1px hairlines, not shadows.
+- dark: no pure black (#000 smears when scrolling on many panels); surfaces step up in lightness:
+  window < panels < cards and inputs, code a step below the card it is on
+- light: the content area a soft grey, panels a step darker, cards and inputs white, code a step below white
+
+`current()` is the palette in use; theme.apply() switches it, and widgets that draw HTML re-render on a switch.
 """
 
 from __future__ import annotations
 
-# surfaces
-WINDOW = "#0f1012"  # window background
-PANEL = "#18191c"  # side panels, docks, the status bar, menus
-CARD = "#1f2024"  # message cards, inputs
-CARD_HOVER = "#25262b"
-CODE_BG = "#141518"  # code body, a step below the card
-CODE_HEAD = "#1a1b1f"  # code header
+from dataclasses import dataclass
 
-# lines: a 1px white hairline at 8% for Qt style sheets; Qt's HTML takes no rgba, so the same line pre-blended
-HAIRLINE = "rgba(255, 255, 255, 0.08)"
-HAIRLINE_STRONG = "rgba(255, 255, 255, 0.16)"
-HAIRLINE_ON_CARD = "#323337"  # HAIRLINE over CARD
 
-# text
-TEXT = "#e4e5e9"
-TEXT_SOFT = "#c9cbd1"  # long-form answer text, a touch softer than UI labels
-MUTED = "#8b8e96"  # secondary text, reasoning
-FAINT = "#5f626a"  # placeholders, disabled
-LINK = "#7cb7ff"
-INLINE_CODE_BG = "#2a2b30"
+@dataclass(frozen=True)
+class Palette:
+    name: str
+    dark: bool
+    # surfaces
+    window: str  # window background
+    panel: str  # side panel, the status bar
+    popup: str  # menus, drop-down lists, tooltips
+    card: str  # message cards, inputs, buttons
+    card_hover: str
+    item_hover: str  # list rows on the panel
+    item_selected: str
+    code_bg: str  # code body, a step below the card
+    code_head: str  # code header
+    # lines; Qt's HTML takes no rgba, so the card's hairline also comes pre-blended
+    hairline: str
+    hairline_strong: str
+    hairline_on_card: str
+    scroll_handle: str
+    scroll_handle_hover: str
+    # text
+    text: str
+    text_soft: str  # long-form answer text
+    muted: str  # secondary text, reasoning
+    faint: str  # placeholders, footers
+    link: str
+    inline_code_bg: str
+    # accents and states
+    accent: str
+    accent_hover: str
+    on_accent: str
+    selection: str
+    ok: str
+    warn: str
+    error: str
+    error_line: str
+    code_styles: tuple[str, ...]  # Pygments styles, the first one installed is used
 
-# accents and states
-ACCENT = "#4f8cff"
-ACCENT_HOVER = "#6a9dff"
-SELECTION = "#264f78"
-OK = "#3fb950"
-WARN = "#d29922"
-ERROR = "#f0883e"
+
+DARK = Palette(
+    name="dark",
+    dark=True,
+    window="#0f1012",
+    panel="#18191c",
+    popup="#18191c",
+    card="#1f2024",
+    card_hover="#25262b",
+    item_hover="#1f2024",
+    item_selected="#25262b",
+    code_bg="#141518",
+    code_head="#1a1b1f",
+    hairline="rgba(255, 255, 255, 0.08)",
+    hairline_strong="rgba(255, 255, 255, 0.16)",
+    hairline_on_card="#323337",
+    scroll_handle="rgba(255, 255, 255, 0.12)",
+    scroll_handle_hover="rgba(255, 255, 255, 0.24)",
+    text="#e4e5e9",
+    text_soft="#c9cbd1",
+    muted="#8b8e96",
+    faint="#5f626a",
+    link="#7cb7ff",
+    inline_code_bg="#2a2b30",
+    accent="#4f8cff",
+    accent_hover="#6a9dff",
+    on_accent="#ffffff",
+    selection="#264f78",
+    ok="#3fb950",
+    warn="#d29922",
+    error="#f0883e",
+    error_line="rgba(240, 136, 62, 0.45)",
+    code_styles=("github-dark", "monokai"),
+)
+
+LIGHT = Palette(
+    name="light",
+    dark=False,
+    window="#f5f5f7",
+    panel="#ececef",
+    popup="#ffffff",
+    card="#ffffff",
+    card_hover="#f1f2f5",
+    item_hover="#e3e4e8",
+    item_selected="#dadce1",
+    code_bg="#f6f7f9",
+    code_head="#eef0f3",
+    hairline="rgba(0, 0, 0, 0.08)",
+    hairline_strong="rgba(0, 0, 0, 0.16)",
+    hairline_on_card="#e8e9ec",
+    scroll_handle="rgba(0, 0, 0, 0.18)",
+    scroll_handle_hover="rgba(0, 0, 0, 0.32)",
+    text="#1d2025",
+    text_soft="#2f333a",
+    muted="#686d76",
+    faint="#9da1a9",
+    link="#0a63d1",
+    inline_code_bg="#eceef2",
+    accent="#2f6fec",
+    accent_hover="#255fd4",
+    on_accent="#ffffff",
+    selection="#cfe0ff",
+    ok="#1a7f37",
+    warn="#9a6700",
+    error="#c4501a",
+    error_line="rgba(196, 80, 26, 0.45)",
+    code_styles=("xcode", "default"),
+)
+
+PALETTES = {p.name: p for p in (DARK, LIGHT)}
+_current = DARK
+
+
+def current() -> Palette:
+    return _current
+
+
+def use(palette: Palette) -> None:
+    global _current
+    _current = palette
+
 
 # shape
 RADIUS_CONTROL = 6  # buttons, inputs, combo boxes

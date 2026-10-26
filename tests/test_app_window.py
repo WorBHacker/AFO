@@ -269,3 +269,35 @@ def test_the_composer_grows_with_its_text(window):
 def test_titles_follow_events(window):
     window.on_event({"type": "chat.titled", "payload": {"conversation_id": "c1", "title": "Новое имя"}})
     assert window.chat_list.item(0).text() == "Новое имя"
+
+
+def test_light_and_dark_switch_on_the_fly(window):
+    from app import palette
+
+    _user, answer = open_first_chat(window)
+    answer.set_markdown("текст\n\n```python\nx = 1\n```")
+    window.set_theme("dark")
+    assert palette.current() is palette.DARK
+    dark_prose, dark_code = answer.prose_html(), answer.code_blocks()[0].view.toHtml()
+    assert palette.DARK.text_soft in dark_prose
+    assert palette.DARK.window in QApplication.instance().styleSheet()
+
+    window.set_theme("light")
+    assert palette.current() is palette.LIGHT
+    assert window.theme_actions["light"].isChecked()
+    assert palette.LIGHT.text_soft in answer.prose_html()  # the open chat re-rendered its HTML
+    assert answer.code_blocks()[0].view.toHtml() != dark_code  # and its code colours
+    assert palette.LIGHT.window in QApplication.instance().styleSheet()
+    assert f"color:{palette.LIGHT.ok}" in window.hub_label.text().replace(" ", "")
+    assert window.settings.value("ui/theme") == "light"
+
+
+def test_system_mode_follows_windows(window):
+    from PySide6.QtCore import Qt
+
+    from app import palette
+
+    window.set_theme("system")
+    scheme = QApplication.instance().styleHints().colorScheme()
+    expected = palette.LIGHT if scheme == Qt.ColorScheme.Light else palette.DARK
+    assert palette.current() is expected

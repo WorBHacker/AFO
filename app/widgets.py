@@ -107,7 +107,11 @@ class ThinkingBlock(QFrame):
 
     def _html(self) -> str:
         # muted and a size down: the page's own style sheet would otherwise give it the answer's colour
-        return page(f'<div style="color:{palette.MUTED}; font-size:9pt;">{render_plain(self._text)}</div>')
+        return page(f'<div style="color:{palette.current().muted}; font-size:9pt;">{render_plain(self._text)}</div>')
+
+    def restyle(self) -> None:
+        if self.expanded:
+            self.body.setText(self._html())
 
     def _toggled(self, shown: bool) -> None:
         if shown:
@@ -222,6 +226,9 @@ class CodeBlock(QFrame):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         return button
 
+    def restyle(self) -> None:
+        self.view.set_highlighted(highlight_code(self.code, self._lang or ""))
+
     def set_code(self, lang: str, code: str) -> None:
         if lang != self._lang:
             self._lang = lang
@@ -313,6 +320,15 @@ class MessageWidget(QFrame):
             self._content.addWidget(widget)
             self._segments.append(widget)
         return widget
+
+    def restyle(self) -> None:
+        """Renders the HTML again after a theme switch: colours live inside it, not in the style sheet."""
+        for segment, widget in zip(self._shown, self._segments, strict=True):
+            if isinstance(segment, Prose):
+                widget.setText(page(segment.html))
+            else:
+                widget.restyle()
+        self.thinking.restyle()
 
     def prose_html(self) -> str:
         return "".join(w.text() for w in self._segments if isinstance(w, QLabel))

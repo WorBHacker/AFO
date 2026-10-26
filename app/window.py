@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -35,7 +36,7 @@ from PySide6.QtWidgets import (
 
 from common.paths import DataPaths
 
-from . import palette, presenter
+from . import palette, presenter, theme
 from .events import EventThread
 from .hub_client import HubClient, HubError, connect
 from .tasks import Background
@@ -48,12 +49,12 @@ RENDER_INTERVAL_MS = 80  # streamed text is re-rendered at most ~12 times a seco
 THINK_TICK_MS = 100  # the thinking timer while a model reasons
 FLASH_MS = 6000
 VRAM_WARN = 0.98  # a loaded model fills VRAM by design; only the last couple of percent is a warning
-HUB_STATES = {
-    "connecting": (palette.MUTED, "подключение…"),
-    "up": (palette.OK, "подключён"),
-    "lost": (palette.WARN, "нет связи, переподключение…"),
-    "down": (palette.ERROR, "недоступен"),
-    "stopped": (palette.ERROR, "остановлен"),
+HUB_STATES = {  # state -> (palette colour, words)
+    "connecting": ("muted", "подключение…"),
+    "up": ("ok", "подключён"),
+    "lost": ("warn", "нет связи, переподключение…"),
+    "down": ("error", "недоступен"),
+    "stopped": ("error", "остановлен"),
 }
 
 
@@ -96,6 +97,11 @@ class MainWindow(QMainWindow):
         self.session = presenter.Session()
         self.totals: dict[str, Any] | None = None
         self._link: bool | None = None  # events connection: never up yet / up / lost
+        self._hub_state = "connecting"
+        self.theme_mode = self.settings.value("ui/theme", "system")
+        app = QApplication.instance()
+        theme.apply(app, self.theme_mode)
+        app.styleHints().colorSchemeChanged.connect(self._system_scheme_changed)
         self._render_timer = self._timer(RENDER_INTERVAL_MS, self._render_live, single=True)
         self._think_timer = self._timer(THINK_TICK_MS, self._render_live)
         self._flash_timer = self._timer(FLASH_MS, lambda: self.flash_label.clear(), single=True)
@@ -125,6 +131,18 @@ class MainWindow(QMainWindow):
         hub_menu.addSeparator()
         self._add_action(hub_menu, "Подключиться заново", self.connect_hub)
         self._add_action(hub_menu, "Остановить хаб и выйти", self.stop_hub_and_quit)
+
+        view_menu = self.menuBar().addMenu("Вид")
+        themes = view_menu.addMenu("Тема")
+        group = QActionGroup(self)
+        self.theme_actions: dict[str, QAction] = {}
+        for mode, label in theme.MODES:
+            action = QAction(label, self, checkable=True)
+            action.setChecked(mode == self.theme_mode)
+            action.triggered.connect(lambda _checked=False, m=mode: self.set_theme(m))
+            group.addAction(action)
+            themes.addAction(action)
+            self.theme_actions[mode] = action
 
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
@@ -156,7 +174,6 @@ class MainWindow(QMainWindow):
         column.addWidget(self._composer_card())
 
         self.splitter = QSplitter()
-        self.splitter.setHandleWidth(1)
         self.splitter.addWidget(sidebar)
         self.splitter.addWidget(main)
         self.splitter.setStretchFactor(1, 1)
@@ -269,10 +286,31 @@ class MainWindow(QMainWindow):
         index = self.effort_box.findData(effort)
         self.effort_box.setCurrentIndex(index if index >= 0 else 1)
 
+    # --- theme ---
+
+    def set_theme(self, mode: str) -> None:
+        """'system', 'light' or 'dark'; switches at once and is remembered."""
+        self.theme_mode = mode
+        self.settings.setValue("ui/theme", mode)
+        self.theme_actions[mode].setChecked(True)
+        self._apply_theme()
+
+    def _system_scheme_changed(self, _scheme) -> None:
+        if self.theme_mode == "system":
+            self._apply_theme()
+
+    def _apply_theme(self) -> None:
+        theme.apply(QApplication.instance(), self.theme_mode)
+        for widget in self.transcript.messages():  # their HTML carries the old colours
+            widget.restyle()
+        self._set_hub_state(self._hub_state)
+
     # --- the status bar ---
 
     def _set_hub_state(self, state: str) -> None:
-        colour, text = HUB_STATES[state]
+        self._hub_state = state
+        colour_name, text = HUB_STATES[state]
+        colour = getattr(palette.current(), colour_name)
         port = presenter.hub_port(self.client.base_url if self.client else None)
         self.hub_label.setText(f'<span style="color:{colour};">●</span>&nbsp;Хаб {port}'.rstrip())
         where = self.client.base_url if self.client else "адрес ещё не известен"

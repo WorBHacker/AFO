@@ -1,5 +1,7 @@
 """Markdown -> what the chat shows: the prose as HTML (the subset Qt's rich text understands) and each code block
 apart, as (language, code), so the window gives every code block its own widget with a header and a copy button.
+
+Colours come from the current palette; after a theme switch the widgets render their HTML again.
 """
 
 from __future__ import annotations
@@ -14,23 +16,10 @@ from pygments.lexers import TextLexer, get_lexer_by_name
 from pygments.styles import get_all_styles
 from pygments.util import ClassNotFound
 
-from .palette import CODE_HEAD, HAIRLINE_ON_CARD, INLINE_CODE_BG, LINE_HEIGHT, LINK, MONO_CSS, MUTED, TEXT_SOFT
+from . import palette
 
-STYLE_SHEET = f"""
-body {{ color: {TEXT_SOFT}; }}
-p, li, blockquote {{ line-height: {LINE_HEIGHT}; }}
-a {{ color: {LINK}; text-decoration: none; }}
-code {{ font-family: {MONO_CSS}; background-color: {INLINE_CODE_BG}; }}
-pre {{ font-family: {MONO_CSS}; }}
-th {{ border: 1px solid {HAIRLINE_ON_CARD}; padding: 4px 8px; background-color: {CODE_HEAD}; }}
-td {{ border: 1px solid {HAIRLINE_ON_CARD}; padding: 4px 8px; }}
-blockquote {{ color: {MUTED}; margin-left: 12px; }}
-h1 {{ font-size: 140%; }} h2 {{ font-size: 125%; }} h3 {{ font-size: 112%; }}
-"""
-
-_STYLE = "github-dark" if "github-dark" in set(get_all_styles()) else "monokai"
-_FORMATTER = HtmlFormatter(style=_STYLE, noclasses=True, nowrap=True)
 _MARK = "\x00"  # CommonMark turns NUL in the input into U+FFFD, so this never comes from the model
+_FORMATTERS: dict[str, HtmlFormatter] = {}
 
 
 @dataclass(frozen=True)
@@ -42,6 +31,32 @@ class Prose:
 class Code:
     lang: str
     code: str
+
+
+def style_sheet() -> str:
+    """The CSS for message HTML in the current theme."""
+    p = palette.current()
+    return f"""
+body {{ color: {p.text_soft}; }}
+p, li, blockquote {{ line-height: {palette.LINE_HEIGHT}; }}
+a {{ color: {p.link}; text-decoration: none; }}
+code {{ font-family: {palette.MONO_CSS}; background-color: {p.inline_code_bg}; }}
+pre {{ font-family: {palette.MONO_CSS}; }}
+th {{ border: 1px solid {p.hairline_on_card}; padding: 4px 8px; background-color: {p.code_head}; }}
+td {{ border: 1px solid {p.hairline_on_card}; padding: 4px 8px; }}
+blockquote {{ color: {p.muted}; margin-left: 12px; }}
+h1 {{ font-size: 140%; }} h2 {{ font-size: 125%; }} h3 {{ font-size: 112%; }}
+"""
+
+
+def _formatter() -> HtmlFormatter:
+    """Pygments colours that suit the current theme (inline styles, so Qt needs no style sheet for them)."""
+    p = palette.current()
+    if p.name not in _FORMATTERS:
+        installed = set(get_all_styles())
+        style = next((s for s in p.code_styles if s in installed), "default")
+        _FORMATTERS[p.name] = HtmlFormatter(style=style, noclasses=True, nowrap=True)
+    return _FORMATTERS[p.name]
 
 
 def _fence(self, tokens, idx, options, env):
@@ -71,22 +86,22 @@ def render_segments(markdown_text: str) -> list[Prose | Code]:
 
 
 def highlight_code(code: str, lang: str) -> str:
-    """Pygments-coloured spans for a code block (no wrapper, inline styles)."""
+    """Coloured spans for a code block in the current theme (no wrapper, inline styles)."""
     try:
         lexer = get_lexer_by_name(lang) if lang else TextLexer()
     except ClassNotFound:
         lexer = TextLexer()
-    return highlight(code, lexer, _FORMATTER).rstrip("\n")
+    return highlight(code, lexer, _formatter()).rstrip("\n")
 
 
 def render_plain(text: str) -> str:
     """User messages and reasoning: keep line breaks, no Markdown surprises."""
-    return f'<p style="white-space:pre-wrap; line-height:{LINE_HEIGHT};">{html.escape(text)}</p>'
+    return f'<p style="white-space:pre-wrap; line-height:{palette.LINE_HEIGHT};">{html.escape(text)}</p>'
 
 
 def page(body: str) -> str:
     """A full document for a QLabel, which has no default style sheet of its own."""
-    return f"<html><head><style>{STYLE_SHEET}</style></head><body>{body}</body></html>"
+    return f"<html><head><style>{style_sheet()}</style></head><body>{body}</body></html>"
 
 
 def language_label(lang: str) -> str:

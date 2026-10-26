@@ -49,3 +49,29 @@ def test_plain_text_keeps_line_breaks_and_escapes():
 def test_page_carries_the_style_sheet():
     document = page("<p>x</p>")
     assert "<style>" in document and "line-height: 140%" in document
+
+
+def test_colours_follow_the_current_palette():
+    from app import palette
+
+    try:
+        palette.use(palette.LIGHT)
+        light_css, light_code = page("x"), highlight_code("def f(): pass", "python")
+        palette.use(palette.DARK)
+        dark_css, dark_code = page("x"), highlight_code("def f(): pass", "python")
+    finally:
+        palette.use(palette.DARK)
+    assert palette.LIGHT.text_soft in light_css and palette.DARK.text_soft in dark_css
+    assert light_code != dark_code  # a light Pygments style in the light theme
+
+
+def test_both_palettes_define_every_token_and_dark_has_no_pure_black():
+    from dataclasses import fields
+
+    from app import palette
+
+    for field in fields(palette.Palette):
+        assert getattr(palette.LIGHT, field.name) is not None
+        assert getattr(palette.DARK, field.name) is not None
+    dark_colours = [v for v in vars(palette.DARK).values() if isinstance(v, str) and v.startswith("#")]
+    assert "#000000" not in dark_colours
