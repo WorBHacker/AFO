@@ -16,6 +16,16 @@ from pygments.util import ClassNotFound
 from .. import palette, presenter
 from ..render import highlight_code
 
+# code the hub's symbol index reads (hub/symbols.py, SUFFIXES): such a file has an outline
+OUTLINE_SUFFIXES = {
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx", ".go", ".rs", ".java", ".cs", ".c",
+    ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
+}  # fmt: skip
+SYMBOL_KINDS = {
+    "function": ("ƒ", "функция"), "method": ("ƒ", "метод"), "class": ("C", "класс"), "interface": ("I", "интерфейс"),
+    "type": ("T", "тип"), "module": ("N", "модуль"), "constant": ("K", "константа"), "macro": ("#", "макрос"),
+    "impl": ("I", "реализация"),
+}  # fmt: skip
 HIGHLIGHT_MAX_BYTES = 300_000  # bigger files are shown as plain text: rich text that large is slow to lay out
 CONFLICT = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 
@@ -146,6 +156,7 @@ def file_view(data: dict[str, Any]) -> dict[str, Any]:
         "truncated": bool(data.get("truncated")),
         "text": data.get("text", ""),
         "lang": language_of(path),
+        "outline": "." in path.rsplit("/", 1)[-1] and "." + path.rsplit(".", 1)[-1].lower() in OUTLINE_SUFFIXES,
     }
     if not view["binary"]:
         view.update(code_view(view["text"], path))
@@ -286,8 +297,48 @@ def highlighted(text: str, ranges: list[list[int]]) -> str:
     return "".join(out).replace("  ", "&nbsp; ")
 
 
+def _symbol(symbol: dict[str, Any]) -> dict[str, Any]:
+    badge, kind = SYMBOL_KINDS.get(symbol["kind"], ("·", symbol["kind"]))
+    return {"badge": badge, "kindText": kind, "tip": f"{kind}: {symbol['signature']}"}
+
+
+def symbol_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Definitions the symbol index found, a row each: badge, name, its class, file and line."""
+    return [
+        {
+            "kind": "symbol",
+            "key": f"s:{s['path']}:{s['line']}:{s['name']}",
+            "path": s["path"],
+            "name": s["name"],
+            "folder": f"{s['path']}:{s['line']}",
+            "container": s["container"],
+            "count": 0,
+            "line": s["line"],
+            "html": "",
+            **_symbol(s),
+        }
+        for s in result.get("symbols", [])
+    ]
+
+
+def outline_rows(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A file's definitions in order, nested by their containers."""
+    return [
+        {
+            "key": f"{s['line']}:{s['name']}",
+            "name": s["name"],
+            "line": s["line"],
+            "depth": s["container"].count(".") + 1 if s["container"] else 0,
+            **_symbol(s),
+        }
+        for s in symbols
+    ]
+
+
 def search_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
     """The hub's search answer as one flat list: a row per file, then a row per matching line."""
+    if "symbols" in result:
+        return symbol_rows(result)
     rows: list[dict[str, Any]] = []
     for item in result.get("files", []):
         path = item["path"]
@@ -339,6 +390,15 @@ def _lead(text: str, ranges: list[list[int]]) -> tuple[str, list[list[int]]]:
 def search_summary(result: dict[str, Any] | None) -> str:
     if result is None:
         return ""
+    if "symbols" in result:
+        total, shown = result.get("total", 0), len(result["symbols"])
+        text = (
+            f"{total} {presenter.plural(total, 'определение', 'определения', 'определений')}"
+            + (" (показаны первые)" if total > shown else "")
+            if total
+            else "определений не найдено"
+        )
+        return text + ("" if result.get("complete", True) else " · индекс ещё строится")
     count, files = result.get("matches", 0), len(result.get("files", []))
     if not count:
         return "ничего не найдено"

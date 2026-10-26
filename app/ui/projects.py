@@ -35,6 +35,7 @@ class Projects(QObject):
     notesChanged = Signal()
     linksChanged = Signal()
     searchChanged = Signal()
+    outlineChanged = Signal()
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -53,6 +54,8 @@ class Projects(QObject):
         self._search_args: tuple[str, bool, bool] = ("", False, False)
         self._search_gen = 0
         self._searching = False
+        self._symbol_mode = False  # search the symbol index (definitions) instead of the text
+        self._outline: dict[str, Any] = {"path": "", "rows": [], "state": ""}  # state: loading / ready / failed
         self._search_timer = app._timer(SEARCH_DELAY_MS, self._run_search, single=True)
         self._goto: tuple[str, int] | None = None  # a file to show at a line, from a search
         self._goto_seq = 0
@@ -118,6 +121,17 @@ class Projects(QObject):
     @Property(bool, notify=searchChanged)
     def searchActive(self) -> bool:
         return bool(self._search_args[0].strip())
+
+    @Property(bool, notify=searchChanged)
+    def symbolSearch(self) -> bool:
+        return self._symbol_mode
+
+    @Property("QVariantMap", notify=outlineChanged)
+    def outline(self) -> dict:
+        """The open file's definitions: {rows, state}; empty for another file than the one loaded."""
+        if self._outline["path"] != self._file.get("path"):
+            return {"rows": [], "state": ""}
+        return {"rows": self._outline["rows"], "state": self._outline["state"]}
 
     @Property("QVariantMap", notify=cardChanged)
     def card(self) -> dict:
@@ -517,12 +531,19 @@ class Projects(QObject):
             self._search_timer.start()
         self.searchChanged.emit()
 
+    @Slot(bool)
+    def setSymbolSearch(self, on: bool) -> None:
+        """Definitions only (the symbol index) or the text of the files; the current query runs again."""
+        self._symbol_mode = on
+        self.search(*self._search_args)
+
     def _run_search(self) -> None:
         text, regex, case_sensitive = self._search_args
         if not self.current or not text.strip():
             return
         pid, generation = self.current["id"], self._search_gen
         case = "sensitive" if case_sensitive else "smart"
+        symbols = self._symbol_mode
 
         def show(result: dict[str, Any]) -> None:
             if generation == self._search_gen:
@@ -535,7 +556,33 @@ class Projects(QObject):
                 self.searchChanged.emit()
                 self.app.show_error(f"Поиск не удался: {error}")
 
-        self.app._call(lambda: self.app.client.search(pid, text, regex=regex, case=case), show, failed)
+        if symbols:
+            self.app._call(lambda: self.app.client.symbols(pid, q=text), show, failed)
+        else:
+            self.app._call(lambda: self.app.client.search(pid, text, regex=regex, case=case), show, failed)
+
+    @Slot()
+    def loadOutline(self) -> None:
+        """The open file's definitions, from the symbol index (asked anew each time: the file may have changed)."""
+        path = self._file.get("path")
+        if not self.current or not path:
+            return
+        pid = self.current["id"]
+        self._outline = {"path": path, "rows": self._outline["rows"] if self._outline["path"] == path else [],
+                         "state": "loading"}  # fmt: skip
+        self.outlineChanged.emit()
+
+        def show(result: dict[str, Any]) -> None:
+            if self._outline["path"] == path:
+                self._outline = {"path": path, "rows": project_rows.outline_rows(result["symbols"]), "state": "ready"}
+                self.outlineChanged.emit()
+
+        def failed(_error: Exception) -> None:
+            if self._outline["path"] == path:
+                self._outline = {"path": path, "rows": [], "state": "failed"}
+                self.outlineChanged.emit()
+
+        self.app._call(lambda: self.app.client.symbols(pid, path=path), show, failed)
 
     @Slot()
     def clearSearch(self) -> None:

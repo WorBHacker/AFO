@@ -66,7 +66,7 @@ Item {
             width: parent.width - toggles.width - 4
             height: parent.height
             rightPadding: clearSearch.visible ? 30 : 10
-            placeholderText: "Поиск по файлам"
+            placeholderText: symbolToggle.checked ? "Поиск определений" : "Поиск по файлам"
             onTextEdited: Projects.search(text, regexToggle.checked, caseToggle.checked)
             Keys.onEscapePressed: { text = ""; Projects.clearSearch() }
             IconButton {
@@ -94,7 +94,13 @@ Item {
                 implicitWidth: 28
                 implicitHeight: 28
                 hoverEnabled: true
-                onToggled: Projects.search(searchField.text, regexToggle.checked, caseToggle.checked)
+                opacity: enabled ? 1 : 0.4
+                onToggled: {
+                    if (symbolToggle.checked !== Projects.symbolSearch)
+                        Projects.setSymbolSearch(symbolToggle.checked)  // runs the query again
+                    else
+                        Projects.search(searchField.text, regexToggle.checked, caseToggle.checked)
+                }
                 background: Rectangle {
                     radius: 5
                     color: toggle.checked ? Theme.p.item_selected : (toggle.hovered ? Theme.p.item_hover : "transparent")
@@ -112,8 +118,19 @@ Item {
                 ToolTip.delay: 600
                 ToolTip.text: tip
             }
-            Toggle { id: caseToggle; text: "Aa"; tip: "Учитывать регистр (без этого — только если в запросе есть заглавные)" }
-            Toggle { id: regexToggle; text: ".*"; tip: "Регулярное выражение" }
+            Toggle {
+                id: caseToggle
+                enabled: !symbolToggle.checked
+                text: "Aa"
+                tip: "Учитывать регистр (без этого — только если в запросе есть заглавные)"
+            }
+            Toggle { id: regexToggle; enabled: !symbolToggle.checked; text: ".*"; tip: "Регулярное выражение" }
+            Toggle {
+                id: symbolToggle
+                objectName: "symbolToggle"
+                text: "ƒ"
+                tip: "Только определения: функции, классы, методы — по индексу символов (Класс.метод тоже можно)"
+            }
         }
     }
 
@@ -162,10 +179,14 @@ Item {
             id: hit
             required property var modelData
             readonly property bool isFile: modelData.kind === "file"
+            readonly property bool isSymbol: modelData.kind === "symbol"
             width: results.width
-            height: isFile ? 28 : 24
+            height: isSymbol ? 40 : (isFile ? 28 : 24)
             hoverEnabled: true
             onClicked: Projects.openFileAt(modelData.path, isFile ? 1 : modelData.line)
+            ToolTip.visible: isSymbol && hovered
+            ToolTip.delay: 700
+            ToolTip.text: modelData.tip || ""
             background: Rectangle {
                 radius: 4
                 color: hit.hovered ? Theme.p.item_hover : "transparent"
@@ -211,9 +232,51 @@ Item {
                     font.family: Theme.uiFont
                     font.pixelSize: 11
                 }
+                // a definition from the symbol index: badge, name, its class; file and line under them
+                SymbolBadge {
+                    visible: hit.isSymbol
+                    x: 6
+                    y: 5
+                    badge: hit.modelData.badge || ""
+                }
+                Text {
+                    id: symbolName
+                    visible: hit.isSymbol
+                    x: 30
+                    y: 3
+                    width: Math.min(implicitWidth, parent.width - x - 8)
+                    text: hit.modelData.name
+                    elide: Text.ElideRight
+                    color: Theme.p.text
+                    font.family: Theme.monoFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    visible: hit.isSymbol && !!hit.modelData.container
+                    x: symbolName.x + symbolName.width + 6
+                    y: 4
+                    width: Math.max(0, parent.width - x - 8)
+                    text: hit.modelData.container || ""
+                    elide: Text.ElideLeft
+                    color: Theme.p.faint
+                    font.family: Theme.monoFont
+                    font.pixelSize: 11
+                }
+                Text {
+                    visible: hit.isSymbol
+                    x: 30
+                    y: 21
+                    width: parent.width - x - 8
+                    text: hit.modelData.folder
+                    elide: Text.ElideMiddle
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
                 Text {
                     id: lineNo
-                    visible: !hit.isFile
+                    visible: !hit.isFile && !hit.isSymbol
                     x: 10
                     width: 34
                     anchors.verticalCenter: parent.verticalCenter
@@ -224,7 +287,7 @@ Item {
                     font.pixelSize: 11
                 }
                 Item {
-                    visible: !hit.isFile
+                    visible: !hit.isFile && !hit.isSymbol
                     x: 52
                     width: parent.width - x - 4
                     height: parent.height

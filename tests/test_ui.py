@@ -200,6 +200,7 @@ class FakeClient:
         self.file_calls = []
         self.updates = []
         self.searches = []
+        self.symbol_calls = []
         self.log = []
         self.histories = {"ct": TOOL_HISTORY}
         self.note_list = []
@@ -380,6 +381,19 @@ class FakeClient:
             if matches:
                 found.append({"path": path, "matches": matches})
         return {"engine": "fake", "files": found, "matches": sum(len(f["matches"]) for f in found), "truncated": False}
+
+    def symbols(self, pid, *, q="", path="", kind="", limit=200):
+        self.symbol_calls.append((q, path))
+        defs = [
+            {"path": "src/app.py", "name": "App", "kind": "class", "line": 1, "end_line": 2, "container": "",
+             "signature": "class App:"},
+            {"path": "src/app.py", "name": "run", "kind": "method", "line": 2, "end_line": 2, "container": "App",
+             "signature": "def run(self): print('hi')"},
+        ]  # fmt: skip
+        if path:
+            return {"path": path, "symbols": [{k: v for k, v in d.items() if k != "path"} for d in defs]}
+        found = [d for d in defs if q.casefold() in d["name"].casefold()]
+        return {"symbols": found, "total": len(found), "complete": q != "partial"}
 
     def file(self, pid, path):
         self.file_calls.append(path)
@@ -1023,6 +1037,58 @@ def test_search_in_a_project(app):
     assert not projects.searchActive and projects.searchRows == []
 
 
+def test_symbols_in_the_window(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.tree.rows)
+    projects.search("ru", False, False)
+    wait_until(lambda: client.searches)
+    projects.setSymbolSearch(True)  # the same query again, now in the symbol index
+    assert projects.symbolSearch
+    wait_until(lambda: client.symbol_calls)
+    wait_until(lambda: projects.searchRows and projects.searchRows[0]["kind"] == "symbol")
+    assert client.symbol_calls == [("ru", "")]
+    row = projects.searchRows[0]
+    assert (row["name"], row["container"], row["folder"], row["badge"], row["line"]) == (
+        "run",
+        "App",
+        "src/app.py:2",
+        "ƒ",
+        2,
+    )
+    assert row["tip"] == "метод: def run(self): print('hi')"
+    assert projects.searchSummary == "1 определение"
+    projects.search("partial", False, False)
+    wait_until(lambda: projects.searchSummary == "определений не найдено · индекс ещё строится")
+    projects.setSymbolSearch(False)
+    wait_until(lambda: client.searches[-1] == ("partial", False, "smart"))
+
+    from app.ui import project_rows
+
+    many = {"symbols": [{"path": "a.py", "name": "x", "kind": "function", "line": 1, "end_line": 1, "container": "",
+                         "signature": "def x():"}], "total": 120, "complete": True}  # fmt: skip
+    assert project_rows.search_summary(many) == "120 определений (показаны первые)"
+
+    # the outline of the open file
+    projects.openFile("README.md", False)
+    wait_until(lambda: projects.file.get("path") == "README.md")
+    assert not projects.file["outline"]  # not code
+    projects.openFile("src/app.py", False)
+    wait_until(lambda: projects.file.get("path") == "src/app.py")
+    assert projects.file["outline"] and projects.outline["rows"] == []
+    projects.loadOutline()
+    assert projects.outline["state"] == "loading"
+    wait_until(lambda: projects.outline["state"] == "ready")
+    assert [(r["name"], r["depth"], r["badge"], r["line"]) for r in projects.outline["rows"]] == [
+        ("App", 0, "C", 1),
+        ("run", 1, "ƒ", 2),
+    ]
+    assert client.symbol_calls[-1] == ("", "src/app.py")
+    projects.openFile("README.md", False)
+    wait_until(lambda: projects.file.get("path") == "README.md")
+    assert projects.outline["rows"] == []  # it belonged to the other file
+
+
 def test_feed_rows():
     from datetime import datetime
 
@@ -1401,6 +1467,25 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         mark = quick.window.findChild(QObject, "gotoMark")
         assert mark.property("visible") and mark.property("y") > 10  # the second line, below the first
+        # definitions: symbol rows in the sidebar, the outline of the open file
+        app.projects.setSymbolSearch(True)
+        app.projects.search("run", False, False)
+        wait_until(lambda: app.projects.searchRows and app.projects.searchRows[0]["kind"] == "symbol")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "searchResults").property("count") == 1
+        app.projects.setSymbolSearch(False)
+        assert quick.window.findChild(QObject, "outlineButton").property("visible")
+        from PySide6.QtCore import QMetaObject
+
+        outline = quick.window.findChild(QObject, "outlinePopup")
+        app.projects.loadOutline()
+        QMetaObject.invokeMethod(outline, "open")
+        wait_until(lambda: outline.property("opened") and app.projects.outline["state"] == "ready")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "outlineList").property("count") == 2
+        QMetaObject.invokeMethod(outline, "close")
         # the feed
         from PySide6.QtCore import Q_ARG, QMetaObject
 

@@ -60,6 +60,7 @@ PATHS = {
     "terminal": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M7.5 9.5l3 2.5-3 2.5M12.5 15h4"/>',
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'
     '<path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
+    "outline": '<path d="M4.5 6h.01M8.5 6h11M8.5 12h.01M12.5 12h7M8.5 18h.01M12.5 18h7"/>',
 }
 
 

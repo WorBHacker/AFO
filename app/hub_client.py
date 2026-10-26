@@ -195,6 +195,11 @@ class HubClient:
         params = {"q": text, "regex": "true" if regex else "false", "case": case, "limit": limit}
         return self._call("GET", f"/v1/projects/{project_id}/search", params=params)
 
+    def symbols(self, project_id: str, *, q: str = "", path: str = "", kind: str = "", limit: int = 200) -> dict:
+        """Definitions named like `q`, or the outline of the file `path` (the hub's symbol index, D26)."""
+        params = {"q": q, "path": path, "kind": kind, "limit": limit}
+        return self._call("GET", f"/v1/projects/{project_id}/symbols", params=params)
+
     def diff(self, project_id: str, path: str = "", *, staged: bool = False) -> dict:
         params = {"path": path, "staged": "true" if staged else "false"}
         return self._call("GET", f"/v1/projects/{project_id}/diff", params=params)

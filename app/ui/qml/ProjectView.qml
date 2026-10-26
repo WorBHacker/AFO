@@ -884,6 +884,15 @@ Item {
                     onPicked: (id) => Projects.showDiff(id === "diff")
                 }
                 IconButton {
+                    id: outlineButton
+                    objectName: "outlineButton"
+                    visible: !!Projects.file.outline && !Projects.file.diffMode && !Projects.file.missing
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "outline"
+                    tip: "Структура файла: классы, функции, методы"
+                    onClicked: { Projects.loadOutline(); outlinePopup.open() }
+                }
+                IconButton {
                     objectName: "pinFile"
                     visible: !Projects.file.binary && !Projects.file.missing && App.currentId !== ""
                     anchors.verticalCenter: parent.verticalCenter
@@ -909,6 +918,98 @@ Item {
                     iconName: "close"
                     tip: "Закрыть файл"
                     onClicked: Projects.closeFile()
+                }
+            }
+        }
+
+        // the file's definitions from the symbol index (D26); a click shows the line
+        Popup {
+            id: outlinePopup
+            objectName: "outlinePopup"
+            parent: Overlay.overlay
+            property real room: 520  // down to the window's bottom edge, set on opening
+            width: 380
+            height: Math.min(room, 520, Math.max(outlineList.contentHeight, 40) + 44)
+            onAboutToShow: {
+                // under the button, its right edges in line (a binding to mapToItem would not follow the layout)
+                const at = outlineButton.mapToItem(Overlay.overlay, outlineButton.width, outlineButton.height)
+                x = Math.max(8, at.x - width)
+                y = at.y + 6
+                room = Math.max(120, Overlay.overlay.height - y - 8)
+            }
+            padding: 6
+            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+            background: Rectangle {
+                radius: 8
+                color: Theme.p.popup
+                border.color: Theme.p.hairline_strong
+                SoftShadow {}
+            }
+            contentItem: Item {
+                Text {
+                    id: outlineHead
+                    x: 8
+                    width: parent.width - 16
+                    height: 28
+                    verticalAlignment: Text.AlignVCenter
+                    text: Projects.outline.state === "loading" && Projects.outline.rows.length === 0 ? "Читаю…"
+                          : Projects.outline.state === "failed" ? "Структуру получить не удалось"
+                          : Projects.outline.rows.length === 0 ? "Определений нет"
+                          : "Структура · " + Projects.outline.rows.length
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                ListView {
+                    id: outlineList
+                    objectName: "outlineList"
+                    y: outlineHead.height + 4
+                    width: parent.width
+                    height: parent.height - y
+                    clip: true
+                    model: Projects.outline.rows
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ThinScrollBar {}
+                    delegate: AbstractButton {
+                        id: entry
+                        required property var modelData
+                        width: outlineList.width
+                        height: 28
+                        hoverEnabled: true
+                        onClicked: { Projects.openFileAt(Projects.file.path, modelData.line); outlinePopup.close() }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 700
+                        ToolTip.text: modelData.tip
+                        background: Rectangle { radius: 5; color: entry.hovered ? Theme.p.item_hover : "transparent" }
+                        contentItem: Item {
+                            SymbolBadge {
+                                id: entryBadge
+                                x: 6 + entry.modelData.depth * 16
+                                anchors.verticalCenter: parent.verticalCenter
+                                badge: entry.modelData.badge
+                            }
+                            Text {
+                                x: entryBadge.x + entryBadge.width + 8
+                                width: parent.width - x - 48
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: entry.modelData.name
+                                elide: Text.ElideRight
+                                color: Theme.p.text
+                                font.family: Theme.monoFont
+                                font.pixelSize: 12
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: entry.modelData.line
+                                color: Theme.p.faint
+                                font.family: Theme.monoFont
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                 }
             }
         }
