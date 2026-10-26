@@ -203,6 +203,7 @@ class FakeClient:
         self.log = []
         self.histories = {"ct": TOOL_HISTORY}
         self.note_list = []
+        self.link_list = []
         self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
 
     def models(self):
@@ -313,6 +314,25 @@ class FakeClient:
 
     def notes(self, pid):
         return [dict(n) for n in self.note_list]
+
+    def links(self):
+        return [dict(link) for link in self.link_list]
+
+    def scan_links(self):
+        evidence = "LocalChat/hub/settings.py:12 обращается к :8080; в папке llama-swap его слушает llama-swap.exe"
+        found = {"id": 7, "a_id": "p1", "b_id": "p2", "a_name": "LocalChat", "b_name": "llama-swap", "kind": "uses",
+                 "description": "", "status": "proposed", "evidence": [evidence]}  # fmt: skip
+        self.link_list = [found]
+        return {"added": 1, "links": self.links()}
+
+    def set_link(self, link_id, **changes):
+        self.log.append(("link", link_id, changes))
+        link = next(x for x in self.link_list if x["id"] == link_id)
+        link.update(changes)
+        return dict(link)
+
+    def delete_link(self, link_id):
+        self.link_list = [x for x in self.link_list if x["id"] != link_id]
 
     def add_note(self, pid, text):
         note = {"id": len(self.note_list) + 1, "project_id": pid, "text": text}
@@ -1193,6 +1213,31 @@ def test_project_notes(app):
     wait_until(lambda: [n["text"] for n in projects.notes] == ["из другого окна"])
 
 
+def test_links_between_projects(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1")
+    assert projects.links["confirmed"] == [] and projects.links["proposed"] == []
+    projects.scanLinks()
+    wait_until(lambda: projects.links["proposed"])
+    proposal = projects.links["proposed"][0]
+    assert proposal["title"] == "LocalChat → llama-swap: использует" and "8080" in proposal["evidence"][0]
+    assert "Найдено новых связей: 1" in app.flashText
+    projects.confirmLink(7, "OpenAI-совместимый API на :8080")
+    wait_until(lambda: projects.links["confirmed"])
+    link = projects.links["confirmed"][0]
+    assert (link["arrow"], link["other"], link["kind"]) == ("→", "llama-swap", "использует")
+    assert client.log[-1] == ("link", 7, {"status": "confirmed", "description": "OpenAI-совместимый API на :8080"})
+    projects.deleteLink(7)
+    wait_until(lambda: projects.links["confirmed"] == [])
+
+    from app.ui import feed_rows
+
+    payload = {"a_name": "LocalChat", "b_name": "llama-swap", "kind": "uses", "description": ":8080"}
+    shown = feed_rows.describe({"type": "link.confirmed", "payload": payload}, projects={}, chats={})
+    assert shown["title"] == "Связь: LocalChat → llama-swap, использует (:8080)"
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1399,6 +1444,11 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "projectCard").property("visible")
         assert quick.window.findChild(QObject, "projectNotes").property("visible")
+        app.projects.scanLinks()
+        wait_until(lambda: app.projects.links["proposed"])
+        for _ in range(20):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "projectLinks").property("height") > 100
         card_sheet = quick.window.findChild(QObject, "cardSheet")
         QMetaObject.invokeMethod(
             card_sheet, "openWith", Q_ARG("QVariant", "## Назначение\nДемо"), Q_ARG("QVariant", True)

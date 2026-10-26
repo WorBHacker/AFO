@@ -151,6 +151,19 @@ class HubClient:
     def git(self, project_id: str, log: int = 20) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
 
+    def links(self) -> list[dict]:
+        return self._call("GET", "/v1/links")["links"]
+
+    def scan_links(self) -> dict:
+        return self._call("POST", "/v1/links/scan")
+
+    def set_link(self, link_id: int, **changes) -> dict:
+        """status (confirmed / rejected), kind, description."""
+        return self._call("PUT", f"/v1/links/{link_id}", changes)
+
+    def delete_link(self, link_id: int) -> None:
+        self._call("DELETE", f"/v1/links/{link_id}")
+
     def notes(self, project_id: str) -> list[dict]:
         return self._call("GET", f"/v1/projects/{project_id}/notes")["notes"]
 

@@ -398,6 +398,139 @@ Item {
                 }
             }
 
+            // links with other projects (D25): confirmed ones, and what the hub found evidence for
+            Column {
+                id: linksBox
+                objectName: "projectLinks"
+                width: parent.width
+                spacing: 4
+                Item {
+                    width: parent.width
+                    height: 24
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Связи с другими проектами"
+                        color: Theme.p.faint
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                    }
+                    PlainButton {
+                        objectName: "scanLinks"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        implicitHeight: 26
+                        iconName: "search"
+                        enabled: !Projects.links.scanning
+                        text: Projects.links.scanning ? "Ищу…" : "Найти связи"
+                        onClicked: Projects.scanLinks()
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: "Пути к папкам других проектов в файлах зависимостей, имена их пакетов, порты, которые они слушают"
+                    }
+                }
+                Text {
+                    visible: Projects.links.confirmed.length === 0 && Projects.links.proposed.length === 0
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: "Связей нет. Хаб поищет улики — зависимости, пути, порты — и предложит, а вы подтвердите."
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                Repeater {
+                    model: Projects.links.confirmed
+                    delegate: Item {
+                        id: link
+                        required property var modelData
+                        width: page.width
+                        height: 30
+                        HoverHandler { id: linkHover }
+                        Rectangle { anchors.fill: parent; radius: 6; color: linkHover.hovered ? Theme.p.item_hover : "transparent" }
+                        Text {
+                            x: 10
+                            width: parent.width - 50
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: link.modelData.arrow + " " + link.modelData.other + " · " + link.modelData.kind
+                                  + (link.modelData.description ? " · " + link.modelData.description : "")
+                            elide: Text.ElideRight
+                            color: Theme.p.text_soft
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        IconButton {
+                            visible: linkHover.hovered
+                            anchors.right: parent.right
+                            anchors.rightMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            implicitWidth: 26
+                            implicitHeight: 26
+                            iconName: "trash"
+                            tip: "Удалить связь"
+                            onClicked: Projects.deleteLink(link.modelData.id)
+                        }
+                    }
+                }
+                Repeater {
+                    model: Projects.links.proposed
+                    delegate: Rectangle {
+                        id: proposal
+                        required property var modelData
+                        width: page.width
+                        height: proposalColumn.height + 20
+                        radius: 8
+                        color: "transparent"
+                        border.color: Theme.p.hairline_strong
+                        Column {
+                            id: proposalColumn
+                            x: 12
+                            y: 10
+                            width: parent.width - 24
+                            spacing: 6
+                            Text {
+                                text: "Похоже на связь: " + proposal.modelData.title
+                                color: Theme.p.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                            }
+                            Repeater {
+                                model: proposal.modelData.evidence
+                                delegate: Text {
+                                    required property string modelData
+                                    width: proposalColumn.width
+                                    wrapMode: Text.Wrap
+                                    text: "• " + modelData
+                                    color: Theme.p.muted
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 12
+                                }
+                            }
+                            Row {
+                                spacing: 6
+                                Field {
+                                    id: linkNote
+                                    width: Math.min(360, proposalColumn.width - 220)
+                                    implicitHeight: 30
+                                    placeholderText: "Описание, например: REST /api, порт 8000"
+                                }
+                                PlainButton {
+                                    kind: "primary"
+                                    implicitHeight: 30
+                                    text: "Подтвердить"
+                                    onClicked: Projects.confirmLink(proposal.modelData.id, linkNote.text)
+                                }
+                                PlainButton {
+                                    implicitHeight: 30
+                                    text: "Не связаны"
+                                    onClicked: Projects.rejectLink(proposal.modelData.id)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // what runs in the project's folder (the hub scans every few seconds)
             Column {
                 objectName: "projectProcesses"

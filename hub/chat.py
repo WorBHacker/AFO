@@ -29,7 +29,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import budgets, cards, context, notes, store
+from . import budgets, cards, context, links, notes, store
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
@@ -197,9 +197,15 @@ class ChatService:
             confirmed = {p.id: cards.confirmed_text(conn, p.id) for p in attached}
             written = {p.id: notes.list_notes(conn, p.id) for p in attached}
             return (history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed,
-                    written)  # fmt: skip
+                    written, links.list_links(conn))  # fmt: skip
 
-        history, everything, events, settings, confirmed, written = await self._db.acall(gather)
+        history, everything, events, settings, confirmed, written, all_links = await self._db.acall(gather)
+        ids = {p.id for p in attached}
+        by_id = {p.id: p for p in everything}
+        linked_ids = sorted(
+            {link["b_id"] if link["a_id"] in ids else link["a_id"] for link in all_links
+             if link["status"] == "confirmed" and (link["a_id"] in ids) != (link["b_id"] in ids)}
+        )  # fmt: skip
         project_notes = {p.id: clean(notes.notes_layer(p.name, written[p.id])) for p in attached if written[p.id]}
         project_cards = {
             pid: (text, await asyncio.to_thread(cards.missing_paths, next(p for p in attached if p.id == pid), text))
@@ -215,6 +221,18 @@ class ChatService:
                 context.live_layer, p, processes=processes.get(p.id, []), terminals=terminals, events=news,
                 now=datetime.now(UTC),
             )  # fmt: skip
+        linked = {}
+        for pid in linked_ids:
+            other = by_id.get(pid)
+            if other is None or not other.root.is_dir():
+                continue
+            terminals = await self.terminals.list(pid, 10) if self.terminals is not None else []
+            text = await asyncio.to_thread(
+                context.live_layer, other, processes=processes.get(pid, []), terminals=terminals, events=[],
+                now=datetime.now(UTC),
+            )  # fmt: skip
+            linked[pid] = (other, text.replace("<live_state", "<linked_project_state", 1).replace(
+                "</live_state>", "</linked_project_state>"))  # fmt: skip
         known = {p.id: p for p in attached}
         pinned = {
             f"file:{item['project_id']}:{item['path']}": (known[item["project_id"]], item["path"])
@@ -225,7 +243,8 @@ class ChatService:
         blocks = await asyncio.to_thread(
             lambda: context.context_blocks(
                 all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
-                settings=settings, pinned=files, cards=project_cards, notes=project_notes,
+                settings=settings, pinned=files, cards=project_cards, notes=project_notes, links=all_links,
+                linked=linked,
             )
         )  # fmt: skip
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))

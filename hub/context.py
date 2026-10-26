@@ -80,13 +80,31 @@ def stack_of(root) -> list[str]:
     return found
 
 
-def map_layer(all_projects: list[Project]) -> str:
+def map_layer(all_projects: list[Project], links: list[dict[str, Any]] | None = None) -> str:
     lines = ["Projects on this computer (the ecosystem map):"]
     for p in sorted(all_projects, key=lambda p: p.name.casefold()):
         stack = ", ".join(stack_of(p.root)) if p.root.is_dir() else "folder missing"
         where = "" if p.cloud_ok else " [local-only]"
         lines.append(f"- {p.name}{where}: {p.description or 'no description'}" + (f" ({stack})" if stack else ""))
+    lines += _link_lines(all_projects, links, cloud=False)
     return fit("\n".join(lines), MAP_BUDGET)
+
+
+def _link_lines(all_projects: list[Project], links: list[dict[str, Any]] | None, *, cloud: bool) -> list[str]:
+    """Confirmed links between projects (D25) for the map; for a cloud model a link that touches a local-only
+    project keeps its names (the map shows names, D27) but not its description."""
+    from .links import map_lines
+
+    if not links:
+        return []
+    names = {p.id: p.name for p in all_projects}
+    local = {p.id for p in all_projects if not p.cloud_ok}
+    shown = [
+        {**link, "description": ""} if cloud and (link["a_id"] in local or link["b_id"] in local) else link
+        for link in links
+    ]
+    found = map_lines(shown, names)
+    return ["Links between the projects (confirmed by the user):", *found] if found else []
 
 
 # --- L1: a project ---
@@ -247,16 +265,18 @@ def context_blocks(
     pinned: dict[str, tuple[Project, str]] | None = None,
     cards: dict[str, tuple[str, list[str]]] | None = None,
     notes: dict[str, str] | None = None,
+    links: list[dict[str, Any]] | None = None,
+    linked: dict[str, tuple[Project, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
     conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
     chat's settings may leave out the map or the live state."""
     settings = settings or {"map": True, "live": True}
     blocks: list[dict[str, Any]] = [{"type": "context", "key": "header", "text": HEADER, "cloud_ok": True}]
-    the_map = map_layer(all_projects)
+    the_map = map_layer(all_projects, links)
     if settings.get("map", True) and previous.get("map") != digest(the_map):
         blocks.append({"type": "context", "key": "map", "text": the_map, "digest": digest(the_map),
-                       "cloud_text": map_layer_for_cloud(all_projects), "cloud_ok": True})  # fmt: skip
+                       "cloud_text": map_layer_for_cloud(all_projects, links), "cloud_ok": True})  # fmt: skip
     for p in attached:
         card, missing = (cards or {}).get(p.id, (None, []))
         text = project_layer(p, card, missing)
@@ -278,13 +298,16 @@ def context_blocks(
         for p in attached:
             blocks.append({"type": "context", "key": f"live:{p.id}", "project": p.name, "cloud_ok": p.cloud_ok,
                            "text": live[p.id]})  # fmt: skip
+        for pid, (p, text) in (linked or {}).items():  # D25: a linked project's state, briefly
+            blocks.append({"type": "context", "key": f"linked:{pid}", "project": p.name, "cloud_ok": p.cloud_ok,
+                           "text": text})  # fmt: skip
     names = ", ".join(p.name for p in attached)
     blocks.append({"type": "context", "key": "tools", "text": f"Attached projects: {names}. {TOOLS_NOTE}",
                    "cloud_ok": True})  # fmt: skip
     return blocks
 
 
-def map_layer_for_cloud(all_projects: list[Project]) -> str:
+def map_layer_for_cloud(all_projects: list[Project], links: list[dict[str, Any]] | None = None) -> str:
     """The map as a cloud model may see it: a local-only project by name only."""
     lines = ["Projects on this computer (the ecosystem map):"]
     for p in sorted(all_projects, key=lambda p: p.name.casefold()):
@@ -293,6 +316,7 @@ def map_layer_for_cloud(all_projects: list[Project]) -> str:
             lines.append(f"- {p.name}: {p.description or 'no description'}" + (f" ({stack})" if stack else ""))
         else:
             lines.append(f"- {p.name} [local-only: you may not see more of it]")
+    lines += _link_lines(all_projects, links, cloud=True)
     return fit("\n".join(lines), MAP_BUDGET)
 
 

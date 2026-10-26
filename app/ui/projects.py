@@ -16,7 +16,7 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from ..hub_client import HubError
-from . import project_rows, rows
+from . import links_text, project_rows, rows
 from .models import TREE_ROLES, RowModel
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ class Projects(QObject):
     processesChanged = Signal()
     cardChanged = Signal()
     notesChanged = Signal()
+    linksChanged = Signal()
     searchChanged = Signal()
 
     def __init__(self, app: Controller):
@@ -58,6 +59,8 @@ class Projects(QObject):
         self._card: dict[str, Any] = {}  # the open project's card, as the hub describes it
         self._card_error = ""
         self._notes: list[dict[str, Any]] = []
+        self._links: list[dict[str, Any]] = []  # every link, as the hub lists them
+        self._scanning = False
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
@@ -136,6 +139,11 @@ class Projects(QObject):
             "error": self._card_error,
             "writer": models.get(self._card_writer(), ""),
         }
+
+    @Property("QVariantMap", notify=linksChanged)
+    def links(self) -> dict:
+        found = links_text.project_links(self._links, self.currentId)
+        return {**found, "scanning": self._scanning}
 
     @Property(list, notify=notesChanged)
     def notes(self) -> list:
@@ -280,6 +288,7 @@ class Projects(QObject):
         self.refresh_git()
         self.load_card()
         self.load_notes()
+        self.load_links()
         if self._file:
             self.openFile(self._file["path"], bool(self._file.get("diffMode")))
 
@@ -466,6 +475,8 @@ class Projects(QObject):
             self.load(catch_up=False)
         elif kind == "processes.changed":
             self._set_processes(payload.get("projects") or {})
+        elif kind in ("links.changed", "link.confirmed"):
+            self.load_links()
         elif kind == "note.changed":
             if payload.get("project_id") == self.currentId:
                 self.load_notes()
@@ -613,6 +624,50 @@ class Projects(QObject):
         if self.current:
             pid = self.current["id"]
             self.app._call(lambda: self.app.client.drop_card_draft(pid), lambda _r: self.load_card())
+
+    # ================= links between projects (D25) =================
+
+    def load_links(self) -> None:
+        if self.app.client is None:
+            return
+
+        def show(found: list[dict[str, Any]]) -> None:
+            self._links = found
+            self.linksChanged.emit()
+
+        self.app._call(lambda: self.app.client.links(), show, lambda _e: None)
+
+    @Slot()
+    def scanLinks(self) -> None:
+        self._scanning = True
+        self.linksChanged.emit()
+
+        def done(result: dict[str, Any]) -> None:
+            self._scanning = False
+            self._links = result["links"]
+            self.linksChanged.emit()
+            added = result["added"]
+            self.app.flash(f"Найдено новых связей: {added}" if added else "Новых связей не найдено")
+
+        def failed(error: Exception) -> None:
+            self._scanning = False
+            self.linksChanged.emit()
+            self.app.show_error(f"Поиск связей не удался: {error}")
+
+        self.app._call(lambda: self.app.client.scan_links(), done, failed)
+
+    @Slot(int, str)
+    def confirmLink(self, link_id: int, description: str) -> None:
+        self.app._call(lambda: self.app.client.set_link(link_id, status="confirmed", description=description),
+                       lambda _r: self.load_links())  # fmt: skip
+
+    @Slot(int)
+    def rejectLink(self, link_id: int) -> None:
+        self.app._call(lambda: self.app.client.set_link(link_id, status="rejected"), lambda _r: self.load_links())
+
+    @Slot(int)
+    def deleteLink(self, link_id: int) -> None:
+        self.app._call(lambda: self.app.client.delete_link(link_id), lambda _r: self.load_links())
 
     # ================= notes (D22 L4) =================
 

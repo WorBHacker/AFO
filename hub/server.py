@@ -18,6 +18,7 @@ from .api import (
     cards,
     conversations,
     events_ws,
+    links,
     models,
     notes,
     processes,
@@ -113,6 +114,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(terminals.router)
     app.include_router(cards.router)
     app.include_router(notes.router)
+    app.include_router(links.router)
     return app
 
 

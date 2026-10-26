@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from .. import presenter
+from . import links_text
 
 GROUPS = [
     ("all", "Всё"),
@@ -88,6 +89,10 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             failed = code not in (0, None)
             text = f"Терминал «{title}» завершился" + (f" с кодом {code}" if code is not None else "")
             return item("terminals", "terminal", text, level="error" if failed else "")
+        case "link.confirmed":
+            kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
+            note = f" ({p['description']})" if p.get("description") else ""
+            return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
         case "card.drafted":
             return item("projects", "edit", f"Черновик карточки «{p.get('name', '')}» готов — проверьте и подтвердите")
         case "card.confirmed":

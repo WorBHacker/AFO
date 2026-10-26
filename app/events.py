@@ -31,6 +31,8 @@ TOPICS = [
     "terminal.*",
     "card.*",
     "note.*",
+    "links.*",
+    "link.*",
     "hub.*",
 ]
 RECONNECT_S = 2.0
