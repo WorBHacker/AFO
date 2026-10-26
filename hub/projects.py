@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import utc_now
+from .secret_filter import is_secret_file
 
 # folders that are never worth watching, in any project
 CACHES = {
@@ -216,7 +217,8 @@ def tree(root: Path, rel: str = "") -> list[dict[str, Any]]:
                 size = 0 if is_dir else entry.stat(follow_symlinks=False).st_size
             except OSError:
                 size = 0
-            entries.append({"name": entry.name, "path": path, "dir": is_dir, "size": size})
+            secret = not is_dir and is_secret_file(entry.name)  # models never get its content (D10)
+            entries.append({"name": entry.name, "path": path, "dir": is_dir, "size": size, "secret": secret})
     entries.sort(key=lambda e: (not e["dir"], e["name"].casefold()))
     return entries
 

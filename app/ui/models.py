@@ -21,7 +21,7 @@ ROLES = [
     "streaming",
     "notice",
 ]
-TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size"]
+TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size", "secret"]
 
 
 class RowModel(QAbstractListModel):

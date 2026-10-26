@@ -53,6 +53,7 @@ def tree_rows(entries: list[dict[str, Any]], depth: int, changed: dict[str, str]
             "open": False,
             "status": changed.get(e["path"], ""),
             "size": e.get("size", 0),
+            "secret": bool(e.get("secret")),
         }
         for e in entries
     ]

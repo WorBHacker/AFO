@@ -167,6 +167,7 @@ class FakeClient:
         self.term_stopped = []
         self.term_removed = []
         self.file_calls = []
+        self.updates = []
         self.searches = []
 
     def models(self):
@@ -249,6 +250,12 @@ class FakeClient:
         project = {"id": "p2", "name": path.rstrip("/").rsplit("/", 1)[-1], "path": path, "exists": True}
         self.project_list.append(project)
         return project
+
+    def update_project(self, pid, **changes):
+        self.updates.append((pid, changes))
+        project = next(p for p in self.project_list if p["id"] == pid)
+        project.update(changes)
+        return dict(project)
 
     def remove_project(self, pid):
         self.project_list = [p for p in self.project_list if p["id"] != pid]
@@ -960,6 +967,20 @@ def test_the_feed(app):
     assert feed.items[1]["title"] == "Запущен терминал: PowerShell"
 
 
+def test_project_settings(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1")
+    assert not projects.currentCloud and projects.currentDescription == ""
+    projects.saveSettings("  Мой хаб ", "бэкенд   и\nокно", True)
+    wait_until(lambda: client.updates)
+    assert client.updates == [("p1", {"name": "Мой хаб", "description": "бэкенд и окно", "cloud_ok": True})]
+    wait_until(lambda: projects.currentCloud)
+    assert projects.currentName == "Мой хаб" and projects.currentDescription == "бэкенд и окно"
+    rows_ = project_rows.tree_rows([{"name": ".env", "path": ".env", "dir": False, "secret": True}], 0, {})
+    assert rows_[0]["secret"] is True
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1133,6 +1154,13 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "feedItems").property("height") > 4 * 30
         QMetaObject.invokeMethod(sheet, "close")
+        for _ in range(20):
+            QApplication.processEvents()
+        project_sheet = quick.window.findChild(QObject, "projectSheet")
+        QMetaObject.invokeMethod(project_sheet, "open")
+        wait_until(lambda: project_sheet.property("opened"))
+        assert quick.window.findChild(QObject, "projectCloud").property("value") == "local"
+        QMetaObject.invokeMethod(project_sheet, "close")
         for _ in range(20):
             QApplication.processEvents()
         image = quick.window.grabWindow()

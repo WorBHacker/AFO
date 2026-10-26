@@ -6,6 +6,7 @@ import QtQuick.Controls.Basic
 Item {
     id: view
     signal addRequested()
+    signal settingsRequested()
 
     // ---------- no project ----------
 
@@ -81,17 +82,55 @@ Item {
                     }
                     Text {
                         width: parent.width
-                        text: Projects.currentPath
-                        elide: Text.ElideMiddle
-                        color: Theme.p.faint
-                        font.family: Theme.monoFont
-                        font.pixelSize: 12
+                        visible: text !== ""
+                        text: Projects.currentDescription
+                        elide: Text.ElideRight
+                        color: Theme.p.text_soft
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                    }
+                    Row {
+                        spacing: 8
+                        Text {
+                            // a long path gives way (in the middle), the badge always shows
+                            width: Math.min(implicitWidth, titleColumn.width - cloudBadge.width - 8)
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Projects.currentPath
+                            elide: Text.ElideMiddle
+                            color: Theme.p.faint
+                            font.family: Theme.monoFont
+                            font.pixelSize: 12
+                        }
+                        Rectangle {
+                            id: cloudBadge
+                            objectName: "cloudBadge"
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: badge.implicitWidth + 14
+                            height: 20
+                            radius: 10
+                            color: "transparent"
+                            border.color: Projects.currentCloud ? Theme.p.accent : Theme.p.hairline_strong
+                            Text {
+                                id: badge
+                                anchors.centerIn: parent
+                                text: Projects.currentCloud ? "облачные модели — можно" : "только локальные модели"
+                                color: Projects.currentCloud ? Theme.p.accent : Theme.p.muted
+                                font.family: Theme.uiFont
+                                font.pixelSize: 11
+                            }
+                        }
                     }
                 }
                 Row {
                     id: actions
                     anchors.right: parent.right
                     spacing: 2
+                    IconButton {
+                        objectName: "projectSettings"
+                        iconName: "sliders"
+                        tip: "Настройки проекта: описание, облачные модели"
+                        onClicked: view.settingsRequested()
+                    }
                     IconButton {
                         iconName: "terminal"
                         tip: Terminals.panelOpen ? "Скрыть терминалы (Ctrl+J)" : "Терминалы проекта (Ctrl+J)"

@@ -78,6 +78,13 @@ def test_tree_without_git_hides_noise(tmp_path):
     assert [e["name"] for e in projects.tree(root.resolve())] == ["main.py"]
 
 
+def test_secret_files_are_marked_in_the_tree(repo):
+    (repo / "deploy.pem").write_text("-----BEGIN PRIVATE KEY-----", encoding="utf-8")
+    (repo / ".env.example").write_text("API_KEY=", encoding="utf-8")
+    marks = {e["name"]: e["secret"] for e in projects.tree(repo.resolve())}
+    assert marks["deploy.pem"] is True and marks[".env.example"] is False and marks["README.md"] is False
+
+
 def test_reading_files(repo):
     root = repo.resolve()
     readme = projects.read_file(root, "README.md")

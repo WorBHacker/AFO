@@ -53,6 +53,7 @@ Window {
             width: parent.width
             height: parent.height - titleBar.height - (terminalPanel.visible ? terminalPanel.height : 0)
             onAddRequested: folderDialog.open()
+            onSettingsRequested: projectSheet.open()
         }
         TerminalPanel {
             id: terminalPanel
@@ -130,6 +131,7 @@ Window {
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
     FeedSheet { id: feedSheet }
+    ProjectSheet { id: projectSheet }
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 

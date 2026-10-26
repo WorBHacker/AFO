@@ -263,6 +263,7 @@ Item {
             required property bool dir
             required property bool open
             required property string status
+            required property bool secret
             readonly property bool selected: !dir && Projects.file.path === path
             readonly property int indent: 6 + depth * 14
             width: tree.width
@@ -285,9 +286,9 @@ Item {
                 Icon {
                     x: node.indent + 14
                     anchors.verticalCenter: parent.verticalCenter
-                    name: node.dir ? "folder" : "file"
+                    name: node.dir ? "folder" : node.secret ? "lock" : "file"
                     size: 14
-                    tint: node.dir ? Theme.p.muted : Theme.p.faint
+                    tint: node.secret ? Theme.p.warn : node.dir ? Theme.p.muted : Theme.p.faint
                 }
                 Text {
                     x: node.indent + 34
@@ -309,9 +310,9 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                 }
             }
-            ToolTip.visible: hovered && name.length > 28
+            ToolTip.visible: hovered && (name.length > 28 || secret)
             ToolTip.delay: 700
-            ToolTip.text: path
+            ToolTip.text: secret ? path + " — секретный файл: моделям не показывается" : path
         }
     }
 

@@ -75,6 +75,14 @@ class Projects(QObject):
     def currentPath(self) -> str:
         return self.current["path"] if self.current else ""
 
+    @Property(str, notify=projectChanged)
+    def currentDescription(self) -> str:
+        return (self.current or {}).get("description", "")
+
+    @Property(bool, notify=projectChanged)
+    def currentCloud(self) -> bool:
+        return bool((self.current or {}).get("cloud_ok"))
+
     @Property(bool, notify=projectChanged)
     def currentMissing(self) -> bool:
         return bool(self.current) and not self.current.get("exists", True)
@@ -155,6 +163,28 @@ class Projects(QObject):
             done,
             lambda error: self.app.show_error(f"Проект не добавлен: {error}"),
         )
+
+    @Slot(str, str, bool)
+    def saveSettings(self, name: str, description: str, cloud_ok: bool) -> None:
+        """The open project's name, its one-line description (the ecosystem map shows it to models) and whether
+        cloud models may see it (D10)."""
+        if not self.current:
+            return
+        pid = self.current["id"]
+        changes = {"name": name.strip() or self.current["name"], "description": " ".join(description.split()),
+                   "cloud_ok": cloud_ok}  # fmt: skip
+
+        def done(project: dict[str, Any]) -> None:
+            self.items = sorted(
+                [project if p["id"] == pid else p for p in self.items], key=lambda p: p["name"].casefold()
+            )
+            if self.currentId == pid:
+                self.current = project
+                self.projectChanged.emit()
+            self.listChanged.emit()
+            self.app.flash("Настройки проекта сохранены")
+
+        self.app._call(lambda: self.app.client.update_project(pid, **changes), done)
 
     @Slot(str)
     def askRemoveProject(self, project_id: str) -> None:
