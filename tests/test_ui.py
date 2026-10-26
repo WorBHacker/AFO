@@ -202,6 +202,7 @@ class FakeClient:
         self.searches = []
         self.log = []
         self.histories = {"ct": TOOL_HISTORY}
+        self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
 
     def models(self):
         return MODELS
@@ -305,6 +306,30 @@ class FakeClient:
     def tree(self, pid, path=""):
         self.tree_calls.append(path)
         return self.trees[path]
+
+    def card(self, pid):
+        return dict(self.card_state)
+
+    def draft_card(self, pid, model_id):
+        self.log.append(("draft", pid, model_id))
+        self.card_state = {**self.card_state, "drafting": True}
+        return {"drafting": True}
+
+    def confirm_card(self, pid, text):
+        version = len(self.card_state["versions"]) + 1
+        confirmed = {"version": version, "text": text, "model_id": None, "created_at": "2026-10-27T03:00:00Z"}
+        self.card_state = {**self.card_state, "confirmed": confirmed, "draft": None, "drafting": False,
+                           "versions": [confirmed, *self.card_state["versions"]]}  # fmt: skip
+        self.log.append(("confirm", pid, text))
+        return dict(self.card_state)
+
+    def restore_card(self, pid, version):
+        self.log.append(("restore", pid, version))
+        return dict(self.card_state)
+
+    def drop_card_draft(self, pid):
+        self.card_state = {**self.card_state, "draft": None}
+        self.log.append(("drop", pid))
 
     def search(self, pid, text, *, regex=False, case="smart", limit=500):
         self.searches.append((text, regex, case))
@@ -1104,6 +1129,36 @@ def test_the_context_inspector(app):
     assert app.flashError and app.contextBlocks == []
 
 
+def test_project_cards(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1")
+    wait_until(lambda: projects.card.get("state") == "none")
+    app.chooseModel("anthropic/claude-opus-5-5")  # a cloud model chosen: the draft still goes to a local one
+    projects.draftCard()
+    wait_until(lambda: any(e[0] == "draft" for e in client.log))
+    assert ("draft", "p1", "llama-swap/coder") in client.log and projects.card["state"] == "drafting"
+
+    draft = {"text": "## Назначение\nДемо", "model_id": "llama-swap/coder", "version": 0}
+    client.card_state = {**client.card_state, "drafting": False, "draft": draft}
+    send(app, "card.drafted", {"project_id": "p1", "name": "LocalChat", "model_id": "llama-swap/coder"})
+    wait_until(lambda: projects.card["state"] == "draft")
+    assert projects.card["draft"] == "## Назначение\nДемо" and projects.card["draftModel"] == "Coder"
+
+    projects.confirmCard("## Назначение\nДемо, поправлено")
+    wait_until(lambda: projects.card["state"] == "confirmed")
+    assert projects.card["version"] == 1 and projects.card["segments"][0]["kind"] == "prose"
+    send(app, "card.failed", {"project_id": "p1", "detail": "модель молчит"})
+    wait_until(lambda: app.flashError)
+    assert "модель молчит" in app.flashText
+
+    from app.ui import feed_rows
+
+    payload = {"name": "LocalChat", "version": 3, "restored_from": 1}
+    shown = feed_rows.describe({"type": "card.confirmed", "payload": payload}, projects={}, chats={})
+    assert shown["title"] == "Карточка «LocalChat» подтверждена, версия 3 (возвращена версия 1)"
+
+
 def test_key_sequences():
     from app.ui.terminals import ALT, CTRL, SHIFT, key_sequence
 
@@ -1268,7 +1323,7 @@ def test_the_projects_view_without_warnings(qapp):
         mark = quick.window.findChild(QObject, "gotoMark")
         assert mark.property("visible") and mark.property("y") > 10  # the second line, below the first
         # the feed
-        from PySide6.QtCore import QMetaObject
+        from PySide6.QtCore import Q_ARG, QMetaObject
 
         sheet = quick.window.findChild(QObject, "feedSheet")
         QMetaObject.invokeMethod(sheet, "open")
@@ -1302,6 +1357,20 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         QMetaObject.invokeMethod(project_sheet, "close")
+        for _ in range(20):
+            QApplication.processEvents()
+        app.setMode("projects")
+        app.projects.closeFile()  # the overview shows when no file is open
+        for _ in range(20):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "projectCard").property("visible")
+        card_sheet = quick.window.findChild(QObject, "cardSheet")
+        QMetaObject.invokeMethod(
+            card_sheet, "openWith", Q_ARG("QVariant", "## Назначение\nДемо"), Q_ARG("QVariant", True)
+        )
+        wait_until(lambda: card_sheet.property("opened"))
+        assert quick.window.findChild(QObject, "cardEditor").property("text") == "## Назначение\nДемо"
+        QMetaObject.invokeMethod(card_sheet, "close")
         for _ in range(20):
             QApplication.processEvents()
         image = quick.window.grabWindow()

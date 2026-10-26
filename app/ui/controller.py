@@ -962,7 +962,7 @@ class Controller(QObject):
             self.load_models()
         elif kind == "system.status":
             self._show_status(payload)
-        elif kind.startswith(("project.", "processes.")):
+        elif kind.startswith(("project.", "processes.", "card.")):
             self.projects.on_event(kind, payload)
         elif kind.startswith("terminal."):
             self.terminals.on_event(kind, payload)

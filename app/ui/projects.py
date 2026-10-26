@@ -16,7 +16,7 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from ..hub_client import HubError
-from . import project_rows
+from . import project_rows, rows
 from .models import TREE_ROLES, RowModel
 
 if TYPE_CHECKING:
@@ -31,6 +31,7 @@ class Projects(QObject):
     gitChanged = Signal()
     fileChanged = Signal()
     processesChanged = Signal()
+    cardChanged = Signal()
     searchChanged = Signal()
 
     def __init__(self, app: Controller):
@@ -53,6 +54,8 @@ class Projects(QObject):
         self._search_timer = app._timer(SEARCH_DELAY_MS, self._run_search, single=True)
         self._goto: tuple[str, int] | None = None  # a file to show at a line, from a search
         self._goto_seq = 0
+        self._card: dict[str, Any] = {}  # the open project's card, as the hub describes it
+        self._card_error = ""
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
@@ -110,6 +113,27 @@ class Projects(QObject):
     @Property(bool, notify=searchChanged)
     def searchActive(self) -> bool:
         return bool(self._search_args[0].strip())
+
+    @Property("QVariantMap", notify=cardChanged)
+    def card(self) -> dict:
+        """The card for the overview: state (none / drafting / draft / confirmed), texts, version, outdated paths."""
+        c = self._card
+        confirmed, draft = c.get("confirmed"), c.get("draft")
+        state = "drafting" if c.get("drafting") else "draft" if draft else "confirmed" if confirmed else "none"
+        models = {m["id"]: m["name"] for m in self.app.model_list}
+        return {
+            "state": state,
+            "confirmed": bool(confirmed),
+            "text": confirmed["text"] if confirmed else "",
+            "segments": rows.segments(confirmed["text"]) if confirmed else [],
+            "version": confirmed["version"] if confirmed else 0,
+            "versions": c.get("versions", []),
+            "draft": draft["text"] if draft else "",
+            "draftModel": models.get(draft["model_id"], draft["model_id"] or "") if draft else "",
+            "missing": c.get("missing", []),
+            "error": self._card_error,
+            "writer": models.get(self._card_writer(), ""),
+        }
 
     @Property(list, notify=processesChanged)
     def processes(self) -> list:
@@ -213,6 +237,8 @@ class Projects(QObject):
         self._reset_view()
 
     def _reset_view(self) -> None:
+        self._card, self._card_error = {}, ""
+        self.cardChanged.emit()
         self._tree_gen += 1
         self._search_gen += 1
         self._search, self._searching, self._search_args = None, False, ("", False, False)
@@ -244,6 +270,7 @@ class Projects(QObject):
             return
         self.reload_tree()
         self.refresh_git()
+        self.load_card()
         if self._file:
             self.openFile(self._file["path"], bool(self._file.get("diffMode")))
 
@@ -430,6 +457,12 @@ class Projects(QObject):
             self.load(catch_up=False)
         elif kind == "processes.changed":
             self._set_processes(payload.get("projects") or {})
+        elif kind.startswith("card."):
+            if payload.get("project_id") == self.currentId:
+                if kind == "card.failed":
+                    self._card_error = payload.get("detail", "")
+                    self.app.show_error(f"Черновик карточки не составлен: {self._card_error}")
+                self.load_card()
         elif payload.get("project_id") != self.currentId or not self.current:
             return
         elif kind == "project.files":
@@ -502,6 +535,72 @@ class Projects(QObject):
         line = self._goto[1]
         text = data.get("text", "").replace("\r\n", "\n")
         return {"gotoLine": line, "gotoOffset": project_rows.line_offset(text, line), "gotoSeq": self._goto_seq}
+
+    # ================= the card (D24) =================
+
+    def load_card(self) -> None:
+        if not self.current or self.app.client is None:
+            return
+        pid = self.current["id"]
+
+        def show(card: dict[str, Any]) -> None:
+            if pid == self.currentId:
+                self._card = card
+                self.cardChanged.emit()
+
+        self.app._call(lambda: self.app.client.card(pid), show, lambda _e: None)
+
+    def _card_writer(self) -> str:
+        """Who drafts: the chosen model if it is local, else the first local one (D24: local by default)."""
+        models = self.app.model_list
+        chosen = self.app.models.get(self.app.modelId)
+        if chosen and chosen.get("locality") == "local":
+            return chosen["id"]
+        local = next((m for m in models if m.get("locality") == "local"), None)
+        return local["id"] if local else self.app.modelId
+
+    @Slot()
+    def draftCard(self) -> None:
+        if not self.current:
+            return
+        pid, model_id = self.current["id"], self._card_writer()
+        self._card_error = ""
+        self._card = {**self._card, "drafting": True}
+        self.cardChanged.emit()
+
+        def failed(error: Exception) -> None:
+            self._card = {**self._card, "drafting": False}
+            self._card_error = str(error)
+            self.cardChanged.emit()
+            self.app.show_error(f"Черновик карточки не начат: {error}")
+
+        self.app._call(lambda: self.app.client.draft_card(pid, model_id), None, failed)
+
+    @Slot(str)
+    def confirmCard(self, text: str) -> None:
+        if not self.current:
+            return
+        pid = self.current["id"]
+
+        def done(card: dict[str, Any]) -> None:
+            if pid == self.currentId:
+                self._card = card
+                self.cardChanged.emit()
+            self.app.flash(f"Карточка подтверждена, версия {card['confirmed']['version']}")
+
+        self.app._call(lambda: self.app.client.confirm_card(pid, text), done)
+
+    @Slot(int)
+    def restoreCard(self, version: int) -> None:
+        if self.current:
+            pid = self.current["id"]
+            self.app._call(lambda: self.app.client.restore_card(pid, version), lambda _c: self.load_card())
+
+    @Slot()
+    def dropCardDraft(self) -> None:
+        if self.current:
+            pid = self.current["id"]
+            self.app._call(lambda: self.app.client.drop_card_draft(pid), lambda _r: self.load_card())
 
     # ================= processes =================
 

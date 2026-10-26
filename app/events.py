@@ -29,6 +29,7 @@ TOPICS = [
     "port.*",
     "git.*",
     "terminal.*",
+    "card.*",
     "hub.*",
 ]
 RECONNECT_S = 2.0

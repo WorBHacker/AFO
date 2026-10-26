@@ -151,6 +151,21 @@ class HubClient:
     def git(self, project_id: str, log: int = 20) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
 
+    def card(self, project_id: str) -> dict:
+        return self._call("GET", f"/v1/projects/{project_id}/card")
+
+    def draft_card(self, project_id: str, model_id: str) -> dict:
+        return self._call("POST", f"/v1/projects/{project_id}/card/draft", {"model_id": model_id})
+
+    def confirm_card(self, project_id: str, text: str) -> dict:
+        return self._call("PUT", f"/v1/projects/{project_id}/card", {"text": text})
+
+    def restore_card(self, project_id: str, version: int) -> dict:
+        return self._call("POST", f"/v1/projects/{project_id}/card/restore", {"version": version})
+
+    def drop_card_draft(self, project_id: str) -> None:
+        self._call("DELETE", f"/v1/projects/{project_id}/card/draft")
+
     def search(self, project_id: str, text: str, *, regex: bool = False, case: str = "smart", limit: int = 500) -> dict:
         params = {"q": text, "regex": "true" if regex else "false", "case": case, "limit": limit}
         return self._call("GET", f"/v1/projects/{project_id}/search", params=params)

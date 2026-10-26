@@ -104,11 +104,16 @@ def _head(root, rel: str, count: int) -> str:
     return text + ("\n[...]" if len(lines) > count else "")
 
 
-def project_layer(project: Project) -> str:
-    """What a model should know about a project before it looks at anything: stack, structure, README, notes."""
+def project_layer(project: Project, card: str | None = None, missing: list[str] | None = None) -> str:
+    """What a model should know about a project before it looks at anything: its confirmed card (D24) when there
+    is one, else what the hub sees itself - stack, structure, README, notes for agents."""
     root = project.root
     if not root.is_dir():
         return f'<project name="{project.name}">\nIts folder ({project.path}) is missing.\n</project>'
+    if card:
+        note = f"\n[The card is outdated here: it names {', '.join(missing)}, which are gone.]" if missing else ""
+        body = clean(f"Folder: {project.path}\nThe project's card (confirmed by the user):\n{card}{note}")
+        return fit(f'<project name="{project.name}">\n{body}\n</project>', PROJECT_BUDGET)
     parts = [f"Folder: {project.path}", f"Description: {project.description or 'none yet'}"]
     stack = stack_of(root)
     if stack:
@@ -240,6 +245,7 @@ def context_blocks(
     live: dict[str, str],
     settings: dict[str, Any] | None = None,
     pinned: dict[str, tuple[Project, str]] | None = None,
+    cards: dict[str, tuple[str, list[str]]] | None = None,
 ) -> list[dict[str, Any]]:
     """The blocks of a new context message: the map, the projects and pinned files when they differ from what the
     conversation already holds (`previous`: block key -> digest), the live state, and the note on tools. The
@@ -251,7 +257,8 @@ def context_blocks(
         blocks.append({"type": "context", "key": "map", "text": the_map, "digest": digest(the_map),
                        "cloud_text": map_layer_for_cloud(all_projects), "cloud_ok": True})  # fmt: skip
     for p in attached:
-        text = project_layer(p)
+        card, missing = (cards or {}).get(p.id, (None, []))
+        text = project_layer(p, card, missing)
         key = f"project:{p.id}"
         if previous.get(key) != digest(text):
             blocks.append({"type": "context", "key": key, "project": p.name, "cloud_ok": p.cloud_ok, "text": text,

@@ -13,7 +13,7 @@ from fastapi import FastAPI
 
 from common import __version__
 
-from .api import budgets, conversations, events_ws, models, processes, projects, secrets, system, terminals
+from .api import budgets, cards, conversations, events_ws, models, processes, projects, secrets, system, terminals
 from .auth import ensure_app_token
 from .chat import ChatService
 from .db import Database, migrate
@@ -53,6 +53,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat = ChatService(db, bus, gateway)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
+        app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
         app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
@@ -98,6 +99,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(projects.router)
     app.include_router(processes.router)
     app.include_router(terminals.router)
+    app.include_router(cards.router)
     return app
 
 

@@ -29,7 +29,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import budgets, context, store
+from . import budgets, cards, context, store
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
@@ -193,9 +193,15 @@ class ChatService:
             ).fetchall()
             events = [{"ts": r["ts"], "type": r["type"], "project_id": r["project_id"],
                        "payload": json.loads(r["payload"])} for r in rows]  # fmt: skip
-            return history, list_projects(conn), events, store.context_settings(conn, conversation_id)
+            confirmed = {p.id: cards.confirmed_text(conn, p.id) for p in attached}
+            return history, list_projects(conn), events, store.context_settings(conn, conversation_id), confirmed
 
-        history, everything, events, settings = await self._db.acall(gather)
+        history, everything, events, settings, confirmed = await self._db.acall(gather)
+        project_cards = {
+            pid: (text, await asyncio.to_thread(cards.missing_paths, next(p for p in attached if p.id == pid), text))
+            for pid, text in confirmed.items()
+            if text
+        }
         processes = (self.processes.latest or {}) if self.processes is not None else {}
         live = {}
         for p in attached:
@@ -215,7 +221,7 @@ class ChatService:
         blocks = await asyncio.to_thread(
             lambda: context.context_blocks(
                 all_projects=everything, attached=attached, previous=context.previous_digests(history), live=live,
-                settings=settings, pinned=files,
+                settings=settings, pinned=files, cards=project_cards,
             )
         )  # fmt: skip
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))

@@ -1,0 +1,185 @@
+"""/v1/projects/{id}/card - the project card (stage 3, D24): a model drafts it, the user confirms it.
+
+Reading is open to every client; drafting, confirming, restoring and dropping a draft are the app's. A draft is
+written in the background: `card.drafting` (live) when it starts, `card.drafted` or `card.failed` when it ends;
+`card.confirmed` when the user confirms a version. A cloud model may not draft the card of a local-only project
+(D10). A paid model's draft is checked against budgets first and its cost recorded like any request.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from .. import budgets, cards, projects, store
+from ..auth import APP_CLIENT, Client
+from ..cards import CardError
+from ..gateway import GatewayError
+from ..gateway.base import cost_usd
+from ..projects import ProjectError
+from .deps import require_client
+
+log = logging.getLogger("hub.cards")
+router = APIRouter(prefix="/v1")
+DRAFT_EFFORT = "medium"
+
+
+class DraftRequest(BaseModel):
+    model_id: str
+
+
+class CardText(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class Version(BaseModel):
+    version: int
+
+
+def _app_only(client: Client) -> None:
+    if client.name != APP_CLIENT:
+        raise HTTPException(status_code=403, detail="only the desktop app may change project cards")
+
+
+async def _project(request: Request, project_id: str) -> projects.Project:
+    try:
+        return await request.app.state.db.acall(lambda conn: projects.get_project(conn, project_id))
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _drafting(request: Request) -> set[str]:
+    state = request.app.state
+    if not hasattr(state, "card_drafts"):
+        state.card_drafts = set()
+    return state.card_drafts
+
+
+async def _state(request: Request, project: projects.Project) -> dict:
+    state = await request.app.state.db.acall(lambda conn: cards.card_state(conn, project.id))
+    confirmed = state["confirmed"]
+    missing = await asyncio.to_thread(cards.missing_paths, project, confirmed["text"]) if confirmed else []
+    return {**state, "missing": missing, "drafting": project.id in _drafting(request)}
+
+
+@router.get("/projects/{project_id}/card")
+async def get_card(project_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    return await _state(request, await _project(request, project_id))
+
+
+@router.post("/projects/{project_id}/card/draft", status_code=202)
+async def draft_card(
+    project_id: str, body: DraftRequest, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    _app_only(client)
+    project = await _project(request, project_id)
+    db = request.app.state.db
+    model = await db.acall(lambda conn: store.get_model(conn, body.model_id))
+    if model is None or not model["enabled"]:
+        raise HTTPException(status_code=422, detail=f"no such model available: {body.model_id}")
+    if model["locality"] == "cloud" and not project.cloud_ok:
+        raise HTTPException(
+            status_code=409, detail=f"«{project.name}» is local-only: a cloud model may not read it (D10)"
+        )
+    if model["prices"] and await db.acall(lambda conn: budgets.reached(conn, model["id"])):
+        raise HTTPException(status_code=409, detail="a budget for this model is used up")
+    if project.id in _drafting(request):
+        raise HTTPException(status_code=409, detail="a draft is being written already")
+    _drafting(request).add(project.id)
+    task = asyncio.create_task(_write_draft(request.app, project, model, client.id))
+    task.add_done_callback(lambda t: t.exception())
+    await request.app.state.bus.publish(
+        "card.drafting", {"project_id": project.id, "model_id": model["id"]}, project_id=project.id, persist=False
+    )
+    return {"drafting": True}
+
+
+async def _write_draft(app, project: projects.Project, model: dict, client_id: str | None) -> None:
+    bus, db = app.state.bus, app.state.db
+    try:
+        messages = await asyncio.to_thread(cards.prompt, project)
+        provider, model_ref = app.state.gateway.resolve(model["id"])
+        text, end = [], None
+        async for event in provider.stream_chat(model_ref, messages, DRAFT_EFFORT, asyncio.Event()):
+            if event.kind == "content":
+                text.append(event.text)
+            elif event.kind == "end":
+                end = event
+        usage = (end.usage if end else None) or {}
+        cost = cost_usd(usage, model["prices"])
+
+        def write(conn):
+            meta = {"purpose": "card", "project_id": project.id}
+            store.record_usage(conn, client_id=client_id, conversation_id=None, message_id=None, model_id=model["id"],
+                               usage=usage, cost_usd=cost, meta=meta)  # fmt: skip
+            if end is not None and end.refusal:
+                return None
+            draft = "".join(text).strip()
+            if draft:
+                cards.save_draft(conn, project.id, draft, model["id"])
+            return draft
+
+        draft = await db.acall(write)
+        if not draft:
+            reason = end.refusal if end is not None and end.refusal else "the model wrote nothing"
+            raise GatewayError(reason)
+        await bus.publish("card.drafted", {"project_id": project.id, "name": project.name, "model_id": model["id"],
+                                           "cost_usd": cost}, project_id=project.id)  # fmt: skip
+    except (GatewayError, CardError) as exc:
+        await bus.publish("card.failed", {"project_id": project.id, "detail": str(exc)}, project_id=project.id)
+    except Exception:
+        log.exception("drafting the card of %s failed", project.id)
+        await bus.publish("card.failed", {"project_id": project.id, "detail": "internal error"}, project_id=project.id)
+    finally:
+        app.state.card_drafts.discard(project.id)
+
+
+@router.put("/projects/{project_id}/card")
+async def confirm_card(
+    project_id: str, body: CardText, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    """The user's text (the draft as edited, or their own) becomes the next confirmed version."""
+    _app_only(client)
+    project = await _project(request, project_id)
+    try:
+        state = await request.app.state.db.acall(lambda conn: cards.confirm(conn, project.id, body.text))
+    except CardError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    version = state["confirmed"]["version"]
+    await request.app.state.bus.publish(
+        "card.confirmed", {"project_id": project.id, "name": project.name, "version": version}, project_id=project.id
+    )
+    return await _state(request, project)
+
+
+@router.post("/projects/{project_id}/card/restore")
+async def restore_card(
+    project_id: str, body: Version, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    _app_only(client)
+    project = await _project(request, project_id)
+    try:
+        state = await request.app.state.db.acall(lambda conn: cards.restore(conn, project.id, body.version))
+    except CardError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await request.app.state.bus.publish(
+        "card.confirmed",
+        {"project_id": project.id, "name": project.name, "version": state["confirmed"]["version"],
+         "restored_from": body.version},
+        project_id=project.id,
+    )  # fmt: skip
+    return await _state(request, project)
+
+
+@router.delete("/projects/{project_id}/card/draft", status_code=204)
+async def drop_draft(project_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> None:
+    _app_only(client)
+    project = await _project(request, project_id)
+    if not await request.app.state.db.acall(lambda conn: cards.drop_draft(conn, project.id)):
+        raise HTTPException(status_code=404, detail="there is no draft")
+    await request.app.state.bus.publish("card.dropped", {"project_id": project.id}, project_id=project.id,
+                                        persist=False)  # fmt: skip

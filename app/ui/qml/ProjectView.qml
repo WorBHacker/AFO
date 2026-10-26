@@ -7,6 +7,7 @@ Item {
     id: view
     signal addRequested()
     signal settingsRequested()
+    signal cardEditRequested(string text, bool draft)
 
     // ---------- no project ----------
 
@@ -205,6 +206,140 @@ Item {
                         font.family: Theme.uiFont
                         font.pixelSize: 12
                     }
+                }
+            }
+
+            // the project's card (D24): what models learn about the project first
+            Column {
+                id: cardBox
+                objectName: "projectCard"
+                width: parent.width
+                spacing: 8
+                property bool expanded: false
+                readonly property var card: Projects.card
+
+                Item {
+                    width: parent.width
+                    height: 24
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Карточка проекта" + (cardBox.card.confirmed ? " · версия " + cardBox.card.version : "")
+                        color: Theme.p.faint
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                    }
+                    Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+                        visible: cardBox.card.state === "confirmed"
+                        IconButton {
+                            iconName: "edit"
+                            tip: "Изменить карточку"
+                            onClicked: view.cardEditRequested(cardBox.card.text, false)
+                        }
+                        IconButton {
+                            iconName: "sparkle"
+                            tip: "Новый черновик от модели «" + cardBox.card.writer + "»"
+                            onClicked: Projects.draftCard()
+                        }
+                    }
+                }
+
+                Text {
+                    visible: cardBox.card.state === "none"
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.3
+                    text: "Карточки нет. Модель составит черновик по README, зависимостям, дереву папок и истории git — "
+                          + "вы проверите и подтвердите. Подтверждённая карточка — первое, что модели узнают о проекте."
+                    color: Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+                PlainButton {
+                    visible: cardBox.card.state === "none"
+                    iconName: "sparkle"
+                    text: "Составить черновик" + (cardBox.card.writer ? " (" + cardBox.card.writer + ")" : "")
+                    onClicked: Projects.draftCard()
+                }
+                Text {
+                    visible: cardBox.card.state === "drafting"
+                    text: "Модель «" + cardBox.card.writer + "» составляет черновик…"
+                    color: Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    SequentialAnimation on opacity {
+                        running: cardBox.card.state === "drafting"
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.4; duration: 700 }
+                        NumberAnimation { to: 1; duration: 700 }
+                    }
+                }
+                Rectangle {
+                    visible: cardBox.card.state === "draft"
+                    width: parent.width
+                    height: 48
+                    radius: 8
+                    color: "transparent"
+                    border.color: Theme.p.accent
+                    Text {
+                        x: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Черновик от «" + cardBox.card.draftModel + "» готов — проверьте и подтвердите"
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                    }
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        PlainButton {
+                            kind: "primary"
+                            text: "Открыть черновик"
+                            onClicked: view.cardEditRequested(cardBox.card.draft, true)
+                        }
+                        PlainButton { text: "Выбросить"; onClicked: Projects.dropCardDraft() }
+                    }
+                }
+                Text {
+                    visible: cardBox.card.missing.length > 0
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: "Карточка устарела: в ней есть то, чего уже нет в проекте — " + cardBox.card.missing.join(", ")
+                    color: Theme.p.warn
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                Item {
+                    visible: cardBox.card.confirmed && cardBox.card.state !== "draft"
+                    width: parent.width
+                    height: cardBox.expanded ? cardText.height : Math.min(cardText.height, 200)
+                    clip: true
+                    Column {
+                        id: cardText
+                        width: parent.width
+                        spacing: 10
+                        Repeater {
+                            model: cardBox.card.segments
+                            delegate: Loader {
+                                required property var modelData
+                                width: cardText.width
+                                sourceComponent: modelData.kind === "code" ? cardCode : cardProse
+                                onLoaded: item.info = Qt.binding(() => modelData)
+                            }
+                        }
+                    }
+                }
+                Component { id: cardProse; Prose { width: parent ? parent.width : 0 } }
+                Component { id: cardCode; CodeBlock { width: parent ? parent.width : 0 } }
+                PlainButton {
+                    visible: cardBox.card.confirmed && cardBox.card.state !== "draft" && cardText.height > 200
+                    text: cardBox.expanded ? "Свернуть" : "Показать полностью"
+                    onClicked: cardBox.expanded = !cardBox.expanded
                 }
             }
 

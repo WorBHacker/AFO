@@ -88,6 +88,14 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             failed = code not in (0, None)
             text = f"Терминал «{title}» завершился" + (f" с кодом {code}" if code is not None else "")
             return item("terminals", "terminal", text, level="error" if failed else "")
+        case "card.drafted":
+            return item("projects", "edit", f"Черновик карточки «{p.get('name', '')}» готов — проверьте и подтвердите")
+        case "card.confirmed":
+            name = p.get("name", "")
+            again = f" (возвращена версия {p['restored_from']})" if p.get("restored_from") else ""
+            return item("projects", "check", f"Карточка «{name}» подтверждена, версия {p.get('version')}{again}")
+        case "card.failed":
+            return item("projects", "edit", "Черновик карточки не составлен", p.get("detail", ""), "error")
         case "process.stopped":
             return item("processes", "power", f"Завершён {p.get('name', '')} (PID {p.get('pid', '')})",
                         p.get("cmdline", ""))  # fmt: skip

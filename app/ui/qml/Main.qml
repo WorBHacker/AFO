@@ -54,6 +54,7 @@ Window {
             height: parent.height - titleBar.height - (terminalPanel.visible ? terminalPanel.height : 0)
             onAddRequested: folderDialog.open()
             onSettingsRequested: projectSheet.open()
+            onCardEditRequested: (text, draft) => cardSheet.openWith(text, draft)
         }
         TerminalPanel {
             id: terminalPanel
@@ -142,6 +143,7 @@ Window {
     FeedSheet { id: feedSheet }
     ProjectSheet { id: projectSheet }
     ContextSheet { id: contextSheet }
+    CardSheet { id: cardSheet }
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 
