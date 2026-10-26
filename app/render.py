@@ -1,4 +1,5 @@
 """Markdown -> the HTML subset QTextBrowser understands, with Pygments-highlighted code blocks."""
+
 from __future__ import annotations
 
 import html
@@ -41,11 +42,13 @@ def _code_html(code: str, lang: str, index: int) -> str:
     body = highlight(code, lexer, _FORMATTER)
     label = html.escape(lang or "code")
     cell = "border-width:0px;"
-    return (f'<table width="100%" border="0" cellspacing="0" cellpadding="8" style="margin-top:6px; margin-bottom:6px;">'
-            f'<tr><td style="{cell} background-color:{CODE_HEAD};"><span style="color:{MUTED};">{label}</span>'
-            f'&nbsp;&nbsp;&nbsp;<a href="copy:{index}" style="color:{LINK}; text-decoration:none;">Копировать</a></td></tr>'
-            f'<tr><td style="{cell} background-color:{CODE_BG};">'
-            f'<pre style="font-family:{MONO}; white-space:pre-wrap; margin:0;">{body}</pre></td></tr></table>')
+    return (
+        f'<table width="100%" border="0" cellspacing="0" cellpadding="8" style="margin-top:6px; margin-bottom:6px;">'
+        f'<tr><td style="{cell} background-color:{CODE_HEAD};"><span style="color:{MUTED};">{label}</span>'
+        f'&nbsp;&nbsp;&nbsp;<a href="copy:{index}" style="color:{LINK}; text-decoration:none;">Копировать</a></td></tr>'
+        f'<tr><td style="{cell} background-color:{CODE_BG};">'
+        f'<pre style="font-family:{MONO}; white-space:pre-wrap; margin:0;">{body}</pre></td></tr></table>'
+    )
 
 
 def _fence(self, tokens, idx, options, env):

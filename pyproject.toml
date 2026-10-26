@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localchat"
+version = "0.0.1"
+description = "Local AI ecosystem: a hub for projects, terminals, models and agents, plus a light Qt app"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.optional-dependencies]
+# Stage 1 adds the hub server stack: fastapi, uvicorn, anthropic, keyring (ARCHITECTURE.md, section 7).
+hub = ["httpx>=0.28"]
+app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "markdown-it-py>=4.0", "pygments>=2.21"]
+dev = ["ruff>=0.14", "pytest>=8.4"]
+
+[tool.setuptools.packages.find]
+include = ["hub*", "app*", "common*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = ["localchat", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
