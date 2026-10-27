@@ -43,7 +43,7 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return f"Записать {path}"
         case "NotebookEdit":
             return f"Править блокнот {path}"
-        case "WebFetch":
+        case "WebFetch" | "web_fetch":
             return f"Открыть {data.get('url', '')}"
         case "WebSearch":
             return f"Искать в сети «{data.get('query', '')}»"

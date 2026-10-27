@@ -24,13 +24,14 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .db import Database, utc_now
 from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
-NETWORK_TOOLS = {"WebFetch", "WebSearch"}
+NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch"}
 HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
 SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
@@ -89,6 +90,8 @@ def grant_key(tool: str, data: dict[str, Any]) -> str | None:
         return None
     if tool in COMMAND_TOOLS:
         return f"{tool}:{' '.join(str(data.get('command', '')).split())}"
+    if tool == "web_fetch":  # the site: "always in this project" on it puts the site on the project's list (D19)
+        return f"web_fetch:{(urlsplit(str(data.get('url', ''))).hostname or '').lower()}"
     return tool
 
 
@@ -107,7 +110,7 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
         return {"kind": "command", "text": str(data.get("command", "")), "note": str(data.get("description", ""))}
     if tool in ("Edit", "MultiEdit", "Write"):
         return {"kind": "diff", "text": _diff(tool, data, root), "note": str(data.get("file_path", ""))}
-    if tool == "WebFetch":
+    if tool in ("WebFetch", "web_fetch"):
         return {"kind": "text", "text": str(data.get("url", "")), "note": str(data.get("prompt", ""))}
     if tool == "WebSearch":
         return {"kind": "text", "text": str(data.get("query", "")), "note": ""}
@@ -212,10 +215,11 @@ class ApprovalQueue:
         project_id: str | None = None,
         client_id: str | None = None,
         root: Path | None = None,
+        cover: bool = True,
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
-        chat", or a rule of the project, covers it."""
-        key = grant_key(tool, data)
+        chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19)."""
+        key = grant_key(tool, data) if cover else None
         approval_id = uuid.uuid4().hex[:12]
         shown = await asyncio.to_thread(preview, tool, data, root)
 

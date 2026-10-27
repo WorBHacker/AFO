@@ -89,6 +89,7 @@ TOOL_ICONS = {
     "write_file": "edit",
     "edit_file": "edit",
     "run_command": "terminal",
+    "web_fetch": "cloud",
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -140,7 +141,7 @@ def tool_label(name: str, args: Any) -> str:
             return f"Ищу «{a.get('pattern', '')}»"
         case "LS":
             return f"Смотрю папку {short_path(path)}"
-        case "WebFetch":
+        case "WebFetch" | "web_fetch":
             return f"Открываю {a.get('url', '')}"
         case "WebSearch":
             return f"Ищу в сети «{a.get('query', '')}»"

@@ -38,6 +38,7 @@ TOOL_LABELS = {
     "edit_file": "править файлы",
     "write_file": "записывать файлы",
     "run_command": "выполнять команды",
+    "web_fetch": "читать страницы в сети",
 }
 BLANK = {"id": "", "name": "", "instructions": "", "model_id": "", "tools": [], "mode": "ask", "project_ids": [],
          "max_steps": 30, "max_minutes": 30, "budget_usd": None}  # fmt: skip

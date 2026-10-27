@@ -44,7 +44,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import budgets, cards, changes, commands, context, links, notes, store
+from . import budgets, cards, changes, commands, context, links, notes, store, web
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -62,7 +62,7 @@ TITLE_LENGTH = 60
 MAX_TOOL_STEPS = 12
 NOT_RUN = "not run: the run stopped before this call"
 READ_ONLY = "not done: this chat is read-only - the user did not allow changes. Say what you would change instead."
-CHAT_TOOLS = [*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND]  # a new conversation's; older ones keep theirs
+CHAT_TOOLS = [*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND, web.WEB_FETCH]  # a new chat's; older keep theirs
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
@@ -453,6 +453,8 @@ class ChatService:
                 output, error = await self._write_file(conversation_id, call, ctx, cancel)
             elif call["name"] == commands.RUN_COMMAND["name"]:
                 output, error = await self._run_command(conversation_id, call, ctx, cancel)
+            elif call["name"] == web.WEB_FETCH["name"]:
+                output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error))
@@ -472,8 +474,10 @@ class ChatService:
         except (ToolError, changes.WriteError) as exc:
             return str(exc), True
         approval_id = None
-        if settings["mode"] != "trusted":
-            allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel)
+        tainted = await self._read_the_web(conversation_id)
+        if settings["mode"] != "trusted" or tainted:  # after reading the web, trust does not count (D19)
+            allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel,
+                                                        cover=not tainted)  # fmt: skip
             if not allowed:
                 return approval_id, True
         if self.snapshots is None:
@@ -501,7 +505,8 @@ class ChatService:
             commands.command_of(args)
         except ToolError as exc:
             return str(exc), True
-        allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
+        tainted = await self._read_the_web(conversation_id)
+        allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=not tainted)
         if not allowed:
             return why, True
         try:
@@ -512,13 +517,45 @@ class ChatService:
             log.exception("run_command failed")
             return f"the command did not start: {exc}", True
 
-    async def _ask_user(self, conversation_id: str, tool: str, args: dict, project, cancel) -> tuple[bool, str | None]:
+    async def _web_fetch(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
+        """A page the model wants to read: asked unless the site is on the short list or the project's (D19)."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        try:
+            url = web.check_url(args.get("url"))
+        except ToolError as exc:
+            return str(exc), True
+        if web.site(url) not in web.ALLOWED_SITES:
+            project = ctx.projects[0] if ctx.projects else None  # the chat's project keeps "always" answers
+            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
+            if not allowed:
+                return why, True
+        try:
+            return await web.fetch(args), False
+        except ToolError as exc:
+            return str(exc), True
+
+    async def _read_the_web(self, conversation_id: str) -> bool:
+        """Has the model in this chat read a web page? Then its writes and commands are asked every time (D19)."""
+
+        def read(conn) -> bool:
+            row = conn.execute(
+                "SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'tool' AND content LIKE ?",
+                (conversation_id, '%"name": "web_fetch"%'),
+            ).fetchone()
+            return row is not None
+
+        return await self._db.acall(read)
+
+    async def _ask_user(
+        self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
+    ) -> tuple[bool, str | None]:
         """Asks in the approval queue and waits - or stops waiting when the user stops the run. (True, approval id)
         when allowed; (False, what the model should read) otherwise."""
         if self.approvals is None:
             return False, "not done: the hub has no approval queue to ask the user"
-        asking = asyncio.create_task(self.approvals.ask(tool, args, conversation_id=conversation_id,
-                                                        project_id=project.id, root=project.root))  # fmt: skip
+        asking = asyncio.create_task(self.approvals.ask(
+            tool, args, conversation_id=conversation_id, project_id=project.id if project else None,
+            root=project.root if project else None, cover=cover))  # fmt: skip
         stopping = asyncio.create_task(cancel.wait())
         await asyncio.wait({asking, stopping}, return_when=asyncio.FIRST_COMPLETED)
         stopping.cancel()
