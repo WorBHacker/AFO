@@ -29,6 +29,7 @@ from .api import (
     links,
     models,
     notes,
+    openai,
     processes,
     projects,
     secrets,
@@ -154,6 +155,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(agents.router)
     app.include_router(stats.router)
     app.include_router(advice.router)
+    app.include_router(openai.router)
     # MCP for Cline, Claude Code and the like (D32): /mcp, with a client token
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))
