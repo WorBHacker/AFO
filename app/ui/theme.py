@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict
+from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
 from PySide6.QtGui import QFontDatabase, QGuiApplication
@@ -31,7 +32,22 @@ def qml_palette(p: palette.Palette) -> dict:
     return {k: qml_colour(v) if isinstance(v, str) else v for k, v in asdict(p).items() if not isinstance(v, tuple)}
 
 
+FONT_DIR = Path(__file__).with_name("fonts")
+_fonts_loaded: list[str] = []
+
+
+def load_fonts() -> list[str]:
+    """The fonts that come with the app (Inter, JetBrains Mono; SIL OFL, licences beside them), for this process
+    only - nothing is installed into Windows. Once; returns the families added."""
+    if not _fonts_loaded:
+        for path in sorted(FONT_DIR.glob("*.ttf")):
+            font_id = QFontDatabase.addApplicationFont(str(path))
+            _fonts_loaded.extend(f for f in QFontDatabase.applicationFontFamilies(font_id) if f not in _fonts_loaded)
+    return list(_fonts_loaded)
+
+
 def pick_font(families: list[str]) -> str:
+    load_fonts()
     installed = set(QFontDatabase.families())
     return next((f for f in families if f in installed), families[-1])
 

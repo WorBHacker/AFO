@@ -28,7 +28,7 @@ include = ["hub*", "app*", "common*"]
 
 [tool.setuptools.package-data]
 "hub.db" = ["migrations/*.sql"]
-"app.ui" = ["qml/*.qml"]
+"app.ui" = ["qml/*.qml", "icons/*.svg", "icons/*.txt", "fonts/*.ttf", "fonts/*.txt"]
 
 [tool.ruff]
 line-length = 120

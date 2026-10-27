@@ -48,7 +48,7 @@ def native_frame_touches(window: QWindow) -> None:
         hwnd = int(window.winId())
         dwm = ctypes.windll.dwmapi
         round_corners = ctypes.c_int(2)  # DWMWCP_ROUND
-        dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(round_corners), ctypes.sizeof(round_corners))
+        refused = dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(round_corners), ctypes.sizeof(round_corners))
 
         class Margins(ctypes.Structure):
             _fields_ = [
@@ -58,7 +58,9 @@ def native_frame_touches(window: QWindow) -> None:
                 ("bottom", ctypes.c_int),
             ]
 
-        dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(Margins(0, 0, 0, 1)))  # brings the shadow back
+        refused = refused or dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(Margins(0, 0, 0, 1)))  # the shadow
+        if refused:  # an HRESULT: Windows 10 has no rounded corners, for one
+            log.info("DWM refused a window touch: 0x%08x", refused & 0xFFFFFFFF)
     except (OSError, AttributeError) as exc:
         log.info("no DWM window touches (%s)", exc)
 

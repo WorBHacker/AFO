@@ -981,6 +981,31 @@ def test_a_slow_render_is_rendered_less_often(app, monkeypatch):
     assert app._render_timer.interval() == controller.RENDER_INTERVAL_MAX_MS
 
 
+def test_the_apps_own_fonts_and_icons(qapp):
+    """Inter and JetBrains Mono come with the app (nothing installed into Windows); every icon the window names
+    exists and draws - Lucide's files, a few of the app's own."""
+    import re
+    from pathlib import Path
+
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtSvg import QSvgRenderer
+
+    from app.ui import icons
+    from app.ui.theme import Theme, load_fonts
+
+    assert {"Inter", "JetBrains Mono"} <= set(load_fonts())
+    theme = Theme("dark")
+    assert (theme.uiFont, theme.monoFont) == ("Inter", "JetBrains Mono")
+    qml = "\n".join(p.read_text(encoding="utf-8") for p in Path("app/ui/qml").glob("*.qml"))
+    named = set(re.findall(r"\b(?:name|iconName):\s*\"([a-z-]+)\"", qml))
+    named |= {row[2] for row in commands.ACTIONS}
+    assert named and named <= icons.NAMES, named - icons.NAMES
+    for name in icons.NAMES:
+        drawn = QSvgRenderer(QByteArray(icons.svg(name, "#ff0000").encode()))
+        assert drawn.isValid(), name
+    assert 'stroke-width="1.75"' in icons.svg("shield", "#ff0000") and "currentColor" not in icons.svg("key", "#1")
+
+
 def test_code_colours_are_kept_per_theme():
     """Finished code blocks of a streamed answer are coloured once (a cache), but a theme switch colours anew."""
     from app import render

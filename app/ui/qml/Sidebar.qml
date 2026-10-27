@@ -245,13 +245,13 @@ Rectangle {
             color: "transparent"
             border.color: Theme.p.hairline
             Row {
-                x: 12
-                width: parent.width - unloadButton.width - 24
+                x: 10
+                width: parent.width - unloadButton.width - 18
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
+                spacing: 6
                 Icon { name: "cpu"; tint: Theme.p.accent; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    width: parent.width - 24
+                    width: parent.width - 22
                     elide: Text.ElideRight
                     text: App.status.local || ""
                     color: Theme.p.text_soft
@@ -267,6 +267,7 @@ Rectangle {
                 anchors.rightMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 implicitHeight: 30
+                implicitWidth: 100  // a little tighter than other buttons: the model's name needs the room
                 iconName: "power"
                 text: "Выгрузить"
                 onClicked: App.askUnloadLocal()
