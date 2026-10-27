@@ -62,6 +62,8 @@ Popup {
             property var info: ({})
             height: info.note ? 46 : 36
             hoverEnabled: true
+            enabled: info.enabled !== false
+            opacity: enabled ? 1 : 0.5
             onClicked: { menu.chosen(info.id); menu.close() }
             background: Rectangle {
                 radius: 6

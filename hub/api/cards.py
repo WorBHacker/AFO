@@ -7,6 +7,10 @@ written in the background: `card.drafting` (live) when it starts, `card.drafted`
 
 A confirmed version keeps what the project was like then; the card's state says what changed since (`changes`), and
 a draft with `update` brings the confirmed card up to date instead of writing it anew (D24).
+
+The confirmed card goes into the project only on the user's button (D23): `GET .../card/export` says what writing
+CLAUDE.md, AGENTS.md or .clinerules would do to each file, `POST .../card/export` writes the chosen ones
+(hub/export.py) - the app's only; `card.exported` goes into the feed.
 """
 
 from __future__ import annotations
@@ -18,9 +22,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import budgets, cards, projects, store
+from .. import budgets, cards, export, notes, projects, store
 from ..auth import APP_CLIENT, Client
 from ..cards import CardError
+from ..export import ExportError
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
 from ..projects import ProjectError
@@ -42,6 +47,10 @@ class CardText(BaseModel):
 
 class Version(BaseModel):
     version: int
+
+
+class ExportRequest(BaseModel):
+    targets: list[str] = Field(min_length=1)  # claude, agents, cline
 
 
 def _app_only(client: Client) -> None:
@@ -77,6 +86,49 @@ async def _state(request: Request, project: projects.Project) -> dict:
 @router.get("/projects/{project_id}/card")
 async def get_card(project_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     return await _state(request, await _project(request, project_id))
+
+
+async def _export_plans(request: Request, project: projects.Project, targets: list[str]) -> list[export.Plan]:
+    card, written = await request.app.state.db.acall(
+        lambda conn: (cards.confirmed_text(conn, project.id), notes.list_notes(conn, project.id))
+    )
+    if not card:
+        raise HTTPException(status_code=409, detail="the project has no confirmed card to export")
+    text = export.block(project, card, written)
+    try:
+        return [await asyncio.to_thread(export.plan, project, target, text) for target in targets]
+    except ExportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/card/export")
+async def export_preview(project_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """What writing the card into each file would do: create it, add the block at its end, replace the block."""
+    _app_only(client)
+    project = await _project(request, project_id)
+    plans = await _export_plans(request, project, list(export.TARGETS))
+    return {"targets": [p.to_json(project.root) for p in plans], "block": plans[0].after if plans else ""}
+
+
+@router.post("/projects/{project_id}/card/export")
+async def export_card(
+    project_id: str, body: ExportRequest, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    _app_only(client)
+    project = await _project(request, project_id)
+    plans = await _export_plans(request, project, list(dict.fromkeys(body.targets)))
+    snapshots = request.app.state.settings.paths.snapshots
+    files = []
+    for item in plans:
+        try:
+            kept = await asyncio.to_thread(export.write, item, snapshots)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=f"{item.path.name} was not written: {exc}") from exc
+        files.append({**item.to_json(project.root), "snapshot": kept})
+    await request.app.state.bus.publish(
+        "card.exported", {"project_id": project.id, "files": files}, project_id=project.id
+    )
+    return {"files": files}
 
 
 @router.post("/projects/{project_id}/card/draft", status_code=202)

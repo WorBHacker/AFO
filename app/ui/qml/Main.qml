@@ -56,6 +56,7 @@ Window {
             onAddRequested: folderDialog.open()
             onSettingsRequested: projectSheet.open()
             onCardEditRequested: (text, draft) => cardSheet.openWith(text, draft)
+            onExportRequested: (anchor) => { Projects.loadExport(); exportMenu.openAt(anchor) }
         }
         TerminalPanel {
             id: terminalPanel
@@ -132,6 +133,14 @@ Window {
                    .concat([{ section: " ", id: "" }, { id: "+add", name: "Добавить проект…", icon: "folder-plus" }])
         onChosen: (id) => id === "+add" ? folderDialog.open() : Projects.openProject(id)
         function openBelow(item) { at = item.mapToItem(null, 0, item.height + 4); open() }
+    }
+    MenuPopup {
+        id: exportMenu
+        objectName: "exportMenu"
+        menuWidth: 360
+        items: [{ section: "Записать карточку в проект", id: "" }].concat(Projects.exportTargets)
+        onChosen: (id) => Projects.exportCard(id)
+        function openAt(item) { anchor = item; open() }
     }
     FolderDialog {
         id: folderDialog

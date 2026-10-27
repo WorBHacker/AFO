@@ -259,6 +259,13 @@ class HubClient:
     def shutdown(self) -> None:
         self._call("POST", "/v1/shutdown")
 
+    def card_export(self, project_id: str) -> dict:
+        """What writing the card into CLAUDE.md / AGENTS.md / .clinerules would do to each (D23)."""
+        return self._call("GET", f"/v1/projects/{project_id}/card/export")
+
+    def export_card(self, project_id: str, targets: list[str]) -> dict:
+        return self._call("POST", f"/v1/projects/{project_id}/card/export", {"targets": targets})
+
     # --- approvals and Claude Code (stage 4, D18) ---
 
     def approvals(self) -> list[dict]:

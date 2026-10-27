@@ -375,6 +375,16 @@ class FakeClient:
         self.card_state = {**self.card_state, "drafting": True}
         return {"drafting": True}
 
+    def card_export(self, pid):
+        modes = {"claude": "create", "agents": "append", "cline": "unchanged"}
+        paths = {"claude": "CLAUDE.md", "agents": "AGENTS.md", "cline": ".clinerules/localchat.md"}
+        targets = [{"target": t, "path": paths[t], "mode": m, "exists": m != "create"} for t, m in modes.items()]
+        return {"targets": targets, "block": "<!-- LocalChat -->"}
+
+    def export_card(self, pid, targets):
+        self.log.append(("export", pid, list(targets)))
+        return {"files": [{"target": t} for t in targets]}
+
     def confirm_card(self, pid, text):
         version = len(self.card_state["versions"]) + 1
         confirmed = {"version": version, "text": text, "model_id": None, "created_at": "2026-10-27T03:00:00Z"}
@@ -1791,3 +1801,28 @@ def test_claude_code_in_a_terminal(app):
     app.terminals.newClaudeCode()
     wait_until(lambda: not app.bg.busy)
     assert app.client.claude_terminals == ["p1"] and app.terminals.panelOpen
+
+
+def test_exporting_the_card_asks_first(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1")
+    projects.loadExport()
+    wait_until(lambda: len(projects.exportTargets) == 3)
+    claude, agents, cline = projects.exportTargets
+    assert (claude["name"], claude["note"], claude["enabled"]) == ("CLAUDE.md", "создать файл", True)
+    assert agents["note"] == "добавить блок в конец файла"
+    assert (cline["name"], cline["enabled"]) == (".clinerules/localchat.md", False)  # already as the card is
+    projects.exportCard("cline")
+    assert app.question == {}  # nothing to write, nothing asked
+    projects.exportCard("agents")
+    assert app.question["title"] == "Записать карточку в AGENTS.md?"
+    assert "остальное в файле не изменится" in app.question["text"] and "git" in app.question["text"]
+    app.answer(False)
+    wait_until(lambda: not app.bg.busy)
+    assert not any(e[0] == "export" for e in client.log)  # declined: nothing written (D23)
+    projects.exportCard("claude")
+    app.answer(True)
+    wait_until(lambda: any(e[0] == "export" for e in client.log))
+    wait_until(lambda: not app.bg.busy)
+    assert ("export", "p1", ["claude"]) in client.log and app.flashText == "Карточка записана в CLAUDE.md"

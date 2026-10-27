@@ -8,6 +8,7 @@ Item {
     signal addRequested()
     signal settingsRequested()
     signal cardEditRequested(string text, bool draft)
+    signal exportRequested(Item anchor)
 
     // ---------- no project ----------
 
@@ -250,6 +251,13 @@ Item {
                             iconName: "sparkle"
                             tip: "Новый черновик от модели «" + cardBox.card.writer + "»"
                             onClicked: Projects.draftCard()
+                        }
+                        IconButton {
+                            id: exportButton
+                            objectName: "cardExport"
+                            iconName: "external"
+                            tip: "В проект: записать карточку в CLAUDE.md, AGENTS.md или .clinerules"
+                            onClicked: view.exportRequested(exportButton)
                         }
                     }
                 }

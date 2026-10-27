@@ -217,6 +217,25 @@ def ago(iso: str, now: datetime | None = None) -> str:
     return when.astimezone().strftime("%d.%m.%Y")
 
 
+EXPORT_MODES = {
+    "create": "создать файл",
+    "append": "добавить блок в конец файла",
+    "replace": "обновить блок LocalChat в файле",
+    "unchanged": "уже как в карточке",
+}
+
+
+def export_question(target: dict[str, Any]) -> str:
+    """What the user agrees to when the card goes into a project file (D23)."""
+    path = target["path"]
+    what = {
+        "create": f"В проекте появится {path} с карточкой, заметками для моделей и строкой о MCP хаба.",
+        "append": f"В конец {path} добавится блок LocalChat с карточкой; остальное в файле не изменится.",
+        "replace": f"Блок LocalChat в {path} заменится нынешней карточкой; остальное в файле не изменится.",
+    }.get(target["mode"], "")
+    return what + " Файл увидит git — его можно закоммитить или удалить; прежний вариант хаб хранит у себя."
+
+
 def local_time(iso: str) -> str:
     """'27.10.2026 05:03' in this computer's time zone (the hub keeps UTC); the text as is if not a date."""
     try:

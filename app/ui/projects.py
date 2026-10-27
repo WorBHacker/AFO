@@ -32,6 +32,7 @@ class Projects(QObject):
     fileChanged = Signal()
     processesChanged = Signal()
     cardChanged = Signal()
+    exportChanged = Signal()
     notesChanged = Signal()
     linksChanged = Signal()
     searchChanged = Signal()
@@ -60,6 +61,7 @@ class Projects(QObject):
         self._goto: tuple[str, int] | None = None  # a file to show at a line, from a search
         self._goto_seq = 0
         self._card: dict[str, Any] = {}  # the open project's card, as the hub describes it
+        self._export: list[dict[str, Any]] = []  # what writing the card into each file would do (D23)
         self._card_error = ""
         self._notes: list[dict[str, Any]] = []
         self._links: list[dict[str, Any]] = []  # every link, as the hub lists them
@@ -611,6 +613,48 @@ class Projects(QObject):
         return {"gotoLine": line, "gotoOffset": project_rows.line_offset(text, line), "gotoSeq": self._goto_seq}
 
     # ================= the card (D24) =================
+
+    @Property(list, notify=exportChanged)
+    def exportTargets(self) -> list:
+        """The files the card can go to, each with what writing it would do - for the menu."""
+        return [{"id": t["target"], "name": t["path"], "note": project_rows.EXPORT_MODES.get(t["mode"], t["mode"]),
+                 "icon": "file", "enabled": t["mode"] != "unchanged"} for t in self._export]  # fmt: skip
+
+    @Slot()
+    def loadExport(self) -> None:
+        if not self.current:
+            return
+        pid = self.current["id"]
+
+        def show(answer: dict[str, Any]) -> None:
+            if self.current and self.current["id"] == pid:
+                self._export = answer["targets"]
+                self.exportChanged.emit()
+
+        self._export = []
+        self.exportChanged.emit()
+        self.app._call(lambda: self.app.client.card_export(pid), show)
+
+    @Slot(str)
+    def exportCard(self, target: str) -> None:
+        """Writes the card into the project after the user agrees (D23: nothing appears there unasked)."""
+        found = next((t for t in self._export if t["target"] == target), None)
+        if not self.current or found is None or found["mode"] == "unchanged":
+            return
+        pid, path = self.current["id"], found["path"]
+        text = project_rows.export_question(found)
+
+        def decide(yes: bool) -> None:
+            if not yes:
+                return
+
+            def done(_answer: dict[str, Any]) -> None:
+                self.app.flash(f"Карточка записана в {path}")
+                self.loadExport()
+
+            self.app._call(lambda: self.app.client.export_card(pid, [target]), done)
+
+        self.app._ask(f"Записать карточку в {path}?", text, "Записать", decide)
 
     def load_card(self) -> None:
         if not self.current or self.app.client is None:
