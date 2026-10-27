@@ -203,8 +203,10 @@ Item {
                 topPadding: 8
                 bottomPadding: 8
                 background: null
-                onTextChanged: Mentions.typed(text, cursorPosition)
-                onCursorPositionChanged: Mentions.typed(text, cursorPosition)
+                // a keystroke changes the text and the cursor: one look at the draft after both, not one per change
+                onTextChanged: mentionsLook.restart()
+                onCursorPositionChanged: mentionsLook.restart()
+                Timer { id: mentionsLook; interval: 0; onTriggered: Mentions.typed(area.text, area.cursorPosition) }
                 onActiveFocusChanged: if (!activeFocus) Mentions.close()
                 Keys.onPressed: (event) => {
                     if (mentionMenu.visible) {  // the @-menu has the keys it needs

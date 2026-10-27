@@ -7,6 +7,41 @@ Column {
     property int rowIndex: -1
     // folded reasoning is not laid out at all; a string property notifies only when the text really changes
     property string bodyText: info.open ? (info.text || "") : ""
+    // Streaming reasoning grows at its end. It shows in parts of about `partSize` characters, cut at line ends (the
+    // line end is the cut), and a tick lays out only the last part again: one TextEdit of 100k characters laid all of
+    // it out on every tick. A selection does not cross parts.
+    readonly property int partSize: 4000
+    property string shownText: ""
+    onBodyTextChanged: {
+        if (shownText !== "" && bodyText.startsWith(shownText) && parts.count > 0) {
+            addText(bodyText.slice(shownText.length))
+        } else {
+            parts.clear()
+            addText(bodyText)
+        }
+        shownText = bodyText
+    }
+    Component.onCompleted: if (shownText === "") { addText(bodyText); shownText = bodyText }
+    function addText(more) {
+        if (more === "")
+            return
+        const growing = parts.count > 0
+        let tail = (growing ? parts.get(parts.count - 1).part : "") + more
+        const cut = []
+        while (tail.length > partSize) {
+            const end = tail.lastIndexOf("\n", partSize)
+            if (end <= 0)
+                break  // no line end yet: the part grows until one comes
+            cut.push(tail.slice(0, end))
+            tail = tail.slice(end + 1)
+        }
+        cut.push(tail)
+        if (growing)
+            parts.setProperty(parts.count - 1, "part", cut.shift())
+        for (const part of cut)
+            parts.append({ part: part })
+    }
+    ListModel { id: parts }
     spacing: 8
 
     Item {
@@ -52,19 +87,27 @@ Column {
         spacing: 12
         leftPadding: 6
         Rectangle { width: 2; height: body.height; radius: 1; color: Theme.p.hairline_strong }
-        TextEdit {
+        Column {
             id: body
+            objectName: "thinkingParts"
             width: think.width - 26
-            readOnly: true
-            selectByMouse: true
-            textFormat: TextEdit.PlainText
-            wrapMode: TextEdit.Wrap
-            text: think.bodyText
-            color: Theme.p.muted
-            selectionColor: Theme.p.selection
-            selectedTextColor: Theme.p.text
-            font.family: Theme.uiFont
-            font.pixelSize: 13
+            Repeater {
+                model: parts
+                delegate: TextEdit {
+                    required property string part
+                    width: body.width
+                    readOnly: true
+                    selectByMouse: true
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.Wrap
+                    text: part
+                    color: Theme.p.muted
+                    selectionColor: Theme.p.selection
+                    selectedTextColor: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+            }
         }
     }
 }

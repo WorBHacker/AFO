@@ -32,9 +32,10 @@ def test_tables_and_inline_code():
 
 
 def test_highlighting_and_language_names():
-    spans = highlight_code("def f(): pass", "python")
-    assert "<span" in spans and "def" in spans
-    assert "<span" not in highlight_code("plain", "no-such-language")
+    tags = highlight_code("def f(): pass", "python")
+    # tags Qt reads fast (no CSS spans to parse); plain text keeps the window's own colour
+    assert '<font color="#' in tags and "<span" not in tags and "def" in tags
+    assert highlight_code("plain <text>", "no-such-language") == "plain &lt;text&gt;"
     assert language_label("py") == "python"
     assert language_label("") == "текст"
     assert language_label("no-such-language") == "no-such-language"

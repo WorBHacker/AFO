@@ -1164,6 +1164,7 @@ Item {
             code: view.file.diffMode ? (view.file.diff || "") : (view.file.code || "")
             numbers: view.file.numbers || ""
             rich: view.file.diffMode ? !!view.file.diffRich : !!view.file.rich
+            columns: (view.file.diffMode ? view.file.diffColumns : view.file.columns) || 0
             showNumbers: !view.file.diffMode
             gotoOffset: view.file.gotoOffset === undefined ? -1 : view.file.gotoOffset
             gotoSeq: view.file.gotoSeq || 0

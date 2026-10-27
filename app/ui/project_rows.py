@@ -84,10 +84,19 @@ def language_of(path: str) -> str:
         return ""
 
 
+TAB_COLUMNS = 12  # a tab as Qt draws it (80 px) is ~10 monospace columns at 13 px: more is only extra room
+
+
+def columns_of(text: str) -> int:
+    """The longest line in monospace columns: the viewer's width without asking Qt to lay the text out for it."""
+    return max((len(line.expandtabs(TAB_COLUMNS)) for line in text.split("\n")), default=0)
+
+
 def code_view(text: str, path: str, *, lang: str | None = None) -> dict[str, Any]:
     """A file (or a diff) for the viewer: the code, coloured as rich text when not too big, else plain, and line
-    numbers made the same way (padded to one width, so a monospace column lines up on the right). Windows line ends
-    are shown as plain ones, so a line's offset in the text is its offset on screen."""
+    numbers as plain text (padded to one width, so a monospace column lines up on the right; a plain line is as tall
+    as a line of the coloured <pre>, and plain numbers lay out ~5x faster). Windows line ends are shown as plain
+    ones, so a line's offset in the text is its offset on screen."""
     text = text.replace("\r\n", "\n")
     lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
     lang = lang if lang is not None else language_of(path)
@@ -96,10 +105,8 @@ def code_view(text: str, path: str, *, lang: str | None = None) -> dict[str, Any
     numbers = "\n".join(str(n).rjust(width) for n in range(1, max(lines, 1) + 1))
     body = text[:-1] if text.endswith("\n") else text
     if rich:
-        style = f"margin:0; font-family:{palette.MONO_CSS};"
-        body = f'<pre style="{style}">{highlight_code(body, lang)}</pre>'
-        numbers = f'<pre style="{style}">{numbers}</pre>'
-    return {"code": body, "numbers": numbers, "lines": lines, "rich": rich}
+        body = f'<pre style="margin:0; font-family:{palette.MONO_CSS};">{highlight_code(body, lang)}</pre>'
+    return {"code": body, "numbers": numbers, "lines": lines, "rich": rich, "columns": columns_of(text)}
 
 
 DIFF_META = (
@@ -121,7 +128,7 @@ def diff_view(text: str) -> dict[str, Any]:
     green, removed red, hunk headers in the accent, file headers muted."""
     body = text[:-1] if text.endswith("\n") else text
     if len(text.encode("utf-8", "replace")) > HIGHLIGHT_MAX_BYTES:
-        return {"code": body, "rich": False}
+        return {"code": body, "rich": False, "columns": columns_of(body)}
     p = palette.current()
     out = []
     for line in body.split("\n"):
@@ -140,6 +147,7 @@ def diff_view(text: str) -> dict[str, Any]:
     return {
         "code": f'<pre style="margin:0; font-family:{palette.MONO_CSS};">' + "\n".join(out) + "</pre>",
         "rich": True,
+        "columns": columns_of(body),
     }
 
 

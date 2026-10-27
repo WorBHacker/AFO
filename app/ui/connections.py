@@ -188,7 +188,7 @@ class Connections(QObject):
                 done(result)
             self.changed.emit()
 
-        self.app._call(fn, ok, self._failed)
+        self.app.call_or_fail(fn, ok, self._failed)
 
     def _failed(self, error: Exception) -> None:
         self._busy = False

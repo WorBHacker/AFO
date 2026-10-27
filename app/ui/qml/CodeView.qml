@@ -1,13 +1,14 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// A file's text with line numbers, scrolling both ways, selectable. Rich text when coloured, plain text otherwise
-// (the numbers are made the same way, so both columns lay out their lines alike).
+// A file's text with line numbers, scrolling both ways, selectable. Rich text when coloured, plain text otherwise;
+// the numbers are plain text either way (a plain line is as tall as a line of the coloured <pre>).
 Flickable {
     id: view
     property string code
     property string numbers
     property bool rich
+    property int columns  // the longest line, in characters (from Python)
     property bool showNumbers: true
     // a line to show (from a search): its offset in the text; a new `gotoSeq` asks again for the same place
     property int gotoOffset: -1
@@ -53,14 +54,18 @@ Flickable {
             leftPadding: 16
             rightPadding: 14
             text: view.showNumbers ? view.numbers : ""
-            textFormat: view.rich ? Text.RichText : Text.PlainText
+            textFormat: Text.PlainText  // as tall a line as the coloured code's, at a fraction of the cost
             color: Theme.p.faint
             font.family: Theme.monoFont
             font.pixelSize: 13
         }
+        // The width comes from the longest line, not from implicitWidth: asking a TextEdit for its implicit width
+        // lays the whole document out once more (a 2700-line file opened in 0.5 s instead of ~0.2 s).
+        FontMetrics { id: metrics; font: body.font }
         TextEdit {
             id: body
-            width: Math.max(implicitWidth, view.width - (gutter.visible ? gutter.width : 0))
+            width: Math.max(Math.ceil(metrics.advanceWidth("0") * (view.columns + 2)) + leftPadding + rightPadding,
+                            view.width - (gutter.visible ? gutter.width : 0))
             topPadding: 14
             bottomPadding: 14
             leftPadding: view.showNumbers ? 4 : 20

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from .models import RowModel
 from .project_rows import local_time
 
 if TYPE_CHECKING:
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
 HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code it starts
 PREVIEW_LINES = 400
+QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
+               "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time"]  # fmt: skip
 
 
 def short_path(path: str, roots: list[str]) -> str:
@@ -111,6 +114,14 @@ class Approvals(QObject):
         super().__init__(app)
         self.app = app
         self._pending: list[dict[str, Any]] = []
+        # the cards in the sheet, by request: an answer or a new request changes its own card only, so a comment
+        # being typed in another one stays (a list rebuilt every card)
+        self.queue = RowModel(self, roles=QUEUE_ROLES)
+        self.changed.connect(lambda: self.queue.sync([{**row, "key": row["id"]} for row in self.items]))
+
+    @Property(QObject, constant=True)
+    def queueModel(self) -> RowModel:
+        return self.queue
 
     @Property(list, notify=changed)
     def items(self) -> list:

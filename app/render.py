@@ -9,18 +9,20 @@ from __future__ import annotations
 import functools
 import html
 from dataclasses import dataclass
+from typing import Any
 
 from markdown_it import MarkdownIt
 from pygments import highlight
-from pygments.formatters import HtmlFormatter
+from pygments.formatter import Formatter
 from pygments.lexers import TextLexer, get_lexer_by_name
 from pygments.styles import get_all_styles
+from pygments.token import Token
 from pygments.util import ClassNotFound
 
 from . import palette
 
 _MARK = "\x00"  # CommonMark turns NUL in the input into U+FFFD, so this never comes from the model
-_FORMATTERS: dict[str, HtmlFormatter] = {}
+_FORMATTERS: dict[str, Formatter] = {}
 
 
 @dataclass(frozen=True)
@@ -50,13 +52,52 @@ h1 {{ font-size: 140%; }} h2 {{ font-size: 125%; }} h3 {{ font-size: 112%; }}
 """
 
 
-def _formatter() -> HtmlFormatter:
-    """Pygments colours that suit the current theme (inline styles, so Qt needs no style sheet for them)."""
+class QtRichFormatter(Formatter):
+    """Pygments -> the rich text Qt reads fastest: <font color>, <b>, <i>, <u> instead of CSS spans (Qt parses a
+    style attribute per span: a 2700-line file is ~1 MB of them), and a run of tokens of one look in one tag."""
+
+    def __init__(self, **options):
+        super().__init__(**options)
+        self._tags: dict[Any, tuple[str, str]] = {}
+        for token, look in self.style:
+            opening, closing = "", ""
+            if look["color"]:
+                opening, closing = f'<font color="#{look["color"]}">', "</font>"
+            for flag, tag in (("bold", "b"), ("italic", "i"), ("underline", "u")):
+                if look[flag]:
+                    opening, closing = f"{opening}<{tag}>", f"</{tag}>{closing}"
+            self._tags[token] = (opening, closing)
+        self._tags[Token] = self._tags[Token.Text] = ("", "")  # plain text keeps the window's own text colour
+
+    def _tags_of(self, token) -> tuple[str, str]:
+        while token not in self._tags and token.parent is not None:  # a lexer's own subtype: its family's look
+            token = token.parent
+        return self._tags.get(token, ("", ""))
+
+    def format(self, tokensource, outfile) -> None:
+        current, run = ("", ""), []
+        for token, value in tokensource:
+            tags = self._tags_of(token)
+            # blanks take the look they come in (their colour does not show): fewer tags
+            if tags != current and not (value.isspace() and "<u>" not in current[0]):
+                if run:
+                    outfile.write(current[0] + html.escape("".join(run), quote=False) + current[1])
+                    run = []
+                current = tags
+            run.append(value)
+        text = "".join(run)
+        text = text[:-1] if text.endswith("\n") else text  # the lexer's own last newline: the code has none
+        if text:
+            outfile.write(current[0] + html.escape(text, quote=False) + current[1])
+
+
+def _formatter() -> Formatter:
+    """Pygments colours that suit the current theme (inline, so Qt needs no style sheet for them)."""
     p = palette.current()
     if p.name not in _FORMATTERS:
         installed = set(get_all_styles())
         style = next((s for s in p.code_styles if s in installed), "default")
-        _FORMATTERS[p.name] = HtmlFormatter(style=style, noclasses=True, nowrap=True)
+        _FORMATTERS[p.name] = QtRichFormatter(style=style)
     return _FORMATTERS[p.name]
 
 

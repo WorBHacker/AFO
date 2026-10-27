@@ -76,23 +76,31 @@ def _boundary_after(text: str, at: int) -> bool:
     return at >= len(text) or text[at].isspace() or text[at] in TRAILING or text[at] == "/"
 
 
+_WORD = re.compile(r"\S*")
+
+
 def mentioned(text: str, projects: list[dict[str, Any]]) -> tuple[list[str], list[tuple[str, str]]]:
-    """What a message mentions with @: project ids, and (project id, path) of files - in the order written."""
+    """What a message mentions with @: project ids, and (project id, path) of files - in the order written.
+    Runs on every keystroke: each @ looks at the few characters a name can take, not at the rest of the draft."""
     ids: list[str] = []
     files: list[tuple[str, str]] = []
-    by_length = sorted(projects, key=lambda p: -len(p["name"]))
-    for at, char in enumerate(text):
-        if char != "@" or (at > 0 and not text[at - 1].isspace() and text[at - 1] not in OPENING):
+    by_length = [(p, p["name"].casefold()) for p in sorted(projects, key=lambda p: -len(p["name"]))]
+    longest = len(by_length[0][0]["name"]) if by_length else 0
+    at = text.find("@")
+    while at >= 0:
+        here, at = at, text.find("@", at + 1)
+        if here > 0 and not text[here - 1].isspace() and text[here - 1] not in OPENING:
             continue
-        rest = text[at + 1 :]
-        for p in by_length:
+        head = text[here + 1 : here + 2 + longest]  # any name and the character after it
+        folded = head.casefold()
+        for p, name_folded in by_length:
             name = p["name"]
-            if not rest.casefold().startswith(name.casefold()) or not _boundary_after(rest, len(name)):
+            if not folded.startswith(name_folded) or not _boundary_after(head, len(name)):
                 continue
             if p["id"] not in ids:
                 ids.append(p["id"])
-            if rest[len(name) : len(name) + 1] == "/":
-                path = re.split(r"\s", rest[len(name) + 1 :], maxsplit=1)[0].rstrip(TRAILING)
+            if head[len(name) : len(name) + 1] == "/":
+                path = _WORD.match(text, here + 2 + len(name)).group().rstrip(TRAILING)
                 if path and (p["id"], path) not in files:
                     files.append((p["id"], path))
             break

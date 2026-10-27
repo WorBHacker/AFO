@@ -503,6 +503,7 @@ class Projects(QObject):
             shown = project_rows.diff_view(self._diff_text)
             view["diff"] = shown["code"]
             view["diffRich"] = shown["rich"]
+            view["diffColumns"] = shown["columns"]
             view["diffEmpty"] = not self._diff_text
         self._file = view
         self.fileChanged.emit()
@@ -606,9 +607,9 @@ class Projects(QObject):
                 self.app.show_error(f"Поиск не удался: {error}")
 
         if symbols:
-            self.app._call(lambda: self.app.client.symbols(pid, q=text), show, failed)
+            self.app.call_or_fail(lambda: self.app.client.symbols(pid, q=text), show, failed)
         else:
-            self.app._call(lambda: self.app.client.search(pid, text, regex=regex, case=case), show, failed)
+            self.app.call_or_fail(lambda: self.app.client.search(pid, text, regex=regex, case=case), show, failed)
 
     @Slot()
     def loadOutline(self) -> None:
@@ -740,7 +741,7 @@ class Projects(QObject):
             self.cardChanged.emit()
             self.app.show_error(f"Черновик карточки не начат: {error}")
 
-        self.app._call(lambda: self.app.client.draft_card(pid, model_id, update=update), None, failed)
+        self.app.call_or_fail(lambda: self.app.client.draft_card(pid, model_id, update=update), None, failed)
 
     @Slot(str)
     def confirmCard(self, text: str) -> None:
@@ -797,7 +798,7 @@ class Projects(QObject):
             self.linksChanged.emit()
             self.app.show_error(f"Поиск связей не удался: {error}")
 
-        self.app._call(lambda: self.app.client.scan_links(), done, failed)
+        self.app.call_or_fail(lambda: self.app.client.scan_links(), done, failed)
 
     @Slot(int, str)
     def confirmLink(self, link_id: int, description: str) -> None:

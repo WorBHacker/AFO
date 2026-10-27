@@ -1048,6 +1048,62 @@ def long_chat_with_tools(steps: int = 8) -> dict:
     return {"id": "c1", "title": "Длинный", "busy": False, "messages": messages}
 
 
+def test_open_reasoning_streams_in_parts_that_add_up_to_it(qapp):
+    """Open reasoning shows in parts cut at line ends, so a tick lays out only the last part (one TextEdit of 100k
+    characters laid all of it out on every tick). Read back, the parts are exactly the reasoning."""
+    import random
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+
+        def parts() -> list[str]:
+            quick.window.grabWindow()  # a frame: the list lays out (and creates) the rows it shows
+            todo, found = [quick.window.contentItem()], []
+            while todo:
+                item = todo.pop(0)
+                todo.extend(item.childItems())
+                if item.objectName() == "thinkingParts":
+                    found.append(
+                        [child.property("text") for child in item.childItems() if child.property("part") is not None]
+                    )
+            return next(p for p in found if p and p[0].startswith("Старт"))
+
+        app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+        app.on_event(event("chat.delta", kind="reasoning", text="Старт.\n"))
+        app._render_live()
+        app.toggleThinking(app.messages.find("live"))
+        rng, sent = random.Random(3), "Старт.\n"
+        for n in range(120):  # lines, blank lines, and a stretch with no line end at all
+            piece = rng.choice(["строка рассуждения " * rng.randint(1, 30), "\n", "\n\n", "x" * 900]) + rng.choice(
+                ["", "\n"]
+            )
+            sent += piece
+            app.on_event(event("chat.delta", kind="reasoning", text=piece))
+            if n % 7 == 0:
+                app._render_live()
+                quick.window.grabWindow()
+        app._render_live()
+        for _ in range(5):
+            QApplication.processEvents()
+        shown = parts()
+        assert len(shown) > 3 and "\n".join(shown) == sent
+        live = app.messages.find("live")
+        app.toggleThinking(live)  # folded and opened again: built anew, the same text
+        app.toggleThinking(live)
+        for _ in range(5):
+            QApplication.processEvents()
+        assert "\n".join(parts()) == sent
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_long_chat_with_tools_rests_at_its_end(qapp):
     """An open chat does nothing while nothing happens. Its rows have very different heights, and those out of view
     were estimates: following the end through positionViewAtEnd() on every contentHeight change moved them, and
@@ -1352,6 +1408,48 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         quick.theme.setMode("dark")
 
 
+def test_a_comment_being_typed_survives_other_requests(qapp):
+    """A denial comment typed in one card stays while another request is answered or arrives: each card is its
+    own row (the queue used to rebuild every card, and the text went with it)."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.pending = [dict(APPROVAL), {**APPROVAL, "id": "ap2", "tool": "Bash", "kind": "command",
+                                           "input": {"command": "pytest"}, "preview": {"kind": "command",
+                                                                                       "text": "pytest"}}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.approvals.count == 2)
+        sheet = quick.window.findChild(QObject, "approvalsSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened"))
+
+        def fields() -> list:
+            found, todo = [], [quick.window.findChild(QObject, "approvalItems")]
+            while todo:
+                item = todo.pop(0)
+                todo.extend(item.childItems())
+                if item.objectName() == "approvalComment":
+                    found.append(item)
+            return found
+
+        wait_until(lambda: len(fields()) == 2)
+        fields()[1].setProperty("text", "сначала линтер")
+        app.approvals.answer(APPROVAL["id"], True, "once", "")  # the first card goes
+        later = {**APPROVAL, "id": "ap9", "status": "pending"}
+        app.on_event({"type": "approval.requested", "payload": {"approval": later}})  # a new one comes
+        for _ in range(10):
+            QApplication.processEvents()
+        assert [f.property("text") for f in fields()] == ["сначала линтер", ""]
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 # --- stage 2: projects ---
 
 
@@ -1373,9 +1471,12 @@ def test_project_rows():
         ("logo.png", 0, ""),
         ("README.md", 0, ""),
     ]
-    code = project_rows.code_view("".join(f"x = {n}\n" for n in range(10)), "a.py")
-    assert code["rich"] and code["lines"] == 10 and "<span" in code["code"]
-    assert " 9\n10" in code["numbers"]  # padded: the numbers line up on the right
+    code = project_rows.code_view("".join(f"x = {n}\n" for n in range(10)) + "\tlong = 1\n", "a.py")
+    # coloured with tags Qt reads fast (no CSS spans); the lexer's last newline is not an empty last line
+    assert code["rich"] and code["lines"] == 11 and "<font color=" in code["code"] and "<span" not in code["code"]
+    assert code["code"].endswith("1</font></pre>")
+    assert " 9\n10" in code["numbers"] and "<" not in code["numbers"]  # plain, padded: they line up on the right
+    assert code["columns"] == project_rows.TAB_COLUMNS + len("long = 1")  # the width, without a layout
     plain = project_rows.code_view("<b>не html</b>", "notes.unknownext")
     assert not plain["rich"] and plain["code"] == "<b>не html</b>" and plain["numbers"] == "1"
     big = project_rows.code_view("x = 1\n" * 60_000, "big.py")
@@ -2025,6 +2126,32 @@ def test_terminal_panel(app):
     assert client.term_removed == ["t1"]
 
 
+def test_without_a_hub_nothing_stays_going_on(app):
+    """A call the window cannot make (no hub connected) undoes the "searching…" / "saving…" it set up front: it
+    used to stay forever, since only the call's answer cleared it."""
+    projects, terms = app.projects, app.terminals
+    app.setMode("projects")
+    projects.openProject("p1")
+    wait_until(lambda: projects.currentId == "p1" and terms.tabs and not app.bg.busy)
+    client, app.client = app.client, None
+    try:
+        projects.scanLinks()
+        assert not projects.links["scanning"]
+        projects.search("print", False, False)
+        projects._run_search()  # the typing pause is over
+        assert not projects._searching and projects.searchSummary != "поиск…"
+        projects.draftCard()
+        assert projects.card.get("state") != "drafting" and "не подключён" in projects.card["error"]
+        app.connections._run(lambda: None)
+        assert not app.connections._busy and "не подключён" in app.connections._error
+        terms.openTerminal("t1")
+        assert not terms._emus["t1"].loading  # not waiting for an answer that never comes
+    finally:
+        app.client = client
+    terms.openTerminal("t1")  # the hub is back: the next opening loads the terminal
+    wait_until(lambda: terms._emus["t1"].loaded)
+
+
 def test_terminal_lines_follow_output_change_by_change(app, monkeypatch):
     """Output into a full scrollback lets its oldest lines go on every event: the line model loses those and gains
     the new ones, not all its rows again - and always holds what a full layout would."""
@@ -2119,6 +2246,20 @@ def test_the_projects_view_without_warnings(qapp):
             QApplication.processEvents()
         code = quick.window.findChild(QObject, "codeView")
         assert code.property("visible") and code.property("contentHeight") > 40
+        # its width comes from the longest line (no layout asked for it): a long Cyrillic or tabbed line still fits
+        app.client.files["wide.py"] = "x = '" + "широкая строка " * 30 + "'\n\t\tif x:\n"
+        app.projects.openFile("wide.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "wide.py")
+        for _ in range(10):
+            QApplication.processEvents()
+        todo, body = [code], None
+        while todo:
+            item = todo.pop()
+            todo.extend(item.childItems())
+            body = item if item.metaObject().className() == "QQuickTextEdit" else body
+        assert body.property("width") >= body.property("implicitWidth") > 2000
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
         app.projects.showDiff(True)
         wait_until(lambda: app.projects.file.get("diffMode"))
         app.setTheme("light")

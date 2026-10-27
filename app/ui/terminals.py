@@ -316,8 +316,7 @@ class Terminals(QObject):
         self.tabsChanged.emit()
         self.currentChanged.emit()
         if not emu.loaded and not emu.loading:
-            emu.loading = True
-            self.app._call(
+            emu.loading = self.app._call(  # no hub: not loading, the next opening asks again
                 lambda: self.app.client.terminal_output(terminal_id),
                 lambda tail: self._tail_arrived(terminal_id, emu, tail),
                 lambda _e: self._tail_arrived(terminal_id, emu, {"data": "", "end": None}),

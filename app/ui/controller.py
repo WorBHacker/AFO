@@ -40,6 +40,7 @@ RENDER_INTERVAL_MAX_MS = 1000
 THINK_TICK_MS = 100
 FLASH_MS = 6000
 MODES = ("chats", "projects")
+NOT_CONNECTED = "Хаб ещё не подключён"
 HUB_STATES = {
     "connecting": "подключение…",
     "up": "подключён",
@@ -440,11 +441,19 @@ class Controller(QObject):
         self._claude_code = status
         self.claudeCodeChanged.emit()
 
-    def _call(self, fn, on_done=None, on_error=None) -> None:
+    def _call(self, fn, on_done=None, on_error=None) -> bool:
+        """`fn` on a pool thread, its result to `on_done` on this one. False (and nothing runs) while no hub is
+        connected: a caller that marked something as going on undoes it then (see `call_or_fail`)."""
         if self.client is None:
-            self.show_error("Хаб ещё не подключён")
-            return
+            self.show_error(NOT_CONNECTED)
+            return False
         self.bg.run(fn, on_done, on_error)
+        return True
+
+    def call_or_fail(self, fn, on_done, on_error) -> None:
+        """`_call`, and without a hub `on_error` at once: a "searching…" or "saving…" it would clear never stays."""
+        if not self._call(fn, on_done, on_error):
+            on_error(HubError(NOT_CONNECTED))
 
     def shutdown(self) -> None:
         if self.events is not None:
