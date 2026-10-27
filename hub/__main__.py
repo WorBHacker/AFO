@@ -8,6 +8,8 @@ python -m hub token create NAME --save    ...into data/tokens/NAME.token instead
 python -m hub token list              list clients
 python -m hub token revoke NAME       the client's token stops working
 python -m hub mcp --client NAME       the stdio adapter to the hub's MCP, for clients that only speak stdio (D32)
+python -m hub telegram link           a one-time code: "/link <code>" to your bot links your chat (D21)
+python -m hub telegram status | unlink
 python -m hub key status              which API keys are set (never their values)
 python -m hub key set NAME            store an API key in the Windows Credential Manager (typed hidden)
 python -m hub key delete NAME         remove it
@@ -195,6 +197,31 @@ def mcp_command(settings: HubSettings, args: argparse.Namespace) -> int:
     return adapter(settings.paths.ensure(), args.client)
 
 
+def telegram_command(settings: HubSettings, args: argparse.Namespace) -> int:
+    from .secrets import default_secret_store
+    from .telegram import TOKEN, linked_chat, new_link_code, unlink
+
+    paths = settings.paths.ensure()
+    db = Database(paths.db)
+    try:
+        db.call(migrate)
+        has_token = bool(default_secret_store().get(TOKEN))
+        if args.action == "link":
+            code = db.call(new_link_code)
+            if not has_token:
+                print("Сначала токен бота: python -m hub key set telegram_bot_token (бота создаёт @BotFather)")
+            print(f"Отправьте своему боту в Telegram: /link {code}  (код действует 10 минут)")
+        elif args.action == "unlink":
+            db.call(unlink)
+            print("Чат отвязан: бот больше никому не пишет")
+        else:
+            chat = db.call(linked_chat)
+            print(f"токен: {'задан' if has_token else 'не задан'}; чат: {chat if chat is not None else 'не привязан'}")
+        return 0
+    finally:
+        db.close()
+
+
 def key_command(settings: HubSettings, args: argparse.Namespace) -> int:
     """API keys live in the OS secret store (D13); this command never prints a value."""
     from .secrets import KNOWN_SECRETS, KeyringSecretStore, default_secret_store
@@ -276,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     actions.add_parser("list", help="list clients")
     revoke = actions.add_parser("revoke", help="stop a client's token from working")
     revoke.add_argument("name")
+    telegram = commands.add_parser("telegram", help="approvals from your Telegram bot (D21)")
+    telegram.add_argument("action", choices=("link", "status", "unlink"))
     mcp = commands.add_parser("mcp", help="the stdio adapter to the hub's MCP (D32)")
     mcp.add_argument("--client", required=True, help="the client whose token data/tokens/NAME.token holds")
     key = commands.add_parser("key", help="API keys in the Windows Credential Manager (D13)")
@@ -296,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         return stop(settings)
     if args.command == "mcp":
         return mcp_command(settings, args)
+    if args.command == "telegram":
+        return telegram_command(settings, args)
     return serve(settings)
 
 

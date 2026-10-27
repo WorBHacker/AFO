@@ -52,7 +52,8 @@ def enabled_ids(hub):
 
 def test_status_never_shows_the_value(hub):
     body = hub.get("/v1/secrets", headers=auth(hub.token)).json()
-    assert body["secrets"] == [{"name": ANTHROPIC_API_KEY, "label": "Anthropic API key (Claude)", "set": False}]
+    assert body["secrets"][0] == {"name": ANTHROPIC_API_KEY, "label": "Anthropic API key (Claude)", "set": False}
+    assert [s["name"] for s in body["secrets"]] == [ANTHROPIC_API_KEY, "telegram_bot_token"]  # D21: the bot's token
     put = hub.put(f"/v1/secrets/{ANTHROPIC_API_KEY}", headers=auth(hub.token), json={"value": f"  {KEY}\n"})
     assert put.status_code == 200
     assert KEY not in put.text

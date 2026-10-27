@@ -20,6 +20,7 @@ ANTHROPIC_API_KEY = "anthropic_api_key"
 # the secrets the hub knows, with what each one is for; the API and the CLI accept only these names
 KNOWN_SECRETS: dict[str, str] = {
     ANTHROPIC_API_KEY: "Anthropic API key (Claude)",
+    "telegram_bot_token": "Токен Telegram-бота для подтверждений (D21)",
 }
 
 

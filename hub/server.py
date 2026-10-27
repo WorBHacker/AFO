@@ -47,6 +47,7 @@ from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .system_status import StatusMonitor
+from .telegram import TelegramBot
 from .terminals import TerminalManager
 from .watch import ProjectWatcher
 
@@ -80,6 +81,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
+        # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
+        app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
@@ -99,6 +102,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         expired = await app.state.approvals.start()
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
+        app.state.telegram.start()
         resumed = await app.state.agents.start()
         if resumed:
             log.info("agent runs going on after a restart: %s", resumed)
@@ -114,6 +118,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.status.stop()
             await app.state.watcher.stop()
             await app.state.processes.stop()
+            await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
             await bus.publish("hub.stopping", {})
