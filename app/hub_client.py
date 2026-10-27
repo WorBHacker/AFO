@@ -124,6 +124,17 @@ class HubClient:
     def start_autonomous(self, body: dict) -> dict:
         return self._call("POST", "/v1/runs/autonomous", body)
 
+    # --- «Песочница» (D17, 9.4b): what a chat changed in its worktree ---
+
+    def sandbox(self, conversation_id: str) -> dict:
+        return self._call("GET", f"/v1/conversations/{conversation_id}/sandbox")
+
+    def apply_sandbox(self, conversation_id: str, project_id: str) -> dict:
+        return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/apply")
+
+    def discard_sandbox(self, conversation_id: str, project_id: str) -> dict:
+        return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/discard")
+
     # --- the user's API keys for the agent's requests (9.4b): behind the connections' password ---
 
     def agent_keys(self) -> dict:

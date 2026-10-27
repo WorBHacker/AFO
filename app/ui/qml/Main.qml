@@ -48,7 +48,14 @@ Window {
             reserve: approvalBanner.visible ? approvalBanner.height + 10 : 0
             y: titleBar.height
             width: parent.width
-            height: parent.height - titleBar.height - composer.height
+            height: parent.height - titleBar.height - composer.height - (sandboxBar.visible ? sandboxBar.height : 0)
+        }
+        SandboxBar {
+            id: sandboxBar
+            visible: App.mode === "chats" && Sandbox.active
+            anchors.bottom: composer.top
+            width: parent.width
+            onReviewRequested: sandboxSheet.open()
         }
         AgentView {
             visible: App.mode === "agent"
@@ -181,6 +188,7 @@ Window {
     ModelsSheet { id: modelsSheet }
     MemorySheet { id: memorySheet }
     AgentAccessSheet { id: accessSheet }
+    SandboxSheet { id: sandboxSheet }
     NewProgramPopup {}
     ComputerFrame {}  // the agent at the desktop: its frame and «Стоп» (D41)
     RenameDialog { id: renameDialog }

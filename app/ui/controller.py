@@ -36,6 +36,7 @@ from .model_setup import ModelSetup
 from .models import RowModel
 from .programs import Programs
 from .projects import Projects
+from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
 from .terminals import Terminals
 from .theme import Theme
@@ -174,6 +175,8 @@ class Controller(QObject):
         self.schedules_view = SchedulesView(self)  # goals on a schedule and on events (9.7, Q23)
         self.mail_view = MailView(self)  # the agent's mailbox, a section of Connections (9.4b, Q21)
         self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
+        self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
+        self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -739,7 +742,7 @@ class Controller(QObject):
     @Slot(str)
     def setChatMode(self, mode: str) -> None:
         """The chat's rights (D17): read_only, ask, trusted - for the model's next writes."""
-        if mode in ("read_only", "ask", "trusted") and self.current:
+        if mode in ("read_only", "ask", "sandbox", "trusted") and self.current:
             self._save_context(mode=mode)
 
     @Slot(str)
@@ -1185,6 +1188,8 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind.startswith("sandbox."):
+            self.sandbox_view.on_event(kind, payload)
         elif kind == "agent.keys":
             self.agent_keys.on_event(kind, payload)
         elif kind.startswith("mail."):

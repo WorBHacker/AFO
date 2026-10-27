@@ -91,7 +91,7 @@ class ContextSettings(BaseModel):
     map: bool | None = None
     live: bool | None = None
     pinned: list[Pinned] | None = None
-    mode: Literal["read_only", "ask", "trusted"] | None = None  # the chat's rights (D17)
+    mode: Literal["read_only", "ask", "sandbox", "trusted"] | None = None  # the chat's rights (D17, 9.4b)
     instructions: str | None = None  # the chat's own system prompt (D39)
     preset: Literal["", "precise", "balanced", "creative"] | None = None  # over the model's parameters
 

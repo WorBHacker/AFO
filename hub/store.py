@@ -179,7 +179,7 @@ def conversation_tools(
 
 CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": ""}
 MAX_PINNED = 10
-MODES = ("read_only", "ask", "trusted")  # a chat's rights (D17)
+MODES = ("read_only", "ask", "sandbox", "trusted")  # a chat's rights (D17); sandbox: a git worktree (9.4b)
 
 
 def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:

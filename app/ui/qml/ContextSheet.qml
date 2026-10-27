@@ -82,7 +82,7 @@ Sheet {
         objectName: "chatMode"
         width: parent.width
         options: [{ id: "read_only", name: "Только чтение" }, { id: "ask", name: "Спрашивать" },
-                  { id: "trusted", name: "Доверенный" }]
+                  { id: "sandbox", name: "Песочница" }, { id: "trusted", name: "Доверенный" }]
         value: App.contextSettings.mode || "ask"
         onPicked: (id) => App.setChatMode(id)
     }
@@ -91,6 +91,7 @@ Sheet {
         wrapMode: Text.Wrap
         text: App.contextSettings.mode === "read_only" ? "Модель только читает: правки файлов она предложит словами."
               : App.contextSettings.mode === "trusted" ? "Модель правит файлы прикреплённых проектов без вопроса. Каждую правку можно откатить в обзоре проекта."
+              : App.contextSettings.mode === "sandbox" ? "Модель правит без вопроса, но не сам проект, а его копию (git worktree от последнего коммита, своя ветка). Потом вы смотрите изменения и применяете их к проекту или отбрасываете. Нужен git-проект."
               : "Каждую правку файла модель показывает карточкой над чатом с diff и ждёт ответа."
         color: Theme.p.muted
         font.family: Theme.uiFont

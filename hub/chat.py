@@ -60,6 +60,7 @@ from . import (
     memory,
     model_settings,
     notes,
+    sandbox,
     store,
     web,
     websearch,
@@ -123,6 +124,7 @@ class ChatService:
         self.mcp: mcp_client.McpServers | None = None  # outside MCP servers' tools (9.5, D42)
         self.computer: computer.Computer | None = None  # the autonomous agent's hands on the desktop (9.6, D41)
         self.mail: mail.MailTools | None = None  # the user's mailbox (9.4b, Q21)
+        self.sandboxes: Path | None = None  # data/worktrees: «Песочница» chats write there (D17, 9.4b)
 
     @property
     def busy(self) -> list[str]:
@@ -305,8 +307,12 @@ class ChatService:
             provider, model_ref = self._gateway.resolve(model["id"])
             await self._use_limits(model["id"])  # the tools' portions of this model (D22, D39)
             cloud = model.get("locality") == "cloud"
-            ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
-                              processes=self.processes, symbols=self.symbols)  # fmt: skip
+            visible = [p for p in attached if p.cloud_ok or not cloud]
+            mode = (await self._db.acall(lambda conn: store.context_settings(conn, conversation_id)))["mode"]
+            if mode == "sandbox" and self.sandboxes is not None:  # its tools see each git project's worktree
+                visible = await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, visible)
+            ctx = ToolContext(visible, terminals=self.terminals, processes=self.processes,
+                              symbols=self.symbols)  # fmt: skip
             accepts = self._gateway.accepts(model["id"])
             model_id = model["id"]
             system, params, version = await self._db.acall(
@@ -679,6 +685,8 @@ class ChatService:
             planned = await asyncio.to_thread(changes.plan, call["name"], project, args)
         except (ToolError, changes.WriteError) as exc:
             return str(exc), True
+        if settings["mode"] == "sandbox":  # into the worktree, unasked: the user reviews the diff (D17)
+            return await self._sandbox_write(conversation_id, project, planned)
         approval_id = None
         tainted = await self._read_the_web(conversation_id)
         if settings["mode"] != "trusted" or tainted:  # after reading the web, trust does not count (D19)
@@ -698,6 +706,23 @@ class ChatService:
                                                                    conversation_id, approval_id))  # fmt: skip
         await self._bus.publish("file.changed", {"change": change, "project_id": project.id}, project_id=project.id)
         return f"{changes.summary(planned)} (change {change['id']}; the user can undo it)", False
+
+    async def _sandbox_write(self, conversation_id: str, project, planned) -> tuple[str, bool]:
+        if self.sandboxes is None or not project.root.is_relative_to(self.sandboxes):
+            return (f"not done: «{project.name}» is not a git repository, and the sandbox needs one - the user may "
+                    "switch the chat to «Спрашивать»"), True  # fmt: skip
+        if self.snapshots is None:
+            return "not done: the hub keeps no snapshots here", True
+        try:
+            await asyncio.to_thread(changes.apply, planned, self.snapshots)
+        except changes.WriteError as exc:
+            return str(exc), True
+        except OSError as exc:
+            return f"could not write {planned.path}: {exc.strerror or exc}", True
+        await self._bus.publish("sandbox.changed", {"conversation_id": conversation_id, "project_id": project.id,
+                                                    "path": str(planned.path)}, project_id=project.id)  # fmt: skip
+        return (f"{changes.summary(planned)} - in the sandbox: the user sees the diff and applies it to the project "
+                "or throws it away"), False  # fmt: skip
 
     async def _run_command(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A command the model wants run: asked (a trusted chat too; the project's whitelist and the chat's answers
@@ -1070,6 +1095,19 @@ def _instructions(conn, conversation_id: str) -> str:
         lines = [f"- {o['name']}: {(o['instructions'].splitlines() or [''])[0][:200]}" for o in others]
         text += "\n\nAgents you can give tasks to with delegate_task:\n" + ("\n".join(lines) or "- none yet")
     return text
+
+
+def _sandboxed(folder: Path, conversation_id: str, projects: list) -> list:
+    """The chat's projects in «Песочница» (D17): a git project as its worktree; another as it is - its writes are
+    refused (blocking: git, in a thread)."""
+    out = []
+    for project in projects:
+        try:
+            out.append(sandbox.ensure(folder, conversation_id, project) if sandbox.is_git(project) else project)
+        except sandbox.SandboxError as exc:
+            log.warning("no sandbox for %s: %s", project.name, exc)
+            out.append(project)
+    return out
 
 
 def _attached(conn, conversation_id: str) -> list:

@@ -41,6 +41,7 @@ from .api import (
     processes,
     programs,
     projects,
+    sandbox,
     schedules,
     stats,
     system,
@@ -108,6 +109,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
+        app.state.chat.sandboxes = paths.root / "worktrees"  # «Песочница» chats' worktrees (D17, 9.4b)
         app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
         app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox",
                                                                   secrets=secrets_store)  # fmt: skip
@@ -205,6 +207,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(schedules.router)
     app.include_router(mcp_servers.router)
     app.include_router(mail.router)
+    app.include_router(sandbox.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)

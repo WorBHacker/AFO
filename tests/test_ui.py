@@ -332,6 +332,8 @@ class FakeClient:
         self.mail_calls = []
         self.keys = []
         self.key_calls = []
+        self.sandboxed = []
+        self.sandbox_calls = []
         self.schedule_calls = []
         self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
@@ -462,6 +464,19 @@ class FakeClient:
         self.access_calls.append(changes)
         self.access = {**self.access, **changes}
         return dict(self.access)
+
+    def sandbox(self, conversation_id):
+        return {"projects": [dict(x) for x in self.sandboxed]}
+
+    def apply_sandbox(self, conversation_id, project_id):
+        self.sandbox_calls.append(("apply", conversation_id, project_id))
+        self.sandboxed = []
+        return {"applied": ["src/app.py"], "conflicts": ["README.md"]}
+
+    def discard_sandbox(self, conversation_id, project_id):
+        self.sandbox_calls.append(("discard", conversation_id, project_id))
+        self.sandboxed = []
+        return {"discarded": project_id}
 
     def agent_keys(self):
         return {"keys": [dict(k) for k in self.keys]}
@@ -4141,6 +4156,52 @@ def test_the_agents_api_keys_in_the_window(qapp):
         assert app.question["title"] == "Удалить ключ «weather»?"
         app.answer(True)
         wait_until(lambda: not app.bg.busy and not keys.items)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_sandbox_chat_in_the_window(qapp):
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        view = app.sandbox_view
+        bar = quick.window.findChild(QObject, "sandboxBar")
+        assert not view.active and not bar.property("visible")
+        client.sandboxed = [{"project_id": "p1", "name": "LocalChat", "files": [
+            {"path": "src/app.py", "status": "changed"}, {"path": "docs.md", "status": "added"}],
+            "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@ -1 +1 @@\n-print('hi')\n+print('привет')\n",
+            "exists": True}]  # fmt: skip
+        app.setChatMode("sandbox")
+        wait_until(lambda: not app.bg.busy and view.count == 2)
+        assert view.active and bar.property("visible") and view.summary.startswith("Песочница: изменено 2 файла")
+        row = view.projects[0]
+        assert row["files"] == ["src/app.py — изменён", "docs.md — новый"]
+        assert [line["mark"] for line in row["lines"]] == ["file", "file", "hunk", "del", "add"]
+        view.apply("p1")
+        wait_until(lambda: not app.bg.busy and view.count == 0)
+        assert client.sandbox_calls == [("apply", "c1", "p1")]
+        assert app.flashText.startswith("Применено, но с конфликтами: README.md")
+        client.sandboxed = [{"project_id": "p1", "name": "LocalChat", "files": [{"path": "a", "status": "added"}],
+                             "diff": "", "exists": True}]  # fmt: skip
+        app.on_event({"type": "sandbox.changed", "payload": {"conversation_id": "c1", "project_id": "p1"}})
+        wait_until(lambda: not app.bg.busy and view.count == 1)
+        view.discard("p1")
+        assert app.question["title"] == "Отбросить правки в «LocalChat»?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and view.count == 0)
+        app.setChatMode("ask")
+        wait_until(lambda: not view.active)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
