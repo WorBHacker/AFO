@@ -580,7 +580,7 @@ class Controller(QObject):
 
     def _set_context(self, messages: list[dict[str, Any]], settings: dict[str, Any] | None) -> None:
         self._context_messages = [m for m in messages if m["role"] == "system"]
-        self._context_settings = settings or {"map": True, "live": True, "pinned": []}
+        self._context_settings = settings or {"map": True, "live": True, "pinned": [], "mode": "ask"}
         self._context_rows = rows.context_rows(self._context_messages)
         self.contextChanged.emit()
 
@@ -607,6 +607,12 @@ class Controller(QObject):
         """The map or the live state on or off for this chat, from its next message on."""
         if layer in ("map", "live") and self.current:
             self._save_context(**{layer: on})
+
+    @Slot(str)
+    def setChatMode(self, mode: str) -> None:
+        """The chat's rights (D17): read_only, ask, trusted - for the model's next writes."""
+        if mode in ("read_only", "ask", "trusted") and self.current:
+            self._save_context(mode=mode)
 
     @Slot(str, str)
     def pinFile(self, project_id: str, path: str) -> None:

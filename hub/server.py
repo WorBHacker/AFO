@@ -19,6 +19,7 @@ from .api import (
     approvals,
     budgets,
     cards,
+    changes,
     claude_code,
     conversations,
     events_ws,
@@ -75,6 +76,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         hub_url = f"http://{settings.host}:{settings.port}"
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
+        app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
@@ -135,6 +137,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(links.router)
     app.include_router(approvals.router)
     app.include_router(claude_code.router)
+    app.include_router(changes.router)
     # MCP for Cline, Claude Code and the like (D32): /mcp, with a client token
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))

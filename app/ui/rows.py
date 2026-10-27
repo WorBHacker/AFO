@@ -86,6 +86,8 @@ TOOL_ICONS = {
     "get_project_card": "file",
     "list_relations": "layers",
     "get_events": "activity",
+    "write_file": "edit",
+    "edit_file": "edit",
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -145,6 +147,10 @@ def tool_label(name: str, args: Any) -> str:
             return "Обновляю список задач"
         case "Task" | "Agent":
             return f"Поручаю подагенту: {a.get('description', '')}"
+        case "edit_file":
+            return f"Правлю {path}"
+        case "write_file":
+            return f"Пишу {path}"
         case "get_ecosystem_map":
             return "Смотрю карту проектов"
         case "get_project_card":

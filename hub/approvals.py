@@ -2,10 +2,11 @@
 
 Claude Code started by the hub asks through the hub's MCP tool approval_prompt (its --permission-prompt-tool); the
 request lands here, in the same queue the hub's own agents will use (stage 5). The user answers in the app:
-allow once, allow for this chat, or deny with a comment the agent reads. An answer "for this chat" covers later
-requests of the same kind in that chat - the same tool, or for a command the same command - except destructive
-commands (git push, reset --hard, rm -r...), which are asked every time (D17). Each request is a row in `approvals`
-with who asked, what, and who answered how; nothing is forgotten.
+allow once, allow for this chat, allow always for this project (a rule, stage 5), or deny with a comment the
+agent reads. An answer "for this chat" or "for this project" covers later requests of the same kind there - the same
+tool, or for a command the same command - except destructive commands (git push, reset --hard, rm -r...), which are
+asked every time (D17). Each request is a row in `approvals` with who asked, what, and who answered how; nothing is
+forgotten. The hub's own models ask here too, before they write a file (write_file, edit_file).
 
 Events: approval.requested {approval}, approval.decided {approval} - both in the feed. A request still open when
 its run ends (or the hub stops) is closed as expired: nobody waits for that answer any more.
@@ -28,9 +29,10 @@ from .db import Database, utc_now
 from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell"}
-WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit"}
+WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
 NETWORK_TOOLS = {"WebFetch", "WebSearch"}
-SCOPES = ("once", "chat")
+HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
+SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
 PREVIEW_CHARS = 40_000
 READ_MAX_BYTES = 2 * 1024 * 1024
@@ -53,6 +55,7 @@ class ApprovalError(Exception):
 class Decision:
     allow: bool
     comment: str = ""
+    approval_id: str | None = None
 
 
 def kind(tool: str) -> str:
@@ -79,6 +82,15 @@ def grant_key(tool: str, data: dict[str, Any]) -> str | None:
 
 def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str]:
     """What the user should see to decide: a command, a diff of the file as it would become, a URL, or the input."""
+    if tool in HUB_WRITES:
+        data = {
+            "file_path": data.get("path", ""),
+            "content": data.get("content", ""),
+            "old_string": data.get("old_text", ""),
+            "new_string": data.get("new_text", ""),
+            "replace_all": data.get("replace_all"),
+        }
+        tool = HUB_WRITES[tool]
     if tool in COMMAND_TOOLS:
         return {"kind": "command", "text": str(data.get("command", "")), "note": str(data.get("description", ""))}
     if tool in ("Edit", "MultiEdit", "Write"):
@@ -138,6 +150,28 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data)}
 
 
+def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:
+    found = (
+        conversation_id
+        and conn.execute(
+            "SELECT 1 FROM approvals WHERE conversation_id = ? AND grant_key = ? AND status = 'allowed'"
+            " AND scope = 'chat'",
+            (conversation_id, key),
+        ).fetchone()
+    )
+    return bool(found)
+
+
+def _rule_allows(conn: sqlite3.Connection, project_id: str | None, key: str) -> bool:
+    found = (
+        project_id
+        and conn.execute(
+            "SELECT 1 FROM permission_rules WHERE project_id = ? AND grant_key = ?", (project_id, key)
+        ).fetchone()
+    )
+    return bool(found)
+
+
 class ApprovalQueue:
     def __init__(self, db: Database, bus: EventBus):
         self._db = db
@@ -167,19 +201,14 @@ class ApprovalQueue:
         root: Path | None = None,
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
-        chat" covers it."""
+        chat", or a rule of the project, covers it."""
         key = grant_key(tool, data)
         approval_id = uuid.uuid4().hex[:12]
         shown = await asyncio.to_thread(preview, tool, data, root)
 
         def write(conn: sqlite3.Connection) -> sqlite3.Row:
-            covered = (
-                bool(conversation_id and key)
-                and conn.execute(
-                    "SELECT 1 FROM approvals WHERE conversation_id = ? AND grant_key = ? AND status = 'allowed'"
-                    " AND scope = 'chat'",
-                    (conversation_id, key),
-                ).fetchone()
+            covered = key is not None and (
+                _chat_allows(conn, conversation_id, key) or _rule_allows(conn, project_id, key)
             )
             conn.execute(
                 "INSERT INTO approvals (id, conversation_id, project_id, client_id, tool, input, grant_key, status,"
@@ -192,7 +221,7 @@ class ApprovalQueue:
         row = _row(await self._db.acall(write)) | {"preview": shown}
         if row["status"] == "allowed":
             await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
-            return Decision(True)
+            return Decision(True, approval_id=approval_id)
         future: asyncio.Future[Decision] = asyncio.get_running_loop().create_future()
         self._waiting[approval_id] = future
         await self._bus.publish("approval.requested", {"approval": row}, project_id=project_id)
@@ -246,13 +275,23 @@ class ApprovalQueue:
 
     async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str) -> dict:
         def write(conn: sqlite3.Connection) -> sqlite3.Row | None:
-            # a destructive command has no grant key: "for this chat" is then allowed this once only (D17)
+            # a destructive command has no grant key, a request without a project no project: an answer "for the
+            # chat" or "for the project" then allows this once only (D17)
             updated = conn.execute(
-                "UPDATE approvals SET status = ?, scope = CASE WHEN grant_key IS NULL AND ? = 'chat' THEN 'once'"
-                " ELSE ? END, comment = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
-                (status, scope, scope, comment or None, utc_now(), by, approval_id),
+                "UPDATE approvals SET status = ?, scope = CASE WHEN ? IN ('chat', 'project') AND (grant_key IS NULL"
+                " OR (? = 'project' AND project_id IS NULL)) THEN 'once' ELSE ? END, comment = ?, decided_at = ?,"
+                " decided_by = ? WHERE id = ? AND status = 'pending'",
+                (status, scope, scope, scope, comment or None, utc_now(), by, approval_id),
             ).rowcount
-            return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone() if updated else None
+            if not updated:
+                return None
+            row = conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
+            if row["scope"] == "project":  # a rule: the same kind of request in this project is allowed from now on
+                conn.execute(
+                    "INSERT OR IGNORE INTO permission_rules (project_id, grant_key, created_by) VALUES (?, ?, ?)",
+                    (row["project_id"], row["grant_key"], by),
+                )
+            return row
 
         found = await self._db.acall(write)
         if found is None:
@@ -262,5 +301,22 @@ class ApprovalQueue:
         future = self._waiting.get(approval_id)
         if future is not None and not future.done():
             allowed = status == "allowed"
-            future.set_result(Decision(allowed, "" if allowed else comment or DENIED))
+            future.set_result(Decision(allowed, "" if allowed else comment or DENIED, approval_id))
         return row
+
+
+# --- the project's rules ("always for this project") ---
+
+
+def list_rules(conn: sqlite3.Connection, project_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM permission_rules WHERE project_id = ? ORDER BY created_at", (project_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_rule(conn: sqlite3.Connection, rule_id: int) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM permission_rules WHERE id = ?", (rule_id,)).fetchone()
+    if row is not None:
+        conn.execute("DELETE FROM permission_rules WHERE id = ?", (rule_id,))
+    return dict(row) if row else None

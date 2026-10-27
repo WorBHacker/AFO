@@ -168,14 +168,17 @@ def conversation_tools(
 
 CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": []}
 MAX_PINNED = 10
+MODES = ("read_only", "ask", "trusted")  # a chat's rights (D17)
 
 
 def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
-    """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]."""
+    """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]; and its rights
+    mode (D17): read_only, ask (the default) or trusted."""
     row = conn.execute("SELECT * FROM conversation_context WHERE conversation_id = ?", (conversation_id,)).fetchone()
     if row is None:
-        return {**CONTEXT_DEFAULTS, "pinned": []}
-    return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"])}
+        return {**CONTEXT_DEFAULTS, "pinned": [], "mode": "ask"}
+    return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"]),
+            "mode": row["mode"]}  # fmt: skip
 
 
 def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **changes: Any) -> dict[str, Any]:
@@ -186,12 +189,15 @@ def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **chang
         if entry["path"] and entry not in pinned:
             pinned.append(entry)
     settings["pinned"] = pinned[:MAX_PINNED]
+    if settings["mode"] not in MODES:
+        raise ValueError(f"unknown mode {settings['mode']!r}: {', '.join(MODES)}")
     conn.execute(
-        "INSERT INTO conversation_context (conversation_id, map, live, pinned) VALUES (?, ?, ?, ?)"
+        "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode) VALUES (?, ?, ?, ?, ?)"
         " ON CONFLICT (conversation_id) DO UPDATE SET map = excluded.map, live = excluded.live,"
-        " pinned = excluded.pinned",
-        (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"])),
-    )
+        " pinned = excluded.pinned, mode = excluded.mode",
+        (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"]),
+         settings["mode"]),
+    )  # fmt: skip
     return settings
 
 

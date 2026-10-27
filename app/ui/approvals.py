@@ -93,6 +93,7 @@ def approval_rows(
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "chatScope": "эта команда в этом чате" if a.get("kind") == "command" else f"все {a.get('tool')} в чате",
+            "projectScope": f"всегда в «{project}»" if project and not a.get("destructive") else "",
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
         })  # fmt: skip

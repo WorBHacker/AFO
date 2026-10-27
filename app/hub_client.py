@@ -266,6 +266,24 @@ class HubClient:
     def export_card(self, project_id: str, targets: list[str]) -> dict:
         return self._call("POST", f"/v1/projects/{project_id}/card/export", {"targets": targets})
 
+    # --- what models wrote, and the project's standing answers (stage 5, D17) ---
+
+    def changes(self, project_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/projects/{project_id}/changes")["changes"]
+
+    def change(self, change_id: int) -> dict:
+        """A change with its diff."""
+        return self._call("GET", f"/v1/changes/{change_id}")
+
+    def revert_change(self, change_id: int, *, force: bool = False) -> dict:
+        return self._call("POST", f"/v1/changes/{change_id}/revert", {"force": force})
+
+    def rules(self, project_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/projects/{project_id}/rules")["rules"]
+
+    def delete_rule(self, rule_id: int) -> None:
+        self._call("DELETE", f"/v1/rules/{rule_id}")
+
     # --- approvals and Claude Code (stage 4, D18) ---
 
     def approvals(self) -> list[dict]:

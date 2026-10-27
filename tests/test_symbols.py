@@ -10,6 +10,7 @@ from starlette.testclient import TestClient
 
 from common.paths import data_paths
 from hub import store, symbols
+from hub.chat import CHAT_TOOLS
 from hub.db import Database, available_migrations, migrate
 from hub.gateway.base import Model, StreamEvent
 from hub.projects import Project
@@ -269,7 +270,7 @@ def test_symbols_through_the_hub(code):
             if len(messages) == 5:
                 break
             hub.portal.call(asyncio.sleep, 0.02)
-        assert [t["name"] for t in provider.calls[0][1]] == [t["name"] for t in TOOLS]
+        assert [t["name"] for t in provider.calls[0][1]] == [t["name"] for t in CHAT_TOOLS]
         assert provider.calls[1][1] == provider.calls[0][1]  # the same list in every request
         assert messages[3]["content"][0]["output"].endswith(
             "src/app.py:5-6 method ChatService._steps: def _steps(self):"

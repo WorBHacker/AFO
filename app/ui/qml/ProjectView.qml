@@ -442,6 +442,96 @@ Item {
                 }
             }
 
+            // what models wrote here, each undoable, and the project's "always" answers (stage 5, D17)
+            Column {
+                objectName: "projectWrites"
+                visible: Projects.fileChanges.length > 0 || Projects.rules.length > 0
+                width: parent.width
+                spacing: 4
+                Text {
+                    bottomPadding: 2
+                    text: "Правки моделей"
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: Projects.fileChanges.slice(0, 10)
+                    delegate: Item {
+                        id: write
+                        required property var modelData
+                        width: page.width
+                        height: 40
+                        HoverHandler { id: writeHover }
+                        Rectangle { anchors.fill: parent; radius: 6; color: writeHover.hovered ? Theme.p.item_hover : "transparent" }
+                        Icon { x: 10; anchors.verticalCenter: parent.verticalCenter; name: "edit"; size: 15
+                               tint: write.modelData.reverted ? Theme.p.faint : Theme.p.text_soft }
+                        Column {
+                            x: 34
+                            width: parent.width - x - 110
+                            anchors.verticalCenter: parent.verticalCenter
+                            Text {
+                                width: parent.width
+                                text: write.modelData.path + (write.modelData.reverted ? " — откачена" : "")
+                                elide: Text.ElideMiddle
+                                color: write.modelData.reverted ? Theme.p.faint : Theme.p.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                            }
+                            Text {
+                                width: parent.width
+                                text: write.modelData.note
+                                elide: Text.ElideRight
+                                color: Theme.p.faint
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                            }
+                        }
+                        PlainButton {
+                            visible: writeHover.hovered && !write.modelData.reverted
+                            anchors.right: parent.right
+                            anchors.rightMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            implicitHeight: 28
+                            text: "Откатить"
+                            onClicked: Projects.revertChange(write.modelData.id)
+                        }
+                    }
+                }
+                Repeater {
+                    model: Projects.rules
+                    delegate: Item {
+                        id: rule
+                        required property var modelData
+                        width: page.width
+                        height: 30
+                        HoverHandler { id: ruleHover }
+                        Text {
+                            x: 10
+                            width: parent.width - 50
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Без вопроса в этом проекте: " + rule.modelData.text
+                            elide: Text.ElideRight
+                            color: Theme.p.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 13
+                        }
+                        IconButton {
+                            visible: ruleHover.hovered
+                            anchors.right: parent.right
+                            anchors.rightMargin: 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            implicitWidth: 26
+                            implicitHeight: 26
+                            iconName: "trash"
+                            tip: "Снова спрашивать"
+                            onClicked: Projects.removeRule(rule.modelData.id)
+                        }
+                    }
+                }
+            }
+
             // links with other projects (D25): confirmed ones, and what the hub found evidence for
             Column {
                 id: linksBox

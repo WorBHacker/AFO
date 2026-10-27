@@ -93,6 +93,11 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
             note = f" ({p['description']})" if p.get("description") else ""
             return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
+        case "file.changed" | "file.reverted":
+            change = p.get("change") or {}
+            what = "Откачена правка" if kind == "file.reverted" else "Модель изменила"
+            chat = f"чат «{change['chat']}»" if change.get("chat") else ""
+            return item("projects", "edit", f"{what} {change.get('path', '')}", chat)
         case "card.drafted":
             return item("projects", "edit", f"Черновик карточки «{p.get('name', '')}» готов — проверьте и подтвердите")
         case "card.confirmed":

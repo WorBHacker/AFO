@@ -170,6 +170,12 @@ Sheet {
                             onClicked: Approvals.answer(card.modelData.id, true, "chat", "")
                         }
                         PlainButton {
+                            objectName: "approveProject"
+                            visible: card.modelData.projectScope !== ""
+                            text: "Разрешить " + card.modelData.projectScope
+                            onClicked: Approvals.answer(card.modelData.id, true, "project", "")
+                        }
+                        PlainButton {
                             objectName: "deny"
                             kind: "danger"
                             iconName: "close"

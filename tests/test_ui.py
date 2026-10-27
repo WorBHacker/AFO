@@ -172,6 +172,20 @@ GIT = {
 }
 
 
+CHANGE = {
+    "id": 3,
+    "created_at": "2026-10-27T04:00:00.000Z",
+    "project_id": "p1",
+    "path": "src/app.py",
+    "before_hash": "aa",
+    "after_hash": "bb",
+    "tool": "edit_file",
+    "conversation_id": "c1",
+    "approval_id": "ap0",
+    "reverted_at": None,
+    "chat": "Первый",
+}
+
 APPROVAL = {
     "id": "ap1",
     "created_at": "2026-10-27T01:02:03.000Z",
@@ -226,6 +240,9 @@ class FakeClient:
         self.link_list = []
         self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
         self.pending = [dict(APPROVAL)]
+        self.change_list = [dict(CHANGE)]
+        self.rule_list = [{"id": 7, "project_id": "p1", "grant_key": "edit_file", "created_by": "app"}]
+        self.stale = True  # the changed file was edited since: an undo needs force
         self.answers = []
         self.claude_terminals = []
 
@@ -445,6 +462,22 @@ class FakeClient:
 
     def approvals(self):
         return [dict(a) for a in self.pending]
+
+    def changes(self, project_id):
+        return [dict(c) for c in self.change_list]
+
+    def rules(self, project_id):
+        return [dict(r) for r in self.rule_list]
+
+    def delete_rule(self, rule_id):
+        self.rule_list = [r for r in self.rule_list if r["id"] != rule_id]
+
+    def revert_change(self, change_id, *, force=False):
+        if self.stale and not force:
+            raise HubError("src/app.py has changed since: undoing would lose those changes")
+        self.log.append(("revert", change_id, force))
+        self.change_list = [{**c, "reverted_at": "2026-10-27T05:00:00Z"} for c in self.change_list]
+        return self.change_list[0]
 
     def answer_approval(self, approval_id, *, allow, scope="once", comment=""):
         if approval_id == "gone":
@@ -1826,3 +1859,72 @@ def test_exporting_the_card_asks_first(app):
     wait_until(lambda: any(e[0] == "export" for e in client.log))
     wait_until(lambda: not app.bg.busy)
     assert ("export", "p1", ["claude"]) in client.log and app.flashText == "Карточка записана в CLAUDE.md"
+
+
+# --- stage 5: models write files ---
+
+
+def test_write_rows_rules_and_feed():
+    from app.ui import feed_rows, project_rows
+
+    (row,) = project_rows.write_rows([CHANGE])
+    assert row["path"] == "src/app.py" and row["note"].startswith("правка · чат «Первый» · ") and not row["reverted"]
+    created = project_rows.write_rows([{**CHANGE, "before_hash": None, "chat": None, "reverted_at": "x"}])[0]
+    assert created["note"].startswith("создан · ") and created["reverted"]
+    assert project_rows.rule_text("edit_file") == "править файлы"
+    assert project_rows.rule_text("Bash:pytest -q") == "команда «pytest -q»"
+    assert rows.tool_label("edit_file", {"project": "p", "path": "a.py"}) == "Правлю a.py"
+    assert rows.tool_label("write_file", {"project": "p", "path": "b.md"}) == "Пишу b.md"
+    shown = feed_rows.describe({"type": "file.changed", "payload": {"change": CHANGE}}, projects={}, chats={})
+    assert shown["title"] == "Модель изменила src/app.py" and shown["detail"] == "чат «Первый»"
+    assert feed_rows.describe({"type": "file.reverted", "payload": {"change": CHANGE}}, projects={},
+                              chats={})["title"] == "Откачена правка src/app.py"  # fmt: skip
+
+
+def test_model_writes_in_the_project_view(app):
+    projects, client = app.projects, app.client
+    projects.openProject("p1")
+    wait_until(lambda: projects.fileChanges and projects.rules)
+    assert projects.fileChanges[0]["path"] == "src/app.py"
+    assert projects.rules == [{"id": 7, "text": "править файлы"}]
+    projects.revertChange(3)
+    assert app.question["title"] == "Откатить правку src/app.py?"
+    app.answer(True)
+    wait_until(lambda: app.question.get("title", "").startswith("src/app.py изменился"))  # changed since: asked again
+    app.answer(True)
+    wait_until(lambda: ("revert", 3, True) in client.log)
+    wait_until(lambda: projects.fileChanges[0]["reverted"])
+    assert app.flashText == "Правка src/app.py откачена"
+    send(app, "file.changed", {"project_id": "p1", "change": CHANGE})  # the feed and the list follow the hub
+    projects.removeRule(7)
+    wait_until(lambda: projects.rules == [])
+
+
+def test_the_chats_rights_mode(app):
+    opened(app)
+    assert app.contextSettings["mode"] == "ask"
+    app.setChatMode("trusted")
+    wait_until(lambda: not app.bg.busy)
+    assert client_log_has(app, ("context", "c1", {"mode": "trusted"}))
+    assert app.contextSettings["mode"] == "trusted"
+    app.setChatMode("root")  # not a mode: ignored
+    assert app.contextSettings["mode"] == "trusted"
+
+
+def client_log_has(app, entry):
+    return entry in app.client.log
+
+
+def test_an_answer_for_the_project_in_the_queue(app):
+    from app.ui.approvals import approval_rows
+
+    projects = {"p1": {"id": "p1", "name": "LocalChat", "path": "D:/Code/LocalChat"}}
+    (row,) = approval_rows([APPROVAL], projects=projects, chats={})
+    assert row["projectScope"] == "всегда в «LocalChat»"
+    push = {**APPROVAL, "destructive": True}
+    assert approval_rows([push], projects=projects, chats={})[0]["projectScope"] == ""
+    assert approval_rows([{**APPROVAL, "project_id": None}], projects=projects, chats={})[0]["projectScope"] == ""
+    wait_until(lambda: app.approvals.count == 1)
+    app.approvals.answer("ap1", True, "project", "")
+    wait_until(lambda: not app.bg.busy)
+    assert app.client.answers[-1] == ("ap1", True, "project", "")

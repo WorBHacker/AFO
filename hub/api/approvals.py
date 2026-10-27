@@ -20,7 +20,7 @@ router = APIRouter(prefix="/v1")
 
 class Answer(BaseModel):
     allow: bool
-    scope: Literal["once", "chat"] = "once"  # allowed: this time, or for the rest of the chat (D17)
+    scope: Literal["once", "chat", "project"] = "once"  # allowed: this time, for the chat, or always in the project
     comment: str = Field(default="", max_length=2000)  # a denial's reason: the agent reads it
 
 

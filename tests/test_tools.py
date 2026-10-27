@@ -9,7 +9,7 @@ from starlette.testclient import TestClient
 
 from common.paths import data_paths
 from hub import chat as chat_module
-from hub.chat import NOT_RUN, _to_prompt
+from hub.chat import CHAT_TOOLS, NOT_RUN, _to_prompt
 from hub.gateway.anthropic_provider import replay_blocks, to_wire
 from hub.gateway.base import Model, StreamEvent
 from hub.gateway.openai_compat import OpenAICompatProvider
@@ -252,7 +252,7 @@ def test_the_tool_loop(hub, repo):
     assert done["usage"]["input_tokens"] == 30 and done["usage"]["output_tokens"] == 5  # both steps
     assert [e["payload"]["name"] for e in events if e["type"] == "chat.tool"] == ["read_file", "git_status"]
     first, second = provider.calls
-    assert [t["name"] for t in first[1]] == [t["name"] for t in TOOLS]
+    assert [t["name"] for t in first[1]] == [t["name"] for t in CHAT_TOOLS]  # reading, then writing (stage 5)
     user, ctx_message = first[0][:2]  # the context comes right after the user's message, stored (D14)
     assert user["role"] == "user" and ctx_message["role"] == "system"
     assert "- proj [local-only]:" in ctx_message["content"] and '<project name="proj">' in ctx_message["content"]
@@ -341,7 +341,7 @@ def test_context_settings_shape_the_next_context(hub, repo):
     hub.put(f"/v1/conversations/{conv}/projects", json={"project_ids": [pid]})
     pin = {"project_id": pid, "path": "README.md"}
     settings = hub.put(f"/v1/conversations/{conv}/context", json={"map": False, "pinned": [pin, pin]}).json()
-    assert settings == {"map": False, "live": True, "pinned": [pin]}  # twice is once
+    assert settings == {"map": False, "live": True, "pinned": [pin], "mode": "ask"}  # twice is once
 
     def ask(text, count):
         hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})

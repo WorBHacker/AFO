@@ -11,11 +11,11 @@ data/snapshots (by its hash), and the export goes into the feed (`card.exported`
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .changes import keep
 from .projects import Project
 from .secret_filter import clean
 
@@ -99,20 +99,9 @@ def plan(project: Project, target: str, text: str) -> Plan:
                 after)  # fmt: skip
 
 
-def snapshot(folder: Path, text: str) -> str:
-    """The file as it was, kept by its hash (one copy of each version)."""
-    data = text.encode("utf-8")
-    digest = hashlib.sha256(data).hexdigest()
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / digest
-    if not target.exists():
-        target.write_bytes(data)
-    return digest
-
-
 def write(item: Plan, snapshots: Path) -> str | None:
     """Writes the planned file; returns the snapshot of what was there."""
-    kept = snapshot(snapshots, item.before) if item.before is not None else None
+    kept = keep(snapshots, item.before.encode("utf-8")) if item.before is not None else None
     if item.mode != "unchanged":
         item.path.parent.mkdir(parents=True, exist_ok=True)
         item.path.write_bytes(item.after.encode("utf-8"))

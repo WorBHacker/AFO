@@ -6,7 +6,7 @@ POST .../messages returns at once with the stored user message, and the answer f
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -91,6 +91,7 @@ class ContextSettings(BaseModel):
     map: bool | None = None
     live: bool | None = None
     pinned: list[Pinned] | None = None
+    mode: Literal["read_only", "ask", "trusted"] | None = None  # the chat's rights (D17)
 
 
 @router.put("/conversations/{conversation_id}/context")
@@ -105,7 +106,8 @@ async def set_context(
     def write(conn):
         if store.get_title(conn, conversation_id) is None:
             return None
-        return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned)
+        return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned,
+                                          mode=body.mode)  # fmt: skip
 
     settings = await request.app.state.db.acall(write)
     if settings is None:

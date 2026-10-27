@@ -77,6 +77,26 @@ Sheet {
         }
     }
 
+    SectionTitle { text: "Права модели в этом чате" }
+    Segmented {
+        objectName: "chatMode"
+        width: parent.width
+        options: [{ id: "read_only", name: "Только чтение" }, { id: "ask", name: "Спрашивать" },
+                  { id: "trusted", name: "Доверенный" }]
+        value: App.contextSettings.mode || "ask"
+        onPicked: (id) => App.setChatMode(id)
+    }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: App.contextSettings.mode === "read_only" ? "Модель только читает: правки файлов она предложит словами."
+              : App.contextSettings.mode === "trusted" ? "Модель правит файлы прикреплённых проектов без вопроса. Каждую правку можно откатить в обзоре проекта."
+              : "Каждую правку файла модель показывает в «Подтверждениях» с diff и ждёт ответа."
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+
     SectionTitle { text: "Закреплённые файлы" }
     Text {
         visible: !App.contextSettings.pinned || App.contextSettings.pinned.length === 0

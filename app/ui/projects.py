@@ -34,6 +34,7 @@ class Projects(QObject):
     cardChanged = Signal()
     exportChanged = Signal()
     notesChanged = Signal()
+    changesChanged = Signal()
     linksChanged = Signal()
     searchChanged = Signal()
     outlineChanged = Signal()
@@ -64,6 +65,8 @@ class Projects(QObject):
         self._export: list[dict[str, Any]] = []  # what writing the card into each file would do (D23)
         self._card_error = ""
         self._notes: list[dict[str, Any]] = []
+        self._changes: list[dict[str, Any]] = []  # what models wrote in the open project (D17)
+        self._rules: list[dict[str, Any]] = []
         self._links: list[dict[str, Any]] = []  # every link, as the hub lists them
         self._scanning = False
         self._file_gen = 0
@@ -168,6 +171,16 @@ class Projects(QObject):
     @Property(list, notify=notesChanged)
     def notes(self) -> list:
         return [{"id": n["id"], "text": n["text"]} for n in self._notes]
+
+    @Property(list, notify=changesChanged)
+    def fileChanges(self) -> list:
+        """What models wrote in the open project, newest first (D17): each can be undone."""
+        return project_rows.write_rows(self._changes)
+
+    @Property(list, notify=changesChanged)
+    def rules(self) -> list:
+        """The project's answers "always": what models may do here without asking."""
+        return [{"id": r["id"], "text": project_rows.rule_text(r["grant_key"])} for r in self._rules]
 
     @Property(list, notify=processesChanged)
     def processes(self) -> list:
@@ -275,6 +288,8 @@ class Projects(QObject):
         self.cardChanged.emit()
         self._notes = []
         self.notesChanged.emit()
+        self._changes, self._rules = [], []
+        self.changesChanged.emit()
         self._tree_gen += 1
         self._search_gen += 1
         self._search, self._searching, self._search_args = None, False, ("", False, False)
@@ -309,6 +324,7 @@ class Projects(QObject):
         self.load_card()
         self.load_notes()
         self.load_links()
+        self.load_changes()
         if self._file:
             self.openFile(self._file["path"], bool(self._file.get("diffMode")))
 
@@ -500,6 +516,9 @@ class Projects(QObject):
         elif kind == "note.changed":
             if payload.get("project_id") == self.currentId:
                 self.load_notes()
+        elif kind.startswith(("file.", "rules.")):
+            if payload.get("project_id") == self.currentId:
+                self.load_changes()
         elif kind.startswith("card."):
             if payload.get("project_id") == self.currentId:
                 if kind == "card.failed":
@@ -768,6 +787,55 @@ class Projects(QObject):
     @Slot(int)
     def deleteLink(self, link_id: int) -> None:
         self.app._call(lambda: self.app.client.delete_link(link_id), lambda _r: self.load_links())
+
+    # ================= what models wrote (stage 5, D17) =================
+
+    def load_changes(self) -> None:
+        if not self.current or self.app.client is None:
+            return
+        pid = self.current["id"]
+
+        def show(found: tuple[list[dict[str, Any]], list[dict[str, Any]]]) -> None:
+            if pid == self.currentId:
+                self._changes, self._rules = found
+                self.changesChanged.emit()
+
+        self.app._call(lambda: (self.app.client.changes(pid), self.app.client.rules(pid)), show, lambda _e: None)
+
+    @Slot(int)
+    def revertChange(self, change_id: int) -> None:
+        """Undo a model's write: asked first; if the file changed since, asked again whether to lose that."""
+        found = next((c for c in self._changes if c["id"] == change_id), None)
+        if found is None or found.get("reverted_at"):
+            return
+        path = found["path"]
+
+        def undo(force: bool) -> None:
+            def failed(error: Exception) -> None:
+                if not force and "changed since" in str(error):
+                    self.app._ask(
+                        f"{path} изменился после этой правки",
+                        "Откат вернёт файл к виду до правки модели, и всё, что менялось в нём потом, пропадёт. "
+                        "Откатить всё равно?",
+                        "Откатить",
+                        lambda yes: undo(True) if yes else None,
+                    )
+                else:
+                    self.app.show_error(f"Не откатилось: {error}")
+
+            def done(_change: dict[str, Any]) -> None:
+                self.app.flash(f"Правка {path} откачена")
+                self.load_changes()
+
+            self.app._call(lambda: self.app.client.revert_change(change_id, force=force), done, failed)
+
+        made = "созданный моделью файл будет удалён" if found["before_hash"] is None else "файл вернётся к виду до неё"
+        self.app._ask(f"Откатить правку {path}?", f"Правка модели отменится: {made}.", "Откатить",
+                      lambda yes: undo(False) if yes else None)  # fmt: skip
+
+    @Slot(int)
+    def removeRule(self, rule_id: int) -> None:
+        self.app._call(lambda: self.app.client.delete_rule(rule_id), lambda _r: self.load_changes())
 
     # ================= notes (D22 L4) =================
 

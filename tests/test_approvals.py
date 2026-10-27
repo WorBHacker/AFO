@@ -162,3 +162,19 @@ def test_the_api_is_the_apps(tmp_path):
         assert client.post(f"/v1/approvals/{approval_id}", json={"allow": False}).status_code == 409
         assert client.get("/v1/approvals/nope").status_code == 404
         assert client.get("/v1/approvals").json()["approvals"] == []
+
+
+def test_an_answer_for_the_project_needs_a_project_and_no_destruction(queue):
+    approvals, _seen, db = queue
+
+    async def scenario(data):
+        asking = asyncio.create_task(approvals.ask("Bash", data, conversation_id="c1"))
+        while not (waiting := await approvals.pending()):
+            await asyncio.sleep(0.01)
+        await approvals.decide(waiting[0]["id"], allow=True, scope="project", by="app")
+        await asking
+        return await approvals.get(waiting[0]["id"])
+
+    assert asyncio.run(scenario({"command": "pytest"}))["scope"] == "once"  # no project: nothing to make a rule for
+    assert asyncio.run(scenario({"command": "git push"}))["scope"] == "once"  # destructive: never a rule (D17)
+    assert db.call(lambda conn: conn.execute("SELECT COUNT(*) FROM permission_rules").fetchone()[0]) == 0

@@ -36,6 +36,8 @@ TOPICS = [
     "hub.*",
     "approval.*",
     "claude_code.*",
+    "file.*",
+    "rules.*",
 ]
 RECONNECT_S = 2.0
 

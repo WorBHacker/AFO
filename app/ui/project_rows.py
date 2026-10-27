@@ -217,6 +217,38 @@ def ago(iso: str, now: datetime | None = None) -> str:
     return when.astimezone().strftime("%d.%m.%Y")
 
 
+TOOL_WORDS = {"edit_file": "правка", "write_file": "запись"}
+RULE_TOOLS = {
+    "edit_file": "править файлы",
+    "write_file": "записывать файлы",
+    "Edit": "Claude Code: править файлы",
+    "Write": "Claude Code: записывать файлы",
+    "MultiEdit": "Claude Code: править файлы",
+}
+
+
+def write_rows(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A project's model writes for the overview: path, what, which chat, when, undone or not."""
+    return [{
+        "id": c["id"],
+        "path": c["path"],
+        "note": " · ".join(s for s in (
+            "создан" if c.get("before_hash") is None else TOOL_WORDS.get(c.get("tool", ""), c.get("tool", "")),
+            f"чат «{c['chat']}»" if c.get("chat") else "",
+            local_time(c.get("created_at", "")),
+        ) if s),
+        "reverted": bool(c.get("reverted_at")),
+    } for c in found]  # fmt: skip
+
+
+def rule_text(key: str) -> str:
+    """An "always for this project" answer in words: 'править файлы', 'команда «pytest -q»'."""
+    tool, _, command = key.partition(":")
+    if command:
+        return f"команда «{command}»"
+    return RULE_TOOLS.get(tool, tool)
+
+
 EXPORT_MODES = {
     "create": "создать файл",
     "append": "добавить блок в конец файла",
