@@ -314,6 +314,35 @@ Item {
                     font.family: Theme.uiFont
                     font.pixelSize: 12
                 }
+                // the project moved on since the card was confirmed (D24): offer an update of what changed
+                Item {
+                    objectName: "cardStale"
+                    visible: cardBox.card.state === "confirmed" && cardBox.card.changes !== ""
+                    width: parent.width
+                    height: visible ? Math.max(staleText.height, updateButton.height) : 0
+                    Text {
+                        id: staleText
+                        width: parent.width - updateButton.width - 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        wrapMode: Text.Wrap
+                        text: cardBox.card.changes + " — карточка могла устареть."
+                        color: Theme.p.warn
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                    PlainButton {
+                        id: updateButton
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        implicitHeight: 28
+                        iconName: "sparkle"
+                        text: "Обновить карточку"
+                        onClicked: Projects.updateCard()
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: "Модель «" + cardBox.card.writer + "» поправит только разделы, которых касаются изменения; вы проверите"
+                    }
+                }
                 Item {
                     visible: cardBox.card.confirmed && cardBox.card.state !== "draft"
                     width: parent.width

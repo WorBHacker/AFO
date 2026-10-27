@@ -146,10 +146,14 @@ class Projects(QObject):
             "text": confirmed["text"] if confirmed else "",
             "segments": rows.segments(confirmed["text"]) if confirmed else [],
             "version": confirmed["version"] if confirmed else 0,
-            "versions": c.get("versions", []),
+            "versions": [{**v, "when": project_rows.local_time(v["created_at"])} for v in c.get("versions", [])],
             "draft": draft["text"] if draft else "",
             "draftModel": models.get(draft["model_id"], draft["model_id"] or "") if draft else "",
             "missing": c.get("missing", []),
+            "changes": project_rows.card_changes(c.get("changes")),  # D24: worth an update?
+            "changedSections": project_rows.changed_sections(confirmed["text"], draft["text"])
+            if confirmed and draft
+            else [],
             "error": self._card_error,
             "writer": models.get(self._card_writer(), ""),
         }
@@ -630,7 +634,12 @@ class Projects(QObject):
         return local["id"] if local else self.app.modelId
 
     @Slot()
-    def draftCard(self) -> None:
+    def updateCard(self) -> None:
+        """A draft that brings the confirmed card up to date: only the sections the changes touch (D24)."""
+        self.draftCard(update=True)
+
+    @Slot()
+    def draftCard(self, update: bool = False) -> None:
         if not self.current:
             return
         pid, model_id = self.current["id"], self._card_writer()
@@ -644,7 +653,7 @@ class Projects(QObject):
             self.cardChanged.emit()
             self.app.show_error(f"Черновик карточки не начат: {error}")
 
-        self.app._call(lambda: self.app.client.draft_card(pid, model_id), None, failed)
+        self.app._call(lambda: self.app.client.draft_card(pid, model_id, update=update), None, failed)
 
     @Slot(str)
     def confirmCard(self, text: str) -> None:

@@ -179,8 +179,10 @@ class HubClient:
     def card(self, project_id: str) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/card")
 
-    def draft_card(self, project_id: str, model_id: str) -> dict:
-        return self._call("POST", f"/v1/projects/{project_id}/card/draft", {"model_id": model_id})
+    def draft_card(self, project_id: str, model_id: str, *, update: bool = False) -> dict:
+        """A model writes a draft: anew, or (`update`) the confirmed card brought up to date."""
+        body = {"model_id": model_id, "update": update}
+        return self._call("POST", f"/v1/projects/{project_id}/card/draft", body)
 
     def confirm_card(self, project_id: str, text: str) -> dict:
         return self._call("PUT", f"/v1/projects/{project_id}/card", {"text": text})

@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from conftest import run_git
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
@@ -35,6 +36,49 @@ def test_what_a_draft_is_made_from(repo):
     assert "## Последние коммиты\n- " in material and "first" in material
     prompt = cards.prompt(project(repo.resolve()))
     assert prompt[0]["role"] == "system" and "Назначение" in prompt[0]["content"]
+
+
+def test_what_changed_since_the_card(repo):
+    p = project(repo.resolve())
+    (repo / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    then = cards.snapshot(p)
+    assert then["head"] and then["folders"] == ["src"] and set(then["deps"]) == {"pyproject.toml"}  # build/: ignored
+    assert cards.changes_since(p, then)["significant"] is False
+    assert cards.changes_since(p, None) is None  # a version confirmed before baselines were kept
+    (repo / "pyproject.toml").write_text("[project]\nname = 'x'\ndependencies = ['httpx']\n", encoding="utf-8")
+    (repo / "Dockerfile").write_text("FROM python\n", encoding="utf-8")
+    changes = cards.changes_since(p, then)
+    assert changes["dependencies"] == ["Dockerfile", "pyproject.toml"] and changes["significant"]
+    for n in range(cards.SIGNIFICANT_COMMITS):
+        run_git(repo, "commit", "-q", "--allow-empty", "-m", f"step {n}")
+    many = cards.changes_since(p, {**cards.snapshot(p), "head": then["head"]})
+    assert many["commits"] == cards.SIGNIFICANT_COMMITS and many["significant"] and many["dependencies"] == []
+    assert cards.changes_since(p, {**then, "head": "0" * 40})["commits"] is None  # a commit that is not there
+
+    asked = cards.update_prompt(p, CARD, then)[1]["content"]
+    assert "изменились файлы зависимостей и сборки: Dockerfile, pyproject.toml" in asked
+    assert "## pyproject.toml (сейчас)\n[project]" in asked and "dependencies = ['httpx']" in asked
+    assert "step 19" in asked and "## Дерево папок сейчас" in asked
+    assert "## Проект сейчас\n# Проект «proj»" in cards.update_prompt(p, CARD, None)[1]["content"]  # no baseline
+    # what models wrap an answer in comes off
+    assert cards.tidy_update("<card>\n## А\nраз\n</card>") == "## А\nраз"
+    assert cards.tidy_update("```markdown\n## А\nраз\n```") == "## А\nраз"
+    assert cards.tidy_update("  ## А\nраз  ") == "## А\nраз"
+
+
+def test_an_update_touches_only_the_sections_the_model_rewrote():
+    card = "Вступление.\n\n## Назначение\nХаб и окно.\n\n## Устройство\n`hub/` и `app/`.\n\n## Зависимости\nfastapi"
+    # a model that garbles what it should copy: only what it rewrote is taken; a misspelt heading finds its section
+    answer = "Вот правка:\n## Зависимасти\nfastapi, tree-sitter\n\n## Индекс символов\nПо tree-sitter."
+    merged = cards.merge_update(card, answer)
+    assert merged == (
+        "Вступление.\n\n## Назначение\nХаб и окно.\n\n## Устройство\n`hub/` и `app/`.\n\n"
+        "## Зависимости\nfastapi, tree-sitter\n\n## Индекс символов\nПо tree-sitter."
+    )
+    assert cards.merge_update(card, cards.NO_CHANGES) is None
+    assert cards.merge_update(card, "<card>\n## назначение\nТолько хаб.\n</card>").startswith(
+        "Вступление.\n\n## Назначение\nТолько хаб.\n\n## Устройство"
+    )
 
 
 def test_outdated_paths(repo):
@@ -122,7 +166,8 @@ def test_the_card_api(hub, repo):
     hub.portal.call(hub.app.state.gateway.sync_catalog)
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
     assert hub.get(f"/v1/projects/{pid}/card").json() == {"confirmed": None, "draft": None, "versions": [],
-                                                         "missing": [], "drafting": False}  # fmt: skip
+                                                         "missing": [], "changes": None,
+                                                         "drafting": False}  # fmt: skip
     cline = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     other = {"Authorization": f"Bearer {cline}"}
     assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "fake/echo"}, headers=other).status_code == 403
@@ -136,6 +181,26 @@ def test_the_card_api(hub, repo):
     confirmed = hub.put(f"/v1/projects/{pid}/card", json={"text": CARD + "\n- правка"}).json()
     assert confirmed["confirmed"]["version"] == 1 and confirmed["draft"] is None
     assert confirmed["missing"] == ["lib/old.py"]
+    unchanged = {"commits": 0, "new_folders": [], "gone_folders": [], "dependencies": [], "significant": False}
+    assert confirmed["changes"] == unchanged  # nothing has moved since
+
+    # the project moves on: the card may be outdated, and an update touches only what changed (D24)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "guide.md").write_text("# guide\n", encoding="utf-8")
+    run_git(repo, "add", "docs")
+    run_git(repo, "commit", "-q", "-m", "docs: a guide")
+    changes = hub.get(f"/v1/projects/{pid}/card").json()["changes"]
+    assert changes == {**unchanged, "commits": 1, "new_folders": ["docs"], "significant": True}
+    assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "fake/echo", "update": True}).status_code == 202
+    wait(hub, lambda: hub.get(f"/v1/projects/{pid}/card").json()["draft"])
+    asked = writer.seen[-1]
+    assert "Выведи только те разделы" in asked[0]["content"] and cards.NO_CHANGES in asked[0]["content"]
+    assert asked[1]["content"].startswith('<changes project="proj">') and "новые папки: docs" in asked[1]["content"]
+    assert asked[1]["content"].endswith("<card>\n" + CARD + "\n- правка\n</card>")  # the confirmed card, last
+    assert "docs: a guide" in asked[1]["content"]  # the commits since
+    hub.delete(f"/v1/projects/{pid}/card/draft")
+    hub.put(f"/v1/projects/{pid}/card", json={"text": CARD})
+    assert hub.get(f"/v1/projects/{pid}/card").json()["changes"]["significant"] is False  # confirmed anew
     assert hub.post(f"/v1/projects/{pid}/card/restore", json={"version": 5}).status_code == 404
     assert hub.delete(f"/v1/projects/{pid}/card/draft").status_code == 404
     assert hub.put(f"/v1/projects/{pid}/card", json={"text": " "}).status_code == 422

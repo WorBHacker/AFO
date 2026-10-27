@@ -29,6 +29,16 @@ Sheet {
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
+    Text {
+        objectName: "cardChangedSections"
+        visible: sheet.fromDraft && Projects.card.confirmed && Projects.card.changedSections.length > 0
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "По сравнению с версией " + Projects.card.version + " изменены разделы: " + Projects.card.changedSections.join(", ")
+        color: Theme.p.accent
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
 
     Rectangle {
         width: parent.width
@@ -84,7 +94,7 @@ Sheet {
             height: 32
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "версия " + version.modelData.version + " · " + version.modelData.created_at.slice(0, 16).replace("T", " ")
+                text: "версия " + version.modelData.version + " · " + version.modelData.when
                       + (version.modelData.model_id ? " · черновик " + version.modelData.model_id : " · вручную")
                 color: version.modelData.version === Projects.card.version ? Theme.p.text : Theme.p.text_soft
                 font.family: Theme.uiFont

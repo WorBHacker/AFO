@@ -217,6 +217,14 @@ def ago(iso: str, now: datetime | None = None) -> str:
     return when.astimezone().strftime("%d.%m.%Y")
 
 
+def local_time(iso: str) -> str:
+    """'27.10.2026 05:03' in this computer's time zone (the hub keeps UTC); the text as is if not a date."""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime("%d.%m.%Y %H:%M")
+    except ValueError:
+        return iso
+
+
 def program_args(cmdline: str, exe: str) -> str:
     """The command line without the program itself (it is shown by name)."""
     line = cmdline.strip()
@@ -385,6 +393,42 @@ def _lead(text: str, ranges: list[list[int]]) -> tuple[str, list[list[int]]]:
         return text, ranges
     cut = first - LEAD
     return "…" + text[cut:], [[a - cut + 1, b - cut + 1] for a, b in ranges if a >= cut]
+
+
+def card_changes(changes: dict[str, Any] | None) -> str:
+    """What changed since the card was confirmed, in a line - or "" when nothing worth saying (D24)."""
+    if not changes or not changes.get("significant"):
+        return ""
+    said = []
+    commits = changes.get("commits") or 0
+    if commits:
+        said.append(f"{commits} {presenter.plural(commits, 'коммит', 'коммита', 'коммитов')}")
+    if changes.get("dependencies"):
+        said.append("изменились " + ", ".join(changes["dependencies"]))
+    if changes.get("new_folders"):
+        said.append("новые папки: " + ", ".join(f"{f}/" for f in changes["new_folders"]))
+    if changes.get("gone_folders"):
+        said.append("исчезли папки: " + ", ".join(f"{f}/" for f in changes["gone_folders"]))
+    return "С подтверждения карточки: " + "; ".join(said)
+
+
+def _sections(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    title = ""
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("## "):
+            title = line[3:].strip()
+            found.setdefault(title, "")
+        else:
+            found[title] = found.get(title, "") + line.strip() + "\n"
+    return {k: v.strip() for k, v in found.items()}
+
+
+def changed_sections(before: str, after: str) -> list[str]:
+    """The ## sections of `after` that differ from `before` (new ones too, and those gone, marked)."""
+    old, new = _sections(before), _sections(after)
+    changed = [title or "(начало)" for title, body in new.items() if old.get(title) != body]
+    return changed + [f"{title} (убран)" for title in old if title and title not in new]
 
 
 def search_summary(result: dict[str, Any] | None) -> str:

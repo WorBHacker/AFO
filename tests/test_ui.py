@@ -348,8 +348,8 @@ class FakeClient:
     def delete_note(self, note_id):
         self.note_list = [n for n in self.note_list if n["id"] != note_id]
 
-    def draft_card(self, pid, model_id):
-        self.log.append(("draft", pid, model_id))
+    def draft_card(self, pid, model_id, *, update=False):
+        self.log.append(("draft", pid, model_id) + (("update",) if update else ()))
         self.card_state = {**self.card_state, "drafting": True}
         return {"drafting": True}
 
@@ -1257,8 +1257,36 @@ def test_project_cards(app):
     send(app, "card.failed", {"project_id": "p1", "detail": "модель молчит"})
     wait_until(lambda: app.flashError)
     assert "модель молчит" in app.flashText
+    assert projects.card["changes"] == ""  # the project has not moved since
 
-    from app.ui import feed_rows
+    # the project moved on: the overview says so and offers an update; the draft shows what it changed (D24)
+    changes = {"commits": 23, "new_folders": ["docs"], "gone_folders": [], "dependencies": ["pyproject.toml"],
+               "significant": True}  # fmt: skip
+    client.card_state = {**client.card_state, "changes": changes}
+    projects.load_card()
+    wait_until(lambda: projects.card["changes"])
+    said = "С подтверждения карточки: 23 коммита; изменились pyproject.toml; новые папки: docs/"
+    assert projects.card["changes"] == said
+    projects.updateCard()
+    wait_until(lambda: client.log[-1][-1] == "update")
+    assert client.log[-1] == ("draft", "p1", "llama-swap/coder", "update")
+    update = {"text": "## Назначение\nДемо, поправлено\n## Устройство\nновое", "model_id": "llama-swap/coder"}
+    client.card_state = {**client.card_state, "drafting": False, "draft": update}
+    send(app, "card.drafted", {"project_id": "p1", "name": "LocalChat", "model_id": "llama-swap/coder"})
+    wait_until(lambda: projects.card["state"] == "draft")
+    assert projects.card["changedSections"] == ["Устройство"]
+
+    from app.ui import feed_rows, project_rows
+
+    assert project_rows.changed_sections("## А\nраз\n## Б\nдва", "## А\nраз, правка\n## В\nтри") == [
+        "А", "В", "Б (убран)"
+    ]  # fmt: skip
+    assert project_rows.card_changes({"commits": 2, "significant": False}) == ""
+    from datetime import UTC, datetime
+
+    utc = datetime(2026, 10, 27, 0, 3, tzinfo=UTC)
+    assert project_rows.local_time("2026-10-27T00:03:00Z") == utc.astimezone().strftime("%d.%m.%Y %H:%M")
+    assert projects.card["versions"][0]["when"] == project_rows.local_time(projects.card["versions"][0]["created_at"])
 
     payload = {"name": "LocalChat", "version": 3, "restored_from": 1}
     shown = feed_rows.describe({"type": "card.confirmed", "payload": payload}, projects={}, chats={})
@@ -1583,6 +1611,18 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "projectLinks").property("height") > 100
+        # a confirmed card the project has moved on from: the hint and the update button
+        confirmed = {"version": 1, "text": "## Назначение\nДемо", "model_id": None,
+                     "created_at": "2026-10-27T03:00:00Z"}  # fmt: skip
+        changes = {"commits": 30, "new_folders": [], "gone_folders": [], "dependencies": [], "significant": True}
+        app.client.card_state = {**app.client.card_state, "confirmed": confirmed, "versions": [confirmed],
+                                 "changes": changes}  # fmt: skip
+        app.projects.load_card()
+        wait_until(lambda: app.projects.card["changes"])
+        for _ in range(20):
+            QApplication.processEvents()
+        stale = quick.window.findChild(QObject, "cardStale")
+        assert stale.property("visible") and stale.property("height") > 20
         card_sheet = quick.window.findChild(QObject, "cardSheet")
         QMetaObject.invokeMethod(
             card_sheet, "openWith", Q_ARG("QVariant", "## Назначение\nДемо"), Q_ARG("QVariant", True)

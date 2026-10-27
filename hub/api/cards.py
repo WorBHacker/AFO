@@ -4,6 +4,9 @@ Reading is open to every client; drafting, confirming, restoring and dropping a 
 written in the background: `card.drafting` (live) when it starts, `card.drafted` or `card.failed` when it ends;
 `card.confirmed` when the user confirms a version. A cloud model may not draft the card of a local-only project
 (D10). A paid model's draft is checked against budgets first and its cost recorded like any request.
+
+A confirmed version keeps what the project was like then; the card's state says what changed since (`changes`), and
+a draft with `update` brings the confirmed card up to date instead of writing it anew (D24).
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ DRAFT_EFFORT = "medium"
 
 class DraftRequest(BaseModel):
     model_id: str
+    update: bool = False  # bring the confirmed card up to date, touching only what changed
 
 
 class CardText(BaseModel):
@@ -63,7 +67,11 @@ async def _state(request: Request, project: projects.Project) -> dict:
     state = await request.app.state.db.acall(lambda conn: cards.card_state(conn, project.id))
     confirmed = state["confirmed"]
     missing = await asyncio.to_thread(cards.missing_paths, project, confirmed["text"]) if confirmed else []
-    return {**state, "missing": missing, "drafting": project.id in _drafting(request)}
+    changes = None
+    if confirmed:
+        baseline = await request.app.state.db.acall(lambda conn: cards.baseline(conn, project.id))
+        changes = await asyncio.to_thread(cards.changes_since, project, baseline)
+    return {**state, "missing": missing, "changes": changes, "drafting": project.id in _drafting(request)}
 
 
 @router.get("/projects/{project_id}/card")
@@ -89,8 +97,15 @@ async def draft_card(
         raise HTTPException(status_code=409, detail="a budget for this model is used up")
     if project.id in _drafting(request):
         raise HTTPException(status_code=409, detail="a draft is being written already")
+    current = None
+    if body.update:
+        current = await db.acall(
+            lambda conn: (cards.confirmed_text(conn, project.id), cards.baseline(conn, project.id))
+        )
+        if current[0] is None:
+            raise HTTPException(status_code=409, detail="there is no confirmed card to bring up to date")
     _drafting(request).add(project.id)
-    task = asyncio.create_task(_write_draft(request.app, project, model, client.id))
+    task = asyncio.create_task(_write_draft(request.app, project, model, client.id, current))
     task.add_done_callback(lambda t: t.exception())
     await request.app.state.bus.publish(
         "card.drafting", {"project_id": project.id, "model_id": model["id"]}, project_id=project.id, persist=False
@@ -98,10 +113,14 @@ async def draft_card(
     return {"drafting": True}
 
 
-async def _write_draft(app, project: projects.Project, model: dict, client_id: str | None) -> None:
+async def _write_draft(app, project: projects.Project, model: dict, client_id: str | None, current=None) -> None:
+    """`current`: (the confirmed card, its baseline) for an update; None for a card written anew."""
     bus, db = app.state.bus, app.state.db
     try:
-        messages = await asyncio.to_thread(cards.prompt, project)
+        if current is None:
+            messages = await asyncio.to_thread(cards.prompt, project)
+        else:
+            messages = await asyncio.to_thread(cards.update_prompt, project, *current)
         provider, model_ref = app.state.gateway.resolve(model["id"])
         text, end = [], None
         async for event in provider.stream_chat(model_ref, messages, DRAFT_EFFORT, asyncio.Event()):
@@ -118,17 +137,24 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
                                usage=usage, cost_usd=cost, meta=meta)  # fmt: skip
             if end is not None and end.refusal:
                 return None
-            draft = "".join(text).strip()
+            # an update: the sections the model rewrote, merged into the confirmed card
+            draft = "".join(text).strip() if current is None else cards.merge_update(current[0], "".join(text))
             if draft:
                 cards.save_draft(conn, project.id, draft, model["id"])
             return draft
 
         draft = await db.acall(write)
         if not draft:
-            reason = end.refusal if end is not None and end.refusal else "the model wrote nothing"
+            if end is not None and end.refusal:
+                reason = end.refusal
+            elif current is not None and "".join(text).strip():
+                reason = "модель не нашла, что менять в карточке"
+            else:
+                reason = "the model wrote nothing"
             raise GatewayError(reason)
         await bus.publish("card.drafted", {"project_id": project.id, "name": project.name, "model_id": model["id"],
-                                           "cost_usd": cost}, project_id=project.id)  # fmt: skip
+                                           "cost_usd": cost, "update": current is not None},
+                          project_id=project.id)  # fmt: skip
     except (GatewayError, CardError) as exc:
         await bus.publish("card.failed", {"project_id": project.id, "detail": str(exc)}, project_id=project.id)
     except Exception:
@@ -145,8 +171,9 @@ async def confirm_card(
     """The user's text (the draft as edited, or their own) becomes the next confirmed version."""
     _app_only(client)
     project = await _project(request, project_id)
+    now = await asyncio.to_thread(cards.snapshot, project)  # what this version is confirmed against
     try:
-        state = await request.app.state.db.acall(lambda conn: cards.confirm(conn, project.id, body.text))
+        state = await request.app.state.db.acall(lambda conn: cards.confirm(conn, project.id, body.text, now))
     except CardError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     version = state["confirmed"]["version"]
@@ -162,8 +189,9 @@ async def restore_card(
 ) -> dict:
     _app_only(client)
     project = await _project(request, project_id)
+    now = await asyncio.to_thread(cards.snapshot, project)
     try:
-        state = await request.app.state.db.acall(lambda conn: cards.restore(conn, project.id, body.version))
+        state = await request.app.state.db.acall(lambda conn: cards.restore(conn, project.id, body.version, now))
     except CardError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await request.app.state.bus.publish(

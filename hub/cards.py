@@ -6,11 +6,19 @@ a cloud model only for a project that allows the cloud (D10). The user edits the
 confirmed version is kept and any can be brought back. The confirmed card is the project's L1 layer (D22) in place
 of the automatic summary. A card that names a file or folder that is gone says so where it is used.
 
+Each confirmed version remembers what it was confirmed against - git HEAD, the top-level folders, the dependency
+files. When the project has moved on noticeably since (dependencies changed, folders came or went, many commits),
+the hub says the card may be outdated, and a model can draft an update that rewrites only the sections the
+changes touch (D24).
+
 Cards live in the hub; nothing is written into the project (D23 - an export comes later, on request).
 """
 
 from __future__ import annotations
 
+import difflib
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -38,6 +46,15 @@ INSTRUCTIONS = (
     "так и напиши. Разделы (заголовки ##): " + "; ".join(SECTIONS) + ". Пути к файлам и папкам - в `обратных "
     "кавычках`, как в проекте. До 600 слов. Выведи только карточку, без вступления."
 )
+NO_CHANGES = "БЕЗ ИЗМЕНЕНИЙ"
+UPDATE_INSTRUCTIONS = (
+    "В теге <card> - карточка проекта, которую подтвердил пользователь; в теге <changes> - что изменилось в проекте "
+    "с тех пор. Выведи только те разделы карточки, которые из-за этих изменений стали неверными или неполными: "
+    "каждый целиком, с его заголовком ## как в карточке и исправленным текстом. Разделы, которых изменения не "
+    "касаются, не выводи. Исправляй только по фактам из <changes>, ничего не выдумывай. Без тегов и пояснений. "
+    f"Если менять нечего, выведи: {NO_CHANGES}"
+)
+SIGNIFICANT_COMMITS = 20  # this many commits since the card was confirmed make it worth a look
 PATH_IN_TEXT = re.compile(r"`([A-Za-z0-9_.\-/\\]+/?)`")
 
 
@@ -109,6 +126,142 @@ def prompt(project: Project) -> list[dict[str, Any]]:
     ]
 
 
+# --- what the card was confirmed against, and what changed since (D24) ---
+
+
+def _head_sha(root: Path) -> str | None:
+    result = projects.git(root, "rev-parse", "HEAD")
+    return result.stdout.decode().strip() if result.returncode == 0 else None
+
+
+def snapshot(project: Project) -> dict[str, Any]:
+    """The project as the card is confirmed: git HEAD, top-level folders, digests of the dependency files."""
+    root = project.root
+    if not root.is_dir():
+        return {}
+    try:
+        top = projects.tree(root)
+    except ProjectError, OSError:
+        top = []
+    deps = {}
+    for name in DEPENDENCY_FILES:
+        try:
+            deps[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()[:16]
+        except OSError:
+            continue
+    return {"head": _head_sha(root), "folders": sorted(e["name"] for e in top if e["dir"]), "deps": deps}
+
+
+def changes_since(project: Project, baseline: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What changed since the card was confirmed: {commits, new_folders, gone_folders, dependencies, significant};
+    None when the version has no baseline (confirmed before baselines were kept) or the folder is gone."""
+    if not baseline or not project.root.is_dir():
+        return None
+    now = snapshot(project)
+    commits = None
+    if baseline.get("head") and now.get("head"):
+        if baseline["head"] == now["head"]:
+            commits = 0
+        else:
+            result = projects.git(project.root, "rev-list", "--count", f"{baseline['head']}..HEAD")
+            commits = int(result.stdout.decode().strip()) if result.returncode == 0 else None  # rewritten history
+    before, after = set(baseline.get("folders", [])), set(now["folders"])
+    old_deps, new_deps = baseline.get("deps", {}), now["deps"]
+    changed = sorted(name for name in set(old_deps) | set(new_deps) if old_deps.get(name) != new_deps.get(name))
+    found = {"commits": commits, "new_folders": sorted(after - before), "gone_folders": sorted(before - after),
+             "dependencies": changed}  # fmt: skip
+    found["significant"] = bool(
+        found["new_folders"] or found["gone_folders"] or changed or (commits or 0) >= SIGNIFICANT_COMMITS
+    )
+    return found
+
+
+def update_prompt(project: Project, card: str, baseline: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """For a draft that brings a confirmed card up to date: the card, what changed, and the material it touches."""
+    root = project.root
+    if not root.is_dir():
+        raise CardError(f"the project's folder is missing: {project.path}")
+    changes = changes_since(project, baseline)
+    parts = []
+    if changes is None:  # no baseline: what the project is now, in full
+        parts.append("## Проект сейчас\n" + gather(project))
+    else:
+        said = []
+        if changes["commits"]:
+            said.append(f"коммитов: {changes['commits']}")
+        if changes["new_folders"]:
+            said.append("новые папки: " + ", ".join(changes["new_folders"]))
+        if changes["gone_folders"]:
+            said.append("исчезли папки: " + ", ".join(changes["gone_folders"]))
+        if changes["dependencies"]:
+            said.append("изменились файлы зависимостей и сборки: " + ", ".join(changes["dependencies"]))
+        parts.append("## Что изменилось с подтверждения\n" + ("; ".join(said) or "заметных изменений нет"))
+        if baseline and baseline.get("head") and changes["commits"]:
+            log = projects.git(root, "log", "--format=%h %s", "-n", "40", f"{baseline['head']}..HEAD")
+            if log.returncode == 0:
+                parts.append("## Коммиты с подтверждения\n" + log.stdout.decode("utf-8", "replace").strip())
+        tree = _tree(root, max_depth=2)
+        if tree:
+            parts.append("## Дерево папок сейчас\n" + "\n".join(tree))
+        for name in changes["dependencies"]:
+            if (root / name).is_file() and not is_secret_file(name):
+                parts.append(f"## {name} (сейчас)\n{_file_head(root, name, 6_000)}")
+    material = clean("\n\n".join(parts))
+    if len(material) > SOURCE_BUDGET_CHARS:
+        material = material[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"
+    # the card last, in its own tag: a model copies what it has just read more faithfully, and does not take the
+    # material for a part of the card (a local model did, with both under ## headings)
+    text = f'<changes project="{project.name}">\n{material}\n</changes>\n\n<card>\n{clean(card)}\n</card>'
+    return [{"role": "system", "content": UPDATE_INSTRUCTIONS}, {"role": "user", "content": text}]
+
+
+def tidy_update(text: str) -> str:
+    """A model's answer without what some models wrap it in: the <card> tag, a code fence."""
+    text = text.strip()
+    inside = re.search(r"<card>\s*(.*?)\s*(?:</card>|$)", text, re.S)
+    if inside:
+        text = inside.group(1)
+    fenced = re.fullmatch(r"```(?:markdown|md)?\s*\n(.*?)\n```", text, re.S)
+    return (fenced.group(1) if fenced else text).strip()
+
+
+def _split(text: str) -> list[tuple[str, list[str]]]:
+    """(heading, lines) per ## section, in order; the text before the first heading under ""."""
+    sections: list[tuple[str, list[str]]] = [("", [])]
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("## "):
+            sections.append((line[3:].strip(), []))
+        else:
+            sections[-1][1].append(line)
+    return sections
+
+
+def merge_update(card: str, answer: str) -> str | None:
+    """The confirmed card with the sections the model rewrote put in place, the rest left exactly as they were -
+    a model asked to copy them garbles some (a local one did, in Russian); a heading it misspelt is matched to the
+    card's closest one. None when the model found nothing to change."""
+    answer = tidy_update(answer)
+    rewritten = [(title, lines) for title, lines in _split(answer)[1:] if title]
+    if not rewritten:
+        return None  # NO_CHANGES, or no sections at all
+    sections = _split(card.strip())
+    titles = [title for title, _lines in sections[1:]]
+    for title, lines in rewritten:
+        body = "\n".join(lines).strip("\n")
+        match = next((t for t in titles if t.casefold() == title.casefold()), None) or next(
+            iter(difflib.get_close_matches(title, titles, n=1, cutoff=0.75)), None
+        )
+        if match is None:
+            sections.append((title, ["", body, ""]))  # a section the card did not have
+            continue
+        at = 1 + titles.index(match)
+        sections[at] = (match, [body, ""] if body else [""])
+    parts = ["\n".join(sections[0][1]).strip("\n")] if "".join(sections[0][1]).strip() else []
+    for title, lines in sections[1:]:
+        parts.append(f"## {title}\n" + "\n".join(lines).strip("\n"))
+    return "\n\n".join(parts).strip()
+
+
 def _known_paths(project: Project) -> tuple[set[str], set[str]]:
     """The project's files and folders (posix, relative), as git shows them or, outside git, without noise."""
     files = projects._git_visible(project.root)
@@ -176,8 +329,21 @@ def save_draft(conn: sqlite3.Connection, project_id: str, text: str, model_id: s
     )
 
 
-def confirm(conn: sqlite3.Connection, project_id: str, text: str) -> dict[str, Any]:
-    """The user's text becomes the next confirmed version; the draft (if any) is done with."""
+def baseline(conn: sqlite3.Connection, project_id: str) -> dict[str, Any] | None:
+    """What the latest confirmed version was confirmed against (see snapshot), if it was kept."""
+    row = conn.execute(
+        "SELECT baseline FROM project_cards WHERE project_id = ? AND status = 'confirmed' ORDER BY version DESC "
+        "LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    return json.loads(row["baseline"]) if row and row["baseline"] else None
+
+
+def confirm(
+    conn: sqlite3.Connection, project_id: str, text: str, state: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The user's text becomes the next confirmed version, with `state` (snapshot) as what it was confirmed
+    against; the draft (if any) is done with."""
     text = text.strip()
     if not text:
         raise CardError("an empty card cannot be confirmed")
@@ -190,20 +356,23 @@ def confirm(conn: sqlite3.Connection, project_id: str, text: str) -> dict[str, A
     ).fetchone()[0]
     conn.execute("DELETE FROM project_cards WHERE project_id = ? AND status = 'draft'", (project_id,))
     conn.execute(
-        "INSERT INTO project_cards (project_id, version, status, text, model_id) VALUES (?, ?, 'confirmed', ?, ?)",
-        (project_id, last + 1, text, draft["model_id"] if draft else None),
+        "INSERT INTO project_cards (project_id, version, status, text, model_id, baseline) "
+        "VALUES (?, ?, 'confirmed', ?, ?, ?)",
+        (project_id, last + 1, text, draft["model_id"] if draft else None, json.dumps(state) if state else None),
     )
     return card_state(conn, project_id)
 
 
-def restore(conn: sqlite3.Connection, project_id: str, version: int) -> dict[str, Any]:
+def restore(
+    conn: sqlite3.Connection, project_id: str, version: int, state: dict[str, Any] | None = None
+) -> dict[str, Any]:
     row = conn.execute(
         "SELECT text FROM project_cards WHERE project_id = ? AND status = 'confirmed' AND version = ?",
         (project_id, version),
     ).fetchone()
     if row is None:
         raise CardError(f"no version {version} of this card")
-    return confirm(conn, project_id, row["text"])
+    return confirm(conn, project_id, row["text"], state)
 
 
 def drop_draft(conn: sqlite3.Connection, project_id: str) -> bool:
