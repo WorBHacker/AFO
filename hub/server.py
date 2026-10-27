@@ -44,6 +44,7 @@ from .api import (
 )
 from .approvals import ApprovalQueue
 from .auth import ensure_app_token
+from .backup import DailyBackup
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
 from .connections import ConnectionLock
@@ -106,6 +107,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.programs = ProgramCatalog(bus, db, settings.programs_interval_s)
+        app.state.backup = DailyBackup(paths.db, paths.backups, settings.backup_interval_s)
         app.state.terminals = TerminalManager(bus, db, paths.terminals)
         app.state.chat.terminals, app.state.chat.processes = app.state.terminals, app.state.processes
         app.state.symbols = app.state.chat.symbols  # one index for the window's queries and the models' tools
@@ -116,6 +118,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.watcher.start(db.call(list_projects))
         app.state.processes.start()
         app.state.programs.start()
+        app.state.backup.start()
         await app.state.terminals.start()
         expired = await app.state.approvals.start()
         if expired:
@@ -137,6 +140,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.watcher.stop()
             await app.state.processes.stop()
             await app.state.programs.stop()
+            await app.state.backup.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
