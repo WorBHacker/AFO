@@ -4,8 +4,10 @@ python -m hub                         start the hub (same as `serve`)
 python -m hub stop                    stop the running hub gracefully
 python -m hub token create NAME       register a client and print its token once
 python -m hub token create NAME --local   ...for a client that only works with local models (D32)
+python -m hub token create NAME --save    ...into data/tokens/NAME.token instead of printing it
 python -m hub token list              list clients
 python -m hub token revoke NAME       the client's token stops working
+python -m hub mcp --client NAME       the stdio adapter to the hub's MCP, for clients that only speak stdio (D32)
 python -m hub key status              which API keys are set (never their values)
 python -m hub key set NAME            store an API key in the Windows Credential Manager (typed hidden)
 python -m hub key delete NAME         remove it
@@ -21,9 +23,11 @@ import socket
 import sqlite3
 import sys
 import time
+from pathlib import Path
 
 from common import __version__
 from common.logging_setup import setup_logging
+from common.paths import DataPaths
 
 from .auth import APP_CLIENT, create_client, list_clients, revoke_client
 from .db import Database, migrate, utc_now
@@ -153,7 +157,12 @@ def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
                 print(f"Клиент {args.name!r} уже есть", file=sys.stderr)
                 return 1
             kind = "локальный" if args.local else "облачный (D32)"
-            print(f"Клиент {args.name!r}, {kind}. Токен показывается один раз:\n{token}")
+            if args.save:
+                saved = save_token(paths, args.name, token)
+                print(f"Клиент {args.name!r}, {kind}. Токен сохранён в {saved}")
+                print(f"Переходник stdio для него: python -m hub mcp --client {args.name}")
+            else:
+                print(f"Клиент {args.name!r}, {kind}. Токен показывается один раз:\n{token}")
         elif args.action == "list":
             for c in db.call(list_clients):
                 state = f"отозван {c.revoked_at}" if c.revoked_at else "активен"
@@ -162,10 +171,28 @@ def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
             if not db.call(lambda conn: revoke_client(conn, args.name)):
                 print(f"Активного клиента {args.name!r} нет", file=sys.stderr)
                 return 1
+            if args.name != APP_CLIENT:
+                (paths.tokens / f"{args.name}.token").unlink(missing_ok=True)
             print(f"Токен клиента {args.name!r} отозван")
         return 0
     finally:
         db.close()
+
+
+def save_token(paths: DataPaths, name: str, token: str) -> Path:
+    """data/tokens/NAME.token, where the stdio adapter finds it: a client's config then holds no secret."""
+    target = paths.tokens / f"{name}.token"
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(token, encoding="utf-8")
+    os.replace(tmp, target)
+    return target
+
+
+def mcp_command(settings: HubSettings, args: argparse.Namespace) -> int:
+    from .mcp_stdio import main as adapter
+
+    setup_logging("hub-mcp", console=False)  # stdout is the protocol's; nothing else may go there
+    return adapter(settings.paths.ensure(), args.client)
 
 
 def key_command(settings: HubSettings, args: argparse.Namespace) -> int:
@@ -245,9 +272,12 @@ def main(argv: list[str] | None = None) -> int:
     create = actions.add_parser("create", help="register a client and print its token once")
     create.add_argument("name")
     create.add_argument("--local", action="store_true", help="the client only works with local models")
+    create.add_argument("--save", action="store_true", help="write the token to data/tokens/NAME.token")
     actions.add_parser("list", help="list clients")
     revoke = actions.add_parser("revoke", help="stop a client's token from working")
     revoke.add_argument("name")
+    mcp = commands.add_parser("mcp", help="the stdio adapter to the hub's MCP (D32)")
+    mcp.add_argument("--client", required=True, help="the client whose token data/tokens/NAME.token holds")
     key = commands.add_parser("key", help="API keys in the Windows Credential Manager (D13)")
     key_actions = key.add_subparsers(dest="action", required=True)
     key_actions.add_parser("status", help="which keys are set")
@@ -264,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
         return key_command(settings, args)
     if args.command == "stop":
         return stop(settings)
+    if args.command == "mcp":
+        return mcp_command(settings, args)
     return serve(settings)
 
 

@@ -6,23 +6,17 @@ process and keeps running when the window closes (D2).
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import subprocess
-import sys
-import time
 from typing import Any
 
 import httpx
 
-from common.paths import PROJECT_ROOT, DataPaths, data_paths
-from hub.settings import DEFAULT_PORT, PORT_ENV
+from common.paths import DataPaths, data_paths
+from hub.locate import START_TIMEOUT_S, HubUnavailable, hub_address, probe, running_hub
+
+__all__ = ["HubClient", "HubError", "connect", "hub_address", "probe"]
 
 log = logging.getLogger("app.hub")
-
-SERVICE = "localchat-hub"
-START_TIMEOUT_S = 30.0
 
 
 class HubError(Exception):
@@ -266,66 +260,13 @@ class HubClient:
         self._call("POST", "/v1/shutdown")
 
 
-def hub_address(paths: DataPaths) -> str:
-    """Where the hub listens: hub.json of a running hub, else the configured port."""
-    try:
-        info = json.loads(paths.hub_info.read_text(encoding="utf-8"))
-        return f"http://{info['host']}:{info['port']}"
-    except OSError, ValueError, KeyError:
-        return f"http://127.0.0.1:{int(os.environ.get(PORT_ENV, DEFAULT_PORT))}"
-
-
-def probe(base_url: str) -> str:
-    """'ok' - a LocalChat hub answers; 'absent' - nothing listens; 'foreign' - some other program does."""
-    try:
-        response = httpx.get(f"{base_url}/v1/health", timeout=1.0)
-    except httpx.HTTPError:
-        return "absent"
-    try:
-        return "ok" if response.json().get("service") == SERVICE else "foreign"
-    except ValueError:
-        return "foreign"
-
-
-def start_hub() -> None:
-    """Starts `python -m hub` as its own process with no console window; it outlives the app (D2)."""
-    flags = 0
-    if os.name == "nt":
-        # a hidden console rather than none: the venv's python.exe starts the real interpreter as a child,
-        # which would open a console window of its own if the parent had none
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(
-        [sys.executable, "-m", "hub"],
-        cwd=PROJECT_ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=flags,
-        close_fds=True,
-    )
-
-
 def connect(paths: DataPaths | None = None, *, start: bool = True, timeout: float = START_TIMEOUT_S) -> HubClient:
     """The client of the running hub; starts the hub first when none answers and `start` is set."""
     paths = paths or data_paths()
-    base = hub_address(paths)
-    state = probe(base)
-    if state == "foreign":
-        raise HubError(f"на {base} отвечает не хаб LocalChat — порт занят другой программой")
-    if state == "absent":
-        if not start:
-            raise HubError("хаб не запущен")
-        log.info("no hub at %s, starting one", base)
-        start_hub()
-        deadline = time.monotonic() + timeout
-        while True:
-            base = hub_address(paths)
-            if probe(base) == "ok":
-                break
-            if time.monotonic() > deadline:
-                raise HubError(f"хаб не запустился за {timeout:.0f} с, подробности в {paths.logs / 'hub.log'}")
-            time.sleep(0.2)
-        log.info("hub started at %s", base)
+    try:
+        base = running_hub(paths, start=start, timeout=timeout)
+    except HubUnavailable as exc:
+        raise HubError(str(exc)) from exc
     try:
         token = (paths.tokens / "app.token").read_text(encoding="utf-8").strip()
     except OSError as exc:
