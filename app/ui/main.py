@@ -17,6 +17,7 @@ from shiboken6 import Shiboken
 
 from common.paths import DataPaths
 
+from . import snap
 from .controller import Controller
 from .icons import IconProvider
 from .notify import Notifier
@@ -108,8 +109,9 @@ class QuickApp:
         if not roots:
             raise RuntimeError("the QML window did not load: " + "; ".join(self.warnings))
         self.window: QWindow | None = roots[0]
-        restore_geometry(self.window, self.settings)
         native_frame_touches(self.window)
+        self.snap = snap.install(app, self.window)  # Windows' snapping to edges and corners, Win+arrows
+        restore_geometry(self.window, self.settings)
         # notices outside the window (D21): an agent waits for an answer, or finished, while the window is behind
         self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
         self.controller.approvals.requested.connect(self.notifier.notify)
@@ -140,6 +142,9 @@ class QuickApp:
         if self.window is None:
             return
         save_geometry(self.window, self.settings)
+        if self.snap is not None:
+            QGuiApplication.instance().removeNativeEventFilter(self.snap)
+            self.snap = None
         self.notifier.close()
         self.controller.shutdown()  # the hub keeps running (D2)
         # the engine and its window go now, before the controller, so no binding ever sees App gone

@@ -17,6 +17,18 @@ def test_the_word_being_typed():
     assert mentions.at_word("смотри @LocalChat/hub/ch", 24) == (7, "LocalChat/hub/ch")
     assert mentions.at_word("(@lla", 5) == (1, "lla")
     assert mentions.at_word("mail me@host", 12) is None  # an address, not a mention
+    assert mentions.at_word("", 5) is None  # the text was just sent: QML still reports the old cursor
+    assert mentions.at_word("@Lo", 99) == (0, "Lo")
+
+
+def test_qml_positions_are_utf16_units():
+    text = "привет 👋 @Loc"  # the emoji is one character here, two units in QML
+    cursor = len(text.encode("utf-16-le")) // 2  # QML's cursor at the end: 14
+    assert cursor == 14 and len(text) == 13
+    index = mentions.from_utf16(text, cursor)
+    assert index == 13 and mentions.at_word(text, index) == (9, "Loc")
+    assert mentions.to_utf16(text, 9) == 10  # where QML's @ is
+    assert mentions.from_utf16("abc", 99) == 3 and mentions.from_utf16("abc", -1) == 0
     assert mentions.at_word("@LocalChat готово", 17) is None  # the cursor is past the mention
     assert mentions.at_word("@Loc и дальше", 3) == (0, "Lo")  # the part before the cursor
 

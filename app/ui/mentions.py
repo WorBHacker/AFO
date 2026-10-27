@@ -15,9 +15,20 @@ TRAILING = ".,;:!?)»\"'"
 OPENING = "([«\"'"  # an @ right after these still starts a mention
 
 
+def from_utf16(text: str, position: int) -> int:
+    """A QML text position as Python's index. QML counts UTF-16 units (an emoji is two), Python characters; and QML
+    may report the old cursor of a text just cleared - the index never passes the end."""
+    return len(text.encode("utf-16-le")[: max(position, 0) * 2].decode("utf-16-le", "ignore"))
+
+
+def to_utf16(text: str, index: int) -> int:
+    """Python's index in the text as a QML position."""
+    return len(text[:index].encode("utf-16-le")) // 2
+
+
 def at_word(text: str, cursor: int) -> tuple[int, str] | None:
-    """The @-mention being typed at the cursor: (where its @ is, what follows the @), or None."""
-    start = cursor
+    """The @-mention being typed at the cursor (Python's index): (where its @ is, what follows the @), or None."""
+    start = cursor = min(max(cursor, 0), len(text))
     while start > 0 and not text[start - 1].isspace() and text[start - 1] != "@":
         start -= 1
     if start == 0 or text[start - 1] != "@":

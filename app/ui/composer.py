@@ -57,11 +57,12 @@ class Mentions(QObject):
     def typed(self, text: str, cursor: int) -> None:
         """The draft or the cursor changed: the @-menu follows, and so do the suggestions."""
         self._suggest(text)
-        word = mentions.at_word(text, cursor)
+        word = mentions.at_word(text, mentions.from_utf16(text, cursor))  # QML's positions are UTF-16 units
         if word is None:
             self.close()
             return
-        self._start, query = word
+        at, query = word
+        self._start = mentions.to_utf16(text, at)  # where QML replaces the word
         files = mentions.file_query(query, self.app.projects.items)
         if files is None:
             self._files_timer.stop()
