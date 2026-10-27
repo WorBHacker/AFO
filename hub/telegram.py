@@ -219,7 +219,8 @@ class TelegramBot:
     # --- outgoing: requests, answers, finished runs ---
 
     async def _follow(self) -> None:
-        subscription = self._bus.subscribe(("approval.requested", "approval.decided", "run.finished"))
+        subscription = self._bus.subscribe(("approval.requested", "approval.decided", "run.finished",
+                                            "run.question", "run.notice"))  # fmt: skip
         while True:
             event = await subscription.queue.get()
             try:
@@ -232,6 +233,11 @@ class TelegramBot:
     async def _send(self, kind: str, payload: dict[str, Any]) -> None:
         chat = await self._db.acall(linked_chat)
         if chat is None or not self._store.get(TOKEN):
+            return
+        if kind in ("run.question", "run.notice"):  # the autonomous agent asks, or says (9.4): answered in the window
+            head = "Агент спрашивает (ответ — в окне LocalChat)" if kind == "run.question" else "Агент сообщает"
+            body = html.escape(str(payload.get("question") or payload.get("text") or ""))
+            await self._call("sendMessage", chat_id=chat, text=f"<b>{head}</b>\n{body}", parse_mode="HTML")
             return
         if kind == "run.finished":
             run = payload.get("run") or {}

@@ -328,6 +328,12 @@ class FakeClient:
         self.exported = {}
         self.auto_calls = []
         self.memory_calls = []
+        self.access = {
+            "folders": [{"path": "D:/Reports", "write": False}],
+            "domains": ["pypi.org"],
+            "default_domains": ["docs.python.org", "pypi.org"],
+        }
+        self.access_calls = []
         self.fact_list = [
             {
                 "id": 1,
@@ -428,6 +434,14 @@ class FakeClient:
 
     def delete_skill(self, skill_id):
         self.memory_calls.append(("delete skill", skill_id))
+
+    def agent_access(self):
+        return dict(self.access)
+
+    def set_agent_access(self, **changes):
+        self.access_calls.append(changes)
+        self.access = {**self.access, **changes}
+        return dict(self.access)
 
     def start_autonomous(self, body):
         self.auto_calls.append(("start", body))
@@ -3643,8 +3657,11 @@ def test_the_agent_mode_in_the_window(qapp):
         view.pause()
         view.editPlan("Только посчитать — дважды", "быстрее")
         wait_until(lambda: not app.bg.busy and len(client.auto_calls) == 4)
-        expected = [("answer", "auto1", "q1", "нет"), ("pause", "auto1"),
-                    ("plan", "auto1", [{"title": "Только посчитать", "check": "дважды"}], "быстрее")]
+        expected = [
+            ("answer", "auto1", "q1", "нет"),
+            ("pause", "auto1"),
+            ("plan", "auto1", [{"title": "Только посчитать", "check": "дважды"}], "быстрее"),
+        ]
         assert sorted(client.auto_calls[1:], key=str) == sorted(expected, key=str)  # in the background: any order
         # its approval comes as the card over the Agent view (D38)
         send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap7", "conversation_id": "auto1",
@@ -3688,6 +3705,45 @@ def test_the_agents_memory_in_the_window(qapp):
         assert sorted(client.memory_calls, key=str) == sorted([
             ("change", 2, {"personal": False}), ("change", 2, {"text": "Почта: ivan@mail.ru"}), ("delete", 1),
             ("add", "Сервер — на 8000", False), ("skill", "auto1", "Подсчёт строк")], key=str)  # fmt: skip
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_folders_and_sites_for_the_agent_in_the_window(qapp, tmp_path):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.autonomy_view
+        sheet = quick.window.findChild(QObject, "agentAccessSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened") and view.accessFolders)
+        assert view.domainsText == "pypi.org"
+        view.addFolder(tmp_path.as_uri())
+        wait_until(lambda: not app.bg.busy and len(view.accessFolders) == 2)
+        view.setFolderWrite(view.accessFolders[-1]["path"], True)  # the path as the hub keeps it
+        wait_until(lambda: not app.bg.busy and view.accessFolders[-1]["write"])
+        view.setDomains("pypi.org, api.example.com\n docs.python.org")
+        view.resetDomains()
+        wait_until(lambda: not app.bg.busy and len(client.access_calls) == 4)
+        assert client.access_calls[0]["folders"][-1] == {"path": tmp_path.as_posix(), "write": False}
+        assert {"domains": ["pypi.org", "api.example.com", "docs.python.org"]} in client.access_calls
+        assert client.access_calls[-1] == {"domains": ["docs.python.org", "pypi.org"]}
+        view.newTask()
+        view.setFlag("network", True)
+        view.setField("goal", "Скачать курс валют")
+        view.start()
+        wait_until(lambda: not app.bg.busy and client.auto_calls)
+        assert client.auto_calls[0][1]["network"] is True
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

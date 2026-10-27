@@ -87,11 +87,20 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Note { text: "Агент сам составит план, выполнит шаги инструментами хаба, проверит каждый и в конце напишет отчёт. Вы видите план и каждый шаг, отвечаете на его вопросы и можете остановить его в любой момент." }
-                PlainButton {
-                    objectName: "agentMemory"
-                    iconName: "layers"
-                    text: "Память агента — факты и навыки"
-                    onClicked: App.openUi("memory")
+                Row {
+                    spacing: 8
+                    PlainButton {
+                        objectName: "agentMemory"
+                        iconName: "layers"
+                        text: "Память агента"
+                        onClicked: App.openUi("memory")
+                    }
+                    PlainButton {
+                        objectName: "agentAccess"
+                        iconName: "folder"
+                        text: "Папки и сайты"
+                        onClicked: App.openUi("agent-access")
+                    }
                 }
                 Flow {
                     width: parent.width
@@ -172,6 +181,16 @@ Item {
                             active: modelData.selected
                             onClicked: Autonomy.toggleProject(modelData.id)
                         }
+                    }
+                }
+                Row {
+                    spacing: 10
+                    Label { text: "Скриптам Python — в сеть"; anchors.verticalCenter: parent.verticalCenter }
+                    Segmented {
+                        objectName: "agentNetwork"
+                        options: [{ id: "no", name: "нельзя" }, { id: "yes", name: "можно" }]
+                        value: Autonomy.draft.network ? "yes" : "no"
+                        onPicked: (id) => Autonomy.setFlag("network", id === "yes")
                     }
                 }
                 Label { text: "Сколько сам" }

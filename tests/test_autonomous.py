@@ -102,7 +102,8 @@ def test_a_goal_planned_carried_out_checked_and_reported(hub):  # noqa: F811
     assert "You work on your own toward a goal" in first[1]["content"] and "Autonomy: you go on" in first[1]["content"]
     sent = [t["name"] for t in hub.app.state.db.call(lambda c: __import__("json").loads(
         c.execute("SELECT tools FROM conversations WHERE id = ?", (run_id,)).fetchone()[0]))]  # fmt: skip
-    assert sent[-7:] == ["set_plan", "update_step", "ask_user", "finish", "note", "remember", "recall"]
+    at = sent.index("set_plan")  # its own tools, together, after the profile's
+    assert sent[at : at + 7] == ["set_plan", "update_step", "ask_user", "finish", "note", "remember", "recall"]
     plan = hub.get(f"/v1/runs/{run_id}/plan").json()
     assert [p["version"] for p in plan["plans"]] == [1, 2] and plan["plans"][1]["reason"] == "сбивался"
     assert [(s["status"], s["attempts"]) for s in plan["plans"][0]["steps"]] == [("done", 0), ("failed", 3)]

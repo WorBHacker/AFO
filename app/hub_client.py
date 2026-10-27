@@ -162,6 +162,12 @@ class HubClient:
     def delete_skill(self, skill_id: int) -> None:
         self._call("DELETE", f"/v1/skills/{skill_id}")
 
+    def agent_access(self) -> dict:
+        return self._call("GET", "/v1/agent/access")
+
+    def set_agent_access(self, **changes) -> dict:
+        return self._call("PUT", "/v1/agent/access", changes)
+
     def check_model(self, model_id: str) -> dict:
         """A local model may load for minutes first: the hub gives it 5, the window waits a little longer."""
         return self._call("POST", "/v1/models/check", {"model_id": model_id}, timeout=330)

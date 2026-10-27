@@ -15,6 +15,7 @@ from starlette.routing import Route
 from common import __version__
 
 from . import autostart, mcp_server
+from .agent_tools import AgentToolbox
 from .agents import AgentRunner
 from .api import (
     advice,
@@ -101,6 +102,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
+        app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox")
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token

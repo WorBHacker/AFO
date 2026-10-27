@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from . import (
+    agent_tools,
     autonomous,
     budgets,
     cards,
@@ -85,7 +86,9 @@ CHAT_TOOLS = [
     websearch.WEB_SEARCH,
 ]  # a new chat's; older keep theirs
 # what only looks: an autonomous run may use it before its plan (the hub's reading tools, the web)
-READING = frozenset({*(t["name"] for t in TOOLS), web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"]})
+READING = frozenset(
+    {*(t["name"] for t in TOOLS), web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], "folder_list", "folder_read"}
+)
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
@@ -105,6 +108,7 @@ class ChatService:
         self.secrets = None  # set by the server: the search engine's key (web_search)
         self.editor = None  # set by the server: what VS Code reports (stage 6.6)
         self.autonomy: autonomous.Autonomy | None = None  # set by the server: the autonomous agent's tools (9.1)
+        self.toolbox: agent_tools.AgentToolbox | None = None  # its folders, scripts, requests, notices (9.4)
 
     @property
     def busy(self) -> list[str]:
@@ -609,6 +613,13 @@ class ChatService:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             elif call["name"] == websearch.WEB_SEARCH["name"]:
                 output, error = await self._web_search(conversation_id, call, ctx, cancel)
+            elif call["name"] in agent_tools.TOOL_NAMES and self.toolbox is not None:  # beyond projects (9.4)
+
+                async def ask(tool, data, cover, call=call):
+                    allowed, said = await self._ask_user(conversation_id, tool, data, None, cancel, cover=cover)
+                    return None if allowed else said
+
+                output, error = await self.toolbox.handle(conversation_id, call, cancel, ask)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
             elif call["name"] == "delegate_task":  # a coordinator's (D20)
@@ -995,6 +1006,7 @@ def _instructions(conn, conversation_id: str) -> str:
         }.get(row["autonomy"] or "plan", "")
         text += f"\n\n{autonomous.GUIDE}\n\nThe goal: {row['goal']}"
         hint = memory.skill_hint(conn, row["goal"])  # a skill kept from a task like this one (9.3)
+        text += f"\n\n{agent_tools.context_note(conn)}"  # its folders, hosts and keys (9.4)
         text += f"\nDone means: {row['done_when']}" if row["done_when"] else ""
         text += f"\nAutonomy: {level}."
         text += f"\n\n{hint}" if hint else ""

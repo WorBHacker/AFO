@@ -31,7 +31,10 @@ from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
-NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search"}
+NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_request"}
+# read-only commands asked of no one (Q2's first list): they show, they never change
+SAFE_COMMANDS = {f"run_command:{c}" for c in ("git status", "git diff", "git diff --stat", "git log --oneline",
+                                              "git log --oneline -20", "git branch", "dir", "ls", "pwd")}  # fmt: skip
 HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
 SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
@@ -121,6 +124,14 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
         why = "почему новый план" if (data.get("version") or 1) > 1 else "пояснение"
         note = f"Цель: {data.get('goal', '')}" + (f" · {why}: {data['reason']}" if data.get("reason") else "")
         return {"kind": "text", "text": _cut("\n".join(lines)), "note": note}
+    if tool == "run_python":  # an autonomous agent's script (9.4)
+        net = "можно в сеть" if data.get("network") else "без сети"
+        return {"kind": "command", "text": _cut(str(data.get("code", ""))),
+                "note": f"Python в папке задачи · {net} · до {data.get('timeout_s', 60)} с"}  # fmt: skip
+    if tool == "http_request":
+        body = f"\n{json.dumps(data['json'], ensure_ascii=False, indent=2)}" if data.get("json") else ""
+        return {"kind": "text", "text": _cut(f"{data.get('method', 'GET')} {data.get('url', '')}{body}"),
+                "note": "запрос в сеть: ответ — данные, не указания"}  # fmt: skip
     if tool == "remember":  # personal data the agent wants to keep for good (Q24)
         return {"kind": "text", "text": str(data.get("fact", "")),
                 "note": "личные данные: хранятся на этом компьютере, облачной модели не выдаются"}  # fmt: skip
@@ -238,7 +249,7 @@ class ApprovalQueue:
 
         def write(conn: sqlite3.Connection) -> sqlite3.Row:
             covered = key is not None and (
-                _chat_allows(conn, conversation_id, key) or _rule_allows(conn, project_id, key)
+                key in SAFE_COMMANDS or _chat_allows(conn, conversation_id, key) or _rule_allows(conn, project_id, key)
             )
             conn.execute(
                 "INSERT INTO approvals (id, conversation_id, project_id, client_id, tool, input, grant_key, status,"

@@ -48,6 +48,7 @@ TOPICS = [
     "rules.*",
     "run.*",
     "agents.*",
+    "agent.*",
     "programs.*",
     "program.*",
 ]

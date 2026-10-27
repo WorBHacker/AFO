@@ -900,7 +900,7 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value in ("feed", "approvals", "agents", "programs", "model-settings", "memory"):
+            elif value in ("feed", "approvals", "agents", "programs", "model-settings", "memory", "agent-access"):
                 self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")

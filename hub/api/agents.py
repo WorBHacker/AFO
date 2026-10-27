@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import agents, autonomous
+from .. import agent_tools, agents, autonomous
 from ..agents import AgentError
 from ..auth import APP_CLIENT, Client
 from .deps import require_client
@@ -144,6 +144,7 @@ class Goal(BaseModel):
     max_minutes: int = autonomous.DEFAULTS["max_minutes"]
     max_replans: int = autonomous.DEFAULTS["max_replans"]
     budget_usd: float | None = autonomous.DEFAULTS["budget_usd"]
+    network: bool = False  # its Python scripts may reach the network (9.4)
 
 
 @router.post("/runs/autonomous", status_code=201)
@@ -223,3 +224,42 @@ async def edit_plan(run_id: str, body: PlanEdit, request: Request, client: Annot
         return await request.app.state.autonomy.edit_plan(run_id, body.steps, body.reason, by=client.name)
     except autonomous.AutonomyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# --- what the autonomous agent may reach beyond projects (stage 9.4) ---
+
+
+@router.get("/agent/access")
+async def agent_access(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    _app_only(client)
+
+    def read(conn):
+        return {"folders": agent_tools.folders(conn), "domains": agent_tools.domains(conn),
+                "default_domains": agent_tools.DEFAULT_DOMAINS}  # fmt: skip
+
+    return await _db(request, read)
+
+
+class Access(BaseModel):
+    folders: list[dict[str, Any]] | None = None  # [{path, write}]
+    domains: list[str] | None = None
+
+
+@router.put("/agent/access")
+async def set_agent_access(body: Access, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    _app_only(client)
+
+    def write(conn):
+        if body.folders is not None:
+            agent_tools.set_setting(conn, agent_tools.FOLDERS, agent_tools.check_folders(body.folders))
+        if body.domains is not None:
+            agent_tools.set_setting(conn, agent_tools.DOMAINS, agent_tools.check_domains(body.domains))
+        return {"folders": agent_tools.folders(conn), "domains": agent_tools.domains(conn),
+                "default_domains": agent_tools.DEFAULT_DOMAINS}  # fmt: skip
+
+    try:
+        found = await request.app.state.db.acall(write)
+    except agent_tools.AgentToolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await request.app.state.bus.publish("agent.access", {"folders": len(found["folders"])})
+    return found

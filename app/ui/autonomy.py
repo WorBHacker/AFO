@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from .. import presenter
 from .project_rows import local_time
@@ -41,7 +41,7 @@ TEMPLATES = [
 ]  # fmt: skip
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
-                         "max_replans": "3"}  # fmt: skip
+                         "max_replans": "3", "network": False}  # fmt: skip
 
 
 def task_rows(runs: list[dict[str, Any]], selected: str, paused: set[str]) -> list[dict[str, Any]]:
@@ -120,7 +120,7 @@ def goal_body(draft: dict[str, Any]) -> dict[str, Any]:
             "planner_model_id": draft["planner_model_id"] or None, "project_ids": list(draft["project_ids"]),
             "autonomy": draft["autonomy"], "max_steps": whole("max_steps", "Шагов"),
             "max_minutes": whole("max_minutes", "Минут"), "max_replans": whole("max_replans", "Новых планов"),
-            "budget_usd": budget}  # fmt: skip
+            "budget_usd": budget, "network": bool(draft.get("network"))}  # fmt: skip
 
 
 class AutonomyView(QObject):
@@ -138,6 +138,7 @@ class AutonomyView(QObject):
         self._paused: set[str] = set()
         self._draft: dict[str, Any] = dict(BLANK)
         self._error = ""
+        self._access: dict[str, Any] = {"folders": [], "domains": [], "default_domains": []}
 
     # ================= for QML =================
 
@@ -247,6 +248,9 @@ class AutonomyView(QObject):
         if kind == "run.question":
             self.app.flash("Агент спрашивает — ответ в режиме «Агент»", ms=10000)
             self.asked.emit("Агент спрашивает", str(payload.get("question", ""))[:200])
+        if kind == "run.notice":  # the agent tells the user something (9.4)
+            self.app.flash(f"Агент: {payload.get('text', '')}", ms=12000)
+            self.asked.emit("Агент сообщает", str(payload.get("text", ""))[:200])
         if kind in ("run.paused", "run.resumed"):
             (self._paused.add if kind == "run.paused" else self._paused.discard)(run_id)
         if kind.startswith("run.") and run_id and run_id == self._selected and kind != "run.status":
@@ -284,6 +288,58 @@ class AutonomyView(QObject):
             self._draft = {**self._draft, name: value}
             self._error = ""
             self.changed.emit()
+
+    @Slot(str, bool)
+    def setFlag(self, name: str, value: bool) -> None:
+        if name == "network":
+            self._draft = {**self._draft, "network": value}
+            self.changed.emit()
+
+    # ---------- what it may reach beyond projects (9.4) ----------
+
+    @Property(list, notify=changed)
+    def accessFolders(self) -> list:
+        return list(self._access.get("folders") or [])
+
+    @Property(str, notify=changed)
+    def domainsText(self) -> str:
+        return "\n".join(self._access.get("domains") or [])
+
+    @Slot()
+    def loadAccess(self) -> None:
+        self.app._call(lambda: self.app.client.agent_access(), self._show_access, lambda _e: None)
+
+    def _show_access(self, access: dict[str, Any]) -> None:
+        self._access = access
+        self.changed.emit()
+
+    def _save_access(self, **changes: Any) -> None:
+        self.app.call_or_fail(lambda: self.app.client.set_agent_access(**changes), self._show_access,
+                              lambda e: self.app.show_error(f"Не сохранено: {e}"))  # fmt: skip
+
+    @Slot(str)
+    def addFolder(self, url: str) -> None:
+        path = QUrl(url).toLocalFile() or url
+        folders = [f for f in self.accessFolders if f["path"] != path]
+        self._save_access(folders=[*folders, {"path": path, "write": False}])
+
+    @Slot(str)
+    def removeFolder(self, path: str) -> None:
+        self._save_access(folders=[f for f in self.accessFolders if f["path"] != path])
+
+    @Slot(str, bool)
+    def setFolderWrite(self, path: str, write: bool) -> None:
+        self._save_access(folders=[{**f, "write": write} if f["path"] == path else f for f in self.accessFolders])
+
+    @Slot(str)
+    def setDomains(self, text: str) -> None:
+        hosts = [h for h in text.replace(",", " ").split() if h]
+        self._save_access(domains=hosts)
+        self.app.flash("Список сайтов сохранён")
+
+    @Slot()
+    def resetDomains(self) -> None:
+        self._save_access(domains=list(self._access.get("default_domains") or []))
 
     @Slot(str)
     def toggleProject(self, project_id: str) -> None:

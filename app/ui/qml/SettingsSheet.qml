@@ -82,6 +82,12 @@ Sheet {
         text: "Программы для агента…"
         onClicked: { sheet.close(); App.openUi("programs") }
     }
+    PlainButton {
+        objectName: "openAgentAccess"
+        iconName: "folder"
+        text: "Папки и сайты для агента…"
+        onClicked: { sheet.close(); App.openUi("agent-access") }
+    }
 
     SectionTitle { text: "Запуск" }
     Column {

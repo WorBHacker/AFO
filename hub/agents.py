@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import autonomous, memory, store
+from . import agent_tools, autonomous, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -219,7 +219,8 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + (autonomous.TOOLS + memory.TOOLS if goal else [])
+    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS if goal else []
+    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"
@@ -230,9 +231,9 @@ def create_run(
     if goal:
         conn.execute(
             "UPDATE agent_runs SET kind = 'autonomous', goal = ?, done_when = ?, autonomy = ?, max_replans = ?,"
-            " planner_model_id = ? WHERE conversation_id = ?",
+            " planner_model_id = ?, network = ? WHERE conversation_id = ?",
             (goal["goal"], goal.get("done_when") or None, goal["autonomy"], goal["max_replans"],
-             goal.get("planner_model_id") or None, conversation_id),
+             goal.get("planner_model_id") or None, int(bool(goal.get("network"))), conversation_id),
         )  # fmt: skip
     return conversation_id
 
@@ -255,6 +256,7 @@ def check_goal(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]
     if budget is not None and (not isinstance(budget, int | float) or budget <= 0):
         raise AgentError("a budget is a positive number of dollars, or none")
     return {"goal": goal, "done_when": " ".join(str(data.get("done_when") or "").split()), "autonomy": autonomy,
+            "network": bool(data.get("network")),
             "planner_model_id": planner, "max_steps": _within(data.get("max_steps", defaults["max_steps"]), STEPS,
                                                               "max_steps"),
             "max_minutes": _within(data.get("max_minutes", defaults["max_minutes"]), MINUTES, "max_minutes"),
