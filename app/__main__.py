@@ -12,7 +12,7 @@ import logging
 import sys
 
 from PySide6 import __version__ as pyside_version
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import QApplication
 
 from common import __version__
 from common.logging_setup import setup_logging
@@ -33,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         # the taskbar groups the window as LocalChat, not as python.exe
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.App")
     use_software_rendering()
-    app = QGuiApplication(sys.argv[:1])
+    app = QApplication(sys.argv[:1])  # QtWidgets for the tray icon and its menu (D21); QML runs on it
     app.setApplicationName("LocalChat")
     install_russian(app)
     quick = QuickApp(app, data_paths().ensure(), connect=not args.smoke)

@@ -93,6 +93,7 @@ class Agents(QObject):
     changed = Signal()
     runsChanged = Signal()
     draftChanged = Signal()
+    finished = Signal(str, str)  # a run ended: a notice outside the window when it is not in front (D21)
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -168,7 +169,9 @@ class Agents(QObject):
             if kind == "run.finished":
                 run = payload.get("run") or {}
                 label = STATUSES.get(run.get("status", ""), ("", ""))[0]
-                self.app.flash(f"Агент «{run.get('profile_name', '')}»: {label}", error=run.get("status") == "error")
+                said = f"Агент «{run.get('profile_name', '')}»: {label}"
+                self.app.flash(said, error=run.get("status") == "error")
+                self.finished.emit(said, " ".join(str(run.get("detail") or run.get("task", "")).split())[:200])
 
     # ================= the draft =================
 

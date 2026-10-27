@@ -105,6 +105,7 @@ def approval_rows(
 class Approvals(QObject):
     changed = Signal()
     arrived = Signal()  # a request from the chat open now: the window shows the queue
+    requested = Signal(str, str)  # every new request: a notice outside the window when it is not in front (D21)
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -152,8 +153,12 @@ class Approvals(QObject):
         self._pending = [a for a in self._pending if a["id"] != approval["id"]]
         if kind == "approval.requested" and approval.get("status") == "pending":
             self._pending.append(approval)
-            self.app.flash(f"{'Claude Code' if approval.get('client') == HUB_CLAUDE_CODE else 'Агент'} ждёт "
-                           "подтверждения — значок щита в заголовке", ms=8000)  # fmt: skip
+            who = "Claude Code" if approval.get("client") == HUB_CLAUDE_CODE else "Агент"
+            self.app.flash(f"{who} ждёт подтверждения — значок щита в заголовке", ms=8000)
+            projects = {p["id"]: p for p in self.app.projects.items}
+            chats = {c["id"]: c.get("title") or "" for c in self.app.conversations}
+            (row,) = approval_rows([approval], projects=projects, chats=chats)
+            self.requested.emit(f"{who} ждёт подтверждения", " · ".join(s for s in (row["title"], row["where"]) if s))
             if approval.get("conversation_id") and approval["conversation_id"] == self.app.current:
                 self.arrived.emit()
         self.changed.emit()

@@ -2063,3 +2063,43 @@ def test_the_agents_panel(app):
     assert app.flashText == "Агент «Ревьюер»: ошибка" and app.flashError
     agents.openRun("r1")
     assert app.mode == "chats"
+
+
+# --- stage 5.5: notices outside the window ---
+
+
+def test_notices_when_the_window_is_behind(qapp):
+    from app.ui.notify import Notifier, tray_icon
+
+    front = {"active": False}
+    notifier = Notifier(lambda: front["active"])
+    assert notifier.notify("Claude Code ждёт подтверждения", "Править hub/chat.py") is True
+    front["active"] = True
+    assert notifier.notify("Агент «X»: готово", "") is False  # in front, the window says it itself
+    assert notifier.shown == [("Claude Code ждёт подтверждения", "Править hub/chat.py")]
+    assert not tray_icon().isNull()
+    notifier.close()
+
+
+def test_the_window_notifies_about_requests_and_runs(qapp):
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        quick.notifier._active = lambda: False  # the window behind others
+        send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap9", "conversation_id": "other"}})
+        send(app, "run.finished", {"run": {**RUN, "status": "done"}})
+        assert quick.notifier.shown == [
+            ("Claude Code ждёт подтверждения", "Править hub/chat.py · LocalChat"),
+            ("Агент «Ревьюер»: готово", "Проверь hub/chat.py"),
+        ]
+        opened = []
+        app.uiRequested.connect(opened.append)
+        quick.notifier.opened.emit()  # the notice clicked: the window comes forward with the queue
+        assert opened == ["approvals"]
+    finally:
+        quick.close()
+        quick.theme.setMode("dark")

@@ -19,6 +19,7 @@ from common.paths import DataPaths
 
 from .controller import Controller
 from .icons import IconProvider
+from .notify import Notifier
 from .theme import Theme
 
 log = logging.getLogger("app.ui")
@@ -108,9 +109,26 @@ class QuickApp:
         self.window: QWindow | None = roots[0]
         restore_geometry(self.window, self.settings)
         native_frame_touches(self.window)
+        # notices outside the window (D21): an agent waits for an answer, or finished, while the window is behind
+        self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
+        self.controller.approvals.requested.connect(self.notifier.notify)
+        self.controller.agents.finished.connect(self.notifier.notify)
+        self.notifier.opened.connect(self._front)
         app.aboutToQuit.connect(self.close)
         if connect:
             QTimer.singleShot(0, self.controller.connectHub)
+
+    def _front(self) -> None:
+        """A notice was clicked: the window comes forward with the approval queue."""
+        if self.window is None:
+            return
+        if self.window.visibility() == QWindow.Visibility.Minimized:
+            self.window.showNormal()
+        self.window.show()
+        self.window.raise_()
+        self.window.requestActivate()
+        if self.controller.approvals.count:
+            self.controller.uiRequested.emit("approvals")
 
     def _warned(self, warnings) -> None:
         for warning in warnings:
@@ -121,6 +139,7 @@ class QuickApp:
         if self.window is None:
             return
         save_geometry(self.window, self.settings)
+        self.notifier.close()
         self.controller.shutdown()  # the hub keeps running (D2)
         # the engine and its window go now, before the controller, so no binding ever sees App gone
         self.window = None
