@@ -45,6 +45,8 @@ TOPICS = [
     "rules.*",
     "run.*",
     "agents.*",
+    "programs.*",
+    "program.*",
 ]
 RECONNECT_S = 2.0
 

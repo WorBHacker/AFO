@@ -215,6 +215,21 @@ CHANGE = {
     "chat": "Первый",
 }
 
+PROGRAMS = [
+    {"id": "p7z", "name": "7-Zip", "publisher": "Igor Pavlov", "version": "26.02", "kind": "desktop",
+     "exe": "C:\\Program Files\\7-Zip\\7zFM.exe", "folder": "C:\\Program Files\\7-Zip", "aumid": "",
+     "decision": "allow", "decided_at": "2026-10-27T15:00:00Z", "first_seen": "2026-10-27T14:00:00Z",
+     "removed": False, "fresh": False},
+    {"id": "pnp", "name": "Блокнот", "publisher": "Microsoft Corporation", "version": "11.2607", "kind": "store",
+     "exe": "", "folder": "C:\\Program Files\\WindowsApps\\Notepad", "aumid": "Notepad!App", "decision": None,
+     "decided_at": None, "first_seen": "2026-10-27T14:00:00Z", "removed": False, "fresh": False},
+    {"id": "ptg", "name": "Telegram", "publisher": "", "version": "", "kind": "desktop", "exe": "C:\\T\\Telegram.exe",
+     "folder": "C:\\T", "aumid": "", "decision": None, "decided_at": None, "first_seen": "2026-10-27T16:00:00Z",
+     "removed": False, "fresh": True},
+    {"id": "pgo", "name": "Старая", "publisher": "", "version": "", "kind": "desktop", "exe": "C:\\Old\\old.exe",
+     "folder": "C:\\Old", "aumid": "", "decision": None, "decided_at": None, "first_seen": "2026-10-20T10:00:00Z",
+     "removed": True, "fresh": False},  # gone and never decided: not shown
+]  # fmt: skip
 APPROVAL = {
     "id": "ap1",
     "created_at": "2026-10-27T01:02:03.000Z",
@@ -279,6 +294,9 @@ class FakeClient:
         self.agent_list = [dict(AGENT)]
         self.advice_calls = []
         self.run_list = [dict(RUN)]
+        self.program_list = [dict(p) for p in PROGRAMS]
+        self.program_offer = None
+        self.program_calls = []
         self.answers = []
         self.claude_terminals = []
 
@@ -551,6 +569,44 @@ class FakeClient:
 
     def approvals(self):
         return [dict(a) for a in self.pending]
+
+    def programs(self):
+        return {"programs": [dict(p) for p in self.program_list], "scanning": False,
+                "scanned_at": "2026-10-27T15:00:00Z", "error": "", "offer": self.program_offer}  # fmt: skip
+
+    def scan_programs(self):
+        self.program_calls.append(("scan",))
+        return {"scanning": True}
+
+    def decide_program(self, program_id, decision):
+        self.program_calls.append(("decide", program_id, decision))
+        for p in self.program_list:
+            if p["id"] == program_id:
+                p.update(decision=decision, fresh=False)
+                return dict(p)
+        raise HubError("no such program")
+
+    def put_off_program(self, program_id):
+        self.program_calls.append(("later", program_id))
+        for p in self.program_list:
+            if p["id"] == program_id:
+                p["fresh"] = False
+        return {}
+
+    def add_program(self, path):
+        self.program_calls.append(("add", path))
+        program = {**PROGRAMS[0], "id": "pm", "name": "Portable", "kind": "manual", "exe": path, "fresh": False,
+                   "decision": None, "decided_at": None}  # fmt: skip
+        self.program_list.append(program)
+        return dict(program)
+
+    def remove_program(self, program_id):
+        self.program_calls.append(("remove", program_id))
+        self.program_list = [p for p in self.program_list if p["id"] != program_id]
+
+    def dismiss_programs_offer(self):
+        self.program_calls.append(("dismiss",))
+        self.program_offer = None
 
     def advice(self, *, conversation_id=None, project_ids=None, priority="balanced"):
         self.advice_calls.append((conversation_id, project_ids, priority))  # apart from `log`: it comes often
@@ -1445,6 +1501,131 @@ def test_a_comment_being_typed_survives_other_requests(qapp):
         for _ in range(10):
             QApplication.processEvents()
         assert [f.property("text") for f in fields()] == ["сначала линтер", ""]
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+# --- step 9.6a: the programs the agent may control (D43) ---
+
+
+def test_program_rows_filters_and_questions():
+    from app.ui import programs
+
+    shown = programs.program_rows(PROGRAMS, "all", "")
+    assert [r["name"] for r in shown] == ["7-Zip", "Блокнот", "Telegram"]  # gone and undecided: not shown
+    assert shown[0]["detail"] == "Igor Pavlov · 26.02" and shown[1]["detail"].endswith("Microsoft Store")
+    assert shown[2]["fresh"] and shown[1]["path"].endswith("Notepad")
+    assert [r["name"] for r in programs.program_rows(PROGRAMS, "undecided", "")] == ["Блокнот", "Telegram"]
+    assert [r["name"] for r in programs.program_rows(PROGRAMS, "new", "")] == ["Telegram"]
+    assert [r["name"] for r in programs.program_rows(PROGRAMS, "all", "pavlov")] == ["7-Zip"]  # by publisher too
+    assert programs.counts(PROGRAMS) == {"all": 3, "allowed": 1, "denied": 0, "undecided": 2, "new": 1}
+    assert [q["name"] for q in programs.questions(PROGRAMS)] == ["Telegram"]
+    gone_but_allowed = {**PROGRAMS[3], "decision": "allow"}  # its decision is worth seeing
+    assert programs.program_rows([gone_but_allowed], "all", "")[0]["detail"] == "не найдена на компьютере"
+
+
+def test_the_programs_window_part(app):
+    progs, client = app.programs, app.client
+    wait_until(lambda: progs.rows.rows)
+    assert [r["name"] for r in progs.rows.rows] == ["7-Zip", "Блокнот", "Telegram"]
+    assert [q["name"] for q in progs.pending] == ["Telegram"] and progs.offer == 0
+    assert progs.filters[0]["name"] == "Все 3" and "Агенту разрешено программ: 1" in progs.status
+
+    asked = []
+    progs.pendingChanged.connect(lambda: asked.append(len(progs.pending)))
+    progs.decide("ptg", "allow")  # from the question: the list and the question follow at once
+    assert progs.pending == [] and asked == [0]
+    assert next(r for r in progs.rows.rows if r["id"] == "ptg")["decision"] == "allow"
+    wait_until(lambda: ("decide", "ptg", "allow") in client.program_calls)
+    progs.decide("ptg", "")  # taking it back: not decided (no)
+    wait_until(lambda: ("decide", "ptg", None) in client.program_calls)
+
+    progs.setView("undecided")
+    assert [r["name"] for r in progs.rows.rows] == ["Блокнот", "Telegram"]
+    progs.setQuery("блок")
+    assert [r["name"] for r in progs.rows.rows] == ["Блокнот"]
+    progs.setQuery("")
+    progs.setView("all")
+
+    # a new program found by the hub: a notice outside the window, and the question
+    client.program_list.append({**PROGRAMS[2], "id": "pnew", "name": "Новая", "first_seen": "2026-10-27T17:00:00Z"})
+    notices = []
+    progs.requested.connect(lambda title, text: notices.append((title, text)))
+    send(app, "programs.found", {"programs": [{"id": "pnew", "name": "Новая"}]})
+    wait_until(lambda: [q["id"] for q in progs.pending] == ["pnew"])
+    assert notices == [("Новая программа", "Новая — разрешить автономному агенту?")]
+    progs.later("pnew")
+    assert progs.pending == []
+    wait_until(lambda: ("later", "pnew") in client.program_calls)
+
+    # after the first look: one offer, and "choose" opens the list on the undecided
+    client.program_offer = {"count": 223}
+    progs.load()
+    wait_until(lambda: progs.offer == 223)
+    opened_ui = []
+    app.uiRequested.connect(opened_ui.append)
+    progs.openList()
+    assert progs.offer == 0 and opened_ui == ["programs"] and progs.view == "undecided"
+    wait_until(lambda: ("dismiss",) in client.program_calls)
+
+    progs.addProgram("file:///C:/Tools/portable.exe")
+    wait_until(lambda: any(r["name"] == "Portable" for r in progs.rows.rows))
+    assert ("add", "C:/Tools/portable.exe") in client.program_calls
+    progs.removeProgram("pm")
+    wait_until(lambda: all(r["id"] != "pm" for r in progs.rows.rows))
+    progs.scan()
+    assert progs.scanning
+    wait_until(lambda: ("scan",) in client.program_calls)
+    from app.ui import feed_rows
+
+    found = feed_rows.describe({"type": "programs.found", "payload": {"programs": [{"name": "Telegram"}]}},
+                               projects={}, chats={})  # fmt: skip
+    assert found["title"] == "Найдена новая программа: «Telegram»" and found["group"] == "agent"
+    decided = {"type": "program.decided", "payload": {"name": "Telegram", "decision": "deny"}}
+    assert feed_rows.describe(decided, projects={}, chats={})["title"] == "Программа «Telegram»: запрещена агенту"
+
+
+def test_the_program_question_and_list_in_the_window(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def drawn(condition) -> None:
+        """Offscreen, frames drive a popup's fade in and out: draw them while waiting."""
+        for _ in range(150):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+            if condition():
+                return
+            time.sleep(0.02)
+        assert condition()
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.programs.pending)
+        for _ in range(10):
+            QApplication.processEvents()
+        popup = quick.window.findChild(QObject, "newProgramPopup")
+        drawn(lambda: popup.property("opened"))
+        assert quick.window.findChild(QObject, "newProgramName").property("text") == "Telegram"
+        quick.window.findChild(QObject, "denyProgram").clicked.emit()
+        wait_until(lambda: ("decide", "ptg", "deny") in client.program_calls)
+        drawn(lambda: not popup.property("visible"))
+
+        client.program_offer = {"count": 223}  # the first look's offer
+        app.programs.load()
+        drawn(lambda: popup.property("opened"))
+        quick.window.findChild(QObject, "chooseProgramsOffer").clicked.emit()
+        sheet = quick.window.findChild(QObject, "programsSheet")
+        drawn(lambda: sheet.property("opened"))
+        listed = quick.window.findChild(QObject, "programList")
+        assert listed.property("count") == 1  # the undecided: Блокнот
+        QMetaObject.invokeMethod(sheet, "close")
         assert quick.warnings == []
     finally:
         quick.close()

@@ -378,6 +378,29 @@ class HubClient:
         body = {"allow": allow, "scope": scope, "comment": comment}
         return self._call("POST", f"/v1/approvals/{approval_id}", body)
 
+    def programs(self) -> dict:
+        """{programs, scanning, scanned_at, error, offer}: this computer's programs and the agent's permissions."""
+        return self._call("GET", "/v1/programs")
+
+    def scan_programs(self) -> dict:
+        return self._call("POST", "/v1/programs/scan")
+
+    def decide_program(self, program_id: str, decision: str | None) -> dict:
+        """allow / deny / None (not decided: no)."""
+        return self._call("PUT", f"/v1/programs/{program_id}", {"decision": decision})
+
+    def put_off_program(self, program_id: str) -> dict:
+        return self._call("PUT", f"/v1/programs/{program_id}", {"later": True})
+
+    def add_program(self, path: str) -> dict:
+        return self._call("POST", "/v1/programs", {"path": path})
+
+    def remove_program(self, program_id: str) -> None:
+        self._call("DELETE", f"/v1/programs/{program_id}")
+
+    def dismiss_programs_offer(self) -> None:
+        self._call("POST", "/v1/programs/offer/dismiss")
+
     def claude_code(self) -> dict:
         """{installed, command, detail, running}: is the user's Claude Code CLI there."""
         return self._call("GET", "/v1/claude-code")

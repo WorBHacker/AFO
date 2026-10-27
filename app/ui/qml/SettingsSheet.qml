@@ -51,6 +51,22 @@ Sheet {
         onClicked: { sheet.close(); App.openUi("connections") }
     }
 
+    SectionTitle { text: "Автономный агент" }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "Программы, которыми агент может управлять: хаб находит их сам и спрашивает о каждой новой."
+        color: Theme.p.text_soft
+        font.family: Theme.uiFont
+        font.pixelSize: 13
+    }
+    PlainButton {
+        objectName: "openPrograms"
+        iconName: "shield"
+        text: "Программы для агента…"
+        onClicked: { sheet.close(); App.openUi("programs") }
+    }
+
     SectionTitle { text: "Запуск" }
     Column {
         width: parent.width

@@ -33,6 +33,7 @@ from .api import (
     notes,
     openai,
     processes,
+    programs,
     projects,
     stats,
     system,
@@ -51,6 +52,7 @@ from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .processes import ProcessMonitor
+from .programs import ProgramCatalog
 from .projects import list_projects
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
@@ -103,6 +105,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
         app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
+        app.state.programs = ProgramCatalog(bus, db, settings.programs_interval_s)
         app.state.terminals = TerminalManager(bus, db, paths.terminals)
         app.state.chat.terminals, app.state.chat.processes = app.state.terminals, app.state.processes
         app.state.symbols = app.state.chat.symbols  # one index for the window's queries and the models' tools
@@ -112,6 +115,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.status.start()
         app.state.watcher.start(db.call(list_projects))
         app.state.processes.start()
+        app.state.programs.start()
         await app.state.terminals.start()
         expired = await app.state.approvals.start()
         if expired:
@@ -132,6 +136,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.status.stop()
             await app.state.watcher.stop()
             await app.state.processes.stop()
+            await app.state.programs.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -157,6 +162,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(editor.router)
     app.include_router(budgets.router)
     app.include_router(projects.router)
+    app.include_router(programs.router)
     app.include_router(processes.router)
     app.include_router(terminals.router)
     app.include_router(cards.router)

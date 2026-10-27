@@ -22,6 +22,7 @@ GROUPS = [
     ("git", "Git"),
     ("chats", "Чаты"),
     ("budgets", "Бюджеты"),
+    ("agent", "Агент"),
 ]
 MONTHS = [
     "января",
@@ -93,6 +94,15 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
             note = f" ({p['description']})" if p.get("description") else ""
             return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
+        case "programs.found":
+            found = p.get("programs") or []
+            names = ", ".join(f"«{f.get('name', '')}»" for f in found[:3]) + ("…" if len(found) > 3 else "")
+            title = "Найдена новая программа" if len(found) == 1 else f"Найдено новых программ: {len(found)}"
+            return item("agent", "shield", f"{title}: {names}", "агенту — только после вашего разрешения")
+        case "program.decided":
+            words = {"allow": "разрешена агенту", "deny": "запрещена агенту"}
+            what = words.get(p.get("decision") or "", "снова не решено (агенту нельзя)")
+            return item("agent", "shield", f"Программа «{p.get('name', '')}»: {what}")
         case "run.started":
             run = p.get("run") or {}
             again = " (продолжает после перезапуска)" if p.get("resumed") else ""

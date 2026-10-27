@@ -27,6 +27,7 @@ from .composer import Mentions
 from .connections import Connections
 from .feed import Feed
 from .models import RowModel
+from .programs import Programs
 from .projects import Projects
 from .terminals import Terminals
 from .theme import Theme
@@ -154,6 +155,7 @@ class Controller(QObject):
         self.approvals = Approvals(self)
         self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
         self.connections = Connections(self)  # keys and tokens behind the password (D13)
+        self.programs = Programs(self)  # which programs the autonomous agent may control (D43)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -409,6 +411,7 @@ class Controller(QObject):
         self.projects.load()
         self.terminals.load()
         self.approvals.load()
+        self.programs.load()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         if self.current:
@@ -862,7 +865,7 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value in ("feed", "approvals", "agents"):
+            elif value in ("feed", "approvals", "agents", "programs"):
                 self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")
@@ -1119,6 +1122,8 @@ class Controller(QObject):
             self.agents.on_event(kind, payload)  # a run waits for the user, or goes on
         elif kind.startswith(("run.", "agents.")):
             self.agents.on_event(kind, payload)
+        elif kind.startswith(("programs.", "program.")):
+            self.programs.on_event(kind, payload)
         elif kind == "claude_code.limit":
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
         elif kind == "hub.stopping":

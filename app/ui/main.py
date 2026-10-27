@@ -102,6 +102,7 @@ class QuickApp:
         context.setContextProperty("Mentions", self.controller.mentions)
         context.setContextProperty("Approvals", self.controller.approvals)
         context.setContextProperty("Agents", self.controller.agents)
+        context.setContextProperty("Programs", self.controller.programs)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))
@@ -116,6 +117,7 @@ class QuickApp:
         self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
         self.controller.approvals.requested.connect(self.notifier.notify)
         self.controller.agents.finished.connect(self.notifier.notify)
+        self.controller.programs.requested.connect(self.notifier.notify)  # the question waits in the window
         self.notifier.opened.connect(self._front)
         app.aboutToQuit.connect(self.close)
         if connect:
