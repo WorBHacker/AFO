@@ -188,6 +188,15 @@ Sheet {
     // ---------- a task ----------
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
     Label { text: Agents.draft.saved ? "Задача для «" + Agents.draft.name + "»" : "Сохраните агента, чтобы дать ему задачу" }
+    Text {
+        objectName: "agentEstimate"
+        visible: Agents.draft.saved && text !== ""
+        width: parent.width
+        text: "Цена задачи: " + Agents.estimate
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
     Row {
         width: parent.width
         spacing: 8

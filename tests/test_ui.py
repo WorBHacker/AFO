@@ -273,6 +273,7 @@ class FakeClient:
         self.rule_list = [{"id": 7, "project_id": "p1", "grant_key": "edit_file", "created_by": "app"}]
         self.stale = True  # the changed file was edited since: an undo needs force
         self.agent_list = [dict(AGENT)]
+        self.advice_calls = []
         self.run_list = [dict(RUN)]
         self.answers = []
         self.claude_terminals = []
@@ -493,6 +494,18 @@ class FakeClient:
 
     def approvals(self):
         return [dict(a) for a in self.pending]
+
+    def advice(self, *, conversation_id=None, project_ids=None, priority="balanced"):
+        self.advice_calls.append((conversation_id, project_ids, priority))  # apart from `log`: it comes often
+        reasons = ["уже в видеопамяти", "102 т/с здесь", "бесплатно", "ещё"]
+        return {"recommended": "llama-swap/coder", "priority": priority, "options": [
+            {"model_id": "llama-swap/coder", "score": 0.8, "reasons": reasons, "blocked": None, "estimate_usd": 0},
+            {"model_id": "anthropic/claude-opus-5-5", "score": 0.5, "reasons": [],
+             "blocked": "«LocalChat» — только для локальных моделей (D10)", "estimate_usd": 0.03},
+        ]}  # fmt: skip
+
+    def agent_estimate(self, agent_id):
+        return {"estimate_usd": 0.0042, "basis": "по 2 прошлым задачам этого агента"}
 
     def stats(self, days=30):
         return {
@@ -2137,3 +2150,27 @@ def test_model_stats_and_the_forecast(app):
     assert app.statsRows[0]["name"] == "Coder"
     assert app.forecastText.startswith("В этом месяце $1.00; последние 7 дней") and "≈ $1.23" in app.forecastText
     assert "Claude Code по подписке — оценка $0.40" in app.forecastText
+
+
+# --- stage 6.2: advice ---
+
+
+def test_the_advice_in_the_model_picker(app):
+    opened(app)
+    wait_until(lambda: app.client.advice_calls)
+    wait_until(lambda: app.pickerItems[0].get("section") == "Рекомендуется для этого чата")
+    first = app.pickerItems[1]
+    assert first["id"] == "llama-swap/coder" and first["note"] == "уже в видеопамяти · 102 т/с здесь · бесплатно"
+    opus = next(i for i in app.pickerItems[2:] if i["id"] == "anthropic/claude-opus-5-5")
+    assert opus["enabled"] is False and opus["note"] == "недоступна: «LocalChat» — только для локальных моделей (D10)"
+    app.setPriority("price")
+    wait_until(lambda: app.client.advice_calls[-1][2] == "price")
+    assert app.priority == "price" and app.settings.value("chat/priority") == "price"
+    app.setPriority("cheapest")  # not a priority: ignored
+    assert app.priority == "price"
+
+
+def test_a_tasks_estimate_in_the_agents_panel(app):
+    app.agents.load()
+    wait_until(lambda: app.agents.estimate)
+    assert app.agents.estimate == "≈ $0.0042 — по 2 прошлым задачам этого агента"

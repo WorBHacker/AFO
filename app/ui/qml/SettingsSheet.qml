@@ -20,6 +20,20 @@ Sheet {
         onPicked: (id) => App.setTheme(id)
     }
 
+    SectionTitle { text: "Подбор модели: что важнее" }
+    Segmented {
+        objectName: "priority"
+        width: parent.width
+        options: [
+            { id: "balanced", name: "Баланс" },
+            { id: "quality", name: "Качество" },
+            { id: "speed", name: "Скорость" },
+            { id: "price", name: "Цена" }
+        ]
+        value: App.priority
+        onPicked: (id) => App.setPriority(id)
+    }
+
     SectionTitle { text: "Ключ Anthropic (модели Claude)" }
     Row {
         spacing: 8

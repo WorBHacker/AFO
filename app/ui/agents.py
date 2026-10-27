@@ -102,6 +102,7 @@ class Agents(QObject):
         self._tools: list[str] = []
         self._runs: list[dict[str, Any]] = []
         self._draft: dict[str, Any] = dict(BLANK)
+        self._estimate = ""  # what a task of the chosen agent may cost (D12)
 
     # ================= for QML =================
 
@@ -121,6 +122,25 @@ class Agents(QObject):
         return {**d, "budget": "" if d["budget_usd"] is None else f"{d['budget_usd']:g}",
                 "modelName": models.get(d["model_id"], d["model_id"] or "выберите модель"),
                 "saved": bool(d["id"])}  # fmt: skip
+
+    @Property(str, notify=draftChanged)
+    def estimate(self) -> str:
+        return self._estimate
+
+    def load_estimate(self) -> None:
+        agent_id = self._draft["id"]
+        self._estimate = ""
+        if not agent_id:
+            return
+
+        def show(found: dict[str, Any]) -> None:
+            if agent_id == self._draft["id"] and found.get("estimate_usd") is not None:
+                cost = found["estimate_usd"]
+                self._estimate = ("бесплатно (локальная модель)" if not cost else f"≈ ${cost:.4f}") + \
+                    f" — {found['basis']}"  # fmt: skip
+                self.draftChanged.emit()
+
+        self.app._call(lambda: self.app.client.agent_estimate(agent_id), show, lambda _e: None)
 
     @Property(list, notify=draftChanged)
     def toolChoices(self) -> list:
@@ -148,6 +168,7 @@ class Agents(QObject):
                 self._draft = dict(BLANK)
             if not self._draft["id"] and not self._draft["name"] and self._profiles:
                 self._draft = dict(self._profiles[0])
+            self.load_estimate()
             self.changed.emit()
             self.runsChanged.emit()
             self.draftChanged.emit()
@@ -186,6 +207,7 @@ class Agents(QObject):
         found = next((p for p in self._profiles if p["id"] == profile_id), None)
         if found is not None:
             self._draft = dict(found)
+            self.load_estimate()
             self.changed.emit()
             self.draftChanged.emit()
 

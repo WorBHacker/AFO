@@ -406,9 +406,21 @@ def chat_rows(
 # --- the model picker ---
 
 
-def picker_items(models: list[dict[str, Any]], loaded: set[str], chosen: str | None) -> list[dict[str, Any]]:
-    """Sections and models for the picker: local ones (which is in VRAM now), then cloud ones with prices."""
+def picker_items(
+    models: list[dict[str, Any]], loaded: set[str], chosen: str | None, advice: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Sections and models for the picker: the hub's advice for this chat first (D11), local ones (which is in VRAM
+    now), then cloud ones with prices; a model the chat may not use says why and cannot be picked."""
     items: list[dict[str, Any]] = []
+    options = {o["model_id"]: o for o in (advice or {}).get("options") or []}
+    best = options.get((advice or {}).get("recommended") or "")
+    named = {m["id"]: m for m in models}
+    if best is not None and best["model_id"] in named:
+        items.append({"section": "Рекомендуется для этого чата", "id": ""})
+        model = named[best["model_id"]]
+        items.append({"section": "", "id": model["id"], "name": model["name"], "icon": "sparkle",
+                      "note": " · ".join(best["reasons"][:3]), "selected": model["id"] == chosen,
+                      "cloud": model["locality"] != "local"})  # fmt: skip
     for local in (True, False):
         group = [m for m in presenter.sorted_models(models) if (m.get("locality") == "local") == local]
         if not group:
@@ -426,12 +438,16 @@ def picker_items(models: list[dict[str, Any]], loaded: set[str], chosen: str | N
                 note = f"${prices.get('input', 0):g} / ${prices.get('output', 0):g} за 1M"
                 if caps.get("context"):
                     note += f" · контекст {caps['context'] // 1000}K"
+            blocked = (options.get(m["id"]) or {}).get("blocked")
+            if blocked:
+                note = f"недоступна: {blocked}"
             items.append(
                 {
                     "section": "",
                     "id": m["id"],
                     "name": m["name"],
                     "note": note,
+                    "enabled": not blocked,
                     "cloud": not local,
                     "loaded": local and ref in loaded,
                     "selected": m["id"] == chosen,

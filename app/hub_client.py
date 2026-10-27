@@ -284,6 +284,18 @@ class HubClient:
     def delete_rule(self, rule_id: int) -> None:
         self._call("DELETE", f"/v1/rules/{rule_id}")
 
+    def advice(
+        self, *, conversation_id: str | None = None, project_ids: list[str] | None = None, priority: str = "balanced"
+    ) -> dict:
+        """Which model for this chat (D11): {recommended, options: [{model_id, score, reasons, blocked, ...}]}."""
+        params = {"priority": priority, "project_ids": ",".join(project_ids or [])}
+        if conversation_id:
+            params["conversation_id"] = conversation_id
+        return self._call("GET", "/v1/advice", params=params)
+
+    def agent_estimate(self, agent_id: str) -> dict:
+        return self._call("GET", f"/v1/agents/{agent_id}/estimate")
+
     def stats(self, days: int = 30) -> dict:
         """{days, models: per model speed / errors / money / tasks, spending: the month and its forecast}."""
         return self._call("GET", "/v1/stats", params={"days": days})

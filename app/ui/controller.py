@@ -145,6 +145,8 @@ class Controller(QObject):
         self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
+        self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
+        self._priority = str(settings.value("chat/priority", "balanced"))
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -189,7 +191,7 @@ class Controller(QObject):
 
     @Property(list, notify=modelChanged)
     def pickerItems(self) -> list:
-        return rows.picker_items(self.model_list, set(self._status["loaded"]), self._model_id)
+        return rows.picker_items(self.model_list, set(self._status["loaded"]), self._model_id, self._advice)
 
     @Property(str, notify=modelChanged)
     def modelCountText(self) -> str:
@@ -420,6 +422,32 @@ class Controller(QObject):
     def load_models(self) -> None:
         self._call(lambda: self.client.models(), self._set_models)
 
+    @Property(str, notify=modelChanged)
+    def priority(self) -> str:
+        return self._priority
+
+    @Slot(str)
+    def setPriority(self, priority: str) -> None:
+        """What the advice weighs most (D11): balanced, quality, speed or price."""
+        if priority in ("balanced", "quality", "speed", "price") and priority != self._priority:
+            self._priority = priority
+            self.settings.setValue("chat/priority", priority)
+            self.modelChanged.emit()
+            self.load_advice()
+
+    def load_advice(self) -> None:
+        if self.client is None:
+            return
+        cid, ids, priority = self.current, list(self._chat_projects), self._priority
+
+        def show(advice: dict[str, Any]) -> None:
+            if cid == self.current:
+                self._advice = advice
+                self.modelChanged.emit()
+
+        self._call(lambda: self.client.advice(conversation_id=cid, project_ids=None if cid else ids,
+                                              priority=priority), show, lambda _e: None)  # fmt: skip
+
     def _set_models(self, models: list[dict[str, Any]]) -> None:
         self.model_list = models
         self.models = {m["id"]: m for m in models}
@@ -595,6 +623,7 @@ class Controller(QObject):
         """The open chat's projects; `push` tells the hub (a chat not made yet takes them with its first message)."""
         self._chat_projects = list(ids)
         self.chatProjectsChanged.emit()
+        self.load_advice()
         if push and self.current and self.client is not None:
             cid, wanted = self.current, list(ids)
             self._call(lambda: self.client.set_chat_projects(cid, wanted))
