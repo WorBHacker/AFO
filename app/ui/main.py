@@ -107,6 +107,7 @@ class QuickApp:
         context.setContextProperty("Programs", self.controller.programs)
         context.setContextProperty("ModelSetup", self.controller.model_setup)
         context.setContextProperty("Autonomy", self.controller.autonomy_view)
+        context.setContextProperty("Memory", self.controller.memory_view)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))

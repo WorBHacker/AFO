@@ -60,6 +60,8 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return "Утвердить план" + (f" (версия {data['version']})" if data.get("version", 1) != 1 else "")
         case "start_step":
             return f"Начать шаг {data.get('step')}: {data.get('title', '')}"
+        case "remember":
+            return "Запомнить личные данные" + (f" о «{data['about']}»" if data.get("about") else "")
     return f"Вызвать {tool.removeprefix('mcp__').replace('__', ' · ')}"
 
 
@@ -104,7 +106,8 @@ def approval_rows(
         who = asker(a, speakers or {})
         project = projects.get(a.get("project_id") or "", {}).get("name", "")
         chat = chats.get(a.get("conversation_id") or "", "")
-        always = "destructive" if a.get("destructive") else "network" if a.get("network") else ""
+        always = ("destructive" if a.get("destructive") else "network" if a.get("network")
+                  else "personal" if a.get("tool") == "remember" else "")  # fmt: skip
         rows.append({
             "id": a["id"],
             "title": title(a.get("tool", ""), data, roots),

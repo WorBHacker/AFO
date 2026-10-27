@@ -121,6 +121,9 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
         why = "почему новый план" if (data.get("version") or 1) > 1 else "пояснение"
         note = f"Цель: {data.get('goal', '')}" + (f" · {why}: {data['reason']}" if data.get("reason") else "")
         return {"kind": "text", "text": _cut("\n".join(lines)), "note": note}
+    if tool == "remember":  # personal data the agent wants to keep for good (Q24)
+        return {"kind": "text", "text": str(data.get("fact", "")),
+                "note": "личные данные: хранятся на этом компьютере, облачной модели не выдаются"}  # fmt: skip
     if tool == "start_step":
         return {"kind": "text", "text": f"{data.get('step')}. {data.get('title', '')}",
                 "note": f"проверка: {data.get('check')}" if data.get("check") else ""}  # fmt: skip

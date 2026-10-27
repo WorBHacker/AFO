@@ -53,6 +53,7 @@ from . import (
     context,
     limits,
     links,
+    memory,
     model_settings,
     notes,
     store,
@@ -367,7 +368,7 @@ class ChatService:
                     await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
                     return
                 continue
-            await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel)
+            await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, cloud=cloud)
             switch = self.autonomy.take_switch(conversation_id) if self.autonomy is not None else None
             if switch:  # the planner made the plan: the run's own model carries it out
                 found = await self._db.acall(lambda conn, m=switch: store.get_model(conn, m))
@@ -575,7 +576,14 @@ class ChatService:
             )
 
     async def _answer_tools(
-        self, conversation_id: str, calls: list[dict], ctx: ToolContext, cancel, *, refuse: str = ""
+        self,
+        conversation_id: str,
+        calls: list[dict],
+        ctx: ToolContext,
+        cancel,
+        *,
+        refuse: str = "",
+        cloud: bool = False,
     ) -> None:
         """Runs the calls (or answers them with `refuse`, or as not run once the user stopped) and stores the
         results as one message."""
@@ -589,7 +597,8 @@ class ChatService:
                 {"conversation_id": conversation_id, "name": call["name"], "input": call["input"]},
                 persist=False,
             )
-            acting = call["name"] not in READING and call["name"] not in autonomous.TOOL_NAMES
+            own = call["name"] in autonomous.TOOL_NAMES or call["name"] in memory.TOOL_NAMES
+            acting = call["name"] not in READING and not own
             if acting and self.autonomy is not None and await self.autonomy.needs_plan(conversation_id):
                 output, error = autonomous.PLAN_FIRST, True  # an autonomous run acts only after its plan (D40)
             elif call["name"] in changes.WRITE_TOOL_NAMES:
@@ -600,8 +609,8 @@ class ChatService:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             elif call["name"] == websearch.WEB_SEARCH["name"]:
                 output, error = await self._web_search(conversation_id, call, ctx, cancel)
-            elif call["name"] in autonomous.TOOL_NAMES and self.autonomy is not None:  # an autonomous run's (D40)
-                output, error = await self.autonomy.handle(conversation_id, call, cancel)
+            elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
+                output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
             elif call["name"] == "delegate_task":  # a coordinator's (D20)
                 if self.agents is None:
                     output, error = "agents are not available here", True
@@ -985,8 +994,10 @@ def _instructions(conn, conversation_id: str) -> str:
             "free": "you go on by yourself under the usual rights",
         }.get(row["autonomy"] or "plan", "")
         text += f"\n\n{autonomous.GUIDE}\n\nThe goal: {row['goal']}"
+        hint = memory.skill_hint(conn, row["goal"])  # a skill kept from a task like this one (9.3)
         text += f"\nDone means: {row['done_when']}" if row["done_when"] else ""
         text += f"\nAutonomy: {level}."
+        text += f"\n\n{hint}" if hint else ""
     if '"delegate_task"' in (row["tools"] or ""):  # a coordinator: who it may give tasks to (D20)
         others = conn.execute(
             "SELECT name, instructions FROM agent_profiles WHERE id IS NOT ? ORDER BY name", (row["profile_id"],)

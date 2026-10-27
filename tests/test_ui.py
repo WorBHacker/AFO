@@ -327,6 +327,37 @@ class FakeClient:
         self.model_saved = {}  # model id -> [settings of each version]
         self.exported = {}
         self.auto_calls = []
+        self.memory_calls = []
+        self.fact_list = [
+            {
+                "id": 1,
+                "text": "Отчёты — в Markdown",
+                "about": "отчёты",
+                "source": "run:auto1",
+                "personal": False,
+                "cloud_ok": True,
+                "created_at": "2026-10-27T20:00:00Z",
+            },
+            {
+                "id": 2,
+                "text": "Почта ivan@mail.ru",
+                "about": "",
+                "source": "user",
+                "personal": True,
+                "cloud_ok": False,
+                "created_at": "2026-10-27T21:00:00Z",
+            },
+        ]
+        self.skill_list = [
+            {
+                "id": 1,
+                "name": "Подсчёт строк",
+                "goal": "Посчитать строки",
+                "uses": 2,
+                "steps": [{"title": "Прочитать", "check": ""}, {"title": "Посчитать", "check": ""}],
+                "created_at": "2026-10-27T22:00:00Z",
+            }
+        ]
         self.imported = []
         self.model_calls = []
 
@@ -373,6 +404,30 @@ class FakeClient:
     def trial_llama_model(self, model_id):
         self.model_calls.append(("trial", model_id))
         return {"ok": False, "error": "llama-swap: upstream command exited", "restored": "config.yaml.bak-1"}
+
+    def memory_facts(self, query=""):
+        return [f for f in self.fact_list if query.lower() in f["text"].lower()]
+
+    def add_fact(self, text, about="", personal=False):
+        self.memory_calls.append(("add", text, personal))
+        return {"id": 9}
+
+    def change_fact(self, fact_id, **changes):
+        self.memory_calls.append(("change", fact_id, changes))
+        return {"id": fact_id}
+
+    def delete_fact(self, fact_id):
+        self.memory_calls.append(("delete", fact_id))
+
+    def skills(self, query=""):
+        return self.skill_list
+
+    def add_skill(self, run_id, name=""):
+        self.memory_calls.append(("skill", run_id, name))
+        return {"id": 1, "name": name}
+
+    def delete_skill(self, skill_id):
+        self.memory_calls.append(("delete skill", skill_id))
 
     def start_autonomous(self, body):
         self.auto_calls.append(("start", body))
@@ -3588,15 +3643,51 @@ def test_the_agent_mode_in_the_window(qapp):
         view.pause()
         view.editPlan("Только посчитать — дважды", "быстрее")
         wait_until(lambda: not app.bg.busy and len(client.auto_calls) == 4)
-        assert client.auto_calls[1:] == [("answer", "auto1", "q1", "нет"), ("pause", "auto1"),
-                                         ("plan", "auto1", [{"title": "Только посчитать", "check": "дважды"}],
-                                          "быстрее")]  # fmt: skip
+        expected = [("answer", "auto1", "q1", "нет"), ("pause", "auto1"),
+                    ("plan", "auto1", [{"title": "Только посчитать", "check": "дважды"}], "быстрее")]
+        assert sorted(client.auto_calls[1:], key=str) == sorted(expected, key=str)  # in the background: any order
         # its approval comes as the card over the Agent view (D38)
         send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap7", "conversation_id": "auto1",
                                                       "tool": "set_plan", "input": {"version": 2}}})  # fmt: skip
         assert app.approvals.card.get("title") == "Утвердить план (версия 2)" and app.approvals.cardCount == 1
         app.approvals.openChat("auto1")  # the shield's list: a task opens in the Agent mode
         assert app.mode == "agent" and view.selectedId == "auto1"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_agents_memory_in_the_window(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui import memory_view
+    from app.ui.main import QuickApp
+
+    rows_ = memory_view.fact_rows(FakeClient().fact_list)
+    assert rows_[0]["meta"].startswith("отчёты · агент · ") and rows_[1]["meta"].startswith("вы · ")
+    assert memory_view.skill_rows(FakeClient().skill_list)[0]["steps"] == "1. Прочитать" + chr(10) + "2. Посчитать"
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        sheet = quick.window.findChild(QObject, "memorySheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened") and len(app.memory_view.facts) == 2)
+        app.memory_view.search("почта")
+        wait_until(lambda: not app.bg.busy and len(app.memory_view.facts) == 1)
+        app.memory_view.setFlag(2, "personal", False)
+        app.memory_view.saveFact(2, "  Почта: ivan@mail.ru ")
+        app.memory_view.deleteFact(1)
+        app.memory_view.addFact("Сервер — на 8000", "", False)
+        app.memory_view.keepSkill("auto1", "Подсчёт строк")
+        wait_until(lambda: not app.bg.busy and len(client.memory_calls) == 5)
+        assert sorted(client.memory_calls, key=str) == sorted([
+            ("change", 2, {"personal": False}), ("change", 2, {"text": "Почта: ivan@mail.ru"}), ("delete", 1),
+            ("add", "Сервер — на 8000", False), ("skill", "auto1", "Подсчёт строк")], key=str)  # fmt: skip
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

@@ -179,6 +179,7 @@ Window {
     CardSheet { id: cardSheet }
     ProgramsSheet { id: programsSheet }
     ModelsSheet { id: modelsSheet }
+    MemorySheet { id: memorySheet }
     NewProgramPopup {}
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
@@ -193,6 +194,7 @@ Window {
             else if (what === "agents") agentsSheet.open()
             else if (what === "programs") programsSheet.open()
             else if (what === "model-settings") modelsSheet.openFor("")
+            else if (what === "memory") memorySheet.open()
             else if (what === "connections") connectionsSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)

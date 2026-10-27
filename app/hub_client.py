@@ -139,6 +139,29 @@ class HubClient:
     def edit_run_plan(self, run_id: str, steps: list, reason: str) -> dict:
         return self._call("PUT", f"/v1/runs/{run_id}/plan", {"steps": steps, "reason": reason})
 
+    # --- the agent's memory (stage 9.3) ---
+
+    def memory_facts(self, query: str = "") -> list[dict]:
+        return self._call("GET", "/v1/memory/facts", params={"q": query})["facts"]
+
+    def add_fact(self, text: str, about: str = "", personal: bool = False) -> dict:
+        return self._call("POST", "/v1/memory/facts", {"text": text, "about": about, "personal": personal})
+
+    def change_fact(self, fact_id: int, **changes) -> dict:
+        return self._call("PUT", f"/v1/memory/facts/{fact_id}", changes)
+
+    def delete_fact(self, fact_id: int) -> None:
+        self._call("DELETE", f"/v1/memory/facts/{fact_id}")
+
+    def skills(self, query: str = "") -> list[dict]:
+        return self._call("GET", "/v1/skills", params={"q": query})["skills"]
+
+    def add_skill(self, run_id: str, name: str = "") -> dict:
+        return self._call("POST", "/v1/skills", {"run_id": run_id, "name": name})
+
+    def delete_skill(self, skill_id: int) -> None:
+        self._call("DELETE", f"/v1/skills/{skill_id}")
+
     def check_model(self, model_id: str) -> dict:
         """A local model may load for minutes first: the hub gives it 5, the window waits a little longer."""
         return self._call("POST", "/v1/models/check", {"model_id": model_id}, timeout=330)

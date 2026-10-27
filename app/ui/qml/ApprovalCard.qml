@@ -99,6 +99,8 @@ FocusScope {
             visible: (card.request.alwaysAsk || "") !== ""
             text: card.request.alwaysAsk === "network"
                   ? "Команда обращается к сети: спрашивается каждый раз, разрешить можно только этот раз."
+                  : card.request.alwaysAsk === "personal"
+                  ? "Личные данные: агент запомнит их только с вашего разрешения — спрашивается каждый раз."
                   : "Разрушительное действие: спрашивается каждый раз, разрешить можно только этот раз и только кнопкой."
             wrapMode: Text.Wrap
             color: Theme.p.error

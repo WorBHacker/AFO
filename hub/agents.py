@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import autonomous, store
+from . import autonomous, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -219,7 +219,7 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + (autonomous.TOOLS if goal else [])
+    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + (autonomous.TOOLS + memory.TOOLS if goal else [])
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"

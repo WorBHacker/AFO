@@ -21,6 +21,7 @@ TOPICS = [
     "chat.*",
     "models.*",
     "model.*",
+    "memory.*",
     "system.*",
     "secrets.*",
     "connections.*",

@@ -87,6 +87,12 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Note { text: "Агент сам составит план, выполнит шаги инструментами хаба, проверит каждый и в конце напишет отчёт. Вы видите план и каждый шаг, отвечаете на его вопросы и можете остановить его в любой момент." }
+                PlainButton {
+                    objectName: "agentMemory"
+                    iconName: "layers"
+                    text: "Память агента — факты и навыки"
+                    onClicked: App.openUi("memory")
+                }
                 Flow {
                     width: parent.width
                     spacing: 6
@@ -477,6 +483,13 @@ Item {
                             font.family: Theme.uiFont
                             font.pixelSize: 13
                             lineHeight: 1.3
+                        }
+                        PlainButton {
+                            objectName: "agentKeepSkill"
+                            visible: !!(view.task.report || {}).goalMet
+                            iconName: "check"
+                            text: "Сохранить как навык"
+                            onClicked: Memory.keepSkill(view.task.id, view.task.goal)
                         }
                         Repeater {
                             model: [{ name: "Сделано", items: (view.task.report || {}).done || [] },
