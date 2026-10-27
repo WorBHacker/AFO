@@ -91,10 +91,55 @@ Sheet {
         wrapMode: Text.Wrap
         text: App.contextSettings.mode === "read_only" ? "Модель только читает: правки файлов она предложит словами."
               : App.contextSettings.mode === "trusted" ? "Модель правит файлы прикреплённых проектов без вопроса. Каждую правку можно откатить в обзоре проекта."
-              : "Каждую правку файла модель показывает в «Подтверждениях» с diff и ждёт ответа."
+              : "Каждую правку файла модель показывает карточкой над чатом с diff и ждёт ответа."
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
+    }
+
+    SectionTitle { text: "Инструкции этого чата" }
+    Rectangle {
+        width: parent.width
+        height: 96
+        radius: 6
+        color: Theme.p.card
+        border.color: chatInstructions.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
+        ScrollView {
+            anchors.fill: parent
+            TextArea {
+                id: chatInstructions
+                objectName: "chatInstructions"
+                placeholderText: "Только для этого чата — после общего промпта и промпта модели. Например: «пиши тесты на pytest»"
+                placeholderTextColor: Theme.p.faint
+                text: App.contextSettings.instructions || ""
+                wrapMode: TextArea.Wrap
+                selectByMouse: true
+                color: Theme.p.text
+                selectionColor: Theme.p.selection
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+                padding: 10
+                background: null
+                onEditingFinished: App.setChatInstructions(text)
+            }
+        }
+    }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "Ответ в этом чате"
+        color: Theme.p.faint
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+        font.weight: Font.DemiBold
+    }
+    Segmented {
+        objectName: "chatPreset"
+        width: parent.width
+        options: [{ id: "", name: "как у модели" }, { id: "precise", name: "Точно" }, { id: "balanced", name: "Баланс" },
+                  { id: "creative", name: "Творчески" }]
+        value: App.contextSettings.preset || ""
+        onPicked: (id) => App.setChatPreset(id)
     }
 
     SectionTitle { text: "Закреплённые файлы" }

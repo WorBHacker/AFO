@@ -249,6 +249,12 @@ APPROVAL = {
 }
 
 
+PRESETS = {
+    "precise": {"temperature": 0.2, "top_p": 0.9, "top_k": 20},
+    "creative": {"temperature": 1.0, "top_p": 0.98, "top_k": 100},
+}
+
+
 class FakeClient:
     token = "t"
     base_url = "http://127.0.0.1:8765"
@@ -299,9 +305,43 @@ class FakeClient:
         self.program_calls = []
         self.answers = []
         self.claude_terminals = []
+        self.model_saved = {}  # model id -> [settings of each version]
+        self.model_calls = []
 
     def models(self):
         return MODELS
+
+    # --- the models' settings (stage 8) ---
+
+    def _model_info(self, model_id):
+        versions = self.model_saved.get(model_id, [])
+        accepts = [] if not model_id else ["max_tokens", "stop"] if model_id.startswith("anthropic/") else [
+            "max_tokens", "min_p", "repeat_penalty", "stop", "temperature", "thinking", "top_k", "top_p"]  # fmt: skip
+        return {"model_id": model_id, "model": next((m for m in MODELS if m["id"] == model_id), None),
+                "version": len(versions), "settings": versions[-1] if versions else {},
+                "history": [{"version": n + 1, "settings": v, "created_at": "2026-10-27T18:00:00.000Z", "by": "app"}
+                            for n, v in reversed(list(enumerate(versions)))],
+                "accepts": accepts, "presets": PRESETS}  # fmt: skip
+
+    def model_settings(self, model_id):
+        self.model_calls.append(("read", model_id))
+        return self._model_info(model_id)
+
+    def save_model_settings(self, model_id, settings):
+        self.model_calls.append(("save", model_id, settings))
+        if settings.get("params", {}).get("temperature", 0) > 2:
+            raise HubError("температура: от 0 до 2")
+        self.model_saved.setdefault(model_id, []).append(settings)
+        return self._model_info(model_id)
+
+    def revert_model_settings(self, model_id, version):
+        self.model_calls.append(("revert", model_id, version))
+        self.model_saved[model_id].append(self.model_saved[model_id][version - 1])
+        return self._model_info(model_id)
+
+    def check_model(self, model_id):
+        self.model_calls.append(("check", model_id))
+        return {"ok": True, "text": "на связи", "ttft_s": 0.3, "tok_s": 88.0, "seconds": 1.2, "cost_usd": 0}
 
     def conversations(self):
         recent = datetime.now(UTC).isoformat().replace("+00:00", "Z")  # "now" is today even at midnight
@@ -1629,6 +1669,104 @@ def test_a_request_with_no_chat_is_answered_in_the_list(qapp):
 
 
 # --- step 9.6a: the programs the agent may control (D43) ---
+
+
+def test_model_setup_fields_back_and_forth():
+    from app.ui import model_setup as ms
+
+    settings = {"hidden": True, "name": "Кодер", "capabilities": {"context": 65536, "tools": False},
+                "prices": {"input": 1.5}, "params": {"temperature": 0.2, "top_k": 20, "stop": ["###", "END"],
+                                                     "thinking": False}, "preset": "precise", "effort": "high",
+                "system_prompt": "Кратко."}  # fmt: skip
+    draft = ms.draft_of(settings)
+    assert (draft["context"], draft["tools"], draft["vision"], draft["temperature"], draft["top_k"]) == (
+        "65536", "no", "", "0.2", "20")  # fmt: skip
+    assert draft["stop"] == "###\nEND" and draft["thinking"] == "off" and draft["price_input"] == "1.5"
+    every = ["max_tokens", "min_p", "repeat_penalty", "stop", "temperature", "thinking", "top_k", "top_p"]
+    assert ms.settings_of(draft, every) == settings  # there and back unchanged
+    assert ms.settings_of({**draft, "temperature": "0,7"}, every)["params"]["temperature"] == 0.7  # a comma counts
+    assert "temperature" not in ms.settings_of(draft, ["max_tokens", "stop"])["params"]  # Claude takes none
+    for field, value, said in (("temperature", "abc", "не число"), ("top_k", "2.5", "целое")):
+        with pytest.raises(ValueError, match=said):
+            ms.settings_of({**draft, field: value}, every)
+    assert ms.settings_of({**draft, "system_prompt": "  Всем.  "}, [], general=True) == {"system_prompt": "Всем."}
+    assert ms.settings_of(dict(ms.BLANK), every) == {}  # nothing set: everything as the provider says
+    models = [{**MODELS[0], "provider": "anthropic", "hidden": True, "settings_version": 2, "provider_name": "Opus"},
+              {**MODELS[1], "provider": "llama-swap"}]  # fmt: skip
+    items = ms.choices(models, "llama-swap/coder")
+    assert [i.get("section") or i["name"] for i in items] == [
+        "Все модели — общий системный промпт",
+        "Локальные · llama-swap",
+        "Coder",
+        "Claude",
+        "Claude Opus 5.5",
+    ]
+    assert items[4]["note"] == "скрыта в выборе · своё имя, у поставщика «Opus» · настройки v2" and items[2]["selected"]
+    said = ms.check_text({"ok": True, "text": "да", "ttft_s": 0.2, "tok_s": 50.0, "seconds": 1.0, "cost_usd": 0})
+    assert said == "«да» · первое слово через 0.2 с · 50.0 ток/с · всего 1.0 с · бесплатно"
+    assert ms.check_text({"ok": False, "error": "нет ключа"}) == "Не ответила: нет ключа"
+
+
+def test_the_models_sheet_in_the_window(qapp):
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.models)
+        setup = app.model_setup
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        QMetaObject.invokeMethod(sheet, "openFor", Q_ARG("QVariant", "llama-swap/coder"))
+        wait_until(lambda: sheet.property("opened") and setup.modelId == "llama-swap/coder" and not setup.loading)
+        assert [f["id"] for f in setup.numberFields] == ["temperature", "top_p", "top_k", "min_p", "repeat_penalty",
+                                                         "max_tokens"]  # fmt: skip
+        setup.applyPreset("precise")
+        assert (setup.draft["temperature"], setup.draft["top_k"], setup.draft["preset"], setup.dirty) == (
+            "0.2", "20", "precise", True)  # fmt: skip
+        setup.setField("temperature", "0,4")  # one's own number: no longer the preset
+        setup.setField("system_prompt", "Отвечай кодом.")
+        setup.setFlag("hidden", True)
+        setup.save()
+        wait_until(lambda: not app.bg.busy and not setup.dirty)
+        saved = next(c for c in reversed(client.model_calls) if c[0] == "save")
+        assert saved[0] == "save" and saved[2] == {"hidden": True, "params": {"temperature": 0.4, "top_p": 0.9,
+                                                   "top_k": 20}, "system_prompt": "Отвечай кодом."}  # fmt: skip
+        assert setup.version == 1 and "Сохранено" in app.flashText
+        setup.setField("temperature", "9")
+        setup.save()
+        wait_until(lambda: not app.bg.busy and setup.error)
+        assert "от 0 до 2" in setup.error and setup.dirty  # the hub's refusal, the draft kept
+        setup.discard()
+        setup.check()
+        wait_until(lambda: not app.bg.busy and not setup.checking)
+        assert setup.checkText.startswith("«на связи» · первое слово через 0.3 с")
+        setup.open("anthropic/claude-opus-5-5")
+        wait_until(lambda: not app.bg.busy and setup.modelId == "anthropic/claude-opus-5-5" and not setup.loading)
+        assert setup.numberFields == [{"id": "max_tokens", "name": "Предел ответа", "hint": "токенов"}]
+        setup.open("*")
+        wait_until(lambda: not app.bg.busy and setup.general)
+        assert client.model_calls[-1] == ("read", "")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_picker_leaves_hidden_models_out_and_a_model_sets_its_depth(app):
+    hidden = [{**MODELS[0], "hidden": True}, {**MODELS[1], "effort": "low"}]
+    items = rows.picker_items(hidden, set(), "llama-swap/coder")
+    assert [i["id"] for i in items if i["id"]] == ["llama-swap/coder"]
+    assert "anthropic/claude-opus-5-5" in [i["id"] for i in rows.picker_items(hidden, set(), MODELS[0]["id"])]
+    app._set_models(hidden)
+    app.chooseEffort("max")
+    app.chooseModel("anthropic/claude-opus-5-5")
+    app.chooseModel("llama-swap/coder")
+    assert app._effort == "low"  # the model's own depth (D39)
 
 
 def test_program_rows_filters_and_questions():
@@ -3202,3 +3340,49 @@ def test_unloading_the_local_model_from_the_sidebar_is_asked_first(qapp):
         assert not sidebar.property("visible")  # nothing in memory: no card
     finally:
         quick.close()
+
+
+def test_a_chats_own_instructions_and_preset(app):
+    opened(app)
+    app.setChatInstructions("  Пиши тесты на pytest. ")
+    app.setChatPreset("precise")
+    app.setChatPreset("wild")  # not a preset: nothing sent
+    wait_until(lambda: not app.bg.busy)
+    sent = [entry for entry in app.client.log if entry[0] == "context"]
+    assert sent[-2:] == [("context", "c1", {"instructions": "Пиши тесты на pytest."}),
+                         ("context", "c1", {"preset": "precise"})]  # fmt: skip
+    assert app.contextSettings["preset"] == "precise"
+
+
+def test_roles_in_the_window(app):
+    from app.ui import model_setup as ms
+
+    assert rows.fallback_note(None) == ""
+    assert rows.fallback_note({"from_name": "Opus", "reason": "503\n overloaded"}) == (
+        "Ответила запасная модель: «Opus» не ответила — 503 overloaded"
+    )
+    app.client.model_saved[""] = [{"roles": {"chat": "llama-swap/coder", "cards": "anthropic/claude-opus-5-5",
+                                             "agents": "llama-swap/coder", "fallback": "gone/model"}}]  # fmt: skip
+    app.load_models()
+    wait_until(lambda: not app.bg.busy and app.roles)
+    assert app.role_model("fallback") == ""  # not offered now: no role here
+    app.chooseModel("anthropic/claude-opus-5-5")
+    app.newChat()
+    assert app.modelId == "llama-swap/coder"  # the model for new chats
+    assert app.projects._card_writer() == "anthropic/claude-opus-5-5"
+    app.agents.newProfile()
+    assert app.agents.draft["model_id"] == "llama-swap/coder"
+    setup = app.model_setup
+    setup.open("*")
+    wait_until(lambda: not app.bg.busy and setup.general and not setup.loading)
+    rows_ = {r["id"]: r for r in setup.roleRows}
+    assert rows_["chat"]["modelName"] == "Coder" and rows_["fallback"]["modelName"] == "gone/model — сейчас нет"
+    assert rows_["vision"]["modelName"] == "не задана" and setup.roleChoices[0]["name"] == "не задана"
+    setup.setRole("fallback", "anthropic/claude-opus-5-5")
+    setup.setRole("cards", "")
+    setup.save()
+    wait_until(lambda: not app.bg.busy and not setup.dirty)
+    saved = next(c for c in reversed(app.client.model_calls) if c[0] == "save")
+    assert saved[1:] == ("", {"roles": {"chat": "llama-swap/coder", "agents": "llama-swap/coder",
+                                        "fallback": "anthropic/claude-opus-5-5"}})  # fmt: skip
+    assert ms.settings_of({**ms.BLANK, "roles": {"chat": ""}}, [], general=True) == {}

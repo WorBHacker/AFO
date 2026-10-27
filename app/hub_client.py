@@ -78,6 +78,21 @@ class HubClient:
     def unload_local(self) -> dict:
         return self._call("POST", "/v1/models/unload")
 
+    # --- the models' settings (stage 8, D39) ---
+
+    def model_settings(self, model_id: str) -> dict:
+        """'' - the general row (the system prompt for every model)."""
+        return self._call("GET", "/v1/model_settings", params={"model_id": model_id})
+
+    def save_model_settings(self, model_id: str, settings: dict) -> dict:
+        return self._call("PUT", "/v1/model_settings", {"model_id": model_id, "settings": settings})
+
+    def revert_model_settings(self, model_id: str, version: int) -> dict:
+        return self._call("POST", "/v1/model_settings/revert", {"model_id": model_id, "version": version})
+
+    def check_model(self, model_id: str) -> dict:
+        return self._call("POST", "/v1/models/check", {"model_id": model_id})
+
     def status(self) -> dict:
         return self._call("GET", "/v1/status")
 

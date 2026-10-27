@@ -66,6 +66,9 @@ _CATALOG: dict[str, tuple[str, list[tuple[str, dict[str, float]]]]] = {
 # the hub's effort as Gemini takes it: a level on Gemini 3 and later ("minimal" is refused by some), a budget on 2.5
 LEVELS = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
 BUDGETS = {"low": 1024, "medium": 4096, "high": 12288, "xhigh": 24576, "max": -1}  # -1: as much as it needs
+# the answer's parameters Gemini takes (D39), into generationConfig
+GENERATION = {"temperature": "temperature", "top_p": "topP", "top_k": "topK", "max_tokens": "maxOutputTokens",
+              "stop": "stopSequences"}  # fmt: skip
 NO_ID = "gemini-call-"  # a call Gemini sent without an id: the hub's id, not sent back
 PLACEHOLDER_SIGNATURE = "skip_thought_signature_validator"  # documented, for calls Gemini did not make itself
 REFUSED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
@@ -151,6 +154,9 @@ class GeminiProvider:
             )
         return models
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        return frozenset(GENERATION)
+
     async def stream_chat(
         self,
         model_ref: str,
@@ -158,7 +164,9 @@ class GeminiProvider:
         effort: str,
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        params = params or {}
         key = self._key()
         if not key:
             raise ProviderError("no Gemini API key is set: add it in the window's Connections")
@@ -171,6 +179,9 @@ class GeminiProvider:
         config: dict[str, Any] = {"thinkingConfig": thinking}
         if model_ref in self._max_output:
             config["maxOutputTokens"] = self._max_output[model_ref]
+        for name, wire in GENERATION.items():
+            if name in params:
+                config[wire] = params[name]
         body: dict[str, Any] = {"contents": contents, "generationConfig": config}
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}

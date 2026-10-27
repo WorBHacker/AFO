@@ -86,10 +86,29 @@ def to_hub_tools(tools: Any) -> list[dict[str, Any]] | None:
     return out
 
 
+def client_params(body: dict[str, Any]) -> dict[str, Any]:
+    """The answer's parameters the client sent, by the hub's names (D39): they count over the model's own settings.
+    llama.cpp's own names (top_k, min_p, repeat_penalty) are taken too."""
+    from .model_settings import SettingsError, check_params
+
+    wanted: dict[str, Any] = {k: body[k] for k in ("temperature", "top_p", "top_k", "min_p", "repeat_penalty")
+                              if body.get(k) is not None}  # fmt: skip
+    length = body.get("max_completion_tokens", body.get("max_tokens"))
+    if length is not None:
+        wanted["max_tokens"] = length
+    stop = body.get("stop")
+    if stop is not None:
+        wanted["stop"] = [stop] if isinstance(stop, str) else stop
+    try:
+        return check_params(wanted)
+    except SettingsError as exc:
+        raise ProxyError(400, "invalid_request_error", str(exc)) from exc
+
+
 def model_list(models: list[dict[str, Any]]) -> dict[str, Any]:
     return {"object": "list", "data": [
         {"id": m["id"], "object": "model", "created": 0, "owned_by": m["provider"]}
-        for m in models if m["provider"] != CLAUDE_CODE
+        for m in models if m["provider"] != CLAUDE_CODE and not m.get("hidden")
     ]}  # fmt: skip
 
 

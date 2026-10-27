@@ -94,6 +94,11 @@ class OpenAIProvider:
                       capabilities={"vision": True, "prices_asof": PRICES_ASOF}, prices=prices)
                 for ref, (label, prices, _efforts) in MODELS.items() if ref in available]  # fmt: skip
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        """The reasoning models take no temperature or top_p, and the Responses API no stop sequences: the
+        answer's length only."""
+        return frozenset({"max_tokens"})
+
     async def stream_chat(
         self,
         model_ref: str,
@@ -101,7 +106,9 @@ class OpenAIProvider:
         effort: str,
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        params = params or {}
         key = self._key()
         if not key:
             raise ProviderError("no OpenAI API key is set: add it in the window's Connections")
@@ -116,6 +123,8 @@ class OpenAIProvider:
         }
         if instructions:
             body["instructions"] = instructions
+        if "max_tokens" in params:
+            body["max_output_tokens"] = params["max_tokens"]
         if tools:
             body["tools"] = [{"type": "function", "name": t["name"], "description": t["description"],
                               "parameters": t["parameters"], "strict": False} for t in tools]  # fmt: skip

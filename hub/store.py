@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from . import model_settings
 from .db import utc_now
 from .gateway import Model
 
@@ -48,14 +49,24 @@ def disable_models_except(conn: sqlite3.Connection, provider: str, keep_ids: lis
 
 
 def list_models(conn: sqlite3.Connection, *, enabled_only: bool = True) -> list[dict[str, Any]]:
+    """The catalog as the user set it (D39): their names, prices and capabilities over the provider's, `hidden` for
+    the ones not to offer in the picker (still listed: the window's model settings show them all)."""
     where = "WHERE enabled = 1" if enabled_only else ""
     rows = conn.execute(f"SELECT * FROM models {where} ORDER BY locality, id").fetchall()
-    return [_model_row(r) for r in rows]
+    found = model_settings.all_current(conn)
+    out = []
+    for row in rows:
+        number, settings = found.get(row["id"], (0, {}))
+        out.append(model_settings.overlay(_model_row(row), settings, number))
+    return out
 
 
 def get_model(conn: sqlite3.Connection, model_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
-    return _model_row(row) if row else None
+    if row is None:
+        return None
+    number, settings = model_settings.current(conn, model_id)
+    return model_settings.overlay(_model_row(row), settings, number)
 
 
 def _model_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -166,19 +177,20 @@ def conversation_tools(
     return chosen
 
 
-CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": []}
+CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": ""}
 MAX_PINNED = 10
 MODES = ("read_only", "ask", "trusted")  # a chat's rights (D17)
 
 
 def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
-    """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]; and its rights
-    mode (D17): read_only, ask (the default) or trusted."""
+    """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]; its rights
+    mode (D17): read_only, ask (the default) or trusted; its own instructions and preset of the answer's parameters
+    (D39, '' - as the model has them)."""
     row = conn.execute("SELECT * FROM conversation_context WHERE conversation_id = ?", (conversation_id,)).fetchone()
     if row is None:
         return {**CONTEXT_DEFAULTS, "pinned": [], "mode": "ask"}
     return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"]),
-            "mode": row["mode"]}  # fmt: skip
+            "mode": row["mode"], "instructions": row["instructions"], "preset": row["preset"]}  # fmt: skip
 
 
 def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **changes: Any) -> dict[str, Any]:
@@ -191,12 +203,16 @@ def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **chang
     settings["pinned"] = pinned[:MAX_PINNED]
     if settings["mode"] not in MODES:
         raise ValueError(f"unknown mode {settings['mode']!r}: {', '.join(MODES)}")
+    if settings["preset"] and settings["preset"] not in model_settings.PRESETS:
+        raise ValueError(f"unknown preset {settings['preset']!r}: {', '.join(model_settings.PRESETS)}")
+    settings["instructions"] = str(settings["instructions"]).strip()[: model_settings.SYSTEM_PROMPT_MAX]
     conn.execute(
-        "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode) VALUES (?, ?, ?, ?, ?)"
-        " ON CONFLICT (conversation_id) DO UPDATE SET map = excluded.map, live = excluded.live,"
-        " pinned = excluded.pinned, mode = excluded.mode",
+        "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode, instructions, preset)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (conversation_id) DO UPDATE SET map = excluded.map,"
+        " live = excluded.live, pinned = excluded.pinned, mode = excluded.mode, instructions = excluded.instructions,"
+        " preset = excluded.preset",
         (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"]),
-         settings["mode"]),
+         settings["mode"], settings["instructions"], settings["preset"]),
     )  # fmt: skip
     return settings
 

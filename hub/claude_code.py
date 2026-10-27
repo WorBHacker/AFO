@@ -125,6 +125,9 @@ class ClaudeCodeProvider:
         return [Model(f"{PROVIDER}/{ref}", PROVIDER, ref, name, "cloud", capabilities, {}) for ref, name in
                 MODELS.items()]  # fmt: skip
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        return frozenset()  # an agent with its own settings: the hub sets none of its parameters
+
     async def stream_chat(self, *args: Any, **kwargs: Any):
         raise ProviderError("Claude Code works as an agent: the hub runs it with ClaudeCodeRunner")
         yield  # an async generator, as the gateway expects

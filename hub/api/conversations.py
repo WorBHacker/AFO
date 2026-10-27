@@ -92,6 +92,8 @@ class ContextSettings(BaseModel):
     live: bool | None = None
     pinned: list[Pinned] | None = None
     mode: Literal["read_only", "ask", "trusted"] | None = None  # the chat's rights (D17)
+    instructions: str | None = None  # the chat's own system prompt (D39)
+    preset: Literal["", "precise", "balanced", "creative"] | None = None  # over the model's parameters
 
 
 @router.put("/conversations/{conversation_id}/context")
@@ -107,7 +109,8 @@ async def set_context(
         if store.get_title(conn, conversation_id) is None:
             return None
         return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned,
-                                          mode=body.mode)  # fmt: skip
+                                          mode=body.mode, instructions=body.instructions,
+                                          preset=body.preset)  # fmt: skip
 
     settings = await request.app.state.db.acall(write)
     if settings is None:

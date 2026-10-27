@@ -93,6 +93,11 @@ class AnthropicProvider:
             self._client_key_hash = key_hash
         return self._client
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        """Only the answer's length and stop sequences: temperature, top_p and top_k are a 400 (D15), and thinking
+        cannot be turned off on these models."""
+        return frozenset({"max_tokens", "stop"})
+
     async def list_models(self) -> list[Model]:
         """The priced Claude models this key can use. No key - no models, and no network call."""
         key = self._key()
@@ -135,7 +140,9 @@ class AnthropicProvider:
         effort: str,
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        params = params or {}
         key = self._key()
         if not key:
             raise ProviderError("no Anthropic API key is set (python -m hub key set anthropic_api_key)")
@@ -143,7 +150,7 @@ class AnthropicProvider:
         system, turns = to_wire(messages, self.name, mid_system=not model_ref.startswith("claude-haiku"))
         request: dict[str, Any] = {
             "model": model_ref,
-            "max_tokens": self._max_tokens,
+            "max_tokens": params.get("max_tokens", self._max_tokens),
             "messages": turns,
             "thinking": {"type": "adaptive", "display": "summarized"},
             "output_config": {"effort": effort},
@@ -151,6 +158,8 @@ class AnthropicProvider:
         }
         if system:
             request["system"] = system
+        if params.get("stop"):
+            request["stop_sequences"] = params["stop"]
         if tools:
             request["tools"] = [
                 {

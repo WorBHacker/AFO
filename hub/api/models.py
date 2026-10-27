@@ -17,7 +17,10 @@ router = APIRouter(prefix="/v1")
 @router.get("/models")
 async def models(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     rows = await request.app.state.db.acall(store.list_models)
-    return {"providers": request.app.state.gateway.providers, "models": rows}
+    gateway = request.app.state.gateway
+    # each model says which of the answer's parameters it takes (D39): the window shows only those
+    rows = [{**row, "accepts": sorted(gateway.accepts(row["id"]))} for row in rows]
+    return {"providers": gateway.providers, "models": rows}
 
 
 @router.post("/models/sync")

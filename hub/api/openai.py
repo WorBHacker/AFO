@@ -12,12 +12,21 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import budgets, store
+from .. import budgets, model_settings, store
 from ..auth import Client
 from ..claude_code import PROVIDER as CLAUDE_CODE
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
-from ..openai_proxy import EFFORTS, Chunks, ProxyError, finish_reason, model_list, to_hub_messages, to_hub_tools
+from ..openai_proxy import (
+    EFFORTS,
+    Chunks,
+    ProxyError,
+    client_params,
+    finish_reason,
+    model_list,
+    to_hub_messages,
+    to_hub_tools,
+)
 from ..openai_proxy import tool_calls_of as openai_calls
 from ..openai_proxy import usage_of as openai_usage
 from .deps import require_client
@@ -54,14 +63,20 @@ async def _complete(request: Request, client: Client, body: dict[str, Any]) -> J
         raise ProxyError(402, "insufficient_quota", "a budget for this model is used up (LocalChat budgets, D12)")
     messages = to_hub_messages(body.get("messages"))
     tools = to_hub_tools(body.get("tools"))
-    effort = EFFORTS.get(str(body.get("reasoning_effort") or ""), "medium")
+    number, own = await state.db.acall(lambda conn: model_settings.current(conn, model_id))
+    effort = EFFORTS.get(str(body.get("reasoning_effort") or ""), own.get("effort") or "medium")
     try:
         provider, ref = state.gateway.resolve(model_id)
     except GatewayError as exc:
         raise ProxyError(404, "model_not_found", str(exc)) from exc
+    # the model's settings, and over them what the client asked for; only what the provider takes goes out
+    params = model_settings.clean_params({**(own.get("params") or {}), **client_params(body)},
+                                         state.gateway.accepts(model_id))  # fmt: skip
     cancel = asyncio.Event()
     chunks = Chunks(model_id)
-    extra = {"tools": tools} if tools else {}
+    extra: dict[str, Any] = {"tools": tools} if tools else {}
+    if params:
+        extra["params"] = params
     include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
 
     async def record(event: Any) -> None:
@@ -72,7 +87,8 @@ async def _complete(request: Request, client: Client, body: dict[str, Any]) -> J
             store.record_usage(conn, client_id=client.id, conversation_id=None, message_id=None, model_id=model_id,
                                usage=usage, cost_usd=cost, estimated=bool(usage.get("estimated")),
                                meta={"proxy": True, "stats": event.stats or {}, "stop_reason": event.stop_reason,
-                                     "cancelled": cancel.is_set()})  # fmt: skip
+                                     "cancelled": cancel.is_set(), **({"params": params} if params else {}),
+                                     **({"settings_version": number} if number else {})})  # fmt: skip
             return budgets.crossed(conn, model_id, cost)
 
         for kind, budget in await state.db.acall(write):

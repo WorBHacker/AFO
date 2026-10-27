@@ -20,6 +20,7 @@ log = logging.getLogger("app.events")
 TOPICS = [
     "chat.*",
     "models.*",
+    "model.*",
     "system.*",
     "secrets.*",
     "connections.*",

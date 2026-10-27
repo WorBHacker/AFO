@@ -713,7 +713,10 @@ class Projects(QObject):
         self.app._call(lambda: self.app.client.card(pid), show, lambda _e: None)
 
     def _card_writer(self) -> str:
-        """Who drafts: the chosen model if it is local, else the first local one (D24: local by default)."""
+        """Who drafts: the model of the role «cards» (D39), else the chosen one if local, else the first local one
+        (D24: local by default)."""
+        if self.app.role_model("cards"):
+            return self.app.role_model("cards")
         models = self.app.model_list
         chosen = self.app.models.get(self.app.modelId)
         if chosen and chosen.get("locality") == "local":

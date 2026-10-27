@@ -81,6 +81,9 @@ class Completion:
     refusal: str | None = None
     cancelled: bool = False
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    params: dict[str, Any] = field(default_factory=dict)  # the answer's parameters it was asked with (D39)
+    settings_version: int = 0  # the version of the model's settings in force then
+    fallback: dict[str, Any] | None = None  # the spare answered instead of {from, from_name, reason} (D39)
 
     def blocks(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -144,6 +147,11 @@ class Provider(Protocol):
 
     async def list_models(self) -> list[Model]: ...
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        """The answer's parameters this model takes (hub/model_settings.PARAMS): the window shows only these, and
+        the gateway sends only these (Claude has no temperature, D15)."""
+        ...
+
     def stream_chat(
         self,
         model_ref: str,
@@ -151,6 +159,7 @@ class Provider(Protocol):
         effort: str,
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Yields StreamEvents for one completion.
 
@@ -159,7 +168,8 @@ class Provider(Protocol):
         replays its own raw messages (Claude needs its thinking blocks back unchanged, D14) and ignores others.
         An assistant turn may carry "tool_calls" [{id, name, input}]; a turn of role "tool" answers one call:
         {tool_call_id, name, content, is_error}. With `tools`, the model may ask for them; the "end" event then
-        lists the calls it made.
+        lists the calls it made. `params` are the answer's parameters the user set (D39), already cut to what
+        `accepts` names; the adapter puts them into its provider's own request.
 
         Must stop promptly once `cancel` is set, and must end with exactly one kind=="end" event
         (even when cancelled), so the caller always gets final usage and stats.

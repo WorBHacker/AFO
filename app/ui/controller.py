@@ -26,6 +26,7 @@ from .approvals import Approvals
 from .composer import Mentions
 from .connections import Connections
 from .feed import Feed
+from .model_setup import ModelSetup
 from .models import RowModel
 from .programs import Programs
 from .projects import Projects
@@ -105,6 +106,7 @@ class Controller(QObject):
         self.client: HubClient | None = None
         self.events: EventThread | None = None
         self.models: dict[str, dict[str, Any]] = {}
+        self.roles: dict[str, str] = {}  # the general settings' roles (D39): chat, cards, agents, fallback...
         self.model_list: list[dict[str, Any]] = []
         self.conversations: list[dict[str, Any]] = []
         self.busy: set[str] = set()
@@ -156,6 +158,7 @@ class Controller(QObject):
         self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
         self.connections = Connections(self)  # keys and tokens behind the password (D13)
         self.programs = Programs(self)  # which programs the autonomous agent may control (D43)
+        self.model_setup = ModelSetup(self)  # the models' settings (stage 8, D39)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -470,6 +473,16 @@ class Controller(QObject):
 
     def load_models(self) -> None:
         self._call(lambda: self.client.models(), self._set_models)
+        self._call(lambda: self.client.model_settings(""), self._set_roles, lambda _e: None)
+
+    def _set_roles(self, general: dict[str, Any]) -> None:
+        """Which model does what (D39): a new chat, project cards, a new agent; the hub keeps the spare one."""
+        self.roles = dict((general.get("settings") or {}).get("roles") or {})
+
+    def role_model(self, role: str) -> str:
+        """The model of a role when it is offered now, else ''."""
+        model_id = self.roles.get(role, "")
+        return model_id if model_id in self.models else ""
 
     @Property(str, notify=modelChanged)
     def priority(self) -> str:
@@ -512,6 +525,8 @@ class Controller(QObject):
             self._model_id = model_id
             self.settings.setValue("chat/model", model_id)
             self.modelChanged.emit()
+            if self.models[model_id].get("effort"):  # the model's own reasoning depth (D39)
+                self.chooseEffort(self.models[model_id]["effort"])
 
     @Slot(str)
     def chooseEffort(self, value: str) -> None:
@@ -636,6 +651,8 @@ class Controller(QObject):
 
     @Slot()
     def newChat(self) -> None:
+        if self.role_model("chat"):  # the model the user chose for new chats (D39)
+            self.chooseModel(self.role_model("chat"))
         self.current = None
         self._title, self._meta = "Новый чат", ""
         self._count, self._spent, self._last_author = 0, 0.0, ""
@@ -707,6 +724,18 @@ class Controller(QObject):
         """The chat's rights (D17): read_only, ask, trusted - for the model's next writes."""
         if mode in ("read_only", "ask", "trusted") and self.current:
             self._save_context(mode=mode)
+
+    @Slot(str)
+    def setChatInstructions(self, text: str) -> None:
+        """The chat's own system prompt (D39): after the general and the model's, from its next message on."""
+        if self.current and text.strip() != (self._context_settings.get("instructions") or ""):
+            self._save_context(instructions=text.strip())
+
+    @Slot(str)
+    def setChatPreset(self, preset: str) -> None:
+        """«Точно / Баланс / Творчески» for this chat over the model's parameters; '' - as the model has them."""
+        if self.current and preset in ("", "precise", "balanced", "creative"):
+            self._save_context(preset=preset)
 
     @Slot(str, str)
     def pinFile(self, project_id: str, path: str) -> None:
@@ -865,7 +894,7 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value in ("feed", "approvals", "agents", "programs"):
+            elif value in ("feed", "approvals", "agents", "programs", "model-settings"):
                 self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")
@@ -1075,6 +1104,16 @@ class Controller(QObject):
             self.sessionChanged.emit()
             self.refresh_usage()
             self.load_conversations()  # the chat moved to the top of its day
+        elif kind == "chat.fallback":  # the model failed: the spare one answers now (D39)
+            if payload.get("usage"):  # the declined request still cost its tokens
+                self.session.add(payload["usage"], payload.get("cost_usd"))
+                self.sessionChanged.emit()
+            self._run_models[cid] = payload.get("model_id", "")
+            if cid in self.live:
+                self.live[cid].model_id = payload.get("model_id", "")
+            self.flash(rows.fallback_note({"from_name": payload.get("from_name"), "reason": payload.get("reason")})
+                       .replace("Ответила запасная модель", f"Отвечает запасная «{payload.get('name', '')}»"),
+                       ms=10000)  # fmt: skip
         elif kind == "chat.error":
             self._run_ended(cid)
             if cid == self.current:
@@ -1124,6 +1163,8 @@ class Controller(QObject):
             self.agents.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind == "model.settings":
+            self.model_setup.on_event(kind, payload)
         elif kind == "claude_code.limit":
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
         elif kind == "hub.stopping":

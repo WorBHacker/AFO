@@ -44,11 +44,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import budgets, cards, changes, commands, context, links, notes, store, web, websearch
+from . import budgets, cards, changes, commands, context, links, model_settings, notes, store, web, websearch
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
-from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
+from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
@@ -259,19 +259,34 @@ class ChatService:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
 
     async def _steps(self, conversation_id, model: dict, effort: str, cancel, client_id, limits: Limits, outcome):
-        provider, model_ref = self._gateway.resolve(model["id"])
-        cloud = model.get("locality") == "cloud"
         attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
-        ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
-                          processes=self.processes, symbols=self.symbols)  # fmt: skip
+
+        async def setup(model: dict):
+            """What answering with this model takes: its provider, the projects it may see, the system prompt and
+            the answer's parameters the user set (D39)."""
+            provider, model_ref = self._gateway.resolve(model["id"])
+            cloud = model.get("locality") == "cloud"
+            ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
+                              processes=self.processes, symbols=self.symbols)  # fmt: skip
+            accepts = self._gateway.accepts(model["id"])
+            model_id = model["id"]
+            system, params, version = await self._db.acall(
+                lambda conn: _answer_setup(conn, conversation_id, model_id, accepts)
+            )
+            return provider, model_ref, cloud, ctx, system, params, version
+
+        provider, model_ref, cloud, ctx, system, params, version = await setup(model)
         await self._bus.publish(
             "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
         )
         run = outcome.totals = RunTotals()
+        fallback: dict | None = None  # the spare took over (once per run): from which model, and why
         tools = None
         for step in range(limits.max_steps + 2):
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             prompt = _to_prompt(history, cloud=cloud)
+            if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
+                prompt = [{"role": "system", "content": system}, *prompt]
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
             # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
             # even after the hub's tools changed
@@ -279,9 +294,28 @@ class ChatService:
                 tools = await self._db.acall(
                     lambda conn: store.conversation_tools(conn, conversation_id, CHAT_TOOLS, FIRST_TOOLS)
                 )
-            completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools)
+            try:
+                completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools,
+                                                 params)  # fmt: skip
+            except ProviderError as exc:  # the model failed: the spare answers instead, once (D39)
+                spare = None if fallback or cancel.is_set() else await self._spare(conversation_id, model)
+                if spare is None:
+                    raise
+                fallback = await self._fall_back(conversation_id, model, spare, exc.detail)
+                model = spare
+                provider, model_ref, cloud, ctx, system, params, version = await setup(model)
+                continue
+            completion.settings_version = version
+            completion.fallback = fallback
             if completion.refusal:
-                await self._save_refusal(conversation_id, model, completion, client_id)
+                spare = None if fallback else await self._spare(conversation_id, model)
+                cost = await self._save_refusal(conversation_id, model, completion, client_id, final=spare is None)
+                if spare is not None:  # it declined: the spare may answer (its tokens are counted all the same)
+                    fallback = await self._fall_back(conversation_id, model, spare, completion.refusal,
+                                                     spent=(completion.usage, cost))  # fmt: skip
+                    model = spare
+                    provider, model_ref, cloud, ctx, system, params, version = await setup(model)
+                    continue
                 outcome.status, outcome.detail = "error", completion.refusal
                 return
             stopped_short = completion.stop_reason in ("max_tokens", "length")  # a cut-off call must not run
@@ -309,9 +343,46 @@ class ChatService:
             if limits.budget_usd is not None and run.cost >= limits.budget_usd:
                 raise GatewayError(f"the task's budget (${limits.budget_usd:g}) was reached at ${run.cost:.4f}")
             if model["prices"]:
-                over = await self._db.acall(lambda conn: budgets.reached(conn, model["id"]))
+                over = await self._db.acall(lambda conn, m=model["id"]: budgets.reached(conn, m))
                 if over:
                     raise GatewayError("the budget ran out while the model was working; send again to go on")
+
+    async def _spare(self, conversation_id: str, model: dict) -> dict | None:
+        """The spare model (the role «fallback», D39) when it may answer here: another, offered model, not Claude
+        Code (an agent of its own); a cloud one only where the chat's projects allow the cloud (D10); a paid one
+        only within its budgets."""
+
+        def find(conn):
+            roles = model_settings.current(conn, model_settings.ALL)[1].get("roles") or {}
+            spare_id = roles.get("fallback")
+            if not spare_id or spare_id == model["id"]:
+                return None
+            spare = store.get_model(conn, spare_id)
+            if spare is None or not spare["enabled"] or spare["provider"] == CLAUDE_CODE:
+                return None
+            if spare["prices"] and budgets.reached(conn, spare_id):
+                return None
+            return spare
+
+        spare = await self._db.acall(find)
+        if spare is not None and spare["locality"] == "cloud":
+            try:
+                await self._check_cloud(conversation_id)
+            except GatewayError:
+                return None
+        return spare
+
+    async def _fall_back(
+        self, conversation_id: str, model: dict, spare: dict, reason: str, *, spent: tuple[dict, float] | None = None
+    ) -> dict:
+        """Tells the window that the spare answers now - and what the declined request still cost (`spent`); the
+        answer keeps it too (its usage's `fallback`)."""
+        log.info("chat %s: %s failed (%s), the spare %s answers", conversation_id, model["id"], reason, spare["id"])
+        note = {"from": model["id"], "from_name": model["name"], "reason": str(reason)[:300]}
+        extra = {"usage": spent[0], "cost_usd": spent[1]} if spent else {}
+        await self._bus.publish("chat.fallback", {"conversation_id": conversation_id, "model_id": spare["id"],
+                                                  "name": spare["name"], **note, **extra})  # fmt: skip
+        return note
 
     async def _store_context(self, conversation_id: str) -> None:
         """Right after a user message in a chat with projects: the context the model gets with it (D22), stored as
@@ -618,14 +689,18 @@ class ChatService:
             return False, f"not done: the user said no - {decision.comment}"
         return True, decision.approval_id
 
-    async def _consume(self, conversation_id, provider, model_ref, prompt, effort, cancel, tools=None) -> Completion:
-        completion = Completion()
+    async def _consume(
+        self, conversation_id, provider, model_ref, prompt, effort, cancel, tools=None, params=None
+    ) -> Completion:
+        completion = Completion(params=dict(params or {}))
         reasoning: list[str] = []
         content: list[str] = []
         # thinking time: from the request (or the end of a model swap) to the first visible word
         clock_from = time.monotonic()
         answer_at: float | None = None
-        extra = {"tools": tools} if tools else {}
+        extra: dict[str, Any] = {"tools": tools} if tools else {}
+        if params:  # only when set: a provider (or a test's stand-in) without them is called as before
+            extra["params"] = params
         async for event in provider.stream_chat(model_ref, prompt, effort, cancel, **extra):
             if event.kind == "loading":
                 clock_from = time.monotonic()
@@ -693,6 +768,9 @@ class ChatService:
                 "stats": completion.stats,
                 "stop_reason": completion.stop_reason,
                 "cancelled": completion.cancelled,
+                **({"params": completion.params} if completion.params else {}),
+                **({"settings_version": completion.settings_version} if completion.settings_version else {}),
+                **({"fallback": completion.fallback} if completion.fallback else {}),
             },
         )
         return message, cost, budgets.crossed(conn, model["id"], cost)
@@ -712,8 +790,11 @@ class ChatService:
         for kind, budget in crossings:
             await self._bus.publish(f"budget.{kind}", {"model_id": model_id, "budget": budget})
 
-    async def _save_refusal(self, conversation_id: str, model: dict, completion: Completion, client_id: str | None):
-        """The provider declined: no assistant message joins the history, but the spent tokens are recorded."""
+    async def _save_refusal(
+        self, conversation_id: str, model: dict, completion: Completion, client_id: str | None, *, final: bool = True
+    ) -> float:
+        """The provider declined: no assistant message joins the history, but the spent tokens are recorded. `final`:
+        the run ends here (no spare to answer instead) - the window hears it as the run's error. Returns the cost."""
         cost = cost_usd(completion.usage, model["prices"])
 
         def write(conn):
@@ -731,18 +812,20 @@ class ChatService:
             return budgets.crossed(conn, model["id"], cost)
 
         crossings = await self._db.acall(write)
-        await self._bus.publish(
-            "chat.error",
-            {
-                "conversation_id": conversation_id,
-                "detail": completion.refusal,
-                "refusal": True,
-                "model_id": model["id"],
-                "usage": completion.usage,
-                "cost_usd": cost,
-            },
-        )
+        if final:
+            await self._bus.publish(
+                "chat.error",
+                {
+                    "conversation_id": conversation_id,
+                    "detail": completion.refusal,
+                    "refusal": True,
+                    "model_id": model["id"],
+                    "usage": completion.usage,
+                    "cost_usd": cost,
+                },
+            )
         await self._publish_crossings(model["id"], crossings)
+        return cost
 
 
 class BudgetReached(GatewayError):
@@ -806,6 +889,21 @@ class RunTotals:
             "stop_reason": last.stop_reason,
             "cancelled": cancelled or last.cancelled,
         }
+
+
+def _answer_setup(conn, conversation_id: str, model_id: str, accepts: frozenset[str]) -> tuple[str, dict, int]:
+    """What the user set for this answer (D39): the system prompt in front of the conversation - the general one,
+    the model's, the chat's own instructions (an agent's role comes after them, with its context) - and the answer's
+    parameters: the model's, the chat's preset over them, cut to what the provider takes; and the model's settings
+    version."""
+    number, own = model_settings.current(conn, model_id)
+    general = model_settings.current(conn, model_settings.ALL)[1]
+    chat = store.context_settings(conn, conversation_id)
+    system = "\n\n".join(t for t in (general.get("system_prompt"), own.get("system_prompt"), chat["instructions"]) if t)
+    params = dict(own.get("params") or {})
+    if chat["preset"]:
+        params.update(model_settings.preset_params(chat["preset"], accepts))
+    return system, model_settings.clean_params(params, accepts), number
 
 
 def _instructions(conn, conversation_id: str) -> str:

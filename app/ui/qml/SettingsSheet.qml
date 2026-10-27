@@ -34,6 +34,22 @@ Sheet {
         onPicked: (id) => App.setPriority(id)
     }
 
+    SectionTitle { text: "Модели" }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "Для каждой модели: показывать ли в выборе, своё имя, параметры ответа, системный промпт, цены."
+        color: Theme.p.text_soft
+        font.family: Theme.uiFont
+        font.pixelSize: 13
+    }
+    PlainButton {
+        objectName: "openModelSettings"
+        iconName: "sliders"
+        text: "Настройка моделей…"
+        onClicked: { sheet.close(); App.openUi("model-settings") }
+    }
+
     SectionTitle { text: "Подключения" }
     Text {
         width: parent.width

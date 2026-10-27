@@ -343,7 +343,7 @@ def test_context_settings_shape_the_next_context(hub, repo):
     hub.put(f"/v1/conversations/{conv}/projects", json={"project_ids": [pid]})
     pin = {"project_id": pid, "path": "README.md"}
     settings = hub.put(f"/v1/conversations/{conv}/context", json={"map": False, "pinned": [pin, pin]}).json()
-    assert settings == {"map": False, "live": True, "pinned": [pin], "mode": "ask"}  # twice is once
+    assert settings == {"map": False, "live": True, "pinned": [pin], "mode": "ask", "instructions": "", "preset": ""}
 
     def ask(text, count):
         hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})

@@ -201,7 +201,7 @@ class Agents(QObject):
 
     @Slot()
     def newProfile(self) -> None:
-        self._draft = dict(BLANK)
+        self._draft = {**BLANK, "model_id": self.app.role_model("agents")}  # the agents' model (D39), if set
         self.changed.emit()
         self.draftChanged.emit()
 

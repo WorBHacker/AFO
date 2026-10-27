@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -29,6 +29,18 @@ LOADING_PREFIX = "llama-swap loading model:"
 
 
 class OpenAICompatProvider:
+    # the answer's parameters this API takes (D39): the hub's name -> the request's; llama.cpp's server takes them all
+    param_names: ClassVar[dict[str, str]] = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "min_p": "min_p",
+        "repeat_penalty": "repeat_penalty",
+        "max_tokens": "max_tokens",
+        "stop": "stop",
+    }
+    thinking_switch = True  # thinking can be turned off (llama.cpp: the chat template's enable_thinking)
+
     def __init__(
         self,
         name: str,
@@ -83,8 +95,9 @@ class OpenAICompatProvider:
         effort: str,
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        body = self.request_body(model_ref, messages, effort, tools)
+        body = self.request_body(model_ref, messages, effort, tools, params)
         calls: dict[int, dict[str, str]] = {}  # tool calls being put together, by index
         thought: list[str] = []  # the reasoning as it came, for a provider that wants it back (DeepSeek)
         details: list[dict[str, Any]] = []  # OpenRouter's reasoning_details, to be sent back unchanged
@@ -160,10 +173,18 @@ class OpenAICompatProvider:
             raw=self.kept("".join(thought), details),
         )
 
+    def accepts(self, model_ref: str) -> frozenset[str]:
+        return frozenset(self.param_names) | ({"thinking"} if self.thinking_switch else frozenset())
+
     # --- hooks for the cloud providers (cloud_openai.py) ---
 
     def request_body(
-        self, model_ref: str, messages: list[dict[str, Any]], effort: str, tools: list[dict[str, Any]] | None
+        self,
+        model_ref: str,
+        messages: list[dict[str, Any]],
+        effort: str,
+        tools: list[dict[str, Any]] | None,
+        params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": model_ref,
@@ -178,7 +199,16 @@ class OpenAICompatProvider:
                 {"type": "function", "function": {k: t[k] for k in ("name", "description", "parameters")}}
                 for t in tools
             ]
+        for name, value in (params or {}).items():
+            if name in self.param_names:
+                body[self.param_names[name]] = value
+        if (params or {}).get("thinking") is False and self.thinking_switch:
+            self.no_thinking(body)
         return body
+
+    def no_thinking(self, body: dict[str, Any]) -> None:
+        """The answer without thinking: llama.cpp hands the chat template enable_thinking (Qwen and others)."""
+        body["chat_template_kwargs"] = {"enable_thinking": False}
 
     def wire(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return wire_messages(messages)

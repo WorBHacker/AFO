@@ -34,6 +34,15 @@ class Gateway:
             raise ModelNotFound(f"no provider for model id {model_id!r}")
         return provider, model_ref
 
+    def accepts(self, model_id: str) -> frozenset[str]:
+        """The answer's parameters the model takes (D39); none for an unknown one."""
+        try:
+            provider, model_ref = self.resolve(model_id)
+        except ModelNotFound:
+            return frozenset()
+        accepts = getattr(provider, "accepts", None)
+        return accepts(model_ref) if accepts is not None else frozenset()
+
     async def sync_catalog(self) -> dict[str, int | str]:
         """Asks every provider for its models: those it lists are upserted and enabled, its other models are
         disabled (a removed API key, a model dropped from llama-swap). A provider that fails keeps its rows as

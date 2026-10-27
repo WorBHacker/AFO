@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 
@@ -95,6 +95,14 @@ class CloudOpenAIProvider(OpenAICompatProvider):
 
 
 class DeepSeekProvider(CloudOpenAIProvider):
+    # in thinking mode DeepSeek ignores temperature and top_p (no error): they count once thinking is off
+    param_names: ClassVar[dict[str, str]] = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "max_tokens": "max_tokens",
+        "stop": "stop",
+    }
+
     def __init__(self, key_getter, transport=None, clock: Callable[[], datetime] = lambda: datetime.now(UTC)):
         super().__init__("deepseek", "https://api.deepseek.com", key_getter, transport)
         self._clock = clock
@@ -110,11 +118,15 @@ class DeepSeekProvider(CloudOpenAIProvider):
                       prices=peak)
                 for ref, (label, _off, peak) in DEEPSEEK_PRICES.items() if ref in available]  # fmt: skip
 
-    def request_body(self, model_ref, messages, effort, tools):
-        # thinking on; DeepSeek takes the hub's efforts itself (medium -> high, xhigh -> high, max)
-        body = super().request_body(model_ref, messages, effort, tools)
-        body["thinking"] = {"type": "enabled"}
+    def request_body(self, model_ref, messages, effort, tools, params=None):
+        # thinking on unless turned off; DeepSeek takes the hub's efforts itself (medium -> high, xhigh -> high, max)
+        body = super().request_body(model_ref, messages, effort, tools, params)
+        body.setdefault("thinking", {"type": "enabled"})
         return body
+
+    def no_thinking(self, body):
+        body["thinking"] = {"type": "disabled"}
+        body.pop("reasoning_effort", None)
 
     def wire(self, messages):
         # with tools, DeepSeek wants reasoning_content back on every earlier assistant turn (a 400 otherwise);
@@ -133,6 +145,18 @@ class DeepSeekProvider(CloudOpenAIProvider):
 
 class OpenRouterProvider(CloudOpenAIProvider):
     """Hundreds of models behind one key; the hub offers those the user chose (`chosen`)."""
+
+    # OpenRouter's own names; a model that does not take one is routed to a provider that does, or it is ignored
+    param_names: ClassVar[dict[str, str]] = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "top_k": "top_k",
+        "min_p": "min_p",
+        "repeat_penalty": "repetition_penalty",
+        "max_tokens": "max_tokens",
+        "stop": "stop",
+    }
+    thinking_switch = False
 
     def __init__(self, key_getter, chosen: Callable[[], Awaitable[list[str]]], transport=None):
         super().__init__("openrouter", "https://openrouter.ai/api", key_getter, transport)
@@ -177,8 +201,8 @@ class OpenRouterProvider(CloudOpenAIProvider):
                       prices={"input": m["input"], "output": m["output"], "cache_read": m["cache_read"]})
                 for m in await self.everything() if m["id"] in chosen]  # fmt: skip
 
-    def request_body(self, model_ref, messages, effort, tools):
-        body = super().request_body(model_ref, messages, effort, tools)
+    def request_body(self, model_ref, messages, effort, tools, params=None):
+        body = super().request_body(model_ref, messages, effort, tools, params)
         body.pop("reasoning_effort", None)
         body.pop("stream_options", None)  # OpenRouter always reports usage now; the option is deprecated
         efforts = self._efforts.get(model_ref, [])

@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from . import budgets, stats, store
+from . import budgets, model_settings, stats, store
 from .claude_code import PROVIDER as CLAUDE_CODE
 
 PRIORITIES = {  # weights of quality, speed, price
@@ -65,7 +65,10 @@ def advise(
     local_only = [p["name"] for p in projects if not p["cloud_ok"]]
     loaded = loaded or set()
     options = []
+    roles = model_settings.current(conn, model_settings.ALL)[1].get("roles") or {}
     for model in store.list_models(conn):
+        if model["hidden"]:  # the user took it out of the picker (D39)
+            continue
         mine = seen.get(model["id"])
         reasons: list[str] = []
         blocked = None
@@ -109,7 +112,11 @@ def advise(
         else:
             price = 1.0
             reasons.append("бесплатно")
-        score = round(weights[0] * quality + weights[1] * speed + weights[2] * price, 3)
+        score = weights[0] * quality + weights[1] * speed + weights[2] * price
+        if roles.get("chat") == model["id"]:  # the user's choice for chats counts a little (D39); never alone
+            score += 0.05
+            reasons.append("ваша модель для чатов")
+        score = round(score, 3)
         options.append({"model_id": model["id"], "name": model["name"], "score": score, "reasons": reasons,
                         "blocked": blocked, "estimate_usd": round(cost, 6)})  # fmt: skip
     options.sort(key=lambda o: (o["blocked"] is not None, -o["score"], o["name"]))

@@ -65,9 +65,19 @@ def assistant_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str,
         "thinking": thinking(reasoning, think) if reasoning else None,
         "footer": presenter.answer_meta(usage),
         "streaming": False,
-        "notice": "",
+        "notice": fallback_note(usage.get("fallback")),
         "tools": tools_of(message),
     }
+
+
+def fallback_note(fallback: dict[str, Any] | None) -> str:
+    """The line over an answer the spare model gave (D39): which model did not answer, and why."""
+    if not fallback:
+        return ""
+    reason = " ".join(str(fallback.get("reason") or "").split())
+    return f"Ответила запасная модель: «{fallback.get('from_name') or fallback.get('from')}» не ответила" + (
+        f" — {reason[:160]}" if reason else ""
+    )
 
 
 TOOL_ICONS = {
@@ -439,7 +449,9 @@ def picker_items(
                       "note": " · ".join(best["reasons"][:3]), "selected": model["id"] == chosen,
                       "cloud": model["locality"] != "local"})  # fmt: skip
     for local in (True, False):
-        group = [m for m in presenter.sorted_models(models) if (m.get("locality") == "local") == local]
+        # a model the user hid stays out of the picker (D39) - unless it is the chosen one
+        group = [m for m in presenter.sorted_models(models)
+                 if (m.get("locality") == "local") == local and (not m.get("hidden") or m["id"] == chosen)]  # fmt: skip
         if not group:
             continue
         items.append({"section": "Локальные · на этой видеокарте" if local else "Облако", "id": ""})

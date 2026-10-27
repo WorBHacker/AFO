@@ -101,8 +101,9 @@ Window {
     MenuPopup {
         id: modelMenu
         menuWidth: 430
-        items: App.pickerItems
-        onChosen: (id) => App.chooseModel(id)
+        items: App.pickerItems.concat([{ section: " ", id: "" },
+                                       { id: "+settings", name: "Настроить модели…", icon: "sliders" }])
+        onChosen: (id) => id === "+settings" ? modelsSheet.openFor(App.modelId) : App.chooseModel(id)
         function openAt(item) { anchor = item; open() }
     }
     MenuPopup {
@@ -170,6 +171,7 @@ Window {
     ContextSheet { id: contextSheet }
     CardSheet { id: cardSheet }
     ProgramsSheet { id: programsSheet }
+    ModelsSheet { id: modelsSheet }
     NewProgramPopup {}
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
@@ -183,6 +185,7 @@ Window {
             else if (what === "approvals") waitingPopup.open()
             else if (what === "agents") agentsSheet.open()
             else if (what === "programs") programsSheet.open()
+            else if (what === "model-settings") modelsSheet.openFor("")
             else if (what === "connections") connectionsSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
