@@ -3,7 +3,7 @@ import QtQuick
 // An error or a refusal, as a card outlined in the error colour.
 Rectangle {
     id: card
-    property var row: ({})
+    property var row: ({})  // read as row?.x: while a delegate is torn down, its row is null for a moment
     property int rowIndex: -1
     implicitHeight: column.height + 24
     radius: 8
@@ -28,7 +28,7 @@ Rectangle {
             selectByMouse: true
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
-            text: card.row.text || ""
+            text: card.row?.text || ""
             color: Theme.p.text_soft
             selectionColor: Theme.p.selection
             font.family: Theme.uiFont

@@ -2,6 +2,7 @@
 and a chat that searched counts as one that has read the web. The engines are mocks: nothing leaves this machine."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -31,6 +32,25 @@ def engines(monkeypatch):
 
     def answer(request):
         seen.append(request)
+        if request.url.host == "api.tavily.com":
+            if request.headers.get("Authorization") != "Bearer tvly-good":
+                return httpx.Response(432 if request.headers.get("Authorization") == "Bearer tvly-spent" else 401)
+            body = json.loads(request.content)
+            assert body == {"query": body["query"], "max_results": body["max_results"], "search_depth": "basic"}
+            return httpx.Response(
+                200,
+                json={
+                    "query": body["query"],
+                    "results": [
+                        {
+                            "title": "Tavily <b>hit</b>",
+                            "url": "https://tv.example",
+                            "content": "from Tavily",
+                            "score": 0.9,
+                        }
+                    ],
+                },
+            )
         if request.url.host == "api.search.brave.com":
             if request.headers.get("X-Subscription-Token") != "BSA-good-key":
                 return httpx.Response(401, json={"error": "bad key"})
@@ -63,7 +83,7 @@ def at(db, url):
 def test_brave_results_become_text(engines, db):
     store = MemorySecretStore({conns.BRAVE_SEARCH_KEY: "BSA-good-key"})
     at(db, "http://127.0.0.1:8888")
-    assert run(websearch.engine(store, db)) == "brave"  # Brave when both are connected
+    assert run(websearch.engines(store, db)) == ["searxng", "brave"]  # the free one first
     found = run(websearch.search("difflib", engine="brave", store=store, db=db, count=5))
     assert found[0] == {"title": "Python difflib", "url": "https://docs.python.org/3/library/difflib.html",
                         "snippet": "Helpers for computing deltas & diffs. More."}  # fmt: skip
@@ -116,3 +136,29 @@ def test_without_an_engine_the_model_hears_how_to_get_one(hub, repo, engines):  
     assert result["error"] is True and "no search engine is connected" in result["output"]
     assert hub.get("/v1/approvals").json()["approvals"] == []  # nothing to ask about
     assert engines == []
+
+
+def test_tavily_and_the_next_engine_when_one_fails(engines, db):
+    store = MemorySecretStore({conns.TAVILY_API_KEY: "tvly-good"})
+    found = run(websearch.search("q", engine="tavily", store=store, db=db, count=3))
+    assert found == [{"title": "Tavily hit", "url": "https://tv.example", "snippet": "from Tavily"}]
+    store.set(conns.TAVILY_API_KEY, "tvly-spent")
+    with pytest.raises(websearch.SearchError, match="used up"):
+        run(websearch.search("q", engine="tavily", store=store, db=db))
+
+    # SearXNG first; it refuses, Tavily answers
+    at(db, "http://127.0.0.1:9999")
+    store.set(conns.TAVILY_API_KEY, "tvly-good")
+    assert run(websearch.engines(store, db)) == ["searxng", "tavily"]
+    answered, found = run(websearch.search_any("q", store=store, db=db))
+    assert answered == "tavily" and found[0]["url"] == "https://tv.example"
+    store.set(conns.TAVILY_API_KEY, "tvly-wrong")  # both fail: the model hears both reasons
+    with pytest.raises(websearch.SearchError, match=r"enable `json`.*; Tavily refused the key"):
+        run(websearch.search_any("q", store=store, db=db))
+    with pytest.raises(websearch.SearchError, match="no search engine is connected"):
+        run(websearch.search_any("q", store=MemorySecretStore(), db=_empty(db)))
+
+
+def _empty(db):
+    db.call(lambda conn: conns.set_address(conn, conns.SEARXNG_URL, None))
+    return db

@@ -45,6 +45,7 @@ DEEPSEEK_API_KEY = "deepseek_api_key"
 OPENROUTER_API_KEY = "openrouter_api_key"
 CHOSEN_PREFIX = "models."  # a provider's chosen models (OpenRouter's hundreds) in the settings table
 BRAVE_SEARCH_KEY = "brave_search_api_key"
+TAVILY_API_KEY = "tavily_api_key"
 SEARXNG_URL = "searxng_url"
 TELEGRAM_TOKEN = "telegram_bot_token"
 
@@ -75,10 +76,14 @@ CONNECTIONS: list[Connection] = [
     Connection(OPENROUTER_API_KEY, "OpenRouter", "key", "Сотни моделей разных компаний по одному ключу; какие "
                "показывать в списке — кнопка «Модели…»", "https://openrouter.ai/settings/keys", "sk-or-…",
                provider="openrouter", choose=True),
-    Connection(BRAVE_SEARCH_KEY, "Brave Search", "key", "Поиск в сети для моделей (web_search)",
+    Connection(SEARXNG_URL, "SearXNG", "address", "Свой поисковик для web_search — бесплатно и без лимитов; "
+               "адрес сервера (ищется первым)", "https://docs.searxng.org/admin/installation-docker.html",
+               "http://127.0.0.1:8888"),
+    Connection(TAVILY_API_KEY, "Tavily", "key", "Поиск в сети для моделей (web_search): 1000 поисков в месяц "
+               "бесплатно, без карты", "https://app.tavily.com/home", "tvly-…"),
+    Connection(BRAVE_SEARCH_KEY, "Brave Search", "key", "Поиск в сети для моделей (web_search): $5 за 1000 "
+               "поисков, $5 в месяц в подарок, нужна карта (ищется последним)",
                "https://api-dashboard.search.brave.com/app/keys", "BSA…"),
-    Connection(SEARXNG_URL, "SearXNG", "address", "Свой поисковик для web_search вместо Brave: адрес сервера",
-               "https://docs.searxng.org/admin/installation-docker.html", "http://127.0.0.1:8888"),
     Connection(TELEGRAM_TOKEN, "Telegram-бот", "token", "Подтверждения с телефона: токен вашего бота",
                "https://t.me/BotFather", "123456789:AA…"),
 ]  # fmt: skip

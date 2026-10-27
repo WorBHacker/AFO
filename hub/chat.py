@@ -567,19 +567,19 @@ class ChatService:
             return "web search is not available here", True
         engine = await websearch.engine(self.secrets, self._db)
         if engine is None:
-            return ("no search engine is connected: the user adds a Brave Search key or a SearXNG address in the "
-                    "window's Connections"), True  # fmt: skip
+            return ("no search engine is connected: the user adds a SearXNG address, a Tavily key or a Brave Search "
+                    "key in the window's Connections"), True  # fmt: skip
         project = ctx.projects[0] if ctx.projects else None
         shown = {"query": query, "engine": websearch.ENGINES[engine]}
         allowed, why = await self._ask_user(conversation_id, call["name"], shown, project, cancel)
         if not allowed:
             return why, True
-        try:
-            found = await websearch.search(query, engine=engine, store=self.secrets, db=self._db,
-                                           count=args.get("count") or websearch.DEFAULT_COUNT)  # fmt: skip
+        try:  # the first engine connected; when it fails, the next one
+            count = args.get("count") or websearch.DEFAULT_COUNT
+            answered, found = await websearch.search_any(query, store=self.secrets, db=self._db, count=count)
         except (ToolError, ValueError, TypeError) as exc:
             return str(exc), True
-        return websearch.as_text(query, engine, found), False
+        return websearch.as_text(query, answered, found), False
 
     async def _read_the_web(self, conversation_id: str) -> bool:
         """Has the model in this chat read a web page or searched? Then its writes and commands are asked every time

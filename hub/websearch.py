@@ -1,9 +1,11 @@
-"""web_search (stage 5.4, D19, Q13): the hub's web search for any model - Brave Search API or the user's SearXNG.
+"""web_search (stage 5.4, D19, Q13): the hub's web search for any model - the user's SearXNG, Tavily or Brave Search.
 
-The engine is the one the user connected in the window's Connections: Brave by its key, SearXNG by its address; Brave
-when both are. A search is asked like any network request (D19) - the query leaves this computer - and what comes back
-is web content: a chat that searched counts as one that has read the web (hub/chat.py). Results are titles, addresses
-and snippets, secrets in them masked; a page itself is read with web_fetch.
+The engines are the ones the user connected in the window's Connections: SearXNG by its address, Tavily and Brave by
+their keys. The free ones come first - the user's own SearXNG (no limits), then Tavily (1000 searches a month free),
+then Brave (paid past a monthly credit) - and when one fails, the next one connected is tried. A search is asked like
+any network request (D19) - the query leaves this computer - and what comes back is web content: a chat that searched
+counts as one that has read the web (hub/chat.py). Results are titles, addresses and snippets, secrets in them masked;
+a page itself is read with web_fetch.
 """
 
 from __future__ import annotations
@@ -21,11 +23,12 @@ from .secrets import SecretStore
 from .tools import ToolError
 
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+TAVILY_URL = "https://api.tavily.com/search"
 TIMEOUT_S = 15.0
 DEFAULT_COUNT = 5
 MAX_COUNT = 10
 SNIPPET_CHARS = 400
-ENGINES = {"brave": "Brave Search", "searxng": "SearXNG"}
+ENGINES = {"searxng": "SearXNG", "tavily": "Tavily", "brave": "Brave Search"}  # in the order they are tried
 TRANSPORT: httpx.AsyncBaseTransport | None = None  # tests put a mock here; the hub leaves it None
 
 WEB_SEARCH: dict[str, Any] = {
@@ -57,12 +60,31 @@ def _plain(text: Any, limit: int = SNIPPET_CHARS) -> str:
     return clean(flat[:limit])
 
 
-async def engine(store: SecretStore, db: Database) -> str | None:
-    """The engine the user connected: Brave first, then SearXNG; None without either."""
-    if store.get(conns.BRAVE_SEARCH_KEY):
-        return "brave"
+async def engines(store: SecretStore, db: Database) -> list[str]:
+    """The engines the user connected, in the order they are tried: the free ones first."""
     url = await db.acall(lambda conn: conns.address(conn, conns.SEARXNG_URL))
-    return "searxng" if url else None
+    connected = {"searxng": bool(url), "tavily": bool(store.get(conns.TAVILY_API_KEY)),
+                 "brave": bool(store.get(conns.BRAVE_SEARCH_KEY))}  # fmt: skip
+    return [name for name in ENGINES if connected[name]]
+
+
+async def engine(store: SecretStore, db: Database) -> str | None:
+    """The engine tried first; None when none is connected."""
+    found = await engines(store, db)
+    return found[0] if found else None
+
+
+async def search_any(query: str, *, store: SecretStore, db: Database, count: int = DEFAULT_COUNT) -> tuple[str, list]:
+    """(the engine that answered, its results), trying the connected engines in order until one answers."""
+    failures = []
+    for name in await engines(store, db):
+        try:
+            return name, await search(query, engine=name, store=store, db=db, count=count)
+        except SearchError as exc:
+            failures.append(str(exc))
+    if not failures:
+        raise SearchError("no search engine is connected: the user adds one in the window's Connections")
+    raise SearchError("; ".join(failures))
 
 
 async def search(query: str, *, engine: str, store: SecretStore, db: Database, count: int = DEFAULT_COUNT,
@@ -73,6 +95,8 @@ async def search(query: str, *, engine: str, store: SecretStore, db: Database, c
         try:
             if engine == "brave":
                 found = await _brave(http, query, count, store.get(conns.BRAVE_SEARCH_KEY) or "")
+            elif engine == "tavily":
+                found = await _tavily(http, query, count, store.get(conns.TAVILY_API_KEY) or "")
             else:
                 base = await db.acall(lambda conn: conns.address(conn, conns.SEARXNG_URL))
                 found = await _searxng(http, query, base)
@@ -95,6 +119,24 @@ async def _brave(http: httpx.AsyncClient, query: str, count: int, key: str) -> l
     results = ((response.json().get("web") or {}).get("results")) or []
     return [{"title": _plain(r.get("title"), 200), "url": str(r.get("url", "")),
              "snippet": _plain(" ".join([str(r.get("description") or ""), *(r.get("extra_snippets") or [])[:1]]))}
+            for r in results if r.get("url")]  # fmt: skip
+
+
+async def _tavily(http: httpx.AsyncClient, query: str, count: int, key: str) -> list[dict[str, str]]:
+    if not key:
+        raise SearchError("no Tavily key: the user adds it in the window's Connections")
+    response = await http.post(TAVILY_URL, json={"query": query, "max_results": count, "search_depth": "basic"},
+                               headers={"Authorization": f"Bearer {key}"})  # fmt: skip
+    if response.status_code == 401:
+        raise SearchError("Tavily refused the key: the user checks it in the window's Connections")
+    if response.status_code == 432:
+        raise SearchError("Tavily: the plan's searches for this month are used up")
+    if response.status_code in (429, 433):
+        raise SearchError("Tavily: too many searches right now or the spending limit is reached; try again later")
+    if response.status_code != 200:
+        raise SearchError(f"Tavily answered {response.status_code}")
+    results = response.json().get("results") or []
+    return [{"title": _plain(r.get("title"), 200), "url": str(r.get("url", "")), "snippet": _plain(r.get("content"))}
             for r in results if r.get("url")]  # fmt: skip
 
 

@@ -3,7 +3,7 @@ import QtQuick
 // The user's message: a card on the right.
 Item {
     id: message
-    property var row: ({})
+    property var row: ({})  // read as row?.x: while a delegate is torn down, its row is null for a moment
     property int rowIndex: -1
     implicitHeight: bubble.height
     Rectangle {
@@ -23,7 +23,7 @@ Item {
             selectByMouse: true
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
-            text: message.row.text || ""
+            text: message.row?.text || ""
             color: Theme.p.text
             selectionColor: Theme.p.selection
             selectedTextColor: Theme.p.text

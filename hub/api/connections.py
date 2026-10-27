@@ -245,8 +245,9 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
         except ProviderError as exc:
             return False, exc.detail
         return bool(models), f"ключ работает: моделей — {len(models)}" if models else "ключ принят, но моделей нет"
-    if connection.name in (conns.BRAVE_SEARCH_KEY, conns.SEARXNG_URL):
-        engine = "brave" if connection.name == conns.BRAVE_SEARCH_KEY else "searxng"
+    engines = {conns.BRAVE_SEARCH_KEY: "brave", conns.TAVILY_API_KEY: "tavily", conns.SEARXNG_URL: "searxng"}
+    if connection.name in engines:
+        engine = engines[connection.name]
         try:
             found = await websearch.search("LocalChat", engine=engine, store=state.secrets, db=state.db, count=3)
         except websearch.SearchError as exc:

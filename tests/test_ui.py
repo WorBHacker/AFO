@@ -2358,3 +2358,27 @@ def test_dragging_the_window_by_its_bars(qapp):
         assert [w for w in quick.warnings if "startSystemMove" in w or "Window.window" in w] == []
     finally:
         quick.close()
+
+
+def test_reloading_the_open_chat_leaves_no_warnings(qapp):
+    """After a reconnect the open chat is fetched again; while its rows are replaced, no message fails on a
+    null row."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        wait_until(lambda: app.messages.rowCount() > 0)
+        for _ in range(20):
+            QApplication.processEvents()
+        app.messages.reset([])  # what a reload does first
+        app.openChat(app.current)
+        wait_until(lambda: app.messages.rowCount() > 0)
+        for _ in range(20):
+            QApplication.processEvents()
+        assert [w for w in quick.warnings if "Message.qml" in w] == []
+    finally:
+        quick.close()
