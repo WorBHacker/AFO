@@ -628,6 +628,10 @@ class FakeClient:
         self.pending = [a for a in self.pending if a["id"] != approval_id]
         return {"id": approval_id, "status": "allowed" if allow else "denied"}
 
+    def unload_local(self):
+        self.unloaded = getattr(self, "unloaded", 0) + 1
+        return {"unloaded": True}
+
     def autostart(self):
         return dict(self.started)
 
@@ -2380,5 +2384,32 @@ def test_reloading_the_open_chat_leaves_no_warnings(qapp):
         for _ in range(20):
             QApplication.processEvents()
         assert [w for w in quick.warnings if "Message.qml" in w] == []
+    finally:
+        quick.close()
+
+
+def test_unloading_the_local_model_from_the_sidebar_is_asked_first(qapp):
+    from PySide6.QtQuick import QQuickItem
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: app.status.get("loaded") == ["coder"])
+        sidebar = quick.window.findChild(QQuickItem, "loadedModelCard")
+        assert sidebar is not None and sidebar.property("visible")  # coder is in memory: the card shows
+        app.askUnloadLocal()
+        assert app.question["title"] == "Выгрузить coder?" and app.question["confirm"] == "Выгрузить"
+        app.answer(False)
+        QApplication.processEvents()
+        assert getattr(app.client, "unloaded", 0) == 0  # said no: nothing happens
+        app.askUnloadLocal()
+        app.answer(True)
+        wait_until(lambda: getattr(app.client, "unloaded", 0) == 1)
+        app._show_status({**STATUS, "local": {"reachable": True, "running": []}})
+        QApplication.processEvents()
+        assert not sidebar.property("visible")  # nothing in memory: no card
     finally:
         quick.close()

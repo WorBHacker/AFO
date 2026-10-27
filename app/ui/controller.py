@@ -514,6 +514,19 @@ class Controller(QObject):
     def unloadLocal(self) -> None:
         self._call(lambda: self.client.unload_local(), lambda _r: self.flash("Локальная модель выгружена"))
 
+    @Slot()
+    def askUnloadLocal(self) -> None:
+        """The sidebar's button: the loaded local model gives its VRAM and RAM back - asked first."""
+        names = ", ".join(self._status.get("loaded") or [])
+
+        def decide(yes: bool) -> None:
+            if yes:
+                self.unloadLocal()
+
+        self._ask(f"Выгрузить {names or 'локальную модель'}?", "Освободятся видеопамять и оперативная память, которые "
+                  "она занимает. Следующий запрос к ней загрузит её заново — это займёт от 20 секунд до минуты.",
+                  "Выгрузить", decide)  # fmt: skip
+
     # ================= the machine, money =================
 
     def refresh_status(self) -> None:

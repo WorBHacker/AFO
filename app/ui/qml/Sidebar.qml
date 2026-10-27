@@ -106,7 +106,7 @@ Rectangle {
         visible: App.mode === "projects"
         y: tabs.y + tabs.height + 10
         width: parent.width
-        height: hubCard.y - y - 8
+        height: footer.y - y - 8
         onProjectMenuRequested: (anchor) => sidebar.projectMenuRequested(anchor)
         onAddRequested: sidebar.addProjectRequested()
     }
@@ -149,7 +149,7 @@ Rectangle {
         x: 8
         y: newChat.y + newChat.height + 12
         width: parent.width - 16
-        height: hubCard.y - y - 8
+        height: footer.y - y - 8
         clip: true
         model: App.chats
         spacing: 2
@@ -226,45 +226,93 @@ Rectangle {
         }
     }
 
-    Rectangle {
-        id: hubCard
+    Column {
+        id: footer
         x: 12
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 12
         width: parent.width - 24
-        height: 40
-        radius: 8
-        color: "transparent"
-        border.color: Theme.p.hairline
-        Row {
-            x: 12
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 8
-            Icon { name: "layers"; anchors.verticalCenter: parent.verticalCenter }
-            Text {
-                text: "Хаб · " + App.modelCountText
-                color: Theme.p.muted
-                font.family: Theme.uiFont
-                font.pixelSize: 12
+        spacing: 8
+
+        // the local model in memory, and a way to give its VRAM and RAM back (asked first)
+        Rectangle {
+            id: modelCard
+            objectName: "loadedModelCard"
+            visible: (App.status.loaded || []).length > 0
+            width: parent.width
+            height: 40
+            radius: 8
+            color: "transparent"
+            border.color: Theme.p.hairline
+            Row {
+                x: 12
+                width: parent.width - unloadButton.width - 24
                 anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                Icon { name: "cpu"; tint: Theme.p.accent; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                    width: parent.width - 24
+                    elide: Text.ElideRight
+                    text: App.status.local || ""
+                    color: Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+            PlainButton {
+                id: unloadButton
+                objectName: "unloadModel"
+                anchors.right: parent.right
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: 30
+                iconName: "power"
+                text: "Выгрузить"
+                onClicked: App.askUnloadLocal()
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: "Выгрузить модель из видеопамяти и ОЗУ (с подтверждением)"
             }
         }
-        IconButton {
-            id: settingsButton
-            anchors.right: parent.right
-            anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
-            iconName: "sliders"
-            tip: "Настройки (Ctrl+,)"
-            onClicked: sidebar.settingsRequested()
-        }
-        IconButton {
-            id: themeButton
-            anchors.right: settingsButton.left
-            anchors.verticalCenter: parent.verticalCenter
-            iconName: Theme.dark ? "moon" : "sun"
-            tip: "Тема"
-            onClicked: sidebar.themeMenuRequested(themeButton)
+
+        Rectangle {
+            id: hubCard
+            width: parent.width
+            height: 40
+            radius: 8
+            color: "transparent"
+            border.color: Theme.p.hairline
+            Row {
+                x: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                Icon { name: "layers"; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                    text: "Хаб · " + App.modelCountText
+                    color: Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+            IconButton {
+                id: settingsButton
+                anchors.right: parent.right
+                anchors.rightMargin: 6
+                anchors.verticalCenter: parent.verticalCenter
+                iconName: "sliders"
+                tip: "Настройки (Ctrl+,)"
+                onClicked: sidebar.settingsRequested()
+            }
+            IconButton {
+                id: themeButton
+                anchors.right: settingsButton.left
+                anchors.verticalCenter: parent.verticalCenter
+                iconName: Theme.dark ? "moon" : "sun"
+                tip: "Тема"
+                onClicked: sidebar.themeMenuRequested(themeButton)
+            }
         }
     }
 }
