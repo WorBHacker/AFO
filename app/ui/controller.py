@@ -1163,7 +1163,7 @@ class Controller(QObject):
             self.agents.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
-        elif kind == "model.settings":
+        elif kind in ("model.settings", "llama.config"):
             self.model_setup.on_event(kind, payload)
         elif kind == "claude_code.limit":
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)

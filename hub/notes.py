@@ -10,9 +10,10 @@ import sqlite3
 from typing import Any
 
 from .db import utc_now
+from .limits import limit
 
 NOTE_MAX_CHARS = 1000
-NOTES_BUDGET_CHARS = 4000  # ~1K tokens (D22)
+NOTES_CHARS_PER_TOKEN = 4  # the budget is in tokens (D22, hub/limits.py): ~1K tokens by default
 
 
 class NoteError(Exception):
@@ -65,7 +66,7 @@ def notes_layer(project_name: str, notes: list[dict[str, Any]]) -> str:
     used = 0
     for note in reversed(notes):
         line = f"- {note['text']}"
-        if used + len(line) > NOTES_BUDGET_CHARS:
+        if used + len(line) > limit("notes") * NOTES_CHARS_PER_TOKEN:
             break
         lines.insert(0, line)
         used += len(line) + 1

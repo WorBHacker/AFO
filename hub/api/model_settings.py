@@ -16,8 +16,10 @@ from pydantic import BaseModel
 
 from .. import budgets, model_settings, store
 from ..auth import APP_CLIENT, Client
+from ..db import utc_now
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
+from ..limits import LIMITS
 from .deps import require_client
 
 router = APIRouter(prefix="/v1")
@@ -44,7 +46,8 @@ def _described(request: Request, model_id: str, model: dict | None, number: int,
     accepts = sorted(request.app.state.gateway.accepts(model_id)) if model is not None else []
     return {"model_id": model_id, "model": model, "version": number, "settings": settings, "history": past,
             "accepts": accepts, "params": list(model_settings.PARAMS), "presets": model_settings.PRESETS,
-            "efforts": list(model_settings.EFFORTS), "roles": list(model_settings.ROLES)}  # fmt: skip
+            "efforts": list(model_settings.EFFORTS), "roles": list(model_settings.ROLES),
+            "limits": {k: {"default": v[0], "low": v[1], "high": v[2]} for k, v in LIMITS.items()}}  # fmt: skip
 
 
 @router.get("/model_settings")
@@ -117,10 +120,14 @@ class Check(BaseModel):
 async def check(request: Request, body: Check, client: Annotated[Client, Depends(require_app)]) -> dict:
     """One short answer with the model's settings and system prompts: its words, how soon the first one came, how
     fast the rest, what it cost (recorded as usage of the app, so budgets count it)."""
-    state = request.app.state
     model = await _known(request, body.model_id)
     if model is None or not model["enabled"]:
         raise HTTPException(status_code=404, detail="this model is not offered now")
+    return await run_check(request.app.state, model, client)
+
+
+async def run_check(state: Any, model: dict[str, Any], client: Client) -> dict:
+    """The check itself - also the trial of a local model's new launch settings (hub/api/llama.py)."""
     if model["prices"] and await state.db.acall(lambda conn: budgets.reached(conn, model["id"])):
         raise HTTPException(status_code=402, detail="a budget for this model is used up")
     number, own = await state.db.acall(lambda conn: model_settings.current(conn, model["id"]))
@@ -166,3 +173,54 @@ async def check(request: Request, body: Check, client: Annotated[Client, Depends
             "seconds": round(time.monotonic() - started, 1), "ttft_s": stats.get("ttft_s"),
             "tok_s": stats.get("tok_s"), "output_tokens": usage.get("output_tokens", 0), "cost_usd": cost,
             "params": params}  # fmt: skip
+
+
+EXPORT_KIND = "localchat-model-settings"
+
+
+@router.get("/model_settings/export")
+async def export(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """Every model's settings as they are now, and the general row - a file to keep or to take to another hub."""
+    current = await request.app.state.db.acall(model_settings.all_current)
+    return {"kind": EXPORT_KIND, "version": 1, "exported_at": utc_now(),
+            "general": current.get(model_settings.ALL, (0, {}))[1],
+            "models": {mid: settings for mid, (_n, settings) in sorted(current.items()) if mid}}  # fmt: skip
+
+
+class Imported(BaseModel):
+    data: dict[str, Any]
+
+
+@router.post("/model_settings/import")
+async def import_settings(request: Request, body: Imported, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """An exported file back: each model of this hub gets its settings as a new version; a model this hub does not
+    have is skipped, a role naming one is dropped; a wrong value is said, and the rest still saved."""
+    data = body.data
+    if data.get("kind") != EXPORT_KIND:
+        raise HTTPException(status_code=422, detail="это не файл настроек моделей LocalChat")
+    db = request.app.state.db
+
+    def apply(conn):
+        known = {m["id"] for m in store.list_models(conn, enabled_only=False)}
+        report: dict[str, Any] = {"saved": [], "skipped": [], "errors": {}}
+        general = dict(data.get("general") or {})
+        roles = general.get("roles") or {}
+        report["skipped"] += [f"роль {role}: {mid}" for role, mid in roles.items() if mid not in known]
+        general["roles"] = {role: mid for role, mid in roles.items() if mid in known}
+        entries = [(model_settings.ALL, {k: general.get(k) for k in ("system_prompt", "roles")})]
+        entries += list((data.get("models") or {}).items())
+        for model_id, settings in entries:
+            if model_id and model_id not in known:
+                report["skipped"].append(model_id)
+                continue
+            try:
+                model_settings.save(conn, model_id, settings, by=f"{client.name} (импорт)")
+            except model_settings.SettingsError as exc:
+                report["errors"][model_id or "общие"] = str(exc)
+                continue
+            report["saved"].append(model_id or "общие")
+        return report
+
+    report = await db.acall(apply)
+    await request.app.state.bus.publish("model.settings", {"model_id": "*", "imported": len(report["saved"])})
+    return report

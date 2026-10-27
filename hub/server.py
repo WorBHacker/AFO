@@ -29,6 +29,7 @@ from .api import (
     editor,
     events_ws,
     links,
+    llama,
     model_settings,
     models,
     notes,
@@ -162,6 +163,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(events_ws.router)
     app.include_router(models.router)
     app.include_router(model_settings.router)
+    app.include_router(llama.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)

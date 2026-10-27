@@ -2,6 +2,7 @@
 history and a streamed answer (no QML warnings allowed). Offscreen, software scene graph."""
 
 import copy
+import json
 import os
 import time
 from datetime import UTC, datetime, timedelta
@@ -249,6 +250,15 @@ APPROVAL = {
 }
 
 
+LLAMA = [
+    {"id": "coder", "name": "Coder", "engine": "strata", "editable": False, "ttl": 0,
+     "profile": "C:/Strata/launch/coder.json"},
+    {"id": "big", "name": "Big", "engine": "llama.cpp", "editable": True, "ttl": 0, "file": "F:/big.gguf",
+     "mmproj": "", "mmproj_on_gpu": True, "context": 32768, "gpu_layers": "all", "flash_attn": "on",
+     "cache_type": "q8_0", "parallel": 1,
+     "info": {"layers": 64, "kv_layers": 16, "kv_heads": 4, "key_length": 256, "value_length": 256,
+              "size_bytes": 12 * 1024**3}},
+]  # fmt: skip
 PRESETS = {
     "precise": {"temperature": 0.2, "top_p": 0.9, "top_k": 20},
     "creative": {"temperature": 1.0, "top_p": 0.98, "top_k": 100},
@@ -306,6 +316,8 @@ class FakeClient:
         self.answers = []
         self.claude_terminals = []
         self.model_saved = {}  # model id -> [settings of each version]
+        self.exported = {}
+        self.imported = []
         self.model_calls = []
 
     def models(self):
@@ -338,6 +350,26 @@ class FakeClient:
         self.model_calls.append(("revert", model_id, version))
         self.model_saved[model_id].append(self.model_saved[model_id][version - 1])
         return self._model_info(model_id)
+
+    def llama_models(self):
+        return {"models": [dict(m) for m in LLAMA], "vram_total_mib": 16384, "backups": []}
+
+    def change_llama_model(self, model_id, changes):
+        self.model_calls.append(("launch", model_id, changes))
+        LLAMA_DONE = [{**m, **changes} if m["id"] == model_id else m for m in LLAMA]
+        return {"changed": True, "verified": True, "backup": "config.yaml.bak-2026-10-27-230000",
+                "models": LLAMA_DONE}  # fmt: skip
+
+    def trial_llama_model(self, model_id):
+        self.model_calls.append(("trial", model_id))
+        return {"ok": False, "error": "llama-swap: upstream command exited", "restored": "config.yaml.bak-1"}
+
+    def export_model_settings(self):
+        return self.exported
+
+    def import_model_settings(self, data):
+        self.imported.append(data)
+        return {"saved": list(data.get("models") or {}), "skipped": [], "errors": {}}
 
     def check_model(self, model_id):
         self.model_calls.append(("check", model_id))
@@ -3386,3 +3418,68 @@ def test_roles_in_the_window(app):
     assert saved[1:] == ("", {"roles": {"chat": "llama-swap/coder", "agents": "llama-swap/coder",
                                         "fallback": "anthropic/claude-opus-5-5"}})  # fmt: skip
     assert ms.settings_of({**ms.BLANK, "roles": {"chat": ""}}, [], general=True) == {}
+
+
+def test_a_local_models_launch_in_the_window(app):
+    from app.ui import model_setup as ms
+
+    big = LLAMA[1]
+    draft = ms.launch_draft(big)
+    assert draft == {"context": "32768", "gpu_mode": "all", "gpu_n": "", "flash_attn": "on", "cache_type": "q8_0",
+                     "parallel": "1", "ttl_min": "0"}  # fmt: skip
+    assert ms.launch_changes(draft, big) == {}
+    changed = {**draft, "context": "65536", "gpu_mode": "n", "gpu_n": "40", "ttl_min": "15", "cache_type": "q4_0"}
+    assert ms.launch_changes(changed, big) == {"ttl": 900, "context": 65536, "gpu_layers": 40, "cache_type": "q4_0"}
+    assert ms.launch_changes({**draft, "context": "65536", "ttl_min": "5"}, LLAMA[0]) == {"ttl": 300}  # Strata: ttl
+    with pytest.raises(ValueError, match="не число"):
+        ms.launch_changes({**draft, "context": "много"}, big)
+    assert "помещается в видеопамять целиком" in ms.launch_estimate(draft, big, 16384)
+    assert "не поместится" in ms.launch_estimate({**draft, "context": "1048576", "cache_type": "f16"}, big, 16384)
+    assert ms.launch_estimate(draft, {**big, "info": None, "file_error": "нет файла"}, 16384).endswith("нет файла")
+
+    app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                               "provider": "llama-swap", "prices": {}}])  # fmt: skip
+    setup = app.model_setup
+    setup.open("llama-swap/coder")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("engine") == "strata")
+    assert not setup.launch["editable"] and setup.launchEstimate == ""
+    setup.open("anthropic/claude-opus-5-5")
+    wait_until(lambda: not app.bg.busy and not setup.loading)
+    assert setup.launch == {}  # a cloud model: nothing to launch
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("engine") == "llama.cpp")
+    assert not setup.launchDirty and "целиком" in setup.launchEstimate
+    setup.setLaunch("context", "262144")  # its KV cache alone 9 GB: what does not fit goes to RAM
+    setup.setLaunch("gpu_mode", "auto")
+    assert setup.launchDirty and "сам положит" in setup.launchEstimate
+    setup.saveLaunch()
+    wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+    launched = next(c for c in reversed(app.client.model_calls) if c[0] == "launch")
+    assert launched == ("launch", "big", {"context": 262144, "gpu_layers": "auto"})
+    assert "llama-swap перечитал" in setup.launchStatus and not setup.launchDirty
+    setup.trialLaunch()
+    wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+    assert "не запустилась — конфиг возвращён из config.yaml.bak-1" in setup.launchStatus
+
+
+def test_budgets_and_settings_files_in_the_window(app, tmp_path):
+    from app.ui import model_setup as ms
+
+    draft = ms.draft_of({"context_budget": {"map": 500, "file_lines": 600}})
+    assert (draft["budget_map"], draft["budget_file_lines"], draft["budget_live"]) == ("500", "600", "")
+    assert ms.settings_of(draft, [])["context_budget"] == {"map": 500, "file_lines": 600}
+    with pytest.raises(ValueError, match="целое"):
+        ms.settings_of({**draft, "budget_map": "1.5"}, [])
+    app.client.exported = {"kind": "localchat-model-settings", "models": {"llama-swap/coder": {"name": "К"}}}
+    target = tmp_path / "models.json"
+    app.model_setup.exportTo(target.as_uri())
+    wait_until(lambda: not app.bg.busy and target.exists())
+    assert json.loads(target.read_text(encoding="utf-8"))["models"] == {"llama-swap/coder": {"name": "К"}}
+    assert "записаны в models.json" in app.flashText
+    app.model_setup.importFrom(target.as_uri())
+    wait_until(lambda: not app.bg.busy and app.client.imported)
+    assert app.client.imported[-1]["models"] == {"llama-swap/coder": {"name": "К"}}
+    wait_until(lambda: "Загружено: 1" in app.flashText)
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    app.model_setup.importFrom((tmp_path / "broken.json").as_uri())
+    assert "Файл не прочитан" in app.flashText

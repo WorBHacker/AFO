@@ -50,11 +50,19 @@ class HubClient:
         self._http.close()
 
     def _call(
-        self, method: str, path: str, body: dict | None = None, params: dict | None = None, headers: dict | None = None
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        params: dict | None = None,
+        headers: dict | None = None,
+        timeout: float | None = None,
     ) -> Any:
+        """`timeout`: seconds for a request known to take long (a local model loading from disk)."""
+        extra = {"timeout": httpx.Timeout(timeout, connect=3.0)} if timeout else {}
         try:
             response = self._http.request(method, path, json=body, params=params,
-                                          headers={**self._headers, **(headers or {})})  # fmt: skip
+                                          headers={**self._headers, **(headers or {})}, **extra)  # fmt: skip
         except httpx.HTTPError as exc:
             raise HubError(f"хаб не отвечает ({exc})") from exc
         if response.status_code >= 400:
@@ -90,8 +98,30 @@ class HubClient:
     def revert_model_settings(self, model_id: str, version: int) -> dict:
         return self._call("POST", "/v1/model_settings/revert", {"model_id": model_id, "version": version})
 
+    # --- a local model's launch settings in llama-swap (stage 8.5) ---
+
+    def llama_models(self) -> dict:
+        return self._call("GET", "/v1/llama/models")
+
+    def change_llama_model(self, model_id: str, changes: dict) -> dict:
+        return self._call("PUT", f"/v1/llama/models/{model_id}", {"changes": changes}, timeout=60)
+
+    def trial_llama_model(self, model_id: str) -> dict:
+        """The model loads with its settings first (minutes from a disk): the window waits as long as the hub."""
+        return self._call("POST", f"/v1/llama/models/{model_id}/trial", timeout=330)
+
+    def restore_llama(self, backup: str) -> dict:
+        return self._call("POST", "/v1/llama/restore", {"backup": backup}, timeout=60)
+
+    def export_model_settings(self) -> dict:
+        return self._call("GET", "/v1/model_settings/export")
+
+    def import_model_settings(self, data: dict) -> dict:
+        return self._call("POST", "/v1/model_settings/import", {"data": data})
+
     def check_model(self, model_id: str) -> dict:
-        return self._call("POST", "/v1/models/check", {"model_id": model_id})
+        """A local model may load for minutes first: the hub gives it 5, the window waits a little longer."""
+        return self._call("POST", "/v1/models/check", {"model_id": model_id}, timeout=330)
 
     def status(self) -> dict:
         return self._call("GET", "/v1/status")

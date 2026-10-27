@@ -15,6 +15,7 @@ import asyncio
 import time
 from typing import Any
 
+from .limits import limit
 from .projects import Project, ProjectError, resolve_inside
 from .secret_filter import clean
 from .tools import TERMINAL_LINES, ToolError, plain_terminal_text
@@ -77,8 +78,9 @@ async def run(terminals: Any, project: Project, args: dict[str, Any], *, by: str
         info = await terminals.get(info["id"])
     output = await terminals.output(info["id"], 256 * 1024)
     lines = plain_terminal_text(output.get("data", "")).rstrip("\n").splitlines()
-    tail = "\n".join(lines[-TERMINAL_LINES:])
-    shown = f"last {min(len(lines), TERMINAL_LINES)} of {len(lines)} lines" if lines else "no output"
+    count = limit("terminal_lines")
+    tail = "\n".join(lines[-count:])
+    shown = f"last {min(len(lines), count)} of {len(lines)} lines" if lines else "no output"
     if info["status"] == "running":
         head = (f"still running after {timeout} s in terminal {info['id']} ({title}); it goes on - read it later "
                 f"with terminal_output. {shown}:")  # fmt: skip

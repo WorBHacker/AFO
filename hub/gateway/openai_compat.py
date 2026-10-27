@@ -70,7 +70,11 @@ class OpenAICompatProvider:
         models = []
         for item in response.json().get("data", []):
             ref = item["id"]
+            # llama-swap nests the config's metadata (meta.llamaswap) and also says the context itself
             meta = item.get("meta") or {}
+            meta = {**meta, **(meta.get("llamaswap") or {})}
+            if item.get("context_length") and not meta.get("context"):
+                meta["context"] = item["context_length"]
             models.append(
                 Model(
                     id=f"{self.name}/{ref}",

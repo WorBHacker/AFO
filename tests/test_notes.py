@@ -9,6 +9,7 @@ from common.paths import data_paths
 from hub import notes
 from hub.auth import create_client
 from hub.gateway.base import Model, StreamEvent
+from hub.limits import limit
 from hub.server import create_app
 from hub.settings import HubSettings
 
@@ -17,7 +18,8 @@ def test_the_notes_layer_keeps_to_its_budget():
     many = [{"text": f"заметка {n} " + "x" * 300} for n in range(30)]
     layer = notes.notes_layer("proj", many)
     assert layer.startswith('<notes project="proj"') and "заметка 29" in layer and "заметка 0 " not in layer
-    assert "older note(s) left out to fit the budget" in layer and len(layer) < notes.NOTES_BUDGET_CHARS + 300
+    assert "older note(s) left out to fit the budget" in layer
+    assert len(layer) < limit("notes") * notes.NOTES_CHARS_PER_TOKEN + 300
 
 
 class Echo:

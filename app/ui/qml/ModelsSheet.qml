@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // The models' settings (D39): for the chosen model - shown in the picker or not, its own name, what it can do, its
 // prices, the answer's parameters its provider takes (with the presets), the default reasoning depth and a system
@@ -43,6 +44,23 @@ Sheet {
             placeholderText: labelled.hint
             text: ModelSetup.draft[labelled.fieldId] || ""
             onEditingFinished: ModelSetup.setField(labelled.fieldId, text)
+        }
+    }
+    // a launch setting of llama-swap's config: the same field, its value from the launch draft
+    component LaunchField: Column {
+        id: launchField
+        property string fieldId
+        property string label
+        property string hint
+        width: 150
+        spacing: 4
+        Label { text: launchField.label }
+        Field {
+            objectName: "launch_" + launchField.fieldId
+            width: parent.width
+            placeholderText: launchField.hint
+            text: ModelSetup.launchDraft[launchField.fieldId] || ""
+            onEditingFinished: ModelSetup.setLaunch(launchField.fieldId, text)
         }
     }
     component Prompt: Rectangle {
@@ -149,6 +167,37 @@ Sheet {
                 }
             }
         }
+    }
+    Row {
+        visible: ModelSetup.general
+        spacing: 8
+        PlainButton {
+            objectName: "exportModelSettings"
+            iconName: "external"
+            text: "Сохранить настройки всех моделей в файл…"
+            onClicked: exportDialog.open()
+        }
+        PlainButton {
+            objectName: "importModelSettings"
+            iconName: "folder"
+            text: "Загрузить из файла…"
+            onClicked: importDialog.open()
+        }
+    }
+    FileDialog {
+        id: exportDialog
+        title: "Сохранить настройки моделей"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: ["Настройки моделей (*.json)"]
+        onAccepted: ModelSetup.exportTo(selectedFile.toString())
+    }
+    FileDialog {
+        id: importDialog
+        title: "Загрузить настройки моделей"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Настройки моделей (*.json)"]
+        onAccepted: ModelSetup.importFrom(selectedFile.toString())
     }
     MenuPopup {
         id: roleMenu
@@ -287,6 +336,141 @@ Sheet {
 
         SectionTitle { text: "Системный промпт модели" }
         Prompt { width: parent.width; fieldId: "system_prompt"; hint: "Идёт после общего промпта и перед инструкциями чата" }
+
+        // ---------- for the experienced: how much context the model gets ----------
+        Text {
+            objectName: "budgetsToggle"
+            text: "<a href=\"x\">" + (budgets.visible ? "▾" : "▸") + " Для опытных: бюджеты контекста и порции инструментов</a>"
+            textFormat: Text.StyledText
+            linkColor: Theme.p.link
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+            onLinkActivated: budgets.visible = !budgets.visible
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+        }
+        Column {
+            id: budgets
+            objectName: "budgetFields"
+            visible: false
+            width: parent.width
+            spacing: 8
+            Note { text: "Сколько контекста модель получает с каждым сообщением (слои L0–L4) и сколько отдают за раз её инструменты. Пусто — как у всех моделей; облачным больше — дороже каждый шаг." }
+            Flow {
+                width: parent.width
+                spacing: 12
+                Repeater {
+                    model: ModelSetup.budgetFields
+                    delegate: Labelled {
+                        required property var modelData
+                        width: 200
+                        fieldId: modelData.id
+                        label: modelData.name
+                        hint: modelData.hint
+                    }
+                }
+            }
+        }
+
+        // ---------- how llama-swap starts it (local models) ----------
+        Column {
+            objectName: "launchSection"
+            visible: ModelSetup.launch.engine !== undefined
+            width: parent.width
+            spacing: 10
+            SectionTitle { text: "Запуск в llama-swap — config.yaml" }
+            Note {
+                visible: ModelSetup.launch.engine === "strata"
+                text: "Запускается через Strata по профилю " + (ModelSetup.launch.profile || "") + " — его настройки меняет сама Strata. Здесь — только выгрузка по времени."
+            }
+            Note {
+                visible: ModelSetup.launch.editable === true
+                text: "llama.cpp · " + (ModelSetup.launch.file || "") + (ModelSetup.launch.mmproj ? " · с проектором картинок" : "")
+            }
+            Flow {
+                visible: ModelSetup.launch.editable === true
+                width: parent.width
+                spacing: 12
+                LaunchField { fieldId: "context"; label: "Контекст, токенов"; hint: "например 32768" }
+                LaunchField { fieldId: "parallel"; label: "Параллельных запросов"; hint: "1" }
+                Column {
+                    spacing: 4
+                    Label { text: "Flash attention" }
+                    Segmented {
+                        options: [{ id: "on", name: "вкл" }, { id: "off", name: "выкл" }, { id: "auto", name: "авто" }]
+                        value: ModelSetup.launchDraft.flash_attn || "auto"
+                        onPicked: (id) => ModelSetup.setLaunch("flash_attn", id)
+                    }
+                }
+            }
+            Row {
+                visible: ModelSetup.launch.editable === true
+                spacing: 10
+                Label { text: "Слои на видеокарте"; anchors.verticalCenter: parent.verticalCenter }
+                Segmented {
+                    objectName: "launchLayers"
+                    options: [{ id: "all", name: "все" }, { id: "auto", name: "сколько поместится" }, { id: "n", name: "число" }]
+                    value: ModelSetup.launchDraft.gpu_mode || "all"
+                    onPicked: (id) => ModelSetup.setLaunch("gpu_mode", id)
+                }
+                Field {
+                    visible: ModelSetup.launchDraft.gpu_mode === "n"
+                    width: 90
+                    placeholderText: "слоёв"
+                    text: ModelSetup.launchDraft.gpu_n || ""
+                    onEditingFinished: ModelSetup.setLaunch("gpu_n", text)
+                }
+            }
+            Row {
+                visible: ModelSetup.launch.editable === true
+                spacing: 10
+                Label { text: "Сжатие KV-кэша"; anchors.verticalCenter: parent.verticalCenter }
+                Segmented {
+                    objectName: "launchCache"
+                    options: ModelSetup.cacheChoices
+                    value: ModelSetup.launchDraft.cache_type || "f16"
+                    onPicked: (id) => ModelSetup.setLaunch("cache_type", id)
+                }
+            }
+            LaunchField { fieldId: "ttl_min"; label: "Выгружать без запросов, мин"; hint: "0 — никогда"; width: 210 }
+            Text {
+                objectName: "launchEstimate"
+                visible: text !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: ModelSetup.launchEstimate
+                color: text.indexOf("не поместится") >= 0 ? Theme.p.error : text.indexOf("медленнее") >= 0 ? Theme.p.warn : Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
+            Row {
+                spacing: 8
+                PlainButton {
+                    objectName: "saveLaunch"
+                    kind: "primary"
+                    iconName: "check"
+                    enabled: ModelSetup.launchDirty && !ModelSetup.launchBusy
+                    text: "Записать в config.yaml"
+                    onClicked: ModelSetup.saveLaunch()
+                }
+                PlainButton {
+                    objectName: "trialLaunch"
+                    enabled: !ModelSetup.launchBusy
+                    iconName: "bolt"
+                    text: "Проверить запуск"
+                    onClicked: ModelSetup.trialLaunch()
+                }
+            }
+            Text {
+                objectName: "launchStatus"
+                visible: text !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: ModelSetup.launchStatus
+                color: text.indexOf("Не ") === 0 || text.indexOf("не запустилась") >= 0 ? Theme.p.error : Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
     }
 
     // ---------- saving, checking ----------

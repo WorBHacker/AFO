@@ -22,16 +22,14 @@ from datetime import datetime
 from typing import Any
 
 from . import projects
+from .limits import limit
 from .projects import Project, ProjectError
 from .secret_filter import clean, is_secret_file
 
 CHARS_PER_TOKEN = 4  # a rough estimate, good enough to keep layers within their budgets
-MAP_BUDGET = 2000  # tokens (D22)
-PROJECT_BUDGET = 3000
-LINKED_BUDGET = 1000  # per linked project, briefly (D22)
+# the layers' budgets in tokens (D22) - a model's own when it has them: hub/limits.py
 LINKED_README_LINES = 15
 PICTURES = re.compile(r"(?:\[?!\[[^\]]*\]\([^)]*\)(?:\]\([^)]*\))?\s*)+|<img [^>]*>")
-LIVE_BUDGET = 2000
 README_LINES = 40
 AGENT_NOTES = ("CLAUDE.md", "AGENTS.md", ".clinerules", ".cursorrules", "CONVENTIONS.md")
 AGENT_NOTE_LINES = 60
@@ -92,7 +90,7 @@ def map_layer(all_projects: list[Project], links: list[dict[str, Any]] | None = 
         where = "" if p.cloud_ok else " [local-only]"
         lines.append(f"- {p.name}{where}: {p.description or 'no description'}" + (f" ({stack})" if stack else ""))
     lines += link_lines(all_projects, links, cloud=False)
-    return fit("\n".join(lines), MAP_BUDGET)
+    return fit("\n".join(lines), limit("map"))
 
 
 def link_lines(all_projects: list[Project], links: list[dict[str, Any]] | None, *, cloud: bool) -> list[str]:
@@ -137,7 +135,7 @@ def project_layer(project: Project, card: str | None = None, missing: list[str] 
     if card:
         note = f"\n[The card is outdated here: it names {', '.join(missing)}, which are gone.]" if missing else ""
         body = clean(f"Folder: {project.path}\nThe project's card (confirmed by the user):\n{card}{note}")
-        return fit(f'<project name="{project.name}">\n{body}\n</project>', PROJECT_BUDGET)
+        return fit(f'<project name="{project.name}">\n{body}\n</project>', limit("project"))
     parts = [f"Folder: {project.path}", f"Description: {project.description or 'none yet'}"]
     stack = stack_of(root)
     if stack:
@@ -160,7 +158,7 @@ def project_layer(project: Project, card: str | None = None, missing: list[str] 
         if note in names and not is_secret_file(note):
             parts.append(f"{note} (the project's own notes for AI agents):\n{_head(root, note, AGENT_NOTE_LINES)}")
     body = clean("\n\n".join(parts))
-    return fit(f'<project name="{project.name}">\n{body}\n</project>', PROJECT_BUDGET)
+    return fit(f'<project name="{project.name}">\n{body}\n</project>', limit("project"))
 
 
 def linked_layer(project: Project, card: str | None, relation: str) -> str:
@@ -179,7 +177,7 @@ def linked_layer(project: Project, card: str | None, relation: str) -> str:
             parts.append(f"{readme} (start):\n{_head(project.root, readme, LINKED_README_LINES)}")
         body = "\n".join(parts)
     relation = relation.replace('"', "'")
-    body = fit(clean(body), LINKED_BUDGET - 40)  # the tags stay whole
+    body = fit(clean(body), limit("linked") - 40)  # the tags stay whole
     return f'<linked_project name="{project.name}" relation="{relation}">\n{body}\n</linked_project>'
 
 
@@ -264,7 +262,7 @@ def live_layer(
         lines.append("since the previous message:")
         lines += [f"  {_ago(e['ts'], now)}: {news_line(e)}" for e in news[-12:]]
     body = clean("\n".join(lines) or "nothing running, no changes")
-    return fit(f'<live_state project="{project.name}">\n{body}\n</live_state>', LIVE_BUDGET)
+    return fit(f'<live_state project="{project.name}">\n{body}\n</live_state>', limit("live"))
 
 
 # --- the stored message ---
@@ -357,7 +355,7 @@ def map_layer_for_cloud(all_projects: list[Project], links: list[dict[str, Any]]
         else:
             lines.append(f"- {p.name} [local-only: you may not see more of it]")
     lines += link_lines(all_projects, links, cloud=True)
-    return fit("\n".join(lines), MAP_BUDGET)
+    return fit("\n".join(lines), limit("map"))
 
 
 def previous_digests(history: list[Any]) -> dict[str, str]:

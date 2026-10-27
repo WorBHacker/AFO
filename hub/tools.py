@@ -18,15 +18,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import projects, search
+from .limits import DEFAULTS, limit
 from .projects import Project, ProjectError
 from .secret_filter import clean, is_secret_file
 from .symbols import SymbolIndex, language_of
 
 MAX_OUTPUT_CHARS = 16_000
-FILE_LINES = 300
+FILE_LINES = DEFAULTS["file_lines"]  # a model may have its own (hub/limits.py)
 FILE_LINES_MAX = 400
-SEARCH_MATCHES = 50
-TERMINAL_LINES = 100
+SEARCH_MATCHES = DEFAULTS["search_matches"]  # a model may have its own (hub/limits.py)
+TERMINAL_LINES = DEFAULTS["terminal_lines"]  # a model may have its own (hub/limits.py)
 DIFF_LINES = 400
 LIST_ENTRIES = 300
 SYMBOL_MATCHES = 30
@@ -262,7 +263,8 @@ def _read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     if is_secret_file(path):
         raise ToolError(f"{path} holds secrets (keys, passwords); its content is not shown")
     start = _int(args.get("start_line"), "start_line", 1, 1, 10_000_000)
-    count = _int(args.get("line_count"), "line_count", FILE_LINES, 1, FILE_LINES_MAX)
+    count = _int(args.get("line_count"), "line_count", limit("file_lines"), 1, max(FILE_LINES_MAX,
+                                                                                    limit("file_lines")))  # fmt: skip
     data = projects.read_file(project.root, path)
     if data["binary"]:
         return f"{data['path']} is a binary file ({data['size']} bytes)"
@@ -288,22 +290,21 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
     if not isinstance(regex, bool):
         raise ToolError("`regex` must be true or false")
     glob = _text(args.get("glob"), "glob")
-    result = search.search(project.root, query, regex=regex, glob=glob, limit=SEARCH_MATCHES * 2)
+    matches = limit("search_matches")
+    result = search.search(project.root, query, regex=regex, glob=glob, limit=matches * 2)
     lines, hidden = [], 0
     for item in result["files"]:
         if is_secret_file(item["path"]):
             hidden += len(item["matches"])
             continue
         for match in item["matches"]:
-            if len(lines) < SEARCH_MATCHES:
+            if len(lines) < matches:
                 lines.append(f"{item['path']}:{match['line']}: {match['text'].strip()}")
     if not lines:
         return f"no matches for {query!r} in {project.name}"
     note = f"\n[{hidden} matches in secret files not shown]" if hidden else ""
     more = (
-        "\n[more matches exist: narrow the query or use glob]"
-        if result["truncated"] or len(lines) == SEARCH_MATCHES
-        else ""
+        "\n[more matches exist: narrow the query or use glob]" if result["truncated"] or len(lines) == matches else ""
     )
     return f"{len(lines)} matches in {project.name}:\n" + "\n".join(lines) + note + more
 
@@ -403,8 +404,9 @@ async def _terminal_output(args: dict[str, Any], ctx: ToolContext) -> str:
         raise ToolError(f"no terminal {wanted!r} in {project.name}; call without `terminal` to list them")
     output = await ctx.terminals.output(terminal["id"], 64 * 1024)
     lines = plain_terminal_text(output.get("data", "")).splitlines()
-    tail = "\n".join(lines[-TERMINAL_LINES:])
-    return f"{terminal['title']} [{terminal['status']}], last {min(len(lines), TERMINAL_LINES)} lines:\n{tail}"
+    shown = limit("terminal_lines")
+    tail = "\n".join(lines[-shown:])
+    return f"{terminal['title']} [{terminal['status']}], last {min(len(lines), shown)} lines:\n{tail}"
 
 
 def _state(terminal: dict[str, Any]) -> str:

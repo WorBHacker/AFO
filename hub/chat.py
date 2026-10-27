@@ -44,7 +44,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import budgets, cards, changes, commands, context, links, model_settings, notes, store, web, websearch
+from . import (
+    budgets,
+    cards,
+    changes,
+    commands,
+    context,
+    limits,
+    links,
+    model_settings,
+    notes,
+    store,
+    web,
+    websearch,
+)
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -133,6 +146,7 @@ class ChatService:
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
         agent = model["provider"] == CLAUDE_CODE
         if not agent:
+            await self._use_limits(model_id)  # its context is stored within the model's own budgets (D39)
             await self._store_context(conversation_id)
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
@@ -186,6 +200,7 @@ class ChatService:
                 lambda conn: store.add_message(conn, conversation_id, "user", [{"type": "text", "text": text}])
             )
             await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+        await self._use_limits(model_id)
         await self._store_context(conversation_id)
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
@@ -265,6 +280,7 @@ class ChatService:
             """What answering with this model takes: its provider, the projects it may see, the system prompt and
             the answer's parameters the user set (D39)."""
             provider, model_ref = self._gateway.resolve(model["id"])
+            await self._use_limits(model["id"])  # the tools' portions of this model (D22, D39)
             cloud = model.get("locality") == "cloud"
             ctx = ToolContext([p for p in attached if p.cloud_ok or not cloud], terminals=self.terminals,
                               processes=self.processes, symbols=self.symbols)  # fmt: skip
@@ -346,6 +362,11 @@ class ChatService:
                 over = await self._db.acall(lambda conn, m=model["id"]: budgets.reached(conn, m))
                 if over:
                     raise GatewayError("the budget ran out while the model was working; send again to go on")
+
+    async def _use_limits(self, model_id: str) -> None:
+        """The model's own context budgets and tool portions for the rest of this task (hub/limits.py)."""
+        own = await self._db.acall(lambda conn: model_settings.current(conn, model_id)[1].get("context_budget"))
+        limits.use(own)
 
     async def _spare(self, conversation_id: str, model: dict) -> dict | None:
         """The spare model (the role «fallback», D39) when it may answer here: another, offered model, not Claude

@@ -313,3 +313,49 @@ def test_roles_and_the_spare_model(hub):
     advice = hub.get("/v1/advice").json()
     tune = next(o for o in advice["options"] if o["model_id"] == "tune/m")
     assert "ваша модель для чатов" in tune["reasons"]
+
+
+def test_a_models_own_context_budgets_and_tool_portions(hub):
+    from hub import limits
+
+    assert limits.limit("map") == 2000 and limits.limit("file_lines") == 300  # the defaults (D22)
+    bad = hub.put("/v1/model_settings", json={"model_id": "tune/m", "settings": {"context_budget": {"map": 10}}})
+    assert bad.status_code == 422 and "от 200" in bad.json()["detail"]
+    assert hub.put("/v1/model_settings", json={"model_id": "tune/m", "settings": {"context_budget": {"x": 1}}}
+                   ).status_code == 422  # fmt: skip
+    hub.put("/v1/model_settings", json={"model_id": "tune/m", "settings": {
+        "context_budget": {"map": 500, "terminal_lines": 20}}})  # fmt: skip
+    read = hub.get("/v1/model_settings", params={"model_id": "tune/m"}).json()
+    assert read["limits"]["map"] == {"default": 2000, "low": 200, "high": 200000}
+
+    seen = {}
+
+    async def look():
+        await hub.app.state.chat._use_limits("tune/m")
+        seen["own"] = (limits.limit("map"), limits.limit("terminal_lines"), limits.limit("live"))
+        seen["thread"] = await asyncio.to_thread(lambda: limits.limit("map"))  # the database's threads see it too
+
+    hub.portal.call(look)
+    assert seen == {"own": (500, 20, 2000), "thread": 500}
+    assert limits.limit("map") == 2000  # another task: the defaults
+
+
+def test_settings_out_to_a_file_and_back(hub):
+    hub.put("/v1/model_settings", json={"model_id": "", "settings": {"system_prompt": "Общий.",
+                                                                      "roles": {"fallback": "tune/m"}}})  # fmt: skip
+    hub.put("/v1/model_settings", json={"model_id": "tune/m", "settings": {"name": "Тюнер", "params": {
+        "temperature": 0.3}}})  # fmt: skip
+    data = hub.get("/v1/model_settings/export").json()
+    assert data["kind"] == "localchat-model-settings" and data["general"]["roles"] == {"fallback": "tune/m"}
+    assert data["models"] == {"tune/m": {"name": "Тюнер", "params": {"temperature": 0.3}}}
+    data["models"]["gone/model"] = {"name": "Нет такой"}
+    data["models"]["tune/m"]["params"]["temperature"] = 0.9
+    data["general"]["roles"]["chat"] = "gone/model"
+    data["models"]["tune/x"] = {"params": {"temperature": 9}}
+    hub.app.state.db.call(lambda c: store.upsert_model(c, Model("tune/x", "tune", "x", "X", "local", {}, {})))
+    report = hub.post("/v1/model_settings/import", json={"data": data}).json()
+    assert report["saved"] == ["общие", "tune/m"] and "gone/model" in report["skipped"]
+    assert "роль chat: gone/model" in report["skipped"] and "от 0 до 2" in report["errors"]["tune/x"]
+    now = hub.get("/v1/model_settings", params={"model_id": "tune/m"}).json()
+    assert now["settings"]["params"] == {"temperature": 0.9} and now["history"][0]["by"] == "app (импорт)"
+    assert hub.post("/v1/model_settings/import", json={"data": {"models": {}}}).status_code == 422

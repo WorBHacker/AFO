@@ -26,6 +26,7 @@ TOPICS = [
     "connections.*",
     "autostart.*",
     "llama_swap.*",
+    "llama.*",
     "editor.command",
     "telegram.*",
     "budget.*",

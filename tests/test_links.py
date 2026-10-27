@@ -9,6 +9,7 @@ from common.paths import data_paths
 from hub import context, links
 from hub.auth import create_client
 from hub.gateway.base import Model, StreamEvent
+from hub.limits import limit
 from hub.links import LinkError
 from hub.projects import Project
 from hub.server import create_app
@@ -157,7 +158,7 @@ def test_a_linked_project_in_brief(pair):
     text = context.linked_layer(back, long_card, 'front -> back: uses (REST "v2")')
     assert text.startswith('<linked_project name="back" relation="front -> back: uses (REST \'v2\')">\nFolder: ')
     assert "Its card (confirmed by the user):\n## Назначение" in text and text.endswith("\n</linked_project>")
-    assert context.tokens(text) <= context.LINKED_BUDGET  # shortened, the tags whole
+    assert context.tokens(text) <= limit("linked")  # shortened, the tags whole
     readme = "![logo](logo.png)\n[![CI](ci.svg)](ci)\n# back\nAPI сервиса\n"
     (back.root / "README.md").write_text(readme, encoding="utf-8")
     plain = context.linked_layer(back, None, "front -> back: uses")

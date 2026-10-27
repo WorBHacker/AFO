@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .db import utc_now
+from .limits import LIMITS
 
 ALL = ""  # the general row: the system prompt for every model
 
@@ -157,6 +158,17 @@ def check(settings: Any) -> dict[str, Any]:
                         roles[role] = str(model_id)
                 if roles:
                     out[key] = roles
+            case "context_budget":  # «для опытных»: the layers' budgets and the tools' portions (D22)
+                if not isinstance(value, dict):
+                    raise SettingsError("бюджеты контекста: нужен словарь")
+                own = {}
+                for name, amount in value.items():
+                    if name not in LIMITS:
+                        raise SettingsError(f"неизвестный бюджет «{name}»")
+                    if amount is not None:
+                        own[name] = int(_number(f"бюджет {name}", amount, int, *LIMITS[name][1:]))
+                if own:
+                    out[key] = own
             case "system_prompt":
                 text = str(value).strip()
                 if len(text) > SYSTEM_PROMPT_MAX:
