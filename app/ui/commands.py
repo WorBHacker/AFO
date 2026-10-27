@@ -24,6 +24,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),
     ("feed", "Лента событий", "activity", "Ctrl E", False),
     ("approvals", "Подтверждения", "shield", "Ctrl Shift A", False),
+    ("agents", "Агенты", "agent", "Ctrl Shift G", False),
     ("settings", "Настройки…", "sliders", "Ctrl ,", False),
     ("key", "Ключ Anthropic…", "key", "", False),
     ("sync", "Обновить список моделей", "refresh", "", False),

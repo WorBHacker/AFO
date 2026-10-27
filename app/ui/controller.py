@@ -21,6 +21,7 @@ from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
 from . import commands, mentions, rows
+from .agents import Agents
 from .approvals import Approvals
 from .composer import Mentions
 from .feed import Feed
@@ -140,6 +141,7 @@ class Controller(QObject):
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
         self.mentions = Mentions(self)
         self.approvals = Approvals(self)
+        self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
@@ -760,7 +762,7 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value in ("feed", "approvals"):
+            elif value in ("feed", "approvals", "agents"):
                 self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")
@@ -1008,6 +1010,9 @@ class Controller(QObject):
             self.terminals.on_event(kind, payload)
         elif kind.startswith("approval."):
             self.approvals.on_event(kind, payload)
+            self.agents.on_event(kind, payload)  # a run waits for the user, or goes on
+        elif kind.startswith(("run.", "agents.")):
+            self.agents.on_event(kind, payload)
         elif kind == "claude_code.limit":
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
         elif kind == "hub.stopping":

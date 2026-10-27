@@ -41,6 +41,7 @@ Window {
             onSearchRequested: palette.open()
             onFeedRequested: feedSheet.open()
             onApprovalsRequested: approvalsSheet.open()
+            onAgentsRequested: agentsSheet.open()
         }
         ChatView {
             visible: App.mode === "chats"
@@ -152,6 +153,7 @@ Window {
     SettingsSheet { id: settingsSheet }
     FeedSheet { id: feedSheet }
     ApprovalsSheet { id: approvalsSheet }
+    AgentsSheet { id: agentsSheet }
     ProjectSheet { id: projectSheet }
     ContextSheet { id: contextSheet }
     CardSheet { id: cardSheet }
@@ -165,6 +167,7 @@ Window {
             else if (what === "settings") settingsSheet.open()
             else if (what === "feed") feedSheet.open()
             else if (what === "approvals") approvalsSheet.open()
+            else if (what === "agents") agentsSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
             else if (what === "add-project") folderDialog.open()
@@ -201,6 +204,7 @@ Window {
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+E"; onActivated: feedSheet.open() }
     Shortcut { sequence: "Ctrl+Shift+A"; onActivated: approvalsSheet.open() }
+    Shortcut { sequence: "Ctrl+Shift+G"; onActivated: agentsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }
     Shortcut { sequence: "F2"; enabled: App.currentId !== ""; onActivated: renameDialog.openFor(App.currentId) }
     Shortcut { sequence: "Ctrl+Shift+U"; onActivated: App.unloadLocal() }

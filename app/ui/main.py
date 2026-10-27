@@ -99,6 +99,7 @@ class QuickApp:
         context.setContextProperty("Feed", self.controller.feed)
         context.setContextProperty("Mentions", self.controller.mentions)
         context.setContextProperty("Approvals", self.controller.approvals)
+        context.setContextProperty("Agents", self.controller.agents)
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))
         roots = self.engine.rootObjects()

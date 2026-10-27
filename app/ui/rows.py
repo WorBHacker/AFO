@@ -382,6 +382,8 @@ def picker_items(models: list[dict[str, Any]], loaded: set[str], chosen: str | N
             caps = m.get("capabilities") or {}
             if local:
                 note = "загружена в видеопамять" if ref in loaded else "загрузится при отправке"
+            elif caps.get("subscription"):
+                note = "подписка Claude Code · работает в папке проекта чата"
             else:
                 prices = m.get("prices") or {}
                 note = f"${prices.get('input', 0):g} / ${prices.get('output', 0):g} за 1M"

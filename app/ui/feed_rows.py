@@ -93,6 +93,17 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
             note = f" ({p['description']})" if p.get("description") else ""
             return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
+        case "run.started":
+            run = p.get("run") or {}
+            again = " (продолжает после перезапуска)" if p.get("resumed") else ""
+            return item("chats", "agent", f"Агент «{run.get('profile_name', '')}» взял задачу{again}",
+                        " ".join(str(run.get("task", "")).split())[:120])  # fmt: skip
+        case "run.finished":
+            run = p.get("run") or {}
+            words = {"done": "готово", "error": "ошибка", "cancelled": "отменён"}
+            level = "error" if run.get("status") == "error" else ""
+            title = f"Агент «{run.get('profile_name', '')}»: {words.get(run.get('status', ''), run.get('status', ''))}"
+            return item("chats", "agent", title, run.get("detail") or "", level)
         case "file.changed" | "file.reverted":
             change = p.get("change") or {}
             what = "Откачена правка" if kind == "file.reverted" else "Модель изменила"

@@ -172,6 +172,32 @@ GIT = {
 }
 
 
+AGENT = {
+    "id": "a1",
+    "name": "Ревьюер",
+    "version": 3,
+    "instructions": "Читай код и говори, что не так.",
+    "model_id": "llama-swap/coder",
+    "tools": ["read_file"],
+    "mode": "read_only",
+    "project_ids": ["p1"],
+    "max_steps": 20,
+    "max_minutes": 15,
+    "budget_usd": None,
+}
+RUN = {
+    "id": "r1",
+    "conversation_id": "r1",
+    "profile_name": "Ревьюер",
+    "task": "Проверь   hub/chat.py",
+    "status": "running",
+    "shown_status": "waiting",
+    "detail": None,
+    "steps": 3,
+    "cost_usd": 0,
+    "created_at": "2026-10-27T06:00:00.000Z",
+}
+
 CHANGE = {
     "id": 3,
     "created_at": "2026-10-27T04:00:00.000Z",
@@ -243,6 +269,8 @@ class FakeClient:
         self.change_list = [dict(CHANGE)]
         self.rule_list = [{"id": 7, "project_id": "p1", "grant_key": "edit_file", "created_by": "app"}]
         self.stale = True  # the changed file was edited since: an undo needs force
+        self.agent_list = [dict(AGENT)]
+        self.run_list = [dict(RUN)]
         self.answers = []
         self.claude_terminals = []
 
@@ -462,6 +490,33 @@ class FakeClient:
 
     def approvals(self):
         return [dict(a) for a in self.pending]
+
+    def agents(self):
+        return {"agents": [dict(a) for a in self.agent_list], "tools": ["read_file", "edit_file", "run_command"]}
+
+    def save_agent(self, body, agent_id=None):
+        if not body["model_id"]:
+            raise HubError("unknown model ''")
+        self.log.append(("save_agent", agent_id, body))
+        saved = {**AGENT, **body, "id": agent_id or "a2", "version": 2 if agent_id else 1}
+        self.agent_list = [a for a in self.agent_list if a["id"] != saved["id"]] + [saved]
+        return saved
+
+    def delete_agent(self, agent_id):
+        self.agent_list = [a for a in self.agent_list if a["id"] != agent_id]
+
+    def start_run(self, agent_id, task, project_ids=None):
+        self.log.append(("run", agent_id, task))
+        run = {**RUN, "id": "r2", "conversation_id": "r2", "task": task, "status": "queued", "shown_status": "queued"}
+        self.run_list.insert(0, run)
+        return run
+
+    def runs(self, limit=30):
+        return [dict(r) for r in self.run_list]
+
+    def cancel_run(self, run_id):
+        self.log.append(("cancel_run", run_id))
+        return {"cancelled": True}
 
     def changes(self, project_id):
         return [dict(c) for c in self.change_list]
@@ -874,7 +929,7 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         opened(app)
         wait_until(lambda: app.approvals.count == 1)
         assert quick.window.findChild(QObject, "approvalsButton").property("visible")  # the shield, with its count
-        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog", "approvalsSheet"):
+        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog", "approvalsSheet", "agentsSheet"):
             popup = quick.window.findChild(QObject, name)
             assert popup is not None, name
             QMetaObject.invokeMethod(popup, "open")
@@ -886,6 +941,10 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
                 cards = quick.window.findChild(QQuickItem, "approvalItems")
                 assert item_named(cards, "approveOnce") is not None
                 assert item_named(cards, "approveChat").property("visible")
+            if name == "agentsSheet":  # the profile in the editor, its run in the list
+                wait_until(lambda: app.agents.runs)
+                assert quick.window.findChild(QQuickItem, "agentName").property("text") == "Ревьюер"
+                assert item_named(quick.window.findChild(QQuickItem, "agentRuns"), "") is not None
             QMetaObject.invokeMethod(popup, "close")
             for _ in range(20):
                 QApplication.processEvents()
@@ -1942,3 +2001,65 @@ def test_commands_in_the_window():
     assert row["title"] == "Выполнить команду" and row["alwaysAsk"] == "network" and row["projectScope"] == ""
     plain = approval_rows([{**install, "network": False}], projects=projects, chats={})[0]
     assert plain["alwaysAsk"] == "" and plain["projectScope"] == "всегда в «LocalChat»"
+
+
+# --- stage 5.3: the hub's own agents ---
+
+
+def test_agent_and_run_rows():
+    from app.ui import agents, feed_rows
+
+    (row,) = agents.profile_rows([AGENT], {"llama-swap/coder": "Coder"}, "a1")
+    assert row["note"] == "Coder · только чтение · проектов: 1 · версия 3" and row["selected"]
+    (run,) = agents.run_rows([RUN])
+    assert (run["task"], run["status"], run["icon"], run["level"], run["active"]) == (
+        "Проверь hub/chat.py", "ждёт подтверждения", "shield", "warn", True)  # fmt: skip
+    failed = agents.run_rows([{**RUN, "status": "error", "shown_status": "error", "detail": "the step limit (2)"}])[0]
+    assert failed["status"] == "ошибка: the step limit (2)" and failed["level"] == "error" and not failed["active"]
+    started = feed_rows.describe({"type": "run.started", "payload": {"run": RUN, "resumed": True}}, projects={},
+                                 chats={})  # fmt: skip
+    assert started["title"] == "Агент «Ревьюер» взял задачу (продолжает после перезапуска)"
+    finished = feed_rows.describe({"type": "run.finished", "payload": {"run": {**RUN, "status": "done"}}},
+                                  projects={}, chats={})  # fmt: skip
+    assert finished["title"] == "Агент «Ревьюер»: готово"
+    subscription = {"id": "claude-code/default", "name": "Claude Code", "locality": "cloud", "prices": {},
+                    "capabilities": {"subscription": True}, "model_ref": "default"}  # fmt: skip
+    note = rows.picker_items([subscription], set(), None)[1]["note"]
+    assert note.startswith("подписка Claude Code")
+
+
+def test_the_agents_panel(app):
+    agents, client = app.agents, app.client
+    agents.load()
+    wait_until(lambda: agents.profiles and agents.runs)
+    assert agents.draft["name"] == "Ревьюер" and agents.draft["saved"] and agents.draft["modelName"] == "Coder"
+    assert [t["selected"] for t in agents.toolChoices] == [True, False, False]
+    assert agents.projectChoices[0] == {"id": "p1", "name": "LocalChat", "selected": True}
+
+    agents.toggleTool("run_command")
+    agents.toggleProject("p1")
+    agents.setField("max_steps", "500")  # out of range: kept as it was
+    agents.setField("max_steps", "40")
+    agents.setField("budget", "0,5")
+    agents.save()
+    wait_until(lambda: any(e[0] == "save_agent" for e in client.log))
+    _, agent_id, body = next(e for e in client.log if e[0] == "save_agent")
+    assert agent_id == "a1" and body["tools"] == ["read_file", "run_command"] and body["project_ids"] == []
+    assert body["max_steps"] == 40 and body["budget_usd"] == 0.5
+    wait_until(lambda: "версия 2" in app.flashText)
+
+    agents.newProfile()
+    assert agents.draft["saved"] is False and all(t["selected"] for t in agents.toolChoices)  # [] means all tools
+    agents.save()  # no model chosen: the hub's refusal is shown
+    wait_until(lambda: "Агент не сохранён" in app.flashText)
+
+    agents.editProfile("a1")
+    agents.startRun("Проверь README")
+    wait_until(lambda: ("run", "a1", "Проверь README") in client.log)
+    wait_until(lambda: agents.runs[0]["task"] == "Проверь README" and agents.runs[0]["status"] == "в очереди")
+    agents.cancelRun("r2")
+    wait_until(lambda: ("cancel_run", "r2") in client.log)
+    send(app, "run.finished", {"run": {**RUN, "status": "error", "detail": "limit"}})
+    assert app.flashText == "Агент «Ревьюер»: ошибка" and app.flashError
+    agents.openRun("r1")
+    assert app.mode == "chats"

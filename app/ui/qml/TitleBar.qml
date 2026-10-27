@@ -8,6 +8,7 @@ Item {
     signal searchRequested()
     signal feedRequested()
     signal approvalsRequested()
+    signal agentsRequested()
     height: 52
 
     DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
@@ -107,6 +108,7 @@ Item {
                 }
             }
         }
+        IconButton { objectName: "agentsButton"; iconName: "agent"; implicitWidth: 38; tip: "Агенты (Ctrl+Shift+G)"; onClicked: bar.agentsRequested() }
         IconButton { iconName: "activity"; implicitWidth: 38; tip: "Лента событий (Ctrl+E)"; onClicked: bar.feedRequested() }
         Rectangle { width: 1; height: 18; color: Theme.p.hairline; anchors.verticalCenter: parent.verticalCenter }
         IconButton { iconName: "min"; implicitWidth: 42; tip: "Свернуть"; onClicked: Window.window.showMinimized() }

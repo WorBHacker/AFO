@@ -38,6 +38,8 @@ TOPICS = [
     "claude_code.*",
     "file.*",
     "rules.*",
+    "run.*",
+    "agents.*",
 ]
 RECONNECT_S = 2.0
 

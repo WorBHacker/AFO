@@ -284,6 +284,29 @@ class HubClient:
     def delete_rule(self, rule_id: int) -> None:
         self._call("DELETE", f"/v1/rules/{rule_id}")
 
+    # --- the hub's own agents (stage 5, D16) ---
+
+    def agents(self) -> dict:
+        """{agents: profiles, tools: the tool names a profile may choose from}."""
+        return self._call("GET", "/v1/agents")
+
+    def save_agent(self, body: dict, agent_id: str | None = None) -> dict:
+        if agent_id:
+            return self._call("PUT", f"/v1/agents/{agent_id}", body)
+        return self._call("POST", "/v1/agents", body)
+
+    def delete_agent(self, agent_id: str) -> None:
+        self._call("DELETE", f"/v1/agents/{agent_id}")
+
+    def start_run(self, agent_id: str, task: str, project_ids: list[str] | None = None) -> dict:
+        return self._call("POST", f"/v1/agents/{agent_id}/runs", {"task": task, "project_ids": project_ids})
+
+    def runs(self, limit: int = 30) -> list[dict]:
+        return self._call("GET", "/v1/runs", params={"limit": limit})["runs"]
+
+    def cancel_run(self, run_id: str) -> dict:
+        return self._call("POST", f"/v1/runs/{run_id}/cancel")
+
     # --- approvals and Claude Code (stage 4, D18) ---
 
     def approvals(self) -> list[dict]:
