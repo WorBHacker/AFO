@@ -28,7 +28,7 @@ class FakeProvider:
     async def list_models(self) -> list[Model]:
         return self.models
 
-    async def stream_chat(self, model_ref, messages, effort, cancel):
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
         self.last_prompt = messages
         for event in self.script:
             if cancel.is_set():
@@ -76,6 +76,8 @@ def drain_until(ws, event_type, limit=200):
         collected.append(message)
         if message.get("type") == event_type:
             return collected
+        if message.get("type") == "chat.error":  # the run is over: waiting on would block forever
+            raise AssertionError(f"chat.error while waiting for {event_type}: {message['payload'].get('detail')}")
     raise AssertionError(f"did not see {event_type}; saw {[m.get('type') for m in collected]}")
 
 
