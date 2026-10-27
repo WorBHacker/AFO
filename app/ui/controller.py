@@ -80,6 +80,7 @@ class Controller(QObject):
     questionChanged = Signal()
     budgetsChanged = Signal()
     keyChanged = Signal()
+    autostartChanged = Signal()
     modeChanged = Signal()
     chatProjectsChanged = Signal()
     contextChanged = Signal()
@@ -109,6 +110,7 @@ class Controller(QObject):
         self.totals: dict[str, Any] | None = None
         self.budgets: list[dict[str, Any]] = []
         self._key_set = False
+        self._autostart: dict[str, Any] = {}
         self._status = rows.status_parts(None)
         self._hub_state = "connecting"
         self._title = "Новый чат"
@@ -398,8 +400,32 @@ class Controller(QObject):
         self.terminals.load()
         self.approvals.load()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
+        self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         if self.current:
             self.openChat(self.current)
+
+    def _set_autostart(self, found: dict[str, Any]) -> None:
+        self._autostart = found
+        self.autostartChanged.emit()
+
+    @Property("QVariantMap", notify=autostartChanged)
+    def autostart(self) -> dict:
+        """login, llama_swap, llama_swap_found - how LocalChat starts (Q8)."""
+        return self._autostart
+
+    @Slot(str, bool)
+    def setAutostart(self, what: str, on: bool) -> None:
+        if what not in ("login", "llama_swap"):
+            return
+
+        def done(found: dict[str, Any]) -> None:
+            self._set_autostart(found)
+            if what == "login":
+                self.flash(
+                    "Хаб будет запускаться при входе в Windows" if on else "Автозапуск при входе в Windows выключен"
+                )
+
+        self._call(lambda: self.client.set_autostart(**{what: on}), done)
 
     def _set_claude_code(self, status: dict[str, Any]) -> None:
         self._claude_code = status

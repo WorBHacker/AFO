@@ -26,6 +26,7 @@ class HubSettings:
     llama_swap_url: str = DEFAULT_LLAMA_SWAP_URL
     status_interval_s: float = 2.0  # GPU / memory / llama-swap sampling; 0 turns the monitor off
     process_interval_s: float = 3.0  # processes and ports in project folders; 0: only when asked
+    manage_llama_swap: bool = False  # start llama-swap when it does not answer (Q8); the real hub, not tests
 
     @classmethod
     def from_env(cls) -> HubSettings:
@@ -33,4 +34,5 @@ class HubSettings:
             paths=data_paths(),
             port=int(os.environ.get(PORT_ENV, DEFAULT_PORT)),
             llama_swap_url=os.environ.get(LLAMA_SWAP_URL_ENV, DEFAULT_LLAMA_SWAP_URL),
+            manage_llama_swap=True,
         )

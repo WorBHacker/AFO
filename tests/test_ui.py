@@ -250,6 +250,7 @@ class FakeClient:
         self.secret_calls = []
         self.key = False
         self.password = None  # the connections' (D13)
+        self.started = {"login": False, "llama_swap": True, "llama_swap_found": True, "llama_swap_script": "x.cmd"}
         self.ticket = ""
         self.project_list = [dict(PROJECT)]
         self.trees = copy.deepcopy(TREE)
@@ -613,6 +614,13 @@ class FakeClient:
         self.answers.append((approval_id, allow, scope, comment))
         self.pending = [a for a in self.pending if a["id"] != approval_id]
         return {"id": approval_id, "status": "allowed" if allow else "denied"}
+
+    def autostart(self):
+        return dict(self.started)
+
+    def set_autostart(self, **change):
+        self.started.update(change)
+        return dict(self.started)
 
     def claude_code(self):
         return {"installed": True, "command": ["claude.exe"], "detail": "", "running": []}
@@ -991,6 +999,15 @@ def test_connections_behind_the_password(app):
     assert conns.error == "Подключения закрылись: введите пароль снова"
 
 
+def test_autostart(app):
+    wait_until(lambda: app.autostart.get("llama_swap") is True)
+    app.setAutostart("login", True)
+    wait_until(lambda: app.autostart["login"] is True)
+    assert app.client.started["login"] is True
+    app.setAutostart("nonsense", True)  # ignored
+    assert "nonsense" not in app.client.started
+
+
 def test_connection_rows():
     from app.ui.connections import connection_rows
 
@@ -1042,7 +1059,15 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         opened(app)
         wait_until(lambda: app.approvals.count == 1)
         assert quick.window.findChild(QObject, "approvalsButton").property("visible")  # the shield, with its count
-        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog", "approvalsSheet", "agentsSheet"):
+        for name in (
+            "palette",
+            "budgetsSheet",
+            "settingsSheet",
+            "renameDialog",
+            "approvalsSheet",
+            "agentsSheet",
+            "connectionsSheet",
+        ):
             popup = quick.window.findChild(QObject, name)
             assert popup is not None, name
             QMetaObject.invokeMethod(popup, "open")
@@ -1389,6 +1414,13 @@ def test_feed_rows():
     assert feed_rows.describe({"type": "budget.changed", "payload": {}}, projects={}, chats={})["group"] == "budgets"
     stopped = {"type": "terminal.exited", "payload": {"title": "dev", "stopped": True, "exit_code": 1}}
     assert feed_rows.describe(stopped, projects={}, chats={})["title"] == "Терминал «dev» остановлен"
+    titles = {kind: feed_rows.describe({"type": kind, "payload": payload}, projects={}, chats={})["title"]
+              for kind, payload in [("secrets.changed", {"title": "Google Gemini", "set": True}),
+                                    ("connections.denied", {"wait": 30}),
+                                    ("llama_swap.started", {"ready": True})]}  # fmt: skip
+    assert titles == {"secrets.changed": "Подключение «Google Gemini» задано",
+                      "connections.denied": "Неверный пароль подключений",
+                      "llama_swap.started": "Хаб запустил llama-swap"}  # fmt: skip
 
 
 def test_the_feed(app):

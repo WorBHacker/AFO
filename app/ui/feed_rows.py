@@ -151,7 +151,24 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
         case "budget.changed":
             return item("budgets", "wallet", "Бюджеты изменены")
         case "secrets.changed":
-            return item("all", "key", "Ключ API изменён")
+            what = f"«{p['title']}»" if p.get("title") else "API"
+            return item("all", "key", f"Подключение {what} {'задано' if p.get('set') else 'удалено'}")
+        case "connections.password":
+            return item("all", "lock", "Пароль подключений изменён" if p.get("changed") else "Пароль подключений задан")
+        case "connections.denied":
+            wait = f"следующая попытка через {p['wait']} с" if p.get("wait") else ""
+            return item("all", "lock", "Неверный пароль подключений", wait, "warn")
+        case "telegram.linked":
+            return item("all", "chat", "Telegram-чат привязан: подтверждения приходят и на телефон")
+        case "telegram.unlinked":
+            return item("all", "chat", "Telegram-чат отвязан")
+        case "autostart.changed":
+            login = "хаб запускается при входе в Windows" if p.get("login") else "без автозапуска при входе"
+            swap = "llama-swap запускает хаб" if p.get("llama_swap") else "llama-swap — вручную"
+            return item("all", "power", "Запуск изменён", f"{login}; {swap}")
+        case "llama_swap.started":
+            detail = "" if p.get("ready") else "ещё не отвечает — подробности в logs/llama-swap.out.log"
+            return item("all", "cpu", "Хаб запустил llama-swap", detail, "" if p.get("ready") else "warn")
         case "hub.started":
             return item("all", "layers", "Хаб запущен", f"версия {p.get('version', '')}")
         case "hub.stopping":

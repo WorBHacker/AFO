@@ -14,7 +14,7 @@ from starlette.routing import Route
 
 from common import __version__
 
-from . import mcp_server
+from . import autostart, mcp_server
 from .agents import AgentRunner
 from .api import (
     advice,
@@ -36,6 +36,9 @@ from .api import (
     stats,
     system,
     terminals,
+)
+from .api import (
+    autostart as autostart_api,
 )
 from .approvals import ApprovalQueue
 from .auth import ensure_app_token
@@ -75,6 +78,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.settings = settings
         app.state.secrets = secrets_store
         app.state.lock = ConnectionLock(secrets_store)  # the connections' password (D13)
+        app.state.run_store = autostart.default_run_store()  # the hub at Windows login (Q8)
         app.state.db = db
         app.state.bus = bus
         app.state.gateway = gateway
@@ -146,6 +150,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(models.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)
+    app.include_router(autostart_api.router)
     app.include_router(budgets.router)
     app.include_router(projects.router)
     app.include_router(processes.router)
@@ -167,6 +172,17 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
 
 
 async def _initial_sync(app: FastAPI) -> None:
+    settings = app.state.settings
+    if settings.manage_llama_swap:  # llama-swap down: the hub starts it first (Q8), then reads its models
+        try:
+            wanted = await app.state.db.acall(autostart.llama_swap_wanted)
+            started = await autostart.ensure_llama_swap(settings.llama_swap_url, autostart.llama_swap_script(), wanted,
+                                                        settings.paths.logs / "llama-swap.out.log")  # fmt: skip
+            log.info("llama-swap: %s", started)
+            if started in ("started", "slow"):
+                await app.state.bus.publish("llama_swap.started", {"ready": started == "started"})
+        except Exception:
+            log.exception("starting llama-swap failed")
     try:
         result = await app.state.gateway.sync_catalog()  # best effort: llama-swap or the network may be down
     except Exception:

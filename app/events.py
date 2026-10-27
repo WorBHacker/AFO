@@ -23,6 +23,8 @@ TOPICS = [
     "system.*",
     "secrets.*",
     "connections.*",
+    "autostart.*",
+    "llama_swap.*",
     "telegram.*",
     "budget.*",
     "project.*",

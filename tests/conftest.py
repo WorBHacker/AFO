@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from common.paths import DATA_DIR_ENV
+from hub.autostart import RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
 from hub.secrets import STORE_ENV
 
@@ -17,6 +18,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setenv(DATA_DIR_ENV, str(data))
     monkeypatch.setenv(STORE_ENV, "memory")
+    monkeypatch.setenv(RUN_STORE_ENV, "memory")  # nor the Windows registry's Run key (autostart)
     monkeypatch.setenv(CLI_ENV, str(tmp_path / "no-claude.exe"))  # the user's Claude Code CLI is never found or run
     return data
 

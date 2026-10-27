@@ -51,6 +51,63 @@ Sheet {
         onClicked: { sheet.close(); App.openUi("connections") }
     }
 
+    SectionTitle { text: "Запуск" }
+    Column {
+        width: parent.width
+        spacing: 6
+        component Switch: AbstractButton {
+            id: toggle
+            checkable: true
+            implicitHeight: 30
+            implicitWidth: label.implicitWidth + 40
+            hoverEnabled: true
+            background: Rectangle {
+                radius: 6
+                color: toggle.checked ? Theme.p.item_selected : (toggle.hovered ? Theme.p.item_hover : "transparent")
+                border.color: toggle.checked ? Theme.p.accent : Theme.p.hairline_strong
+            }
+            contentItem: Item {
+                Icon {
+                    x: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: toggle.checked ? "check" : "close"
+                    size: 13
+                    tint: toggle.checked ? Theme.p.accent : Theme.p.faint
+                }
+                Text {
+                    id: label
+                    x: 26
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: toggle.text
+                    color: toggle.checked ? Theme.p.text : Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+            }
+        }
+        Switch {
+            objectName: "autostartLogin"
+            text: "Запускать хаб при входе в Windows"
+            checked: !!App.autostart.login
+            onToggled: App.setAutostart("login", checked)
+        }
+        Switch {
+            objectName: "autostartLlamaSwap"
+            text: "Хаб сам запускает llama-swap, если тот не отвечает"
+            checked: App.autostart.llama_swap !== false
+            onToggled: App.setAutostart("llama_swap", checked)
+        }
+        Text {
+            width: parent.width
+            wrapMode: Text.Wrap
+            visible: App.autostart.llama_swap_script !== undefined && !App.autostart.llama_swap_found
+            text: "Скрипт запуска llama-swap не найден: " + (App.autostart.llama_swap_script || "")
+            color: Theme.p.warn
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+        }
+    }
+
     SectionTitle { text: "Хаб" }
     Text {
         width: parent.width
