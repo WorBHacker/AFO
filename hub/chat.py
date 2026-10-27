@@ -86,6 +86,7 @@ class ChatService:
         self.snapshots: Path | None = None  # data/snapshots: the files before and after each write
         self.agents = None  # set by the server: a coordinator's sub-runs (D20)
         self.secrets = None  # set by the server: the search engine's key (web_search)
+        self.editor = None  # set by the server: what VS Code reports (stage 6.6)
 
     @property
     def busy(self) -> list[str]:
@@ -356,7 +357,7 @@ class ChatService:
             news = [e for e in events if e["project_id"] == p.id]
             live[p.id] = await asyncio.to_thread(
                 context.live_layer, p, processes=processes.get(p.id, []), terminals=terminals, events=news,
-                now=datetime.now(UTC),
+                now=datetime.now(UTC), editor_file=self.editor.open_in(p.id) if self.editor is not None else "",
             )  # fmt: skip
         linked, linked_cards = {}, {}
         for pid in linked_ids:

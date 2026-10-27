@@ -26,6 +26,7 @@ from .api import (
     claude_code,
     connections,
     conversations,
+    editor,
     events_ws,
     links,
     models,
@@ -46,6 +47,7 @@ from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
 from .connections import ConnectionLock
 from .db import Database, migrate
+from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .processes import ProcessMonitor
@@ -84,6 +86,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.gateway = gateway
         app.state.chat = ChatService(db, bus, gateway)
         app.state.chat.secrets = secrets_store
+        app.state.editor = app.state.chat.editor = Editor(db, bus)  # VS Code's open file and commands (stage 6.6)
         app.state.approvals = ApprovalQueue(db, bus)
         # Claude Code (D8, D18): the user's CLI in a chat's project, with the hub's MCP and its approval queue
         hub_url = f"http://{settings.host}:{settings.port}"
@@ -151,6 +154,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(conversations.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)
+    app.include_router(editor.router)
     app.include_router(budgets.router)
     app.include_router(projects.router)
     app.include_router(processes.router)

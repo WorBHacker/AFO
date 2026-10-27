@@ -166,6 +166,11 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             login = "хаб запускается при входе в Windows" if p.get("login") else "без автозапуска при входе"
             swap = "llama-swap запускает хаб" if p.get("llama_swap") else "llama-swap — вручную"
             return item("all", "power", "Запуск изменён", f"{login}; {swap}")
+        case "editor.command":
+            code = p.get("exit_code")
+            failed = code not in (0, None)
+            detail = " · ".join(x for x in (f"код {code}" if code is not None else "", p.get("terminal", "")) if x)
+            return item("terminals", "terminal", f"VS Code: {p.get('command', '')}", detail, "error" if failed else "")
         case "llama_swap.started":
             detail = "" if p.get("ready") else "ещё не отвечает — подробности в logs/llama-swap.out.log"
             return item("all", "cpu", "Хаб запустил llama-swap", detail, "" if p.get("ready") else "warn")
