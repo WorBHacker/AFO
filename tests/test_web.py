@@ -103,3 +103,16 @@ def test_listed_sites_need_no_question(hub, repo, site, monkeypatch):  # noqa: F
     result = result_of(finished(hub, conv))
     assert result["error"] is False and "# Установка" in result["output"]
     assert hub.get("/v1/approvals").json()["approvals"] == []
+
+
+def test_a_name_that_turns_local_after_the_check_is_refused(site, monkeypatch):
+    """DNS rebinding: the name passed the check, then the connection reached this computer - nothing is read."""
+    checks = []
+
+    def public_first_then_local(host):  # the name's check passes; the address the connection reached does not
+        checks.append(host)
+        return len(checks) > 1
+
+    monkeypatch.setattr(web, "_is_local", public_first_then_local)
+    with pytest.raises(ToolError, match=r"led to this computer or its local network \(127\.0\.0\.1\)"):
+        asyncio.run(web.fetch({"url": f"{site}/doc"}))

@@ -67,6 +67,13 @@ def check_url(url: Any) -> str:
     return url
 
 
+def _connected_to(response: httpx.Response) -> str | None:
+    """The address the request really reached (after DNS), when the transport tells it."""
+    stream = response.extensions.get("network_stream")
+    peer = stream.get_extra_info("server_addr") if stream is not None else None
+    return str(peer[0]) if peer else None
+
+
 def _is_local(host: str) -> bool:
     """The host is this computer or its local network - by name or by any address it resolves to."""
     if host in ("localhost",) or host.endswith((".local", ".localhost", ".internal", ".lan")):
@@ -165,6 +172,10 @@ async def fetch(args: dict[str, Any]) -> str:
                 raise ToolError(f"{site(url)} is this computer or its local network: the web tool does not go there")
             try:
                 async with http.stream("GET", url) as response:
+                    # the name was checked before, but it may resolve anew (DNS rebinding): check where it went
+                    peer = _connected_to(response)
+                    if peer is not None and await asyncio.to_thread(_is_local, peer):
+                        raise ToolError(f"{site(url)} led to this computer or its local network ({peer}): refused")
                     if response.is_redirect and response.headers.get("location"):
                         url = check_url(urljoin(url, response.headers["location"]))
                         continue
