@@ -29,6 +29,11 @@ class HubError(Exception):
         self.data = data or {}
 
 
+def _unlock(ticket: str) -> dict[str, str]:
+    """The connections' unlock ticket (D13), when the window has one."""
+    return {"X-LocalChat-Unlock": ticket} if ticket else {}
+
+
 class HubClient:
     def __init__(self, base_url: str, token: str, http: httpx.Client | None = None):
         self.base_url = base_url.rstrip("/")
@@ -44,9 +49,12 @@ class HubClient:
     def close(self) -> None:
         self._http.close()
 
-    def _call(self, method: str, path: str, body: dict | None = None, params: dict | None = None) -> Any:
+    def _call(
+        self, method: str, path: str, body: dict | None = None, params: dict | None = None, headers: dict | None = None
+    ) -> Any:
         try:
-            response = self._http.request(method, path, json=body, params=params, headers=self._headers)
+            response = self._http.request(method, path, json=body, params=params,
+                                          headers={**self._headers, **(headers or {})})  # fmt: skip
         except httpx.HTTPError as exc:
             raise HubError(f"хаб не отвечает ({exc})") from exc
         if response.status_code >= 400:
@@ -238,14 +246,35 @@ class HubClient:
 
     # --- keys and the hub itself ---
 
-    def secrets(self) -> list[dict]:
-        return self._call("GET", "/v1/secrets")["secrets"]
+    # --- connections (D13): keys, tokens and addresses behind the user's password ---
 
-    def set_secret(self, name: str, value: str) -> dict:
-        return self._call("PUT", f"/v1/secrets/{name}", {"value": value})
+    def connections(self, ticket: str = "") -> dict:
+        """{password, unlocked, connections: [...], telegram: {linked}}; never a key's value."""
+        return self._call("GET", "/v1/connections", headers=_unlock(ticket))
 
-    def delete_secret(self, name: str) -> dict:
-        return self._call("DELETE", f"/v1/secrets/{name}")
+    def set_connections_password(self, password: str, old: str = "") -> dict:
+        return self._call("POST", "/v1/connections/password", {"password": password, "old": old})
+
+    def unlock_connections(self, password: str) -> str:
+        return self._call("POST", "/v1/connections/unlock", {"password": password})["ticket"]
+
+    def lock_connections(self, ticket: str) -> None:
+        self._call("POST", "/v1/connections/lock", headers=_unlock(ticket))
+
+    def set_connection(self, name: str, value: str, ticket: str) -> dict:
+        return self._call("PUT", f"/v1/connections/{name}", {"value": value}, headers=_unlock(ticket))
+
+    def delete_connection(self, name: str, ticket: str) -> dict:
+        return self._call("DELETE", f"/v1/connections/{name}", headers=_unlock(ticket))
+
+    def check_connection(self, name: str, ticket: str) -> dict:
+        return self._call("POST", f"/v1/connections/{name}/check", headers=_unlock(ticket))
+
+    def telegram_link(self, ticket: str) -> dict:
+        return self._call("POST", "/v1/connections/telegram/link", headers=_unlock(ticket))
+
+    def telegram_unlink(self, ticket: str) -> dict:
+        return self._call("DELETE", "/v1/connections/telegram/link", headers=_unlock(ticket))
 
     def feed(self, *, limit: int = 100, before: int | None = None, project_id: str = "", types: str = "") -> dict:
         """The event log, newest first: {events, more}."""

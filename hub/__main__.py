@@ -10,9 +10,11 @@ python -m hub token revoke NAME       the client's token stops working
 python -m hub mcp --client NAME       the stdio adapter to the hub's MCP, for clients that only speak stdio (D32)
 python -m hub telegram link           a one-time code: "/link <code>" to your bot links your chat (D21)
 python -m hub telegram status | unlink
-python -m hub key status              which API keys are set (never their values)
-python -m hub key set NAME            store an API key in the Windows Credential Manager (typed hidden)
+python -m hub key status              which API keys and tokens are set (never their values)
+python -m hub key set NAME            store one in the Windows Credential Manager (typed hidden; the connections'
+                                      password first, once there is one)
 python -m hub key delete NAME         remove it
+python -m hub connections reset       a forgotten password: remove it together with every saved connection
 """
 
 from __future__ import annotations
@@ -205,7 +207,10 @@ def telegram_command(settings: HubSettings, args: argparse.Namespace) -> int:
     db = Database(paths.db)
     try:
         db.call(migrate)
-        has_token = bool(default_secret_store().get(TOKEN))
+        store = default_secret_store()
+        has_token = bool(store.get(TOKEN))
+        if args.action in ("link", "unlink") and not _password_given(store):
+            return 1
         if args.action == "link":
             code = db.call(new_link_code)
             if not has_token:
@@ -223,29 +228,78 @@ def telegram_command(settings: HubSettings, args: argparse.Namespace) -> int:
 
 
 def key_command(settings: HubSettings, args: argparse.Namespace) -> int:
-    """API keys live in the OS secret store (D13); this command never prints a value."""
-    from .secrets import KNOWN_SECRETS, KeyringSecretStore, default_secret_store
+    """API keys and tokens live in the OS secret store (D13); this command never prints a value. An address
+    (SearXNG) is set in the window."""
+    from .connections import CONNECTIONS, clean_value
+    from .secrets import KeyringSecretStore, default_secret_store
 
+    secret = {c.name: c for c in CONNECTIONS if c.kind != "address"}
     store = default_secret_store()
     if args.action == "status":
-        for name, label in KNOWN_SECRETS.items():
-            print(f"{name:20} {'задан' if store.get(name) else 'не задан':9} {label}")
+        for c in secret.values():
+            print(f"{c.name:22} {'задан' if store.get(c.name) else 'не задан':9} {c.title}: {c.purpose}")
         return 0
-    if args.name not in KNOWN_SECRETS:
-        print(f"Неизвестный ключ {args.name!r}. Известные: {', '.join(KNOWN_SECRETS)}", file=sys.stderr)
+    if args.name not in secret:
+        print(f"Неизвестный ключ {args.name!r}. Известные: {', '.join(secret)}", file=sys.stderr)
         return 1
     if not isinstance(store, KeyringSecretStore):
         print("Хранилище секретов Windows недоступно, ключ не сохранён (подробности в логе)", file=sys.stderr)
         return 1
+    if not _password_given(store):
+        return 1
     if args.action == "set":
-        value = _read_secret(f"{KNOWN_SECRETS[args.name]} (ввод скрыт): ")
+        value = _read_secret(f"{secret[args.name].title} — {secret[args.name].purpose} (ввод скрыт): ")
         if not value:
             print("Пустое значение, ничего не сохранено", file=sys.stderr)
+            return 1
+        try:
+            value = clean_value(secret[args.name], value)
+        except ValueError as exc:
+            print(f"Не сохранено: {exc}", file=sys.stderr)
             return 1
         store.set(args.name, value)
         print(f"Ключ {args.name} сохранён в диспетчере учётных данных Windows")
     else:
         print(f"Ключ {args.name} удалён" if store.delete(args.name) else f"Ключ {args.name} и не был задан")
+    _refresh_catalog(settings)
+    return 0
+
+
+def _password_given(store) -> bool:
+    """Once the connections have a password (D13), the console asks it too before a change."""
+    from .connections import PASSWORD, password_matches
+
+    raw = store.get(PASSWORD)
+    if not raw:
+        return True
+    if not password_matches(json.loads(raw), _read_secret("Пароль подключений (ввод скрыт): ")):
+        print("Неверный пароль. Забыли его — python -m hub connections reset", file=sys.stderr)
+        return False
+    return True
+
+
+def connections_command(settings: HubSettings, args: argparse.Namespace) -> int:
+    """A forgotten password: it goes with every saved connection, so nothing set under it stays behind."""
+    from .connections import CONNECTIONS, reset
+    from .secrets import KeyringSecretStore, default_secret_store
+
+    store = default_secret_store()
+    if not isinstance(store, KeyringSecretStore):
+        print("Хранилище секретов Windows недоступно (подробности в логе)", file=sys.stderr)
+        return 1
+    titles = ", ".join(c.title for c in CONNECTIONS)
+    print(f"Будут удалены пароль подключений и все сохранённые подключения ({titles}).")
+    if _read_secret("Чтобы продолжить, напишите СБРОС: ").casefold() != "сброс":
+        print("Ничего не изменено")
+        return 1
+    paths = settings.paths.ensure()
+    db = Database(paths.db)
+    try:
+        db.call(migrate)
+        removed = db.call(lambda conn: reset(store, conn))
+    finally:
+        db.close()
+    print(f"Пароль сброшен; удалены: {', '.join(removed) or 'ничего не было задано'}. Новый пароль задаётся в окне")
     _refresh_catalog(settings)
     return 0
 
@@ -314,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     key_set.add_argument("name")
     key_delete = key_actions.add_parser("delete", help="remove a key")
     key_delete.add_argument("name")
+    connections = commands.add_parser("connections", help="the connections' password (D13)")
+    connections.add_argument("action", choices=("reset",))
     args = parser.parse_args(argv)
 
     settings = HubSettings.from_env()
@@ -321,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
         return token_command(settings, args)
     if args.command == "key":
         return key_command(settings, args)
+    if args.command == "connections":
+        return connections_command(settings, args)
     if args.command == "stop":
         return stop(settings)
     if args.command == "mcp":

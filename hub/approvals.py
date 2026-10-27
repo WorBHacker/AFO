@@ -31,7 +31,7 @@ from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
-NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch"}
+NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search"}
 HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
 SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
@@ -112,8 +112,8 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
         return {"kind": "diff", "text": _diff(tool, data, root), "note": str(data.get("file_path", ""))}
     if tool in ("WebFetch", "web_fetch"):
         return {"kind": "text", "text": str(data.get("url", "")), "note": str(data.get("prompt", ""))}
-    if tool == "WebSearch":
-        return {"kind": "text", "text": str(data.get("query", "")), "note": ""}
+    if tool in ("WebSearch", "web_search"):
+        return {"kind": "text", "text": str(data.get("query", "")), "note": str(data.get("engine", ""))}
     return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)), "note": ""}
 
 

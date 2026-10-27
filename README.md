@@ -43,11 +43,16 @@ py -3.14 -m venv .venv
 .venv/Scripts/python.exe -m hub stop
 ```
 
-Ключ Anthropic (для моделей Claude) хранится в диспетчере учётных данных Windows, ввод скрыт:
+Ключи API (Anthropic, Google Gemini, Brave Search), адрес своего SearXNG и токен Telegram-бота задаются в окне:
+«Подключения» (Ctrl+Shift+K или «Настройки → Открыть подключения…»). В первый раз окно просит придумать пароль
+подключений — без него ключи не добавить, не заменить и не удалить. Ключи хранятся в диспетчере учётных данных
+Windows и из хаба не выходят. То же из консоли (спросит пароль, если он задан):
 
 ```bash
 .venv/Scripts/python.exe -m hub key set anthropic_api_key
 .venv/Scripts/python.exe -m hub key status
 ```
+
+Забыли пароль — `python -m hub connections reset`: сбрасывает его вместе со всеми сохранёнными подключениями.
 
 Логи пишутся в `data/logs/<компонент>.log`. Папку данных можно переопределить переменной `LOCALCHAT_DATA_DIR`.

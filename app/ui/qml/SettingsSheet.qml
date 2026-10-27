@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// Settings: the theme, the Anthropic key (D13), the hub's own actions, the version.
+// Settings: the theme, the model advice's priority, the connections (D13), the hub's own actions, the version.
 Sheet {
     id: sheet
     objectName: "settingsSheet"
@@ -34,46 +34,21 @@ Sheet {
         onPicked: (id) => App.setPriority(id)
     }
 
-    SectionTitle { text: "Ключ Anthropic (модели Claude)" }
-    Row {
-        spacing: 8
-        Rectangle {
-            width: 7; height: 7; radius: 3.5
-            color: App.keySet ? Theme.p.ok : Theme.p.faint
-            anchors.verticalCenter: parent.verticalCenter
-        }
-        Text {
-            text: App.keySet ? "Задан · хранится в диспетчере учётных данных Windows"
-                             : "Не задан — модели Claude недоступны"
-            color: Theme.p.text_soft
-            font.family: Theme.uiFont
-            font.pixelSize: 13
-        }
-    }
-    Row {
+    SectionTitle { text: "Подключения" }
+    Text {
         width: parent.width
-        spacing: 8
-        Field {
-            id: key
-            width: parent.width - save.width - 8
-            echoMode: TextInput.Password
-            placeholderText: App.keySet ? "Новый ключ, чтобы заменить" : "sk-ant-…"
-            onAccepted: save.clicked()
-        }
-        PlainButton {
-            id: save
-            kind: "primary"
-            text: "Сохранить"
-            enabled: key.text.trim() !== ""
-            onClicked: { App.setAnthropicKey(key.text); key.text = "" }
-        }
+        wrapMode: Text.Wrap
+        text: "Ключи API (Anthropic, Gemini, поиск) и токен Telegram-бота — под паролем подключений. "
+              + (App.keySet ? "Ключ Anthropic задан." : "Ключ Anthropic не задан — модели Claude по ключу недоступны.")
+        color: Theme.p.text_soft
+        font.family: Theme.uiFont
+        font.pixelSize: 13
     }
     PlainButton {
-        visible: App.keySet
-        kind: "danger"
-        iconName: "trash"
-        text: "Удалить ключ"
-        onClicked: App.deleteAnthropicKey()
+        objectName: "openConnections"
+        iconName: "key"
+        text: "Открыть подключения…"
+        onClicked: { sheet.close(); App.openUi("connections") }
     }
 
     SectionTitle { text: "Хаб" }

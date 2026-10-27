@@ -160,6 +160,10 @@ class TelegramBot:
             raise httpx.HTTPError(f"{method}: {body.get('description', response.status_code)}")
         return body["result"]
 
+    async def me(self) -> dict[str, Any]:
+        """The bot itself (getMe): a check of the token. LookupError without one."""
+        return await self._call("getMe")
+
     # --- incoming: /link, button presses ---
 
     async def _poll(self) -> None:

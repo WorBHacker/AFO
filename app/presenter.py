@@ -228,7 +228,13 @@ def local_model(status: dict[str, Any] | None) -> str:
 
 PERIODS = [("day", "за день"), ("week", "за неделю"), ("month", "за месяц")]
 HARD_ACTIONS = [("ask", "спрашивать"), ("block", "запрещать")]
-PROVIDER_NAMES = {"anthropic": "Anthropic", "openai": "OpenAI", "openrouter": "OpenRouter", "deepseek": "DeepSeek"}
+PROVIDER_NAMES = {
+    "anthropic": "Anthropic",
+    "gemini": "Google Gemini",
+    "openai": "OpenAI",
+    "openrouter": "OpenRouter",
+    "deepseek": "DeepSeek",
+}
 STATE_ORDER = {"ok": 0, "soft": 1, "hard": 2}
 
 

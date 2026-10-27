@@ -44,7 +44,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import budgets, cards, changes, commands, context, links, notes, store, web
+from . import budgets, cards, changes, commands, context, links, notes, store, web, websearch
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -62,7 +62,13 @@ TITLE_LENGTH = 60
 MAX_TOOL_STEPS = 12
 NOT_RUN = "not run: the run stopped before this call"
 READ_ONLY = "not done: this chat is read-only - the user did not allow changes. Say what you would change instead."
-CHAT_TOOLS = [*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND, web.WEB_FETCH]  # a new chat's; older keep theirs
+CHAT_TOOLS = [
+    *TOOLS,
+    *changes.WRITE_TOOLS,
+    commands.RUN_COMMAND,
+    web.WEB_FETCH,
+    websearch.WEB_SEARCH,
+]  # a new chat's; older keep theirs
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
@@ -79,6 +85,7 @@ class ChatService:
         self.approvals = None
         self.snapshots: Path | None = None  # data/snapshots: the files before and after each write
         self.agents = None  # set by the server: a coordinator's sub-runs (D20)
+        self.secrets = None  # set by the server: the search engine's key (web_search)
 
     @property
     def busy(self) -> list[str]:
@@ -460,6 +467,8 @@ class ChatService:
                 output, error = await self._run_command(conversation_id, call, ctx, cancel)
             elif call["name"] == web.WEB_FETCH["name"]:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
+            elif call["name"] == websearch.WEB_SEARCH["name"]:
+                output, error = await self._web_search(conversation_id, call, ctx, cancel)
             elif call["name"] == "delegate_task":  # a coordinator's (D20)
                 if self.agents is None:
                     output, error = "agents are not available here", True
@@ -545,13 +554,41 @@ class ChatService:
         except ToolError as exc:
             return str(exc), True
 
+    async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
+        """A search the model wants: asked every time - the query leaves this computer (D19) - with the engine the
+        user connected (Brave Search or their SearXNG)."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        try:
+            query = websearch.query_of(args)
+        except ToolError as exc:
+            return str(exc), True
+        if self.secrets is None:
+            return "web search is not available here", True
+        engine = await websearch.engine(self.secrets, self._db)
+        if engine is None:
+            return ("no search engine is connected: the user adds a Brave Search key or a SearXNG address in the "
+                    "window's Connections"), True  # fmt: skip
+        project = ctx.projects[0] if ctx.projects else None
+        shown = {"query": query, "engine": websearch.ENGINES[engine]}
+        allowed, why = await self._ask_user(conversation_id, call["name"], shown, project, cancel)
+        if not allowed:
+            return why, True
+        try:
+            found = await websearch.search(query, engine=engine, store=self.secrets, db=self._db,
+                                           count=args.get("count") or websearch.DEFAULT_COUNT)  # fmt: skip
+        except (ToolError, ValueError, TypeError) as exc:
+            return str(exc), True
+        return websearch.as_text(query, engine, found), False
+
     async def _read_the_web(self, conversation_id: str) -> bool:
-        """Has the model in this chat read a web page? Then its writes and commands are asked every time (D19)."""
+        """Has the model in this chat read a web page or searched? Then its writes and commands are asked every time
+        (D19)."""
 
         def read(conn) -> bool:
             row = conn.execute(
-                "SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'tool' AND content LIKE ?",
-                (conversation_id, '%"name": "web_fetch"%'),
+                "SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'tool' AND (content LIKE ? OR content"
+                " LIKE ?)",
+                (conversation_id, '%"name": "web_fetch"%', '%"name": "web_search"%'),
             ).fetchone()
             return row is not None
 

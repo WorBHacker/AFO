@@ -24,6 +24,7 @@ from .api import (
     cards,
     changes,
     claude_code,
+    connections,
     conversations,
     events_ws,
     links,
@@ -32,7 +33,6 @@ from .api import (
     openai,
     processes,
     projects,
-    secrets,
     stats,
     system,
     terminals,
@@ -41,6 +41,7 @@ from .approvals import ApprovalQueue
 from .auth import ensure_app_token
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
+from .connections import ConnectionLock
 from .db import Database, migrate
 from .events import EventBus
 from .gateway.registry import build_default_gateway
@@ -73,10 +74,12 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         gateway = build_default_gateway(db, settings.llama_swap_url, secrets_store)
         app.state.settings = settings
         app.state.secrets = secrets_store
+        app.state.lock = ConnectionLock(secrets_store)  # the connections' password (D13)
         app.state.db = db
         app.state.bus = bus
         app.state.gateway = gateway
         app.state.chat = ChatService(db, bus, gateway)
+        app.state.chat.secrets = secrets_store
         app.state.approvals = ApprovalQueue(db, bus)
         # Claude Code (D8, D18): the user's CLI in a chat's project, with the hub's MCP and its approval queue
         hub_url = f"http://{settings.host}:{settings.port}"
@@ -142,7 +145,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(events_ws.router)
     app.include_router(models.router)
     app.include_router(conversations.router)
-    app.include_router(secrets.router)
+    app.include_router(connections.router)
     app.include_router(budgets.router)
     app.include_router(projects.router)
     app.include_router(processes.router)

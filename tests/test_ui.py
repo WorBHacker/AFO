@@ -249,6 +249,8 @@ class FakeClient:
         self.deleted_budgets = []
         self.secret_calls = []
         self.key = False
+        self.password = None  # the connections' (D13)
+        self.ticket = ""
         self.project_list = [dict(PROJECT)]
         self.trees = copy.deepcopy(TREE)
         self.files = dict(FILES)
@@ -321,18 +323,59 @@ class FakeClient:
     def delete_budget(self, budget_id):
         self.deleted_budgets.append(budget_id)
 
-    def secrets(self):
-        return [{"name": "anthropic_api_key", "label": "x", "set": self.key}]
+    def connections(self, ticket=""):
+        unlocked = bool(ticket) and ticket == self.ticket
+        rows = [
+            {"name": "anthropic_api_key", "title": "Anthropic", "kind": "key", "purpose": "Модели Claude",
+             "site": "https://console.anthropic.com/settings/keys", "hint": "sk-ant-…", "set": self.key,
+             "tail": "-123" if self.key and unlocked else ""},
+            {"name": "searxng_url", "title": "SearXNG", "kind": "address", "purpose": "Свой поисковик",
+             "site": "https://docs.searxng.org/", "hint": "http://127.0.0.1:8888", "set": False, "value": ""},
+            {"name": "telegram_bot_token", "title": "Telegram-бот", "kind": "token", "purpose": "С телефона",
+             "site": "https://t.me/BotFather", "hint": "123456789:AA…", "set": False, "tail": ""},
+        ]  # fmt: skip
+        return {"password": self.password is not None, "unlocked": unlocked, "connections": rows,
+                "telegram": {"linked": False}}  # fmt: skip
 
-    def set_secret(self, name, value):
+    def set_connections_password(self, password, old=""):
+        if self.password is not None and old != self.password:
+            raise HubError("неверный пароль", code="wrong_password")
+        self.password, self.ticket = password, ""
+        return {"password": True}
+
+    def unlock_connections(self, password):
+        if password != self.password:
+            raise HubError("неверный пароль", code="wrong_password")
+        self.ticket = "ticket-1"
+        return self.ticket
+
+    def lock_connections(self, ticket):
+        self.secret_calls.append(("lock", ticket))
+        self.ticket = ""
+
+    def _open(self, ticket):
+        if not ticket or ticket != self.ticket:
+            raise HubError("подключения закрыты: введите пароль", code="locked")
+
+    def set_connection(self, name, value, ticket):
+        self._open(ticket)
         self.secret_calls.append(("set", name, value))
-        self.key = True
+        self.key = self.key or name == "anthropic_api_key"
         return {"name": name, "set": True, "catalog": {"synced": 2}}
 
-    def delete_secret(self, name):
+    def delete_connection(self, name, ticket):
+        self._open(ticket)
         self.secret_calls.append(("delete", name))
-        self.key = False
+        self.key = self.key and name != "anthropic_api_key"
         return {"name": name, "set": False}
+
+    def check_connection(self, name, ticket):
+        self._open(ticket)
+        return {"name": name, "ok": True, "detail": "ключ работает: моделей — 2"}
+
+    def telegram_link(self, ticket):
+        self._open(ticket)
+        return {"code": "123456", "valid_s": 600}
 
     def rename(self, cid, title):
         self.renamed.append((cid, title))
@@ -878,7 +921,7 @@ def test_commands_open_panels_and_act(app):
     app.runCommand("action:budgets")
     app.runCommand("action:key")
     app.runCommand("model:anthropic/claude-opus-5-5")
-    assert asked == ["budgets", "settings"] and app.modelId == "anthropic/claude-opus-5-5"
+    assert asked == ["budgets", "connections"] and app.modelId == "anthropic/claude-opus-5-5"
     app.runCommand("chat:c1")
     wait_until(lambda: len(app.messages.rows) == 2)
     app.runCommand("action:theme:light")
@@ -910,16 +953,56 @@ def test_budgets_are_saved_checked_and_deleted(app):
     wait_until(lambda: app.client.deleted_budgets == [1])
 
 
-def test_the_anthropic_key(app):
+def test_connections_behind_the_password(app):
+    conns = app.connections
+    wait_until(lambda: conns.state == "new")  # no password yet: the sheet asks to make one up
+    conns.createPassword("12345", "12345")
+    assert conns.error == "Пароль — не короче 6 символов"
+    conns.createPassword("секрет-1", "секрет-2")
+    assert conns.error == "Пароли не совпадают"
+    conns.createPassword("секрет-1", "секрет-1")
+    wait_until(lambda: conns.state == "open")
     assert app.keySet is False
-    app.setAnthropicKey("  sk-ant-test  ")
+
+    conns.save("anthropic_api_key", "  sk-ant-test  ")
     wait_until(lambda: app.keySet)
     assert app.client.secret_calls == [("set", "anthropic_api_key", "sk-ant-test")]
-    app.deleteAnthropicKey()
-    assert app.question["title"] == "Удалить ключ Anthropic?"
+    wait_until(lambda: conns.items[0]["status"] == "задан · …-123")
+    conns.check("anthropic_api_key")
+    wait_until(lambda: conns.items[0]["note"] == "ключ работает: моделей — 2")
+    assert conns.items[0]["noteOk"] is True and conns.items[1]["secret"] is False
+    conns.linkTelegram()
+    wait_until(lambda: conns.linkCode == "123456")
+    conns.remove("anthropic_api_key")
+    assert app.question["title"] == "Удалить подключение «Anthropic»?"
     app.answer(True)
     wait_until(lambda: not app.keySet)
-    assert app.client.secret_calls[-1] == ("delete", "anthropic_api_key")
+
+    conns.lock()  # the sheet closed
+    assert conns.state == "locked" and conns.linkCode == ""
+    wait_until(lambda: ("lock", "ticket-1") in app.client.secret_calls)  # the hub forgets the ticket too
+    conns.unlock("не тот")
+    wait_until(lambda: conns.error == "неверный пароль")
+    conns.unlock("секрет-1")
+    wait_until(lambda: conns.state == "open" and conns.error == "")
+    app.client.ticket = "lapsed"  # ten minutes without a change: the hub forgot the ticket
+    conns.save("anthropic_api_key", "sk-ant-again")
+    wait_until(lambda: conns.state == "locked")
+    assert conns.error == "Подключения закрылись: введите пароль снова"
+
+
+def test_connection_rows():
+    from app.ui.connections import connection_rows
+
+    data = {"connections": [
+        {"name": "a", "title": "A", "kind": "key", "purpose": "", "site": "", "hint": "", "set": True, "tail": ""},
+        {"name": "u", "title": "U", "kind": "address", "purpose": "", "site": "", "hint": "", "set": True,
+         "value": "http://127.0.0.1:8888"},
+        {"name": "t", "title": "T", "kind": "token", "purpose": "", "site": "", "hint": "", "set": False},
+    ]}  # fmt: skip
+    shown = connection_rows(data, {"t": {"ok": False, "text": "Telegram: Unauthorized"}})
+    assert [r["status"] for r in shown] == ["задан", "http://127.0.0.1:8888", "не задан"]
+    assert shown[2]["note"] == "Telegram: Unauthorized" and shown[2]["noteOk"] is False
 
 
 def test_rename_and_delete_a_chat(app):

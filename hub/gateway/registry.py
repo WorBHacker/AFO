@@ -23,6 +23,9 @@ class Gateway:
     def providers(self) -> list[str]:
         return sorted(self._providers)
 
+    def provider(self, name: str) -> Provider | None:
+        return self._providers.get(name)
+
     def resolve(self, model_id: str) -> tuple[Provider, str]:
         """'llama-swap/coder' -> (provider, 'coder'). The provider part is the name before the first '/'."""
         provider_name, _, model_ref = model_id.partition("/")
@@ -61,14 +64,17 @@ class Gateway:
 
 
 def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStore) -> Gateway:
-    """The gateway: local models through llama-swap, Claude by API key (D34), and Claude Code when its CLI is
-    installed (stage 4, D8) - the chat runs those through hub/claude_code.py."""
+    """The gateway: local models through llama-swap, Claude by API key (D34), Gemini by API key (stage 6.5), and
+    Claude Code when its CLI is installed (stage 4, D8) - the chat runs those through hub/claude_code.py."""
     from ..claude_code import ClaudeCodeProvider
+    from ..connections import GEMINI_API_KEY
     from .anthropic_provider import AnthropicProvider
+    from .gemini_provider import GeminiProvider
     from .openai_compat import OpenAICompatProvider
 
     gateway = Gateway(db)
     gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality="local"))
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
+    gateway.register(GeminiProvider(lambda: secrets.get(GEMINI_API_KEY)))
     gateway.register(ClaudeCodeProvider())
     return gateway

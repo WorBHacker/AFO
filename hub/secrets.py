@@ -1,7 +1,8 @@
 """API keys and other secrets (D13). On Windows keyring stores them in the Credential Manager.
 
 Secrets never go into settings.json or the database, and their values are never logged or returned by
-the API - the API reports only whether a key is set.
+the API - the API reports only whether a key is set. Which secrets the hub knows, and the password that guards
+them, is hub/connections.py.
 """
 
 from __future__ import annotations
@@ -17,11 +18,6 @@ SERVICE = "LocalChat"
 STORE_ENV = "LOCALCHAT_SECRETS"
 
 ANTHROPIC_API_KEY = "anthropic_api_key"
-# the secrets the hub knows, with what each one is for; the API and the CLI accept only these names
-KNOWN_SECRETS: dict[str, str] = {
-    ANTHROPIC_API_KEY: "Anthropic API key (Claude)",
-    "telegram_bot_token": "Токен Telegram-бота для подтверждений (D21)",
-}
 
 
 class SecretStore(Protocol):

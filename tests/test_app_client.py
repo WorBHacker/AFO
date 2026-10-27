@@ -39,7 +39,7 @@ def test_calls_through_the_api(client):
     assert client.conversations()["conversations"][0]["id"] == cid
     assert set(client.status()) >= {"gpu", "memory", "local", "busy"}
     assert "today_cost_usd" in client.usage()
-    assert client.secrets()[0]["set"] is False
+    assert client.connections()["connections"][0]["set"] is False
     assert client.events_url == "ws://127.0.0.1:8765/v1/events"
 
 

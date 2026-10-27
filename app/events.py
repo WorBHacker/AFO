@@ -22,6 +22,8 @@ TOPICS = [
     "models.*",
     "system.*",
     "secrets.*",
+    "connections.*",
+    "telegram.*",
     "budget.*",
     "project.*",
     "processes.*",

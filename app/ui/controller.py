@@ -24,6 +24,7 @@ from . import commands, mentions, rows
 from .agents import Agents
 from .approvals import Approvals
 from .composer import Mentions
+from .connections import Connections
 from .feed import Feed
 from .models import RowModel
 from .projects import Projects
@@ -143,6 +144,7 @@ class Controller(QObject):
         self.mentions = Mentions(self)
         self.approvals = Approvals(self)
         self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
+        self.connections = Connections(self)  # keys and tokens behind the password (D13)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -549,36 +551,14 @@ class Controller(QObject):
     # ================= the Anthropic key (D13) =================
 
     def load_secrets(self) -> None:
-        def show(secrets: list[dict]) -> None:
-            self._key_set = any(s["name"] == ANTHROPIC_KEY and s["set"] for s in secrets)
+        """Whether Claude's key is set (the picker's note); the keys themselves are the Connections sheet's."""
+        self.connections.load()
+
+    def show_connections(self, rows: list[dict]) -> None:
+        key_set = any(r["name"] == ANTHROPIC_KEY and r["set"] for r in rows)
+        if key_set != self._key_set:
+            self._key_set = key_set
             self.keyChanged.emit()
-
-        self._call(lambda: self.client.secrets(), show)
-
-    @Slot(str)
-    def setAnthropicKey(self, value: str) -> None:
-        if not value.strip():
-            return
-
-        def done(result: dict) -> None:
-            self._key_set = True
-            self.keyChanged.emit()
-            self.load_models()
-            errors = (result.get("catalog") or {}).get("errors")
-            if errors:
-                self.show_error(f"Ключ сохранён, но список моделей не получен: {errors}")
-            else:
-                self.flash("Ключ сохранён в диспетчере учётных данных Windows, модели Claude добавлены")
-
-        self._call(lambda: self.client.set_secret(ANTHROPIC_KEY, value.strip()), done)
-
-    @Slot()
-    def deleteAnthropicKey(self) -> None:
-        def decide(yes: bool) -> None:
-            if yes:
-                self._call(lambda: self.client.delete_secret(ANTHROPIC_KEY), lambda _r: self.load_secrets())
-
-        self._ask("Удалить ключ Anthropic?", "Модели Claude пропадут из списка.", "Удалить", decide)
 
     # ================= chats =================
 
@@ -793,6 +773,11 @@ class Controller(QObject):
         )
 
     @Slot(str)
+    def openUi(self, what: str) -> None:
+        """A panel opened from another one (Settings -> Connections)."""
+        self.uiRequested.emit(what)
+
+    @Slot(str)
     def runCommand(self, command_id: str) -> None:
         kind, _, value = command_id.partition(":")
         if kind == "chat":
@@ -826,8 +811,8 @@ class Controller(QObject):
                 self.uiRequested.emit("add-project")
             elif value in ("models", "budgets", "settings", "rename"):
                 self.uiRequested.emit(value)
-            elif value == "key":
-                self.uiRequested.emit("settings")
+            elif value in ("key", "connections"):
+                self.uiRequested.emit("connections")
             elif value == "sync":
                 self.syncModels()
             elif value == "unload":
@@ -1050,6 +1035,10 @@ class Controller(QObject):
             self._call(lambda: self.client.budgets(), self._set_budgets)
         elif kind in ("models.synced", "secrets.changed"):
             self.load_models()
+            if kind == "secrets.changed":
+                self.connections.load()
+        elif kind.startswith(("connections.", "telegram.")):
+            self.connections.on_event(kind, payload)
         elif kind == "system.status":
             self._show_status(payload)
         elif kind.startswith(("project.", "processes.", "card.", "note.", "link")):
