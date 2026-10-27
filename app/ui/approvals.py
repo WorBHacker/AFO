@@ -35,7 +35,7 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
     """What the agent wants, in a few words."""
     path = short_path(str(data.get("file_path") or data.get("notebook_path") or ""), roots)
     match tool:
-        case "Bash" | "PowerShell":
+        case "Bash" | "PowerShell" | "run_command":
             return "Выполнить команду"
         case "Edit" | "MultiEdit":
             return f"Править {path}"
@@ -79,6 +79,7 @@ def approval_rows(
         who = "Claude Code" if a.get("client") == HUB_CLAUDE_CODE else a.get("client") or "агент"
         project = projects.get(a.get("project_id") or "", {}).get("name", "")
         chat = chats.get(a.get("conversation_id") or "", "")
+        always = "destructive" if a.get("destructive") else "network" if a.get("network") else ""
         rows.append({
             "id": a["id"],
             "title": title(a.get("tool", ""), data, roots),
@@ -92,8 +93,9 @@ def approval_rows(
             "previewKind": preview.get("kind", "text"),
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
+            "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)
             "chatScope": "эта команда в этом чате" if a.get("kind") == "command" else f"все {a.get('tool')} в чате",
-            "projectScope": f"всегда в «{project}»" if project and not a.get("destructive") else "",
+            "projectScope": f"всегда в «{project}»" if project and not always else "",
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
         })  # fmt: skip

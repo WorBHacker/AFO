@@ -1928,3 +1928,17 @@ def test_an_answer_for_the_project_in_the_queue(app):
     app.approvals.answer("ap1", True, "project", "")
     wait_until(lambda: not app.bg.busy)
     assert app.client.answers[-1] == ("ap1", True, "project", "")
+
+
+def test_commands_in_the_window():
+    from app.ui.approvals import approval_rows
+
+    assert rows.tool_label("run_command", {"project": "p", "command": "pytest  -q"}) == "Выполняю pytest -q"
+    projects = {"p1": {"id": "p1", "name": "LocalChat", "path": "D:/Code/LocalChat"}}
+    preview = {"kind": "command", "text": "pip install x"}
+    install = {**APPROVAL, "tool": "run_command", "kind": "command", "network": True,
+               "input": {"command": "pip install x"}, "preview": preview}  # fmt: skip
+    (row,) = approval_rows([install], projects=projects, chats={})
+    assert row["title"] == "Выполнить команду" and row["alwaysAsk"] == "network" and row["projectScope"] == ""
+    plain = approval_rows([{**install, "network": False}], projects=projects, chats={})[0]
+    assert plain["alwaysAsk"] == "" and plain["projectScope"] == "всегда в «LocalChat»"

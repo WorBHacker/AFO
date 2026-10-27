@@ -21,7 +21,9 @@ allow the cloud and sees the others by name (D10); it gets no chat where a local
 
 The model may also write files of the chat's projects (stage 5, D17): write_file and edit_file are asked in the
 approval queue with a diff, unless the chat is trusted or an answer "for this chat" / a rule of the project covers
-them; a read-only chat refuses them. Each write is kept as a change that can be undone (hub/changes.py).
+them; a read-only chat refuses them. Each write is kept as a change that can be undone (hub/changes.py). And it may
+run commands (run_command, hub/commands.py) in a hub terminal: asked every time unless the project's whitelist or
+an answer for the chat covers that very command - destructive and network commands always.
 
 A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in the chat's project instead
 (hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
@@ -40,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from . import budgets, cards, changes, context, links, notes, store
+from . import budgets, cards, changes, commands, context, links, notes, store
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -58,7 +60,7 @@ TITLE_LENGTH = 60
 MAX_TOOL_STEPS = 12
 NOT_RUN = "not run: the run stopped before this call"
 READ_ONLY = "not done: this chat is read-only - the user did not allow changes. Say what you would change instead."
-CHAT_TOOLS = TOOLS + changes.WRITE_TOOLS  # what a new conversation gets; older ones keep theirs (D14)
+CHAT_TOOLS = [*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND]  # a new conversation's; older ones keep theirs
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
@@ -375,6 +377,8 @@ class ChatService:
             )
             if call["name"] in changes.WRITE_TOOL_NAMES:
                 output, error = await self._write_file(conversation_id, call, ctx, cancel)
+            elif call["name"] == commands.RUN_COMMAND["name"]:
+                output, error = await self._run_command(conversation_id, call, ctx, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error))
@@ -395,22 +399,9 @@ class ChatService:
             return str(exc), True
         approval_id = None
         if settings["mode"] != "trusted":
-            if self.approvals is None:
-                return "not done: the hub has no approval queue to ask the user", True
-            asking = asyncio.create_task(self.approvals.ask(call["name"], args, conversation_id=conversation_id,
-                                                            project_id=project.id, root=project.root))  # fmt: skip
-            stopping = asyncio.create_task(cancel.wait())
-            await asyncio.wait({asking, stopping}, return_when=asyncio.FIRST_COMPLETED)
-            stopping.cancel()
-            if not asking.done():  # the user stopped the run: the request closes unanswered
-                asking.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asking
-                return NOT_RUN, True
-            decision = asking.result()
-            if not decision.allow:
-                return f"not done: the user said no - {decision.comment}", True
-            approval_id = decision.approval_id
+            allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel)
+            if not allowed:
+                return approval_id, True
         if self.snapshots is None:
             return "not done: the hub keeps no snapshots here, so the change could not be undone", True
         try:
@@ -423,6 +414,49 @@ class ChatService:
                                                                    conversation_id, approval_id))  # fmt: skip
         await self._bus.publish("file.changed", {"change": change, "project_id": project.id}, project_id=project.id)
         return f"{changes.summary(planned)} (change {change['id']}; the user can undo it)", False
+
+    async def _run_command(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
+        """A command the model wants run: asked (a trusted chat too; the project's whitelist and the chat's answers
+        aside), then run in a hub terminal the user sees, waited for."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
+        if settings["mode"] == "read_only":
+            return READ_ONLY, True
+        try:
+            project = ctx.project(args.get("project"))
+            commands.command_of(args)
+        except ToolError as exc:
+            return str(exc), True
+        allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
+        if not allowed:
+            return why, True
+        try:
+            return await commands.run(self.terminals, project, args, by="model"), False
+        except ToolError as exc:
+            return str(exc), True
+        except Exception as exc:  # a terminal that would not start: the model hears why, the run goes on
+            log.exception("run_command failed")
+            return f"the command did not start: {exc}", True
+
+    async def _ask_user(self, conversation_id: str, tool: str, args: dict, project, cancel) -> tuple[bool, str | None]:
+        """Asks in the approval queue and waits - or stops waiting when the user stops the run. (True, approval id)
+        when allowed; (False, what the model should read) otherwise."""
+        if self.approvals is None:
+            return False, "not done: the hub has no approval queue to ask the user"
+        asking = asyncio.create_task(self.approvals.ask(tool, args, conversation_id=conversation_id,
+                                                        project_id=project.id, root=project.root))  # fmt: skip
+        stopping = asyncio.create_task(cancel.wait())
+        await asyncio.wait({asking, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        stopping.cancel()
+        if not asking.done():  # the user stopped the run: the request closes unanswered
+            asking.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asking
+            return False, NOT_RUN
+        decision = asking.result()
+        if not decision.allow:
+            return False, f"not done: the user said no - {decision.comment}"
+        return True, decision.approval_id
 
     async def _consume(self, conversation_id, provider, model_ref, prompt, effort, cancel, tools=None) -> Completion:
         completion = Completion()

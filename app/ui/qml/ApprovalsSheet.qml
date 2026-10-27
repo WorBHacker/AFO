@@ -94,8 +94,10 @@ Sheet {
 
                     Text {
                         width: parent.width
-                        visible: card.modelData.destructive
-                        text: "Разрушительное действие: спрашивается каждый раз, разрешить можно только этот раз."
+                        visible: card.modelData.alwaysAsk !== ""
+                        text: card.modelData.alwaysAsk === "network"
+                              ? "Команда обращается к сети: спрашивается каждый раз, разрешить можно только этот раз."
+                              : "Разрушительное действие: спрашивается каждый раз, разрешить можно только этот раз."
                         wrapMode: Text.Wrap
                         color: Theme.p.error
                         font.family: Theme.uiFont
@@ -165,7 +167,7 @@ Sheet {
                         }
                         PlainButton {
                             objectName: "approveChat"
-                            visible: !card.modelData.destructive && card.modelData.conversationId !== ""
+                            visible: card.modelData.alwaysAsk === "" && card.modelData.conversationId !== ""
                             text: "Разрешить: " + card.modelData.chatScope
                             onClicked: Approvals.answer(card.modelData.id, true, "chat", "")
                         }

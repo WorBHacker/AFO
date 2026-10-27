@@ -28,7 +28,7 @@ from typing import Any
 from .db import Database, utc_now
 from .events import EventBus
 
-COMMAND_TOOLS = {"Bash", "PowerShell"}
+COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
 NETWORK_TOOLS = {"WebFetch", "WebSearch"}
 HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
@@ -40,6 +40,13 @@ DESTRUCTIVE = re.compile(
     r"\bgit\s+(push|reset\s+--hard|clean\s+-\w*f|branch\s+-D|checkout\s+--\s|restore\b|stash\s+(drop|clear))"
     r"|\brm\s+-\w*[rf]|\b(rmdir|rd)\s+/s|\bdel\s+/[sq]|\bRemove-Item\b.*-Recurse|\bformat\s+[a-z]:"
     r"|\bdrop\s+(table|database)\b|\bshutdown\b|\bmkfs\b",
+    re.IGNORECASE,
+)
+# commands that reach the network - installs, downloads, git's remote work: asked every time (D19)
+NETWORK = re.compile(
+    r"\b(pip3?|uv|poetry|pipx)\s+(install|add|sync)\b|\b(npm|pnpm)\s+(i|install|add|ci)\b|\byarn\s+add\b"
+    r"|\bcurl\b|\bwget\b|\bInvoke-(WebRequest|RestMethod)\b|\biwr\b|\birm\b|\bgit\s+(clone|pull|fetch)\b"
+    r"|\bwinget\b|\bchoco\b|\bscoop\b|\bcargo\s+(install|add)\b|\bgo\s+(get|install)\b|\bssh\b|\bscp\b",
     re.IGNORECASE,
 )
 SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
@@ -71,9 +78,14 @@ def destructive(tool: str, data: dict[str, Any]) -> bool:
     return tool in COMMAND_TOOLS and bool(DESTRUCTIVE.search(str(data.get("command", ""))))
 
 
+def network(tool: str, data: dict[str, Any]) -> bool:
+    return tool in COMMAND_TOOLS and bool(NETWORK.search(str(data.get("command", ""))))
+
+
 def grant_key(tool: str, data: dict[str, Any]) -> str | None:
-    """What an answer "for this chat" covers; None when nothing may be covered so (a destructive command)."""
-    if destructive(tool, data):
+    """What an answer "for this chat" covers; None when nothing may be covered so (a destructive command, or one
+    that reaches the network)."""
+    if destructive(tool, data) or network(tool, data):
         return None
     if tool in COMMAND_TOOLS:
         return f"{tool}:{' '.join(str(data.get('command', '')).split())}"
@@ -147,7 +159,8 @@ def _cut(text: str) -> str:
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = json.loads(row["input"])
-    return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data)}
+    return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
+                        "network": network(row["tool"], data)}  # fmt: skip
 
 
 def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:

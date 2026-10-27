@@ -88,6 +88,7 @@ TOOL_ICONS = {
     "get_events": "activity",
     "write_file": "edit",
     "edit_file": "edit",
+    "run_command": "terminal",
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -130,7 +131,7 @@ def tool_label(name: str, args: Any) -> str:
             return f"Правлю {file}"
         case "Write":
             return f"Пишу {file}"
-        case "Bash" | "PowerShell":
+        case "Bash" | "PowerShell" | "run_command":
             command = " ".join(str(a.get("command", "")).split())
             return f"Выполняю {command[:80]}" + ("…" if len(command) > 80 else "")
         case "Glob":
