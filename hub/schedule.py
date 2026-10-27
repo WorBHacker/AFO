@@ -34,7 +34,7 @@ from .events import EventBus
 
 log = logging.getLogger("hub.schedule")
 
-TRIGGERS = ("time", "file", "telegram")
+TRIGGERS = ("time", "file", "telegram", "mail")
 EVERY = ("day", "weekdays", "hours")
 QUIET_KEY = "agent.quiet"
 QUIET_DEFAULT = {"enabled": True, "from": "23:00", "to": "08:00"}
@@ -42,6 +42,8 @@ CLOCK = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 GOAL_FIELDS = ("goal", "done_when", "model_id", "profile_id", "autonomy", "project_ids", "network", "max_steps",
                "max_minutes", "budget_usd", "max_replans", "planner_model_id")  # fmt: skip
 TICK_S = 20.0
+MAIL_EVERY_S = 120.0  # how often INBOX is looked into while a mail schedule is on
+MAIL_SEEN = "mail.seen_uid"  # settings: the newest letter already looked at
 FILE_SETTLE_S = 3.0  # a file still being written: wait until it stays the same
 
 
@@ -82,8 +84,8 @@ def check_trigger(data: dict[str, Any]) -> dict[str, Any]:
         return {"kind": kind, "folder": str(folder.resolve()), "pattern": pattern}
     if kind == "telegram":
         return {"kind": kind, "contains": " ".join(str(data.get("contains") or "").split())}
-    if kind == "mail":
-        raise ScheduleError("mail as a trigger comes with the mail step (9.4b)")
+    if kind == "mail":  # a new letter in INBOX (9.4b): optionally with words in its sender or subject
+        return {"kind": kind, "words": " ".join(str(data.get("words") or "").split())}
     raise ScheduleError(f"a trigger: {', '.join(TRIGGERS)}")
 
 
@@ -205,7 +207,7 @@ class Scheduler:
     """Starts the schedules' runs: a clock for the time triggers, folder watching and the bot for the events."""
 
     def __init__(self, db: Database, bus: EventBus, agents: Any, *, tick_s: float = TICK_S,
-                 now: Any = None):  # fmt: skip
+                 now: Any = None, mail: Any = None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._agents = agents
@@ -217,6 +219,8 @@ class Scheduler:
         self._observer: Any = None
         self._watches: dict[str, Any] = {}  # schedule id -> its folder's watch
         self._seen: dict[str, float] = {}  # a file's path -> when it was last taken (a save fires several events)
+        self._mail = mail  # the mailbox's tools (9.4b): new letters for the mail triggers
+        self._mail_at = -1e9
 
     def start(self, *, clock: bool = True) -> None:
         """The events always; the clock (times, folders) unless off - the tests tick by hand."""
@@ -260,6 +264,10 @@ class Scheduler:
         found = await self._db.acall(schedules)
         await asyncio.to_thread(self._sync_watches, [s for s in found if s["enabled"]
                                                      and s["trigger"]["kind"] == "file"])  # fmt: skip
+        mail_due = asyncio.get_running_loop().time() - self._mail_at >= MAIL_EVERY_S
+        if mail_due and any(s["enabled"] and s["trigger"]["kind"] == "mail" for s in found):
+            await self.check_mail()  # new letters: kept as events, started below
+            found = await self._db.acall(schedules)
         quiet = await self.quiet_now()
         started = []
         for s in found:
@@ -296,10 +304,8 @@ class Scheduler:
         if s["last_run_id"]:
             last = await self._db.acall(lambda conn: conn.execute(
                 "SELECT status FROM agent_runs WHERE conversation_id = ?", (s["last_run_id"],)).fetchone())  # fmt: skip
-            if last is not None and last["status"] in ("queued", "running"):
-                await self._db.acall(lambda conn: conn.execute("UPDATE schedules SET pending = '[]' WHERE id = ?",
-                                                               (s["id"],)))  # fmt: skip
-                log.info("schedule %s: its last run still goes, this start skipped", s["id"])
+            if last is not None and last["status"] in ("queued", "running"):  # a time: skipped; events: kept
+                log.info("schedule %s: its last run still goes, not started over it", s["id"])
                 return None
         goal = dict(s["goal"])
         events = [w for w in why if w != "по расписанию"]
@@ -332,7 +338,39 @@ class Scheduler:
     # --- events ---
 
     async def event(self, kind: str, text: str, match: Any) -> None:
-        """An event for the schedules of `kind` that `match` it: kept, and started at the next tick."""
+        """An event for the schedules of `kind` that `match` it: kept, and started now (or after the quiet hours)."""
+        await self.keep(kind, text, match)
+        await self.tick()
+
+    async def check_mail(self) -> int:
+        """New letters in INBOX since the last look, kept for the mail triggers; how many there were. The first
+        look only notes where the mail is now: what was there before is not news."""
+        self._mail_at = asyncio.get_running_loop().time()
+        if self._mail is None:
+            return 0
+        try:
+            box = await self._mail.mailbox()
+            seen = await self._db.acall(lambda conn: conn.execute("SELECT value FROM settings WHERE key = ?",
+                                                                  (MAIL_SEEN,)).fetchone())  # fmt: skip
+            if seen is None:
+                newest, letters = await asyncio.to_thread(box.newest), []
+            else:
+                letters = await asyncio.to_thread(box.since, int(json.loads(seen["value"])))
+                newest = max([f["uid"] for f in letters], default=int(json.loads(seen["value"])))
+        except Exception as exc:  # no mailbox, the server away: the next look tries again
+            log.info("mail not looked into: %s", exc)
+            return 0
+        await self._db.acall(lambda conn: conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (MAIL_SEEN, json.dumps(newest))))  # fmt: skip
+        for f in letters:
+            heard = f"{f['from']} {f['subject']}".casefold()
+            await self.keep("mail", f"новое письмо от {f['from']}: «{f['subject']}» (uid {f['uid']})",
+                            lambda t, heard=heard: all(w.casefold() in heard for w in t["words"].split()))  # fmt: skip
+        return len(letters)
+
+    async def keep(self, kind: str, text: str, match: Any) -> None:
+        """The event, kept by every enabled schedule of `kind` that `match`es it, till its next start."""
         found = await self._db.acall(schedules)
         for s in found:
             if s["enabled"] and s["trigger"]["kind"] == kind and match(s["trigger"]):
@@ -346,7 +384,6 @@ class Scheduler:
                                  (json.dumps(pending[-50:], ensure_ascii=False), s["id"]))  # fmt: skip
 
                 await self._db.acall(keep)
-        await self.tick()
 
     async def _messages(self) -> None:
         subscription = self._bus.subscribe(("telegram.message",))

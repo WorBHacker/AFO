@@ -55,6 +55,7 @@ from . import (
     context,
     limits,
     links,
+    mail,
     mcp_client,
     memory,
     model_settings,
@@ -96,6 +97,7 @@ READING = frozenset(
         "folder_list",
         "folder_read",
         *computer.READING,
+        *mail.READING,
     }
 )
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
@@ -120,6 +122,7 @@ class ChatService:
         self.toolbox: agent_tools.AgentToolbox | None = None  # its folders, scripts, requests, notices (9.4)
         self.mcp: mcp_client.McpServers | None = None  # outside MCP servers' tools (9.5, D42)
         self.computer: computer.Computer | None = None  # the autonomous agent's hands on the desktop (9.6, D41)
+        self.mail: mail.MailTools | None = None  # the user's mailbox (9.4b, Q21)
 
     @property
     def busy(self) -> list[str]:
@@ -641,6 +644,13 @@ class ChatService:
                     return None if allowed else said
 
                 output, error = await self.computer.handle(conversation_id, call, cancel, ask)
+            elif call["name"] in mail.TOOL_NAMES and self.mail is not None:  # the mailbox (9.4b, Q21)
+
+                async def ask(tool, shown, cover, call=call):
+                    allowed, said = await self._ask_user(conversation_id, tool, shown, None, cancel, cover=cover)
+                    return None if allowed else said
+
+                output, error = await self.mail.handle(conversation_id, call, cancel, ask, cloud=cloud)
             elif outside:  # an outside MCP server's (9.5, D42)
                 output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)

@@ -31,6 +31,7 @@ from .api import (
     events_ws,
     links,
     llama,
+    mail,
     mcp_servers,
     memory,
     model_settings,
@@ -60,6 +61,7 @@ from .db import Database, migrate
 from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
+from .mail import MailTools
 from .mcp_client import McpServers
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
@@ -107,7 +109,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
-        app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox")
+        app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox",
+                                                                  secrets=secrets_store)  # fmt: skip
         app.state.mcp = app.state.chat.mcp = McpServers(db, bus, secrets_store)  # outside MCP servers (9.5, D42)
         app.state.computer = app.state.chat.computer = Computer(  # the agent's hands on the desktop (9.6, D41)
             db,
@@ -120,8 +123,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
+        app.state.mail = app.state.chat.mail = MailTools(db, secrets_store)  # the user's mailbox (9.4b, Q21)
         app.state.scheduler = Scheduler(db, bus, app.state.agents,  # goals on a schedule and on events (9.7)
-                                        tick_s=settings.schedule_tick_s or 20.0)  # fmt: skip
+                                        tick_s=settings.schedule_tick_s or 20.0, mail=app.state.mail)  # fmt: skip
         app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store,
                                          quiet=app.state.scheduler.quiet_now)  # fmt: skip
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
@@ -200,6 +204,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(memory.router)
     app.include_router(schedules.router)
     app.include_router(mcp_servers.router)
+    app.include_router(mail.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)

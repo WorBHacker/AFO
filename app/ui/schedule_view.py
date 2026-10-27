@@ -21,9 +21,10 @@ DAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 WHEN = [{"id": "now", "name": "Сейчас"}, {"id": "time", "name": "По времени"}, {"id": "event", "name": "По событию"}]
 EVERY = [{"id": "day", "name": "Каждый день"}, {"id": "weekdays", "name": "По дням недели"},
          {"id": "hours", "name": "Каждые N часов"}]  # fmt: skip
-EVENTS = [{"id": "file", "name": "Новый файл в папке"}, {"id": "telegram", "name": "Сообщение боту"}]
+EVENTS = [{"id": "file", "name": "Новый файл в папке"}, {"id": "telegram", "name": "Сообщение боту"},
+          {"id": "mail", "name": "Новое письмо"}]  # fmt: skip
 BLANK = {"when": "now", "every": "day", "at": "09:00", "days": [1, 2, 3, 4, 5], "hours": "6", "event": "file",
-         "folder": "", "pattern": "*", "contains": "", "computer": False}  # fmt: skip
+         "folder": "", "pattern": "*", "contains": "", "words": "", "computer": False}  # fmt: skip
 
 
 def trigger_text(trigger: dict[str, Any]) -> str:
@@ -40,6 +41,9 @@ def trigger_text(trigger: dict[str, Any]) -> str:
         case "telegram":
             words = trigger.get("contains") or ""
             return f"сообщение боту со словами «{words}»" if words else "любое сообщение боту"
+        case "mail":
+            words = trigger.get("words") or ""
+            return f"новое письмо со словами «{words}»" if words else "любое новое письмо"
     return str(trigger.get("kind") or "")
 
 
@@ -86,6 +90,8 @@ def trigger_body(draft: dict[str, Any]) -> dict[str, Any]:
         if not str(draft["folder"]).strip():
             raise ValueError("Выберите папку, в которой ждать новые файлы")
         return {"kind": "file", "folder": str(draft["folder"]).strip(), "pattern": str(draft["pattern"]).strip()}
+    if draft["event"] == "mail":
+        return {"kind": "mail", "words": str(draft["words"]).strip()}
     return {"kind": "telegram", "contains": str(draft["contains"]).strip()}
 
 

@@ -10,7 +10,7 @@ Sheet {
     title: "Подключения"
     iconName: "key"
     width: Math.min(600, (parent ? parent.width : 960) * 0.92)
-    onAboutToShow: { Services.load(); Mcp.load() }
+    onAboutToShow: { Services.load(); Mcp.load(); Mail.load(); AgentKeys.load() }
     onClosed: Services.lock()
 
     component Note: Text {
@@ -308,6 +308,12 @@ Sheet {
             }
         }
     }
+
+    // ---------- the agent's mailbox (9.4b) ----------
+    MailSection { width: parent.width }
+
+    // ---------- the user's API keys for the agent (9.4b) ----------
+    KeysSection { width: parent.width }
 
     // ---------- outside MCP servers (9.5) ----------
     McpSection { width: parent.width }

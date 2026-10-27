@@ -131,3 +131,53 @@ def test_beyond_projects_through_an_autonomous_run(hub, tmp_path):  # noqa: F811
     notices = [e for e in hub.get("/v1/feed", params={"types": "run.notice"}).json()["events"]]
     assert json.loads(json.dumps(notices[0]["payload"]))["text"] == "Сумма готова: 12"
     assert hub.put("/v1/agent/access", json={"folders": [{"path": "C:/"}]}).status_code == 422
+
+
+def test_the_users_api_keys_reach_their_host_only(db):
+    """A key goes in its header to its own host (and its subdomains) - never to the model, never elsewhere."""
+    from hub.secrets import MemorySecretStore
+
+    seen = []
+
+    def api(request):
+        seen.append((request.url.host, request.headers.get("X-Api-Key", "")))
+        return httpx.Response(200, text=f"you sent {request.headers.get('X-Api-Key', 'nothing')}")
+
+    store = MemorySecretStore({at.KEY_SECRET + "weather": "w-secret-123"})
+    db.call(lambda c: at.set_setting(c, at.KEYS, at.check_keys([{"name": "Weather", "host": "api.weather.example",
+                                                                 "header": "X-Api-Key", "prefix": ""}])))  # fmt: skip
+    db.call(lambda c: at.set_setting(c, at.DOMAINS, ["api.weather.example", "other.example"]))
+    toolbox = at.AgentToolbox(db, None, None, db.path.parent / "sandbox", transport=httpx.MockTransport(api),
+                              secrets=store)  # fmt: skip
+
+    async def ask(tool, data, cover):
+        return None
+
+    def call(url):
+        return asyncio.run(toolbox.handle("r1", {"name": "http_request", "input": {"url": url}}, None, ask))
+
+    out, error = call("https://api.weather.example/today")
+    assert not error and "w-secret-123" not in out and "you sent [the user's key]" in out
+    call("https://eu.api.weather.example/today")  # a subdomain of its host: the key too
+    call("https://other.example/x")  # another host: no key
+    assert seen == [("api.weather.example", "w-secret-123"), ("eu.api.weather.example", "w-secret-123"),
+                    ("other.example", "")]  # fmt: skip
+    assert "- weather: api.weather.example" in db.call(at.context_note)
+
+
+def test_keys_through_the_hub(hub):  # noqa: F811
+    from tests.test_connections import unlocked
+
+    key = {"host": "api.weather.example", "header": "X-Api-Key", "prefix": "", "value": "w-secret-123"}
+    assert hub.put("/v1/agent/keys/weather", json=key).status_code == 401  # a secret: the connections' password
+    headers = unlocked(hub)
+    assert hub.put("/v1/agent/keys/weather", json={**key, "value": ""}, headers=headers).status_code == 422
+    listed = hub.put("/v1/agent/keys/weather", json=key, headers=headers).json()["keys"]
+    assert listed == [{"name": "weather", "host": "api.weather.example", "header": "X-Api-Key", "prefix": "",
+                       "set": True}]  # fmt: skip
+    assert "w-secret-123" not in hub.get("/v1/agent/keys").text
+    assert hub.app.state.secrets.get(at.KEY_SECRET + "weather") == "w-secret-123"
+    hub.put("/v1/agent/keys/weather", json={**key, "host": "api2.weather.example", "value": ""}, headers=headers)
+    assert hub.get("/v1/agent/keys").json()["keys"][0]["host"] == "api2.weather.example"  # the key kept
+    assert hub.delete("/v1/agent/keys/weather", headers=headers).json() == {"keys": []}
+    assert hub.app.state.secrets.get(at.KEY_SECRET + "weather") is None

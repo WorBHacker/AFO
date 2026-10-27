@@ -104,6 +104,14 @@ Column {
             PlainButton { id: choose; iconName: "folder"; text: "Выбрать…"; onClicked: folderDialog.open() }
         }
         Field {
+            visible: panel.d.event === "mail"
+            objectName: "scheduleWords"
+            width: parent.width
+            text: panel.d.words
+            placeholderText: "Слова в отправителе или теме (пусто — любое новое письмо)"
+            onEditingFinished: Schedules.setField("words", text)
+        }
+        Field {
             visible: panel.d.event === "telegram"
             objectName: "scheduleContains"
             width: parent.width
@@ -114,6 +122,9 @@ Column {
         Hint {
             text: panel.d.event === "file"
                   ? "Путь нового файла агент получит как данные. Файлы, появившиеся в тихие часы, он разберёт утром."
+                  : panel.d.event === "mail"
+                  ? "Хаб заглядывает во «Входящие» раз в пару минут; отправителя и тему письма агент получит как данные. "
+                    + "Почта подключается в «Подключениях»."
                   : "Сообщение вашему Telegram-боту (из привязанного чата) запустит задачу; текст агент получит как данные."
         }
     }

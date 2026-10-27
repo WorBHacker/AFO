@@ -25,6 +25,7 @@ TOPICS = [
     "mcp.*",
     "computer.*",
     "schedule.*",
+    "mail.*",
     "system.*",
     "secrets.*",
     "connections.*",

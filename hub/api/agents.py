@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from .. import agent_tools, agents, autonomous
 from ..agents import AgentError
 from ..auth import APP_CLIENT, Client
+from .connections import Ticket, _open
 from .deps import require_client
 
 router = APIRouter(prefix="/v1")
@@ -238,6 +239,63 @@ async def agent_access(request: Request, client: Annotated[Client, Depends(requi
                 "default_domains": agent_tools.DEFAULT_DOMAINS}  # fmt: skip
 
     return await _db(request, read)
+
+
+class Key(BaseModel):
+    host: str = Field(min_length=3, max_length=253)
+    header: str = Field(default="Authorization", max_length=100)
+    prefix: str = Field(default="Bearer ", max_length=50)
+    value: str = Field(default="", max_length=4000)  # '' keeps the one set
+
+
+@router.get("/agent/keys")
+async def agent_keys(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """The user's API keys for http_request: name, host, header - and whether set; never a key."""
+    _app_only(client)
+    store = request.app.state.secrets
+    found = await _db(request, agent_tools.keys)
+    return {"keys": [{**k, "set": bool(store.get(agent_tools.KEY_SECRET + k["name"]))} for k in found]}
+
+
+@router.put("/agent/keys/{name}")
+async def set_agent_key(name: str, body: Key, request: Request, client: Annotated[Client, Depends(require_client)],
+                        ticket: Ticket = None) -> dict:  # fmt: skip
+    """A key behind the connections' password (D13): the hub adds it to the requests to its host only."""
+    await _open(request, client, ticket)
+    store = request.app.state.secrets
+
+    def write(conn):
+        found = [k for k in agent_tools.keys(conn) if k["name"] != name.strip().lower()]
+        checked = agent_tools.check_keys([*found, {"name": name, "host": body.host, "header": body.header,
+                                                   "prefix": body.prefix}])  # fmt: skip
+        mine = checked[-1]
+        if not body.value and not store.get(agent_tools.KEY_SECRET + mine["name"]):
+            raise agent_tools.AgentToolError("the key itself")
+        agent_tools.set_setting(conn, agent_tools.KEYS, checked)
+        return mine
+
+    try:
+        mine = await request.app.state.db.acall(write)
+    except agent_tools.AgentToolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.value:
+        store.set(agent_tools.KEY_SECRET + mine["name"], body.value)
+    await request.app.state.bus.publish("agent.keys", {"name": mine["name"], "host": mine["host"]})
+    return await agent_keys(request, client)
+
+
+@router.delete("/agent/keys/{name}")
+async def delete_agent_key(name: str, request: Request, client: Annotated[Client, Depends(require_client)],
+                           ticket: Ticket = None) -> dict:  # fmt: skip
+    await _open(request, client, ticket)
+
+    def write(conn):
+        agent_tools.set_setting(conn, agent_tools.KEYS, [k for k in agent_tools.keys(conn) if k["name"] != name])
+
+    await request.app.state.db.acall(write)
+    request.app.state.secrets.delete(agent_tools.KEY_SECRET + name)
+    await request.app.state.bus.publish("agent.keys", {"name": name, "removed": True})
+    return await agent_keys(request, client)
 
 
 class Access(BaseModel):

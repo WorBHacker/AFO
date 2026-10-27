@@ -64,6 +64,8 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return "Запомнить личные данные" + (f" о «{data['about']}»" if data.get("about") else "")
         case "run_python":
             return "Запустить скрипт Python"
+        case "mail_send":  # a letter from the user's address (9.4b)
+            return f"Отправить письмо: {data.get('subject', '')}"
         case "http_request":
             return f"Запрос в сеть: {data.get('method', 'GET')} {data.get('url', '')}"
     if tool.startswith("mcp__") and "__" in tool[5:]:  # an outside MCP server's tool (9.5)
@@ -114,7 +116,8 @@ def approval_rows(
         project = projects.get(a.get("project_id") or "", {}).get("name", "")
         chat = chats.get(a.get("conversation_id") or "", "")
         cls = a.get("class") or ""  # an outside MCP server's tool: its class of action (9.5)
-        always = ("destructive" if a.get("destructive") else "send" if cls == "send"
+        sends = cls == "send" or a.get("tool") in ("mail_send", "screen_send")
+        always = ("destructive" if a.get("destructive") else "send" if sends
                   else "outside" if cls == "network" else "network" if a.get("network")
                   or a.get("tool") == "http_request" else "personal" if a.get("tool") == "remember"
                   else "script" if a.get("tool") == "run_python" else "")  # fmt: skip

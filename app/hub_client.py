@@ -124,6 +124,33 @@ class HubClient:
     def start_autonomous(self, body: dict) -> dict:
         return self._call("POST", "/v1/runs/autonomous", body)
 
+    # --- the user's API keys for the agent's requests (9.4b): behind the connections' password ---
+
+    def agent_keys(self) -> dict:
+        """{keys: [{name, host, header, prefix, set}]} - never a key."""
+        return self._call("GET", "/v1/agent/keys")
+
+    def set_agent_key(self, name: str, body: dict, ticket: str) -> dict:
+        return self._call("PUT", f"/v1/agent/keys/{name}", body, headers=_unlock(ticket))
+
+    def delete_agent_key(self, name: str, ticket: str) -> dict:
+        return self._call("DELETE", f"/v1/agent/keys/{name}", headers=_unlock(ticket))
+
+    # --- the agent's mailbox (9.4b, Q21): changes behind the connections' password ---
+
+    def mail(self) -> dict:
+        """{account: {address, servers...} | None, password: set or not} - never the password."""
+        return self._call("GET", "/v1/mail")
+
+    def set_mail(self, body: dict, ticket: str) -> dict:
+        return self._call("PUT", "/v1/mail", body, headers=_unlock(ticket))
+
+    def delete_mail(self, ticket: str) -> dict:
+        return self._call("DELETE", "/v1/mail", headers=_unlock(ticket))
+
+    def check_mail(self, ticket: str) -> dict:
+        return self._call("POST", "/v1/mail/check", headers=_unlock(ticket), timeout=90)
+
     # --- schedules and events (9.7, Q23) ---
 
     def schedules(self) -> dict:

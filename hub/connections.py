@@ -192,6 +192,12 @@ def reset(store: SecretStore, conn: sqlite3.Connection) -> list[str]:
     removed += [c.name for c in CONNECTIONS if c.kind == "address" and set_address(conn, c.name, None)]
     servers = [r["name"] for r in conn.execute("SELECT name FROM mcp_servers ORDER BY name")]  # their keys (9.5)
     removed += [f"mcp_env.{name}" for name in servers if store.delete(f"mcp_env.{name}")]
+    if store.delete("mail_password"):  # the mailbox's app password (9.4b)
+        removed.append("mail_password")
+    keys = conn.execute("SELECT value FROM settings WHERE key = 'agent.keys'").fetchone()
+    for key in json.loads(keys["value"]) if keys else []:  # the agent's API keys (9.4b)
+        if store.delete(f"agent_key.{key.get('name')}"):
+            removed.append(f"agent_key.{key.get('name')}")
     store.delete(PASSWORD)
     return removed
 

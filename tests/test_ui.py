@@ -328,6 +328,10 @@ class FakeClient:
         self.exported = {}
         self.auto_calls = []
         self.scheduled = []
+        self.mailbox = None
+        self.mail_calls = []
+        self.keys = []
+        self.key_calls = []
         self.schedule_calls = []
         self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
@@ -458,6 +462,42 @@ class FakeClient:
         self.access_calls.append(changes)
         self.access = {**self.access, **changes}
         return dict(self.access)
+
+    def agent_keys(self):
+        return {"keys": [dict(k) for k in self.keys]}
+
+    def set_agent_key(self, name, body, ticket):
+        self._open(ticket)
+        self.key_calls.append((name, body))
+        self.keys = [k for k in self.keys if k["name"] != name] + [
+            {"name": name, "host": body["host"], "header": body["header"], "prefix": body["prefix"], "set": True}
+        ]
+        return self.agent_keys()
+
+    def delete_agent_key(self, name, ticket):
+        self._open(ticket)
+        self.keys = [k for k in self.keys if k["name"] != name]
+        return self.agent_keys()
+
+    def mail(self):
+        return {"account": self.mailbox, "password": self.mailbox is not None}
+
+    def set_mail(self, body, ticket):
+        self._open(ticket)
+        self.mail_calls.append(("set", body))
+        self.mailbox = {"address": body["address"], "imap_host": "imap.yandex.ru", "imap_port": 993,
+                        "smtp_host": "smtp.yandex.ru", "smtp_port": 465}  # fmt: skip
+        return self.mail()
+
+    def check_mail(self, ticket):
+        self._open(ticket)
+        return {"ok": True, "detail": "почта работает: входящие читаются, отправка доступна"}
+
+    def delete_mail(self, ticket):
+        self._open(ticket)
+        self.mail_calls.append(("delete",))
+        self.mailbox = None
+        return self.mail()
 
     def schedules(self):
         return {"schedules": [dict(x) for x in self.scheduled], "quiet": dict(self.quiet)}
@@ -4001,6 +4041,106 @@ def test_schedules_in_the_window(qapp, tmp_path):
         notifier.quiet = lambda: False
         notifier.flush()
         assert notifier.shown[-1] == ("Агент спрашивает", "Какой счёт?") and notifier.held == []
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_agents_mailbox_in_the_window(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.approvals import approval_rows
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        mail = app.mail_view
+        sheet = quick.window.findChild(QObject, "connectionsSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened"))
+        assert quick.window.findChild(QObject, "mailSection") is not None and not mail.connected
+        assert mail.knownProvider("anna@ya.ru") and not mail.knownProvider("anna@example.org")
+        mail.save("anna@ya.ru", "app-pass", "", "", "", "")  # locked: refused
+        wait_until(lambda: not mail.busy and mail.note)
+        assert not mail.noteOk and client.mail_calls == []
+        app.connections.createPassword("секрет-1", "секрет-1")
+        wait_until(lambda: app.connections.state == "open")
+        mail.save(" anna@ya.ru ", "app-pass", "", "", "", "")
+        wait_until(lambda: not app.bg.busy and mail.connected)
+        assert client.mail_calls[0] == ("set", {"address": "anna@ya.ru", "password": "app-pass"})
+        assert mail.servers == "IMAP imap.yandex.ru:993 · SMTP smtp.yandex.ru:465"
+        mail.check()
+        wait_until(lambda: not mail.busy and mail.note.startswith("почта работает"))
+        mail.remove()
+        assert app.question["title"] == "Отключить почту?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and not mail.connected)
+        schedules = app.schedules_view  # a new letter as the start of a task
+        app.setMode("agent")
+        app.autonomy_view.newTask()
+        app.autonomy_view.setField("goal", "Разобрать счёт из письма")
+        schedules.setField("when", "event")
+        schedules.setField("event", "mail")
+        schedules.setField("words", "счёт")
+        schedules.create()
+        wait_until(lambda: not app.bg.busy and schedules.items)
+        assert client.schedule_calls[-1][1]["trigger"] == {"kind": "mail", "words": "счёт"}
+        assert schedules.items[0]["trigger"] == "новое письмо со словами «счёт»"
+        letter = {
+            "id": "a1",
+            "tool": "mail_send",
+            "kind": "network",
+            "network": True,
+            "class": "",
+            "input": {"to": ["buh@example.org"], "subject": "Re: Счёт"},
+            "preview": {"kind": "text", "text": "Кому: buh@example.org", "note": "письмо от anna@ya.ru"},
+        }
+        row = approval_rows([letter], projects={}, chats={})[0]
+        assert row["title"] == "Отправить письмо: Re: Счёт" and row["alwaysAsk"] == "send"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_agents_api_keys_in_the_window(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        keys = app.agent_keys
+        sheet = quick.window.findChild(QObject, "connectionsSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened"))
+        assert quick.window.findChild(QObject, "keysSection") is not None
+        keys.save("weather", "api.weather.example", "X-Api-Key", "", "w-1")  # locked: refused
+        wait_until(lambda: not app.bg.busy and keys.error)
+        app.connections.createPassword("секрет-1", "секрет-1")
+        wait_until(lambda: app.connections.state == "open")
+        keys.save(" Weather ", "", "", "", "")
+        assert keys.error.startswith("Нужны имя ключа и сайт")
+        keys.save(" Weather ", " api.weather.example ", "", "Bearer ", " w-1 ")
+        wait_until(lambda: not app.bg.busy and keys.items)
+        assert client.key_calls == [("weather", {"host": "api.weather.example", "header": "Authorization",
+                                                 "prefix": "Bearer ", "value": "w-1"})]  # fmt: skip
+        assert keys.items[0]["note"] == "Authorization: Bearer …" and "w-1" not in str(keys.items)
+        keys.remove("weather")
+        assert app.question["title"] == "Удалить ключ «weather»?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and not keys.items)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

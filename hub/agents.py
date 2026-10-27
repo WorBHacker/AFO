@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import agent_tools, autonomous, computer, memory, store
+from . import agent_tools, autonomous, computer, mail, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -221,7 +221,7 @@ def create_run(
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
     screen = computer.TOOLS if goal and goal.get("computer", True) else []  # a schedule's run: only if allowed (Q23)
-    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + screen + (outside or []) if goal else []
+    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + mail.TOOLS + screen + (outside or []) if goal else []
     tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(

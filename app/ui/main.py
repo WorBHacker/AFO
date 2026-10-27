@@ -112,6 +112,8 @@ class QuickApp:
         context.setContextProperty("Mcp", self.controller.mcp_view)
         context.setContextProperty("AgentScreen", self.controller.computer_view)
         context.setContextProperty("Schedules", self.controller.schedules_view)
+        context.setContextProperty("Mail", self.controller.mail_view)
+        context.setContextProperty("AgentKeys", self.controller.agent_keys)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))

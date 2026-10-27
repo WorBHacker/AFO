@@ -31,7 +31,7 @@ from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
-NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_request"}
+NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_request", "mail_send"}
 SCREEN_TOOLS = {"screen_act", "screen_send"}  # the autonomous agent at the desktop (9.6, D41)
 # read-only commands asked of no one (Q2's first list): they show, they never change
 SAFE_COMMANDS = {f"run_command:{c}" for c in ("git status", "git diff", "git diff --stat", "git log --oneline",
@@ -91,7 +91,7 @@ def kind(tool: str) -> str:
 
 def sends(tool: str) -> bool:
     """What goes out in the person's name: asked every time (D41), an MCP tool of the class "send" (D42) too."""
-    return tool == "screen_send" or CLASSED.get(tool) == "send"
+    return tool in ("screen_send", "mail_send") or CLASSED.get(tool) == "send"
 
 
 def destructive(tool: str, data: dict[str, Any]) -> bool:
@@ -101,7 +101,7 @@ def destructive(tool: str, data: dict[str, Any]) -> bool:
 
 
 def network(tool: str, data: dict[str, Any]) -> bool:
-    if CLASSED.get(tool) in ("network", "send"):
+    if CLASSED.get(tool) in ("network", "send") or tool == "mail_send":
         return True
     return tool in COMMAND_TOOLS and bool(NETWORK.search(str(data.get("command", ""))))
 
@@ -159,6 +159,11 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
     if tool == "remember":  # personal data the agent wants to keep for good (Q24)
         return {"kind": "text", "text": str(data.get("fact", "")),
                 "note": "личные данные: хранятся на этом компьютере, облачной модели не выдаются"}  # fmt: skip
+    if tool == "mail_send":  # a letter from the user's address (Q21): whole, asked every time
+        head = f"Кому: {', '.join(data.get('to') or [])}\nТема: {data.get('subject', '')}"
+        reply = f" · ответ на «{data['reply']}»" if data.get("reply") else ""
+        return {"kind": "text", "text": _cut(f"{head}\n\n{data.get('text', '')}"),
+                "note": f"письмо от {data.get('from', 'вас')}{reply} — спрашивается каждый раз"}  # fmt: skip
     if tool in SCREEN_TOOLS:  # the agent at the desktop (D41): which program, window, what
         what = {
             "open": "открыть программу",

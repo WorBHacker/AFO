@@ -33,10 +33,11 @@ def test_triggers_times_and_quiet_hours(tmp_path):
     assert sc.check_trigger({"kind": "time", "every": "hours", "hours": 6})["hours"] == 6
     assert sc.check_trigger({"kind": "file", "folder": str(tmp_path), "pattern": ""})["pattern"] == "*"
     assert sc.check_trigger({"kind": "telegram", "contains": "  отчёт  "})["contains"] == "отчёт"
+    assert sc.check_trigger({"kind": "mail", "words": " счёт  "}) == {"kind": "mail", "words": "счёт"}  # 9.4b
     for bad, said in (({"kind": "time", "at": "25:00"}, "a time like"), ({"kind": "time", "every": "weekdays",
                       "at": "10:00", "days": []}, "days of the week"), ({"kind": "time", "every": "hours", "hours": 0},
                       "1 to 168"), ({"kind": "file", "folder": str(tmp_path / "нет")}, "a folder that exists"),
-                      ({"kind": "mail"}, "mail step"), ({"kind": "moon"}, "a trigger")):  # fmt: skip
+                      ({"kind": "moon"}, "a trigger")):  # fmt: skip
         with pytest.raises(sc.ScheduleError, match=said):
             sc.check_trigger(bad)
     tuesday = datetime(2026, 10, 27, 8, 0)

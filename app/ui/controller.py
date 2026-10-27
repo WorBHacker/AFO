@@ -21,6 +21,7 @@ from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
 from . import commands, mentions, rows
+from .agent_keys_view import AgentKeys
 from .agents import Agents
 from .approvals import Approvals
 from .autonomy import AutonomyView
@@ -28,6 +29,7 @@ from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
 from .feed import Feed
+from .mail_view import MailView
 from .mcp_view import McpView
 from .memory_view import MemoryView
 from .model_setup import ModelSetup
@@ -170,6 +172,8 @@ class Controller(QObject):
         self.mcp_view = McpView(self)  # outside MCP servers, a section of Connections (9.5, D42)
         self.computer_view = ComputerView(self)  # the agent at the desktop: frame and «Стоп» (9.6, D41)
         self.schedules_view = SchedulesView(self)  # goals on a schedule and on events (9.7, Q23)
+        self.mail_view = MailView(self)  # the agent's mailbox, a section of Connections (9.4b, Q21)
+        self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -1181,6 +1185,10 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind == "agent.keys":
+            self.agent_keys.on_event(kind, payload)
+        elif kind.startswith("mail."):
+            self.mail_view.on_event(kind, payload)
         elif kind.startswith("schedule."):
             self.schedules_view.on_event(kind, payload)
         elif kind.startswith("computer."):
