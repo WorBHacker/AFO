@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code it starts
+SCOPE_WORDS = {"set_plan": "все новые планы этой задачи", "start_step": "все шаги этой задачи"}  # an agent's (D40)
 PREVIEW_LINES = 400
 QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
                "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time"]  # fmt: skip
@@ -55,6 +56,10 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return f"Открыть {data.get('url', '')}"
         case "WebSearch" | "web_search":
             return f"Искать в сети «{data.get('query', '')}»"
+        case "set_plan":  # an autonomous agent's (D40)
+            return "Утвердить план" + (f" (версия {data['version']})" if data.get("version", 1) != 1 else "")
+        case "start_step":
+            return f"Начать шаг {data.get('step')}: {data.get('title', '')}"
     return f"Вызвать {tool.removeprefix('mcp__').replace('__', ' · ')}"
 
 
@@ -114,7 +119,8 @@ def approval_rows(
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)
-            "chatScope": "эта команда в этом чате" if a.get("kind") == "command" else f"все {a.get('tool')} в чате",
+            "chatScope": "эта команда в этом чате" if a.get("kind") == "command"
+                         else SCOPE_WORDS.get(a.get("tool", ""), f"все {a.get('tool')} в чате"),
             "projectScope": f"всегда в «{project}»" if project and not always else "",
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
@@ -190,11 +196,18 @@ class Approvals(QObject):
         self.changed.connect(self._refresh)
         app.currentChanged.connect(self._refresh)
         app.chatsChanged.connect(self._refresh)  # a chat's name in the card
+        app.modeChanged.connect(self._refresh)  # the card is the open chat's - or the open agent task's
 
     def _speakers(self) -> dict[str, str]:
         """Each chat's model by name (its latest answer's)."""
         return {c["id"]: model_name(self.app.models, c["last_model_id"])
                 for c in self.app.conversations if c.get("last_model_id")}  # fmt: skip
+
+    def _open(self) -> str:
+        """What the card belongs to: the open chat, or in the Agent mode the open task (stage 9.2)."""
+        if self.app.mode == "agent":
+            return self.app.autonomy_view.selected() if hasattr(self.app, "autonomy_view") else ""
+        return self.app.current or ""
 
     def _rows(self, approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         projects = {p["id"]: p for p in self.app.projects.items}
@@ -203,7 +216,7 @@ class Approvals(QObject):
 
     def _refresh(self) -> None:
         """The card of the open chat (its oldest request) and the cards with no chat; a signal only on a change."""
-        current = self.app.current or ""
+        current = self._open()
         here = [a for a in self._pending if current and a.get("conversation_id") == current]
         card = self._rows(here[:1])[0] if here else {}
         if card != self._card or len(here) != self._card_count:
@@ -275,7 +288,13 @@ class Approvals(QObject):
 
     @Slot(str)
     def openChat(self, conversation_id: str) -> None:
-        """The chat that waits, with its card: from the projects mode too."""
+        """The chat that waits, with its card: from the projects mode too; an autonomous agent's task opens in the
+        Agent mode."""
+        view = getattr(self.app, "autonomy_view", None)
+        if view is not None and view.is_task(conversation_id):
+            self.app.setMode("agent")
+            view.select(conversation_id)
+            return
         self.app.setMode("chats")
         self.app.openChat(conversation_id)
 
@@ -301,7 +320,7 @@ class Approvals(QObject):
             self._latest = approval.get("conversation_id") or ""
             (row,) = self._rows([approval])
             who = row["who"]
-            shown = bool(self._latest) and self._latest == self.app.current and self.app.mode == "chats"
+            shown = bool(self._latest) and self._latest == self._open() and self.app.mode in ("chats", "agent")
             if not shown:  # the open chat's card says it itself
                 self.app.flash(f"{who} ждёт подтверждения — значок щита в заголовке", ms=8000)
             self.requested.emit(f"{who} ждёт подтверждения", " · ".join(s for s in (row["title"], row["where"]) if s))

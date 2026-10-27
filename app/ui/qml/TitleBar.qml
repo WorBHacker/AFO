@@ -28,7 +28,8 @@ Item {
         spacing: 1
         Text {
             width: parent.width
-            text: App.mode === "projects" ? (Projects.currentName || "Проекты") : App.currentTitle
+            text: App.mode === "projects" ? (Projects.currentName || "Проекты")
+                  : App.mode === "agent" ? (Autonomy.task.goal || "Автономный агент") : App.currentTitle
             elide: Text.ElideRight
             color: Theme.p.text
             font.family: Theme.uiFont
@@ -38,7 +39,8 @@ Item {
         Text {
             width: parent.width
             visible: text !== ""
-            text: App.mode !== "projects" ? App.currentMeta
+            text: App.mode === "agent" ? (Autonomy.task.statusLabel ? Autonomy.task.statusLabel + (Autonomy.task.progress ? " · шаги " + Autonomy.task.progress : "") : "новая задача")
+                  : App.mode !== "projects" ? App.currentMeta
                   : Projects.currentId ? [Projects.git.summary, Projects.processesSummary].filter(s => !!s).join(" · ") : ""
             elide: Text.ElideRight
             color: Theme.p.faint

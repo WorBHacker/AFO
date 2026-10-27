@@ -50,6 +50,13 @@ Window {
             width: parent.width
             height: parent.height - titleBar.height - composer.height
         }
+        AgentView {
+            visible: App.mode === "agent"
+            y: titleBar.height
+            width: parent.width
+            height: parent.height - titleBar.height
+            reserveTop: approvalBanner.visible ? approvalBanner.height + 10 : 0
+        }
         ProjectView {
             visible: App.mode === "projects"
             y: titleBar.height
@@ -200,6 +207,7 @@ Window {
     Shortcut { sequence: "Ctrl+L"; onActivated: { App.setMode("chats"); composer.focusInput() } }
     Shortcut { sequence: "Ctrl+1"; onActivated: App.setMode("chats") }
     Shortcut { sequence: "Ctrl+2"; onActivated: App.setMode("projects") }
+    Shortcut { sequence: "Ctrl+3"; onActivated: App.setMode("agent") }
     Shortcut { sequence: "F5"; enabled: App.mode === "projects"; onActivated: Projects.refresh() }
     Shortcut {
         sequences: ["Ctrl+J", "Ctrl+`"]

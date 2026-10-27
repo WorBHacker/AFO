@@ -56,13 +56,14 @@ Rectangle {
             y: 3
             Repeater {
                 model: [{ id: "chats", name: "Чаты", icon: "chat", key: "Ctrl+1" },
-                        { id: "projects", name: "Проекты", icon: "folder", key: "Ctrl+2" }]
+                        { id: "projects", name: "Проекты", icon: "folder", key: "Ctrl+2" },
+                        { id: "agent", name: "Агент", icon: "agent", key: "Ctrl+3" }]
                 delegate: AbstractButton {
                     id: tab
                     required property var modelData
                     readonly property bool chosen: App.mode === modelData.id
                     objectName: "tab-" + modelData.id
-                    width: (tabs.width - 6) / 2
+                    width: (tabs.width - 6) / 3
                     height: tabs.height - 6
                     hoverEnabled: true
                     onClicked: App.setMode(modelData.id)
@@ -140,6 +141,110 @@ Rectangle {
                 }
             }
             Kbd { text: "Ctrl N"; anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter }
+        }
+    }
+
+    // ---------- the Agent mode: the autonomous agent's tasks (D40) ----------
+    AbstractButton {
+        id: newTask
+        objectName: "newAgentTask"
+        visible: App.mode === "agent"
+        x: 12
+        y: tabs.y + tabs.height + 10
+        width: parent.width - 24
+        height: 36
+        hoverEnabled: true
+        onClicked: Autonomy.newTask()
+        background: Rectangle {
+            radius: 6
+            color: newTask.hovered || Autonomy.selectedId === "" ? Theme.p.card_hover : Theme.p.card
+            border.color: Theme.p.hairline
+        }
+        contentItem: Item {
+            Row {
+                x: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
+                Icon { name: "plus"; tint: Theme.p.text; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                    text: "Новая задача"
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+        }
+    }
+    ListView {
+        id: tasks
+        objectName: "agentTasks"
+        visible: App.mode === "agent"
+        x: 8
+        y: newTask.y + newTask.height + 12
+        width: parent.width - 16
+        height: footer.y - y - 8
+        clip: true
+        model: Autonomy.tasks
+        spacing: 2
+        boundsBehavior: Flickable.StopAtBounds
+        section.property: "section"
+        section.delegate: Text {
+            required property string section
+            width: tasks.width
+            height: 30
+            leftPadding: 10
+            bottomPadding: 6
+            verticalAlignment: Text.AlignBottom
+            text: section
+            color: Theme.p.faint
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+        }
+        ScrollBar.vertical: ThinScrollBar {}
+        delegate: AbstractButton {
+            id: taskRow
+            required property var modelData
+            width: tasks.width
+            height: 46
+            hoverEnabled: true
+            onClicked: Autonomy.select(modelData.id)
+            background: Rectangle {
+                radius: 6
+                color: taskRow.modelData.selected ? Theme.p.item_selected : (taskRow.hovered ? Theme.p.item_hover : "transparent")
+            }
+            contentItem: Item {
+                Icon {
+                    x: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    name: taskRow.modelData.waiting ? "shield" : taskRow.modelData.live ? "agent"
+                          : taskRow.modelData.status === "done" ? "check" : "close"
+                    size: 14
+                    tint: taskRow.modelData.waiting ? Theme.p.warn : taskRow.modelData.live ? Theme.p.accent
+                          : taskRow.modelData.status === "done" && taskRow.modelData.goalMet ? Theme.p.ok : Theme.p.faint
+                }
+                Column {
+                    x: 32
+                    width: parent.width - 40
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 1
+                    Text {
+                        width: parent.width
+                        text: taskRow.modelData.title
+                        elide: Text.ElideRight
+                        color: taskRow.modelData.selected ? Theme.p.text : Theme.p.text_soft
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                    }
+                    Text {
+                        text: taskRow.modelData.statusLabel
+                        color: taskRow.modelData.waiting ? Theme.p.warn : Theme.p.faint
+                        font.family: Theme.uiFont
+                        font.pixelSize: 11
+                    }
+                }
+            }
         }
     }
 

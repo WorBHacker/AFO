@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from . import (
+    autonomous,
     budgets,
     cards,
     changes,
@@ -82,6 +83,8 @@ CHAT_TOOLS = [
     web.WEB_FETCH,
     websearch.WEB_SEARCH,
 ]  # a new chat's; older keep theirs
+# what only looks: an autonomous run may use it before its plan (the hub's reading tools, the web)
+READING = frozenset({*(t["name"] for t in TOOLS), web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"]})
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
 
@@ -100,6 +103,7 @@ class ChatService:
         self.agents = None  # set by the server: a coordinator's sub-runs (D20)
         self.secrets = None  # set by the server: the search engine's key (web_search)
         self.editor = None  # set by the server: what VS Code reports (stage 6.6)
+        self.autonomy: autonomous.Autonomy | None = None  # set by the server: the autonomous agent's tools (9.1)
 
     @property
     def busy(self) -> list[str]:
@@ -299,6 +303,13 @@ class ChatService:
         fallback: dict | None = None  # the spare took over (once per run): from which model, and why
         tools = None
         for step in range(limits.max_steps + 2):
+            if limits.autonomous and self.autonomy is not None:  # paused by the user; what it should hear first
+                await self.autonomy.wait_resumed(conversation_id, cancel)
+                if cancel.is_set():
+                    outcome.status = "cancelled"
+                    return
+                for notice in self.autonomy.take_notices(conversation_id):
+                    await self._hub_note(conversation_id, notice)
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             prompt = _to_prompt(history, cloud=cloud)
             if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
@@ -337,6 +348,13 @@ class ChatService:
             stopped_short = completion.stop_reason in ("max_tokens", "length")  # a cut-off call must not run
             if not completion.tool_calls or completion.cancelled or stopped_short:
                 completion.tool_calls = []
+                nudge = None
+                if limits.autonomous and self.autonomy is not None and not completion.cancelled:
+                    nudge = await self.autonomy.nudge(conversation_id)  # it stopped before its report (D40)
+                if nudge:
+                    await self._save_step(conversation_id, model, completion, client_id, run)
+                    await self._hub_note(conversation_id, nudge)
+                    continue
                 await self._save(conversation_id, model, completion, client_id, run)
                 if completion.cancelled:
                     outcome.status = "cancelled"
@@ -350,6 +368,16 @@ class ChatService:
                     return
                 continue
             await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel)
+            switch = self.autonomy.take_switch(conversation_id) if self.autonomy is not None else None
+            if switch:  # the planner made the plan: the run's own model carries it out
+                found = await self._db.acall(lambda conn, m=switch: store.get_model(conn, m))
+                if found is not None and found["enabled"]:
+                    model = found
+                    provider, model_ref, cloud, ctx, system, params, version = await setup(model)
+                    await self._bus.publish("chat.fallback", {"conversation_id": conversation_id,
+                                                              "model_id": model["id"], "name": model["name"],
+                                                              "from": "", "from_name": "", "reason": "",
+                                                              "planned": True})  # fmt: skip
             if cancel.is_set():
                 await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion, cancelled=True))
                 outcome.status = "cancelled"
@@ -362,6 +390,13 @@ class ChatService:
                 over = await self._db.acall(lambda conn, m=model["id"]: budgets.reached(conn, m))
                 if over:
                     raise GatewayError("the budget ran out while the model was working; send again to go on")
+
+    async def _hub_note(self, conversation_id: str, text: str) -> None:
+        """A word from the hub to the model between its steps (D40): stored as a user turn, marked as the hub's."""
+        message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "user",
+                                                                       [{"type": "text", "text": text,
+                                                                         "hub": True}]))  # fmt: skip
+        await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
 
     async def _use_limits(self, model_id: str) -> None:
         """The model's own context budgets and tool portions for the rest of this task (hub/limits.py)."""
@@ -554,7 +589,10 @@ class ChatService:
                 {"conversation_id": conversation_id, "name": call["name"], "input": call["input"]},
                 persist=False,
             )
-            if call["name"] in changes.WRITE_TOOL_NAMES:
+            acting = call["name"] not in READING and call["name"] not in autonomous.TOOL_NAMES
+            if acting and self.autonomy is not None and await self.autonomy.needs_plan(conversation_id):
+                output, error = autonomous.PLAN_FIRST, True  # an autonomous run acts only after its plan (D40)
+            elif call["name"] in changes.WRITE_TOOL_NAMES:
                 output, error = await self._write_file(conversation_id, call, ctx, cancel)
             elif call["name"] == commands.RUN_COMMAND["name"]:
                 output, error = await self._run_command(conversation_id, call, ctx, cancel)
@@ -562,6 +600,8 @@ class ChatService:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             elif call["name"] == websearch.WEB_SEARCH["name"]:
                 output, error = await self._web_search(conversation_id, call, ctx, cancel)
+            elif call["name"] in autonomous.TOOL_NAMES and self.autonomy is not None:  # an autonomous run's (D40)
+                output, error = await self.autonomy.handle(conversation_id, call, cancel)
             elif call["name"] == "delegate_task":  # a coordinator's (D20)
                 if self.agents is None:
                     output, error = "agents are not available here", True
@@ -871,6 +911,7 @@ class Limits:
     max_steps: int = field(default_factory=lambda: MAX_TOOL_STEPS)  # read when made: a chat's limit
     deadline: float | None = None
     budget_usd: float | None = None
+    autonomous: bool = False  # an autonomous agent's run: nudged on to its report, pausable (D40)
 
 
 @dataclass
@@ -930,13 +971,22 @@ def _answer_setup(conn, conversation_id: str, model_id: str, accepts: frozenset[
 def _instructions(conn, conversation_id: str) -> str:
     """An agent run's role, as its profile had it when the run began; '' for a chat."""
     row = conn.execute(
-        "SELECT r.profile_name, r.instructions, r.profile_id, c.tools FROM agent_runs r JOIN conversations c"
-        " ON c.id = r.conversation_id WHERE r.conversation_id = ?",
+        "SELECT r.profile_name, r.instructions, r.profile_id, r.kind, r.goal, r.done_when, r.autonomy, c.tools"
+        " FROM agent_runs r JOIN conversations c ON c.id = r.conversation_id WHERE r.conversation_id = ?",
         (conversation_id,),
     ).fetchone()
     if row is None:
         return ""
     text = f"You are the agent «{row['profile_name']}» of the user's hub.\n{row['instructions']}".strip()
+    if row["kind"] == "autonomous":  # the goal, what "done" means, and how to work toward it (D40)
+        level = {
+            "each_step": "the user approves your plan and each step before it starts",
+            "plan": "the user approves your plan; then you go on by yourself under the usual rights",
+            "free": "you go on by yourself under the usual rights",
+        }.get(row["autonomy"] or "plan", "")
+        text += f"\n\n{autonomous.GUIDE}\n\nThe goal: {row['goal']}"
+        text += f"\nDone means: {row['done_when']}" if row["done_when"] else ""
+        text += f"\nAutonomy: {level}."
     if '"delegate_task"' in (row["tools"] or ""):  # a coordinator: who it may give tasks to (D20)
         others = conn.execute(
             "SELECT name, instructions FROM agent_profiles WHERE id IS NOT ? ORDER BY name", (row["profile_id"],)

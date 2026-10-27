@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import store
+from . import autonomous, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -165,15 +165,18 @@ def _last_answer(conn: sqlite3.Connection, run_id: str) -> str:
 
 
 RUN_SELECT = (
-    "SELECT r.*, EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = r.conversation_id"
-    " AND a.status = 'pending') AS waiting, (SELECT p.profile_name FROM agent_runs p"
+    "SELECT r.*, (EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = r.conversation_id"
+    " AND a.status = 'pending') OR EXISTS (SELECT 1 FROM run_questions q WHERE q.conversation_id = r.conversation_id"
+    " AND q.status = 'pending')) AS waiting, (SELECT p.profile_name FROM agent_runs p"
     " WHERE p.conversation_id = r.parent_run) AS parent_name FROM agent_runs r"
 )
+AUTONOMOUS_PROFILE = "Автономный агент"  # the profile an autonomous run gets when none is chosen
 
 
 def _run(row: sqlite3.Row) -> dict[str, Any]:
     run = dict(row)
     run["waiting"] = bool(run["waiting"])
+    run["report"] = json.loads(run["report"]) if run.get("report") else None
     run["id"] = run["conversation_id"]
     run["shown_status"] = "waiting" if run["status"] == "running" and run["waiting"] else run["status"]
     return run
@@ -192,9 +195,16 @@ def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]
 
 
 def create_run(
-    conn: sqlite3.Connection, profile: dict[str, Any], task: str, project_ids: list[str], parent_run: str | None = None
+    conn: sqlite3.Connection,
+    profile: dict[str, Any],
+    task: str,
+    project_ids: list[str],
+    parent_run: str | None = None,
+    goal: dict[str, Any] | None = None,
 ) -> str:
-    """The run's conversation, set up as the profile says: projects, rights, its fixed tool list, and its row."""
+    """The run's conversation, set up as the profile says: projects, rights, its fixed tool list, and its row.
+    `goal`: an autonomous run's (D40) - goal, done_when, autonomy, max_replans, planner_model_id; it gets the
+    autonomous tools besides the profile's."""
     model = store.get_model(conn, profile["model_id"])
     if model is None or not model["enabled"]:
         raise AgentError(f"the agent's model {profile['model_id']!r} is not available now")
@@ -209,7 +219,7 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    tools = [t for t in AGENT_TOOLS if t["name"] in wanted]
+    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + (autonomous.TOOLS if goal else [])
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"
@@ -217,7 +227,48 @@ def create_run(
         (conversation_id, profile["id"], profile["version"], profile["name"], profile["instructions"],
          profile["model_id"], profile["max_steps"], profile["max_minutes"], profile["budget_usd"], task, parent_run),
     )  # fmt: skip
+    if goal:
+        conn.execute(
+            "UPDATE agent_runs SET kind = 'autonomous', goal = ?, done_when = ?, autonomy = ?, max_replans = ?,"
+            " planner_model_id = ? WHERE conversation_id = ?",
+            (goal["goal"], goal.get("done_when") or None, goal["autonomy"], goal["max_replans"],
+             goal.get("planner_model_id") or None, conversation_id),
+        )  # fmt: skip
     return conversation_id
+
+
+def check_goal(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    """An autonomous run's goal and limits (Q22's defaults: 100 steps, 60 minutes, $1, 3 new plans)."""
+    goal = " ".join(str(data.get("goal") or "").split())
+    if not goal:
+        raise AgentError("an autonomous run needs a goal")
+    if len(goal) > INSTRUCTIONS_CHARS:
+        raise AgentError(f"a goal longer than {INSTRUCTIONS_CHARS} characters")
+    autonomy = data.get("autonomy") or "plan"
+    if autonomy not in autonomous.AUTONOMY:
+        raise AgentError(f"unknown autonomy {autonomy!r}: {', '.join(autonomous.AUTONOMY)}")
+    planner = str(data.get("planner_model_id") or "")
+    if planner and (planner.startswith(f"{CLAUDE_CODE}/") or store.get_model(conn, planner) is None):
+        raise AgentError(f"unknown planner model {planner!r}")
+    defaults = autonomous.DEFAULTS
+    budget = data.get("budget_usd", defaults["budget_usd"])
+    if budget is not None and (not isinstance(budget, int | float) or budget <= 0):
+        raise AgentError("a budget is a positive number of dollars, or none")
+    return {"goal": goal, "done_when": " ".join(str(data.get("done_when") or "").split()), "autonomy": autonomy,
+            "planner_model_id": planner, "max_steps": _within(data.get("max_steps", defaults["max_steps"]), STEPS,
+                                                              "max_steps"),
+            "max_minutes": _within(data.get("max_minutes", defaults["max_minutes"]), MINUTES, "max_minutes"),
+            "max_replans": _within(data.get("max_replans", defaults["max_replans"]), (0, 20), "max_replans"),
+            "budget_usd": float(budget) if budget is not None else None}  # fmt: skip
+
+
+def autonomous_profile(conn: sqlite3.Connection, model_id: str) -> dict[str, Any]:
+    """The profile an autonomous run gets when none is chosen: every tool of the hub, "ask" rights - made once."""
+    found = next((p for p in list_profiles(conn) if p["name"] == AUTONOMOUS_PROFILE), None)
+    if found is not None:
+        return found
+    return save_profile(conn, {"name": AUTONOMOUS_PROFILE, "model_id": model_id, "tools": [], "mode": "ask",
+                               "instructions": "", "max_steps": 100, "max_minutes": 60})  # fmt: skip
 
 
 class AgentRunner:
@@ -251,6 +302,36 @@ class AgentRunner:
         def create(conn):
             profile = get_profile(conn, profile_id)
             return create_run(conn, profile, task, profile["project_ids"] if project_ids is None else project_ids)
+
+        try:
+            run_id = await self._db.acall(create)
+        except ProjectError as exc:
+            raise AgentError(str(exc)) from exc
+        await self._launch(run_id, resume=False)
+        return await self._db.acall(lambda conn: get_run(conn, run_id))
+
+    async def run_autonomous(self, data: dict[str, Any]) -> dict[str, Any]:
+        """An autonomous run (D40): a goal for a profile (or the built-in one), with the model, projects and limits
+        asked for, else the profile's."""
+
+        def create(conn):
+            goal = check_goal(conn, data)
+            model_id = str(data.get("model_id") or "")
+            if data.get("profile_id"):
+                profile = get_profile(conn, str(data["profile_id"]))
+            else:
+                if not model_id:
+                    raise AgentError("choose the model that carries the goal out")
+                profile = autonomous_profile(conn, model_id)
+            profile = {**profile, "max_steps": goal["max_steps"], "max_minutes": goal["max_minutes"],
+                       "budget_usd": goal["budget_usd"]}  # fmt: skip
+            if model_id:
+                check_profile(conn, {**profile, "model_id": model_id})  # a model a profile may have
+                profile["model_id"] = model_id
+            projects = data.get("project_ids")
+            task = f"Цель: {goal['goal']}" + (f"\nГотово, когда: {goal['done_when']}" if goal["done_when"] else "")
+            return create_run(conn, profile, task, profile["project_ids"] if projects is None else
+                              [str(p) for p in projects], goal=goal)  # fmt: skip
 
         try:
             run_id = await self._db.acall(create)
@@ -327,8 +408,13 @@ class AgentRunner:
             await self._gpu.acquire()  # one local run at a time: the GPU holds one model (D16)
             self._waiting.pop(run_id, None)
             self._held.add(run_id)
+        auto = run.get("kind") == "autonomous"
         limits = Limits(max_steps=run["max_steps"], deadline=time.monotonic() + run["max_minutes"] * 60,
-                        budget_usd=run["budget_usd"])  # fmt: skip
+                        budget_usd=run["budget_usd"], autonomous=auto)  # fmt: skip
+        model_id = run["model_id"]
+        if auto and run.get("planner_model_id"):  # the planner plans; once the plan is made, the run's model goes on
+            planned = await self._db.acall(lambda conn: autonomous.current_plan(conn, run_id) is not None)
+            model_id = run["model_id"] if planned else run["planner_model_id"]
         await self._db.acall(lambda conn: conn.execute(
             "UPDATE agent_runs SET status = 'running', started_at = COALESCE(started_at, ?) WHERE conversation_id = ?",
             (utc_now(), run_id)))  # fmt: skip
@@ -336,7 +422,7 @@ class AgentRunner:
         await self._bus.publish("run.started", {"run": current, "resumed": resume})
         text = RESUMED if resume else run["task"]
         try:
-            await self._chat.start(run_id, run["model_id"], text, limits=limits,
+            await self._chat.start(run_id, model_id, text, limits=limits,
                                    on_end=lambda outcome: self._finish(run_id, outcome))  # fmt: skip
         except GatewayError as exc:
             await self._finish(run_id, Outcome(status="error", detail=str(exc)))
@@ -350,6 +436,13 @@ class AgentRunner:
             self._gpu.release()
         totals = outcome.totals
         status = outcome.status if outcome.status in ("done", "error", "cancelled") else "done"
+        autonomy = self._chat.autonomy
+        if autonomy is not None:
+            await autonomy.expire_all(run_id)  # its questions: nobody waits for the answers now
+            autonomy.forget(run_id)
+            info = await autonomy.info(run_id)
+            if info is not None and info["report"] is None and status == "done" and not outcome.detail:
+                outcome.detail = "закончил без отчёта"
 
         def write(conn):
             conn.execute(

@@ -16,6 +16,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("new", "Новый чат", "plus", "Ctrl N", False),
     ("mode:chats", "Перейти к чатам", "chat", "Ctrl 1", False),
     ("mode:projects", "Перейти к проектам", "folder", "Ctrl 2", False),
+    ("mode:agent", "Перейти к агенту: задачи автономного агента", "agent", "Ctrl 3", False),
     ("add-project", "Добавить проект…", "folder-plus", "", False),
     ("search-project", "Найти в файлах проекта", "search", "Ctrl Shift F", False),
     ("new-terminal", "Новый терминал в проекте", "terminal", "Ctrl Shift `", False),

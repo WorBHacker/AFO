@@ -259,6 +259,15 @@ LLAMA = [
      "info": {"layers": 64, "kv_layers": 16, "kv_heads": 4, "key_length": 256, "value_length": 256,
               "size_bytes": 12 * 1024**3}},
 ]  # fmt: skip
+AUTO_RUN = {**RUN, "id": "auto1", "conversation_id": "auto1", "kind": "autonomous", "goal": "Посчитать строки",
+            "status": "running", "shown_status": "running", "model_id": "llama-swap/coder", "report": None,
+            "steps": 4, "cost_usd": 0}  # fmt: skip
+AUTO_PLAN = {"goal": "Посчитать строки", "done_when": "число названо", "autonomy": "plan", "report": None,
+             "paused": False, "plans": [{"version": 2, "reason": "сбивался", "approved": "user", "steps": [
+                 {"n": 1, "title": "Прочитать", "check": "файл прочитан", "status": "done", "attempts": 0,
+                  "note": "прочитан · проверка: 9 строк"},
+                 {"n": 2, "title": "Посчитать", "check": "дважды", "status": "running", "attempts": 1, "note": ""}]}],
+             "questions": [{"id": "q1", "question": "Считать пустые?", "status": "pending"}]}  # fmt: skip
 PRESETS = {
     "precise": {"temperature": 0.2, "top_p": 0.9, "top_k": 20},
     "creative": {"temperature": 1.0, "top_p": 0.98, "top_k": 100},
@@ -317,6 +326,7 @@ class FakeClient:
         self.claude_terminals = []
         self.model_saved = {}  # model id -> [settings of each version]
         self.exported = {}
+        self.auto_calls = []
         self.imported = []
         self.model_calls = []
 
@@ -363,6 +373,26 @@ class FakeClient:
     def trial_llama_model(self, model_id):
         self.model_calls.append(("trial", model_id))
         return {"ok": False, "error": "llama-swap: upstream command exited", "restored": "config.yaml.bak-1"}
+
+    def start_autonomous(self, body):
+        self.auto_calls.append(("start", body))
+        return {**AUTO_RUN, "id": "auto2", "conversation_id": "auto2", "goal": body["goal"]}
+
+    def run_plan(self, run_id):
+        return AUTO_PLAN if run_id == "auto1" else {**AUTO_PLAN, "plans": [], "questions": []}
+
+    def answer_question(self, run_id, question_id, answer):
+        self.auto_calls.append(("answer", run_id, question_id, answer))
+        return {"id": question_id}
+
+    def pause_run(self, run_id):
+        self.auto_calls.append(("pause", run_id))
+
+    def resume_run(self, run_id):
+        self.auto_calls.append(("resume", run_id))
+
+    def edit_run_plan(self, run_id, steps, reason):
+        self.auto_calls.append(("plan", run_id, steps, reason))
 
     def export_model_settings(self):
         return self.exported
@@ -3380,9 +3410,9 @@ def test_a_chats_own_instructions_and_preset(app):
     app.setChatPreset("precise")
     app.setChatPreset("wild")  # not a preset: nothing sent
     wait_until(lambda: not app.bg.busy)
-    sent = [entry for entry in app.client.log if entry[0] == "context"]
-    assert sent[-2:] == [("context", "c1", {"instructions": "Пиши тесты на pytest."}),
-                         ("context", "c1", {"preset": "precise"})]  # fmt: skip
+    sent = [entry[2] for entry in app.client.log if entry[0] == "context"]
+    # the two go out in the background: in either order
+    assert {"instructions": "Пиши тесты на pytest."} in sent[-2:] and {"preset": "precise"} in sent[-2:]
     assert app.contextSettings["preset"] == "precise"
 
 
@@ -3483,3 +3513,92 @@ def test_budgets_and_settings_files_in_the_window(app, tmp_path):
     (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
     app.model_setup.importFrom((tmp_path / "broken.json").as_uri())
     assert "Файл не прочитан" in app.flashText
+
+
+def test_the_agent_modes_rows():
+    from app.ui import autonomy as au
+
+    rows_ = au.task_rows([AUTO_RUN, {**AUTO_RUN, "id": "old", "status": "done", "shown_status": "done",
+                                     "report": {"goal_met": True}}, RUN], "auto1", {"auto1"})  # fmt: skip
+    assert [(r["id"], r["status"], r["section"], r["selected"]) for r in rows_] == [
+        ("auto1", "paused", "Идут", True),
+        ("old", "done", "Готовы", False),
+    ]  # an ordinary run: not a task here
+    assert rows_[1]["goalMet"] and rows_[0]["statusLabel"] == "пауза"
+    steps = au.step_rows(AUTO_PLAN["plans"][0])
+    assert (steps[0]["label"], steps[0]["icon"], steps[1]["label"]) == ("готово", "check", "идёт · попыток 1")
+    text = au.plan_text(AUTO_PLAN["plans"][0])
+    assert text == "Прочитать — файл прочитан\nПосчитать — дважды"
+    assert au.steps_from_text("1. Прочитать — файл прочитан\n\n2) Посчитать") == [
+        {"title": "Прочитать", "check": "файл прочитан"},
+        {"title": "Посчитать", "check": ""},
+    ]
+    assert au.report_rows({"summary": "ok", "goal_met": False, "not_done": ["x"]})["verdict"] == "Цель не достигнута"
+    good = au.goal_body({**au.BLANK, "goal": " Сделать ", "model_id": "m", "budget_usd": "0,5"})
+    assert good["goal"] == "Сделать" and good["budget_usd"] == 0.5 and good["max_steps"] == 100
+    for change, said in (
+        ({"goal": " "}, "Напишите цель"),
+        ({"model_id": ""}, "Выберите модель"),
+        ({"max_steps": "много"}, "Шагов: нужно целое"),
+        ({"budget_usd": "x"}, "Бюджет"),
+    ):
+        with pytest.raises(ValueError, match=said):
+            au.goal_body({**au.BLANK, "goal": "x", "model_id": "m", **change})
+
+
+def test_the_agent_mode_in_the_window(qapp):
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.run_list = [dict(AUTO_RUN), dict(RUN)]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.autonomy_view.tasks)
+        view = app.autonomy_view
+        app.setMode("agent")
+        view.newTask()
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "agentForm").property("visible")
+        assert view.draft["model_id"] == app.modelId  # no executor role: the chat's model
+        view.applyTemplate("tests")
+        assert view.draft["done_when"].startswith("все тесты проходят")
+        view.setField("goal", "Починить тесты в LocalChat")
+        view.setField("autonomy", "each_step")
+        view.start()
+        wait_until(lambda: not app.bg.busy and view.selectedId == "auto2")
+        started = client.auto_calls[0]
+        assert started[0] == "start" and started[1]["goal"] == "Починить тесты в LocalChat"
+        assert started[1]["autonomy"] == "each_step" and started[1]["max_minutes"] == 60
+
+        view.select("auto1")
+        wait_until(lambda: not app.bg.busy and view.task.get("planVersion") == 2)
+        task = view.task
+        assert (task["progress"], task["planReason"], task["question"]["question"]) == (
+            "1 из 2",
+            "сбивался",
+            "Считать пустые?",
+        )
+        assert quick.window.findChild(QObject, "agentQuestion").property("visible")
+        view.answer("q1", "  нет  ")
+        view.pause()
+        view.editPlan("Только посчитать — дважды", "быстрее")
+        wait_until(lambda: not app.bg.busy and len(client.auto_calls) == 4)
+        assert client.auto_calls[1:] == [("answer", "auto1", "q1", "нет"), ("pause", "auto1"),
+                                         ("plan", "auto1", [{"title": "Только посчитать", "check": "дважды"}],
+                                          "быстрее")]  # fmt: skip
+        # its approval comes as the card over the Agent view (D38)
+        send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap7", "conversation_id": "auto1",
+                                                      "tool": "set_plan", "input": {"version": 2}}})  # fmt: skip
+        assert app.approvals.card.get("title") == "Утвердить план (версия 2)" and app.approvals.cardCount == 1
+        app.approvals.openChat("auto1")  # the shield's list: a task opens in the Agent mode
+        assert app.mode == "agent" and view.selectedId == "auto1"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

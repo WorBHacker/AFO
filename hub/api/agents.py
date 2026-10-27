@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import agents
+from .. import agents, autonomous
 from ..agents import AgentError
 from ..auth import APP_CLIENT, Client
 from .deps import require_client
@@ -127,3 +127,99 @@ async def cancel_run(run_id: str, request: Request, client: Annotated[Client, De
     _app_only(client)
     await _db(request, lambda conn: agents.get_run(conn, run_id))
     return {"cancelled": await request.app.state.agents.cancel(run_id)}
+
+
+# --- the autonomous agent (stage 9.1, D40) ---
+
+
+class Goal(BaseModel):
+    goal: str = Field(min_length=1, max_length=8000)
+    done_when: str = ""
+    profile_id: str | None = None  # the built-in «Автономный агент» when left out
+    model_id: str | None = None  # the profile's model when left out
+    planner_model_id: str | None = None  # plans first, then the run's model carries the plan out
+    project_ids: list[str] | None = None
+    autonomy: str = "plan"  # each_step / plan / free (Q22)
+    max_steps: int = autonomous.DEFAULTS["max_steps"]
+    max_minutes: int = autonomous.DEFAULTS["max_minutes"]
+    max_replans: int = autonomous.DEFAULTS["max_replans"]
+    budget_usd: float | None = autonomous.DEFAULTS["budget_usd"]
+
+
+@router.post("/runs/autonomous", status_code=201)
+async def start_autonomous(body: Goal, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    _app_only(client)
+    try:
+        return await request.app.state.agents.run_autonomous(body.model_dump())
+    except AgentError as exc:
+        raise _error(exc) from exc
+
+
+@router.get("/runs/{run_id}/plan")
+async def run_plan(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """An autonomous run's goal, every version of its plan with the steps, its questions, its report."""
+
+    def read(conn):
+        info = autonomous.run_info(conn, run_id)
+        if info is None:
+            raise AgentError(f"no such autonomous run: {run_id}")
+        return {**info, "plans": autonomous.plans(conn, run_id), "questions": autonomous.questions(conn, run_id)}
+
+    found = await _db(request, read)
+    return {**found, "paused": request.app.state.autonomy.paused(run_id)}
+
+
+class Answer(BaseModel):
+    answer: str = Field(min_length=1, max_length=8000)
+
+
+@router.post("/runs/{run_id}/questions/{question_id}")
+async def answer_question(
+    run_id: str, question_id: str, body: Answer, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    _app_only(client)
+    try:
+        return await request.app.state.autonomy.answer(run_id, question_id, body.answer, by=client.name)
+    except autonomous.AutonomyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+async def _running_autonomous(request: Request, run_id: str) -> None:
+    run = await _db(request, lambda conn: agents.get_run(conn, run_id))
+    if run.get("kind") != "autonomous":
+        raise HTTPException(status_code=422, detail="only an autonomous run can be paused or given a new plan")
+    if run["status"] not in ("queued", "running"):
+        raise HTTPException(status_code=409, detail=f"the run is {run['status']}")
+
+
+@router.post("/runs/{run_id}/pause", status_code=202)
+async def pause_run(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """The run stops before its next model call; what it runs now finishes."""
+    _app_only(client)
+    await _running_autonomous(request, run_id)
+    await request.app.state.autonomy.pause(run_id)
+    return {"paused": True}
+
+
+@router.post("/runs/{run_id}/resume", status_code=202)
+async def resume_run(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    _app_only(client)
+    await _running_autonomous(request, run_id)
+    await request.app.state.autonomy.resume(run_id)
+    return {"paused": False}
+
+
+class PlanEdit(BaseModel):
+    steps: list[Any]
+    reason: str = ""
+
+
+@router.put("/runs/{run_id}/plan")
+async def edit_plan(run_id: str, body: PlanEdit, request: Request, client: Annotated[Client, Depends(require_client)]):
+    """The user's own plan for the run: a new version; the agent hears it before its next step."""
+    _app_only(client)
+    await _running_autonomous(request, run_id)
+    try:
+        return await request.app.state.autonomy.edit_plan(run_id, body.steps, body.reason, by=client.name)
+    except autonomous.AutonomyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -46,6 +46,7 @@ from .api import (
 )
 from .approvals import ApprovalQueue
 from .auth import ensure_app_token
+from .autonomous import Autonomy
 from .backup import DailyBackup
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
@@ -98,6 +99,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
+        app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
@@ -126,6 +128,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
+            log.info("open questions of autonomous runs expired")
         resumed = await app.state.agents.start()
         if resumed:
             log.info("agent runs going on after a restart: %s", resumed)

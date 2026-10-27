@@ -23,6 +23,7 @@ from ..tasks import Background
 from . import commands, mentions, rows
 from .agents import Agents
 from .approvals import Approvals
+from .autonomy import AutonomyView
 from .composer import Mentions
 from .connections import Connections
 from .feed import Feed
@@ -41,7 +42,7 @@ RENDER_SHARE = 4  # ...and a render takes at most a quarter of the GUI thread: a
 RENDER_INTERVAL_MAX_MS = 1000
 THINK_TICK_MS = 100
 FLASH_MS = 6000
-MODES = ("chats", "projects")
+MODES = ("chats", "projects", "agent")
 NOT_CONNECTED = "Хаб ещё не подключён"
 HUB_STATES = {
     "connecting": "подключение…",
@@ -159,6 +160,8 @@ class Controller(QObject):
         self.connections = Connections(self)  # keys and tokens behind the password (D13)
         self.programs = Programs(self)  # which programs the autonomous agent may control (D43)
         self.model_setup = ModelSetup(self)  # the models' settings (stage 8, D39)
+        self.autonomy_view = AutonomyView(self)  # the Agent mode: the autonomous agent's tasks (stage 9, D40)
+        self.autonomy_view.selectionChanged.connect(self.approvals._refresh)  # its approvals card follows the task
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -415,6 +418,7 @@ class Controller(QObject):
         self.terminals.load()
         self.approvals.load()
         self.programs.load()
+        self.autonomy_view.load()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         if self.current:
@@ -1111,9 +1115,12 @@ class Controller(QObject):
             self._run_models[cid] = payload.get("model_id", "")
             if cid in self.live:
                 self.live[cid].model_id = payload.get("model_id", "")
-            self.flash(rows.fallback_note({"from_name": payload.get("from_name"), "reason": payload.get("reason")})
-                       .replace("Ответила запасная модель", f"Отвечает запасная «{payload.get('name', '')}»"),
-                       ms=10000)  # fmt: skip
+            if payload.get("planned"):  # an autonomous run: the planner made the plan, the run's model goes on
+                self.flash(f"План готов — дальше работает «{payload.get('name', '')}»")
+            else:
+                self.flash(rows.fallback_note({"from_name": payload.get("from_name"), "reason": payload.get("reason")})
+                           .replace("Ответила запасная модель", f"Отвечает запасная «{payload.get('name', '')}»"),
+                           ms=10000)  # fmt: skip
         elif kind == "chat.error":
             self._run_ended(cid)
             if cid == self.current:
@@ -1161,6 +1168,8 @@ class Controller(QObject):
             self.agents.on_event(kind, payload)  # a run waits for the user, or goes on
         elif kind.startswith(("run.", "agents.")):
             self.agents.on_event(kind, payload)
+            if kind.startswith("run."):
+                self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
         elif kind in ("model.settings", "llama.config"):

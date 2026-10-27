@@ -119,6 +119,26 @@ class HubClient:
     def import_model_settings(self, data: dict) -> dict:
         return self._call("POST", "/v1/model_settings/import", {"data": data})
 
+    # --- the autonomous agent (stage 9) ---
+
+    def start_autonomous(self, body: dict) -> dict:
+        return self._call("POST", "/v1/runs/autonomous", body)
+
+    def run_plan(self, run_id: str) -> dict:
+        return self._call("GET", f"/v1/runs/{run_id}/plan")
+
+    def answer_question(self, run_id: str, question_id: str, answer: str) -> dict:
+        return self._call("POST", f"/v1/runs/{run_id}/questions/{question_id}", {"answer": answer})
+
+    def pause_run(self, run_id: str) -> dict:
+        return self._call("POST", f"/v1/runs/{run_id}/pause")
+
+    def resume_run(self, run_id: str) -> dict:
+        return self._call("POST", f"/v1/runs/{run_id}/resume")
+
+    def edit_run_plan(self, run_id: str, steps: list, reason: str) -> dict:
+        return self._call("PUT", f"/v1/runs/{run_id}/plan", {"steps": steps, "reason": reason})
+
     def check_model(self, model_id: str) -> dict:
         """A local model may load for minutes first: the hub gives it 5, the window waits a little longer."""
         return self._call("POST", "/v1/models/check", {"model_id": model_id}, timeout=330)

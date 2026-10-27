@@ -114,6 +114,16 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
         return {"kind": "text", "text": str(data.get("url", "")), "note": str(data.get("prompt", ""))}
     if tool in ("WebSearch", "web_search"):
         return {"kind": "text", "text": str(data.get("query", "")), "note": str(data.get("engine", ""))}
+    if tool == "set_plan":  # an autonomous agent's plan (D40): the goal, the numbered steps, why it changed
+        steps = data.get("steps") if isinstance(data.get("steps"), list) else []
+        lines = [f"{n}. {s.get('title', '')}" + (f" — проверка: {s['check']}" if s.get("check") else "")
+                 for n, s in enumerate(steps, 1) if isinstance(s, dict)]  # fmt: skip
+        why = "почему новый план" if (data.get("version") or 1) > 1 else "пояснение"
+        note = f"Цель: {data.get('goal', '')}" + (f" · {why}: {data['reason']}" if data.get("reason") else "")
+        return {"kind": "text", "text": _cut("\n".join(lines)), "note": note}
+    if tool == "start_step":
+        return {"kind": "text", "text": f"{data.get('step')}. {data.get('title', '')}",
+                "note": f"проверка: {data.get('check')}" if data.get("check") else ""}  # fmt: skip
     return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)), "note": ""}
 
 

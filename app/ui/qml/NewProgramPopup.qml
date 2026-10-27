@@ -23,7 +23,7 @@ Popup {
     // from Programs itself: this handler may run before `current` and `offering` follow the same signal. While the
     // open chat's approval card is up, the question waits: that chat stands still, a program does not
     function follow() {
-        const card = Approvals.cardCount > 0 && App.mode === "chats"
+        const card = Approvals.cardCount > 0 && (App.mode === "chats" || App.mode === "agent")
         if ((Programs.pending.length > 0 || Programs.offer > 0) && !card)
             open()
         else

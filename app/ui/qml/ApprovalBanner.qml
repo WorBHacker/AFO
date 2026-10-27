@@ -9,7 +9,7 @@ Item {
     objectName: "approvalBanner"
     property real column: 780
     property real room: 600  // the height the card may take: from its top to the composer
-    readonly property bool wanted: Approvals.cardCount > 0 && App.mode === "chats"
+    readonly property bool wanted: Approvals.cardCount > 0 && (App.mode === "chats" || App.mode === "agent")
     property var shown: ({})  // kept while the card fades out after the last answer
     signal finished()  // the last request is answered: the keyboard goes back to the composer
 
@@ -25,7 +25,7 @@ Item {
         const had = shown && shown.id ? shown.id : ""
         if (next && next.id) {
             shown = next
-            if (next.id !== had && App.mode === "chats" && !banner.typing())
+            if (next.id !== had && App.mode !== "projects" && !banner.typing())
                 Qt.callLater(card.forceActiveFocus)
         } else if (had && card.activeFocus) {
             banner.finished()
