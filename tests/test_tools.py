@@ -72,7 +72,7 @@ def test_search_git_and_bad_input(ctx):
     assert tool("git_diff", {"project": "proj", "path": ".env"}, ctx)[1] is True
 
     for name, args, says in [
-        ("read_file", {"project": "other", "path": "x"}, "the projects you can use: proj"),
+        ("read_file", {"project": "other", "path": "x"}, "among those you may read: proj"),
         ("read_file", {"project": "proj", "path": 5}, "`path` must be a string"),
         ("read_file", {"project": "proj"}, "`path` must be a string"),
         ("read_file", {"project": "proj", "path": "README.md", "start_line": "2"}, "whole number"),

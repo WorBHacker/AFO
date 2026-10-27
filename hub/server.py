@@ -10,9 +10,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.routing import Route
 
 from common import __version__
 
+from . import mcp_server
 from .api import (
     budgets,
     cards,
@@ -82,7 +84,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         await app.state.terminals.start()
         log.info("hub ready, app token in %s", token_file)
         try:
-            yield
+            # the MCP app is mounted, not run: its session manager lives in the hub's lifespan
+            async with mcp.session_manager.run():
+                yield
         finally:
             catalog.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -116,6 +120,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(cards.router)
     app.include_router(notes.router)
     app.include_router(links.router)
+    # MCP for Cline, Claude Code and the like (D32): /mcp, with a client token
+    mcp, mcp_app = mcp_server.build(app)
+    app.router.routes.append(Route("/mcp", endpoint=mcp_app))
     return app
 
 

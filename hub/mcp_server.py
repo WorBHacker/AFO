@@ -1,0 +1,290 @@
+"""The hub's MCP server (stage 4, D32): the ecosystem for MCP clients - Cline, Claude Code - at /mcp.
+
+Streamable HTTP, stateless, answers as JSON. Every request carries a client's token (`Authorization: Bearer`), and
+McpGate checks it before the MCP layer sees the request (D31); a tool then finds its client by that token. The
+tools only read (D17), like a chat's (hub/tools.py), through the same secret filter. A client counts as cloud until
+it is marked local (D32): then it works only with the projects that allow the cloud and sees the others by name
+(D10, D27). The map and the cards are also resources: `hub://map`, `hub://project/{id}/card`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Annotated, Any
+
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import Field
+from starlette.datastructures import Headers
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from common import __version__
+
+from . import cards, context, links, notes, projects
+from .auth import Client, bearer_token, find_client
+from .projects import Project, ProjectError
+from .secret_filter import clean
+from .tools import ToolContext, run_tool
+from .tools import ToolError as WrongInput
+
+INSTRUCTIONS = (
+    "LocalChat hub: the projects on the user's computer, their code, git, terminals, processes and how they link. "
+    "Start with get_ecosystem_map, then get_project_card for the project you work on; read code with the other "
+    "tools. Everything here only reads. Secrets appear as [REDACTED]."
+)
+READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+EVENTS_MAX = 100
+IN_PROCESS = Client(id="", name="in-process", cloud=True)  # a call without HTTP headers: treated as cloud
+
+ProjectName = Annotated[str, Field(description="The project's name, as get_ecosystem_map lists it.")]
+FilePath = Annotated[str, Field(description="A path relative to the project's root.")]
+
+
+class McpGate:
+    """Lets a request through to the MCP app only with a valid client token; refuses the rest with 401."""
+
+    def __init__(self, app: Any, inner: ASGIApp):
+        self.app = app  # the hub's FastAPI app: its state has the database
+        self.inner = inner
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            token = bearer_token(Headers(scope=scope).get("authorization"))
+            db = self.app.state.db
+            client = await db.acall(lambda conn: find_client(conn, token)) if token else None
+            if client is None:
+                body = {"error": "unauthorized", "detail": "a client token is needed: Authorization: Bearer <token>"}
+                await JSONResponse(body, status_code=401)(scope, receive, send)
+                return
+        await self.inner(scope, receive, send)
+
+
+def build(app: Any) -> tuple[MCPServer, ASGIApp]:
+    """The MCP server over the hub's state, and its ASGI app (gated) for the /mcp route."""
+    server = MCPServer("LocalChat hub", instructions=INSTRUCTIONS, version=__version__)
+
+    async def caller(ctx: Context) -> Client:
+        headers = ctx.headers
+        if headers is None:
+            return IN_PROCESS
+        token = bearer_token(headers.get("authorization"))
+        client = await app.state.db.acall(lambda conn: find_client(conn, token)) if token else None
+        if client is None:  # the gate lets none through; this guards a server used without it
+            raise ToolError("no valid client token")
+        return client
+
+    async def everything() -> list[Project]:
+        return await app.state.db.acall(projects.list_projects)
+
+    async def tool_context(ctx: Context) -> tuple[Client, ToolContext]:
+        client = await caller(ctx)
+        usable = [p for p in await everything() if p.cloud_ok or not client.cloud]
+        state = app.state
+        return client, ToolContext(usable, terminals=state.terminals, processes=state.processes, symbols=state.symbols)
+
+    def pick(tools: ToolContext, name: str) -> Project:
+        try:
+            return tools.project(name)
+        except WrongInput as exc:
+            raise ToolError(str(exc)) from exc
+
+    async def run(name: str, args: dict[str, Any], ctx: Context) -> str:
+        _client, tools = await tool_context(ctx)
+        output, error = await run_tool(name, {k: v for k, v in args.items() if v is not None}, tools)
+        if error:
+            raise ToolError(output)
+        return output
+
+    # --- the map (D22 L0, D25) ---
+
+    @server.tool(annotations=READ_ONLY)
+    async def get_ecosystem_map(ctx: Context) -> str:
+        """All projects on this computer: name, one-line description, stack - and the confirmed links between
+        them. Projects you may not read are listed by name only."""
+        client = await caller(ctx)
+        found, all_links = await asyncio.gather(everything(), app.state.db.acall(links.list_links))
+        layer = context.map_layer_for_cloud if client.cloud else context.map_layer
+        return clean(await asyncio.to_thread(layer, found, all_links))
+
+    @server.tool(annotations=READ_ONLY)
+    async def get_project_card(project: ProjectName, ctx: Context) -> str:
+        """What to know about a project before reading it: its card confirmed by the user (or, without one, its
+        stack, structure and README), and the user's notes for models."""
+        _client, tools = await tool_context(ctx)
+        p = pick(tools, project)
+        card, written = await app.state.db.acall(
+            lambda conn: (cards.confirmed_text(conn, p.id), notes.list_notes(conn, p.id))
+        )
+        missing = await asyncio.to_thread(cards.missing_paths, p, card) if card else []
+        text = await asyncio.to_thread(context.project_layer, p, card, missing)
+        if written:
+            text += "\n\n" + notes.notes_layer(p.name, written)
+        return clean(text)
+
+    @server.tool(annotations=READ_ONLY)
+    async def list_relations(ctx: Context) -> str:
+        """The confirmed links between projects: which uses which, what they share, how (D25)."""
+        client = await caller(ctx)
+        found, all_links = await asyncio.gather(everything(), app.state.db.acall(links.list_links))
+        lines = context.link_lines(found, all_links, cloud=client.cloud)
+        return clean("\n".join(lines)) if lines else "no confirmed links between projects"
+
+    # --- code (D26) ---
+
+    @server.tool(annotations=READ_ONLY)
+    async def list_files(
+        project: ProjectName,
+        ctx: Context,
+        path: Annotated[str, Field(description="A folder inside the project; empty for its root.")] = "",
+        depth: Annotated[int, Field(description="How many levels, 1 to 3.")] = 1,
+    ) -> str:
+        """A folder of a project: subfolders and files with sizes, as git shows them; secret files marked."""
+        return await run("list_files", {"project": project, "path": path, "depth": depth}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def read_file(
+        project: ProjectName,
+        path: FilePath,
+        ctx: Context,
+        start_line: Annotated[int, Field(description="The first line to read.")] = 1,
+        line_count: Annotated[int, Field(description="How many lines, at most 400.")] = 300,
+    ) -> str:
+        """A text file of a project with line numbers, a part at a time; secret files cannot be read."""
+        args = {"project": project, "path": path, "start_line": start_line, "line_count": line_count}
+        return await run("read_file", args, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def search_code(
+        project: ProjectName,
+        query: Annotated[str, Field(description="What to look for.")],
+        ctx: Context,
+        regex: Annotated[bool, Field(description="The query is a regular expression.")] = False,
+        glob: Annotated[str, Field(description="Only files matching this, e.g. *.py.")] = "",
+    ) -> str:
+        """Lines of a project's files that match, with file and line number (ripgrep; up to 50)."""
+        return await run("search_code", {"project": project, "query": query, "regex": regex, "glob": glob}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def find_symbol(
+        project: ProjectName,
+        name: Annotated[str, Field(description="A name or part of it; Class.method for a method.")],
+        ctx: Context,
+        kind: Annotated[str, Field(description="Only this kind: function, method, class, interface, type...")] = "",
+    ) -> str:
+        """Where a function, class, method, interface or type is defined (the hub's tree-sitter index)."""
+        return await run("find_symbol", {"project": project, "name": name, "kind": kind or None}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def file_outline(project: ProjectName, path: FilePath, ctx: Context) -> str:
+        """A code file's classes, functions and methods with their lines, nested as in the file."""
+        return await run("file_outline", {"project": project, "path": path}, ctx)
+
+    # --- git ---
+
+    @server.tool(annotations=READ_ONLY)
+    async def git_status(project: ProjectName, ctx: Context) -> str:
+        """A project's branch, commits ahead / behind, changed files, recent commits."""
+        return await run("git_status", {"project": project}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def git_diff(
+        project: ProjectName,
+        ctx: Context,
+        path: Annotated[str, Field(description="One file; all changes without it.")] = "",
+    ) -> str:
+        """A project's uncommitted changes as a unified diff (up to 400 lines)."""
+        return await run("git_diff", {"project": project, "path": path}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def git_log(
+        project: ProjectName,
+        ctx: Context,
+        count: Annotated[int, Field(description="How many commits, up to 100.")] = 20,
+    ) -> str:
+        """A project's recent commits: short sha, date, author, subject."""
+        _client, tools = await tool_context(ctx)
+        p = pick(tools, project)
+        log = await asyncio.to_thread(projects.git_log, p.root, max(1, min(count, 100)))
+        lines = [f"{c['sha']} {c['when'][:10]} {c['author']}: {c['subject']}" for c in log]
+        return clean("\n".join(lines)) if lines else f"{p.name}: no commits (or not a git repository)"
+
+    # --- what is happening (D4) ---
+
+    @server.tool(annotations=READ_ONLY)
+    async def list_processes(project: ProjectName, ctx: Context) -> str:
+        """Processes running in a project's folder: command, listening ports, CPU, memory."""
+        return await run("list_processes", {"project": project}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def list_terminals(project: ProjectName, ctx: Context) -> str:
+        """A project's terminals in the hub: running ones and recent ones, with their state."""
+        return await run("terminal_output", {"project": project}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def read_terminal(
+        project: ProjectName,
+        terminal: Annotated[str, Field(description="The terminal's id or title, from list_terminals.")],
+        ctx: Context,
+    ) -> str:
+        """The last 100 lines a terminal of the project printed."""
+        return await run("terminal_output", {"project": project, "terminal": terminal}, ctx)
+
+    @server.tool(annotations=READ_ONLY)
+    async def get_events(
+        ctx: Context,
+        project: Annotated[str, Field(description="Only this project's events (optional).")] = "",
+        limit: Annotated[int, Field(description="How many, newest first, up to 100.")] = 30,
+    ) -> str:
+        """What happened lately: commits and branch switches, ports opened and closed, terminals started and
+        finished, processes that stopped."""
+        _client, tools = await tool_context(ctx)
+        ids = {p.id: p.name for p in tools.projects}
+        if project:
+            p = pick(tools, project)
+            ids = {p.id: p.name}
+        if not ids:
+            return "no projects you may read"
+        count = max(1, min(limit, EVENTS_MAX))
+
+        def read(conn):
+            marks = ", ".join("?" * len(ids))
+            return conn.execute(
+                f"SELECT ts, type, project_id, payload FROM events WHERE project_id IN ({marks}) AND type IN "
+                f"({', '.join('?' * len(context.NEWS_TYPES))}) ORDER BY id DESC LIMIT ?",
+                [*ids, *sorted(context.NEWS_TYPES), count],
+            ).fetchall()
+
+        rows = await app.state.db.acall(read)
+        lines = [
+            f"{r['ts'][:16].replace('T', ' ')} UTC {ids[r['project_id']]}: "
+            + context.news_line({"type": r["type"], "payload": json.loads(r["payload"])})
+            for r in rows
+        ]
+        return clean("\n".join(lines)) if lines else "nothing happened lately"
+
+    # --- resources ---
+
+    @server.resource("hub://map", name="ecosystem-map", mime_type="text/plain")
+    async def map_resource() -> str:
+        """The ecosystem map, as a cloud client may see it (a resource has no caller to ask about)."""
+        found, all_links = await asyncio.gather(everything(), app.state.db.acall(links.list_links))
+        return clean(await asyncio.to_thread(context.map_layer_for_cloud, found, all_links))
+
+    @server.resource("hub://project/{project_id}/card", name="project-card", mime_type="text/markdown")
+    async def card_resource(project_id: str, ctx: Context) -> str:
+        """A project's confirmed card."""
+        client = await caller(ctx)
+        try:
+            p = await app.state.db.acall(lambda conn: projects.get_project(conn, project_id))
+        except ProjectError as exc:
+            raise ToolError(str(exc)) from exc
+        if client.cloud and not p.cloud_ok:
+            raise ToolError(f"«{p.name}» is local-only: a cloud client may not read it (D10)")
+        card = await app.state.db.acall(lambda conn: cards.confirmed_text(conn, p.id))
+        return clean(card) if card else f"«{p.name}» has no confirmed card yet"
+
+    gated = McpGate(app, server.streamable_http_app(stateless_http=True, json_response=True))
+    return server, gated

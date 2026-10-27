@@ -90,11 +90,11 @@ def map_layer(all_projects: list[Project], links: list[dict[str, Any]] | None = 
         stack = ", ".join(stack_of(p.root)) if p.root.is_dir() else "folder missing"
         where = "" if p.cloud_ok else " [local-only]"
         lines.append(f"- {p.name}{where}: {p.description or 'no description'}" + (f" ({stack})" if stack else ""))
-    lines += _link_lines(all_projects, links, cloud=False)
+    lines += link_lines(all_projects, links, cloud=False)
     return fit("\n".join(lines), MAP_BUDGET)
 
 
-def _link_lines(all_projects: list[Project], links: list[dict[str, Any]] | None, *, cloud: bool) -> list[str]:
+def link_lines(all_projects: list[Project], links: list[dict[str, Any]] | None, *, cloud: bool) -> list[str]:
     """Confirmed links between projects (D25) for the map; for a cloud model a link that touches a local-only
     project keeps its names (the map shows names, D27) but not its description."""
     from .links import map_lines
@@ -194,7 +194,7 @@ def _ago(ts: str, now: datetime) -> str:
     return "just now" if minutes < 1 else f"{minutes} min ago" if minutes < 120 else f"{minutes // 60} h ago"
 
 
-def _news(event: dict[str, Any]) -> str:
+def news_line(event: dict[str, Any]) -> str:
     p = event["payload"]
     match event["type"]:
         case "git.head":
@@ -253,7 +253,7 @@ def live_layer(
     news = [e for e in events if e["type"] in NEWS_TYPES]
     if news:
         lines.append("since the previous message:")
-        lines += [f"  {_ago(e['ts'], now)}: {_news(e)}" for e in news[-12:]]
+        lines += [f"  {_ago(e['ts'], now)}: {news_line(e)}" for e in news[-12:]]
     body = clean("\n".join(lines) or "nothing running, no changes")
     return fit(f'<live_state project="{project.name}">\n{body}\n</live_state>', LIVE_BUDGET)
 
@@ -347,7 +347,7 @@ def map_layer_for_cloud(all_projects: list[Project], links: list[dict[str, Any]]
             lines.append(f"- {p.name}: {p.description or 'no description'}" + (f" ({stack})" if stack else ""))
         else:
             lines.append(f"- {p.name} [local-only: you may not see more of it]")
-    lines += _link_lines(all_projects, links, cloud=True)
+    lines += link_lines(all_projects, links, cloud=True)
     return fit("\n".join(lines), MAP_BUDGET)
 
 

@@ -182,7 +182,7 @@ class ToolContext:
         found = self.by_name.get(value.strip().casefold()) or self.by_name.get(value.strip())
         if found is None:
             names = ", ".join(p.name for p in self.projects) or "none"
-            raise ToolError(f"no project {value!r} in this chat; the projects you can use: {names}")
+            raise ToolError(f"no project {value!r} among those you may read: {names}")
         return found
 
 
