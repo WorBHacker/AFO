@@ -6,16 +6,18 @@ import threading
 import pytest
 
 from common.paths import DATA_DIR_ENV
+from hub.claude_code import CLI_ENV
 from hub.secrets import STORE_ENV
 
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(tmp_path, monkeypatch):
-    """Every test gets its own data folder and in-memory secrets, so no test touches the real data/ folder
-    or the Windows Credential Manager (subprocesses inherit both through the environment)."""
+    """Every test gets its own data folder and in-memory secrets, so no test touches the real data/ folder, the
+    Windows Credential Manager or the user's Claude Code (subprocesses inherit all three through the environment)."""
     data = tmp_path / "data"
     monkeypatch.setenv(DATA_DIR_ENV, str(data))
     monkeypatch.setenv(STORE_ENV, "memory")
+    monkeypatch.setenv(CLI_ENV, str(tmp_path / "no-claude.exe"))  # the user's Claude Code CLI is never found or run
     return data
 
 

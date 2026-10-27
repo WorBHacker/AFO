@@ -79,8 +79,9 @@ def test_a_local_client_reads_the_ecosystem(hub):
         return found
 
     found = mcp_call(hub, token, work)
-    assert set(found["tools"]) == TOOLS
-    assert all(t.annotations.read_only_hint for t in found["tools"].values())  # D17: all of them only read
+    assert set(found["tools"]) == TOOLS | {"approval_prompt"}  # and Claude Code's permission tool (D18)
+    reading = [t for name, t in found["tools"].items() if name != "approval_prompt"]
+    assert all(t.annotations.read_only_hint for t in reading)  # D17: all of them only read
     assert "- proj [local-only]" in found["map"] and "- shared: общая библиотека" in found["map"]
     assert '<project name="proj">' in found["card"]
     assert "src/app.py:3-4 function serve: def serve(port):" in found["symbol"]

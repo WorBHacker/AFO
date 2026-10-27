@@ -1,0 +1,164 @@
+"""The approval queue (stage 4, D17, D18): asking and waiting, answers once and for the chat, destructive commands,
+previews, expiry, and the API."""
+
+import asyncio
+
+import pytest
+from starlette.testclient import TestClient
+
+from common.paths import data_paths
+from hub.approvals import EXPIRED, ApprovalQueue, destructive, grant_key, preview
+from hub.auth import create_client
+from hub.db import Database, migrate
+from hub.events import EventBus
+from hub.server import create_app
+from hub.settings import HubSettings
+
+BASE = "http://127.0.0.1:8765"
+
+
+@pytest.fixture
+def queue(tmp_path):
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    bus = EventBus(db)
+    seen = bus.subscribe(("approval.*",))
+    chat = db.call(lambda conn: conn.execute("INSERT INTO conversations (id, kind) VALUES ('c1', 'chat')"))
+    assert chat
+    yield ApprovalQueue(db, bus), seen, db
+    db.close()
+
+
+def drain(subscription):
+    found = []
+    while not subscription.queue.empty():
+        found.append(subscription.queue.get_nowait())
+    return found
+
+
+def test_destructive_commands_are_never_covered_for_the_chat():
+    for command in ("git push origin main", "git reset --hard HEAD~1", "rm -rf build", "Remove-Item x -Recurse -Force",
+                    "rmdir /s /q out", "git clean -fdx", "DROP TABLE users"):  # fmt: skip
+        assert destructive("Bash", {"command": command}), command
+        assert grant_key("Bash", {"command": command}) is None
+    for command in ("git status", "pytest -q", "rm notes.txt", "git log --oneline"):
+        assert not destructive("Bash", {"command": command}), command
+    assert grant_key("Bash", {"command": "pytest   -q"}) == "Bash:pytest -q"  # the same command, spaced differently
+    assert grant_key("Edit", {"file_path": "a.py"}) == "Edit"  # a write tool: the tool, whatever the file
+
+
+def test_previews_show_what_the_file_would_become(tmp_path):
+    (tmp_path / "app.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    edit = preview("Edit", {"file_path": str(tmp_path / "app.py"), "old_string": "two", "new_string": "2"}, tmp_path)
+    assert edit["kind"] == "diff" and "--- a/app.py" in edit["text"] and "-two\n+2\n" in edit["text"]
+    assert " one\n" in edit["text"]  # with its context, from the real file
+    new = preview("Write", {"file_path": "new.txt", "content": "hello\n"}, tmp_path)
+    assert "--- /dev/null" in new["text"] and "+hello\n" in new["text"]
+    multi = preview(
+        "MultiEdit",
+        {"file_path": "app.py", "edits": [{"old_string": "one", "new_string": "1"}, {"old_string": "three",
+                                                                                    "new_string": "3"}]},
+        tmp_path,
+    )  # fmt: skip
+    assert "-one\n" in multi["text"] and "+3\n" in multi["text"]
+    command = preview("Bash", {"command": "pytest -q", "description": "Run tests"}, tmp_path)
+    assert command == {"kind": "command", "text": "pytest -q", "note": "Run tests"}
+    assert preview("WebFetch", {"url": "https://pypi.org", "prompt": "version?"}, None)["text"] == "https://pypi.org"
+    assert '"x": 1' in preview("mcp__other__tool", {"x": 1}, None)["text"]
+
+
+def test_a_request_waits_for_the_answer(queue):
+    approvals, seen, _db = queue
+
+    async def scenario():
+        asking = asyncio.create_task(approvals.ask("Bash", {"command": "pytest"}, conversation_id="c1"))
+        await asyncio.sleep(0.05)
+        (waiting,) = await approvals.pending()
+        assert waiting["tool"] == "Bash" and waiting["kind"] == "command" and waiting["preview"]["text"] == "pytest"
+        assert not asking.done()
+        await approvals.decide(waiting["id"], allow=False, comment="сначала линтер", by="app")
+        return await asking, await approvals.get(waiting["id"])
+
+    decision, row = asyncio.run(scenario())
+    assert decision.allow is False and decision.comment == "сначала линтер"
+    assert row["status"] == "denied" and row["decided_by"] == "app"
+    assert [e.type for e in drain(seen)] == ["approval.requested", "approval.decided"]
+
+
+def test_an_answer_for_the_chat_covers_the_same_kind_later(queue):
+    approvals, _seen, db = queue
+
+    async def answer_next(**kwargs):
+        while not (waiting := await approvals.pending()):
+            await asyncio.sleep(0.01)
+        await approvals.decide(waiting[0]["id"], by="app", **kwargs)
+
+    async def scenario():
+        edit = {"file_path": "a.py", "old_string": "x", "new_string": "y"}
+        first = asyncio.gather(approvals.ask("Edit", edit, conversation_id="c1"), answer_next(allow=True, scope="chat"))
+        decisions = [(await first)[0]]
+        decisions.append(await approvals.ask("Edit", {**edit, "file_path": "b.py"}, conversation_id="c1"))  # covered
+        other = asyncio.gather(approvals.ask("Bash", {"command": "ls"}, conversation_id="c1"), answer_next(allow=True))
+        decisions.append((await other)[0])  # a command is not covered by an answer about edits
+        push = {"command": "git push"}
+        chat = {"allow": True, "scope": "chat"}
+        pushed = asyncio.gather(approvals.ask("Bash", push, conversation_id="c1"), answer_next(**chat))
+        decisions.append((await pushed)[0])
+        again = asyncio.gather(approvals.ask("Bash", push, conversation_id="c1"), answer_next(allow=False))
+        decisions.append((await again)[0])  # a destructive command is asked every time (D17)
+        return decisions
+
+    decisions = asyncio.run(scenario())
+    assert [d.allow for d in decisions] == [True, True, True, True, False]
+    rows = db.call(lambda conn: conn.execute("SELECT tool, status, scope FROM approvals ORDER BY rowid").fetchall())
+    assert [tuple(r) for r in rows] == [
+        ("Edit", "allowed", "chat"),
+        ("Edit", "allowed", "auto"),
+        ("Bash", "allowed", "once"),
+        ("Bash", "allowed", "once"),  # "for the chat" on git push was taken as this once
+        ("Bash", "denied", None),
+    ]
+
+
+def test_requests_of_an_ended_run_expire(queue):
+    approvals, _seen, db = queue
+
+    async def scenario():
+        asking = asyncio.create_task(approvals.ask("Write", {"file_path": "x", "content": ""}, conversation_id="c1"))
+        await asyncio.sleep(0.05)
+        assert await approvals.expire("c1") == 1
+        return await asking
+
+    decision = asyncio.run(scenario())
+    assert decision.allow is False and decision.comment == EXPIRED
+    assert db.call(lambda conn: conn.execute("SELECT status FROM approvals").fetchone()[0]) == "expired"
+
+    async def left_open():  # a hub that stopped while a request waited
+        db.call(lambda conn: conn.execute("INSERT INTO approvals (id, tool, input) VALUES ('old', 'Bash', '{}')"))
+        return await approvals.start()
+
+    assert asyncio.run(left_open()) == 1
+
+
+def test_the_api_is_the_apps(tmp_path):
+    app = create_app(HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
+                                 process_interval_s=0))  # fmt: skip
+    with TestClient(app, base_url=BASE) as client:
+        client.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        other = app.state.db.call(lambda c: create_client(c, "cline"))
+        assert client.get("/v1/approvals", headers={"Authorization": f"Bearer {other}"}).status_code == 403
+
+        async def ask():
+            return await app.state.approvals.ask("Bash", {"command": "pytest"})
+
+        asking = client.portal.start_task_soon(ask)
+        while not (waiting := client.get("/v1/approvals").json()["approvals"]):
+            pass
+        approval_id = waiting[0]["id"]
+        assert client.post(f"/v1/approvals/{approval_id}", json={"allow": True, "scope": "forever"}).status_code == 422
+        answered = client.post(f"/v1/approvals/{approval_id}", json={"allow": True})
+        assert answered.status_code == 200 and answered.json()["status"] == "allowed"
+        assert asking.result(timeout=5).allow is True
+        assert client.post(f"/v1/approvals/{approval_id}", json={"allow": False}).status_code == 409
+        assert client.get("/v1/approvals/nope").status_code == 404
+        assert client.get("/v1/approvals").json()["approvals"] == []

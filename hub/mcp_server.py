@@ -5,6 +5,9 @@ McpGate checks it before the MCP layer sees the request (D31); a tool then finds
 tools only read (D17), like a chat's (hub/tools.py), through the same secret filter. A client counts as cloud until
 it is marked local (D32): then it works only with the projects that allow the cloud and sees the others by name
 (D10, D27). The map and the cards are also resources: `hub://map`, `hub://project/{id}/card`.
+
+One tool is not for models: approval_prompt, Claude Code's --permission-prompt-tool (D18). It puts Claude Code's
+permission request into the app's approval queue and answers when the user has (hub/approvals.py).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from common import __version__
 
 from . import cards, context, links, notes, projects
 from .auth import Client, bearer_token, find_client
+from .claude_code import CONVERSATION_HEADER, HUB_CLIENT
 from .projects import Project, ProjectError
 from .secret_filter import clean
 from .tools import ToolContext, run_tool
@@ -36,6 +40,7 @@ INSTRUCTIONS = (
     "tools. Everything here only reads. Secrets appear as [REDACTED]."
 )
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+ASKS_THE_USER = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 EVENTS_MAX = 100
 IN_PROCESS = Client(id="", name="in-process", cloud=True)  # a call without HTTP headers: treated as cloud
 
@@ -264,6 +269,32 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             for r in rows
         ]
         return clean("\n".join(lines)) if lines else "nothing happened lately"
+
+    # --- Claude Code's permission requests (D18) ---
+
+    @server.tool(annotations=ASKS_THE_USER)
+    async def approval_prompt(
+        tool_name: Annotated[str, Field(description="The tool Claude Code wants to run.")],
+        input: Annotated[dict[str, Any], Field(description="Its input.")],  # the name Claude Code sends
+        ctx: Context,
+        tool_use_id: Annotated[str | None, Field(description="The call's id.")] = None,
+    ) -> str:
+        """Not for models: Claude Code's --permission-prompt-tool. Asks the user in the LocalChat app whether the
+        tool may run, waits for the answer, and returns it as Claude Code expects."""
+        client = await caller(ctx)
+        conversation = ctx.headers.get(CONVERSATION_HEADER) if ctx.headers is not None else None
+        turn = app.state.claude_code.turns.get(conversation) if client.name == HUB_CLIENT and conversation else None
+        decision = await app.state.approvals.ask(
+            tool_name,
+            input,
+            conversation_id=turn.conversation_id if turn else None,
+            project_id=turn.project.id if turn else None,
+            client_id=client.id or None,
+            root=turn.project.root if turn else None,
+        )
+        if decision.allow:
+            return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
+        return json.dumps({"behavior": "deny", "message": decision.comment}, ensure_ascii=False)
 
     # --- resources ---
 

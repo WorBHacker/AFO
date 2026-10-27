@@ -16,8 +16,10 @@ from common import __version__
 
 from . import mcp_server
 from .api import (
+    approvals,
     budgets,
     cards,
+    claude_code,
     conversations,
     events_ws,
     links,
@@ -29,8 +31,10 @@ from .api import (
     system,
     terminals,
 )
+from .approvals import ApprovalQueue
 from .auth import ensure_app_token
 from .chat import ChatService
+from .claude_code import ClaudeCodeRunner
 from .db import Database, migrate
 from .events import EventBus
 from .gateway.registry import build_default_gateway
@@ -66,6 +70,11 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.bus = bus
         app.state.gateway = gateway
         app.state.chat = ChatService(db, bus, gateway)
+        app.state.approvals = ApprovalQueue(db, bus)
+        # Claude Code (D8, D18): the user's CLI in a chat's project, with the hub's MCP and its approval queue
+        hub_url = f"http://{settings.host}:{settings.port}"
+        app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
+        app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
@@ -82,6 +91,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.watcher.start(db.call(list_projects))
         app.state.processes.start()
         await app.state.terminals.start()
+        expired = await app.state.approvals.start()
+        if expired:
+            log.info("%s approval requests left open by the last hub expired", expired)
         log.info("hub ready, app token in %s", token_file)
         try:
             # the MCP app is mounted, not run: its session manager lives in the hub's lifespan
@@ -94,6 +106,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.status.stop()
             await app.state.watcher.stop()
             await app.state.processes.stop()
+            await app.state.claude_code.stop()
             await app.state.terminals.stop()
             await bus.publish("hub.stopping", {})
             db.close()
@@ -120,6 +133,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(cards.router)
     app.include_router(notes.router)
     app.include_router(links.router)
+    app.include_router(approvals.router)
+    app.include_router(claude_code.router)
     # MCP for Cline, Claude Code and the like (D32): /mcp, with a client token
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))

@@ -1,0 +1,556 @@
+"""Claude Code under the hub (stage 4, D8, D16, D18): the user's own `claude` CLI, logged in with their subscription,
+working in a chat's project.
+
+The hub never logs in for it and never touches its tokens (D8): it starts the official CLI the user already uses.
+A chat whose model is `claude-code/<model>` runs each user message as one turn of
+    claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages
+in the chat's project folder; the message goes in on stdin, and `--resume <session>` continues the chat's Claude
+Code session. What it streams becomes the hub's own: text and thinking deltas go out as chat.delta, its messages are
+stored as the chat's messages (its tool calls and their results included), and its result ends the run with
+chat.done. Its usage is recorded as an estimate with no money: the subscription pays (D12).
+
+Claude Code also gets the hub's MCP server (`--mcp-config`, with a token of its own and the chat's id in a header),
+so it reads the ecosystem through the same tools as any MCP client, and asks for permissions through the hub
+(`--permission-prompt-tool mcp__localchat__approval_prompt`): its requests join the app's approval queue (D18).
+
+The same CLI can run interactively in a hub terminal (`terminal_command`): then it asks in its own window.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import collections
+import contextlib
+import json
+import logging
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from common.paths import DataPaths
+
+from . import store
+from .auth import create_client, find_client, rotate_token
+from .db import Database
+from .events import EventBus
+from .gateway import GatewayError, Model, ProviderError
+from .gateway.base import reasoning_block, text_block, tool_call_block, tool_result_block
+from .processes import stop_tree
+from .projects import Project
+
+log = logging.getLogger("hub.claude_code")
+
+PROVIDER = "claude-code"
+CLI_ENV = "LOCALCHAT_CLAUDE"  # the CLI to run, when it is not where the hub looks
+HUB_CLIENT = "hub-claude-code"  # the client token the hub gives the Claude Code it starts
+SERVER = "localchat"  # the hub's MCP server inside Claude Code: its tools are mcp__localchat__*
+PERMISSION_TOOL = f"mcp__{SERVER}__approval_prompt"
+CONVERSATION_HEADER = "X-LocalChat-Conversation"
+MODELS = {"default": "Claude Code", "opus": "Claude Code · Opus", "sonnet": "Claude Code · Sonnet",
+          "haiku": "Claude Code · Haiku"}  # fmt: skip
+RESULT_MAX_CHARS = 30_000  # of one tool result kept in the chat (the rest stays in Claude Code's own session)
+EARLIER_CHARS = 6_000  # of the chat before Claude Code joined it, given with its first message
+STDERR_LINES = 30
+STOP_WAIT_S = 3.0
+AFTER_RESULT_S = 10.0  # Claude Code may finish background work after its answer; then the hub stops it
+WAIT_MS = 24 * 3600 * 1000  # an MCP call may wait this long: the user answers a permission request when they can
+NOT_PASSED = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+              "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SIMPLE"}  # fmt: skip
+APPEND_PROMPT = (
+    "You work under LocalChat, a hub on the user's computer that knows all their projects. Its MCP tools "
+    "(mcp__localchat__*) give the map of the projects and their links (get_ecosystem_map), a project's card "
+    "confirmed by the user (get_project_card), and other projects' code, git, terminals, processes and recent "
+    "events. Use them when the task touches another project or what is running. The user answers your permission "
+    "requests in the LocalChat app; a denial may carry their comment - follow it."
+)
+
+
+def find_cli(environ: dict[str, str] | None = None) -> list[str] | None:
+    """The command that runs the `claude` CLI: $LOCALCHAT_CLAUDE, then PATH, then where its installers put it
+    (the native installer, npm, the Claude desktop app's own copy). An npm shim is run through node directly, so
+    no cmd.exe stands between the hub and the CLI."""
+    env = os.environ if environ is None else environ
+    if chosen := env.get(CLI_ENV, "").strip():
+        return _runnable(Path(chosen))
+    home = Path(env.get("USERPROFILE") or Path.home())
+    appdata = Path(env.get("APPDATA") or home / "AppData" / "Roaming")
+    candidates = [shutil.which("claude"), home / ".local" / "bin" / "claude.exe", appdata / "npm" / "claude.cmd"]
+    for found in candidates:
+        if found and Path(found).is_file():
+            return _runnable(Path(found))
+    bundled = _newest_bundled(appdata / "Claude" / "claude-code")
+    return [str(bundled)] if bundled else None
+
+
+def _runnable(path: Path) -> list[str] | None:
+    if not path.is_file():
+        return None
+    if path.suffix.lower() in (".cmd", ".bat"):
+        script = path.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+        node = shutil.which("node")
+        if script.is_file() and node:
+            return [node, str(script)]
+    return [str(path)]
+
+
+def _newest_bundled(root: Path) -> Path | None:
+    """The Claude desktop app keeps the CLI as claude-code/<version>/<build>/claude.exe: the newest version."""
+
+    def version(path: Path) -> tuple[int, ...]:
+        return tuple(int(part) for part in re.findall(r"\d+", path.parent.parent.name))
+
+    found = sorted(root.glob("*/*/claude.exe"), key=version) if root.is_dir() else []
+    return found[-1] if found else None
+
+
+class ClaudeCodeProvider:
+    """The gateway's view of Claude Code: which "models" the chat may pick. Its turns run in ClaudeCodeRunner."""
+
+    name = PROVIDER
+
+    def __init__(self, find: Callable[[], list[str] | None] = find_cli):
+        self._find = find
+
+    async def list_models(self) -> list[Model]:
+        if not await asyncio.to_thread(self._find):
+            return []  # no CLI on this computer: no Claude Code in the model list
+        capabilities = {"tools": True, "agent": True, "subscription": True}
+        return [Model(f"{PROVIDER}/{ref}", PROVIDER, ref, name, "cloud", capabilities, {}) for ref, name in
+                MODELS.items()]  # fmt: skip
+
+    async def stream_chat(self, *args: Any, **kwargs: Any):
+        raise ProviderError("Claude Code works as an agent: the hub runs it with ClaudeCodeRunner")
+        yield  # an async generator, as the gateway expects
+
+
+# --- what Claude Code streams ---
+
+
+@dataclass
+class Step:
+    """One thing the hub does with what Claude Code streamed."""
+
+    kind: str  # session | delta | message | limit | result
+    data: Any = None
+    role: str = ""
+    raw: dict[str, Any] | None = None
+
+
+class Translator:
+    """Claude Code's stream-json lines -> the hub's steps: its session, text and thinking deltas, its messages in
+    the hub's block format (tool calls, then their results as a message of role "tool"), subscription limit
+    notices, and the final result. Subagents' own messages (parent_tool_use_id set) stay inside Claude Code: the
+    chat shows the main thread.
+
+    Claude Code sends each finished block of a model message as its own line (they share message.id); the blocks
+    of one message are gathered into one stored message - up to its first tool call, so the call shows in the chat
+    while it runs (and while it waits for the user's approval)."""
+
+    def __init__(self) -> None:
+        self.calls: dict[str, str] = {}  # tool_use id -> tool name
+        self._pending: list[dict[str, Any]] = []
+        self._pending_id: str | None = None
+        self._pending_raw: list[dict[str, Any]] = []
+
+    def feed(self, event: dict[str, Any]) -> list[Step]:
+        kind = event.get("type")
+        if event.get("parent_tool_use_id"):
+            return []
+        if kind == "stream_event":
+            delta = (event.get("event") or {}).get("delta") or {}
+            if delta.get("type") == "text_delta":
+                return [Step("delta", delta.get("text", ""), role="content")]
+            if delta.get("type") == "thinking_delta":
+                return [Step("delta", delta.get("thinking", ""), role="reasoning")]
+            return []
+        if kind == "assistant":
+            message = event.get("message") or {}
+            steps = self.flush() if message.get("id") != self._pending_id else []
+            self._pending_id = message.get("id")
+            self._pending += self._assistant(message)
+            self._pending_raw.append(event)
+            if any(b["type"] == "tool_call" for b in self._pending):
+                steps += self.flush()
+            return steps
+        steps = self.flush()
+        if kind == "system" and event.get("subtype") == "init":
+            steps.append(Step("session", event))
+        elif kind == "user":
+            results = self._results(event.get("message") or {})
+            if results:
+                steps.append(Step("message", results, role="tool", raw=event))
+        elif kind == "rate_limit_event":
+            steps.append(Step("limit", event.get("rate_limit_info") or {}))
+        elif kind == "result":
+            steps.append(Step("result", event))
+        return steps
+
+    def flush(self) -> list[Step]:
+        """The gathered blocks of the model message so far, as one message."""
+        if not self._pending:
+            self._pending_raw = []
+            return []
+        step = Step("message", self._pending, role="assistant", raw={"events": self._pending_raw})
+        self._pending, self._pending_raw = [], []
+        return [step]
+
+    def _assistant(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for block in message.get("content") or []:
+            match block.get("type"):
+                case "text" if block.get("text"):
+                    blocks.append(text_block(block["text"]))
+                case "thinking" if block.get("thinking"):
+                    blocks.append(reasoning_block(block["thinking"]))
+                case "tool_use":
+                    self.calls[block.get("id", "")] = block.get("name", "")
+                    blocks.append(tool_call_block(block.get("id", ""), block.get("name", ""), block.get("input", {})))
+        return blocks
+
+    def _results(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        results = []
+        for block in content:
+            if block.get("type") != "tool_result":
+                continue
+            call_id = block.get("tool_use_id", "")
+            output = _text_of(block.get("content"))
+            if len(output) > RESULT_MAX_CHARS:
+                output = output[:RESULT_MAX_CHARS] + f"\n… (ещё {len(output) - RESULT_MAX_CHARS} символов)"
+            results.append(tool_result_block(call_id, self.calls.get(call_id, ""), output, bool(block.get("is_error"))))
+        return results
+
+
+def _text_of(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") if b.get("type") == "text" else f"[{b.get('type')}]" for b in content
+                         if isinstance(b, dict))  # fmt: skip
+    return "" if content is None else json.dumps(content, ensure_ascii=False)
+
+
+def usage_of(result: dict[str, Any]) -> dict[str, int]:
+    """Claude Code's usage in the hub's terms: input_tokens is the whole prompt, cache reads and writes inside it."""
+    usage = result.get("usage") or {}
+    read, write = int(usage.get("cache_read_input_tokens") or 0), int(usage.get("cache_creation_input_tokens") or 0)
+    return {
+        "input_tokens": int(usage.get("input_tokens") or 0) + read + write,
+        "cached_input_tokens": read,
+        "cache_write_tokens": write,
+        "output_tokens": int(usage.get("output_tokens") or 0),
+        "estimated": 1,
+    }
+
+
+def user_line(text: str) -> bytes:
+    """One user message for `--input-format stream-json`: a single newline-terminated JSON line."""
+    message = {"type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": None}
+    return json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
+
+
+def child_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """Claude Code's environment: the user's, without what would make it bill an API key or another provider
+    instead of the subscription (D8: in -p mode an ANTHROPIC_API_KEY in the environment always wins), and with MCP
+    time limits that let a permission request wait for the user (by default an HTTP call ends after 60 s, an idle
+    one after 5 min, and a long one is moved to the background)."""
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k.upper() not in NOT_PASSED}
+    return env | {"MCP_TOOL_TIMEOUT": str(WAIT_MS), "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT": "0",
+                  "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"}  # fmt: skip
+
+
+def error_text(result: dict[str, Any]) -> str:
+    """What went wrong, from a result with is_error: its text, or its list of errors, or its kind."""
+    errors = result.get("errors")
+    text = result.get("result") or ("; ".join(map(str, errors)) if isinstance(errors, list) else "")
+    return text or str(result.get("subtype") or "error")
+
+
+def earlier_text(history: list[store.MessageRow]) -> str:
+    """The chat before Claude Code joined it (other models' turns): its visible text, the latest part."""
+    lines = []
+    for message in history:
+        text = "".join(b.get("text", "") for b in message.content if b.get("type") == "text").strip()
+        if message.role in ("user", "assistant") and text:
+            lines.append(f"{'User' if message.role == 'user' else 'Assistant'}: {text}")
+    joined = "\n\n".join(lines)
+    return joined[-EARLIER_CHARS:] if joined else ""
+
+
+# --- running it ---
+
+
+@dataclass
+class Turn:
+    """A turn in progress: its process and what the approval tool needs to know about it."""
+
+    conversation_id: str
+    project: Project
+    process: subprocess.Popen | None = None
+
+
+class ClaudeCodeRunner:
+    def __init__(
+        self,
+        db: Database,
+        bus: EventBus,
+        paths: DataPaths,
+        hub_url: Callable[[], str],
+        find: Callable[[], list[str] | None] = find_cli,
+    ):
+        self._db = db
+        self._bus = bus
+        self._paths = paths
+        self._hub_url = hub_url
+        self._find = find
+        self.turns: dict[str, Turn] = {}  # conversation_id -> its turn now running
+
+    # --- the hub's MCP for Claude Code ---
+
+    def token(self) -> str:
+        """The hub's own client for the Claude Code it starts: a cloud client (D32), its token kept in data/tokens."""
+        token_file = self._paths.tokens / f"{HUB_CLIENT}.token"
+
+        def ensure(conn: sqlite3.Connection) -> str:
+            if token_file.is_file():
+                stored = token_file.read_text(encoding="utf-8").strip()
+                if stored and find_client(conn, stored):
+                    return stored
+            exists = conn.execute("SELECT 1 FROM clients WHERE name = ?", (HUB_CLIENT,)).fetchone()
+            return rotate_token(conn, HUB_CLIENT) if exists else create_client(conn, HUB_CLIENT, cloud=True)
+
+        token = self._db.call(ensure)
+        self._paths.tokens.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(token, encoding="utf-8")
+        return token
+
+    def mcp_config(self, name: str, conversation_id: str | None = None) -> Path:
+        """An --mcp-config file: the hub's MCP over HTTP, with the token (and the chat, for its approvals)."""
+        headers = {"Authorization": f"Bearer {self.token()}"}
+        if conversation_id:
+            headers[CONVERSATION_HEADER] = conversation_id
+        server = {"type": "http", "url": f"{self._hub_url()}/mcp", "headers": headers, "timeout": WAIT_MS}
+        config = {"mcpServers": {SERVER: server}}
+        folder = self._paths.root / "claude-code"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{name}.mcp.json"
+        path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        return path
+
+    def cli(self) -> list[str]:
+        found = self._find()
+        if not found:
+            raise GatewayError(
+                "Claude Code is not installed here: the hub found no `claude` CLI (PATH, ~/.local/bin, npm, the "
+                f"Claude desktop app). Install it, or set ${CLI_ENV} to its path."
+            )
+        return found
+
+    def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path]) -> list[str]:
+        argv = [*self.cli(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                "--include-partial-messages", "--mcp-config", str(config), "--permission-prompt-tool",
+                PERMISSION_TOOL, "--append-system-prompt", APPEND_PROMPT]  # fmt: skip
+        if model_ref != "default":
+            argv += ["--model", model_ref]
+        if resume:
+            argv += ["--resume", resume]
+        for folder in extra_dirs:
+            argv += ["--add-dir", str(folder)]
+        return argv
+
+    def terminal_command(self, project: Project) -> list[str]:
+        """Interactive Claude Code for a hub terminal: the hub's tools, its own permission prompts."""
+        return [*self.cli(), "--mcp-config", str(self.mcp_config(f"terminal-{project.id}"))]
+
+    # --- one turn ---
+
+    async def run(
+        self,
+        conversation_id: str,
+        model: dict[str, Any],
+        text: str,
+        projects: list[Project],
+        cancel: asyncio.Event,
+        client_id: str | None,
+    ) -> None:
+        if not projects:
+            raise GatewayError(
+                "Claude Code works in a project folder: attach a project to this chat (one that allows the cloud)"
+            )
+        project = projects[0]
+        session, earlier = await self._db.acall(lambda conn: _session_and_history(conn, conversation_id))
+        resume = session.get("id") if session.get("cwd") == str(project.root) else None  # a session lives in its folder
+        if not resume and earlier:
+            text = f"<earlier_in_this_chat>\n{earlier}\n</earlier_in_this_chat>\n\n{text}"
+        config = await asyncio.to_thread(self.mcp_config, conversation_id, conversation_id)
+        argv = await asyncio.to_thread(self.command, model["model_ref"], config, resume=resume,
+                                       extra_dirs=[p.root for p in projects[1:]])  # fmt: skip
+        turn = Turn(conversation_id, project)
+        self.turns[conversation_id] = turn
+        try:
+            await self._turn(turn, argv, model, text, cancel, client_id)
+        finally:
+            self.turns.pop(conversation_id, None)
+            with contextlib.suppress(OSError):
+                config.unlink()
+
+    async def _turn(self, turn, argv, model, text, cancel, client_id) -> None:
+        loop = asyncio.get_running_loop()
+        lines: asyncio.Queue[bytes | None] = asyncio.Queue()
+        errors: collections.deque[str] = collections.deque(maxlen=STDERR_LINES)
+        try:
+            process = await asyncio.to_thread(_start, argv, turn.project.root)
+        except OSError as exc:
+            raise GatewayError(f"Claude Code did not start: {exc}") from exc
+        turn.process = process
+        log.info("claude code turn for %s: pid %s in %s", turn.conversation_id, process.pid, turn.project.root)
+        _pipe_thread(process.stdout, lambda line: loop.call_soon_threadsafe(lines.put_nowait, line))
+        _pipe_thread(process.stderr, lambda line: errors.append(line.decode("utf-8", "replace").rstrip()) if line
+                     else None)  # fmt: skip
+        await asyncio.to_thread(_send, process, user_line(text))
+
+        translator = Translator()
+        last_id: int | None = None
+        result: dict[str, Any] | None = None
+        stopper = asyncio.create_task(cancel.wait())
+        try:
+            while True:
+                reading = asyncio.create_task(lines.get())
+                done, _ = await asyncio.wait({reading, stopper}, return_when=asyncio.FIRST_COMPLETED)
+                if stopper in done:
+                    reading.cancel()
+                    await asyncio.to_thread(stop_tree, process.pid, STOP_WAIT_S)
+                    break
+                line = reading.result()
+                if line is None:
+                    break
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    log.warning("claude code printed a line that is not JSON: %r", line[:200])
+                    continue
+                for step in translator.feed(event):
+                    last_id = await self._apply(turn, model, step) or last_id
+                    if step.kind == "result":
+                        result = step.data
+                if result is not None:  # the answer is complete; what it still does in the background is not
+                    break
+            for step in translator.flush():  # a message cut off by a stop
+                last_id = await self._apply(turn, model, step) or last_id
+        finally:
+            stopper.cancel()
+            await asyncio.to_thread(_wind_down, process)
+        await self._finish(turn.conversation_id, model, result, last_id, cancel.is_set(), errors, client_id,
+                           process.returncode)  # fmt: skip
+
+    async def _apply(self, turn: Turn, model: dict, step: Step) -> int | None:
+        conversation_id = turn.conversation_id
+        if step.kind == "session":
+            await self._db.acall(lambda conn: _save_session(conn, conversation_id, step.data, turn.project.root))
+        elif step.kind == "delta" and step.data:
+            payload = {"conversation_id": conversation_id, "kind": step.role, "text": step.data}
+            await self._bus.publish("chat.delta", payload, persist=False)
+        elif step.kind == "message":
+            model_id = model["id"] if step.role == "assistant" else None
+
+            def write(conn: sqlite3.Connection) -> store.MessageRow:
+                return store.add_message(conn, conversation_id, step.role, step.data, model_id=model_id,
+                                         provider_raw=step.raw)  # fmt: skip
+
+            message = await self._db.acall(write)
+            await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+            return message.id if step.role == "assistant" else None
+        elif step.kind == "limit" and step.data.get("status") not in (None, "allowed"):
+            # the subscription's limits (D12): near ("allowed_warning") or reached ("rejected") - into the feed
+            payload = {"conversation_id": conversation_id, "info": step.data}
+            await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id)
+        return None
+
+    async def _finish(self, conversation_id, model, result, last_id, cancelled, errors, client_id, code) -> None:
+        if result is None and not cancelled:
+            detail = "\n".join(errors) or f"Claude Code ended (code {code}) without an answer"
+            raise GatewayError(f"Claude Code: {detail[-1500:]}")
+        usage = usage_of(result) if result else {}
+        stats = {}
+        if result:
+            stats = {"duration_s": round((result.get("duration_ms") or 0) / 1000, 1), "turns": result.get("num_turns"),
+                     "cost_estimate_usd": result.get("total_cost_usd"), "subscription": True}  # fmt: skip
+            meta = {"stats": stats, "stop_reason": result.get("subtype"), "session_id": result.get("session_id"),
+                    "subscription": True, "model_usage": result.get("modelUsage")}  # fmt: skip
+            await self._db.acall(lambda conn: store.record_usage(
+                conn, client_id=client_id, conversation_id=conversation_id, message_id=last_id, model_id=model["id"],
+                usage=usage, cost_usd=0.0, estimated=True, meta=meta))  # fmt: skip
+        if result and result.get("is_error") and not cancelled:
+            detail = f"Claude Code: {error_text(result)}"
+            payload = {"conversation_id": conversation_id, "detail": detail, "usage": usage, "cost_usd": 0}
+            await self._bus.publish("chat.error", payload)
+            return
+        await self._bus.publish("chat.done", {
+            "conversation_id": conversation_id, "message_id": last_id, "usage": usage, "stats": stats, "cost_usd": 0.0,
+            "steps": (result or {}).get("num_turns") or 0, "stop_reason": (result or {}).get("subtype"),
+            "cancelled": cancelled,
+        })  # fmt: skip
+
+    async def stop(self) -> None:
+        """The hub stops: so do the turns it started."""
+        for turn in list(self.turns.values()):
+            if turn.process is not None and turn.process.poll() is None:
+                await asyncio.to_thread(stop_tree, turn.process.pid, STOP_WAIT_S)
+
+
+def _start(argv: list[str], cwd: Path) -> subprocess.Popen:
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            env=child_env(), creationflags=flags)  # fmt: skip
+
+
+def _wind_down(process: subprocess.Popen) -> None:
+    """After its answer (or a stop) Claude Code gets a little while to end on its own; then it is stopped."""
+    try:
+        process.wait(AFTER_RESULT_S)
+    except subprocess.TimeoutExpired:
+        stop_tree(process.pid, STOP_WAIT_S)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(STOP_WAIT_S)
+
+
+def _send(process: subprocess.Popen, line: bytes) -> None:
+    """The message, then the end of input: Claude Code answers it and exits."""
+    try:
+        process.stdin.write(line)
+        process.stdin.close()
+    except OSError:  # it ended already; its stderr says why
+        pass
+
+
+def _pipe_thread(pipe, deliver: Callable[[bytes | None], Any]) -> None:
+    def pump() -> None:
+        try:
+            for line in iter(pipe.readline, b""):
+                if line.strip():
+                    deliver(line)
+        finally:
+            deliver(None)
+
+    threading.Thread(target=pump, name="claude-code-pipe", daemon=True).start()
+
+
+def _session_and_history(conn: sqlite3.Connection, conversation_id: str) -> tuple[dict, str]:
+    row = conn.execute("SELECT agent_session FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    session = json.loads(row["agent_session"]) if row and row["agent_session"] else {}
+    history = store.get_messages(conn, conversation_id)[:-1]  # without the message being sent now
+    return session, earlier_text([m for m in history if not (m.model_id or "").startswith(f"{PROVIDER}/")])
+
+
+def _save_session(conn: sqlite3.Connection, conversation_id: str, init: dict[str, Any], cwd: Path) -> None:
+    session = {"id": init.get("session_id"), "cwd": str(cwd), "model": init.get("model")}
+    conn.execute("UPDATE conversations SET agent_session = ? WHERE id = ?", (json.dumps(session), conversation_id))

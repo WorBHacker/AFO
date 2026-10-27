@@ -196,12 +196,17 @@ class TerminalManager:
         cols: int = 120,
         rows: int = 30,
         title: str = "",
+        argv: list[str] | None = None,
     ) -> dict[str, Any]:
+        """A shell (running `command`, or interactive), or with `argv` a program of the hub's choice run directly."""
         if not cwd.is_dir():
             raise TerminalError(f"no such folder: {cwd}")
         cols, rows = max(20, min(cols, 500)), max(5, min(rows, 200))
-        kind, program = find_shell(shell)
-        args = shell_args(kind, command)
+        if argv:
+            kind, program, args = "program", argv[0], argv[1:]
+        else:
+            kind, program = find_shell(shell)
+            args = shell_args(kind, command)
         terminal_id = uuid.uuid4().hex[:12]
         pty = winpty.PTY(cols, rows)
         try:

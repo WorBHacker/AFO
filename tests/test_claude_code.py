@@ -1,0 +1,343 @@
+"""Claude Code under the hub (stage 4.3, D8, D18): finding the CLI, reading its stream, and whole turns against a real
+hub over HTTP - with a stand-in CLI (tests/fake_claude.py), never the user's Claude Code."""
+
+import json
+import socket
+import sys
+import threading
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+import uvicorn
+
+from common.paths import data_paths
+from hub import store
+from hub.chat import _to_prompt
+from hub.claude_code import (
+    CONVERSATION_HEADER,
+    PERMISSION_TOOL,
+    ClaudeCodeProvider,
+    Translator,
+    child_env,
+    earlier_text,
+    error_text,
+    find_cli,
+    usage_of,
+    user_line,
+)
+from hub.server import create_app
+from hub.settings import HubSettings
+
+FAKE = [sys.executable, str(Path(__file__).with_name("fake_claude.py"))]
+
+
+# --- finding the CLI ---
+
+
+def test_the_cli_is_found_where_its_installers_put_it(tmp_path):
+    empty = {"USERPROFILE": str(tmp_path / "home"), "APPDATA": str(tmp_path / "roaming"), "PATH": ""}
+    assert find_cli({**empty, "LOCALCHAT_CLAUDE": str(tmp_path / "missing.exe")}) is None
+    bundled = tmp_path / "roaming" / "Claude" / "claude-code"
+    for version in ("2.1.99", "2.1.308", "2.1.304"):
+        (bundled / version / "abc").mkdir(parents=True)
+        (bundled / version / "abc" / "claude.exe").write_bytes(b"")
+    assert find_cli(empty) == [str(bundled / "2.1.308" / "abc" / "claude.exe")]  # the desktop app's newest copy
+    native = tmp_path / "home" / ".local" / "bin"
+    native.mkdir(parents=True)
+    (native / "claude.exe").write_bytes(b"")
+    assert find_cli(empty) == [str(native / "claude.exe")]  # the native installer's comes first
+    chosen = tmp_path / "my-claude.exe"
+    chosen.write_bytes(b"")
+    assert find_cli({**empty, "LOCALCHAT_CLAUDE": str(chosen)}) == [str(chosen)]
+
+
+def test_without_the_cli_there_are_no_claude_code_models():
+    import asyncio
+
+    assert asyncio.run(ClaudeCodeProvider(lambda: None).list_models()) == []
+    models = asyncio.run(ClaudeCodeProvider(lambda: FAKE).list_models())
+    assert [m.id for m in models] == ["claude-code/default", "claude-code/opus", "claude-code/sonnet",
+                                      "claude-code/haiku"]  # fmt: skip
+    assert all(m.locality == "cloud" and m.prices == {} for m in models)  # a cloud model, paid by the subscription
+
+
+# --- its stream ---
+
+
+def assistant(message_id, *blocks, parent=None):
+    return {"type": "assistant", "parent_tool_use_id": parent, "message": {"id": message_id, "content": list(blocks)}}
+
+
+def test_the_blocks_of_one_message_become_one_message():
+    t = Translator()
+    steps = [
+        *t.feed({"type": "system", "subtype": "init", "session_id": "s1"}),
+        *t.feed({"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "Сейчас"}}}),
+        *t.feed(assistant("m1", {"type": "thinking", "thinking": "думаю"})),
+        *t.feed(assistant("m1", {"type": "text", "text": "Сейчас посмотрю."})),
+        *t.feed(assistant("m1", {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "a.py"}})),
+        *t.feed(assistant("m1", {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "ls"}})),
+        *t.feed(assistant("x", {"type": "text", "text": "subagent"}, parent="t9")),
+        *t.feed({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "print(1)"}]},
+            {"type": "tool_result", "tool_use_id": "t2", "content": "x" * 40_000, "is_error": True}]}}),
+        *t.feed(assistant("m2", {"type": "text", "text": "Готово."})),
+        *t.feed({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning"}}),
+        *t.feed({"type": "result", "subtype": "success", "is_error": False}),
+    ]  # fmt: skip
+    kinds = [(s.kind, s.role) for s in steps]
+    assert kinds == [("session", ""), ("delta", "content"), ("message", "assistant"), ("message", "assistant"),
+                     ("message", "tool"), ("message", "assistant"), ("limit", ""), ("result", "")]  # fmt: skip
+    first, second, results, last = (s.data for s in steps if s.kind == "message")
+    assert [b["type"] for b in first] == ["reasoning", "text", "tool_call"]  # gathered, up to the first call
+    assert second == [{"type": "tool_call", "id": "t2", "name": "Bash", "input": {"command": "ls"}}]
+    assert results[0] == {"type": "tool_result", "id": "t1", "name": "Read", "output": "print(1)", "error": False}
+    assert results[1]["error"] is True and results[1]["name"] == "Bash" and "ещё 10000 символов" in results[1]["output"]
+    assert last == [{"type": "text", "text": "Готово."}]
+    assert all("subagent" not in json.dumps(s.data, ensure_ascii=False) for s in steps)
+
+
+def test_usage_errors_input_and_environment():
+    result = {"usage": {"input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20,
+                        "output_tokens": 30}}  # fmt: skip
+    assert usage_of(result) == {"input_tokens": 130, "cached_input_tokens": 100, "cache_write_tokens": 20,
+                                "output_tokens": 30, "estimated": 1}  # fmt: skip
+    assert error_text({"errors": ["limit", "again"]}) == "limit; again"
+    assert error_text({"result": "boom", "errors": ["x"]}) == "boom"
+    assert error_text({"subtype": "error_max_turns"}) == "error_max_turns"
+    line = user_line("строка\nвторая")
+    assert line.endswith(b"\n") and line.count(b"\n") == 1
+    assert json.loads(line) == {"type": "user", "message": {"role": "user", "content": "строка\nвторая"},
+                                "parent_tool_use_id": None}  # fmt: skip
+    billing = {"ANTHROPIC_API_KEY": "sk", "anthropic_auth_token": "t", "CLAUDE_CODE_USE_VERTEX": "1"}
+    env = child_env({"PATH": "x", **billing})
+    assert env["PATH"] == "x" and not set(billing) & set(env)
+    assert int(env["MCP_TOOL_TIMEOUT"]) >= 3600_000 and env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == "0"
+
+
+def message(seq, role, content, model_id=None):
+    return store.MessageRow(seq, seq, role, model_id, content, "")
+
+
+def test_other_models_get_claude_codes_turns_as_text_only():
+    call = {"type": "tool_call", "id": "t1", "name": "Edit", "input": {}}
+    history = [
+        message(1, "user", [{"type": "text", "text": "поправь"}]),
+        message(2, "assistant", [{"type": "text", "text": "Правлю."}, call], "claude-code/default"),
+        message(3, "tool", [{"type": "tool_result", "id": "t1", "name": "Edit", "output": "ok", "error": False}]),
+        message(4, "assistant", [{"type": "text", "text": "Готово."}], "claude-code/default"),
+        message(5, "user", [{"type": "text", "text": "а теперь ты"}]),
+    ]  # fmt: skip
+    prompt = _to_prompt(history)
+    expected = [("user", "поправь"), ("assistant", "Правлю."), ("assistant", "Готово."), ("user", "а теперь ты")]
+    assert [(p["role"], p["content"]) for p in prompt] == expected
+    assert not any("tool_calls" in p or "provider_raw" in p for p in prompt)
+    assert earlier_text(history[:1] + history[4:]) == "User: поправь\n\nUser: а теперь ты"
+
+
+# --- whole turns, through a real hub ---
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+class LiveHub:
+    """The hub app served by uvicorn on a free port in a thread: the stand-in CLI reaches its /mcp over HTTP."""
+
+    def __init__(self):
+        port = free_port()
+        self.app = create_app(HubSettings(paths=data_paths(), port=port, llama_swap_url="http://127.0.0.1:9",
+                                          status_interval_s=0, process_interval_s=0))  # fmt: skip
+        config = uvicorn.Config(self.app, host="127.0.0.1", port=port, log_config=None, lifespan="on",
+                                ws="websockets-sansio")  # fmt: skip
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, daemon=True)
+        self.thread.start()
+        deadline = time.monotonic() + 30
+        while not self.server.started:
+            assert time.monotonic() < deadline, "the hub did not start"
+            time.sleep(0.05)
+        token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        self.http = httpx.Client(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": f"Bearer {token}"},
+                                 timeout=30)  # fmt: skip
+
+    def close(self):
+        self.http.close()
+        self.server.should_exit = True
+        self.thread.join(30)
+
+    def wait_idle(self, cid, timeout=60):
+        deadline = time.monotonic() + timeout
+        while self.http.get(f"/v1/conversations/{cid}").json()["busy"]:
+            assert time.monotonic() < deadline, "the turn did not end"
+            time.sleep(0.05)
+        return self.http.get(f"/v1/conversations/{cid}").json()
+
+    def wait_approval(self, timeout=30):
+        deadline = time.monotonic() + timeout
+        while not (pending := self.http.get("/v1/approvals").json()["approvals"]):
+            assert time.monotonic() < deadline, "no approval request came"
+            time.sleep(0.05)
+        return pending[0]
+
+    def feed(self, types):
+        events = self.http.get("/v1/feed", params={"limit": 200, "types": types}).json()["events"]
+        return [e["type"] for e in events]
+
+
+@pytest.fixture
+def hub(repo, tmp_path, monkeypatch):
+    log = tmp_path / "fake-claude.log"
+    monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-not-for-claude-code")  # must not reach the CLI (D8)
+    live = LiveHub()
+    try:
+        live.app.state.claude_code._find = lambda: FAKE
+        live.app.state.gateway.register(ClaudeCodeProvider(lambda: FAKE))
+        assert live.http.post("/v1/models/sync").status_code == 200
+        live.repo, live.log = repo, log
+        pid = live.http.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+        live.http.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})
+        live.pid = pid
+        yield live
+    finally:
+        live.close()
+
+
+def runs(hub):
+    return [json.loads(line) for line in hub.log.read_text(encoding="utf-8").splitlines()]
+
+
+def chat_with_project(hub):
+    cid = hub.http.post("/v1/conversations", json={}).json()["id"]
+    hub.http.put(f"/v1/conversations/{cid}/projects", json={"project_ids": [hub.pid]})
+    return cid
+
+
+def send(hub, cid, text, model="claude-code/default"):
+    response = hub.http.post(f"/v1/conversations/{cid}/messages", json={"content": text, "model_id": model})
+    assert response.status_code == 202, response.text
+
+
+def test_a_turn_asks_the_user_and_edits_when_allowed(hub):
+    cid = chat_with_project(hub)
+    send(hub, cid, "edit notes.txt please")
+    asked = hub.wait_approval()
+    assert asked["tool"] == "Edit" and asked["conversation_id"] == cid and asked["project_id"] == hub.pid
+    assert "-свежий файл" in asked["preview"]["text"] and "+правленый файл" in asked["preview"]["text"]  # the real file
+    assert hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": True}).status_code == 200
+    chat = hub.wait_idle(cid)
+    roles = [(m["role"], [b["type"] for b in m["content"]]) for m in chat["messages"]]
+    assert roles == [("user", ["text"]), ("assistant", ["reasoning", "text", "tool_call"]), ("tool", ["tool_result"]),
+                     ("assistant", ["text"])]  # fmt: skip
+    assert chat["messages"][-1]["content"][0]["text"] == "Готово." and chat["messages"][-1]["model_id"] == (
+        "claude-code/default"
+    )
+    assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "правленый файл\n"
+    (first,) = runs(hub)
+    assert first["cwd"] == str(hub.repo) and "--resume" not in first["argv"]
+    assert first["argv"][first["argv"].index("--permission-prompt-tool") + 1] == PERMISSION_TOOL
+    assert first["env"]["ANTHROPIC_API_KEY"] is None  # the subscription, never an API key (D8)
+    assert int(first["env"]["MCP_TOOL_TIMEOUT"]) > 60_000
+    assert not list((data_paths().root / "claude-code").glob(f"{cid}*"))  # its MCP config (with a token) is gone
+    usage = hub.http.get("/v1/usage").json()
+    assert usage["today_cost_usd"] == 0  # the subscription pays: no money counted (D12)
+    assert "approval.requested" in hub.feed("approval.*") and "approval.decided" in hub.feed("approval.*")
+
+    send(hub, cid, "and now something else")
+    chat = hub.wait_idle(cid)
+    second = runs(hub)[1]
+    assert second["argv"][second["argv"].index("--resume") + 1]  # the same Claude Code session goes on
+    assert chat["messages"][-1]["content"][0]["text"].startswith("Ответ на:")
+
+
+def test_a_denial_with_a_comment_reaches_claude_code(hub):
+    cid = chat_with_project(hub)
+    send(hub, cid, "edit it")
+    asked = hub.wait_approval()
+    hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не трогай заметки"})
+    chat = hub.wait_idle(cid)
+    result = chat["messages"][2]["content"][0]
+    assert result["error"] is True and result["output"] == "не трогай заметки"
+    assert chat["messages"][-1]["content"][0]["text"] == "Не стал править: не трогай заметки"
+    assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "свежий файл\n"
+
+
+def test_earlier_turns_of_other_models_go_with_the_first_message(hub):
+    cid = chat_with_project(hub)
+    hub.app.state.db.call(lambda c: store.add_message(c, cid, "user", [{"type": "text", "text": "что в проекте?"}]))
+    hub.app.state.db.call(lambda c: store.add_message(c, cid, "assistant", [{"type": "text", "text": "Файлы."}],
+                                                      model_id="llama-swap/coder"))  # fmt: skip
+    send(hub, cid, "hello")
+    hub.wait_idle(cid)
+    (run,) = runs(hub)
+    assert run["text"].startswith("<earlier_in_this_chat>\nUser: что в проекте?\n\nAssistant: Файлы.")
+    assert run["text"].endswith("\n\nhello")
+
+
+def test_a_limit_and_an_error_end_the_turn(hub):
+    cid = chat_with_project(hub)
+    send(hub, cid, "limit")
+    hub.wait_idle(cid)
+    feed = hub.http.get("/v1/feed", params={"types": "chat.error,claude_code.limit"}).json()["events"]
+    error = next(e for e in feed if e["type"] == "chat.error")
+    assert error["payload"]["detail"] == "Claude Code: You've hit your session limit"
+    limit = next(e for e in feed if e["type"] == "claude_code.limit")
+    assert limit["payload"]["info"]["status"] == "rejected"
+
+
+def test_a_turn_can_be_stopped(hub):
+    cid = chat_with_project(hub)
+    send(hub, cid, "hang")
+    deadline = time.monotonic() + 30
+    while not runs_started(hub):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert hub.http.post(f"/v1/conversations/{cid}/cancel").status_code in (200, 202)
+    hub.wait_idle(cid, timeout=30)
+    done = hub.http.get("/v1/feed", params={"types": "chat.done"}).json()["events"]
+    assert done[0]["payload"]["cancelled"] is True
+
+
+def runs_started(hub):
+    return hub.log.exists() and hub.log.read_text(encoding="utf-8").strip()
+
+
+def test_projects_only_for_local_models_stay_closed(hub, tmp_path):
+    cid = hub.http.post("/v1/conversations", json={}).json()["id"]
+    send(hub, cid, "hello")  # no project
+    hub.wait_idle(cid)
+    hub.http.patch(f"/v1/projects/{hub.pid}", json={"cloud_ok": False})
+    hub.http.put(f"/v1/conversations/{cid}/projects", json={"project_ids": [hub.pid]})
+    send(hub, cid, "hello")
+    hub.wait_idle(cid)
+    errors = [e["payload"]["detail"] for e in
+              hub.http.get("/v1/feed", params={"types": "chat.error"}).json()["events"]]  # fmt: skip
+    assert any("attach a project" in e for e in errors)
+    assert any("only local models may see it (D10)" in e for e in errors)
+    assert not hub.log.exists()  # Claude Code was never started
+    refused = hub.http.post(f"/v1/projects/{hub.pid}/claude-code/terminal", json={})
+    assert refused.status_code == 409 and "local models only" in refused.json()["detail"]
+
+
+def test_status_and_a_terminal(hub):
+    status = hub.http.get("/v1/claude-code").json()
+    assert status["installed"] is True and status["command"] == FAKE
+    terminal = hub.http.post(f"/v1/projects/{hub.pid}/claude-code/terminal", json={"cols": 100, "rows": 30})
+    assert terminal.status_code == 201, terminal.text
+    info = terminal.json()
+    assert info["title"] == "Claude Code" and "--mcp-config" in info["command"]
+    deadline = time.monotonic() + 30
+    while "interactive" not in hub.http.get(f"/v1/terminals/{info['id']}/output").json().get("data", ""):
+        assert time.monotonic() < deadline, "the terminal printed nothing"
+        time.sleep(0.1)
+    config = json.loads((data_paths().root / "claude-code" / f"terminal-{hub.pid}.mcp.json").read_text("utf-8"))
+    server = config["mcpServers"]["localchat"]
+    assert server["type"] == "http" and server["url"].endswith("/mcp") and CONVERSATION_HEADER not in server["headers"]
+    hub.app.state.claude_code._find = lambda: None
+    assert hub.http.get("/v1/claude-code").json()["installed"] is False

@@ -61,11 +61,14 @@ class Gateway:
 
 
 def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStore) -> Gateway:
-    """The gateway as stage 1 configures it: local models through llama-swap, Claude by API key (D34)."""
+    """The gateway: local models through llama-swap, Claude by API key (D34), and Claude Code when its CLI is
+    installed (stage 4, D8) - the chat runs those through hub/claude_code.py."""
+    from ..claude_code import ClaudeCodeProvider
     from .anthropic_provider import AnthropicProvider
     from .openai_compat import OpenAICompatProvider
 
     gateway = Gateway(db)
     gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality="local"))
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
+    gateway.register(ClaudeCodeProvider())
     return gateway

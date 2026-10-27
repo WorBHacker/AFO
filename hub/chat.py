@@ -18,6 +18,11 @@ the hub runs the tools and stores their results as a message of role "tool", and
 MAX_TOOL_STEPS times. chat.done ends the run with its totals. Nothing stored is ever rewritten, and the tool list
 of a conversation does not change, so Claude's thinking stays valid (D14). A cloud model reaches only projects that
 allow the cloud and sees the others by name (D10); it gets no chat where a local model worked with such a project.
+
+A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in the chat's project instead
+(hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
+keeps its own session, so the hub stores no context messages for it. Other models get its answers as text only:
+its tool calls belong to Claude Code's tools, not the hub's.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import budgets, cards, context, links, notes, store
+from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, blocks_to_prompt_text
@@ -57,6 +63,8 @@ class ChatService:
         self.terminals = None  # set by the server: the tools read terminals and processes through them
         self.processes = None
         self.symbols = SymbolIndex()  # the server's shared one replaces it
+        self.claude_code = None  # set by the server: runs the turns of chats with a Claude Code model
+        self.approvals = None
 
     @property
     def busy(self) -> list[str]:
@@ -101,10 +109,15 @@ class ChatService:
         if title:
             await self._bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
-        await self._store_context(conversation_id)
+        agent = model["provider"] == CLAUDE_CODE
+        if not agent:
+            await self._store_context(conversation_id)
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
-        task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
+        if agent:
+            task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id))
+        else:
+            task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
         task.add_done_callback(lambda t: t.exception())  # surface a crash to the loop's handler
         return user_msg.to_json()
 
@@ -134,6 +147,33 @@ class ChatService:
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
         finally:
             self._runs.pop(conversation_id, None)
+
+    async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id):
+        """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10)."""
+        try:
+            if self.claude_code is None:
+                raise GatewayError("Claude Code is not set up in this hub")
+            attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
+            usable = [p for p in attached if p.cloud_ok]
+            if attached and not usable:
+                names = ", ".join(f"«{p.name}»" for p in attached)
+                raise GatewayError(
+                    f"{names}: only local models may see it (D10), and Claude Code is a cloud model. "
+                    "Allow the cloud in the project's settings to work on it with Claude Code."
+                )
+            await self._bus.publish(
+                "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
+            )
+            await self.claude_code.run(conversation_id, model, text, usable, cancel, client_id)
+        except GatewayError as exc:
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc)})
+        except Exception:
+            log.exception("claude code turn for %s crashed", conversation_id)
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
+        finally:
+            self._runs.pop(conversation_id, None)
+            if self.approvals is not None:
+                await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
 
     async def _steps(self, conversation_id: str, model: dict, effort: str, cancel: asyncio.Event, client_id):
         provider, model_ref = self._gateway.resolve(model["id"])
@@ -528,7 +568,16 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False) -> list[
     is rendered for the kind of model (`cloud`: local-only projects hidden).
     """
     prompt: list[dict[str, Any]] = []
+    agent_calls: set[str] = set()  # Claude Code's tool calls: its own tools, not the hub's - text only for others
     for message in history:
+        if (message.model_id or "").startswith(f"{CLAUDE_CODE}/"):
+            agent_calls |= {b["id"] for b in message.content if b.get("type") == "tool_call"}
+            text = blocks_to_prompt_text(message.content)
+            if text:
+                prompt.append({"role": "assistant", "content": text})
+            continue
+        if message.role == "tool" and agent_calls and all(b.get("id") in agent_calls for b in message.content):
+            continue
         if message.role == "system":
             if any(b.get("type") == "context" for b in message.content):
                 prompt.append({"role": "system", "content": context.render(message.content, cloud=cloud)})

@@ -80,7 +80,7 @@ def test_the_bridge_forwards_messages_as_they_are(hub):
     assert init[0]["id"] == 1 and init[0]["result"]["serverInfo"]["name"] == "LocalChat hub"
     assert protocol == init[0]["result"]["protocolVersion"]  # sent with every later request
     assert initialized == []  # a notification: the hub accepts it (202) and nothing goes back
-    assert {t["name"] for t in listed[0]["result"]["tools"]} == TOOLS
+    assert {t["name"] for t in listed[0]["result"]["tools"]} == TOOLS | {"approval_prompt"}
     assert "class Shared" in outline[0]["result"]["content"][0]["text"]
     assert wrong[0]["result"]["isError"] is True  # a tool's error is the tool's result, as over HTTP
     assert garbage[0]["id"] is None and garbage[0]["error"]["code"] == PARSE_ERROR
@@ -217,7 +217,7 @@ def test_a_stdio_client_works_through_the_adapter_which_starts_the_hub(env, isol
 
     try:
         names, mapped, wrong, started = asyncio.run(session())
-        assert names == TOOLS
+        assert names == TOOLS | {"approval_prompt"}
         assert "projects" in mapped.lower()
         assert wrong.is_error and "no project 'nope'" in wrong.content[0].text
         assert started == "ok"
