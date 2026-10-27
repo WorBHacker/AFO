@@ -11,7 +11,8 @@ Item {
     signal agentsRequested()
     height: 52
 
-    DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
+    // the window through the bar: a handler is not an Item, its own Window.window is null
+    DragHandler { target: null; onActiveChanged: if (active) bar.Window.window.startSystemMove() }
     TapHandler { onDoubleTapped: bar.toggleMaximized() }
 
     function toggleMaximized() {

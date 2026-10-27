@@ -2332,3 +2332,29 @@ def test_choice_rows():
     assert rows_[0]["note"] == "vendor/model-99 · $1 / $2 за 1M · контекст 128K" and rows_[0]["picked"] is True
     found, total = choice_rows(models, set(), "DEEPSEEK pro")
     assert total == 1 and found[0]["name"] == "DeepSeek V4 Pro" and found[0]["note"].endswith("$0.66 / $1.98 за 1M")
+
+
+def test_dragging_the_window_by_its_bars(qapp):
+    """The title bar and the sidebar's top move the window: their drag handlers reach it through their item (a
+    handler's own Window.window is null in Qt 6.12)."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        window = quick.window
+        window.resize(1280, 820)
+        QApplication.processEvents()
+        for x, y in ((700, 20), (60, 25)):  # the title bar; the sidebar's brand
+            QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(x, y))
+            for step in range(1, 12):
+                QTest.mouseMove(window, QPoint(x + step * 6, y + step * 2))
+                QApplication.processEvents()
+            QTest.mouseRelease(
+                window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(x + 66, y + 22)
+            )
+        assert [w for w in quick.warnings if "startSystemMove" in w or "Window.window" in w] == []
+    finally:
+        quick.close()

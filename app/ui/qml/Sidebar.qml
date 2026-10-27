@@ -39,7 +39,7 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
-        DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
+        DragHandler { target: null; onActiveChanged: if (active) brand.Window.window.startSystemMove() }
     }
 
     Rectangle {
