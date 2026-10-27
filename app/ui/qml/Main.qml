@@ -40,11 +40,12 @@ Window {
             width: parent.width
             onSearchRequested: palette.open()
             onFeedRequested: feedSheet.open()
-            onApprovalsRequested: approvalsSheet.open()
+            onApprovalsRequested: waitingPopup.open()
             onAgentsRequested: agentsSheet.open()
         }
         ChatView {
             visible: App.mode === "chats"
+            reserve: approvalBanner.visible ? approvalBanner.height + 10 : 0
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - composer.height
@@ -75,6 +76,16 @@ Window {
             onEffortMenuRequested: (anchor) => effortMenu.openAt(anchor)
             onProjectMenuRequested: (anchor) => chatProjectMenu.openAt(anchor)
             onContextRequested: contextSheet.open()
+        }
+        // the open chat's requests: a card over the top of its conversation (D38)
+        ApprovalBanner {
+            id: approvalBanner
+            z: 2
+            column: Math.min(780, parent.width - 48)
+            x: (parent.width - width) / 2
+            y: titleBar.height + 10
+            room: parent.height - y - composer.height - 10
+            onFinished: composer.focusInput()
         }
     }
 
@@ -152,7 +163,7 @@ Window {
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
     FeedSheet { id: feedSheet }
-    ApprovalsSheet { id: approvalsSheet }
+    WaitingPopup { id: waitingPopup }
     AgentsSheet { id: agentsSheet }
     ConnectionsSheet { id: connectionsSheet }
     ProjectSheet { id: projectSheet }
@@ -169,7 +180,7 @@ Window {
             if (what === "budgets") budgetsSheet.open()
             else if (what === "settings") settingsSheet.open()
             else if (what === "feed") feedSheet.open()
-            else if (what === "approvals") approvalsSheet.open()
+            else if (what === "approvals") waitingPopup.open()
             else if (what === "agents") agentsSheet.open()
             else if (what === "programs") programsSheet.open()
             else if (what === "connections") connectionsSheet.open()
@@ -178,11 +189,6 @@ Window {
             else if (what === "add-project") folderDialog.open()
             else if (what === "search-project") Qt.callLater(sidebar.focusProjectSearch)
         }
-    }
-
-    Connections {
-        target: Approvals
-        function onArrived() { approvalsSheet.open() }  // the chat open now stands still until it is answered
     }
 
     // ---------- keyboard ----------
@@ -208,7 +214,7 @@ Window {
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+E"; onActivated: feedSheet.open() }
-    Shortcut { sequence: "Ctrl+Shift+A"; onActivated: approvalsSheet.open() }
+    Shortcut { sequence: "Ctrl+Shift+A"; onActivated: waitingPopup.open() }
     Shortcut { sequence: "Ctrl+Shift+G"; onActivated: agentsSheet.open() }
     Shortcut { sequence: "Ctrl+Shift+K"; onActivated: connectionsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }

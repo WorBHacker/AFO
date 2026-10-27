@@ -1436,7 +1436,7 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
             "budgetsSheet",
             "settingsSheet",
             "renameDialog",
-            "approvalsSheet",
+            "approvalsList",
             "agentsSheet",
             "connectionsSheet",
         ):
@@ -1447,10 +1447,11 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
             if name == "palette":
                 items = popup.property("items")  # a QJSValue or already a list, depending on how it was set
                 assert len(items.toVariant() if hasattr(items, "toVariant") else items) > 4
-            if name == "approvalsSheet":  # a request with its diff and the three answers
-                cards = quick.window.findChild(QQuickItem, "approvalItems")
-                assert item_named(cards, "approveOnce") is not None
-                assert item_named(cards, "approveChat").property("visible")
+            if name == "approvalsList":  # who waits: the open chat, its card on top with its answers
+                wait_until(lambda p=popup: item_named(p.property("contentItem"), "waiting_c1") is not None)
+                card = quick.window.findChild(QQuickItem, "chatApprovalCard")
+                assert item_named(card, "approveOnce") is not None
+                assert item_named(card, "approveChat").property("visible")
             if name == "agentsSheet":  # the profile in the editor, its run in the list
                 wait_until(lambda: app.agents.runs)
                 assert quick.window.findChild(QQuickItem, "agentName").property("text") == "Ревьюер"
@@ -1464,9 +1465,103 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         quick.theme.setMode("dark")
 
 
-def test_a_comment_being_typed_survives_other_requests(qapp):
-    """A denial comment typed in one card stays while another request is answered or arrives: each card is its
-    own row (the queue used to rebuild every card, and the text went with it)."""
+def test_the_card_on_top_of_the_chat(qapp):
+    """The open chat's requests (D38): a card over the conversation, "1 из N", the next after an answer; a comment
+    being typed stays while other requests come and go; the keys; "Показать всё"; the shield's list."""
+    from PySide6.QtCore import QEvent, QMetaObject, QObject
+    from PySide6.QtGui import QKeyEvent
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def drawn(condition) -> None:
+        """Offscreen, frames drive the card's slide and the list's fade: draw them while waiting."""
+        for _ in range(150):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+            if condition():
+                return
+            time.sleep(0.02)
+        assert condition()
+
+    def key(item, code, modifiers=Qt.KeyboardModifier.NoModifier) -> None:
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(item, QKeyEvent(kind, code, modifiers))
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        diff = "\n".join(["--- a/x", "+++ b/x", "@@ -1,30 +1,30 @@"] + [f"+line {n}" for n in range(30)])
+        client.pending = [{**APPROVAL, "preview": {"kind": "diff", "note": "", "text": diff}},
+                          {**APPROVAL, "id": "ap2", "tool": "Bash", "kind": "command", "input": {"command": "pytest"},
+                           "preview": {"kind": "command", "text": "pytest"}}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.approvals.count == 2)
+        banner = quick.window.findChild(QObject, "approvalBanner")
+        assert not banner.property("visible")  # no chat open yet
+        opened(app)
+        drawn(lambda: banner.property("opacity") == 1)
+        card = quick.window.findChild(QObject, "chatApprovalCard")
+        assert quick.window.findChild(QObject, "approvalPosition").property("text").startswith("1 из 2")
+        lines = quick.window.findChild(QObject, "approvalLines")
+        shown = lambda: sum(1 for c in lines.childItems() if c.property("text") is not None)  # noqa: E731
+        assert shown() == 12  # a few lines; all 33 on "Показать всё"
+        quick.window.findChild(QObject, "approvalShowAll").linkActivated.emit("x")
+        drawn(lambda: shown() == 33)
+        assert card.property("activeFocus")  # nobody was typing: the card has the keyboard
+
+        comment = item_named(card, "approvalComment")
+        key(card, Qt.Key.Key_Escape)  # Esc: to the comment
+        assert comment.property("activeFocus")
+        comment.setProperty("text", "сначала линтер")
+        key(comment, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)  # never allows from the comment
+        later = {**APPROVAL, "id": "ap9", "conversation_id": "other"}
+        app.on_event({"type": "approval.requested", "payload": {"approval": later}})  # another chat's comes
+        app.on_event({"type": "approval.requested", "payload": {"approval": {**later, "id": "ap10",
+                                                                              "conversation_id": "c1"}}})  # fmt: skip
+        drawn(lambda: quick.window.findChild(QObject, "approvalPosition").property("text").startswith("1 из 3"))
+        assert comment.property("text") == "сначала линтер" and client.answers == []
+        key(comment, Qt.Key.Key_Return)  # Enter in the comment: denied with it
+        wait_until(lambda: client.answers == [("ap1", False, "once", "сначала линтер")])
+        drawn(lambda: item_named(card, "approvalTitle").property("text") == "Claude Code: Выполнить команду")
+        assert comment.property("text") == "" and quick.window.findChild(QObject, "approvalShowAll") is not None
+        assert not quick.window.findChild(QObject, "approvalShowAll").property("visible")  # one line: nothing more
+
+        card.forceActiveFocus()
+        key(card, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)  # Ctrl+Enter: allowed once
+        wait_until(lambda: client.answers[-1] == ("ap2", True, "once", ""))
+        rm = {**APPROVAL, "id": "ap11", "conversation_id": "c1", "tool": "run_command", "kind": "command",
+              "destructive": True, "input": {"command": "rm -rf build"},
+              "preview": {"kind": "command", "text": "rm -rf build"}}  # fmt: skip
+        app.approvals.answer("ap10", True, "chat", "")
+        app.on_event({"type": "approval.requested", "payload": {"approval": rm}})
+        drawn(lambda: app.approvals.card.get("id") == "ap11")
+        card.forceActiveFocus()
+        key(card, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)  # destructive: only its button allows
+        for _ in range(10):
+            QApplication.processEvents()
+        assert all(a[0] != "ap11" for a in client.answers)
+        assert not item_named(card, "approveChat").property("visible")
+
+        # the shield's list: who waits elsewhere; a row opens that chat, from the projects mode too
+        app.setMode("projects")
+        drawn(lambda: banner.property("opacity") == 0)
+        client.pending = [later, rm]  # the hub's queue now: the list reloads it on opening
+        QMetaObject.invokeMethod(quick.window.findChild(QObject, "approvalsList"), "open")
+        listed = quick.window.findChild(QObject, "approvalsList")
+        drawn(lambda: listed.property("opened") and item_named(listed.property("contentItem"), "waiting_other"))
+        item_named(listed.property("contentItem"), "waiting_other").clicked.emit()
+        assert app.mode == "chats" and app.current == "other"
+        drawn(lambda: not listed.property("visible") and app.approvals.card.get("id") == "ap9")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_request_with_no_chat_is_answered_in_the_list(qapp):
+    """An outside MCP client's request has no chat: it is a card in the shield's list, and a comment typed in one
+    such card stays while another is answered or arrives (each card is its own row)."""
     from PySide6.QtCore import QMetaObject, QObject
 
     from app.ui.main import QuickApp
@@ -1475,17 +1570,18 @@ def test_a_comment_being_typed_survives_other_requests(qapp):
     try:
         app = quick.controller
         client = FakeClient()
-        client.pending = [dict(APPROVAL), {**APPROVAL, "id": "ap2", "tool": "Bash", "kind": "command",
-                                           "input": {"command": "pytest"}, "preview": {"kind": "command",
-                                                                                       "text": "pytest"}}]  # fmt: skip
+        client.pending = [{**APPROVAL, "conversation_id": None, "client": "cline"},
+                          {**APPROVAL, "id": "ap2", "conversation_id": None, "client": "cline", "tool": "Bash",
+                           "kind": "command", "input": {"command": "pytest"},
+                           "preview": {"kind": "command", "text": "pytest"}}]  # fmt: skip
         app.attach(client, start_events=False)
-        wait_until(lambda: not app.bg.busy and app.approvals.count == 2)
-        sheet = quick.window.findChild(QObject, "approvalsSheet")
-        QMetaObject.invokeMethod(sheet, "open")
-        wait_until(lambda: sheet.property("opened"))
+        wait_until(lambda: not app.bg.busy and app.approvals.looseCount == 2)
+        listed = quick.window.findChild(QObject, "approvalsList")
+        QMetaObject.invokeMethod(listed, "open")
+        wait_until(lambda: listed.property("opened"))
 
         def fields() -> list:
-            found, todo = [], [quick.window.findChild(QObject, "approvalItems")]
+            found, todo = [], [quick.window.findChild(QObject, "looseApprovals")]
             while todo:
                 item = todo.pop(0)
                 todo.extend(item.childItems())
@@ -1496,11 +1592,12 @@ def test_a_comment_being_typed_survives_other_requests(qapp):
         wait_until(lambda: len(fields()) == 2)
         fields()[1].setProperty("text", "сначала линтер")
         app.approvals.answer(APPROVAL["id"], True, "once", "")  # the first card goes
-        later = {**APPROVAL, "id": "ap9", "status": "pending"}
+        later = {**APPROVAL, "id": "ap9", "conversation_id": None}
         app.on_event({"type": "approval.requested", "payload": {"approval": later}})  # a new one comes
         for _ in range(10):
             QApplication.processEvents()
         assert [f.property("text") for f in fields()] == ["сначала линтер", ""]
+        assert not item_named(quick.window.findChild(QObject, "looseApprovals"), "approveChat").property("visible")
         assert quick.warnings == []
     finally:
         quick.close()
@@ -2621,6 +2718,12 @@ def test_approval_rows():
     assert push["title"] == "Выполнить команду" and push["destructive"] and push["lines"] == [{"text": "git push",
                                                                                             "mark": ""}]  # fmt: skip
     assert push["chatScope"] == "эта команда в этом чате" and push["icon"] == "terminal"
+    # the hub's own models ask with no client: the chat's model asks, with the hub's tool names said in words
+    own = {**APPROVAL, "id": "ap5", "client": None, "tool": "edit_file", "input": {"project": "p1", "path": "a.txt"}}
+    search = {**own, "id": "ap6", "conversation_id": "c9", "tool": "web_search", "input": {"query": "qt 6.12"}}
+    mine, found = approval_rows([own, search], projects=projects, chats={}, speakers={"c1": "Coder"})
+    assert (mine["who"], mine["title"]) == ("Coder", "Править a.txt")
+    assert (found["who"], found["title"]) == ("Агент", "Искать в сети «qt 6.12»")  # an unknown chat's model
 
 
 def test_claude_code_tool_rows_and_footer():
@@ -2643,28 +2746,60 @@ def test_claude_code_tool_rows_and_footer():
     assert "близко до " in presenter.claude_code_limit({"status": "allowed_warning", "resetsAt": 1890000000})
 
 
+def test_how_long_a_request_waits_and_who_waits():
+    from app.ui.approvals import age, waiting_rows
+
+    now = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
+    assert [age(t, now) for t in ("2026-10-27T11:59:40Z", "2026-10-27T11:55:00Z", "2026-10-27T09:50:00.000Z",
+                                  "2026-10-27T10:00:00Z", "2026-10-24T11:00:00Z", "?")] == [
+        "только что", "5 мин", "2 ч 10 мин", "2 ч", "3 дн", ""]  # fmt: skip
+    push = {**APPROVAL, "id": "ap2", "conversation_id": "run1", "client": "agent", "tool": "run_command",
+            "kind": "command", "destructive": True, "created_at": "2026-10-27T11:00:00Z"}  # fmt: skip
+    loose = {**APPROVAL, "id": "ap3", "conversation_id": None}
+    projects = {"p1": {"id": "p1", "name": "LocalChat", "path": "D:\\Code\\LocalChat"}}
+    rows_ = waiting_rows([APPROVAL, push, loose, {**APPROVAL, "id": "ap4"}], projects=projects,
+                         chats={"c1": "Первый", "run1": ""}, current="run1", now=now)  # fmt: skip
+    assert [(r["conversationId"], r["chat"], r["count"], r["more"], r["here"]) for r in rows_] == [
+        ("c1", "Первый", 2, "ещё 1", False),
+        ("run1", "Чат без названия", 1, "", True),
+    ]  # no chat: not a row
+    assert rows_[0]["what"] == "Claude Code: Править hub/chat.py" and not rows_[0]["destructive"]
+    assert rows_[1]["what"] == "agent: Выполнить команду" and rows_[1]["destructive"] and rows_[1]["icon"] == "terminal"
+    assert rows_[1]["age"] == "1 ч"
+
+
 def test_the_approval_queue(app):
     approvals = app.approvals
     wait_until(lambda: approvals.count == 1)  # loaded with the rest when the window attached
     assert approvals.items[0]["title"] == "Править hub/chat.py"
-    arrived = []
-    approvals.arrived.connect(lambda: arrived.append(1))
-    opened(app)  # chat c1 is open
+    assert approvals.card == {} and approvals.cardCount == 0  # no chat open: no card
+    cards = []
+    approvals.hereChanged.connect(lambda: cards.append((approvals.card.get("id"), approvals.cardCount)))
+    opened(app)  # chat c1 is open: its request is the card on top of it
+    assert cards == [("ap1", 1)] and approvals.card["where"] == "LocalChat · «Первый»"
     request = {**APPROVAL, "id": "ap3", "tool": "Bash", "kind": "command", "input": {"command": "pytest"},
                "preview": {"kind": "command", "text": "pytest", "note": ""}}  # fmt: skip
+    app.flash("")
     send(app, "approval.requested", {"approval": request})
-    assert approvals.count == 2 and arrived == [1]  # from the open chat: the queue opens
-    assert "ждёт подтверждения" in app.flashText
+    assert approvals.count == 2 and cards[-1] == ("ap1", 2)  # the oldest stays on top: "1 из 2"
+    assert app.flashText == ""  # the open chat's card says it itself
     send(app, "approval.requested", {"approval": {**request, "id": "ap4", "conversation_id": "other"}})
-    assert approvals.count == 3 and arrived == [1]  # another chat's: only the badge and the notice
+    assert approvals.count == 3 and len(cards) == 2  # another chat's: only the shield, the flash and the notice
+    assert "щита" in app.flashText
+    assert [(w["conversationId"], w["count"], w["here"]) for w in approvals.waiting] == [
+        ("c1", 2, True),
+        ("other", 1, False),
+    ]
+    assert approvals.waiting[0]["more"] == "ещё 1" and approvals.waiting[1]["chat"] == "Чат без названия"
     send(app, "approval.decided", {"approval": {**request, "id": "ap4", "status": "expired"}})
     assert approvals.count == 2
-    approvals.answer("ap3", False, "once", "сначала линтер")
+    approvals.answer("ap1", False, "once", "сначала линтер")
+    assert cards[-1] == ("ap3", 1)  # answered: the next one of this chat, at once
     wait_until(lambda: not app.bg.busy)
-    assert app.client.answers == [("ap3", False, "once", "сначала линтер")] and approvals.count == 1
-    approvals.answer("ap1", True, "chat", "")
+    assert app.client.answers == [("ap1", False, "once", "сначала линтер")] and approvals.count == 1
+    approvals.answer("ap3", True, "chat", "")
     wait_until(lambda: not app.bg.busy)
-    assert app.client.answers[-1] == ("ap1", True, "chat", "") and approvals.count == 0
+    assert app.client.answers[-1] == ("ap3", True, "chat", "") and approvals.count == 0 and cards[-1] == (None, 0)
     approvals._pending = [{**APPROVAL, "id": "gone"}]
     approvals.answer("gone", True, "once", "")
     wait_until(lambda: not app.bg.busy)
@@ -2882,9 +3017,14 @@ def test_the_window_notifies_about_requests_and_runs(qapp):
             ("Claude Code ждёт подтверждения", "Править hub/chat.py · LocalChat"),
             ("Агент «Ревьюер»: готово", "Проверь hub/chat.py"),
         ]
+        app.setMode("projects")
+        quick.notifier.opened.emit()  # the notice clicked: the window comes forward with that chat and its card
+        assert app.mode == "chats" and app.current == "other"
+        wait_until(lambda: app.approvals.cardCount == 1 and not app.bg.busy)
         opened = []
         app.uiRequested.connect(opened.append)
-        quick.notifier.opened.emit()  # the notice clicked: the window comes forward with the queue
+        send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap10", "conversation_id": None}})
+        quick.notifier.opened.emit()  # a request with no chat: the shield's list, where its card is
         assert opened == ["approvals"]
     finally:
         quick.close()

@@ -124,7 +124,7 @@ class QuickApp:
             QTimer.singleShot(0, self.controller.connectHub)
 
     def _front(self) -> None:
-        """A notice was clicked: the window comes forward with the approval queue."""
+        """A notice was clicked: the window comes forward with the chat whose request it was (its card on top)."""
         if self.window is None:
             return
         if self.window.visibility() == QWindow.Visibility.Minimized:
@@ -132,8 +132,7 @@ class QuickApp:
         self.window.show()
         self.window.raise_()
         self.window.requestActivate()
-        if self.controller.approvals.count:
-            self.controller.uiRequested.emit("approvals")
+        self.controller.approvals.show_latest()
 
     def _warned(self, warnings) -> None:
         for warning in warnings:

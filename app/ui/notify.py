@@ -1,6 +1,7 @@
 """Notices outside the window (stage 5, D21): a tray icon, and a Windows notification when an agent waits for the
 user's answer or finishes its task while the window is not in front. Clicking the notification (or the icon) brings
-the window forward and shows the approval queue. With no system tray (or offscreen) nothing is shown.
+the window forward with the chat that waits (its approval card on top). With no system tray (or offscreen) nothing
+is shown.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ def tray_icon(name: str = "shield", colour: str = "#4f8cff", side: int = 64) -> 
 class Notifier(QObject):
     """The tray icon and its notifications. `active` says whether the window is in front now."""
 
-    opened = Signal()  # the user clicked a notice or the icon: show the window and the queue
+    opened = Signal()  # the user clicked a notice or the icon: show the window and the chat that waits
 
     def __init__(self, active: Callable[[], bool], parent: QObject | None = None):
         super().__init__(parent)

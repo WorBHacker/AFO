@@ -7,10 +7,13 @@ ListView {
     readonly property int column: Math.min(780, width - 48)
     property bool follow: true
     property bool autoScroll: false
+    property real reserve: 0  // the approval card's room at the top: the first messages scroll out from under it
 
     model: App.messageModel
     spacing: 28
-    topMargin: 28
+    topMargin: 28 + reserve
+    // a conversation shorter than the view sits below the card; a longer one stays where it is
+    onTopMarginChanged: if (contentHeight + topMargin + bottomMargin <= height) contentY = -topMargin
     bottomMargin: 24
     clip: true
     // rows this far out of view stay laid out, so their heights are real: a list of estimates moves under the reader

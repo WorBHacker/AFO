@@ -89,7 +89,7 @@ Item {
             iconName: "shield"
             implicitWidth: 38
             tint: Theme.p.warn
-            tip: "Подтверждения: ждут ответа " + Approvals.count + " (Ctrl+Shift+A)"
+            tip: "Ждут подтверждения: " + Approvals.count + " — кто ждёт (Ctrl+Shift+A)"
             onClicked: bar.approvalsRequested()
             Rectangle {
                 x: parent.width - width - 4

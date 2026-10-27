@@ -20,9 +20,11 @@ Popup {
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 140 } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 100 } }
 
-    // from Programs itself: this handler may run before `current` and `offering` follow the same signal
+    // from Programs itself: this handler may run before `current` and `offering` follow the same signal. While the
+    // open chat's approval card is up, the question waits: that chat stands still, a program does not
     function follow() {
-        if (Programs.pending.length > 0 || Programs.offer > 0)
+        const card = Approvals.cardCount > 0 && App.mode === "chats"
+        if ((Programs.pending.length > 0 || Programs.offer > 0) && !card)
             open()
         else
             close()
@@ -30,6 +32,14 @@ Popup {
     Connections {
         target: Programs
         function onPendingChanged() { popup.follow() }
+    }
+    Connections {
+        target: Approvals
+        function onHereChanged() { popup.follow() }
+    }
+    Connections {
+        target: App
+        function onModeChanged() { popup.follow() }
     }
     Component.onCompleted: follow()
 

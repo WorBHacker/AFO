@@ -33,7 +33,7 @@ include = ["hub*", "app*", "common*"]
 [tool.ruff]
 line-length = 120
 target-version = "py314"
-extend-exclude = ["localchat", "data"]
+extend-exclude = ["data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]

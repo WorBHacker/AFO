@@ -23,7 +23,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("models", "Выбрать модель…", "cpu", "", False),
     ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),
     ("feed", "Лента событий", "activity", "Ctrl E", False),
-    ("approvals", "Подтверждения", "shield", "Ctrl Shift A", False),
+    ("approvals", "Подтверждения: кто ждёт", "shield", "Ctrl Shift A", False),
     ("agents", "Агенты", "agent", "Ctrl Shift G", False),
     ("programs", "Программы для агента…", "shield", "", False),
     ("settings", "Настройки…", "sliders", "Ctrl ,", False),
