@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import agent_tools, autonomous, memory, store
+from . import agent_tools, autonomous, computer, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -220,7 +220,7 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + (outside or []) if goal else []
+    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + computer.TOOLS + (outside or []) if goal else []
     tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
@@ -440,6 +440,8 @@ class AgentRunner:
             self._gpu.release()
         totals = outcome.totals
         status = outcome.status if outcome.status in ("done", "error", "cancelled") else "done"
+        if self._chat.computer is not None:  # its hold on the desktop goes with it (D41)
+            await self._chat.computer.release(run_id)
         autonomy = self._chat.autonomy
         if autonomy is not None:
             await autonomy.expire_all(run_id)  # its questions: nobody waits for the answers now

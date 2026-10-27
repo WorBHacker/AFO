@@ -182,6 +182,7 @@ Window {
     MemorySheet { id: memorySheet }
     AgentAccessSheet { id: accessSheet }
     NewProgramPopup {}
+    ComputerFrame {}  // the agent at the desktop: its frame and «Стоп» (D41)
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 

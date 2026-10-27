@@ -21,6 +21,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from common import __version__
 
+from ..auth import APP_CLIENT
 from ..db import utc_now
 from ..events import EventBus, Subscription
 from .deps import client_from_headers
@@ -63,6 +64,9 @@ async def events(websocket: WebSocket) -> None:
         }
     )
     log.info("events: client %s connected", client.name)
+    window = client.name == APP_CLIENT  # the desktop app: it draws the agent's frame and «stop» (D41)
+    if window:
+        websocket.app.state.app_windows = getattr(websocket.app.state, "app_windows", 0) + 1
     sender = asyncio.create_task(_send_live(websocket, stream))
     try:
         while True:
@@ -85,6 +89,8 @@ async def events(websocket: WebSocket) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await sender
         bus.unsubscribe(stream.subscription)
+        if window:
+            websocket.app.state.app_windows -= 1
         log.info("events: client %s disconnected", client.name)
 
 

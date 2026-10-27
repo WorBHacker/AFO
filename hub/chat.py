@@ -51,6 +51,7 @@ from . import (
     cards,
     changes,
     commands,
+    computer,
     context,
     limits,
     links,
@@ -88,7 +89,14 @@ CHAT_TOOLS = [
 ]  # a new chat's; older keep theirs
 # what only looks: an autonomous run may use it before its plan (the hub's reading tools, the web)
 READING = frozenset(
-    {*(t["name"] for t in TOOLS), web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], "folder_list", "folder_read"}
+    {
+        *(t["name"] for t in TOOLS),
+        web.WEB_FETCH["name"],
+        websearch.WEB_SEARCH["name"],
+        "folder_list",
+        "folder_read",
+        *computer.READING,
+    }
 )
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 
@@ -111,6 +119,7 @@ class ChatService:
         self.autonomy: autonomous.Autonomy | None = None  # set by the server: the autonomous agent's tools (9.1)
         self.toolbox: agent_tools.AgentToolbox | None = None  # its folders, scripts, requests, notices (9.4)
         self.mcp: mcp_client.McpServers | None = None  # outside MCP servers' tools (9.5, D42)
+        self.computer: computer.Computer | None = None  # the autonomous agent's hands on the desktop (9.6, D41)
 
     @property
     def busy(self) -> list[str]:
@@ -625,6 +634,13 @@ class ChatService:
                     return None if allowed else said
 
                 output, error = await self.toolbox.handle(conversation_id, call, cancel, ask)
+            elif call["name"] in computer.TOOL_NAMES and self.computer is not None:  # the desktop (9.6, D41)
+
+                async def ask(tool, shown, cover, call=call):
+                    allowed, said = await self._ask_user(conversation_id, tool, shown, None, cancel, cover=cover)
+                    return None if allowed else said
+
+                output, error = await self.computer.handle(conversation_id, call, cancel, ask)
             elif outside:  # an outside MCP server's (9.5, D42)
                 output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)

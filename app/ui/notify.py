@@ -38,11 +38,15 @@ class Notifier(QObject):
         self._active = active
         self.shown: list[tuple[str, str]] = []  # what was notified (tests read it; the tray may be absent)
         self.tray: QSystemTrayIcon | None = None
+        self.stop_shown = False
+        self._stop_agent: Callable[[], None] | None = None  # while the agent controls the computer (D41)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(tray_icon(), self)
             self.tray.setToolTip("LocalChat")
             menu = QMenu()
             menu.addAction("Открыть LocalChat", self.opened.emit)
+            self._stop = menu.addAction("Остановить агента (управляет компьютером)", self._stop_now)
+            self._stop.setVisible(False)
             self.tray.setContextMenu(menu)
             self._menu = menu  # kept: the tray does not own it
             self.tray.activated.connect(self._clicked)
@@ -57,6 +61,17 @@ class Notifier(QObject):
         if self.tray is not None:
             self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, SHOW_MS)
         return True
+
+    def show_stop(self, shown: bool, stop: Callable[[], None]) -> None:
+        """The tray's «stop» for the agent at the desktop (D41): there while it acts."""
+        self.stop_shown = shown
+        self._stop_agent = stop if shown else None
+        if self.tray is not None:
+            self._stop.setVisible(shown)
+
+    def _stop_now(self) -> None:
+        if self._stop_agent is not None:
+            self._stop_agent()
 
     def _clicked(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):

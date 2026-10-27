@@ -25,6 +25,7 @@ from .agents import Agents
 from .approvals import Approvals
 from .autonomy import AutonomyView
 from .composer import Mentions
+from .computer_view import ComputerView
 from .connections import Connections
 from .feed import Feed
 from .mcp_view import McpView
@@ -166,6 +167,7 @@ class Controller(QObject):
         self.autonomy_view.selectionChanged.connect(self.approvals._refresh)  # its approvals card follows the task
         self.memory_view = MemoryView(self)  # the agent's memory: facts and skills (stage 9.3)
         self.mcp_view = McpView(self)  # outside MCP servers, a section of Connections (9.5, D42)
+        self.computer_view = ComputerView(self)  # the agent at the desktop: frame and «Стоп» (9.6, D41)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -1176,6 +1178,8 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind.startswith("computer."):
+            self.computer_view.on_event(kind, payload)
         elif kind.startswith("mcp."):
             self.mcp_view.on_event(kind, payload)
         elif kind.startswith("memory."):

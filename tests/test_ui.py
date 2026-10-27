@@ -3852,3 +3852,43 @@ def test_outside_mcp_servers_in_connections(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_agent_at_the_desktop_frame_and_stop(qapp):
+    from PySide6.QtCore import QObject
+
+    from app.ui.computer_view import logical_rect
+    from app.ui.main import QuickApp
+
+    screens = [(0, 0, 1280, 720, 1.5), (1920, 0, 1920, 1080, 1.0)]  # a 150% laptop, a 100% monitor to its right
+    assert logical_rect(300, 150, 600, 450, screens) == [200, 100, 400, 300]
+    assert logical_rect(2000, 100, 800, 600, screens) == [2000, 100, 800, 600]
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.computer_view
+        frame = quick.window.findChild(QObject, "agentFrame")
+        bar = quick.window.findChild(QObject, "agentBar")
+        assert frame is not None and bar is not None and not frame.property("visible")
+        window = {"id": 42, "title": "Тестовое окно агента", "rect": [100, 120, 360, 420]}
+        control = {"run_id": "r1", "window": window, "program": "Python (тест)", "action": "type"}
+        app.on_event({"type": "computer.control", "payload": control})
+        assert view.active and view.text == "Агент управляет компьютером · Python (тест)"
+        wait_until(lambda: frame.property("visible") and bar.property("visible"))
+        assert quick.notifier.stop_shown
+        view.stop()
+        wait_until(lambda: ("cancel_run", "r1") in client.log)
+        assert app.flashText.startswith("Агент остановлен")
+        app.on_event({"type": "computer.released", "payload": {"run_id": "r1"}})
+        assert not view.active and not quick.notifier.stop_shown
+        wait_until(lambda: not frame.property("visible"))
+        app.on_event({"type": "computer.paused", "payload": {"run_id": "r1", "why": "person"}})
+        assert app.flashText.startswith("Агент ждёт")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

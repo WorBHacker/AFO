@@ -18,6 +18,7 @@ from shiboken6 import Shiboken
 from common.paths import DataPaths
 
 from . import snap
+from .computer_view import install_stop_key
 from .controller import Controller
 from .icons import IconProvider
 from .notify import Notifier
@@ -109,6 +110,7 @@ class QuickApp:
         context.setContextProperty("Autonomy", self.controller.autonomy_view)
         context.setContextProperty("Memory", self.controller.memory_view)
         context.setContextProperty("Mcp", self.controller.mcp_view)
+        context.setContextProperty("AgentScreen", self.controller.computer_view)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))
@@ -118,6 +120,7 @@ class QuickApp:
         self.window: QWindow | None = roots[0]
         native_frame_touches(self.window)
         self.snap = snap.install(app, self.window)  # Windows' snapping to edges and corners, Win+arrows
+        self.stop_key = install_stop_key(app, self.window, self.controller.computer_view)  # Ctrl+Alt+End (D41)
         restore_geometry(self.window, self.settings)
         # notices outside the window (D21): an agent waits for an answer, or finished, while the window is behind
         self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
@@ -126,6 +129,8 @@ class QuickApp:
         self.controller.programs.requested.connect(self.notifier.notify)  # the question waits in the window
         self.controller.autonomy_view.asked.connect(self.notifier.notify)  # an agent's question waits too
         self.notifier.opened.connect(self._front)
+        view = self.controller.computer_view  # «Стоп» in the tray's menu too, while the agent acts (D41)
+        view.changed.connect(lambda: self.notifier.show_stop(view.active, view.stop))
         app.aboutToQuit.connect(self.close)
         if connect:
             QTimer.singleShot(0, self.controller.connectHub)

@@ -53,6 +53,7 @@ from .autonomous import Autonomy
 from .backup import DailyBackup
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
+from .computer import Computer, prune, vision_eyes
 from .connections import ConnectionLock
 from .db import Database, migrate
 from .editor import Editor
@@ -106,6 +107,14 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
         app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox")
         app.state.mcp = app.state.chat.mcp = McpServers(db, bus, secrets_store)  # outside MCP servers (9.5, D42)
+        app.state.computer = app.state.chat.computer = Computer(  # the agent's hands on the desktop (9.6, D41)
+            db,
+            bus,
+            paths.root / "computer",
+            see=vision_eyes(db, gateway),
+            still_running=lambda run: run in app.state.chat.busy,
+            watched=lambda: getattr(app.state, "app_windows", 0) > 0,  # the window draws the frame and «stop»
+        )
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
@@ -134,6 +143,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        await asyncio.to_thread(prune, paths.root / "computer")  # snapshots past their term (D30)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
             log.info("open questions of autonomous runs expired")
@@ -151,6 +161,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             with contextlib.suppress(asyncio.CancelledError):
                 await servers
             await app.state.mcp.stop()
+            app.state.computer.close()
             with contextlib.suppress(asyncio.CancelledError):
                 await catalog
             await app.state.status.stop()

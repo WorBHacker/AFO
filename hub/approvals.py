@@ -32,6 +32,7 @@ from .events import EventBus
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
 WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
 NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_request"}
+SCREEN_TOOLS = {"screen_act", "screen_send"}  # the autonomous agent at the desktop (9.6, D41)
 # read-only commands asked of no one (Q2's first list): they show, they never change
 SAFE_COMMANDS = {f"run_command:{c}" for c in ("git status", "git diff", "git diff --stat", "git log --oneline",
                                               "git log --oneline -20", "git branch", "dir", "ls", "pwd")}  # fmt: skip
@@ -79,13 +80,18 @@ class Decision:
 
 def kind(tool: str) -> str:
     """command, write, network or other - how the app shows the request."""
-    if tool in COMMAND_TOOLS:
+    if tool in COMMAND_TOOLS or tool in SCREEN_TOOLS:
         return "command"
     if tool in WRITE_TOOLS:
         return "write"
     if tool in CLASSED:
         return CLASS_KINDS[CLASSED[tool]]
     return "network" if tool in NETWORK_TOOLS else "other"
+
+
+def sends(tool: str) -> bool:
+    """What goes out in the person's name: asked every time (D41), an MCP tool of the class "send" (D42) too."""
+    return tool == "screen_send" or CLASSED.get(tool) == "send"
 
 
 def destructive(tool: str, data: dict[str, Any]) -> bool:
@@ -103,8 +109,10 @@ def network(tool: str, data: dict[str, Any]) -> bool:
 def grant_key(tool: str, data: dict[str, Any]) -> str | None:
     """What an answer "for this chat" covers; None when nothing may be covered so (a destructive command, or one
     that reaches the network)."""
-    if destructive(tool, data) or network(tool, data):
+    if destructive(tool, data) or network(tool, data) or sends(tool):
         return None
+    if tool == "screen_act":  # "for this task" covers this program, not the desktop
+        return f"screen_act:{data.get('program', '')}"
     if tool in COMMAND_TOOLS:
         return f"{tool}:{' '.join(str(data.get('command', '')).split())}"
     if CLASSED.get(tool) == "command":  # an MCP server's command: the same input only
@@ -151,6 +159,33 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
     if tool == "remember":  # personal data the agent wants to keep for good (Q24)
         return {"kind": "text", "text": str(data.get("fact", "")),
                 "note": "личные данные: хранятся на этом компьютере, облачной модели не выдаются"}  # fmt: skip
+    if tool in SCREEN_TOOLS:  # the agent at the desktop (D41): which program, window, what
+        what = {
+            "open": "открыть программу",
+            "click": "нажать",
+            "type": "ввести",
+            "toggle": "переключить",
+            "select": "выбрать",
+            "expand": "раскрыть",
+            "collapse": "свернуть",
+            "scroll": "прокрутить",
+            "keys": "клавиши",
+            "focus": "вывести окно вперёд",
+        }.get(str(data.get("action")), data.get("action"))
+        lines = [
+            f"{what}"
+            + (f" «{data['element']}»" if data.get("element") else "")
+            + (f": {data['keys']}" if data.get("keys") else "")
+        ]
+        if data.get("text"):
+            lines.append(f"текст: {data['text']}")
+        place = f"«{data.get('program', '')}»" + (f" · окно «{data['window']}»" if data.get("window") else "")
+        note = (
+            "отправка от вашего имени — спрашивается каждый раз"
+            if tool == "screen_send"
+            else ("управление компьютером: «для этой задачи» — в этой программе")
+        )
+        return {"kind": "text", "text": _cut("\n".join(lines)), "note": f"{place} · {note}"}
     if tool == "start_step":
         return {"kind": "text", "text": f"{data.get('step')}. {data.get('title', '')}",
                 "note": f"проверка: {data.get('check')}" if data.get("check") else ""}  # fmt: skip
