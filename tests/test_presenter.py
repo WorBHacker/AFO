@@ -55,7 +55,7 @@ def test_status_line_and_commit_warning():
     }
     line = presenter.status_text(status)
     assert "VRAM 14.7/15.9 ГБ · 12% · 41°C" in line
-    assert "выделено 76/79 ГБ" in line
+    assert "ОЗУ 44.5/63.4 ГБ, выделено 76/79 ГБ" in line
     assert "загружена: coder (готова)" in line
     assert presenter.commit_is_tight(status)
     status["memory"]["commit_used_gib"] = 60.0

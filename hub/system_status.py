@@ -33,6 +33,16 @@ class _NvmlMemory(ctypes.Structure):
     _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
 
 
+class _NvmlMemoryV2(ctypes.Structure):
+    """v2 counts the driver's reserved memory apart: `used` is then what nvidia-smi calls used."""
+
+    _fields_ = [("version", ctypes.c_uint), ("total", ctypes.c_ulonglong), ("reserved", ctypes.c_ulonglong),
+                ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]  # fmt: skip
+
+
+NVML_MEMORY_V2 = ctypes.sizeof(_NvmlMemoryV2) | (2 << 24)  # NVML_STRUCT_VERSION(Memory, 2)
+
+
 class _NvmlUtilization(ctypes.Structure):
     _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
@@ -57,11 +67,22 @@ class GpuProbe:
         except OSError as exc:
             log.info("no NVML (%s); GPU status is not shown", exc)
 
+    def _memory(self) -> _NvmlMemory | _NvmlMemoryV2 | None:
+        """VRAM as nvidia-smi shows it (v2: without the driver's reserve); v1 on a driver without v2."""
+        memory = _NvmlMemoryV2(version=NVML_MEMORY_V2)
+        try:
+            if self._nvml.nvmlDeviceGetMemoryInfo_v2(self._handle, ctypes.byref(memory)) == 0:
+                return memory
+        except AttributeError:
+            pass
+        older = _NvmlMemory()
+        return older if self._nvml.nvmlDeviceGetMemoryInfo(self._handle, ctypes.byref(older)) == 0 else None
+
     def sample(self) -> dict[str, Any] | None:
         if self._nvml is None:
             return None
-        memory = _NvmlMemory()
-        if self._nvml.nvmlDeviceGetMemoryInfo(self._handle, ctypes.byref(memory)) != 0:
+        memory = self._memory()
+        if memory is None:
             return None
         utilization = _NvmlUtilization()
         util_ok = self._nvml.nvmlDeviceGetUtilizationRates(self._handle, ctypes.byref(utilization)) == 0

@@ -118,7 +118,8 @@ def status_text(status: dict[str, Any] | None) -> str:
     memory = status.get("memory")
     if memory:
         parts.append(
-            f"ОЗУ {memory['ram_used_gib']:.0f}/{memory['ram_total_gib']:.0f} ГБ, "
+            # tenths: whole numbers showed 63/63 - "full" - for 62.5 of 63.4
+            f"ОЗУ {memory['ram_used_gib']:.1f}/{memory['ram_total_gib']:.1f} ГБ, "
             f"выделено {memory['commit_used_gib']:.0f}/{memory['commit_limit_gib']:.0f} ГБ"
         )
     local = status.get("local") or {}

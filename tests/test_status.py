@@ -1,6 +1,7 @@
 """System status (GPU, memory, llama-swap) and freeing the GPU."""
 
 import asyncio
+import ctypes
 
 import httpx
 from starlette.testclient import TestClient
@@ -8,7 +9,7 @@ from starlette.testclient import TestClient
 from common.paths import data_paths
 from hub.server import create_app
 from hub.settings import HubSettings
-from hub.system_status import GpuProbe, StatusMonitor, llama_swap_sample, memory_sample
+from hub.system_status import GIB, MIB, GpuProbe, StatusMonitor, llama_swap_sample, memory_sample
 
 BASE = "http://127.0.0.1:8765"
 
@@ -76,3 +77,43 @@ def test_status_and_unload_endpoints():
         unload = hub.post("/v1/models/unload", headers=headers)
         assert unload.status_code == 502  # llama-swap is not there
         assert "llama-swap" in unload.json()["detail"]
+
+
+class FakeNvml:
+    """Fills NVML's structures like the driver: 16 GiB, 0.3 GiB reserved, 14.5 GiB used besides."""
+
+    def __init__(self, v2=True):
+        self.v2 = v2
+
+    def nvmlDeviceGetMemoryInfo_v2(self, handle, ref):
+        if not self.v2:
+            raise AttributeError("an old driver")
+        memory = ref._obj
+        assert memory.version == (ctypes.sizeof(memory) | (2 << 24))
+        memory.total, memory.reserved, memory.used = 16 * GIB, 300 * MIB, 14_848 * MIB
+        memory.free = memory.total - memory.reserved - memory.used
+        return 0
+
+    def nvmlDeviceGetMemoryInfo(self, handle, ref):
+        memory = ref._obj
+        memory.total, memory.used = 16 * GIB, 15_148 * MIB  # v1: the reserve counts as used
+        memory.free = memory.total - memory.used
+        return 0
+
+    def nvmlDeviceGetUtilizationRates(self, handle, ref):
+        ref._obj.gpu = 9
+        return 0
+
+    def nvmlDeviceGetTemperature(self, handle, sensor, ref):
+        ref._obj.value = 33
+        return 0
+
+
+def test_vram_is_counted_as_nvidia_smi_counts_it():
+    probe = GpuProbe.__new__(GpuProbe)
+    probe.name, probe._handle = "RTX", ctypes.c_void_p()
+    probe._nvml = FakeNvml()
+    assert probe.sample() == {"name": "RTX", "vram_used_mib": 14_848, "vram_total_mib": 16_384, "util_pct": 9,
+                              "temp_c": 33}  # fmt: skip
+    probe._nvml = FakeNvml(v2=False)  # an older driver: the old count
+    assert probe.sample()["vram_used_mib"] == 15_148
