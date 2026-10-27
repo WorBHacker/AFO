@@ -272,10 +272,10 @@ class ChatService:
         for step in range(limits.max_steps + 2):
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             prompt = _to_prompt(history, cloud=cloud)
-            # the tool list never changes within a conversation (D14): Claude always has it, others from the
-            # first context on - the definitions it was first sent, even after the hub's tools changed
-            has_context = any(m.role == "system" for m in history)
-            if tools is None and (getattr(provider, "tools_always", False) or has_context):
+            # the tool list never changes within a conversation (D14), and every model has it from the first message:
+            # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
+            # even after the hub's tools changed
+            if tools is None:
                 tools = await self._db.acall(
                     lambda conn: store.conversation_tools(conn, conversation_id, CHAT_TOOLS, FIRST_TOOLS)
                 )

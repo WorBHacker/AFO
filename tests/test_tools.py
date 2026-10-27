@@ -280,10 +280,12 @@ def test_the_tool_loop(hub, repo):
     assert second_context["role"] == "system" and keys == ["header", f"live:{pid}", "tools"]
 
 
-def test_no_projects_no_tools_and_cloud_models_see_only_cloud_projects(hub, repo):
+def test_a_chat_without_projects_has_tools_and_cloud_models_see_only_cloud_projects(hub, repo):
     provider = ToolProvider([])
     run_chat(hub, provider)
-    assert provider.calls[0][1] is None and [m["role"] for m in provider.calls[0][0]] == ["user"]  # an ordinary chat
+    messages, tools = provider.calls[0]
+    assert [m["role"] for m in messages] == ["user"]  # an ordinary chat: no context
+    assert {"web_search", "web_fetch"} <= {t["name"] for t in tools}  # but the web tools, local model or not (D19)
 
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local only by default
     cloud = ToolProvider([], locality="cloud")
