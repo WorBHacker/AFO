@@ -103,6 +103,9 @@ class Terminals(QObject):
         self._project = ""
         self._cols, self._rows = 120, 30
         self._shown = (0, 0)  # scrollback lines and screen lines in the line model now
+        self._shown_base = 0  # the scrollback lines let go before the first one in the line model
+        self._behind = False  # the open terminal had output while the panel was hidden: shown when it shows
+        app.modeChanged.connect(self._catch_up)
         self._open = str(app.settings.value("terminals/open", "false")) == "true"
         self._height = int(app.settings.value("terminals/height", 300))
         self._sender = Background(self, threads=1)  # keys go out one after another, in order
@@ -181,6 +184,17 @@ class Terminals(QObject):
                 running = [t for t in self.tabs if t["running"]]
                 if running:
                     self.openTerminal(running[0]["id"])
+            self._catch_up()
+
+    def _visible(self) -> bool:
+        """The panel shows (QML: projects mode, a project open, the panel open)."""
+        return self._open and self.app.mode == "projects"
+
+    def _catch_up(self) -> None:
+        emu = self._emus.get(self._current)
+        if self._behind and emu is not None and self._visible():
+            self._behind = False
+            self._show(emu)
 
     @Slot(int)
     def setPanelHeight(self, height: int) -> None:
@@ -371,7 +385,10 @@ class Terminals(QObject):
                 return
             news = self._feed(emu, payload["offset"], payload["data"])
             if news and payload["terminal_id"] == self._current:
-                self._update(emu)
+                if self._visible():
+                    self._update(emu)
+                else:
+                    self._behind = True  # up to 33 outputs a second: a hidden panel does not lay them out
         elif kind == "terminal.started":
             info = payload.get("terminal") or {}
             if info.get("project_id") == self._project and info.get("id") not in self._infos:
@@ -409,20 +426,39 @@ class Terminals(QObject):
         rows = [{"key": f"h{base + i}", "html": text} for i, text in enumerate(screen.scrolled)]
         rows += [{"key": f"s{y}", "html": screen.html(y)} for y in range(screen.lines)]
         self.lines.sync(rows)
-        self._shown = (len(screen.scrolled), screen.lines)
+        self._shown, self._shown_base = (len(screen.scrolled), screen.lines), base
+        self._behind = False
         self.cursorChanged.emit()
 
     def _update(self, emu: _Emu) -> None:
-        """Only what changed: new scrollback lines go in before the screen, changed screen lines are redrawn."""
+        """Only what changed: scrollback lines let go at the top are removed, new ones go in before the screen,
+        changed screen lines are redrawn. A full scrollback (3000 lines) lets lines go on every output: laying it
+        all out again then rebuilt every row each time."""
         screen = emu.screen
         news, dirty = screen.take_news()
-        history = len(screen.scrolled)
-        if news or self._shown != (history, screen.lines):
-            self._show(emu)  # scrolled, trimmed or resized: lay it out again (rows that stay are kept)
+        history, base = len(screen.scrolled), screen.dropped
+        shown_history, shown_lines = self._shown
+        gone = base - self._shown_base
+        kept = shown_history - gone
+        if (
+            shown_lines != screen.lines
+            or not 0 <= gone <= shown_history
+            or history < kept
+            or len(self.lines.rows) != (shown_history + shown_lines)
+        ):
+            self._show(emu)  # resized, or not what was shown: lay it out again (rows that stay are kept)
             return
-        for y in sorted(dirty):
+        if gone:
+            self.lines.remove(0, gone)
+        if history > kept:
+            added = [{"key": f"h{base + i}", "html": screen.scrolled[i]} for i in range(kept, history)]
+            self.lines.insert(kept, added)
+        self._shown, self._shown_base = (history, screen.lines), base
+        for y in sorted(set(range(screen.lines)) if news else dirty):  # scrolled: every screen line moved up
             if y < screen.lines:
-                self.lines.update(history + y, html=screen.html(y))
+                html = screen.html(y)
+                if self.lines.rows[history + y]["html"] != html:
+                    self.lines.update(history + y, html=html)
         self.cursorChanged.emit()
 
     def _restyle(self) -> None:

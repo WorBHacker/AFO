@@ -107,3 +107,21 @@ def test_app_entry_point_builds_the_window(env, isolated_data_dir):
     log_text = (isolated_data_dir / "logs" / "app.log").read_text(encoding="utf-8")
     assert "LocalChat app" in log_text
     assert "the window was built" in log_text
+
+
+def test_a_native_crash_of_the_window_leaves_a_trace(env, isolated_data_dir):
+    """A crash inside Qt has no Python traceback: the stacks go to app-crash.log, Qt's warnings to app.log."""
+    code = (
+        "import faulthandler\n"
+        "from PySide6.QtCore import qWarning\n"
+        "from app.__main__ import watch_for_crashes\n"
+        "from common.logging_setup import setup_logging\n"
+        "watch_for_crashes(setup_logging('app', console=False))\n"
+        "qWarning('QObject: a warning from Qt')\n"
+        "faulthandler._sigsegv()\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], cwd=PROJECT_ROOT, env=env, capture_output=True, timeout=60)
+    assert result.returncode != 0
+    logs = isolated_data_dir / "logs"
+    assert "Segmentation fault" in (logs / "app-crash.log").read_text(encoding="utf-8")
+    assert "app.qt: QObject: a warning from Qt" in (logs / "app.log").read_text(encoding="utf-8")

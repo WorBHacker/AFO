@@ -10,6 +10,7 @@ Sheet {
     iconName: "edit"
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
     property bool fromDraft: false
+    readonly property var card: Projects.card  // one copy per change, not one per binding
 
     function openWith(text, draft) {
         fromDraft = draft
@@ -22,19 +23,19 @@ Sheet {
         wrapMode: Text.Wrap
         lineHeight: 1.3
         text: sheet.fromDraft
-              ? "Черновик от модели «" + Projects.card.draftModel + "». Проверьте факты, поправьте и подтвердите — карточка "
+              ? "Черновик от модели «" + sheet.card.draftModel + "». Проверьте факты, поправьте и подтвердите — карточка "
                 + "станет тем, что модели узнают о проекте первым делом."
-              : "Сейчас — версия " + Projects.card.version + ". Подтверждённая правка станет новой версией; старые остаются."
+              : "Сейчас — версия " + sheet.card.version + ". Подтверждённая правка станет новой версией; старые остаются."
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
     Text {
         objectName: "cardChangedSections"
-        visible: sheet.fromDraft && Projects.card.confirmed && Projects.card.changedSections.length > 0
+        visible: sheet.fromDraft && sheet.card.confirmed && sheet.card.changedSections.length > 0
         width: parent.width
         wrapMode: Text.Wrap
-        text: "По сравнению с версией " + Projects.card.version + " изменены разделы: " + Projects.card.changedSections.join(", ")
+        text: "По сравнению с версией " + sheet.card.version + " изменены разделы: " + sheet.card.changedSections.join(", ")
         color: Theme.p.accent
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -84,9 +85,9 @@ Sheet {
         }
     }
 
-    SectionTitle { visible: Projects.card.versions.length > 0; text: "Версии" }
+    SectionTitle { visible: sheet.card.versions.length > 0; text: "Версии" }
     Repeater {
-        model: Projects.card.versions
+        model: sheet.card.versions
         delegate: Item {
             id: version
             required property var modelData
@@ -96,12 +97,12 @@ Sheet {
                 anchors.verticalCenter: parent.verticalCenter
                 text: "версия " + version.modelData.version + " · " + version.modelData.when
                       + (version.modelData.model_id ? " · черновик " + version.modelData.model_id : " · вручную")
-                color: version.modelData.version === Projects.card.version ? Theme.p.text : Theme.p.text_soft
+                color: version.modelData.version === sheet.card.version ? Theme.p.text : Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 13
             }
             PlainButton {
-                visible: version.modelData.version !== Projects.card.version
+                visible: version.modelData.version !== sheet.card.version
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Вернуть"

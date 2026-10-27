@@ -60,13 +60,38 @@ Column {
         rowIndex: answer.rowIndex
     }
 
+    // The pieces live in a ListModel that changes only where the answer did: while an answer streams, its new
+    // text re-renders the last piece alone. A Repeater over the plain list would rebuild every piece on each tick.
+    property var segments: answer.row?.segments || []
+    onSegmentsChanged: syncSegments()
+    Component.onCompleted: syncSegments()
+    function syncSegments() {
+        const list = answer.segments
+        for (let i = 0; i < list.length; ++i) {
+            const piece = list[i]
+            if (i >= pieces.count) {
+                pieces.append(piece)
+                continue
+            }
+            const old = pieces.get(i)
+            if (old.kind !== piece.kind || old.html !== piece.html || old.code !== piece.code || old.lang !== piece.lang)
+                pieces.set(i, piece)
+        }
+        if (pieces.count > list.length)
+            pieces.remove(list.length, pieces.count - list.length)
+    }
+    ListModel { id: pieces }
+
     Repeater {
-        model: answer.row?.segments || []
+        model: pieces
         delegate: Loader {
-            required property var modelData
+            required property string kind
+            required property string lang
+            required property string html
+            required property string code
             width: answer.width
-            sourceComponent: modelData.kind === "code" ? codeSegment : proseSegment
-            onLoaded: item.info = Qt.binding(() => modelData)
+            sourceComponent: kind === "code" ? codeSegment : proseSegment
+            onLoaded: item.info = Qt.binding(() => ({ kind, lang, html, code }))
         }
     }
     Component { id: proseSegment; Prose { width: parent ? parent.width : 0 } }

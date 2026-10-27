@@ -10,6 +10,12 @@ Item {
     signal cardEditRequested(string text, bool draft)
     signal exportRequested(Item anchor)
 
+    // one copy each from Python per change: every `Projects.file.x` would convert the whole file (text and HTML)
+    readonly property var file: Projects.file
+    readonly property var git: Projects.git
+    readonly property var links: Projects.links
+    readonly property var outline: Projects.outline
+
     // ---------- no project ----------
 
     Column {
@@ -51,7 +57,7 @@ Item {
     Flickable {
         id: overview
         objectName: "projectOverview"
-        visible: Projects.currentId !== "" && !Projects.file.path
+        visible: Projects.currentId !== "" && !view.file.path
         anchors.fill: parent
         contentHeight: page.height + 56
         clip: true
@@ -190,7 +196,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     name: "branch"
                     size: 18
-                    tint: Projects.git.repo ? Theme.p.accent : Theme.p.faint
+                    tint: view.git.repo ? Theme.p.accent : Theme.p.faint
                 }
                 Column {
                     x: 46
@@ -199,7 +205,7 @@ Item {
                     spacing: 2
                     Text {
                         width: parent.width
-                        text: Projects.git.repo === undefined ? "Читаю git…" : Projects.git.summary
+                        text: view.git.repo === undefined ? "Читаю git…" : view.git.summary
                         elide: Text.ElideRight
                         color: Theme.p.text
                         font.family: Theme.uiFont
@@ -207,7 +213,7 @@ Item {
                     }
                     Text {
                         width: parent.width
-                        visible: Projects.git.repo === false
+                        visible: view.git.repo === false
                         text: "Дерево без служебных папок (node_modules, .venv, кэши); с git — по .gitignore."
                         elide: Text.ElideRight
                         color: Theme.p.faint
@@ -555,8 +561,8 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         implicitHeight: 26
                         iconName: "search"
-                        enabled: !Projects.links.scanning
-                        text: Projects.links.scanning ? "Ищу…" : "Найти связи"
+                        enabled: !view.links.scanning
+                        text: view.links.scanning ? "Ищу…" : "Найти связи"
                         onClicked: Projects.scanLinks()
                         ToolTip.visible: hovered
                         ToolTip.delay: 600
@@ -564,7 +570,7 @@ Item {
                     }
                 }
                 Text {
-                    visible: Projects.links.confirmed.length === 0 && Projects.links.proposed.length === 0
+                    visible: view.links.confirmed.length === 0 && view.links.proposed.length === 0
                     width: parent.width
                     wrapMode: Text.Wrap
                     text: "Связей нет. Хаб поищет улики — зависимости, пути, порты — и предложит, а вы подтвердите."
@@ -573,7 +579,7 @@ Item {
                     font.pixelSize: 12
                 }
                 Repeater {
-                    model: Projects.links.confirmed
+                    model: view.links.confirmed
                     delegate: Item {
                         id: link
                         required property var modelData
@@ -606,7 +612,7 @@ Item {
                     }
                 }
                 Repeater {
-                    model: Projects.links.proposed
+                    model: view.links.proposed
                     delegate: Rectangle {
                         id: proposal
                         required property var modelData
@@ -783,7 +789,7 @@ Item {
 
             // changed files
             Column {
-                visible: !!Projects.git.changes && Projects.git.changes.length > 0
+                visible: !!view.git.changes && view.git.changes.length > 0
                 width: parent.width
                 spacing: 2
                 Text {
@@ -795,7 +801,7 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Repeater {
-                    model: Projects.git.changes || []
+                    model: view.git.changes || []
                     delegate: AbstractButton {
                         id: change
                         required property var modelData
@@ -900,7 +906,7 @@ Item {
 
             // recent commits
             Column {
-                visible: !!Projects.git.log && Projects.git.log.length > 0
+                visible: !!view.git.log && view.git.log.length > 0
                 width: parent.width
                 spacing: 2
                 Text {
@@ -912,7 +918,7 @@ Item {
                     font.weight: Font.DemiBold
                 }
                 Repeater {
-                    model: Projects.git.log || []
+                    model: view.git.log || []
                     delegate: Item {
                         id: commit
                         required property var modelData
@@ -959,7 +965,7 @@ Item {
     Item {
         id: fileView
         objectName: "projectFile"
-        visible: Projects.currentId !== "" && !!Projects.file.path
+        visible: Projects.currentId !== "" && !!view.file.path
         anchors.fill: parent
 
         Rectangle {
@@ -984,8 +990,8 @@ Item {
                 Text {
                     width: parent.width
                     textFormat: Text.StyledText
-                    text: (Projects.file.folder ? "<font color='" + Theme.p.faint + "'>" + Projects.file.folder + "/</font>" : "")
-                          + (Projects.file.name || "")
+                    text: (view.file.folder ? "<font color='" + Theme.p.faint + "'>" + view.file.folder + "/</font>" : "")
+                          + (view.file.name || "")
                     elide: Text.ElideMiddle
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -994,10 +1000,10 @@ Item {
                 }
                 Text {
                     width: parent.width
-                    text: Projects.file.missing ? "удалён с диска"
-                          : [Projects.file.sizeText, Projects.file.encoding, Projects.file.lang,
-                             Projects.file.truncated ? "показаны первые 2 МБ" : "",
-                             Projects.file.linesText].filter(s => !!s).join(" · ")
+                    text: view.file.missing ? "удалён с диска"
+                          : [view.file.sizeText, view.file.encoding, view.file.lang,
+                             view.file.truncated ? "показаны первые 2 МБ" : "",
+                             view.file.linesText].filter(s => !!s).join(" · ")
                     elide: Text.ElideRight
                     color: Theme.p.faint
                     font.family: Theme.uiFont
@@ -1011,16 +1017,16 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
                 Segmented {
-                    visible: !!Projects.file.hasDiff
+                    visible: !!view.file.hasDiff
                     anchors.verticalCenter: parent.verticalCenter
                     options: [{ id: "file", name: "Файл" }, { id: "diff", name: "Изменения" }]
-                    value: Projects.file.diffMode ? "diff" : "file"
+                    value: view.file.diffMode ? "diff" : "file"
                     onPicked: (id) => Projects.showDiff(id === "diff")
                 }
                 IconButton {
                     id: outlineButton
                     objectName: "outlineButton"
-                    visible: !!Projects.file.outline && !Projects.file.diffMode && !Projects.file.missing
+                    visible: !!view.file.outline && !view.file.diffMode && !view.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "outline"
                     tip: "Структура файла: классы, функции, методы"
@@ -1028,24 +1034,24 @@ Item {
                 }
                 IconButton {
                     objectName: "pinFile"
-                    visible: !Projects.file.binary && !Projects.file.missing && App.currentId !== ""
+                    visible: !view.file.binary && !view.file.missing && App.currentId !== ""
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "pin"
                     tip: "Закрепить в контексте открытого чата: «" + App.currentTitle + "»"
-                    onClicked: App.pinFile(Projects.currentId, Projects.file.path)
+                    onClicked: App.pinFile(Projects.currentId, view.file.path)
                 }
                 IconButton {
-                    visible: !Projects.file.binary && !Projects.file.diffMode && !Projects.file.missing
+                    visible: !view.file.binary && !view.file.diffMode && !view.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "copy"
                     tip: "Копировать содержимое"
-                    onClicked: App.copy(Projects.file.text || "")
+                    onClicked: App.copy(view.file.text || "")
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "external"
                     tip: "Показать в проводнике"
-                    onClicked: Projects.openFolder(Projects.file.path)
+                    onClicked: Projects.openFolder(view.file.path)
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
@@ -1086,10 +1092,10 @@ Item {
                     width: parent.width - 16
                     height: 28
                     verticalAlignment: Text.AlignVCenter
-                    text: Projects.outline.state === "loading" && Projects.outline.rows.length === 0 ? "Читаю…"
-                          : Projects.outline.state === "failed" ? "Структуру получить не удалось"
-                          : Projects.outline.rows.length === 0 ? "Определений нет"
-                          : "Структура · " + Projects.outline.rows.length
+                    text: view.outline.state === "loading" && view.outline.rows.length === 0 ? "Читаю…"
+                          : view.outline.state === "failed" ? "Структуру получить не удалось"
+                          : view.outline.rows.length === 0 ? "Определений нет"
+                          : "Структура · " + view.outline.rows.length
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -1102,7 +1108,7 @@ Item {
                     width: parent.width
                     height: parent.height - y
                     clip: true
-                    model: Projects.outline.rows
+                    model: view.outline.rows
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ThinScrollBar {}
                     delegate: AbstractButton {
@@ -1111,7 +1117,7 @@ Item {
                         width: outlineList.width
                         height: 28
                         hoverEnabled: true
-                        onClicked: { Projects.openFileAt(Projects.file.path, modelData.line); outlinePopup.close() }
+                        onClicked: { Projects.openFileAt(view.file.path, modelData.line); outlinePopup.close() }
                         ToolTip.visible: hovered
                         ToolTip.delay: 700
                         ToolTip.text: modelData.tip
@@ -1154,30 +1160,30 @@ Item {
             y: fileHead.height
             width: parent.width
             height: parent.height - fileHead.height
-            visible: !!Projects.file.diffMode || (!Projects.file.binary && !Projects.file.missing)
-            code: Projects.file.diffMode ? (Projects.file.diff || "") : (Projects.file.code || "")
-            numbers: Projects.file.numbers || ""
-            rich: Projects.file.diffMode ? !!Projects.file.diffRich : !!Projects.file.rich
-            showNumbers: !Projects.file.diffMode
-            gotoOffset: Projects.file.gotoOffset === undefined ? -1 : Projects.file.gotoOffset
-            gotoSeq: Projects.file.gotoSeq || 0
+            visible: !!view.file.diffMode || (!view.file.binary && !view.file.missing)
+            code: view.file.diffMode ? (view.file.diff || "") : (view.file.code || "")
+            numbers: view.file.numbers || ""
+            rich: view.file.diffMode ? !!view.file.diffRich : !!view.file.rich
+            showNumbers: !view.file.diffMode
+            gotoOffset: view.file.gotoOffset === undefined ? -1 : view.file.gotoOffset
+            gotoSeq: view.file.gotoSeq || 0
             // another file (or the diff instead of the file) starts at the top; a refresh keeps the place
             property string shown
             onCodeChanged: {
-                const now = (Projects.file.path || "") + (Projects.file.diffMode ? ":diff" : "")
+                const now = (view.file.path || "") + (view.file.diffMode ? ":diff" : "")
                 if (now !== shown) { shown = now; contentX = 0; contentY = 0 }
             }
         }
 
         Text {
-            visible: Projects.file.diffMode ? !!Projects.file.diffEmpty : (!!Projects.file.binary || !!Projects.file.missing)
+            visible: view.file.diffMode ? !!view.file.diffEmpty : (!!view.file.binary || !!view.file.missing)
             anchors.centerIn: code
             width: Math.min(420, parent.width - 48)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
-            text: Projects.file.diffMode ? "Изменений нет: файл совпадает с последним коммитом (или изменения уже в индексе)."
-                  : Projects.file.missing ? "Файла больше нет на диске." + (Projects.file.hasDiff ? " Его удаление — во вкладке «Изменения»." : "")
-                  : "Двоичный файл (" + (Projects.file.sizeText || "") + ") — не показывается."
+            text: view.file.diffMode ? "Изменений нет: файл совпадает с последним коммитом (или изменения уже в индексе)."
+                  : view.file.missing ? "Файла больше нет на диске." + (view.file.hasDiff ? " Его удаление — во вкладке «Изменения»." : "")
+                  : "Двоичный файл (" + (view.file.sizeText || "") + ") — не показывается."
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 PAGE = 150
 RECENT = 6
+KEPT = 1000  # live events kept at most; older ones come back with "show more"
 
 
 class Feed(QObject):
@@ -119,6 +120,9 @@ class Feed(QObject):
             return
         if self._loaded and all(e["id"] != event["id"] for e in self._events[:20]):
             self._events.insert(0, event)
+            if len(self._events) > KEPT:
+                del self._events[KEPT:]
+                self._more = True
             self.itemsChanged.emit()
         if self._project and event.get("project_id") == self._project:
             self._recent = [event, *[e for e in self._recent if e["id"] != event["id"]]][:RECENT]

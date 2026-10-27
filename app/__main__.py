@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import faulthandler
 import logging
 import sys
 
 from PySide6 import __version__ as pyside_version
+from PySide6.QtCore import QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from common import __version__
@@ -29,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     log = setup_logging("app")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per hub call is noise
     log.info("LocalChat app %s (PySide6 %s)", __version__, pyside_version)
+    watch_for_crashes(log)
     if sys.platform == "win32":
         # the taskbar groups the window as LocalChat, not as python.exe
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.App")
@@ -41,7 +44,25 @@ def main(argv: list[str] | None = None) -> int:
         log.info("smoke check: the window was built (%d QML warnings)", len(quick.warnings))
         quick.close()
         return 1 if quick.warnings else 0
-    return app.exec()
+    code = app.exec()
+    log.info("the window closed (exit code %s)", code)
+    return code
+
+
+def watch_for_crashes(log: logging.Logger) -> None:
+    """A native crash (in Qt, not in Python) leaves the Python stacks in data/logs/app-crash.log, and Qt's own
+    warnings join the log: without them a crash or a freeze leaves no trace at all."""
+    crash_file = open(data_paths().logs / "app-crash.log", "a", encoding="utf-8")  # noqa: SIM115 - open until exit
+    faulthandler.enable(crash_file, all_threads=True)
+    qt_log = logging.getLogger("app.qt")
+    levels = {QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
+              QtMsgType.QtFatalMsg: logging.CRITICAL}  # fmt: skip
+
+    def handler(kind: QtMsgType, context, message: str) -> None:
+        if kind in levels and ".qml:" not in message:  # QML warnings are logged by the window already
+            qt_log.log(levels[kind], "%s", message)
+
+    qInstallMessageHandler(handler)
 
 
 if __name__ == "__main__":

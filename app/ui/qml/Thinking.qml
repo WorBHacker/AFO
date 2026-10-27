@@ -5,6 +5,8 @@ Column {
     id: think
     property var info: ({})
     property int rowIndex: -1
+    // folded reasoning is not laid out at all; a string property notifies only when the text really changes
+    property string bodyText: info.open ? (info.text || "") : ""
     spacing: 8
 
     Item {
@@ -57,7 +59,7 @@ Column {
             selectByMouse: true
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
-            text: think.info.text || ""
+            text: think.bodyText
             color: Theme.p.muted
             selectionColor: Theme.p.selection
             selectedTextColor: Theme.p.text

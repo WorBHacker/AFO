@@ -5,6 +5,8 @@ import QtQuick.Controls.Basic
 Rectangle {
     id: block
     property var info: ({})
+    // a string property notifies only when its value changes: the same code again is not laid out again
+    property string html: info.html || ""
     radius: 8
     color: Theme.p.code_bg
     border.color: Theme.p.hairline
@@ -83,7 +85,7 @@ Rectangle {
             selectByMouse: true
             textFormat: TextEdit.RichText
             wrapMode: TextEdit.NoWrap
-            text: block.info.html || ""
+            text: block.html
             color: Theme.p.text
             selectionColor: Theme.p.selection
             font.family: Theme.monoFont

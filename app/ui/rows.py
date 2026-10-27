@@ -13,7 +13,8 @@ from ..render import Code, highlight_code, language_label, page, render_plain, r
 
 
 def segments(markdown: str) -> list[dict[str, str]]:
-    """An answer as pieces for QML: prose HTML, and code blocks with their language, coloured HTML and raw text."""
+    """An answer as pieces for QML: prose HTML, and code blocks with their language, coloured HTML and raw text.
+    Every piece has the same keys: the view keeps them in a ListModel, whose roles come from the first piece."""
     out = []
     for segment in render_segments(markdown) if markdown else []:
         if isinstance(segment, Code):
@@ -21,7 +22,7 @@ def segments(markdown: str) -> list[dict[str, str]]:
             html = f'<pre style="margin:0; font-family:{palette.MONO_CSS}; line-height:140%;">{spans}</pre>'
             out.append({"kind": "code", "lang": language_label(segment.lang), "html": html, "code": segment.code})
         else:
-            out.append({"kind": "prose", "html": page(segment.html), "code": ""})
+            out.append({"kind": "prose", "lang": "", "html": page(segment.html), "code": ""})
     return out
 
 
@@ -268,6 +269,21 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
     return out
 
 
+def answered(rows: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    """The rows whose calls these results answer, matched by call id from the newest row: {row index: its calls with
+    the results}. Not just the last row with calls: Claude Code stores parallel calls as separate messages."""
+    changed: dict[int, list[dict[str, Any]]] = {}
+    for result in results:
+        if result.get("type") != "tool_result":
+            continue
+        for index in range(len(rows) - 1, -1, -1):
+            tools = changed.get(index) or rows[index].get("tools") or []
+            if any(tool["id"] == result.get("id") for tool in tools):
+                changed[index] = with_results(tools, [result])
+                break
+    return changed
+
+
 CONTEXT_ORDER = ("map", "project", "file", "live", "tools")
 
 
@@ -355,10 +371,8 @@ def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[di
         if m["role"] == "system":  # the hub's context for the model (D22): the inspector shows it, not the chat
             continue
         if m["role"] == "tool":
-            for row in reversed(out):
-                if row.get("tools"):
-                    row["tools"] = with_results(row["tools"], m["content"])
-                    break
+            for index, tools in answered(out, m["content"]).items():
+                out[index]["tools"] = tools
             continue
         out.append(user_row(m) if m["role"] == "user" else assistant_row(m, models))
     return out

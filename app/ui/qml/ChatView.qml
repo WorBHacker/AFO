@@ -13,6 +13,8 @@ ListView {
     topMargin: 28
     bottomMargin: 24
     clip: true
+    // rows this far out of view stay laid out, so their heights are real: a list of estimates moves under the reader
+    cacheBuffer: 20000
     boundsBehavior: Flickable.StopAtBounds
     flickDeceleration: 4000
 
@@ -24,6 +26,8 @@ ListView {
         required property var model
         width: list.width
         height: loader.height
+        // the last row grows while an answer streams: its end stays in view
+        onHeightChanged: if (list.follow && index === list.count - 1) Qt.callLater(list.toEnd)
         Loader {
             id: loader
             x: (slot.width - list.column) / 2
@@ -42,13 +46,38 @@ ListView {
     Component { id: assistantMessage; AssistantMessage {} }
     Component { id: errorMessage; ErrorMessage {} }
 
+    // How far the last message's bottom is below the view (Infinity: that row is not laid out at all).
+    function endGap() {
+        const last = itemAtIndex(count - 1)
+        return last ? last.y + last.height + bottomMargin - height - contentY : Infinity
+    }
+    // Keeps the last message's bottom in view by moving just the missing distance. It follows the last row's growth
+    // and new rows, not contentHeight, and never asks positionViewAtEnd() when that row is laid out: the heights of
+    // rows out of view are estimates, positionViewAtEnd() changed them, contentHeight changed, and it ran again -
+    // forever, the window busy even with nothing streaming (a long chat with tool calls).
     function toEnd() {
         autoScroll = true
-        positionViewAtEnd()
+        const gap = endGap()
+        if (gap === Infinity) {
+            if (count > 0)
+                positionViewAtEnd()
+        } else if (gap > 1) {
+            contentY += gap
+        }
         autoScroll = false
     }
-    onContentYChanged: if (!autoScroll) follow = atYEnd || contentHeight <= height
-    onContentHeightChanged: if (follow) Qt.callLater(toEnd)
+    // Only the reader scrolling up stops the following; being at the end again starts it. The list also moves
+    // contentY itself (a new row, a corrected estimate): that never stops it.
+    property real lastY: 0
+    onContentYChanged: {
+        if (!autoScroll) {
+            if (endGap() <= 40)
+                follow = true
+            else if (contentY < lastY - 0.5)
+                follow = false
+        }
+        lastY = contentY
+    }
     onCountChanged: if (follow) Qt.callLater(toEnd)
     Connections {
         target: App

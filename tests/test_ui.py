@@ -823,6 +823,123 @@ def test_a_streamed_answer(app):
     assert app.sessionText == "Сессия: 42 ток. · $0"
 
 
+def test_an_answer_the_hub_lost_does_not_keep_the_chat_busy(app):
+    """The hub restarted (or stopped) mid-answer: no chat.done or chat.error ever comes. The chat was "answering"
+    forever, sending stopped instead of sending, until the window restarted."""
+    opened(app)
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    app.on_event(event("chat.delta", kind="content", text="половина ответа"))
+    app._render_live()
+    assert app.busyNow
+    app._on_connected(False)
+    app._on_connected(True)  # back: the hub's status lists no running chat
+    wait_until(lambda: not app.busyNow)
+    wait_until(lambda: not app.bg.busy)  # the chat is read again, too: the mark survives that, whatever came first
+    assert app.messages.find("live") == -1
+    assert app.messages.rows[-1]["role"] == "error" and "прервался" in app.messages.rows[-1]["text"]
+    assert sum(row["role"] == "error" for row in app.messages.rows) == 1
+    assert not app.live and app._stale_runs == set() and app._interrupted == set()
+    for status_first in (True, False):  # the status and the chat come back in either order
+        app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+        app._stale_runs = {"c1"}
+        steps = [lambda: app._show_status({**STATUS, "busy": []}),
+                 lambda: app._show_conversation("c1", copy.deepcopy(HISTORY))]  # fmt: skip
+        for step in steps if status_first else steps[::-1]:
+            step()
+        assert [row["role"] for row in app.messages.rows] == ["user", "assistant", "error"], status_first
+        assert not app.busyNow and not app._interrupted
+
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    app.on_event(event("chat.delta", kind="content", text="ещё"))
+    app.refresh_status()  # a run that started after the break is the hub's: a status does not end it
+    wait_until(lambda: not app.bg.busy)
+    assert app.busyNow
+    send(app, "hub.stopping", {})
+    assert not app.busyNow and app.messages.find("live") == -1
+
+
+def test_the_answer_after_a_tool_step_keeps_its_model(app):
+    """The step with the tool calls is a message of its own; the answer that follows is the same run's: its
+    author is that model, not a nameless cloud one."""
+    opened(app)
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    step = {"id": 3, "role": "assistant", "model_id": "llama-swap/coder",
+            "content": [{"type": "tool_call", "id": "t1", "name": "read_file", "input": {"path": "a.py"}}]}  # fmt: skip
+    app.on_event(event("chat.message", message=step))
+    app.on_event(event("chat.delta", kind="content", text="дальше"))
+    app._render_live()
+    live = app.messages.rows[app.messages.find("live")]
+    assert live["author"] == "Coder" and live["local"]
+
+
+def test_parallel_calls_each_get_their_result(app):
+    """Claude Code stores parallel calls as separate messages; one tool message answers them all, by id."""
+
+    def call(mid, cid, path):
+        block = {"type": "tool_call", "id": cid, "name": "read_file", "input": {"path": path}}
+        return {"id": mid, "role": "assistant", "model_id": "llama-swap/coder", "content": [block]}
+
+    results = {"id": 12, "role": "tool", "model_id": None, "content": [
+        {"type": "tool_result", "id": "a", "name": "read_file", "output": "A", "error": False},
+        {"type": "tool_result", "id": "b", "name": "read_file", "output": "B", "error": False}]}  # fmt: skip
+    shown = rows.rows_for([call(10, "a", "a.py"), call(11, "b", "b.py"), results], {})
+    assert [(t["state"], t["output"]) for row in shown for t in row["tools"]] == [("ok", "A"), ("ok", "B")]
+
+    opened(app)  # the same live: each step's calls stay in their own row
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    app.on_event(event("chat.message", message=call(10, "a", "a.py")))
+    app.on_event(event("chat.message", message=call(11, "b", "b.py")))
+    app.on_event(event("chat.message", message=results))
+    states = [t["state"] for row in app.messages.rows for t in row.get("tools") or []]
+    assert states == ["ok", "ok"]
+
+
+def test_a_new_message_is_not_a_chat_switch(app):
+    """The line under the title changes with every message; only another chat resets the view's place (the
+    reader scrolled up was pulled to the bottom by each step) and the composer's suggestions."""
+    opened(app)
+    switches = []
+    app.currentChanged.connect(lambda: switches.append(1))
+    user = {"id": 5, "role": "user", "model_id": None, "content": [{"type": "text", "text": "ещё вопрос"}]}
+    app.on_event(event("chat.message", message=user))
+    app.on_event(event("chat.titled", title="Новое имя"))
+    assert switches == [] and app.currentTitle == "Новое имя" and app.currentMeta.startswith("3 сообщения")
+    app.openChat("c2")
+    assert switches == [1]
+
+
+def test_a_slow_render_is_rendered_less_often(app, monkeypatch):
+    """A long answer costs more to render: the next render waits RENDER_SHARE times as long, up to a limit, so the
+    window never spends all its time on it (it froze on long answers)."""
+    from app.ui import controller
+
+    opened(app)
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    app._render_live()
+    assert app._render_timer.interval() == controller.RENDER_INTERVAL_MS  # a quick render: the usual pace
+    monkeypatch.setattr(app, "_render_live_row", lambda: time.sleep(0.05))
+    app._render_live()
+    assert 4 * 50 <= app._render_timer.interval() < 4 * 50 + 100
+    monkeypatch.setattr(app, "_render_live_row", lambda: time.sleep(0.4))
+    app._render_live()
+    assert app._render_timer.interval() == controller.RENDER_INTERVAL_MAX_MS
+
+
+def test_code_colours_are_kept_per_theme():
+    """Finished code blocks of a streamed answer are coloured once (a cache), but a theme switch colours anew."""
+    from app import render
+
+    first = render.highlight_code("def f():\n    return 1", "python")
+    assert render.highlight_code("def f():\n    return 1", "python") is first  # the same string: from the cache
+    before = palette.current()
+    palette.use(palette.LIGHT if before is palette.DARK else palette.DARK)
+    try:
+        assert render.highlight_code("def f():\n    return 1", "python") != first
+    finally:
+        palette.use(before)
+    assert all(set(s) == {"kind", "lang", "html", "code"} for s in rows.segments("text\n\n```py\nx\n```\n\nmore"))
+
+
 def test_refusal_is_a_row_with_its_cost(app):
     opened(app)
     app.on_event(event("chat.run_started", model_id="x"))
@@ -908,6 +1025,132 @@ def test_the_qml_window_shows_history_and_a_stream_without_warnings(qapp, tmp_pa
     finally:
         quick.close()
         quick.theme.setMode("dark")
+
+
+def long_chat_with_tools(steps: int = 8) -> dict:
+    """A chat like the user's: long answers with reasoning between short questions, steps with many tool calls."""
+    messages: list[dict] = []
+    for n in range(steps):
+        messages.append({"id": len(messages) + 1, "role": "user", "model_id": None, "usage": None,
+                         "content": [{"type": "text", "text": f"вопрос {n}"}]})  # fmt: skip
+        calls = [{"type": "tool_call", "id": f"c{n}-{k}", "name": "web_fetch", "input": {"url": f"http://x/{k}"}}
+                 for k in range(2 + n % 4)]  # fmt: skip
+        messages.append({"id": len(messages) + 1, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+                         "content": [{"type": "reasoning", "text": "думаю " * 200}, *calls]})  # fmt: skip
+        messages.append({"id": len(messages) + 1, "role": "tool", "model_id": None, "usage": None,
+                         "content": [{"type": "tool_result", "id": c["id"], "name": "web_fetch",
+                                      "output": "страница\n" * (5 + n), "error": False} for c in calls]})  # fmt: skip
+        body = "\n\n".join(f"Абзац {k}: " + "текст ответа, " * (10 + 25 * (n % 3)) for k in range(1 + n % 5))
+        if n % 2:
+            body += "\n\n```python\n" + "print('строка')\n" * (3 + 8 * n) + "```"
+        messages.append({"id": len(messages) + 1, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+                         "content": [{"type": "text", "text": body}]})  # fmt: skip
+    return {"id": "c1", "title": "Длинный", "busy": False, "messages": messages}
+
+
+def test_a_long_chat_with_tools_rests_at_its_end(qapp):
+    """An open chat does nothing while nothing happens. Its rows have very different heights, and those out of view
+    were estimates: following the end through positionViewAtEnd() on every contentHeight change moved them, and
+    the view re-laid itself out forever (the window ~95% busy, the reader's place drifting)."""
+    from PySide6.QtCore import Q_RETURN_ARG, QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.conversations_by_id = {"c1": long_chat_with_tools()}
+        client.conversation = lambda cid: copy.deepcopy(client.conversations_by_id["c1"])
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("c1")
+        wait_until(lambda: len(app.messages.rows) > 10)
+        view = next(o for o in quick.window.findChildren(QObject) if o.metaObject().className().startswith("ChatView"))
+
+        def gap() -> float:
+            direct = Qt.ConnectionType.DirectConnection
+            return QMetaObject.invokeMethod(view, "endGap", direct, Q_RETURN_ARG("QVariant"))
+
+        for _ in range(50):
+            QApplication.processEvents()
+        rest = view.property("contentY")
+        for _ in range(50):
+            QApplication.processEvents()
+            time.sleep(0.002)
+        assert view.property("contentY") == rest and abs(gap()) <= 1 and view.property("follow")
+
+        # tool results: a folded one is not laid out, and opening one leaves the other calls' items alone
+        import shiboken6
+
+        def texts() -> dict[str, list[int]]:
+            found: dict[str, list[int]] = {}
+            todo = [quick.window.contentItem()]
+            while todo:
+                item = todo.pop()
+                todo.extend(item.childItems())
+                text = item.property("text")
+                if isinstance(text, str) and text:
+                    found.setdefault(text, []).append(shiboken6.getCppPointer(item)[0])
+            return found
+
+        last_step = max(i for i, row in enumerate(app.messages.rows) if row.get("tools"))
+        labels = [tool["label"] for tool in app.messages.rows[last_step]["tools"]]
+        before = texts()
+        output = "страница\nстраница"  # a result itself, not its one-line summary
+        assert not any(output in text for text in before)  # every result folded: no output text at all
+        app.toggleTool(last_step, 1)
+        for _ in range(10):
+            QApplication.processEvents()
+        after = texts()
+        assert sum(output in text for text in after) == 1
+        assert after[labels[0]] == before[labels[0]]  # the first call's line is the same item
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_streamed_answer_redraws_only_its_last_piece(qapp):
+    """While an answer streams, the pieces it already finished stay the same items: rebuilding every piece on each
+    render made a long answer freeze the window."""
+    import shiboken6
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+
+        def pieces() -> dict[str, int]:
+            """The answer's pieces by a word in them -> their C++ object (a list's rows have no QObject parent, so
+            the visual tree is walked)."""
+            found, todo = {}, [quick.window.contentItem()]
+            while todo:
+                item = todo.pop()
+                todo.extend(item.childItems())
+                html = item.property("html") if item.metaObject().className().startswith(("Prose", "CodeBlock")) else ""
+                for mark in ("Сначала", "streamed", "потом"):
+                    if html and mark in html:
+                        found[mark] = shiboken6.getCppPointer(item)[0]
+            return found
+
+        app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+        app.on_event(event("chat.delta", kind="content", text="Сначала код:\n\n```js\nlet streamed = 1\n```\n\nпотом"))
+        wait_until(lambda: len(app.messages.rows[-1]["segments"]) == 3)
+        wait_until(lambda: len(pieces()) == 3)
+        before = pieces()
+        app.on_event(event("chat.delta", kind="content", text=" ещё текст"))
+        wait_until(lambda: "ещё текст" in app.messages.rows[-1]["segments"][-1]["html"])
+        for _ in range(10):
+            QApplication.processEvents()
+        after = pieces()
+        assert after["Сначала"] == before["Сначала"] and after["streamed"] == before["streamed"]
+        assert quick.warnings == []
+    finally:
+        quick.close()
 
 
 # --- step 6.2: the palette, budgets, the key, chat actions ---
@@ -1173,6 +1416,7 @@ def test_projects_tree_files_and_git(app):
     wait_until(lambda: projects.file.get("path") == "src/app.py")
     assert projects.file["rich"] and projects.file["hasDiff"] and projects.file["mark"] == "M"
     assert projects.file["linesText"] == "2 строки"
+    assert projects.openPath == "src/app.py"  # what the tree's rows read: not the whole file each
     projects.showDiff(True)
     wait_until(lambda: projects.file.get("diffMode"))
     assert "+print('new')" in projects.file["diff"] and projects.file["diffRich"]
@@ -1185,7 +1429,7 @@ def test_projects_tree_files_and_git(app):
     app.setTheme("light")
     assert "<span" in projects.file["diff"]  # coloured again for the new theme
     projects.closeFile()
-    assert projects.file == {}
+    assert projects.file == {} and projects.openPath == ""
 
 
 def test_adding_and_removing_projects(app):
@@ -1461,6 +1705,13 @@ def test_the_feed(app):
                   "payload": {"terminal": {"title": "PowerShell", "cwd": "D:/x"}}})  # fmt: skip
     assert [r["id"] for r in feed.recent][:2] == [11, 9]
     assert feed.items[1]["title"] == "Запущен терминал: PowerShell"
+    # a window open for days does not keep every event: the oldest wait for "show more"
+    from app.ui.feed import KEPT
+
+    for n in range(KEPT):
+        app.on_event({"id": 100 + n, "ts": "2026-10-27T02:00:00.000Z", "type": "port.closed", "project_id": "p1",
+                      "payload": {"project_id": "p1", "port": n, "name": "python.exe"}})  # fmt: skip
+    assert len(feed._events) == KEPT and feed.more and feed._events[0]["id"] == 100 + KEPT - 1
 
 
 def test_project_settings(app):
@@ -1577,6 +1828,12 @@ def test_project_cards(app):
     projects.confirmCard("## Назначение\nДемо, поправлено")
     wait_until(lambda: projects.card["state"] == "confirmed")
     assert projects.card["version"] == 1 and projects.card["segments"][0]["kind"] == "prose"
+    assert projects.card is projects.card  # read by some twenty bindings: built once, not once per read
+    first = projects.card
+    projects.cardChanged.emit()  # a theme switch, say: same inputs, same card
+    assert projects.card is first
+    app.chooseModel("llama-swap/coder")  # the writer is part of the card: a new one
+    assert projects.card is not first and projects.card["writer"] == "Coder"
     send(app, "card.failed", {"project_id": "p1", "detail": "модель молчит"})
     wait_until(lambda: app.flashError)
     assert "модель молчит" in app.flashText
@@ -1716,17 +1973,22 @@ def test_terminal_panel(app):
     from app.ui.terminals import CTRL
 
     terms, client = app.terminals, app.client
+    app.setMode("projects")
     app.projects.openProject("p1")
     wait_until(lambda: terms.tabs)
     assert [(t["title"], t["running"], t["note"]) for t in terms.tabs] == [("PowerShell", True, "работает")]
     terms.setViewSize(40, 5)
+    terms.setPanelOpen(True)
     terms.openTerminal("t1")
     wait_until(lambda: terms._emus["t1"].loaded)
     assert terms.lines.rows[0]["html"] == "PS&nbsp;D:\\Code&gt;"
     assert terms.cursorVisible and (terms.cursorX, terms.cursorY) == (len(TAIL), 0)
 
-    # an event that overlaps the tail: only its new part is played
+    # an event that overlaps the tail: only its new part is played - and laid out only while the panel shows
+    app.setMode("chats")
     send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) - 3, "data": "e> dir\r\n"})
+    assert terms.lines.rows[0]["html"] == "PS&nbsp;D:\\Code&gt;"
+    app.setMode("projects")
     assert terms.lines.rows[0]["html"] == "PS&nbsp;D:\\Code&gt;&nbsp;dir"
     send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) + 5,
                                   "data": "".join(f"\x1b[32mline {n}\x1b[0m\r\n" for n in range(8))})  # fmt: skip
@@ -1761,6 +2023,37 @@ def test_terminal_panel(app):
     terms.closeTab("t1")  # ended: removed with its log
     wait_until(lambda: [t["id"] for t in terms.tabs] == ["t2"])
     assert client.term_removed == ["t1"]
+
+
+def test_terminal_lines_follow_output_change_by_change(app, monkeypatch):
+    """Output into a full scrollback lets its oldest lines go on every event: the line model loses those and gains
+    the new ones, not all its rows again - and always holds what a full layout would."""
+    import random
+
+    from app.ui import term_screen
+
+    monkeypatch.setattr(term_screen, "HISTORY_LINES", 40)
+    terms = app.terminals
+    terms._open, terms._current = True, "tx"
+    app.setMode("projects")
+    terms._cols, terms._rows = 30, 6
+    emu = terms._emus["tx"] = terms._new_emu()
+    emu.loaded = True
+    terms._fit(emu)
+    terms._show(emu)
+    inserted: list[int] = []
+    insert = terms.lines.insert
+    monkeypatch.setattr(terms.lines, "insert", lambda at, rows: (inserted.append(len(rows)), insert(at, rows)))
+    rng = random.Random(7)
+    for n in range(200):
+        lines = "".join(f"\x1b[3{k % 8}mline {n}.{k}\x1b[0m\r\n" for k in range(rng.randint(0, 6)))
+        emu.stream.feed(lines + ("prompt> " if n % 3 else ""))
+        terms._update(emu)
+        screen = emu.screen
+        full = [{"key": f"h{screen.dropped + i}", "html": text} for i, text in enumerate(screen.scrolled)]
+        full += [{"key": f"s{y}", "html": screen.html(y)} for y in range(screen.lines)]
+        assert terms.lines.rows == full, n
+    assert emu.screen.dropped > 300 and max(inserted) <= 6  # only the new lines went in, never the whole list
 
 
 def test_projects_mode_and_palette(app):
@@ -1887,6 +2180,15 @@ def test_the_projects_view_without_warnings(qapp):
         QMetaObject.invokeMethod(sheet, "close")
         for _ in range(20):
             QApplication.processEvents()
+        # closed, it has no rows to rebuild on every event the hub stores (offscreen, frames drive its slide-out)
+        for _ in range(100):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+            if not sheet.property("visible"):
+                break
+            time.sleep(0.02)
+        assert not sheet.property("visible")
+        assert len(quick.window.findChild(QObject, "feedItems").childItems()) == 1  # the Repeater alone
         project_sheet = quick.window.findChild(QObject, "projectSheet")
         QMetaObject.invokeMethod(project_sheet, "open")
         wait_until(lambda: project_sheet.property("opened"))

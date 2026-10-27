@@ -35,6 +35,8 @@ log = logging.getLogger("app.ui")
 
 ANTHROPIC_KEY = "anthropic_api_key"
 RENDER_INTERVAL_MS = 80  # a streamed answer is re-rendered at most ~12 times a second
+RENDER_SHARE = 4  # ...and a render takes at most a quarter of the GUI thread: a long answer renders less often
+RENDER_INTERVAL_MAX_MS = 1000
 THINK_TICK_MS = 100
 FLASH_MS = 6000
 MODES = ("chats", "projects")
@@ -69,7 +71,8 @@ class LiveRun:
 
 class Controller(QObject):
     chatsChanged = Signal()
-    currentChanged = Signal()
+    currentChanged = Signal()  # another chat (or a new one) is open
+    headerChanged = Signal()  # its title or the line under it: not a switch, the view keeps its place
     modelChanged = Signal()
     effortChanged = Signal()
     busyChanged = Signal()
@@ -103,7 +106,10 @@ class Controller(QObject):
         self.model_list: list[dict[str, Any]] = []
         self.conversations: list[dict[str, Any]] = []
         self.busy: set[str] = set()
+        self._stale_runs: set[str] = set()  # answers streaming when the link to the hub broke (_on_connected)
+        self._interrupted: set[str] = set()  # chats whose answer the hub lost, not yet shown so (_end_dead_run)
         self.live: dict[str, LiveRun] = {}
+        self._run_models: dict[str, str] = {}  # each running chat's model: a run's answers after tool steps, too
         self.current: str | None = None
         self.messages = RowModel(self)
         self.session = presenter.Session()
@@ -173,11 +179,11 @@ class Controller(QObject):
     def currentId(self) -> str:
         return self.current or ""
 
-    @Property(str, notify=currentChanged)
+    @Property(str, notify=headerChanged)
     def currentTitle(self) -> str:
         return self._title
 
-    @Property(str, notify=currentChanged)
+    @Property(str, notify=headerChanged)
     def currentMeta(self) -> str:
         return self._meta
 
@@ -383,7 +389,10 @@ class Controller(QObject):
     def _on_connected(self, connected: bool) -> None:
         self._set_hub("up" if connected else "lost")
         if connected and self._link is False:
-            self.reload_all()  # back after a break: deltas are not replayed, so fetch what happened
+            # back after a break: deltas are not replayed, so fetch what happened. An answer that was streaming
+            # and is not running now (the hub restarted) ended without an event: the status will say so.
+            self._stale_runs = set(self.live)
+            self.reload_all()
         self._link = connected
 
     def _set_hub(self, state: str) -> None:
@@ -539,6 +548,9 @@ class Controller(QObject):
         if self._status["loaded"] != loaded_before:
             self.modelChanged.emit()  # the picker marks what is in VRAM
         if "busy" in status:
+            for cid in self._stale_runs - set(status["busy"]):
+                self._end_dead_run(cid)
+            self._stale_runs = set()
             self.busy = set(status["busy"]) | set(self.live)
             self.busyChanged.emit()
 
@@ -620,6 +632,7 @@ class Controller(QObject):
         self._set_chat_projects([], push=False)
         self._set_context([], None)
         self.currentChanged.emit()
+        self.headerChanged.emit()
         self.busyChanged.emit()
 
     @Slot(str)
@@ -730,6 +743,7 @@ class Controller(QObject):
             title = next((c["title"] for c in self.conversations if c["id"] == conversation_id), "")
             self._title, self._meta = title or "Новый чат", ""
             self.currentChanged.emit()
+            self.headerChanged.emit()
             self.busyChanged.emit()
         self._call(
             lambda: self.client.conversation(conversation_id),
@@ -740,6 +754,11 @@ class Controller(QObject):
         if conversation_id != self.current:
             return  # the user moved on while this was loading
         self.messages.reset(rows.rows_for(data["messages"], self.models))
+        if conversation_id in self._stale_runs and not data.get("busy"):
+            self._end_dead_run(conversation_id)  # read before the hub's status came: this says the same
+        elif conversation_id in self._interrupted and not data.get("busy"):
+            self._mark_interrupted()  # the history has no trace of the cut answer: say what happened
+        self._interrupted.discard(conversation_id)
         self._set_chat_projects(data.get("projects") or [], push=False)
         self._set_context(data["messages"], data.get("context"))
         last_model = next((m["model_id"] for m in reversed(data["messages"]) if m["role"] == "assistant"), None)
@@ -765,7 +784,7 @@ class Controller(QObject):
         if self._spent:
             parts.append(presenter.money(self._spent))
         self._meta = " · ".join(parts) if self._count else ""
-        self.currentChanged.emit()
+        self.headerChanged.emit()
 
     @Slot(str, str)
     def renameChat(self, conversation_id: str, title: str) -> None:
@@ -996,18 +1015,20 @@ class Controller(QObject):
         if kind == "chat.run_started":
             self.busy.add(cid)
             self.live[cid] = LiveRun(payload.get("model_id", ""))
+            self._run_models[cid] = payload.get("model_id", "")
             if cid == self.current:
                 self._ensure_live_row()
             self.busyChanged.emit()
             self.chatsChanged.emit()
         elif kind == "chat.loading":
-            run = self.live.setdefault(cid, LiveRun(""))
+            run = self.live.setdefault(cid, LiveRun(self._run_models.get(cid, "")))
             lines = [line for line in payload.get("text", "").splitlines() if line.strip()]
             run.loading = lines[-1].strip() if lines else run.loading
             run.clock_from = time.monotonic()  # the thinking clock starts once the model is in VRAM
             self._schedule_render(cid)
         elif kind == "chat.delta":
-            run = self.live.setdefault(cid, LiveRun(""))
+            # after a tool step the run goes on with the same model: its next answer is that model's, too
+            run = self.live.setdefault(cid, LiveRun(self._run_models.get(cid, "")))
             run.loading = ""
             if payload.get("kind") == "reasoning":
                 run.reasoning += payload.get("text", "")
@@ -1064,7 +1085,7 @@ class Controller(QObject):
         elif kind == "chat.titled":
             if cid == self.current:
                 self._title = payload.get("title", "") or "Новый чат"
-                self.currentChanged.emit()
+                self.headerChanged.emit()
             self.load_conversations()
         elif kind in ("budget.warning", "budget.exceeded"):
             text = presenter.budget_event_text(kind.removeprefix("budget."), payload["budget"])
@@ -1093,10 +1114,27 @@ class Controller(QObject):
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
         elif kind == "hub.stopping":
             self._set_hub("stopped")
+            for run_cid in list(self.live):  # an answer does not outlive the hub; nothing else would end it
+                self._end_dead_run(run_cid)
+
+    def _end_dead_run(self, conversation_id: str) -> None:
+        """A run the hub no longer has (it stopped or restarted mid-answer): what was shown stays, marked cut. The
+        chat is read again after a break, so the mark waits for that, too (`_interrupted`)."""
+        self._run_ended(conversation_id)
+        self._stale_runs.discard(conversation_id)
+        self._interrupted.add(conversation_id)
+        if conversation_id == self.current:
+            self._drop_live_row()
+            self._mark_interrupted()
+
+    def _mark_interrupted(self) -> None:
+        self._errors += 1
+        self.messages.append(rows.error_row(f"e{self._errors}", "Ответ прервался: хаб остановился."))
 
     def _run_ended(self, conversation_id: str | None) -> None:
         self.busy.discard(conversation_id)
         self.live.pop(conversation_id, None)
+        self._run_models.pop(conversation_id, None)
         if conversation_id == self.current:
             self._think_timer.stop()
         self.busyChanged.emit()
@@ -1105,12 +1143,9 @@ class Controller(QObject):
     def _message_arrived(self, message: dict[str, Any], run: LiveRun | None) -> None:
         if self.messages.find(f"m{message['id']}") >= 0:
             return
-        if message["role"] == "tool":  # results join the answer that asked for them
-            for index in range(len(self.messages.rows) - 1, -1, -1):
-                tools = self.messages.rows[index].get("tools")
-                if tools:
-                    self.messages.update(index, tools=rows.with_results(tools, message["content"]))
-                    return
+        if message["role"] == "tool":  # results join the answers that asked for them
+            for index, tools in rows.answered(self.messages.rows, message["content"]).items():
+                self.messages.update(index, tools=tools)
             return
         self._count += 1
         if message["role"] == "assistant":
@@ -1157,6 +1192,13 @@ class Controller(QObject):
                 self._render_timer.start()
 
     def _render_live(self) -> None:
+        started = time.perf_counter()
+        self._render_live_row()
+        spent_ms = (time.perf_counter() - started) * 1000
+        interval = min(RENDER_INTERVAL_MAX_MS, max(RENDER_INTERVAL_MS, round(spent_ms * RENDER_SHARE)))
+        self._render_timer.setInterval(interval)
+
+    def _render_live_row(self) -> None:
         index = self.messages.find("live")
         if index < 0:
             self._think_timer.stop()

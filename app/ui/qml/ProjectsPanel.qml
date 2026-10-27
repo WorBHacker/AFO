@@ -327,7 +327,7 @@ Item {
             required property bool open
             required property string status
             required property bool secret
-            readonly property bool selected: !dir && Projects.file.path === path
+            readonly property bool selected: !dir && Projects.openPath === path
             readonly property int indent: 6 + depth * 14
             width: tree.width
             height: 26

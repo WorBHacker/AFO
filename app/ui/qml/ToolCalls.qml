@@ -9,12 +9,44 @@ Column {
     property int rowIndex: -1
     spacing: 2
 
+    // The calls live in a ListModel changed only where the list did: a result arriving or a click on one call
+    // does not rebuild the others (each may hold thousands of characters of output).
+    onToolsChanged: syncCalls()
+    Component.onCompleted: syncCalls()
+    function syncCalls() {
+        const list = calls.tools
+        const roles = ["id", "icon", "label", "project", "status", "summary", "output", "open"]
+        for (let i = 0; i < list.length; ++i) {
+            const entry = {}
+            for (const role of roles) {
+                const value = list[i][role === "status" ? "state" : role]  // `state` is every Item's own property
+                entry[role] = role === "open" ? !!value : String(value ?? "")
+            }
+            if (i >= entries.count) {
+                entries.append(entry)
+                continue
+            }
+            const old = entries.get(i)
+            if (roles.some(role => old[role] !== entry[role]))
+                entries.set(i, entry)
+        }
+        if (entries.count > list.length)
+            entries.remove(list.length, entries.count - list.length)
+    }
+    ListModel { id: entries }
+
     Repeater {
-        model: calls.tools
+        model: entries
         delegate: Column {
             id: call
-            required property var modelData
             required property int index
+            required property string icon
+            required property string label
+            required property string project
+            required property string status
+            required property string summary
+            required property string output
+            required property bool open
             width: calls.width
             spacing: 4
 
@@ -23,14 +55,14 @@ Column {
                 width: parent.width
                 height: 28
                 hoverEnabled: true
-                enabled: call.modelData.state !== "running"
+                enabled: call.status !== "running"
                 onClicked: App.toggleTool(calls.rowIndex, call.index)
                 background: Rectangle { radius: 6; color: line.hovered ? Theme.p.item_hover : "transparent" }
                 contentItem: Item {
                     Icon {
                         x: 6
                         anchors.verticalCenter: parent.verticalCenter
-                        name: call.modelData.icon
+                        name: call.icon
                         size: 14
                         tint: Theme.p.muted
                     }
@@ -38,7 +70,7 @@ Column {
                         id: label
                         x: 28
                         anchors.verticalCenter: parent.verticalCenter
-                        text: call.modelData.label
+                        text: call.label
                         color: Theme.p.text_soft
                         font.family: Theme.uiFont
                         font.pixelSize: 13
@@ -47,9 +79,9 @@ Column {
                         x: label.x + label.width + 8
                         width: Math.max(0, parent.width - x - 40)
                         anchors.verticalCenter: parent.verticalCenter
-                        text: call.modelData.state === "running" ? "…" : call.modelData.summary
+                        text: call.status === "running" ? "…" : call.summary
                         elide: Text.ElideRight
-                        color: call.modelData.state === "error" ? Theme.p.error : Theme.p.faint
+                        color: call.status === "error" ? Theme.p.error : Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
                     }
@@ -57,19 +89,19 @@ Column {
                         anchors.right: parent.right
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: call.modelData.state !== "running"
-                        name: call.modelData.state === "error" ? "close" : (call.modelData.open ? "chevron-down" : "check")
+                        visible: call.status !== "running"
+                        name: call.status === "error" ? "close" : (call.open ? "chevron-down" : "check")
                         size: 13
-                        tint: call.modelData.state === "error" ? Theme.p.error : Theme.p.ok
+                        tint: call.status === "error" ? Theme.p.error : Theme.p.ok
                     }
                 }
-                ToolTip.visible: hovered && call.modelData.project !== ""
+                ToolTip.visible: hovered && call.project !== ""
                 ToolTip.delay: 800
-                ToolTip.text: "Проект: " + call.modelData.project + " · щелчок — что вернул инструмент"
+                ToolTip.text: "Проект: " + call.project + " · щелчок — что вернул инструмент"
             }
 
             Rectangle {
-                visible: !!call.modelData.open
+                visible: !!call.open
                 x: 28
                 width: parent.width - 28
                 height: Math.min(260, output.implicitHeight + 16)
@@ -93,7 +125,7 @@ Column {
                         selectByMouse: true
                         textFormat: TextEdit.PlainText
                         wrapMode: TextEdit.NoWrap
-                        text: call.modelData.output || ""
+                        text: call.open ? call.output : ""  // a folded result is not laid out at all
                         color: Theme.p.text_soft
                         selectionColor: Theme.p.selection
                         font.family: Theme.monoFont

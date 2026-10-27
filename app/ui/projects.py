@@ -9,12 +9,14 @@ tree) are dropped by a generation count.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
+from .. import palette
 from ..hub_client import HubError
 from . import links_text, project_rows, rows
 from .models import TREE_ROLES, RowModel
@@ -69,6 +71,7 @@ class Projects(QObject):
         self._rules: list[dict[str, Any]] = []
         self._links: list[dict[str, Any]] = []  # every link, as the hub lists them
         self._scanning = False
+        self._memos: dict[str, tuple[tuple, Any]] = {}  # computed properties, built once per change (_memo)
         self._file_gen = 0
         app.theme.changed.connect(self._restyle)
 
@@ -115,6 +118,11 @@ class Projects(QObject):
     def file(self) -> dict:
         return self._file
 
+    @Property(str, notify=fileChanged)
+    def openPath(self) -> str:
+        """For the tree's rows: `file` carries the whole text and its HTML, too much to hand to every row."""
+        return self._file.get("path", "")
+
     @Property(list, notify=searchChanged)
     def searchRows(self) -> list:
         return project_rows.search_rows(self._search) if self._search else []
@@ -140,7 +148,26 @@ class Projects(QObject):
 
     @Property("QVariantMap", notify=cardChanged)
     def card(self) -> dict:
-        """The card for the overview: state (none / drafting / draft / confirmed), texts, version, outdated paths."""
+        """The card for the overview: state (none / drafting / draft / confirmed), texts, version, outdated paths.
+        QML reads it once per binding (the overview and the card sheet: about twenty), so it is built once."""
+        inputs = (self._card, self._card_error, self.app.model_list, self.app.modelId, palette.current().name)
+        return self._memo("card", inputs, self._card_view)
+
+    @Property("QVariantMap", notify=linksChanged)
+    def links(self) -> dict:
+        inputs = (self._links, self.currentId, self._scanning)
+        return self._memo("links", inputs, lambda: {**links_text.project_links(*inputs[:2]), "scanning": inputs[2]})
+
+    def _memo(self, name: str, inputs: tuple, build: Callable[[], Any]) -> Any:
+        """The value built last time, while its inputs are the same objects (or equal ones)."""
+        cached = self._memos.get(name)
+        if cached is not None and all(a is b or a == b for a, b in zip(cached[0], inputs, strict=True)):
+            return cached[1]
+        value = build()
+        self._memos[name] = (inputs, value)
+        return value
+
+    def _card_view(self) -> dict[str, Any]:
         c = self._card
         confirmed, draft = c.get("confirmed"), c.get("draft")
         state = "drafting" if c.get("drafting") else "draft" if draft else "confirmed" if confirmed else "none"
@@ -162,11 +189,6 @@ class Projects(QObject):
             "error": self._card_error,
             "writer": models.get(self._card_writer(), ""),
         }
-
-    @Property("QVariantMap", notify=linksChanged)
-    def links(self) -> dict:
-        found = links_text.project_links(self._links, self.currentId)
-        return {**found, "scanning": self._scanning}
 
     @Property(list, notify=notesChanged)
     def notes(self) -> list:
@@ -501,6 +523,8 @@ class Projects(QObject):
             self._render_file(bool(self._file.get("diffMode")))
         if self._search:
             self.searchChanged.emit()  # the marks carry colours
+        if self._card:
+            self.cardChanged.emit()  # so do the card's code blocks
 
     # ================= what the hub says =================
 

@@ -10,6 +10,8 @@ Sheet {
     iconName: "activity"
     width: Math.min(560, (parent ? parent.width : 960) * 0.9)
     onAboutToShow: Feed.load()
+    // the rows exist only while the sheet shows: a closed sheet rebuilt them all on every event the hub stored
+    readonly property var rows: sheet.visible ? Feed.items : []
 
     Segmented {
         width: parent.width
@@ -19,7 +21,7 @@ Sheet {
     }
 
     Text {
-        visible: Feed.items.length === 0
+        visible: sheet.rows.length === 0
         topPadding: 24
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
@@ -34,7 +36,7 @@ Sheet {
         width: parent.width
         spacing: 2
         Repeater {
-            model: Feed.items
+            model: sheet.rows
             delegate: Loader {
                 required property var modelData
                 width: parent.width

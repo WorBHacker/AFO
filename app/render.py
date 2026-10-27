@@ -6,6 +6,7 @@ Colours come from the current palette; after a theme switch the window renders i
 
 from __future__ import annotations
 
+import functools
 import html
 from dataclasses import dataclass
 
@@ -97,6 +98,12 @@ def render_segments(markdown_text: str) -> list[Prose | Code]:
 
 def highlight_code(code: str, lang: str) -> str:
     """Coloured spans for a code block in the current theme (no wrapper, inline styles)."""
+    return _highlighted(code, lang, palette.current().name)
+
+
+@functools.lru_cache(maxsize=512)
+def _highlighted(code: str, lang: str, theme: str) -> str:
+    """A streamed answer is rendered again many times a second: its finished code blocks come from here."""
     try:
         lexer = get_lexer_by_name(lang) if lang else TextLexer()
     except ClassNotFound:
@@ -114,6 +121,7 @@ def page(body: str) -> str:
     return f"<html><head><style>{style_sheet()}</style></head><body>{body}</body></html>"
 
 
+@functools.lru_cache(maxsize=256)
 def language_label(lang: str) -> str:
     if not lang:
         return "текст"
