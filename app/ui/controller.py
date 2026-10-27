@@ -83,6 +83,7 @@ class Controller(QObject):
     chatProjectsChanged = Signal()
     contextChanged = Signal()
     claudeCodeChanged = Signal()
+    statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
     uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
@@ -143,6 +144,7 @@ class Controller(QObject):
         self.approvals = Approvals(self)
         self.agents = Agents(self)  # the hub's own agents (stage 5, D16)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
+        self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -213,6 +215,23 @@ class Controller(QObject):
     @Property(str, notify=hubChanged)
     def hubState(self) -> str:
         return self._hub_state
+
+    @Property(list, notify=statsChanged)
+    def statsRows(self) -> list:
+        names = {m["id"]: m["name"] for m in self.model_list}
+        return rows.stats_rows(self._stats.get("models") or [], names)
+
+    @Property(str, notify=statsChanged)
+    def forecastText(self) -> str:
+        return rows.forecast_text(self._stats.get("spending"))
+
+    @Slot()
+    def loadStats(self) -> None:
+        def show(found: dict[str, Any]) -> None:
+            self._stats = found
+            self.statsChanged.emit()
+
+        self._call(lambda: self.client.stats(), show, lambda _e: None)
 
     @Property(bool, notify=claudeCodeChanged)
     def claudeCodeInstalled(self) -> bool:

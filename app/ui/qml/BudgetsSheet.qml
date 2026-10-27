@@ -37,6 +37,7 @@ Sheet {
         function onBudgetsChanged() { if (sheet.saving) { sheet.saving = false; form.visible = false } }
     }
     onClosed: form.visible = false
+    onAboutToShow: App.loadStats()
 
     Text {
         width: parent.width
@@ -44,6 +45,18 @@ Sheet {
               + "запрос уходит только с вашего подтверждения или не уходит вовсе."
         wrapMode: Text.Wrap
         color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 13
+        lineHeight: 1.35
+    }
+
+    Text {
+        objectName: "forecast"
+        width: parent.width
+        visible: text !== ""
+        text: App.forecastText
+        wrapMode: Text.Wrap
+        color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
         lineHeight: 1.35
@@ -236,6 +249,47 @@ Sheet {
                         form.error = ""
                         App.saveBudget(scopes.value, periods.value, soft.text, hard.text, actions.value)
                     }
+                }
+            }
+        }
+    }
+
+    // what the hub saw of each model in 30 days (D11): speed, errors, money, agent tasks
+    SectionTitle { visible: App.statsRows.length > 0; text: "Модели за 30 дней" }
+    Column {
+        objectName: "modelStats"
+        width: parent.width
+        spacing: 6
+        Repeater {
+            model: App.statsRows
+            delegate: Column {
+                required property var modelData
+                width: parent.width
+                spacing: 1
+                Text {
+                    width: parent.width
+                    text: modelData.name
+                    elide: Text.ElideRight
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    width: parent.width
+                    text: modelData.speed
+                    elide: Text.ElideRight
+                    color: Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                Text {
+                    width: parent.width
+                    text: modelData.more
+                    elide: Text.ElideRight
+                    color: modelData.warn ? Theme.p.warn : Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
                 }
             }
         }

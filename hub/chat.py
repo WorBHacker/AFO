@@ -206,11 +206,13 @@ class ChatService:
                 outcome.status = "done"
         except GatewayError as exc:
             outcome.status, outcome.detail = "error", str(exc)
-            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc)})
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc),
+                                                   "model_id": model["id"]})  # fmt: skip
         except Exception:
             log.exception("chat run for %s crashed", conversation_id)
             outcome.status, outcome.detail = "error", "internal error"
-            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error",
+                                                   "model_id": model["id"]})  # fmt: skip
         finally:
             self._runs.pop(conversation_id, None)
             if on_end is not None:
@@ -236,10 +238,12 @@ class ChatService:
             )
             await self.claude_code.run(conversation_id, model, text, usable, cancel, client_id)
         except GatewayError as exc:
-            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc)})
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc),
+                                                   "model_id": model["id"]})  # fmt: skip
         except Exception:
             log.exception("claude code turn for %s crashed", conversation_id)
-            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
+            await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error",
+                                                   "model_id": model["id"]})  # fmt: skip
         finally:
             self._runs.pop(conversation_id, None)
             if self.approvals is not None:
@@ -688,6 +692,7 @@ class ChatService:
                 "conversation_id": conversation_id,
                 "detail": completion.refusal,
                 "refusal": True,
+                "model_id": model["id"],
                 "usage": completion.usage,
                 "cost_usd": cost,
             },

@@ -284,6 +284,10 @@ class HubClient:
     def delete_rule(self, rule_id: int) -> None:
         self._call("DELETE", f"/v1/rules/{rule_id}")
 
+    def stats(self, days: int = 30) -> dict:
+        """{days, models: per model speed / errors / money / tasks, spending: the month and its forecast}."""
+        return self._call("GET", "/v1/stats", params={"days": days})
+
     # --- the hub's own agents (stage 5, D16) ---
 
     def agents(self) -> dict:

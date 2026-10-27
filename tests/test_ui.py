@@ -172,6 +172,9 @@ GIT = {
 }
 
 
+STATS = {"model_id": "llama-swap/coder", "requests": 56, "errors": 14, "error_rate": 0.2, "tok_s": 102.1,
+         "ttft_s": 0.49, "answer_s": 1.65, "cost_usd": 0.0, "estimate_usd": 0.0, "runs": 3, "runs_done": 2}  # fmt: skip
+
 AGENT = {
     "id": "a1",
     "name": "Ревьюер",
@@ -490,6 +493,20 @@ class FakeClient:
 
     def approvals(self):
         return [dict(a) for a in self.pending]
+
+    def stats(self, days=30):
+        return {
+            "days": days,
+            "models": [dict(STATS)],
+            "spending": {
+                "month_to_date_usd": 1.0,
+                "daily_avg_7d_usd": 0.05,
+                "forecast_month_usd": 1.23,
+                "days_left": 4.5,
+                "by_model_usd": {},
+                "subscription_estimate_usd": 0.4,
+            },
+        }
 
     def agents(self):
         return {"agents": [dict(a) for a in self.agent_list], "tools": ["read_file", "edit_file", "run_command"]}
@@ -2103,3 +2120,20 @@ def test_the_window_notifies_about_requests_and_runs(qapp):
     finally:
         quick.close()
         quick.theme.setMode("dark")
+
+
+# --- stage 6.1: what the hub learnt about models and money ---
+
+
+def test_model_stats_and_the_forecast(app):
+    (row,) = rows.stats_rows([STATS], {"llama-swap/coder": "Coder"})
+    assert row["name"] == "Coder" and row["speed"] == "56 запросов · 102.1 т/с · первый токен 0.49 с · ответ 1.65 с"
+    assert row["more"] == "ошибки 20% · задачи агентов 2/3" and row["warn"] is True
+    calm = rows.stats_rows([{**STATS, "errors": 0, "error_rate": 0.0, "runs": 0, "cost_usd": 0.5}], {})[0]
+    assert calm["more"].startswith("без ошибок · $") and not calm["warn"]
+    assert rows.forecast_text(None) == ""
+    app.loadStats()
+    wait_until(lambda: app.statsRows)
+    assert app.statsRows[0]["name"] == "Coder"
+    assert app.forecastText.startswith("В этом месяце $1.00; последние 7 дней") and "≈ $1.23" in app.forecastText
+    assert "Claude Code по подписке — оценка $0.40" in app.forecastText

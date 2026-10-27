@@ -119,6 +119,42 @@ def short_path(path: str) -> str:
     return "/".join(parts[-3:]) if absolute and len(parts) > 3 else norm
 
 
+def stats_rows(found: list[dict[str, Any]], names: dict[str, str]) -> list[dict[str, Any]]:
+    """Per model, what the hub saw (D11): requests and speed, then errors, money and agent tasks."""
+    out = []
+    for m in found:
+        speed = [f"{m['requests']} {presenter.plural(m['requests'], 'запрос', 'запроса', 'запросов')}"]
+        if m.get("tok_s"):
+            speed.append(f"{m['tok_s']:g} т/с")
+        if m.get("ttft_s") is not None:
+            speed.append(f"первый токен {m['ttft_s']:g} с")
+        if m.get("answer_s") is not None:
+            speed.append(f"ответ {m['answer_s']:g} с")
+        more = [f"ошибки {m['error_rate'] * 100:.0f}%" if m.get("errors") else "без ошибок"]
+        if m.get("cost_usd"):
+            more.append(presenter.money(m["cost_usd"]))
+        elif m.get("estimate_usd"):
+            more.append(f"подписка, оценка {presenter.money(m['estimate_usd'])}")
+        if m.get("runs"):
+            more.append(f"задачи агентов {m['runs_done']}/{m['runs']}")
+        out.append({"id": m["model_id"], "name": names.get(m["model_id"], m["model_id"]), "speed": " · ".join(speed),
+                    "more": " · ".join(more), "warn": (m.get("error_rate") or 0) >= 0.2})  # fmt: skip
+    return out
+
+
+def forecast_text(spending: dict[str, Any] | None) -> str:
+    """The month's money in one line (D12): so far, the pace, where it ends."""
+    if not spending:
+        return ""
+    text = f"В этом месяце {presenter.money(spending['month_to_date_usd'])}"
+    if spending.get("daily_avg_7d_usd"):
+        text += (f"; последние 7 дней — {presenter.money(spending['daily_avg_7d_usd'])} в день, к концу месяца "
+                 f"≈ {presenter.money(spending['forecast_month_usd'])}")  # fmt: skip
+    if spending.get("subscription_estimate_usd"):
+        text += f". Claude Code по подписке — оценка {presenter.money(spending['subscription_estimate_usd'])}"
+    return text + "."
+
+
 def tool_label(name: str, args: Any) -> str:
     """What a tool call does, in a few words: 'Читаю hub/chat.py', 'Ищу «budget»'."""
     a = args if isinstance(args, dict) else {}
