@@ -201,10 +201,11 @@ def create_run(
     project_ids: list[str],
     parent_run: str | None = None,
     goal: dict[str, Any] | None = None,
+    outside: list[dict[str, Any]] | None = None,
 ) -> str:
     """The run's conversation, set up as the profile says: projects, rights, its fixed tool list, and its row.
     `goal`: an autonomous run's (D40) - goal, done_when, autonomy, max_replans, planner_model_id; it gets the
-    autonomous tools besides the profile's."""
+    autonomous tools besides the profile's, and `outside`: the outside MCP servers' tools ready now (D42)."""
     model = store.get_model(conn, profile["model_id"])
     if model is None or not model["enabled"]:
         raise AgentError(f"the agent's model {profile['model_id']!r} is not available now")
@@ -219,7 +220,7 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS if goal else []
+    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + (outside or []) if goal else []
     tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
@@ -333,8 +334,9 @@ class AgentRunner:
             projects = data.get("project_ids")
             task = f"Цель: {goal['goal']}" + (f"\nГотово, когда: {goal['done_when']}" if goal["done_when"] else "")
             return create_run(conn, profile, task, profile["project_ids"] if projects is None else
-                              [str(p) for p in projects], goal=goal)  # fmt: skip
+                              [str(p) for p in projects], goal=goal, outside=outside)  # fmt: skip
 
+        outside = self._chat.mcp.definitions() if self._chat.mcp is not None else []
         try:
             run_id = await self._db.acall(create)
         except ProjectError as exc:

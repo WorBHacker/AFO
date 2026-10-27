@@ -31,6 +31,7 @@ from .api import (
     events_ws,
     links,
     llama,
+    mcp_servers,
     memory,
     model_settings,
     models,
@@ -57,6 +58,7 @@ from .db import Database, migrate
 from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
+from .mcp_client import McpServers
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects
@@ -103,6 +105,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.autonomy = app.state.chat.autonomy = Autonomy(db, bus, app.state.approvals)  # D40
         app.state.toolbox = app.state.chat.toolbox = AgentToolbox(db, bus, app.state.approvals, paths.root / "sandbox")
+        app.state.mcp = app.state.chat.mcp = McpServers(db, bus, secrets_store)  # outside MCP servers (9.5, D42)
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
@@ -131,6 +134,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
             log.info("open questions of autonomous runs expired")
         resumed = await app.state.agents.start()
@@ -143,6 +147,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                 yield
         finally:
             catalog.cancel()
+            servers.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await servers
+            await app.state.mcp.stop()
             with contextlib.suppress(asyncio.CancelledError):
                 await catalog
             await app.state.status.stop()
@@ -172,6 +180,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(model_settings.router)
     app.include_router(llama.router)
     app.include_router(memory.router)
+    app.include_router(mcp_servers.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)

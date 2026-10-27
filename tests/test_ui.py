@@ -334,6 +334,19 @@ class FakeClient:
             "default_domains": ["docs.python.org", "pypi.org"],
         }
         self.access_calls = []
+        self.mcp = [
+            {
+                "name": "broken",
+                "transport": "stdio",
+                "target": "nope --stdio",
+                "enabled": True,
+                "state": "error",
+                "detail": "FileNotFoundError: nope",
+                "env": [],
+                "tools": [],
+            }
+        ]
+        self.mcp_calls = []
         self.fact_list = [
             {
                 "id": 1,
@@ -547,6 +560,46 @@ class FakeClient:
     def _open(self, ticket):
         if not ticket or ticket != self.ticket:
             raise HubError("подключения закрыты: введите пароль", code="locked")
+
+    def mcp_servers(self):
+        return {"servers": [dict(s) for s in self.mcp], "classes": ["read", "write"]}
+
+    def add_mcp_server(self, name, target, env, ticket):
+        self._open(ticket)
+        self.mcp_calls.append(("add", name, target, env))
+        server = {"name": name, "transport": "stdio", "target": target, "enabled": True, "state": "ready",
+                  "detail": "", "env": [line.split("=")[0] for line in env.splitlines()],
+                  "tools": [{"tool": "list_notes", "name": f"mcp__{name}__list_notes", "description": "Заметки.\nВсе.",
+                             "class": "read", "default": "read"},
+                            {"tool": "wipe_notes", "name": f"mcp__{name}__wipe_notes", "description": "",
+                             "class": "destructive", "default": "destructive"}]}  # fmt: skip
+        self.mcp.append(server)
+        return server
+
+    def set_mcp_server(self, name, ticket, **change):
+        self._open(ticket)
+        self.mcp_calls.append(("set", name, change))
+        server = next(s for s in self.mcp if s["name"] == name)
+        if "enabled" in change:
+            server.update(enabled=change["enabled"], state="ready" if change["enabled"] else "off")
+        return server
+
+    def restart_mcp_server(self, name):
+        self.mcp_calls.append(("restart", name))
+        return next(s for s in self.mcp if s["name"] == name)
+
+    def set_mcp_tool_class(self, name, tool, cls, ticket):
+        self._open(ticket)
+        self.mcp_calls.append(("class", name, tool, cls))
+        server = next(s for s in self.mcp if s["name"] == name)
+        next(t for t in server["tools"] if t["tool"] == tool)["class"] = cls
+        return server
+
+    def delete_mcp_server(self, name, ticket):
+        self._open(ticket)
+        self.mcp_calls.append(("delete", name))
+        self.mcp = [s for s in self.mcp if s["name"] != name]
+        return {"removed": name}
 
     def set_connection(self, name, value, ticket):
         self._open(ticket)
@@ -3744,6 +3797,56 @@ def test_folders_and_sites_for_the_agent_in_the_window(qapp, tmp_path):
         view.start()
         wait_until(lambda: not app.bg.busy and client.auto_calls)
         assert client.auto_calls[0][1]["network"] is True
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_outside_mcp_servers_in_connections(qapp):
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+    from app.ui.mcp_view import env_lines
+
+    assert env_lines("TOKEN=a=b; OWNER = Анна;\n X=1 ") == "TOKEN=a=b\nOWNER = Анна\nX=1"
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        mcp = app.mcp_view
+        sheet = quick.window.findChild(QObject, "connectionsSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened") and mcp.servers)
+        assert mcp.servers[0]["status"] == "ошибка" and mcp.servers[0]["detail"] == "FileNotFoundError: nope"
+        mcp.add("notes", "python server.py", "OWNER=Анна")  # locked: the hub refuses, the sheet asks the password
+        wait_until(lambda: not mcp.busy and mcp.error)
+        assert client.mcp_calls == []
+        app.connections.createPassword("секрет-1", "секрет-1")
+        wait_until(lambda: app.connections.state == "open")
+        mcp.add(" notes ", " python server.py ", "OWNER=Анна; TOKEN=x")
+        wait_until(lambda: not mcp.busy and len(mcp.servers) == 2)
+        assert client.mcp_calls[0] == ("add", "notes", "python server.py", "OWNER=Анна\nTOKEN=x")
+        notes = next(s for s in mcp.servers if s["name"] == "notes")
+        assert notes["opened"] and notes["status"] == "работает · инструментов: 2" and notes["env"] == "OWNER, TOKEN"
+        assert notes["tools"][0] == {"tool": "list_notes", "description": "Заметки.", "cls": "read",
+                                     "clsText": "только читает", "changed": False}  # fmt: skip
+        mcp.setClass("notes", "wipe_notes", "write")
+        wait_until(lambda: not mcp.busy and next(s for s in mcp.servers if s["name"] == "notes")["tools"][1]["changed"])
+        mcp.setClass("notes", "wipe_notes", "nonsense")  # not a class: nothing sent
+        mcp.setEnabled("notes", False)
+        notes = lambda: next(s for s in mcp.servers if s["name"] == "notes")  # noqa: E731
+        wait_until(lambda: not mcp.busy and notes()["status"] == "выключен")
+        mcp.restart("broken")
+        mcp.remove("notes")
+        assert app.question["title"] == "Удалить сервер MCP «notes»?"
+        app.answer(True)
+        wait_until(lambda: not mcp.busy and len(mcp.servers) == 1)
+        assert [c[0] for c in client.mcp_calls] == ["add", "class", "set", "restart", "delete"]
+        assert quick.window.findChild(QObject, "mcpSection") is not None
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

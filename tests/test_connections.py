@@ -231,8 +231,10 @@ def test_a_forgotten_password_takes_the_connections_with_it(tmp_path):
     db = Database(tmp_path / "hub.db")
     db.call(migrate)
     db.call(lambda conn: conns.set_address(conn, conns.SEARXNG_URL, "http://127.0.0.1:8888"))
+    db.call(lambda conn: conn.execute("INSERT INTO mcp_servers (name, transport, command) VALUES ('gh', 'stdio', 'x')"))
+    store.set("mcp_env.gh", '{"GITHUB_TOKEN": "t"}')  # an MCP server's keys, set under the password too (9.5)
     removed = db.call(lambda conn: conns.reset(store, conn))
-    assert removed == [ANTHROPIC_API_KEY, conns.TELEGRAM_TOKEN, conns.SEARXNG_URL]
+    assert removed == [ANTHROPIC_API_KEY, conns.TELEGRAM_TOKEN, conns.SEARXNG_URL, "mcp_env.gh"]
     assert store.get(conns.PASSWORD) is None and store.get(ANTHROPIC_API_KEY) is None
     assert db.call(lambda conn: conns.address(conn, conns.SEARXNG_URL)) == ""
     db.close()

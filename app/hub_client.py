@@ -386,6 +386,30 @@ class HubClient:
     def choose_models(self, name: str, ids: list[str], ticket: str) -> dict:
         return self._call("PUT", f"/v1/connections/{name}/models", {"ids": ids}, headers=_unlock(ticket))
 
+    # --- outside MCP servers (9.5, D42): their tools for new chats and agents; changes behind the password ---
+
+    def mcp_servers(self) -> dict:
+        """{servers: [{name, transport, target, enabled, state, detail, tools: [...], env: [names]}], classes}."""
+        return self._call("GET", "/v1/mcp/servers")
+
+    def add_mcp_server(self, name: str, target: str, env: str, ticket: str) -> dict:
+        """Added and started: a server fetched on its first start (npx, uvx) may take a while."""
+        body = {"name": name, "target": target, "env": env}
+        return self._call("POST", "/v1/mcp/servers", body, headers=_unlock(ticket), timeout=60)
+
+    def set_mcp_server(self, name: str, ticket: str, **change) -> dict:
+        """enabled, env (KEY=value lines)."""
+        return self._call("PUT", f"/v1/mcp/servers/{name}", change, headers=_unlock(ticket), timeout=60)
+
+    def restart_mcp_server(self, name: str) -> dict:
+        return self._call("POST", f"/v1/mcp/servers/{name}/restart", timeout=60)
+
+    def set_mcp_tool_class(self, name: str, tool: str, cls: str, ticket: str) -> dict:
+        return self._call("PUT", f"/v1/mcp/servers/{name}/tools/{tool}", {"class": cls}, headers=_unlock(ticket))
+
+    def delete_mcp_server(self, name: str, ticket: str) -> dict:
+        return self._call("DELETE", f"/v1/mcp/servers/{name}", headers=_unlock(ticket))
+
     def feed(self, *, limit: int = 100, before: int | None = None, project_id: str = "", types: str = "") -> dict:
         """The event log, newest first: {events, more}."""
         params: dict = {"limit": limit, "types": types}

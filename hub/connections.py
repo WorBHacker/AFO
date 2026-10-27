@@ -190,6 +190,8 @@ def reset(store: SecretStore, conn: sqlite3.Connection) -> list[str]:
     """A forgotten password: it goes, and so does every saved connection - nothing set under it stays behind."""
     removed = [c.name for c in CONNECTIONS if c.kind != "address" and store.delete(c.name)]
     removed += [c.name for c in CONNECTIONS if c.kind == "address" and set_address(conn, c.name, None)]
+    servers = [r["name"] for r in conn.execute("SELECT name FROM mcp_servers ORDER BY name")]  # their keys (9.5)
+    removed += [f"mcp_env.{name}" for name in servers if store.delete(f"mcp_env.{name}")]
     store.delete(PASSWORD)
     return removed
 

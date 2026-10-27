@@ -32,6 +32,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("programs", "Программы для агента…", "shield", "", False),
     ("settings", "Настройки…", "sliders", "Ctrl ,", False),
     ("connections", "Подключения: ключи API и токены…", "key", "Ctrl Shift K", False),
+    ("mcp", "Серверы MCP: инструменты для чатов и агента…", "layers", "", False),
     ("sync", "Обновить список моделей", "refresh", "", False),
     ("unload", "Выгрузить локальную модель из видеопамяти", "cpu", "Ctrl Shift U", False),
     ("theme:system", "Тема: как в системе", "layers", "", False),

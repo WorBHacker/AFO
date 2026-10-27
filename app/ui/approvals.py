@@ -66,7 +66,10 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return "Запустить скрипт Python"
         case "http_request":
             return f"Запрос в сеть: {data.get('method', 'GET')} {data.get('url', '')}"
-    return f"Вызвать {tool.removeprefix('mcp__').replace('__', ' · ')}"
+    if tool.startswith("mcp__") and "__" in tool[5:]:  # an outside MCP server's tool (9.5)
+        server, _, name = tool[5:].partition("__")
+        return f"MCP «{server}»: {name}"
+    return f"Вызвать {tool}"
 
 
 def preview_lines(preview: dict[str, Any]) -> list[dict[str, str]]:
@@ -110,7 +113,9 @@ def approval_rows(
         who = asker(a, speakers or {})
         project = projects.get(a.get("project_id") or "", {}).get("name", "")
         chat = chats.get(a.get("conversation_id") or "", "")
-        always = ("destructive" if a.get("destructive") else "network" if a.get("network")
+        cls = a.get("class") or ""  # an outside MCP server's tool: its class of action (9.5)
+        always = ("destructive" if a.get("destructive") else "send" if cls == "send"
+                  else "outside" if cls == "network" else "network" if a.get("network")
                   or a.get("tool") == "http_request" else "personal" if a.get("tool") == "remember"
                   else "script" if a.get("tool") == "run_python" else "")  # fmt: skip
         rows.append({
@@ -127,7 +132,9 @@ def approval_rows(
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)
-            "chatScope": "эта команда в этом чате" if a.get("kind") == "command"
+            "chatScope": "этот же вызов в этом чате" if cls == "command"
+                         else "эта команда в этом чате" if a.get("kind") == "command"
+                         else f"«{a.get('tool', '')[5:].partition('__')[2]}» в этом чате" if cls
                          else SCOPE_WORDS.get(a.get("tool", ""), f"все {a.get('tool')} в чате"),
             "projectScope": f"всегда в «{project}»" if project and not always else "",
             "conversationId": a.get("conversation_id") or "",

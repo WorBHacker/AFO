@@ -54,6 +54,7 @@ from . import (
     context,
     limits,
     links,
+    mcp_client,
     memory,
     model_settings,
     notes,
@@ -109,6 +110,7 @@ class ChatService:
         self.editor = None  # set by the server: what VS Code reports (stage 6.6)
         self.autonomy: autonomous.Autonomy | None = None  # set by the server: the autonomous agent's tools (9.1)
         self.toolbox: agent_tools.AgentToolbox | None = None  # its folders, scripts, requests, notices (9.4)
+        self.mcp: mcp_client.McpServers | None = None  # outside MCP servers' tools (9.5, D42)
 
     @property
     def busy(self) -> list[str]:
@@ -322,9 +324,10 @@ class ChatService:
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
             # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
             # even after the hub's tools changed
-            if tools is None:
+            if tools is None:  # a new chat gets the outside MCP servers' tools ready now too (D42)
+                current = [*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])]
                 tools = await self._db.acall(
-                    lambda conn: store.conversation_tools(conn, conversation_id, CHAT_TOOLS, FIRST_TOOLS)
+                    lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
                 )
             try:
                 completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools,
@@ -602,7 +605,9 @@ class ChatService:
                 persist=False,
             )
             own = call["name"] in autonomous.TOOL_NAMES or call["name"] in memory.TOOL_NAMES
-            acting = call["name"] not in READING and not own
+            outside = self.mcp is not None and mcp_client.split_name(call["name"]) is not None
+            reading = call["name"] in READING or (outside and self.mcp.tool_class(call["name"]) == "read")
+            acting = not reading and not own
             if acting and self.autonomy is not None and await self.autonomy.needs_plan(conversation_id):
                 output, error = autonomous.PLAN_FIRST, True  # an autonomous run acts only after its plan (D40)
             elif call["name"] in changes.WRITE_TOOL_NAMES:
@@ -620,6 +625,8 @@ class ChatService:
                     return None if allowed else said
 
                 output, error = await self.toolbox.handle(conversation_id, call, cancel, ask)
+            elif outside:  # an outside MCP server's (9.5, D42)
+                output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
             elif call["name"] == "delegate_task":  # a coordinator's (D20)
@@ -733,15 +740,35 @@ class ChatService:
             return str(exc), True
         return websearch.as_text(query, answered, found), False
 
+    async def _mcp_tool(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
+        """An outside MCP server's tool (9.5, D42), as its class says: a read runs; a write is asked unless the chat
+        is trusted (an answer for the chat covers it); a command is asked, the same input covered; network, send
+        and destructive are asked every time. A read-only chat reads only."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        cls = self.mcp.tool_class(call["name"])
+        if cls != "read":
+            settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
+            if settings["mode"] == "read_only":
+                return READ_ONLY, True
+            tainted = await self._read_the_web(conversation_id)
+            if cls != "write" or settings["mode"] != "trusted" or tainted:
+                project = ctx.projects[0] if ctx.projects else None
+                allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
+                                                    cover=not tainted)  # fmt: skip
+                if not allowed:
+                    return why, True
+        return await self.mcp.call(call["name"], args, cancel)
+
     async def _read_the_web(self, conversation_id: str) -> bool:
-        """Has the model in this chat read a web page or searched? Then its writes and commands are asked every time
-        (D19)."""
+        """Has the model in this chat read a web page, searched, or used an outside MCP tool that goes out there?
+        Then its writes and commands are asked every time (D19)."""
+        names = ["web_fetch", "web_search", *(self.mcp.network_names() if self.mcp is not None else [])]
 
         def read(conn) -> bool:
+            found = " OR ".join("content LIKE ?" for _ in names)
             row = conn.execute(
-                "SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'tool' AND (content LIKE ? OR content"
-                " LIKE ?)",
-                (conversation_id, '%"name": "web_fetch"%', '%"name": "web_search"%'),
+                f"SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'tool' AND ({found})",
+                (conversation_id, *(f'%"name": "{n}"%' for n in names)),
             ).fetchone()
             return row is not None
 

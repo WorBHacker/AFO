@@ -36,6 +36,14 @@ NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_reque
 SAFE_COMMANDS = {f"run_command:{c}" for c in ("git status", "git diff", "git diff --stat", "git log --oneline",
                                               "git log --oneline -20", "git branch", "dir", "ls", "pwd")}  # fmt: skip
 HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write tools, shown like Claude Code's
+# tools whose class of action the hub learns at run time - an outside MCP server's (9.5, D42): read, write, command,
+# network, send or destructive; the last three are asked every time
+CLASSED: dict[str, str] = {}
+CLASS_KINDS = {"read": "other", "write": "write", "command": "command", "network": "network", "send": "network",
+               "destructive": "command"}  # fmt: skip
+CLASS_WORDS = {"read": "только читает", "write": "меняет данные", "command": "запускает команды",
+               "network": "ходит в сеть", "send": "отправляет от вашего имени",
+               "destructive": "удаляет или необратимо меняет"}  # fmt: skip
 SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
 PREVIEW_CHARS = 40_000
@@ -75,14 +83,20 @@ def kind(tool: str) -> str:
         return "command"
     if tool in WRITE_TOOLS:
         return "write"
+    if tool in CLASSED:
+        return CLASS_KINDS[CLASSED[tool]]
     return "network" if tool in NETWORK_TOOLS else "other"
 
 
 def destructive(tool: str, data: dict[str, Any]) -> bool:
+    if CLASSED.get(tool) == "destructive":
+        return True
     return tool in COMMAND_TOOLS and bool(DESTRUCTIVE.search(str(data.get("command", ""))))
 
 
 def network(tool: str, data: dict[str, Any]) -> bool:
+    if CLASSED.get(tool) in ("network", "send"):
+        return True
     return tool in COMMAND_TOOLS and bool(NETWORK.search(str(data.get("command", ""))))
 
 
@@ -93,6 +107,8 @@ def grant_key(tool: str, data: dict[str, Any]) -> str | None:
         return None
     if tool in COMMAND_TOOLS:
         return f"{tool}:{' '.join(str(data.get('command', '')).split())}"
+    if CLASSED.get(tool) == "command":  # an MCP server's command: the same input only
+        return f"{tool}:{json.dumps(data, ensure_ascii=False, sort_keys=True)}"
     if tool == "web_fetch":  # the site: "always in this project" on it puts the site on the project's list (D19)
         return f"web_fetch:{(urlsplit(str(data.get('url', ''))).hostname or '').lower()}"
     return tool
@@ -138,6 +154,11 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str
     if tool == "start_step":
         return {"kind": "text", "text": f"{data.get('step')}. {data.get('title', '')}",
                 "note": f"проверка: {data.get('check')}" if data.get("check") else ""}  # fmt: skip
+    if tool.startswith("mcp__") and "__" in tool[5:]:  # an outside MCP server's tool (9.5): what it gets, its class
+        server = tool[5:].partition("__")[0]
+        word = CLASS_WORDS.get(CLASSED.get(tool, ""), "")
+        return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)),
+                "note": f"MCP-сервер «{server}»" + (f" · {word}" if word else "")}  # fmt: skip
     return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)), "note": ""}
 
 
@@ -187,7 +208,7 @@ def _cut(text: str) -> str:
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = json.loads(row["input"])
     return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
-                        "network": network(row["tool"], data)}  # fmt: skip
+                        "network": network(row["tool"], data), "class": CLASSED.get(row["tool"], "")}  # fmt: skip
 
 
 def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:

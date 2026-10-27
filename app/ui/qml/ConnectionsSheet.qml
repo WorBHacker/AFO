@@ -10,7 +10,7 @@ Sheet {
     title: "Подключения"
     iconName: "key"
     width: Math.min(600, (parent ? parent.width : 960) * 0.92)
-    onAboutToShow: Services.load()
+    onAboutToShow: { Services.load(); Mcp.load() }
     onClosed: Services.lock()
 
     component Note: Text {
@@ -308,6 +308,9 @@ Sheet {
             }
         }
     }
+
+    // ---------- outside MCP servers (9.5) ----------
+    McpSection { width: parent.width }
 
     // ---------- the password itself ----------
     Column {

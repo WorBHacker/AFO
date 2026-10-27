@@ -22,6 +22,7 @@ TOPICS = [
     "models.*",
     "model.*",
     "memory.*",
+    "mcp.*",
     "system.*",
     "secrets.*",
     "connections.*",

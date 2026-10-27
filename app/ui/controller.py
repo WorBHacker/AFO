@@ -27,6 +27,7 @@ from .autonomy import AutonomyView
 from .composer import Mentions
 from .connections import Connections
 from .feed import Feed
+from .mcp_view import McpView
 from .memory_view import MemoryView
 from .model_setup import ModelSetup
 from .models import RowModel
@@ -164,6 +165,7 @@ class Controller(QObject):
         self.autonomy_view = AutonomyView(self)  # the Agent mode: the autonomous agent's tasks (stage 9, D40)
         self.autonomy_view.selectionChanged.connect(self.approvals._refresh)  # its approvals card follows the task
         self.memory_view = MemoryView(self)  # the agent's memory: facts and skills (stage 9.3)
+        self.mcp_view = McpView(self)  # outside MCP servers, a section of Connections (9.5, D42)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -916,7 +918,7 @@ class Controller(QObject):
                 self.uiRequested.emit("add-project")
             elif value in ("models", "budgets", "settings", "rename"):
                 self.uiRequested.emit(value)
-            elif value in ("key", "connections"):
+            elif value in ("key", "connections", "mcp"):  # the MCP servers are a section of Connections
                 self.uiRequested.emit("connections")
             elif value == "sync":
                 self.syncModels()
@@ -1174,6 +1176,8 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind.startswith("mcp."):
+            self.mcp_view.on_event(kind, payload)
         elif kind.startswith("memory."):
             self.memory_view.on_event(kind, payload)
         elif kind in ("model.settings", "llama.config"):

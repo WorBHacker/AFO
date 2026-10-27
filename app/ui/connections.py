@@ -85,6 +85,11 @@ class Connections(QObject):
         self._picked: set[str] = set()
         self._query = ""
 
+    @property
+    def ticket(self) -> str:
+        """The unlock ticket while the sheet is open (in memory only): the MCP servers' section changes with it."""
+        return self._ticket
+
     # --- what QML reads ---
 
     @Property(str, notify=changed)
