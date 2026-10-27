@@ -15,7 +15,9 @@ from starlette.routing import Route
 from common import __version__
 
 from . import mcp_server
+from .agents import AgentRunner
 from .api import (
+    agents,
     approvals,
     budgets,
     cards,
@@ -77,6 +79,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
+        app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
@@ -96,6 +99,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         expired = await app.state.approvals.start()
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
+        resumed = await app.state.agents.start()
+        if resumed:
+            log.info("agent runs going on after a restart: %s", resumed)
         log.info("hub ready, app token in %s", token_file)
         try:
             # the MCP app is mounted, not run: its session manager lives in the hub's lifespan
@@ -138,6 +144,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(approvals.router)
     app.include_router(claude_code.router)
     app.include_router(changes.router)
+    app.include_router(agents.router)
     # MCP for Cline, Claude Code and the like (D32): /mcp, with a client token
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))

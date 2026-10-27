@@ -363,6 +363,12 @@ def previous_digests(history: list[Any]) -> dict[str, str]:
     return found
 
 
+def role_block(instructions: str) -> dict[str, Any]:
+    """An agent's role (D16) as a context block: what it is for and how it should work, from its profile."""
+    text = f"<agent_role>\n{instructions.strip()}\n</agent_role>"
+    return {"type": "context", "key": "role", "text": text, "digest": digest(text), "cloud_ok": True}
+
+
 def render(blocks: list[dict[str, Any]], *, cloud: bool) -> str:
     """A stored context message as the model reads it; for a cloud model, local-only projects stay hidden."""
     parts = []

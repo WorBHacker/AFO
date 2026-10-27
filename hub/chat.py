@@ -38,6 +38,8 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -148,16 +150,73 @@ class ChatService:
         cancel.set()
         return True
 
-    async def _run(self, conversation_id: str, model: dict, effort: str, cancel: asyncio.Event, client_id: str | None):
+    async def start(
+        self,
+        conversation_id: str,
+        model_id: str,
+        text: str | None,
+        *,
+        limits: Limits,
+        on_end: Callable[[Outcome], Awaitable[None]],
+        client_id: str | None = None,
+        effort: str = DEFAULT_EFFORT,
+    ) -> None:
+        """An agent's run (stage 5, D16): its task - or nothing new, when a run goes on after the hub restarted - and
+        then the same loop as a chat's, within the run's limits; `on_end` hears how it ended."""
+        if conversation_id in self._runs:
+            raise GatewayError("this conversation already has a run in progress")
+        model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
+        if model is None or not model["enabled"]:
+            raise GatewayError(f"model {model_id!r} is not available now")
+        if model["locality"] == "cloud":
+            await self._check_cloud(conversation_id)
+        if model["prices"]:
+            await self._check_budgets(model_id, False, client_id)
+        if text:
+            message = await self._db.acall(
+                lambda conn: store.add_message(conn, conversation_id, "user", [{"type": "text", "text": text}])
+            )
+            await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+        await self._store_context(conversation_id)
+        cancel = asyncio.Event()
+        self._runs[conversation_id] = cancel
+        task = asyncio.create_task(
+            self._run(
+                conversation_id, model, effort, cancel, client_id, limits=limits, outcome=Outcome(), on_end=on_end
+            )
+        )
+        task.add_done_callback(lambda t: t.exception())
+
+    async def _run(
+        self,
+        conversation_id: str,
+        model: dict,
+        effort: str,
+        cancel: asyncio.Event,
+        client_id: str | None,
+        *,
+        limits: Limits | None = None,
+        outcome: Outcome | None = None,
+        on_end: Callable[[Outcome], Awaitable[None]] | None = None,
+    ):
+        outcome = outcome or Outcome()
         try:
-            await self._steps(conversation_id, model, effort, cancel, client_id)
+            await self._steps(conversation_id, model, effort, cancel, client_id, limits or Limits(), outcome)
+            if outcome.status == "running":
+                outcome.status = "done"
         except GatewayError as exc:
+            outcome.status, outcome.detail = "error", str(exc)
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc)})
         except Exception:
             log.exception("chat run for %s crashed", conversation_id)
+            outcome.status, outcome.detail = "error", "internal error"
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error"})
         finally:
             self._runs.pop(conversation_id, None)
+            if on_end is not None:
+                if self.approvals is not None:
+                    await self.approvals.expire(conversation_id)
+                await on_end(outcome)
 
     async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id):
         """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10)."""
@@ -186,7 +245,7 @@ class ChatService:
             if self.approvals is not None:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
 
-    async def _steps(self, conversation_id: str, model: dict, effort: str, cancel: asyncio.Event, client_id):
+    async def _steps(self, conversation_id, model: dict, effort: str, cancel, client_id, limits: Limits, outcome):
         provider, model_ref = self._gateway.resolve(model["id"])
         cloud = model.get("locality") == "cloud"
         attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
@@ -195,9 +254,9 @@ class ChatService:
         await self._bus.publish(
             "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
         )
-        run = RunTotals()
+        run = outcome.totals = RunTotals()
         tools = None
-        for step in range(MAX_TOOL_STEPS + 2):
+        for step in range(limits.max_steps + 2):
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             prompt = _to_prompt(history, cloud=cloud)
             # the tool list never changes within a conversation (D14): Claude always has it, others from the
@@ -210,23 +269,32 @@ class ChatService:
             completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools)
             if completion.refusal:
                 await self._save_refusal(conversation_id, model, completion, client_id)
+                outcome.status, outcome.detail = "error", completion.refusal
                 return
             stopped_short = completion.stop_reason in ("max_tokens", "length")  # a cut-off call must not run
             if not completion.tool_calls or completion.cancelled or stopped_short:
                 completion.tool_calls = []
                 await self._save(conversation_id, model, completion, client_id, run)
+                if completion.cancelled:
+                    outcome.status = "cancelled"
                 return
             message_id = await self._save_step(conversation_id, model, completion, client_id, run)
-            if step >= MAX_TOOL_STEPS:  # it keeps asking: answer without running, and let it finish (or stop)
+            if step >= limits.max_steps:  # it keeps asking: answer without running, and let it finish (or stop)
                 await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, refuse=STEP_LIMIT)
-                if step > MAX_TOOL_STEPS:
+                if step > limits.max_steps:
+                    outcome.status, outcome.detail = "error", f"the step limit ({limits.max_steps}) was reached"
                     await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
                     return
                 continue
             await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel)
             if cancel.is_set():
                 await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion, cancelled=True))
+                outcome.status = "cancelled"
                 return
+            if limits.deadline is not None and time.monotonic() > limits.deadline:
+                raise GatewayError("the task's time limit was reached; give it more time or a narrower task")
+            if limits.budget_usd is not None and run.cost >= limits.budget_usd:
+                raise GatewayError(f"the task's budget (${limits.budget_usd:g}) was reached at ${run.cost:.4f}")
             if model["prices"]:
                 over = await self._db.acall(lambda conn: budgets.reached(conn, model["id"]))
                 if over:
@@ -235,8 +303,10 @@ class ChatService:
     async def _store_context(self, conversation_id: str) -> None:
         """Right after a user message in a chat with projects: the context the model gets with it (D22), stored as
         a system message - the layers that changed since the last one, and the live state."""
-        attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
-        if not attached:
+        attached, instructions = await self._db.acall(
+            lambda conn: (_attached(conn, conversation_id), _instructions(conn, conversation_id))
+        )
+        if not attached and not instructions:
             return
 
         def gather(conn):
@@ -310,6 +380,10 @@ class ChatService:
                 linked=linked, linked_cards=linked_cards,
             )
         )  # fmt: skip
+        if instructions:  # an agent's role (D16): once, right after the header
+            role = context.role_block(instructions)
+            if context.previous_digests(history).get(role["key"]) != role["digest"]:
+                blocks.insert(1, role)
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "system", blocks))
         await self._bus.publish(
             "chat.context",
@@ -599,6 +673,24 @@ def _title_from(text: str) -> str:
     return line if len(line) <= TITLE_LENGTH else line[: TITLE_LENGTH - 1].rstrip() + "…"
 
 
+@dataclass
+class Limits:
+    """How far a run may go: tool steps, a monotonic deadline, money (D16, D12). A chat's are the defaults."""
+
+    max_steps: int = field(default_factory=lambda: MAX_TOOL_STEPS)  # read when made: a chat's limit
+    deadline: float | None = None
+    budget_usd: float | None = None
+
+
+@dataclass
+class Outcome:
+    """How a run ended: done, cancelled or error (with why), and what it took."""
+
+    status: str = "running"
+    detail: str = ""
+    totals: RunTotals | None = None
+
+
 class RunTotals:
     """What all the steps of one run used and cost, for its chat.done."""
 
@@ -627,6 +719,16 @@ class RunTotals:
             "stop_reason": last.stop_reason,
             "cancelled": cancelled or last.cancelled,
         }
+
+
+def _instructions(conn, conversation_id: str) -> str:
+    """An agent run's role, as its profile had it when the run began; '' for a chat."""
+    row = conn.execute(
+        "SELECT profile_name, instructions FROM agent_runs WHERE conversation_id = ?", (conversation_id,)
+    ).fetchone()
+    if row is None:
+        return ""
+    return f"You are the agent «{row['profile_name']}» of the user's hub.\n{row['instructions']}".strip()
 
 
 def _attached(conn, conversation_id: str) -> list:
