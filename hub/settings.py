@@ -27,6 +27,7 @@ class HubSettings:
     status_interval_s: float = 2.0  # GPU / memory / llama-swap sampling; 0 turns the monitor off
     process_interval_s: float = 3.0  # processes and ports in project folders; 0: only when asked
     manage_llama_swap: bool = False  # start llama-swap when it does not answer (Q8); the real hub, not tests
+    schedule_tick_s: float = 0.0  # how often schedules are looked at (9.7); 0: never by themselves - tests
     programs_interval_s: float = 0.0  # looks for new programs (D43); 0: only when asked - tests never scan
     backup_interval_s: float = 0.0  # checks for today's database copy (D29); 0: never
 
@@ -38,5 +39,6 @@ class HubSettings:
             llama_swap_url=os.environ.get(LLAMA_SWAP_URL_ENV, DEFAULT_LLAMA_SWAP_URL),
             manage_llama_swap=True,
             programs_interval_s=600.0,
+            schedule_tick_s=20.0,
             backup_interval_s=3600.0,
         )

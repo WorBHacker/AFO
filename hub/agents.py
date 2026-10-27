@@ -220,7 +220,8 @@ def create_run(
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
     wanted = profile["tools"] or DEFAULT_TOOLS
-    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + computer.TOOLS + (outside or []) if goal else []
+    screen = computer.TOOLS if goal and goal.get("computer", True) else []  # a schedule's run: only if allowed (Q23)
+    extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + screen + (outside or []) if goal else []
     tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
@@ -232,9 +233,10 @@ def create_run(
     if goal:
         conn.execute(
             "UPDATE agent_runs SET kind = 'autonomous', goal = ?, done_when = ?, autonomy = ?, max_replans = ?,"
-            " planner_model_id = ?, network = ? WHERE conversation_id = ?",
+            " planner_model_id = ?, network = ?, schedule_id = ? WHERE conversation_id = ?",
             (goal["goal"], goal.get("done_when") or None, goal["autonomy"], goal["max_replans"],
-             goal.get("planner_model_id") or None, int(bool(goal.get("network"))), conversation_id),
+             goal.get("planner_model_id") or None, int(bool(goal.get("network"))), goal.get("schedule_id"),
+             conversation_id),
         )  # fmt: skip
     return conversation_id
 
@@ -257,7 +259,8 @@ def check_goal(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]
     if budget is not None and (not isinstance(budget, int | float) or budget <= 0):
         raise AgentError("a budget is a positive number of dollars, or none")
     return {"goal": goal, "done_when": " ".join(str(data.get("done_when") or "").split()), "autonomy": autonomy,
-            "network": bool(data.get("network")),
+            "network": bool(data.get("network")), "computer": bool(data.get("computer", True)),
+            "schedule_id": str(data.get("schedule_id") or "") or None,  # a schedule's run (9.7): may it use the screen
             "planner_model_id": planner, "max_steps": _within(data.get("max_steps", defaults["max_steps"]), STEPS,
                                                               "max_steps"),
             "max_minutes": _within(data.get("max_minutes", defaults["max_minutes"]), MINUTES, "max_minutes"),

@@ -227,6 +227,7 @@ Item {
                         }
                     }
                 }
+                SchedulePanel { width: parent.width }
                 Text {
                     objectName: "agentError"
                     visible: text !== ""
@@ -240,9 +241,9 @@ Item {
                 PlainButton {
                     objectName: "agentStart"
                     kind: "primary"
-                    iconName: "bolt"
-                    text: "Начать"
-                    onClicked: Autonomy.start()
+                    iconName: Schedules.draft.when === "now" ? "bolt" : "refresh"
+                    text: Schedules.draft.when === "now" ? "Начать" : "Запланировать"
+                    onClicked: Schedules.draft.when === "now" ? Autonomy.start() : Schedules.create()
                 }
             }
 

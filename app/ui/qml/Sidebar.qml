@@ -176,12 +176,19 @@ Rectangle {
             }
         }
     }
+    ScheduleList {
+        id: scheduled
+        visible: App.mode === "agent" && Schedules.items.length > 0
+        x: 8
+        y: newTask.y + newTask.height + 10
+        width: parent.width - 16
+    }
     ListView {
         id: tasks
         objectName: "agentTasks"
         visible: App.mode === "agent"
         x: 8
-        y: newTask.y + newTask.height + 12
+        y: (scheduled.visible ? scheduled.y + scheduled.height : newTask.y + newTask.height) + 12
         width: parent.width - 16
         height: footer.y - y - 8
         clip: true

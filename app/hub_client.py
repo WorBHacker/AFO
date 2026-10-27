@@ -124,6 +124,28 @@ class HubClient:
     def start_autonomous(self, body: dict) -> dict:
         return self._call("POST", "/v1/runs/autonomous", body)
 
+    # --- schedules and events (9.7, Q23) ---
+
+    def schedules(self) -> dict:
+        """{schedules: [...], quiet: {enabled, from, to}}."""
+        return self._call("GET", "/v1/schedules")
+
+    def add_schedule(self, body: dict) -> dict:
+        return self._call("POST", "/v1/schedules", body)
+
+    def set_schedule(self, sid: str, **change) -> dict:
+        return self._call("PUT", f"/v1/schedules/{sid}", change)
+
+    def delete_schedule(self, sid: str) -> dict:
+        return self._call("DELETE", f"/v1/schedules/{sid}")
+
+    def run_schedule(self, sid: str) -> dict:
+        return self._call("POST", f"/v1/schedules/{sid}/run")
+
+    def set_quiet(self, **change) -> dict:
+        """enabled, from, to (HH:MM)."""
+        return self._call("PUT", "/v1/agent/quiet", change)
+
     def run_plan(self, run_id: str) -> dict:
         return self._call("GET", f"/v1/runs/{run_id}/plan")
 

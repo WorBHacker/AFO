@@ -111,6 +111,7 @@ class QuickApp:
         context.setContextProperty("Memory", self.controller.memory_view)
         context.setContextProperty("Mcp", self.controller.mcp_view)
         context.setContextProperty("AgentScreen", self.controller.computer_view)
+        context.setContextProperty("Schedules", self.controller.schedules_view)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))
@@ -129,6 +130,7 @@ class QuickApp:
         self.controller.programs.requested.connect(self.notifier.notify)  # the question waits in the window
         self.controller.autonomy_view.asked.connect(self.notifier.notify)  # an agent's question waits too
         self.notifier.opened.connect(self._front)
+        self.notifier.quiet = self.controller.schedules_view.quiet_now  # notices wait out the quiet hours (Q23)
         view = self.controller.computer_view  # «Стоп» in the tray's menu too, while the agent acts (D41)
         view.changed.connect(lambda: self.notifier.show_stop(view.active, view.stop))
         app.aboutToQuit.connect(self.close)

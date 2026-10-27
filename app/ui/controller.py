@@ -34,6 +34,7 @@ from .model_setup import ModelSetup
 from .models import RowModel
 from .programs import Programs
 from .projects import Projects
+from .schedule_view import SchedulesView
 from .terminals import Terminals
 from .theme import Theme
 
@@ -168,6 +169,7 @@ class Controller(QObject):
         self.memory_view = MemoryView(self)  # the agent's memory: facts and skills (stage 9.3)
         self.mcp_view = McpView(self)  # outside MCP servers, a section of Connections (9.5, D42)
         self.computer_view = ComputerView(self)  # the agent at the desktop: frame and «Стоп» (9.6, D41)
+        self.schedules_view = SchedulesView(self)  # goals on a schedule and on events (9.7, Q23)
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -425,6 +427,7 @@ class Controller(QObject):
         self.approvals.load()
         self.programs.load()
         self.autonomy_view.load()
+        self.schedules_view.load()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         if self.current:
@@ -1178,6 +1181,8 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind.startswith("schedule."):
+            self.schedules_view.on_event(kind, payload)
         elif kind.startswith("computer."):
             self.computer_view.on_event(kind, payload)
         elif kind.startswith("mcp."):

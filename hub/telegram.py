@@ -122,7 +122,7 @@ def _project(conn: sqlite3.Connection, project_id: str | None) -> dict[str, Any]
 
 class TelegramBot:
     def __init__(self, db: Database, bus: EventBus, approvals: ApprovalQueue, store: SecretStore,
-                 http: httpx.AsyncClient | None = None, api: str = API):  # fmt: skip
+                 http: httpx.AsyncClient | None = None, api: str = API, quiet=None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._approvals = approvals
@@ -132,6 +132,8 @@ class TelegramBot:
         self._tasks: list[asyncio.Task] = []
         self._messages: dict[str, int] = {}  # approval id -> the message that asks about it
         self._offset = 0
+        self._quiet = quiet  # the quiet hours now: their end, or None (9.7, Q23)
+        self._held: list[tuple[str, dict[str, Any]]] = []  # what waits for the morning
 
     def start(self) -> None:
         self._tasks = [asyncio.create_task(self._poll()), asyncio.create_task(self._follow())]
@@ -200,6 +202,8 @@ class TelegramBot:
                 await self._call("sendMessage", chat_id=chat_id,
                                  text="Готово: этот чат получает запросы подтверждения LocalChat.")  # fmt: skip
                 await self._bus.publish("telegram.linked", {"chat_id": chat_id})
+            if chat is not None and chat_id == chat and text and not text.startswith("/"):  # the user's own word
+                await self._bus.publish("telegram.message", {"text": text[:2000]})  # schedules wait for it (9.7)
             return  # nothing else is answered: the bot talks to its user only
         query = update.get("callback_query")
         if not query:
@@ -222,13 +226,39 @@ class TelegramBot:
         subscription = self._bus.subscribe(("approval.requested", "approval.decided", "run.finished",
                                             "run.question", "run.notice"))  # fmt: skip
         while True:
-            event = await subscription.queue.get()
             try:
-                await self._send(event.type, event.payload)
+                event = await asyncio.wait_for(subscription.queue.get(), 60)
+            except TimeoutError:
+                event = None
+            try:
+                if await self._hold(event):
+                    continue
+                if event is not None:
+                    await self._send(event.type, event.payload)
             except (httpx.HTTPError, ValueError, LookupError) as exc:
-                log.warning("telegram: %s not sent: %s", event.type, exc)
+                log.warning("telegram: %s not sent: %s", getattr(event, "type", "the night's"), exc)
             except Exception:
-                log.exception("telegram: %s failed", event.type)
+                log.exception("telegram: %s failed", getattr(event, "type", "the night's"))
+
+    async def _hold(self, event: Any) -> bool:
+        """In the quiet hours requests and the agent's words wait for the morning (Q23); then they go, in order -
+        a request answered in the window meanwhile is not sent at all. True when this event waits."""
+        quiet = await self._quiet() if self._quiet is not None else None
+        if quiet is not None:
+            if event is None:
+                return True
+            if event.type == "approval.decided":
+                gone = (event.payload.get("approval") or {}).get("id")
+                kept = [h for h in self._held if (h[1].get("approval") or {}).get("id") != gone]
+                answered_overnight = len(kept) != len(self._held)
+                self._held = kept
+                return answered_overnight  # its request never went out: nothing to edit
+            self._held.append((event.type, event.payload))
+            return True
+        held, self._held = self._held, []
+        for kind, payload in held:
+            await self._send(kind, payload)
+        return False
 
     async def _send(self, kind: str, payload: dict[str, Any]) -> None:
         chat = await self._db.acall(linked_chat)

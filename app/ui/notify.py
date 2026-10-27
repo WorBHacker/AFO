@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QByteArray, QObject, QRectF, Qt, Signal
+from PySide6.QtCore import QByteArray, QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
@@ -40,6 +40,12 @@ class Notifier(QObject):
         self.tray: QSystemTrayIcon | None = None
         self.stop_shown = False
         self._stop_agent: Callable[[], None] | None = None  # while the agent controls the computer (D41)
+        self.quiet: Callable[[], bool] | None = None  # the quiet hours now (Q23): notices wait for the morning
+        self.held: list[tuple[str, str]] = []
+        self._morning = QTimer(self)
+        self._morning.setInterval(60_000)
+        self._morning.timeout.connect(self.flush)
+        self._morning.start()
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(tray_icon(), self)
             self.tray.setToolTip("LocalChat")
@@ -57,6 +63,9 @@ class Notifier(QObject):
         """Shows a notice when the window is not in front (in front, the window says it itself)."""
         if self._active():
             return False
+        if self.quiet is not None and self.quiet():
+            self.held.append((title, text))
+            return False
         self.shown.append((title, text))
         if self.tray is not None:
             self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, SHOW_MS)
@@ -68,6 +77,14 @@ class Notifier(QObject):
         self._stop_agent = stop if shown else None
         if self.tray is not None:
             self._stop.setVisible(shown)
+
+    def flush(self) -> None:
+        """The quiet hours are over: what waited, as one notice."""
+        if not self.held or (self.quiet is not None and self.quiet()):
+            return
+        held, self.held = self.held, []
+        title, text = held[-1] if len(held) == 1 else (f"Пока были тихие часы: {len(held)}", held[-1][1])
+        self.notify(title, text)
 
     def _stop_now(self) -> None:
         if self._stop_agent is not None:

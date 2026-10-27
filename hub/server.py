@@ -40,6 +40,7 @@ from .api import (
     processes,
     programs,
     projects,
+    schedules,
     stats,
     system,
     terminals,
@@ -63,6 +64,7 @@ from .mcp_client import McpServers
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects
+from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
@@ -118,7 +120,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
-        app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store)
+        app.state.scheduler = Scheduler(db, bus, app.state.agents,  # goals on a schedule and on events (9.7)
+                                        tick_s=settings.schedule_tick_s or 20.0)  # fmt: skip
+        app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store,
+                                         quiet=app.state.scheduler.quiet_now)  # fmt: skip
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
@@ -143,6 +148,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
         await asyncio.to_thread(prune, paths.root / "computer")  # snapshots past their term (D30)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
@@ -169,6 +175,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.processes.stop()
             await app.state.programs.stop()
             await app.state.backup.stop()
+            await app.state.scheduler.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -191,6 +198,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(model_settings.router)
     app.include_router(llama.router)
     app.include_router(memory.router)
+    app.include_router(schedules.router)
     app.include_router(mcp_servers.router)
     app.include_router(conversations.router)
     app.include_router(connections.router)

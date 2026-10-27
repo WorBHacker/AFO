@@ -167,3 +167,42 @@ def test_without_a_token_nothing_is_sent(bot):
     tg._store.delete(telegram.TOKEN)
     asyncio.run(tg._send("run.finished", {"run": {"profile_name": "x", "status": "done"}}))
     assert api.calls == []
+
+
+def test_the_users_words_and_the_quiet_hours(bot):
+    """A message from the linked chat is an event for the schedules (9.7); in the quiet hours what the bot would
+    send waits for the morning, and a request answered meanwhile is never sent (Q23)."""
+    tg, api, db, queue = bot
+    db.call(lambda c: telegram._set(c, telegram.CHAT_KEY, CHAT))
+    night = {"quiet": True}
+
+    async def quiet():
+        return "08:00" if night["quiet"] else None
+
+    tg._quiet = quiet
+
+    async def scenario():
+        heard = tg._bus.subscribe(("telegram.message",))
+        await tg._handle(message(999, "чужой"))  # a stranger's words: nothing
+        await tg._handle(message(CHAT, "/start"))  # a command: nothing
+        await tg._handle(message(CHAT, "Пришли сводку"))
+        said = await asyncio.wait_for(heard.queue.get(), 5)
+        sub = tg._bus.subscribe(("approval.*", "run.*"))
+        ask = asyncio.create_task(queue.ask("run_command", {"command": "pytest -q"}, conversation_id="c1",
+                                            project_id="p1"))  # fmt: skip
+        await tg._hold(await sub.queue.get())  # requested at night: held
+        await tg._bus.publish("run.notice", {"run_id": "r1", "text": "Сводка готова"})
+        await tg._hold(await sub.queue.get())
+        pending = (await queue.pending())[0]
+        await queue.decide(pending["id"], allow=True, by="app")  # answered in the window before morning
+        assert await tg._hold(await sub.queue.get()) is True  # its request never went out: nothing to edit
+        await ask
+        assert api.sent() == []
+        night["quiet"] = False
+        assert await tg._hold(None) is False  # morning: what waited goes
+        return said
+
+    said = asyncio.run(scenario())
+    assert said.payload == {"text": "Пришли сводку"}
+    texts = [m["text"] for m in api.sent()]
+    assert texts == ["<b>Агент сообщает</b>\nСводка готова"]

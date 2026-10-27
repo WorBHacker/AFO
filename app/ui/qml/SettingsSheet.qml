@@ -88,6 +88,44 @@ Sheet {
         text: "Папки и сайты для агента…"
         onClicked: { sheet.close(); App.openUi("agent-access") }
     }
+    Row {
+        objectName: "quietHours"
+        spacing: 8
+        Text {
+            text: "Тихие часы: с"
+            color: Theme.p.text_soft
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Field { id: quietFrom; objectName: "quietFrom"; width: 70; text: Schedules.quiet.from || "23:00" }
+        Text {
+            text: "до"
+            color: Theme.p.text_soft
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Field { id: quietTo; objectName: "quietTo"; width: 70; text: Schedules.quiet.to || "08:00" }
+        Segmented {
+            objectName: "quietEnabled"
+            options: [{ id: "on", name: "вкл" }, { id: "off", name: "выкл" }]
+            value: Schedules.quiet.enabled === false ? "off" : "on"
+            onPicked: (id) => Schedules.setQuiet(id === "on", quietFrom.text, quietTo.text)
+        }
+        PlainButton {
+            text: "Сохранить"
+            onClicked: Schedules.setQuiet(Schedules.quiet.enabled !== false, quietFrom.text, quietTo.text)
+        }
+    }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: Schedules.quietText + "."
+        color: Theme.p.faint
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
 
     SectionTitle { text: "Запуск" }
     Column {

@@ -327,6 +327,9 @@ class FakeClient:
         self.model_saved = {}  # model id -> [settings of each version]
         self.exported = {}
         self.auto_calls = []
+        self.scheduled = []
+        self.schedule_calls = []
+        self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
         self.access = {
             "folders": [{"path": "D:/Reports", "write": False}],
@@ -455,6 +458,39 @@ class FakeClient:
         self.access_calls.append(changes)
         self.access = {**self.access, **changes}
         return dict(self.access)
+
+    def schedules(self):
+        return {"schedules": [dict(x) for x in self.scheduled], "quiet": dict(self.quiet)}
+
+    def add_schedule(self, body):
+        self.schedule_calls.append(("add", body))
+        found = {"id": f"s{len(self.scheduled) + 1}", "title": body["title"], "goal": body["goal"],
+                 "trigger": body["trigger"], "computer": body["computer"], "enabled": True,
+                 "next_at": "2026-10-29T09:00", "waiting_until": None, "pending": [], "last_error": None,
+                 "last_run_id": None}  # fmt: skip
+        self.scheduled.append(found)
+        return found
+
+    def set_schedule(self, sid, **change):
+        self.schedule_calls.append(("set", sid, change))
+        found = next(x for x in self.scheduled if x["id"] == sid)
+        found.update(change)
+        return found
+
+    def delete_schedule(self, sid):
+        self.schedule_calls.append(("delete", sid))
+        self.scheduled = [x for x in self.scheduled if x["id"] != sid]
+        return {"removed": sid}
+
+    def run_schedule(self, sid):
+        self.schedule_calls.append(("run", sid))
+        return {"run_id": "auto1"}
+
+    def set_quiet(self, **change):
+        if "from" in change and ":" not in change["from"]:
+            raise HubError("quiet from: a time like 09:30")
+        self.quiet = {**self.quiet, **change}
+        return dict(self.quiet)
 
     def start_autonomous(self, body):
         self.auto_calls.append(("start", body))
@@ -3358,6 +3394,7 @@ def test_the_window_notifies_about_requests_and_runs(qapp):
         app.attach(FakeClient(), start_events=False)
         wait_until(lambda: not app.bg.busy)
         quick.notifier._active = lambda: False  # the window behind others
+        quick.notifier.quiet = lambda: False  # whatever the time the test runs at: not the quiet hours
         send(app, "approval.requested", {"approval": {**APPROVAL, "id": "ap9", "conversation_id": "other"}})
         send(app, "run.finished", {"run": {**RUN, "status": "done"}})
         assert quick.notifier.shown == [
@@ -3887,6 +3924,83 @@ def test_the_agent_at_the_desktop_frame_and_stop(qapp):
         wait_until(lambda: not frame.property("visible"))
         app.on_event({"type": "computer.paused", "payload": {"run_id": "r1", "why": "person"}})
         assert app.flashText.startswith("Агент ждёт")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_schedules_in_the_window(qapp, tmp_path):
+    from datetime import datetime
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+    from app.ui.schedule_view import trigger_text, when_text
+
+    assert trigger_text({"kind": "time", "every": "weekdays", "at": "09:00", "days": [1, 5]}) == "по пн, пт в 09:00"
+    assert trigger_text({"kind": "telegram", "contains": ""}) == "любое сообщение боту"
+    now = datetime(2026, 10, 28, 12, 0)
+    assert when_text({"enabled": True, "next_at": "2026-10-29T09:00"}, now) == "завтра в 09:00"
+    assert when_text({"enabled": True, "waiting_until": "2026-10-29T08:00"}, now) == "ждёт конца тихих часов (08:00)"
+    assert when_text({"enabled": True, "next_at": None}, now) == "ждёт события"
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("agent")
+        view, schedules = app.autonomy_view, app.schedules_view
+        view.newTask()
+        view.setField("goal", "Разобрать новые счета")
+        assert quick.window.findChild(QObject, "schedulePanel") is not None
+        schedules.setField("when", "event")
+        schedules.create()
+        assert schedules.error == "Выберите папку, в которой ждать новые файлы"
+        schedules.setField("folder", str(tmp_path))
+        schedules.setField("pattern", "*.pdf")
+        schedules.setComputer(True)
+        schedules.create()
+        wait_until(lambda: not app.bg.busy and schedules.items)
+        _kind, body = client.schedule_calls[0]
+        assert body["trigger"] == {"kind": "file", "folder": str(tmp_path), "pattern": "*.pdf"}
+        assert body["computer"] is True and body["goal"]["goal"] == "Разобрать новые счета"
+        assert app.flashText.startswith("Запланировано: новый файл *.pdf в ")
+        assert schedules.draft["when"] == "now"  # the form is back to «now»
+        schedules.setField("when", "time")
+        schedules.setField("every", "weekdays")
+        schedules.toggleDay(1)  # Monday off
+        schedules.toggleDay(6)  # Saturday on
+        schedules.setField("at", "7:45")
+        schedules.create()
+        wait_until(lambda: not app.bg.busy and len(schedules.items) == 2)
+        assert client.schedule_calls[1][1]["trigger"] == {"kind": "time", "every": "weekdays", "at": "7:45",
+                                                          "days": [2, 3, 4, 5, 6]}  # fmt: skip
+        row = schedules.items[0]
+        assert row["trigger"].startswith("новый файл *.pdf") and row["computer"] is True
+        schedules.setEnabled("s1", False)
+        wait_until(lambda: not app.bg.busy and not schedules.items[0]["enabled"])
+        assert schedules.items[0]["when"] == "выключено"
+        schedules.runNow("s2")
+        wait_until(lambda: ("run", "s2") in client.schedule_calls)
+        schedules.remove("s1")
+        assert app.question["title"] == "Удалить расписание «Разобрать новые счета»?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and len(schedules.items) == 1)
+        schedules.setQuiet(True, "полночь", "08:00")
+        wait_until(lambda: not app.bg.busy and app.flashError)
+        schedules.setQuiet(False, "22:00", "07:00")
+        wait_until(lambda: not app.bg.busy and schedules.quiet["enabled"] is False)
+        assert schedules.quietText.startswith("Тихих часов нет")
+        notifier = quick.notifier  # the quiet hours: notices wait for the morning
+        notifier.quiet = lambda: True
+        notifier._active = lambda: False
+        assert notifier.notify("Агент спрашивает", "Какой счёт?") is False and notifier.held
+        notifier.quiet = lambda: False
+        notifier.flush()
+        assert notifier.shown[-1] == ("Агент спрашивает", "Какой счёт?") and notifier.held == []
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
