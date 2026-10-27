@@ -40,6 +40,7 @@ Window {
             width: parent.width
             onSearchRequested: palette.open()
             onFeedRequested: feedSheet.open()
+            onApprovalsRequested: approvalsSheet.open()
         }
         ChatView {
             visible: App.mode === "chats"
@@ -141,6 +142,7 @@ Window {
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
     FeedSheet { id: feedSheet }
+    ApprovalsSheet { id: approvalsSheet }
     ProjectSheet { id: projectSheet }
     ContextSheet { id: contextSheet }
     CardSheet { id: cardSheet }
@@ -153,11 +155,17 @@ Window {
             if (what === "budgets") budgetsSheet.open()
             else if (what === "settings") settingsSheet.open()
             else if (what === "feed") feedSheet.open()
+            else if (what === "approvals") approvalsSheet.open()
             else if (what === "rename") renameDialog.openFor(App.currentId)
             else if (what === "models") modelMenu.openAt(composer.modelChip)
             else if (what === "add-project") folderDialog.open()
             else if (what === "search-project") Qt.callLater(sidebar.focusProjectSearch)
         }
+    }
+
+    Connections {
+        target: Approvals
+        function onArrived() { approvalsSheet.open() }  // the chat open now stands still until it is answered
     }
 
     // ---------- keyboard ----------
@@ -183,6 +191,7 @@ Window {
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+B"; onActivated: budgetsSheet.open() }
     Shortcut { sequence: "Ctrl+E"; onActivated: feedSheet.open() }
+    Shortcut { sequence: "Ctrl+Shift+A"; onActivated: approvalsSheet.open() }
     Shortcut { sequence: "Ctrl+,"; onActivated: settingsSheet.open() }
     Shortcut { sequence: "F2"; enabled: App.currentId !== ""; onActivated: renameDialog.openFor(App.currentId) }
     Shortcut { sequence: "Ctrl+Shift+U"; onActivated: App.unloadLocal() }

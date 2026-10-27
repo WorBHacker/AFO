@@ -21,6 +21,7 @@ from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
 from . import commands, mentions, rows
+from .approvals import Approvals
 from .composer import Mentions
 from .feed import Feed
 from .models import RowModel
@@ -80,6 +81,7 @@ class Controller(QObject):
     modeChanged = Signal()
     chatProjectsChanged = Signal()
     contextChanged = Signal()
+    claudeCodeChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
     uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
@@ -137,6 +139,8 @@ class Controller(QObject):
         self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
         self.mentions = Mentions(self)
+        self.approvals = Approvals(self)
+        self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
 
     def _timer(self, interval: int, slot, *, single: bool = False) -> QTimer:
         timer = QTimer(self)
@@ -207,6 +211,10 @@ class Controller(QObject):
     @Property(str, notify=hubChanged)
     def hubState(self) -> str:
         return self._hub_state
+
+    @Property(bool, notify=claudeCodeChanged)
+    def claudeCodeInstalled(self) -> bool:
+        return bool(self._claude_code.get("installed"))
 
     @Property(str, notify=hubChanged)
     def hubPort(self) -> str:
@@ -363,8 +371,14 @@ class Controller(QObject):
         self.load_secrets()
         self.projects.load()
         self.terminals.load()
+        self.approvals.load()
+        self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         if self.current:
             self.openChat(self.current)
+
+    def _set_claude_code(self, status: dict[str, Any]) -> None:
+        self._claude_code = status
+        self.claudeCodeChanged.emit()
 
     def _call(self, fn, on_done=None, on_error=None) -> None:
         if self.client is None:
@@ -740,8 +754,8 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value == "feed":
-                self.uiRequested.emit("feed")
+            elif value in ("feed", "approvals"):
+                self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")
                 self.uiRequested.emit("search-project")
@@ -986,6 +1000,10 @@ class Controller(QObject):
             self.projects.on_event(kind, payload)
         elif kind.startswith("terminal."):
             self.terminals.on_event(kind, payload)
+        elif kind.startswith("approval."):
+            self.approvals.on_event(kind, payload)
+        elif kind == "claude_code.limit":
+            self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
         elif kind == "hub.stopping":
             self._set_hub("stopped")
 

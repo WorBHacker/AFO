@@ -73,19 +73,96 @@ TOOL_ICONS = {
     "list_files": "folder",
     "read_file": "file",
     "search_code": "search",
+    "find_symbol": "search",
+    "file_outline": "outline",
     "git_status": "branch",
     "git_diff": "diff",
+    "git_log": "commit",
     "terminal_output": "terminal",
+    "list_terminals": "terminal",
+    "read_terminal": "terminal",
     "list_processes": "cpu",
+    "get_ecosystem_map": "layers",
+    "get_project_card": "file",
+    "list_relations": "layers",
+    "get_events": "activity",
+    # Claude Code's own tools (stage 4)
+    "Read": "file",
+    "Edit": "edit",
+    "MultiEdit": "edit",
+    "Write": "edit",
+    "NotebookEdit": "edit",
+    "Bash": "terminal",
+    "PowerShell": "terminal",
+    "Glob": "search",
+    "Grep": "search",
+    "LS": "folder",
+    "WebFetch": "cloud",
+    "WebSearch": "cloud",
+    "TodoWrite": "check",
+    "Task": "agent",
+    "Agent": "agent",
 }
+HUB_MCP = "mcp__localchat__"  # the hub's tools as Claude Code calls them
 TOOL_OUTPUT_SHOWN = 6000  # characters of a result shown when opened
+
+
+def short_path(path: str) -> str:
+    """An absolute path by its last parts (Claude Code names files by absolute path); a relative one as it is."""
+    norm = path.replace("\\", "/")
+    parts = [p for p in norm.split("/") if p]
+    absolute = norm.startswith("/") or (len(norm) > 1 and norm[1] == ":")
+    return "/".join(parts[-3:]) if absolute and len(parts) > 3 else norm
 
 
 def tool_label(name: str, args: Any) -> str:
     """What a tool call does, in a few words: 'Читаю hub/chat.py', 'Ищу «budget»'."""
     a = args if isinstance(args, dict) else {}
+    name = name.removeprefix(HUB_MCP)
     path = a.get("path") if isinstance(a.get("path"), str) else ""
+    file = short_path(str(a.get("file_path") or a.get("notebook_path") or ""))
     match name:
+        case "Read":
+            return f"Читаю {file}"
+        case "Edit" | "MultiEdit" | "NotebookEdit":
+            return f"Правлю {file}"
+        case "Write":
+            return f"Пишу {file}"
+        case "Bash" | "PowerShell":
+            command = " ".join(str(a.get("command", "")).split())
+            return f"Выполняю {command[:80]}" + ("…" if len(command) > 80 else "")
+        case "Glob":
+            return f"Ищу файлы {a.get('pattern', '')}"
+        case "Grep":
+            return f"Ищу «{a.get('pattern', '')}»"
+        case "LS":
+            return f"Смотрю папку {short_path(path)}"
+        case "WebFetch":
+            return f"Открываю {a.get('url', '')}"
+        case "WebSearch":
+            return f"Ищу в сети «{a.get('query', '')}»"
+        case "TodoWrite":
+            return "Обновляю список задач"
+        case "Task" | "Agent":
+            return f"Поручаю подагенту: {a.get('description', '')}"
+        case "get_ecosystem_map":
+            return "Смотрю карту проектов"
+        case "get_project_card":
+            return f"Читаю карточку «{a.get('project', '')}»"
+        case "list_relations":
+            return "Смотрю связи проектов"
+        case "find_symbol":
+            return f"Ищу определение {a.get('name', '')}"
+        case "file_outline":
+            return f"Смотрю структуру {path}"
+        case "git_log":
+            return "Смотрю историю git"
+        case "list_terminals":
+            return "Смотрю терминалы"
+        case "read_terminal":
+            return f"Читаю терминал «{a.get('terminal', '')}»"
+        case "get_events":
+            return "Смотрю, что происходило"
         case "read_file":
             start = a.get("start_line")
             return f"Читаю {path}" + (f" со строки {start}" if isinstance(start, int) and start > 1 else "")
@@ -109,7 +186,7 @@ def tools_of(message: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": b["id"],
-            "icon": TOOL_ICONS.get(b["name"], "dots"),
+            "icon": TOOL_ICONS.get(b["name"].removeprefix(HUB_MCP), "dots"),
             "label": tool_label(b["name"], b.get("input")),
             "project": (b.get("input") or {}).get("project", "") if isinstance(b.get("input"), dict) else "",
             "state": "running",

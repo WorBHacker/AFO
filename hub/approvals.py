@@ -40,6 +40,7 @@ DESTRUCTIVE = re.compile(
     r"|\bdrop\s+(table|database)\b|\bshutdown\b|\bmkfs\b",
     re.IGNORECASE,
 )
+SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
 DENIED = "the user denied this"
 EXPIRED = "nobody answered: the run ended before the user did"
 
@@ -186,7 +187,7 @@ class ApprovalQueue:
                 (approval_id, conversation_id, project_id, client_id, tool, json.dumps(data, ensure_ascii=False), key,
                  *(("allowed", "auto", utc_now(), "hub") if covered else ("pending", None, None, None))),
             )  # fmt: skip
-            return conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+            return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
         row = _row(await self._db.acall(write)) | {"preview": shown}
         if row["status"] == "allowed":
@@ -224,14 +225,12 @@ class ApprovalQueue:
 
     async def pending(self) -> list[dict]:
         rows = await self._db.acall(
-            lambda conn: conn.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at").fetchall()
+            lambda conn: conn.execute(f"{SELECT} WHERE a.status = 'pending' ORDER BY a.created_at").fetchall()
         )
         return [await self._with_preview(_row(r)) for r in rows]
 
     async def get(self, approval_id: str) -> dict:
-        row = await self._db.acall(
-            lambda conn: conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
-        )
+        row = await self._db.acall(lambda conn: conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone())
         if row is None:
             raise ApprovalError(f"no such approval: {approval_id}")
         return await self._with_preview(_row(row))
@@ -253,7 +252,7 @@ class ApprovalQueue:
                 " ELSE ? END, comment = ?, decided_at = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
                 (status, scope, scope, comment or None, utc_now(), by, approval_id),
             ).rowcount
-            return conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone() if updated else None
+            return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone() if updated else None
 
         found = await self._db.acall(write)
         if found is None:

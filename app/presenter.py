@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 EFFORTS = [
@@ -79,11 +80,26 @@ def answer_meta(usage: dict[str, Any] | None, *, stats: dict | None = None, cost
     cost = cost if cost is not None else usage.get("cost_usd")
     if cost:
         parts.append(money(cost))
+    if stats.get("subscription"):  # Claude Code: the subscription pays; its own estimate for scale (D12)
+        estimate = stats.get("cost_estimate_usd")
+        parts.append("подписка" + (f", по оценке ≈{money(estimate)}" if estimate else ""))
     if usage.get("cancelled"):
         parts.append("остановлено")
     if usage.get("stop_reason") == "max_tokens":
         parts.append("обрезано по лимиту")
     return " · ".join(parts)
+
+
+def claude_code_limit(info: dict[str, Any]) -> str:
+    """A notice about the Claude Code subscription's limits (D12): near, or reached and until when."""
+    resets = info.get("resetsAt")
+    when = ""
+    if isinstance(resets, int | float) and resets > 0:
+        seconds = resets / 1000 if resets > 10**11 else resets  # seconds or milliseconds: the docs do not say
+        when = " до " + datetime.fromtimestamp(seconds).strftime("%d.%m %H:%M")
+    if info.get("status") == "rejected":
+        return f"Claude Code: лимит подписки исчерпан{when}"
+    return f"Claude Code: лимит подписки близко{when}"
 
 
 def status_text(status: dict[str, Any] | None) -> str:

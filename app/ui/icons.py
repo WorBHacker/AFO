@@ -61,6 +61,8 @@ PATHS = {
     "keyboard": '<rect x="3.5" y="6.5" width="17" height="11" rx="2"/>'
     '<path d="M7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
     "outline": '<path d="M4.5 6h.01M8.5 6h11M8.5 12h.01M12.5 12h7M8.5 18h.01M12.5 18h7"/>',
+    "shield": '<path d="M12 3.5l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9v-5z"/><path d="M9 12l2 2 4-4"/>',
+    "agent": '<rect x="4.5" y="7.5" width="15" height="11" rx="3"/><path d="M12 7.5V4.5M9 12.5h.01M15 12.5h.01"/>',
 }
 
 

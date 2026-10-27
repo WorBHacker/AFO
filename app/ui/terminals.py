@@ -267,6 +267,28 @@ class Terminals(QObject):
             lambda error: self.app.show_error(f"Терминал не открылся: {error}"),
         )
 
+    @Slot()
+    def newClaudeCode(self) -> None:
+        """Claude Code in a terminal of the open project, with the hub's tools (stage 4, D8)."""
+        if not self._project:
+            return
+        pid, cols, rows = self._project, self._cols, self._rows
+
+        def done(info: dict[str, Any]) -> None:
+            if pid != self._project:
+                return
+            self._infos[info["id"]] = info
+            self._emus.setdefault(info["id"], self._new_emu())
+            self.tabsChanged.emit()
+            self.setPanelOpen(True)
+            self.openTerminal(info["id"])
+
+        self.app._call(
+            lambda: self.app.client.claude_code_terminal(pid, cols=cols, rows=rows),
+            done,
+            lambda error: self.app.show_error(f"Claude Code не запустился: {error}"),
+        )
+
     def _new_emu(self) -> _Emu:
         screen = TermScreen(self._cols, self._rows)
         return _Emu(screen=screen, stream=pyte.Stream(screen))

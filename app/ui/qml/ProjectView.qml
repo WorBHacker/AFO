@@ -132,6 +132,13 @@ Item {
                         onClicked: App.newChatAbout(Projects.currentId)
                     }
                     IconButton {
+                        objectName: "claudeCodeTerminal"
+                        visible: App.claudeCodeInstalled
+                        iconName: "agent"
+                        tip: "Claude Code в терминале — с инструментами хаба (проекту нужно разрешение на облако)"
+                        onClicked: Terminals.newClaudeCode()
+                    }
+                    IconButton {
                         objectName: "projectSettings"
                         iconName: "sliders"
                         tip: "Настройки проекта: описание, облачные модели"

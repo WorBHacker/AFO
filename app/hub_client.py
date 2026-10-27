@@ -259,6 +259,23 @@ class HubClient:
     def shutdown(self) -> None:
         self._call("POST", "/v1/shutdown")
 
+    # --- approvals and Claude Code (stage 4, D18) ---
+
+    def approvals(self) -> list[dict]:
+        """What agents wait to be allowed, oldest first, each with its preview (command, diff...)."""
+        return self._call("GET", "/v1/approvals")["approvals"]
+
+    def answer_approval(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "") -> dict:
+        body = {"allow": allow, "scope": scope, "comment": comment}
+        return self._call("POST", f"/v1/approvals/{approval_id}", body)
+
+    def claude_code(self) -> dict:
+        """{installed, command, detail, running}: is the user's Claude Code CLI there."""
+        return self._call("GET", "/v1/claude-code")
+
+    def claude_code_terminal(self, project_id: str, cols: int = 120, rows: int = 30) -> dict:
+        return self._call("POST", f"/v1/projects/{project_id}/claude-code/terminal", {"cols": cols, "rows": rows})
+
 
 def connect(paths: DataPaths | None = None, *, start: bool = True, timeout: float = START_TIMEOUT_S) -> HubClient:
     """The client of the running hub; starts the hub first when none answers and `start` is set."""

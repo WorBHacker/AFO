@@ -172,6 +172,25 @@ GIT = {
 }
 
 
+APPROVAL = {
+    "id": "ap1",
+    "created_at": "2026-10-27T01:02:03.000Z",
+    "conversation_id": "c1",
+    "project_id": "p1",
+    "client": "hub-claude-code",
+    "tool": "Edit",
+    "kind": "write",
+    "destructive": False,
+    "status": "pending",
+    "input": {"file_path": "D:\\Code\\LocalChat\\hub\\chat.py", "old_string": "a", "new_string": "b"},
+    "preview": {
+        "kind": "diff",
+        "note": "D:\\Code\\LocalChat\\hub\\chat.py",
+        "text": "--- a/hub/chat.py\n+++ b/hub/chat.py\n@@ -1,2 +1,2 @@\n x = 1\n-a\n+b\n",
+    },
+}
+
+
 class FakeClient:
     token = "t"
     base_url = "http://127.0.0.1:8765"
@@ -206,6 +225,9 @@ class FakeClient:
         self.note_list = []
         self.link_list = []
         self.card_state = {"confirmed": None, "draft": None, "versions": [], "missing": [], "drafting": False}
+        self.pending = [dict(APPROVAL)]
+        self.answers = []
+        self.claude_terminals = []
 
     def models(self):
         return MODELS
@@ -410,6 +432,26 @@ class FakeClient:
 
     def terminals(self, project_id=None):
         return [dict(t) for t in self.term_list if project_id in (None, t["project_id"])]
+
+    def approvals(self):
+        return [dict(a) for a in self.pending]
+
+    def answer_approval(self, approval_id, *, allow, scope="once", comment=""):
+        if approval_id == "gone":
+            raise HubError("no open approval gone: it was answered already, or never asked")
+        self.answers.append((approval_id, allow, scope, comment))
+        self.pending = [a for a in self.pending if a["id"] != approval_id]
+        return {"id": approval_id, "status": "allowed" if allow else "denied"}
+
+    def claude_code(self):
+        return {"installed": True, "command": ["claude.exe"], "detail": "", "running": []}
+
+    def claude_code_terminal(self, project_id, cols=120, rows=30):
+        info = {**TERMINAL, "id": f"t{len(self.term_list) + 1}", "project_id": project_id, "title": "Claude Code",
+                "cols": cols, "rows": rows, "created_at": "2026-10-27T01:00:00.000Z"}  # fmt: skip
+        self.term_list.append(info)
+        self.claude_terminals.append(project_id)
+        return dict(info)
 
     def start_terminal(self, project_id, *, cols, rows, path="", command=None):
         info = {**TERMINAL, "id": f"t{len(self.term_list) + 1}", "project_id": project_id, "cols": cols, "rows": rows,
@@ -765,8 +807,19 @@ def test_rename_and_delete_a_chat(app):
     wait_until(lambda: app.current is None)  # the open chat was the deleted one
 
 
+def item_named(root, name):
+    """An item below `root` by objectName, through the visual tree (a Repeater's items are not QObject children)."""
+    for child in root.childItems():
+        if child.objectName() == name:
+            return child
+        if (found := item_named(child, name)) is not None:
+            return found
+    return None
+
+
 def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
     from PySide6.QtCore import QMetaObject, QObject
+    from PySide6.QtQuick import QQuickItem
 
     from app.ui.main import QuickApp
 
@@ -776,7 +829,9 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         app.attach(FakeClient(), start_events=False)
         wait_until(lambda: not app.bg.busy)
         opened(app)
-        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog"):
+        wait_until(lambda: app.approvals.count == 1)
+        assert quick.window.findChild(QObject, "approvalsButton").property("visible")  # the shield, with its count
+        for name in ("palette", "budgetsSheet", "settingsSheet", "renameDialog", "approvalsSheet"):
             popup = quick.window.findChild(QObject, name)
             assert popup is not None, name
             QMetaObject.invokeMethod(popup, "open")
@@ -784,6 +839,10 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
             if name == "palette":
                 items = popup.property("items")  # a QJSValue or already a list, depending on how it was set
                 assert len(items.toVariant() if hasattr(items, "toVariant") else items) > 4
+            if name == "approvalsSheet":  # a request with its diff and the three answers
+                cards = quick.window.findChild(QQuickItem, "approvalItems")
+                assert item_named(cards, "approveOnce") is not None
+                assert item_named(cards, "approveChat").property("visible")
             QMetaObject.invokeMethod(popup, "close")
             for _ in range(20):
                 QApplication.processEvents()
@@ -1654,3 +1713,81 @@ def test_search_lines_start_near_their_match():
     )
     html = rows_[1]["html"]
     assert html.startswith("…") and ">Manager</span>" in html and "from" not in html
+
+
+# --- stage 4: approvals and Claude Code ---
+
+
+def test_approval_rows():
+    from app.ui.approvals import approval_rows
+
+    projects = {"p1": {"id": "p1", "name": "LocalChat", "path": "D:\\Code\\LocalChat"}}
+    preview = {"kind": "command", "text": "git push", "note": "Push"}
+    command = {**APPROVAL, "id": "ap2", "tool": "Bash", "kind": "command", "destructive": True,
+               "input": {"command": "git push"}, "preview": preview}  # fmt: skip
+    edit, push = approval_rows([APPROVAL, command], projects=projects, chats={"c1": "Первый"})
+    assert edit["title"] == "Править hub/chat.py" and edit["who"] == "Claude Code"
+    assert edit["where"] == "LocalChat · «Первый»" and edit["note"] == "hub/chat.py"
+    assert [line["mark"] for line in edit["lines"]] == ["file", "file", "hunk", "", "del", "add"]
+    assert edit["chatScope"] == "все Edit в чате" and edit["time"].count(":") == 1
+    assert push["title"] == "Выполнить команду" and push["destructive"] and push["lines"] == [{"text": "git push",
+                                                                                            "mark": ""}]  # fmt: skip
+    assert push["chatScope"] == "эта команда в этом чате" and push["icon"] == "terminal"
+
+
+def test_claude_code_tool_rows_and_footer():
+    from app import presenter
+
+    path = "D:/AI model/LocalChat/hub/claude_code.py"
+    assert rows.tool_label("Read", {"file_path": path}) == "Читаю LocalChat/hub/claude_code.py"
+    assert rows.tool_label("Edit", {"file_path": "hub/x.py"}) == "Правлю hub/x.py"
+    assert rows.tool_label("Bash", {"command": "pytest  -q"}) == "Выполняю pytest -q"
+    assert rows.tool_label("mcp__localchat__read_file", {"project": "p", "path": "a.py"}) == "Читаю a.py"
+    assert rows.tool_label("mcp__localchat__get_ecosystem_map", {}) == "Смотрю карту проектов"
+    assert rows.tool_label("Task", {"description": "найти тесты"}) == "Поручаю подагенту: найти тесты"
+    built = rows.tools_of({"content": [{"type": "tool_call", "id": "t", "name": "mcp__localchat__git_log",
+                                        "input": {"project": "p"}}]})  # fmt: skip
+    assert built[0]["icon"] == "commit" and built[0]["project"] == "p"
+    footer = presenter.answer_meta({"output_tokens": 30, "estimated": 1},
+                                   stats={"subscription": True, "cost_estimate_usd": 0.0123}, cost=0.0)  # fmt: skip
+    assert footer == "~30 ток. · подписка, по оценке ≈" + presenter.money(0.0123)
+    assert presenter.claude_code_limit({"status": "rejected"}) == "Claude Code: лимит подписки исчерпан"
+    assert "близко до " in presenter.claude_code_limit({"status": "allowed_warning", "resetsAt": 1890000000})
+
+
+def test_the_approval_queue(app):
+    approvals = app.approvals
+    wait_until(lambda: approvals.count == 1)  # loaded with the rest when the window attached
+    assert approvals.items[0]["title"] == "Править hub/chat.py"
+    arrived = []
+    approvals.arrived.connect(lambda: arrived.append(1))
+    opened(app)  # chat c1 is open
+    request = {**APPROVAL, "id": "ap3", "tool": "Bash", "kind": "command", "input": {"command": "pytest"},
+               "preview": {"kind": "command", "text": "pytest", "note": ""}}  # fmt: skip
+    send(app, "approval.requested", {"approval": request})
+    assert approvals.count == 2 and arrived == [1]  # from the open chat: the queue opens
+    assert "ждёт подтверждения" in app.flashText
+    send(app, "approval.requested", {"approval": {**request, "id": "ap4", "conversation_id": "other"}})
+    assert approvals.count == 3 and arrived == [1]  # another chat's: only the badge and the notice
+    send(app, "approval.decided", {"approval": {**request, "id": "ap4", "status": "expired"}})
+    assert approvals.count == 2
+    approvals.answer("ap3", False, "once", "сначала линтер")
+    wait_until(lambda: not app.bg.busy)
+    assert app.client.answers == [("ap3", False, "once", "сначала линтер")] and approvals.count == 1
+    approvals.answer("ap1", True, "chat", "")
+    wait_until(lambda: not app.bg.busy)
+    assert app.client.answers[-1] == ("ap1", True, "chat", "") and approvals.count == 0
+    approvals._pending = [{**APPROVAL, "id": "gone"}]
+    approvals.answer("gone", True, "once", "")
+    wait_until(lambda: not app.bg.busy)
+    assert "Ответ не принят" in app.flashText and approvals.count == 0  # reloaded from the hub
+    send(app, "claude_code.limit", {"info": {"status": "rejected"}})
+    assert app.flashText == "Claude Code: лимит подписки исчерпан" and app.flashError
+
+
+def test_claude_code_in_a_terminal(app):
+    assert app.claudeCodeInstalled is True
+    app.terminals.set_project("p1")
+    app.terminals.newClaudeCode()
+    wait_until(lambda: not app.bg.busy)
+    assert app.client.claude_terminals == ["p1"] and app.terminals.panelOpen

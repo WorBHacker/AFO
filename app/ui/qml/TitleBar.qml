@@ -7,6 +7,7 @@ Item {
     id: bar
     signal searchRequested()
     signal feedRequested()
+    signal approvalsRequested()
     height: 52
 
     DragHandler { target: null; onActiveChanged: if (active) Window.window.startSystemMove() }
@@ -79,6 +80,33 @@ Item {
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter
         spacing: 2
+        IconButton {
+            id: approvals
+            objectName: "approvalsButton"
+            visible: Approvals.count > 0
+            iconName: "shield"
+            implicitWidth: 38
+            tint: Theme.p.warn
+            tip: "Подтверждения: ждут ответа " + Approvals.count + " (Ctrl+Shift+A)"
+            onClicked: bar.approvalsRequested()
+            Rectangle {
+                x: parent.width - width - 4
+                y: 5
+                width: Math.max(16, count.implicitWidth + 8)
+                height: 16
+                radius: 8
+                color: Theme.p.warn
+                Text {
+                    id: count
+                    anchors.centerIn: parent
+                    text: Approvals.count
+                    color: Theme.p.on_accent
+                    font.family: Theme.uiFont
+                    font.pixelSize: 10
+                    font.weight: Font.DemiBold
+                }
+            }
+        }
         IconButton { iconName: "activity"; implicitWidth: 38; tip: "Лента событий (Ctrl+E)"; onClicked: bar.feedRequested() }
         Rectangle { width: 1; height: 18; color: Theme.p.hairline; anchors.verticalCenter: parent.verticalCenter }
         IconButton { iconName: "min"; implicitWidth: 42; tip: "Свернуть"; onClicked: Window.window.showMinimized() }
