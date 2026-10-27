@@ -245,3 +245,42 @@ def test_the_console(capsys):
     assert main(["key", "set", "anthropic_api_key"]) == 1  # a memory store would lose the key at exit
     assert main(["key", "set", "nope"]) == 1
     assert main(["connections", "reset"]) == 1  # the same: not without the Windows store
+
+
+class Chooser:
+    """A provider with too many models to list, like OpenRouter."""
+
+    name = "openrouter"
+
+    def __init__(self):
+        self.everything_calls = 0
+
+    async def everything(self):
+        self.everything_calls += 1
+        return [
+            {
+                "id": "deepseek/deepseek-v4-pro",
+                "name": "DeepSeek V4 Pro",
+                "input": 0.66,
+                "output": 1.98,
+                "context": 1_000_000,
+            },
+            {"id": "qwen/qwen3.8-coder", "name": "Qwen3.8 Coder", "input": 0.2, "output": 0.8, "context": 262_144},
+        ]
+
+    async def list_models(self):
+        return []
+
+
+def test_choosing_a_providers_models(hub):
+    hub.app.state.gateway.register(Chooser())
+    listed = hub.get(f"/v1/connections/{conns.OPENROUTER_API_KEY}/models").json()
+    assert [m["id"] for m in listed["models"]] == ["deepseek/deepseek-v4-pro", "qwen/qwen3.8-coder"]
+    assert listed["chosen"] == [] and not any(m["chosen"] for m in listed["models"])
+    ids = ["qwen/qwen3.8-coder", " deepseek/deepseek-v4-pro ", "qwen/qwen3.8-coder"]
+    assert hub.put(f"/v1/connections/{conns.OPENROUTER_API_KEY}/models", json={"ids": ids}).status_code == 401
+    headers = unlocked(hub)
+    saved = hub.put(f"/v1/connections/{conns.OPENROUTER_API_KEY}/models", json={"ids": ids}, headers=headers).json()
+    assert saved["chosen"] == ["deepseek/deepseek-v4-pro", "qwen/qwen3.8-coder"] and "catalog" in saved
+    assert row(hub, conns.OPENROUTER_API_KEY)["chosen"] == 2
+    assert hub.get(f"/v1/connections/{ANTHROPIC_API_KEY}/models").status_code == 404  # its models are not chosen

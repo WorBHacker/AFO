@@ -43,7 +43,8 @@ py -3.14 -m venv .venv
 .venv/Scripts/python.exe -m hub stop
 ```
 
-Ключи API (Anthropic, Google Gemini, Brave Search), адрес своего SearXNG и токен Telegram-бота задаются в окне:
+Ключи API (Anthropic, OpenAI, Google Gemini, DeepSeek, OpenRouter, Brave Search), адрес своего SearXNG и токен
+Telegram-бота задаются в окне:
 «Подключения» (Ctrl+Shift+K или «Настройки → Открыть подключения…»). В первый раз окно просит придумать пароль
 подключений — без него ключи не добавить, не заменить и не удалить. Ключи хранятся в диспетчере учётных данных
 Windows и из хаба не выходят. То же из консоли (спросит пароль, если он задан):

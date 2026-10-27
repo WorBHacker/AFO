@@ -37,6 +37,10 @@ class Value(BaseModel):
     value: str = Field(min_length=1, max_length=2000)
 
 
+class Chosen(BaseModel):
+    ids: list[str] = Field(max_length=500)
+
+
 def _app_only(client: Client) -> None:
     if client.name != APP_CLIENT:
         raise HTTPException(status_code=403, detail="only the desktop app manages connections")
@@ -160,6 +164,45 @@ async def delete_connection(name: str, request: Request, client: Annotated[Clien
     else:
         state.secrets.delete(name)
     return await _changed(request, connection, is_set=False)
+
+
+@router.get("/{name}/models")
+async def provider_models(name: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """Everything a provider with too many models (OpenRouter) has, and which ones the user chose to offer."""
+    from ..gateway.base import ProviderError
+
+    _app_only(client)
+    connection = _chooser(name)
+    state = request.app.state
+    provider = state.gateway.provider(connection.provider)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="this provider is not in the hub")
+    try:
+        everything = await provider.everything()
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
+    chosen = set(await state.db.acall(lambda conn: conns.chosen_models(conn, connection.provider)))
+    return {"models": [{**m, "chosen": m["id"] in chosen} for m in everything], "chosen": sorted(chosen)}
+
+
+@router.put("/{name}/models")
+async def choose_models(name: str, body: Chosen, request: Request, client: Annotated[Client, Depends(require_client)],
+                        ticket: Ticket = None) -> dict:  # fmt: skip
+    """The models to offer; the catalog follows at once."""
+    await _open(request, client, ticket)
+    connection = _chooser(name)
+    state = request.app.state
+    ids = await state.db.acall(lambda conn: conns.set_chosen_models(conn, connection.provider, body.ids))
+    catalog = await state.gateway.sync_catalog()
+    await state.bus.publish("models.synced", catalog)
+    return {"chosen": ids, "catalog": catalog}
+
+
+def _chooser(name: str) -> conns.Connection:
+    connection = _connection(name)
+    if not connection.choose:
+        raise HTTPException(status_code=404, detail=f"{connection.title}: its models are not chosen by hand")
+    return connection
 
 
 @router.post("/{name}/check")

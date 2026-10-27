@@ -48,6 +48,7 @@ Drawer {
             }
         }
         Flickable {
+            objectName: "sheetFlick"
             y: head.height
             width: parent.width
             height: parent.height - head.height

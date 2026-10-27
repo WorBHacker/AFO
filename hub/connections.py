@@ -40,6 +40,10 @@ ADDRESS_PREFIX = "connections."  # an address's key in the settings table
 UNLOCK_HEADER = "X-LocalChat-Unlock"
 
 GEMINI_API_KEY = "gemini_api_key"
+OPENAI_API_KEY = "openai_api_key"
+DEEPSEEK_API_KEY = "deepseek_api_key"
+OPENROUTER_API_KEY = "openrouter_api_key"
+CHOSEN_PREFIX = "models."  # a provider's chosen models (OpenRouter's hundreds) in the settings table
 BRAVE_SEARCH_KEY = "brave_search_api_key"
 SEARXNG_URL = "searxng_url"
 TELEGRAM_TOKEN = "telegram_bot_token"
@@ -54,14 +58,23 @@ class Connection:
     site: str  # where to get it
     hint: str  # what it looks like
     provider: str = ""  # the gateway provider whose models it brings: the catalog syncs when it changes
+    choose: bool = False  # the provider has too many models to list: the user picks which ones the hub offers
 
 
 CONNECTIONS: list[Connection] = [
     Connection(ANTHROPIC_API_KEY, "Anthropic", "key", "Модели Claude по ключу — оплата за токены",
                "https://console.anthropic.com/settings/keys", "sk-ant-…", provider="anthropic"),
+    Connection(OPENAI_API_KEY, "OpenAI", "key", "Модели GPT по ключу — оплата за токены",
+               "https://platform.openai.com/api-keys", "sk-…", provider="openai"),
     Connection(GEMINI_API_KEY, "Google Gemini", "key", "Модели Gemini. На бесплатном уровне Google может "
                "использовать запросы для улучшения своих моделей — для закрытого кода нужен платный",
                "https://aistudio.google.com/apikey", "AIza…", provider="gemini"),
+    Connection(DEEPSEEK_API_KEY, "DeepSeek", "key", "Модели DeepSeek — недорогие; запросы обрабатываются на "
+               "серверах в Китае — для закрытого кода решайте сами", "https://platform.deepseek.com/api_keys", "sk-…",
+               provider="deepseek"),
+    Connection(OPENROUTER_API_KEY, "OpenRouter", "key", "Сотни моделей разных компаний по одному ключу; какие "
+               "показывать в списке — кнопка «Модели…»", "https://openrouter.ai/settings/keys", "sk-or-…",
+               provider="openrouter", choose=True),
     Connection(BRAVE_SEARCH_KEY, "Brave Search", "key", "Поиск в сети для моделей (web_search)",
                "https://api-dashboard.search.brave.com/app/keys", "BSA…"),
     Connection(SEARXNG_URL, "SearXNG", "address", "Свой поисковик для web_search вместо Brave: адрес сервера",
@@ -203,6 +216,22 @@ def set_address(conn: sqlite3.Connection, name: str, value: str | None) -> bool:
     return True
 
 
+def chosen_models(conn: sqlite3.Connection, provider: str) -> list[str]:
+    """The models of a provider the user chose to offer (OpenRouter); [] - none chosen yet."""
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (CHOSEN_PREFIX + provider,)).fetchone()
+    return list(json.loads(row["value"])) if row else []
+
+
+def set_chosen_models(conn: sqlite3.Connection, provider: str, ids: list[str]) -> list[str]:
+    ids = sorted({i.strip() for i in ids if i.strip()})
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+        " value = excluded.value, updated_at = excluded.updated_at",
+        (CHOSEN_PREFIX + provider, json.dumps(ids), utc_now()),
+    )
+    return ids
+
+
 def clean_value(connection: Connection, value: str) -> str:
     """The value as it is stored, or ValueError with what is wrong (in Russian, for the window)."""
     value = value.strip()
@@ -223,7 +252,9 @@ def rows(store: SecretStore, conn: sqlite3.Connection, *, unlocked: bool) -> lis
     out = []
     for c in CONNECTIONS:
         row: dict[str, Any] = {"name": c.name, "title": c.title, "kind": c.kind, "purpose": c.purpose,
-                               "site": c.site, "hint": c.hint}  # fmt: skip
+                               "site": c.site, "hint": c.hint, "choose": c.choose}  # fmt: skip
+        if c.choose:
+            row["chosen"] = len(chosen_models(conn, c.provider))
         if c.kind == "address":
             value = address(conn, c.name)
             row["value"] = value

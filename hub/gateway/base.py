@@ -117,8 +117,11 @@ def cost_usd(usage: dict[str, int], prices: dict[str, float]) -> float:
     """USD for one request from its token counts and the model's per-1M prices. Local models cost 0.
 
     `input_tokens` is the whole prompt; the parts read from or written to the cache are inside it and are
-    priced at their own rates.
+    priced at their own rates. A provider that knows the request's price itself - OpenRouter says it, DeepSeek's
+    depends on the hour - puts it in `cost_microusd`, which then counts instead.
     """
+    if "cost_microusd" in usage:
+        return round(usage["cost_microusd"] / 1_000_000, 6)
     if not prices:
         return 0.0
     cached = usage.get("cached_input_tokens", 0)

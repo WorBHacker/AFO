@@ -1,4 +1,5 @@
-"""An OpenAI-compatible adapter. Serves llama-swap now (D5); OpenAI, OpenRouter and DeepSeek reuse it.
+"""An OpenAI-compatible adapter. Serves llama-swap (D5); the cloud ones - OpenAI, DeepSeek, OpenRouter - build on it
+(hub/gateway/cloud_openai.py) through its hooks: the request body, the history on the wire, the raw answer kept.
 
 llama-swap streams model-swap progress in the reasoning field, prefixed `llama-swap loading model:`
 (sendLoadingState). Those lines are separated out as "loading" events, so they never land in the saved
@@ -35,17 +36,22 @@ class OpenAICompatProvider:
         locality: str = "local",
         api_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        key_getter=None,
     ):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.locality = locality
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self._key_getter = key_getter or (lambda: api_key)  # read on every use: the user may change the key
         self._transport = transport  # tests inject a mock; production leaves it None
+
+    def _headers(self) -> dict[str, str]:
+        key = self._key_getter()
+        return {"Authorization": f"Bearer {key}"} if key else {}
 
     async def list_models(self) -> list[Model]:
         async with httpx.AsyncClient(timeout=5.0, transport=self._transport) as client:
             try:
-                response = await client.get(f"{self.base_url}/v1/models", headers=self._headers)
+                response = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise ProviderError(f"{self.name}: cannot list models ({exc})") from exc
@@ -78,20 +84,10 @@ class OpenAICompatProvider:
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        body: dict[str, Any] = {
-            "model": model_ref,
-            # only the visible text travels; other providers' raw messages are not for this API
-            "messages": wire_messages(messages),
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "reasoning_effort": effort,
-        }
-        if tools:
-            body["tools"] = [
-                {"type": "function", "function": {k: t[k] for k in ("name", "description", "parameters")}}
-                for t in tools
-            ]
+        body = self.request_body(model_ref, messages, effort, tools)
         calls: dict[int, dict[str, str]] = {}  # tool calls being put together, by index
+        thought: list[str] = []  # the reasoning as it came, for a provider that wants it back (DeepSeek)
+        details: list[dict[str, Any]] = []  # OpenRouter's reasoning_details, to be sent back unchanged
         started = time.monotonic()
         first_at: float | None = None
         in_loading = False
@@ -105,12 +101,12 @@ class OpenAICompatProvider:
             async with (
                 httpx.AsyncClient(timeout=timeout, transport=self._transport) as client,
                 client.stream(
-                    "POST", f"{self.base_url}/v1/chat/completions", json=body, headers=self._headers
+                    "POST", f"{self.base_url}/v1/chat/completions", json=body, headers=self._headers()
                 ) as response,
             ):
                 if response.status_code != 200:
                     detail = (await response.aread()).decode("utf-8", "replace")[:500]
-                    raise ProviderError(f"{self.name}: HTTP {response.status_code}: {detail}")
+                    raise ProviderError(f"{self.name}: {self.describe(response.status_code, detail)}")
                 async for line in response.aiter_lines():
                     if cancel.is_set():
                         break
@@ -120,6 +116,8 @@ class OpenAICompatProvider:
                     if data == "[DONE]":
                         break
                     obj = json.loads(data)
+                    if isinstance(obj.get("error"), dict):  # a failure after the stream began (OpenRouter)
+                        raise ProviderError(f"{self.name}: {obj['error'].get('message') or 'the answer broke off'}")
                     usage = obj.get("usage") or usage
                     timings = obj.get("timings") or timings
                     if not obj.get("choices"):
@@ -134,6 +132,7 @@ class OpenAICompatProvider:
                         call["args"] += function.get("arguments") or ""
                     think = delta.get("reasoning_content") or delta.get("reasoning") or ""
                     text = delta.get("content") or ""
+                    details += [d for d in delta.get("reasoning_details") or [] if isinstance(d, dict)]
                     if think and not in_loading and first_at is None and think.lstrip().startswith(LOADING_PREFIX):
                         in_loading = True
                     if in_loading:
@@ -146,6 +145,7 @@ class OpenAICompatProvider:
                         first_at = first_at or time.monotonic()
                         chunks += 1
                     if think:
+                        thought.append(think)
                         yield StreamEvent("reasoning", think)
                     if text:
                         yield StreamEvent("content", text)
@@ -153,11 +153,51 @@ class OpenAICompatProvider:
             raise ProviderError(f"{self.name}: {exc}") from exc
         yield StreamEvent(
             "end",
-            usage=_usage(usage, chunks),
+            usage=self.priced(model_ref, _usage(usage, chunks), usage),
             stats=_stats(usage, timings, started, first_at),
             stop_reason=finish_reason,
             tool_calls=[_call(index, call) for index, call in sorted(calls.items()) if call["name"]],
+            raw=self.kept("".join(thought), details),
         )
+
+    # --- hooks for the cloud providers (cloud_openai.py) ---
+
+    def request_body(
+        self, model_ref: str, messages: list[dict[str, Any]], effort: str, tools: list[dict[str, Any]] | None
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": model_ref,
+            # only the visible text travels; other providers' raw messages are not for this API
+            "messages": self.wire(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "reasoning_effort": effort,
+        }
+        if tools:
+            body["tools"] = [
+                {"type": "function", "function": {k: t[k] for k in ("name", "description", "parameters")}}
+                for t in tools
+            ]
+        return body
+
+    def wire(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return wire_messages(messages)
+
+    def kept(self, reasoning: str, details: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """What of the answer is stored to be sent back later (None: nothing, as for local models)."""
+        return None
+
+    def describe(self, status: int, detail: str) -> str:
+        return f"HTTP {status}: {detail}"
+
+    def priced(self, model_ref: str, counted: dict[str, int], reported: dict[str, Any]) -> dict[str, int]:
+        """The usage, with the request's own price (`cost_microusd`) when the provider knows it better than the
+        catalog's per-token prices."""
+        price = self.price(model_ref, counted, reported)
+        return {**counted, "cost_microusd": price} if price is not None else counted
+
+    def price(self, model_ref: str, counted: dict[str, int], reported: dict[str, Any]) -> int | None:
+        return None
 
 
 def wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -207,7 +247,8 @@ def _usage(usage: dict, chunks: int) -> dict[str, int]:
     details = usage.get("prompt_tokens_details") or {}
     return {
         "input_tokens": usage.get("prompt_tokens", 0),
-        "cached_input_tokens": details.get("cached_tokens", 0),
+        # OpenAI and OpenRouter say cached_tokens; DeepSeek, prompt_cache_hit_tokens
+        "cached_input_tokens": details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0,
         "output_tokens": usage.get("completion_tokens") or chunks,
     }
 

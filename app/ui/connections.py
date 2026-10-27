@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 TELEGRAM = "telegram_bot_token"
+SHOWN_CHOICES = 80  # models listed at once in the chooser; the search narrows the rest
 
 
 def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -29,6 +30,8 @@ def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> l
             status = c.get("value") or "не задан"
         elif c["set"]:
             status = "задан" + (f" · …{c['tail']}" if c.get("tail") else "")
+            if c.get("choose"):
+                status += f" · моделей в списке: {c.get('chosen', 0)}"
         else:
             status = "не задан"
         note = notes.get(c["name"], {})
@@ -44,8 +47,25 @@ def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> l
             "note": note.get("text", ""),
             "noteOk": bool(note.get("ok")),
             "telegram": c["name"] == TELEGRAM,
+            "choose": bool(c.get("choose")),
         })  # fmt: skip
     return out
+
+
+def choice_rows(models: list[dict[str, Any]], picked: set[str], query: str) -> tuple[list[dict[str, Any]], int]:
+    """The chooser's list: models matching every word typed (in the id or the name), the picked ones first, at most
+    SHOWN_CHOICES; and how many matched in all."""
+    words = query.casefold().split()
+    found = [m for m in models if all(w in f"{m['id']} {m.get('name', '')}".casefold() for w in words)]
+    found.sort(key=lambda m: (m["id"] not in picked, m.get("name", m["id"]).casefold()))
+    rows = []
+    for m in found[:SHOWN_CHOICES]:
+        note = f"${m.get('input', 0):g} / ${m.get('output', 0):g} за 1M"
+        if m.get("context"):
+            note += f" · контекст {int(m['context']) // 1000}K"
+        rows.append({"id": m["id"], "name": m.get("name") or m["id"], "note": f"{m['id']} · {note}",
+                     "picked": m["id"] in picked})  # fmt: skip
+    return rows, len(found)
 
 
 class Connections(QObject):
@@ -60,6 +80,10 @@ class Connections(QObject):
         self._notes: dict[str, dict[str, Any]] = {}
         self._link = ""  # the one-time code for "/link" to the bot
         self._busy = False
+        self._choosing = ""  # the connection whose models are being chosen (OpenRouter)
+        self._choices: list[dict[str, Any]] = []
+        self._picked: set[str] = set()
+        self._query = ""
 
     # --- what QML reads ---
 
@@ -91,6 +115,65 @@ class Connections(QObject):
     @Property(bool, notify=changed)
     def telegramLinked(self) -> bool:
         return bool((self._data.get("telegram") or {}).get("linked"))
+
+    @Property(str, notify=changed)
+    def choosing(self) -> str:
+        return self._choosing
+
+    @Property(list, notify=changed)
+    def choices(self) -> list:
+        return choice_rows(self._choices, self._picked, self._query)[0]
+
+    @Property(str, notify=changed)
+    def choicesNote(self) -> str:
+        if not self._choices:
+            return "Загружаю список моделей…" if self._busy else ""
+        shown, total = choice_rows(self._choices, self._picked, self._query)
+        head = f"Выбрано: {len(self._picked)} · найдено: {total}"
+        return head + (f" (показаны первые {len(shown)} — уточните поиск)" if total > len(shown) else "")
+
+    @Property(int, notify=changed)
+    def pickedCount(self) -> int:
+        return len(self._picked)
+
+    # --- choosing a provider's models (OpenRouter) ---
+
+    @Slot(str)
+    def openModels(self, name: str) -> None:
+        self._choosing, self._choices, self._query = name, [], ""
+
+        def shown(found: dict[str, Any]) -> None:
+            self._choices = found.get("models", [])
+            self._picked = set(found.get("chosen", []))
+
+        self._run(lambda: self.app.client.provider_models(name), shown)
+
+    @Slot()
+    def closeModels(self) -> None:
+        self._choosing, self._choices, self._picked, self._query = "", [], set(), ""
+        self.changed.emit()
+
+    @Slot(str)
+    def filterModels(self, text: str) -> None:
+        self._query = text
+        self.changed.emit()
+
+    @Slot(str)
+    def toggleModel(self, model_id: str) -> None:
+        self._picked ^= {model_id}
+        self.changed.emit()
+
+    @Slot()
+    def saveModels(self) -> None:
+        name, ticket, ids = self._choosing, self._ticket, sorted(self._picked)
+
+        def saved(result: dict[str, Any]) -> None:
+            self._notes[name] = {"ok": True, "text": f"В списке моделей: {len(result.get('chosen', []))}"}
+            self.closeModels()
+            self.load()
+            self.app.load_models()
+
+        self._run(lambda: self.app.client.choose_models(name, ids, ticket), saved)
 
     # --- talking to the hub ---
 

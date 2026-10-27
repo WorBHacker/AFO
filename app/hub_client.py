@@ -285,6 +285,13 @@ class HubClient:
     def telegram_unlink(self, ticket: str) -> dict:
         return self._call("DELETE", "/v1/connections/telegram/link", headers=_unlock(ticket))
 
+    def provider_models(self, name: str) -> dict:
+        """All the models of a provider whose models are chosen by hand (OpenRouter), and which are chosen."""
+        return self._call("GET", f"/v1/connections/{name}/models")
+
+    def choose_models(self, name: str, ids: list[str], ticket: str) -> dict:
+        return self._call("PUT", f"/v1/connections/{name}/models", {"ids": ids}, headers=_unlock(ticket))
+
     def feed(self, *, limit: int = 100, before: int | None = None, project_id: str = "", types: str = "") -> dict:
         """The event log, newest first: {events, more}."""
         params: dict = {"limit": limit, "types": types}

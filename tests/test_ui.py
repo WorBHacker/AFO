@@ -252,6 +252,7 @@ class FakeClient:
         self.password = None  # the connections' (D13)
         self.started = {"login": False, "llama_swap": True, "llama_swap_found": True, "llama_swap_script": "x.cmd"}
         self.ticket = ""
+        self.chosen = []
         self.project_list = [dict(PROJECT)]
         self.trees = copy.deepcopy(TREE)
         self.files = dict(FILES)
@@ -377,6 +378,18 @@ class FakeClient:
     def telegram_link(self, ticket):
         self._open(ticket)
         return {"code": "123456", "valid_s": 600}
+
+    def provider_models(self, name):
+        models = [
+            {"id": "qwen/qwen3.8-coder", "name": "Qwen3.8 Coder", "input": 0.2, "output": 0.8, "context": 262144},
+            {"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro", "input": 0.66, "output": 1.98},
+        ]
+        return {"models": models, "chosen": list(self.chosen)}
+
+    def choose_models(self, name, ids, ticket):
+        self._open(ticket)
+        self.chosen = list(ids)
+        return {"chosen": self.chosen, "catalog": {"synced": 3}}
 
     def rename(self, cid, title):
         self.renamed.append((cid, title))
@@ -2289,3 +2302,33 @@ def test_a_tasks_estimate_in_the_agents_panel(app):
     app.agents.load()
     wait_until(lambda: app.agents.estimate)
     assert app.agents.estimate == "≈ $0.0042 — по 2 прошлым задачам этого агента"
+
+
+def test_choosing_openrouter_models(app):
+    conns = app.connections
+    wait_until(lambda: conns.state == "new")
+    conns.createPassword("секрет-1", "секрет-1")
+    wait_until(lambda: conns.state == "open")
+    conns.openModels("openrouter_api_key")
+    wait_until(lambda: len(conns.choices) == 2)
+    assert conns.choosing == "openrouter_api_key" and conns.pickedCount == 0
+    conns.filterModels("deepseek")
+    assert [c["id"] for c in conns.choices] == ["deepseek/deepseek-v4-pro"]
+    conns.toggleModel("deepseek/deepseek-v4-pro")
+    assert conns.pickedCount == 1 and conns.choicesNote == "Выбрано: 1 · найдено: 1"
+    conns.saveModels()
+    wait_until(lambda: conns.choosing == "")
+    assert app.client.chosen == ["deepseek/deepseek-v4-pro"]
+
+
+def test_choice_rows():
+    from app.ui.connections import SHOWN_CHOICES, choice_rows
+
+    models = [{"id": f"vendor/model-{n}", "name": f"Model {n:03d}", "input": 1, "output": 2, "context": 128_000}
+              for n in range(100)] + [{"id": "deepseek/deepseek-v4-pro", "name": "DeepSeek V4 Pro", "input": 0.66,
+                                       "output": 1.98}]  # fmt: skip
+    rows_, total = choice_rows(models, {"vendor/model-99"}, "")
+    assert total == 101 and len(rows_) == SHOWN_CHOICES and rows_[0]["id"] == "vendor/model-99"  # picked first
+    assert rows_[0]["note"] == "vendor/model-99 · $1 / $2 за 1M · контекст 128K" and rows_[0]["picked"] is True
+    found, total = choice_rows(models, set(), "DEEPSEEK pro")
+    assert total == 1 and found[0]["name"] == "DeepSeek V4 Pro" and found[0]["note"].endswith("$0.66 / $1.98 за 1M")

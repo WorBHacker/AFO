@@ -192,6 +192,13 @@ Sheet {
                     onClicked: Services.remove(entry.modelData.name)
                 }
                 PlainButton {
+                    objectName: "chooseModels"
+                    visible: entry.modelData.choose
+                    iconName: "cpu"
+                    text: "Модели…"
+                    onClicked: Services.openModels(entry.modelData.name)
+                }
+                PlainButton {
                     visible: entry.modelData.telegram
                     iconName: "chat"
                     text: Services.telegramLinked ? "Привязать другой чат" : "Привязать чат"
@@ -201,6 +208,80 @@ Sheet {
                     visible: entry.modelData.telegram && Services.telegramLinked
                     text: "Отвязать"
                     onClicked: Services.unlinkTelegram()
+                }
+            }
+            Column {
+                objectName: "modelChooser"
+                visible: Services.state === "open" && Services.choosing === entry.modelData.name
+                width: parent.width
+                spacing: 6
+                Field {
+                    width: parent.width
+                    placeholderText: "Поиск: например, deepseek, gpt, qwen coder"
+                    onTextChanged: Services.filterModels(text)
+                }
+                Note { text: Services.choicesNote }
+                Repeater {
+                    model: Services.choosing === entry.modelData.name ? Services.choices : []
+                    delegate: AbstractButton {
+                        id: choice
+                        required property var modelData
+                        width: parent ? parent.width : 400
+                        implicitHeight: 40
+                        hoverEnabled: true
+                        onClicked: Services.toggleModel(modelData.id)
+                        background: Rectangle { radius: 6; color: choice.hovered ? Theme.p.item_hover : "transparent" }
+                        contentItem: Item {
+                            Rectangle {
+                                x: 6
+                                width: 14
+                                height: 14
+                                radius: 3
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: choice.modelData.picked ? Theme.p.accent : "transparent"
+                                border.color: choice.modelData.picked ? Theme.p.accent : Theme.p.hairline_strong
+                                Icon {
+                                    anchors.centerIn: parent
+                                    visible: choice.modelData.picked
+                                    name: "check"
+                                    size: 11
+                                    tint: Theme.p.on_accent
+                                }
+                            }
+                            Column {
+                                x: 28
+                                width: parent.width - 32
+                                anchors.verticalCenter: parent.verticalCenter
+                                Text {
+                                    width: parent.width
+                                    elide: Text.ElideRight
+                                    text: choice.modelData.name
+                                    color: Theme.p.text
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 13
+                                }
+                                Text {
+                                    width: parent.width
+                                    elide: Text.ElideRight
+                                    text: choice.modelData.note
+                                    color: Theme.p.faint
+                                    font.family: Theme.uiFont
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+                    }
+                }
+                Row {
+                    spacing: 8
+                    PlainButton {
+                        objectName: "saveModels"
+                        kind: "primary"
+                        text: "Сохранить выбор (" + Services.pickedCount + ")"
+                        enabled: !Services.busy
+                        onClicked: Services.saveModels()
+                    }
+                    PlainButton { text: "Отмена"; onClicked: Services.closeModels() }
                 }
             }
             Text {

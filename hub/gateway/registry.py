@@ -64,17 +64,24 @@ class Gateway:
 
 
 def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStore) -> Gateway:
-    """The gateway: local models through llama-swap, Claude by API key (D34), Gemini by API key (stage 6.5), and
-    Claude Code when its CLI is installed (stage 4, D8) - the chat runs those through hub/claude_code.py."""
+    """The gateway: local models through llama-swap, Claude by API key (D34), Gemini, OpenAI, DeepSeek and OpenRouter
+    by API key (D6), and Claude Code when its CLI is installed (stage 4, D8) - the chat runs those through
+    hub/claude_code.py. A provider without its key offers no models and makes no network call."""
     from ..claude_code import ClaudeCodeProvider
-    from ..connections import GEMINI_API_KEY
+    from ..connections import DEEPSEEK_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, chosen_models
     from .anthropic_provider import AnthropicProvider
+    from .cloud_openai import DeepSeekProvider, OpenRouterProvider
     from .gemini_provider import GeminiProvider
     from .openai_compat import OpenAICompatProvider
+    from .openai_responses import OpenAIProvider
 
     gateway = Gateway(db)
     gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality="local"))
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
     gateway.register(GeminiProvider(lambda: secrets.get(GEMINI_API_KEY)))
+    gateway.register(OpenAIProvider(lambda: secrets.get(OPENAI_API_KEY)))
+    gateway.register(DeepSeekProvider(lambda: secrets.get(DEEPSEEK_API_KEY)))
+    gateway.register(OpenRouterProvider(lambda: secrets.get(OPENROUTER_API_KEY),
+                                        lambda: db.acall(lambda conn: chosen_models(conn, "openrouter"))))  # fmt: skip
     gateway.register(ClaudeCodeProvider())
     return gateway

@@ -210,6 +210,7 @@ def test_a_tool_loop_through_the_hub_replays_the_signed_turn(hub, repo):  # noqa
             api.answer = next(answers)
         return api(request)
 
+    settled(hub)  # the hub's own first sync (its keyless provider of this name) must not come after ours
     hub.app.state.gateway.register(GeminiProvider(lambda: KEY, transport=httpx.MockTransport(handler)))
     hub.portal.call(hub.app.state.gateway.sync_catalog)
     conv = hub.post("/v1/conversations", json={}).json()["id"]
@@ -228,3 +229,12 @@ def test_a_tool_loop_through_the_hub_replays_the_signed_turn(hub, repo):  # noqa
     assert replayed[2]["parts"][0]["functionResponse"]["id"] == "fc-9"
     usage = hub.get("/v1/usage").json()
     assert usage["total_cost_usd"] > 0  # priced: 130 input and 9 output tokens of Gemini 3.8 Flash
+
+
+def settled(hub):  # noqa: F811
+    """Waits for the hub's startup catalog sync."""
+
+    async def wait():
+        await hub.app.state.initial_sync
+
+    hub.portal.call(wait)
