@@ -78,6 +78,7 @@ class ChatService:
         self.claude_code = None  # set by the server: runs the turns of chats with a Claude Code model
         self.approvals = None
         self.snapshots: Path | None = None  # data/snapshots: the files before and after each write
+        self.agents = None  # set by the server: a coordinator's sub-runs (D20)
 
     @property
     def busy(self) -> list[str]:
@@ -459,6 +460,12 @@ class ChatService:
                 output, error = await self._run_command(conversation_id, call, ctx, cancel)
             elif call["name"] == web.WEB_FETCH["name"]:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
+            elif call["name"] == "delegate_task":  # a coordinator's (D20)
+                if self.agents is None:
+                    output, error = "agents are not available here", True
+                else:
+                    args = call["input"] if isinstance(call["input"], dict) else {}
+                    output, error = await self.agents.delegate(conversation_id, args, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error))
@@ -766,11 +773,20 @@ class RunTotals:
 def _instructions(conn, conversation_id: str) -> str:
     """An agent run's role, as its profile had it when the run began; '' for a chat."""
     row = conn.execute(
-        "SELECT profile_name, instructions FROM agent_runs WHERE conversation_id = ?", (conversation_id,)
+        "SELECT r.profile_name, r.instructions, r.profile_id, c.tools FROM agent_runs r JOIN conversations c"
+        " ON c.id = r.conversation_id WHERE r.conversation_id = ?",
+        (conversation_id,),
     ).fetchone()
     if row is None:
         return ""
-    return f"You are the agent «{row['profile_name']}» of the user's hub.\n{row['instructions']}".strip()
+    text = f"You are the agent «{row['profile_name']}» of the user's hub.\n{row['instructions']}".strip()
+    if '"delegate_task"' in (row["tools"] or ""):  # a coordinator: who it may give tasks to (D20)
+        others = conn.execute(
+            "SELECT name, instructions FROM agent_profiles WHERE id IS NOT ? ORDER BY name", (row["profile_id"],)
+        ).fetchall()
+        lines = [f"- {o['name']}: {(o['instructions'].splitlines() or [''])[0][:200]}" for o in others]
+        text += "\n\nAgents you can give tasks to with delegate_task:\n" + ("\n".join(lines) or "- none yet")
+    return text
 
 
 def _attached(conn, conversation_id: str) -> list:

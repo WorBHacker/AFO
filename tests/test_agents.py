@@ -162,3 +162,71 @@ def test_a_run_goes_on_after_the_hub_restarts(hub, repo):  # noqa: F811
     started = hub.get("/v1/feed", params={"types": "run.started"}).json()["events"][0]
     assert started["payload"]["resumed"] is True
     asyncio.run(asyncio.sleep(0))
+
+
+# --- a coordinator (stage 6.4, D20) ---
+
+
+def delegate(agent, task, call_id="d1"):
+    return {"id": call_id, "name": "delegate_task", "input": {"agent": agent, "task": task}}
+
+
+def test_a_coordinator_gives_a_task_and_gets_the_answer(hub, repo):  # noqa: F811
+    provider = register(hub, ToolProvider([[delegate("Писатель", "Напиши одно слово")]]))
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    profile(hub, name="Писатель", instructions="Пишешь коротко.\nВторая строка не видна координатору.",
+            tools=["read_file"], project_ids=[pid])  # fmt: skip
+    boss = profile(hub, name="Координатор", instructions="Делишь задачу.", tools=["delegate_task", "read_file"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    run = ended(hub, run_id)
+    assert run["status"] == "done"  # both local: the coordinator gave up the GPU while it waited (no deadlock)
+    role = provider.calls[0][0][1]["content"]
+    assert "Agents you can give tasks to with delegate_task:\n- Писатель: Пишешь коротко." in role
+    assert "Вторая строка" not in role and "- Координатор" not in role
+    (child,) = [r for r in hub.get("/v1/runs").json()["runs"] if r["parent_run"] == run_id]
+    assert child["status"] == "done" and child["profile_name"] == "Писатель" and child["parent_name"] == "Координатор"
+    assert child["task"] == "Напиши одно слово"
+    results = [b for m in hub.get(f"/v1/conversations/{run_id}").json()["messages"] if m["role"] == "tool"
+               for b in m["content"]]  # fmt: skip
+    assert results[0]["output"] == "agent «Писатель» finished. Its answer:\nГотово" and results[0]["error"] is False
+
+
+def test_one_level_only_and_unknown_agents(hub, repo):  # noqa: F811
+    register(hub, ToolProvider([[delegate("Никто", "x")], [delegate("Помощник", "x", "d2")],
+                                [delegate("Координатор", "x", "d3")]]))  # fmt: skip
+    profile(hub, name="Помощник", tools=["delegate_task"])
+    boss = profile(hub, name="Координатор", tools=["delegate_task"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    results = [b["output"] for m in hub.get(f"/v1/conversations/{run_id}").json()["messages"] if m["role"] == "tool"
+               for b in m["content"]]  # fmt: skip
+    assert results[0].startswith("no agent 'Никто'; the agents are: Координатор, Помощник")
+    (child,) = [r for r in hub.get("/v1/runs").json()["runs"] if r["parent_run"] == run_id]
+    child_results = [b["output"] for m in hub.get(f"/v1/conversations/{child['id']}").json()["messages"]
+                     if m["role"] == "tool" for b in m["content"]]  # fmt: skip
+    assert child_results == ["you are a sub-agent yourself: you cannot give tasks further (one level, D20)"]
+
+
+def test_all_tools_by_default_means_no_delegation(hub):  # noqa: F811
+    provider = register(hub, ToolProvider([]))
+    plain = profile(hub, name="Обычный", tools=[])
+    ended(hub, hub.post(f"/v1/agents/{plain['id']}/runs", json={"task": "x"}).json()["id"])
+    names = [t["name"] for t in provider.calls[0][1]]
+    assert "delegate_task" not in names and "run_command" in names
+
+
+def test_stopping_the_coordinator_stops_its_sub_run(hub, repo):  # noqa: F811
+    register(
+        hub, ToolProvider([[delegate("Правщик", "Поправь")], [{"id": "w1", "name": "edit_file", "input": edit()}]])
+    )
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_task"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]  # the sub-agent waits for the user
+    (child,) = [r for r in hub.get("/v1/runs").json()["runs"] if r["parent_run"] == run_id]
+    assert asked["conversation_id"] == child["id"] and child["shown_status"] == "waiting"
+    hub.post(f"/v1/runs/{run_id}/cancel")
+    assert ended(hub, child["id"])["status"] == "cancelled"
+    assert ended(hub, run_id)["status"] == "cancelled"
+    assert hub.get("/v1/approvals").json()["approvals"] == []

@@ -11,6 +11,11 @@ Statuses: queued (a local model's run waits for the GPU: one at a time) -> runni
 running run that waits for the user's answer reads as "waiting" (its open approval says so). A run the hub was
 running when it stopped goes on when the hub starts again. Events: run.started, run.finished (in the feed),
 run.status (live).
+
+A coordinator (D20) is an agent with the tool delegate_task: it gives a part of its task to another profile - a
+sub-run, linked to it - waits, and gets the sub-agent's final answer as the tool's result. While it waits it gives up
+the GPU (the sub-agent may need it), and takes it back after. One level only: a sub-run cannot delegate further.
+Stopping the coordinator stops its sub-runs.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from . import store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
+from .delegate import DELEGATE
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
@@ -38,7 +44,9 @@ STEPS = (1, 200)
 MINUTES = (1, 24 * 60)
 NAME_CHARS = 60
 INSTRUCTIONS_CHARS = 8000
-TOOL_NAMES = [t["name"] for t in CHAT_TOOLS]
+AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE]  # what a profile may choose from
+TOOL_NAMES = [t["name"] for t in AGENT_TOOLS]
+DEFAULT_TOOLS = [n for n in TOOL_NAMES if n != DELEGATE["name"]]  # "all": a coordinator is chosen, not by default
 RESUMED = "[LocalChat hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
 
@@ -145,9 +153,21 @@ def delete_profile(conn: sqlite3.Connection, profile_id: str) -> bool:
 
 # --- runs ---
 
+
+def _last_answer(conn: sqlite3.Connection, run_id: str) -> str:
+    """The run's final answer: the text of its last assistant message."""
+    for message in reversed(store.get_messages(conn, run_id)):
+        if message.role == "assistant":
+            text = "".join(b.get("text", "") for b in message.content if b.get("type") == "text").strip()
+            if text:
+                return text
+    return ""
+
+
 RUN_SELECT = (
     "SELECT r.*, EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = r.conversation_id"
-    " AND a.status = 'pending') AS waiting FROM agent_runs r"
+    " AND a.status = 'pending') AS waiting, (SELECT p.profile_name FROM agent_runs p"
+    " WHERE p.conversation_id = r.parent_run) AS parent_name FROM agent_runs r"
 )
 
 
@@ -171,7 +191,9 @@ def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]
     return [_run(r) for r in rows]
 
 
-def create_run(conn: sqlite3.Connection, profile: dict[str, Any], task: str, project_ids: list[str]) -> str:
+def create_run(
+    conn: sqlite3.Connection, profile: dict[str, Any], task: str, project_ids: list[str], parent_run: str | None = None
+) -> str:
     """The run's conversation, set up as the profile says: projects, rights, its fixed tool list, and its row."""
     model = store.get_model(conn, profile["model_id"])
     if model is None or not model["enabled"]:
@@ -186,14 +208,14 @@ def create_run(conn: sqlite3.Connection, profile: dict[str, Any], task: str, pro
                                                 title=f"{profile['name']}: {title[:60]}")  # fmt: skip
     store.set_conversation_projects(conn, conversation_id, project_ids)
     store.set_context_settings(conn, conversation_id, mode=profile["mode"])
-    wanted = profile["tools"] or TOOL_NAMES
-    tools = [t for t in CHAT_TOOLS if t["name"] in wanted]
+    wanted = profile["tools"] or DEFAULT_TOOLS
+    tools = [t for t in AGENT_TOOLS if t["name"] in wanted]
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"
-        " max_steps, max_minutes, budget_usd, task) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " max_steps, max_minutes, budget_usd, task, parent_run) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (conversation_id, profile["id"], profile["version"], profile["name"], profile["instructions"],
-         profile["model_id"], profile["max_steps"], profile["max_minutes"], profile["budget_usd"], task),
+         profile["model_id"], profile["max_steps"], profile["max_minutes"], profile["budget_usd"], task, parent_run),
     )  # fmt: skip
     return conversation_id
 
@@ -208,6 +230,7 @@ class AgentRunner:
         self._gpu = asyncio.Semaphore(1)
         self._held: set[str] = set()  # runs holding the GPU now
         self._waiting: dict[str, asyncio.Task] = {}  # runs queued for the GPU
+        self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
 
     async def start(self) -> list[str]:
         """Runs the hub was running (or had queued) when it stopped go on now."""
@@ -235,6 +258,50 @@ class AgentRunner:
             raise AgentError(str(exc)) from exc
         await self._launch(run_id, resume=False)
         return await self._db.acall(lambda conn: get_run(conn, run_id))
+
+    async def delegate(self, parent_id: str, args: dict[str, Any], cancel: asyncio.Event) -> tuple[str, bool]:
+        """A coordinator's delegate_task: a sub-run of the named agent, waited for; its answer is the result."""
+        name, task = str(args.get("agent") or "").strip(), str(args.get("task") or "").strip()
+        if not name or not task:
+            return "`agent` (a name) and `task` (what to do) are both needed", True
+
+        def create(conn) -> str:
+            if get_run(conn, parent_id)["parent_run"]:
+                raise AgentError("you are a sub-agent yourself: you cannot give tasks further (one level, D20)")
+            found = next((p for p in list_profiles(conn) if p["name"].casefold() == name.casefold()), None)
+            if found is None:
+                names = ", ".join(p["name"] for p in list_profiles(conn)) or "none"
+                raise AgentError(f"no agent {name!r}; the agents are: {names}")
+            return create_run(conn, found, task, found["project_ids"], parent_run=parent_id)
+
+        try:
+            child_id = await self._db.acall(create)
+        except (AgentError, ProjectError) as exc:
+            return str(exc), True
+        ended = self._ended[child_id] = asyncio.Event()
+        gave_up = parent_id in self._held  # the GPU goes to whoever needs it while the coordinator waits
+        if gave_up:
+            self._held.discard(parent_id)
+            self._gpu.release()
+        try:
+            await self._launch(child_id, resume=False)
+            stopping = asyncio.create_task(cancel.wait())
+            ending = asyncio.create_task(ended.wait())
+            await asyncio.wait({stopping, ending}, return_when=asyncio.FIRST_COMPLETED)
+            stopping.cancel()
+            if not ended.is_set():  # the coordinator was stopped: so is its sub-run
+                await self.cancel(child_id)
+                await ended.wait()
+            ending.cancel()
+        finally:
+            self._ended.pop(child_id, None)
+            if gave_up:
+                await self._gpu.acquire()
+                self._held.add(parent_id)
+        run, answer = await self._db.acall(lambda conn: (get_run(conn, child_id), _last_answer(conn, child_id)))
+        how = {"done": "finished", "error": "failed", "cancelled": "was stopped"}.get(run["status"], run["status"])
+        head = f"agent «{run['profile_name']}» {how}" + (f" ({run['detail']})" if run.get("detail") else "")
+        return f"{head}. Its answer:\n{answer}" if answer else head, run["status"] != "done"
 
     async def cancel(self, run_id: str) -> bool:
         queued = self._waiting.pop(run_id, None)
@@ -295,6 +362,9 @@ class AgentRunner:
 
         run = await self._db.acall(write)
         await self._bus.publish("run.finished", {"run": run})
+        ended = self._ended.get(run_id)
+        if ended is not None:
+            ended.set()
 
     async def _status(self, run_id: str, status: str) -> None:
         await self._db.acall(

@@ -90,6 +90,7 @@ TOOL_ICONS = {
     "edit_file": "edit",
     "run_command": "terminal",
     "web_fetch": "cloud",
+    "delegate_task": "agent",
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -183,6 +184,8 @@ def tool_label(name: str, args: Any) -> str:
             return f"Ищу в сети «{a.get('query', '')}»"
         case "TodoWrite":
             return "Обновляю список задач"
+        case "delegate_task":
+            return f"Поручаю агенту «{a.get('agent', '')}»: {' '.join(str(a.get('task', '')).split())[:80]}"
         case "Task" | "Agent":
             return f"Поручаю подагенту: {a.get('description', '')}"
         case "edit_file":

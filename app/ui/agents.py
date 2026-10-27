@@ -39,6 +39,7 @@ TOOL_LABELS = {
     "write_file": "записывать файлы",
     "run_command": "выполнять команды",
     "web_fetch": "читать страницы в сети",
+    "delegate_task": "давать задачи другим агентам (координатор)",
 }
 BLANK = {"id": "", "name": "", "instructions": "", "model_id": "", "tools": [], "mode": "ask", "project_ids": [],
          "max_steps": 30, "max_minutes": 30, "budget_usd": None}  # fmt: skip
@@ -65,6 +66,8 @@ def run_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if r["status"] == "error" and r.get("detail"):
             label += f": {r['detail']}"
         parts = [r["profile_name"], local_time(r.get("created_at", ""))]
+        if r.get("parent_name"):
+            parts.insert(1, f"подзадача от «{r['parent_name']}»")
         if r.get("steps"):
             parts.append(f"шагов {r['steps']}")
         if r.get("cost_usd"):
