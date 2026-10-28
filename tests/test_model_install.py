@@ -336,7 +336,9 @@ def wait_for(hub, job_id, *statuses, timeout=30.0):
 def test_a_model_installed_tried_and_removed(hub):
     system = hub.get("/v1/install/system").json()
     assert system["server"] == "${llama_server}" and system["space"]["vram_gib"] == 14.7
-    assert system["folder"] == str(Path(hub.tmp / "T" / "LocalChat" / "models"))
+    home = hub.tmp / "localchat-model"  # LocalChat's own `model` folder (conftest points it at the test's folder)
+    assert system["folder"] == str(home) and system["home"]["folder"] == str(home)
+    assert system["drives"][0]["folder"] == str(Path(hub.tmp / "T" / "LocalChat" / "models"))
     shown = hub.get("/v1/install/repo/test/Tiny-GGUF").json()
     assert [(v["quant"], v["bits"], v["verdict"]) for v in shown["variants"]] == [
         ("Q4_K_M", 4.5, "gpu"), ("Q8_0", 8.5, "gpu"), ("BF16", 16.0, "gpu")]  # fmt: skip
@@ -354,7 +356,7 @@ def test_a_model_installed_tried_and_removed(hub):
     done = wait_for(hub, job["id"], "done", "failed")
     assert done["status"] == "done", done["error"]
     assert done["trial"]["tries"][0]["ok"] and done["trial"]["where"] == "gpu" and done["percent"] == 100.0
-    folder = hub.tmp / "T" / "LocalChat" / "models" / "test" / "Tiny-GGUF"
+    folder = home / "test" / "Tiny-GGUF"  # no drive, no folder chosen: LocalChat's own `model` folder
     assert (folder / "Tiny-Q8_0.gguf").read_bytes() == FILES["Tiny-Q8_0.gguf"] and FakeHub.ranges
     view = lc.model_view(hub.config.read_text(encoding="utf-8"), "tiny-q8_0")
     assert view["file"] == str(folder / "Tiny-Q8_0.gguf").replace("\\", "/") and view["mmproj"].endswith(

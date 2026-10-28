@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.plain_errors import explain
 
@@ -117,10 +117,30 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def drive_rows(drives: list[dict[str, Any]], chosen: str) -> list[dict[str, Any]]:
-    return [{"id": d["letter"], "selected": d["letter"] == chosen, "slow": d.get("kind") in ("hdd", "usb"),
-             "name": f"{d['letter']}: {d.get('words', '')} · свободно {gb(d['free_gib'], of_bytes=False)}"}
-            for d in drives]  # fmt: skip
+def drive_rows(drives: list[dict[str, Any]], chosen: str, home: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Where a model may go: LocalChat's own `model` folder first (the default, 2026-10-28), then each drive."""
+    out = []
+    if home and home.get("folder"):
+        free = f" · свободно {gb(home['free_gib'], of_bytes=False)}" if home.get("free_gib") is not None else ""
+        out.append({"id": "home", "selected": chosen in ("", "home"), "slow": home.get("kind") in ("hdd", "usb"),
+                    "name": "Папка LocalChat" + (f" ({home['letter']}: {home['words']})" if home.get("letter")
+                                                 else "") + free})  # fmt: skip
+    return out + [{"id": d["letter"], "selected": d["letter"] == chosen, "slow": d.get("kind") in ("hdd", "usb"),
+                   "name": f"{d['letter']}: {d.get('words', '')} · свободно {gb(d['free_gib'], of_bytes=False)}"}
+                  for d in drives]  # fmt: skip
+
+
+def target_folder(system: dict[str, Any], chosen: str, own: str, repo: str) -> str:
+    """The folder the model's files will land in, as the person chose: their own folder, a drive, LocalChat's."""
+    if own:
+        base = own.rstrip("\\/")
+    elif chosen and chosen != "home":
+        base = next((d.get("folder", "") for d in system.get("drives") or [] if d["letter"] == chosen), "")
+    else:
+        base = (system.get("home") or {}).get("folder") or system.get("folder") or ""
+    if not base:
+        return ""
+    return base + ("\\" + repo.replace("/", "\\") if repo else "")
 
 
 def progress_text(job: dict[str, Any]) -> str:
@@ -279,7 +299,12 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def drives(self) -> list:
-        return drive_rows(self._system.get("drives") or [], self._drive)
+        return drive_rows(self._system.get("drives") or [], self._drive, self._system.get("home"))
+
+    @Property(str, notify=changed)
+    def target(self) -> str:
+        """Where the open model will be saved: the line under «Куда сохранить»."""
+        return target_folder(self._system, self._drive, self._folder, self._repo_name)
 
     @Property(str, notify=changed)
     def folder(self) -> str:
@@ -309,10 +334,7 @@ class InstallView(QObject):
             return
 
         def system(data: dict[str, Any]) -> None:
-            self._system = data
-            if not self._drive and data.get("drives"):
-                roomy = (d["letter"] for d in data["drives"] if d["free_gib"] > 10)  # the fastest with room
-                self._drive = next(roomy, data["drives"][0]["letter"])
+            self._system = data  # no drive chosen: LocalChat's own `model` folder (2026-10-28, the user's word)
             self.changed.emit()
 
         self.app._call(lambda: self.app.client.install_system(), system, lambda _e: None)
@@ -398,12 +420,15 @@ class InstallView(QObject):
 
     @Slot(str)
     def setDrive(self, letter: str) -> None:
-        self._drive, self._folder = letter, ""
+        """A drive, or «home» - LocalChat's own `model` folder."""
+        self._drive, self._folder = ("" if letter == "home" else letter), ""
         self.changed.emit()
 
     @Slot(str)
     def setFolder(self, folder: str) -> None:
-        self._folder = folder.strip()
+        """A folder of one's own: typed, or picked in «Обзор…» (a file:// address)."""
+        folder = folder.strip()
+        self._folder = (QUrl(folder).toLocalFile() or folder) if folder.startswith("file:") else folder
         self.changed.emit()
 
     @Slot(bool)

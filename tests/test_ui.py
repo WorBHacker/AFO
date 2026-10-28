@@ -542,7 +542,14 @@ class FakeClient:
             ],
             "server": "${llama_server}",
             "problem": "",
-            "folder": "D:\\LocalChat\\models",
+            "folder": "D:\\AI model\\LocalChat\\model",
+            "home": {
+                "folder": "D:\\AI model\\LocalChat\\model",
+                "letter": "D",
+                "words": "NVMe",
+                "kind": "nvme",
+                "free_gib": 456.5,
+            },
             "token": False,
         }
 
@@ -4453,12 +4460,13 @@ def test_installing_a_local_model_from_the_window(qapp):
         view.setPurpose("code")
         assert [r["id"] for r in view.catalog] == ["gpt-oss-120b"]
         view.setPurpose("")
-        assert [d["id"] for d in view.drives] == ["D", "F"] and view.drives[0]["selected"] and view.drives[1]["slow"]
+        places = view.drives  # LocalChat's own `model` folder first, and chosen (2026-10-28, the user's word)
+        assert [d["id"] for d in places] == ["home", "D", "F"] and places[0]["selected"] and places[2]["slow"]
+        assert places[0]["name"] == "Папка LocalChat (D: NVMe) · свободно 456,5 ГБ"
 
         view.installRecommended("ggml-org/gemma-4-E4B-it-GGUF")
         wait_until(lambda: not app.bg.busy and view.tab == "jobs")
-        assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q8_0",
-                                                        "drive": "D"})  # fmt: skip
+        assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q8_0"})
         assert view.activeCount == 1 and view.jobs[0]["statusWords"] == "в очереди"
         half = {"id": "j1", "done_bytes": 4_295_000_000, "total_bytes": 8_590_000_000, "speed": 21_700_000}
         app.on_event({"type": "install.progress", "payload": half})
@@ -4491,6 +4499,12 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert [(v["quant"], v["size"], v["recommended"]) for v in view.variants] == [
             ("Q4_0", "4,6 ГБ", False), ("Q8_0", "8,0 ГБ", True)]  # fmt: skip
         assert view.repo["projectorText"] == "Понимать картинки (+0,6 ГБ)" and "7,6 млрд" in view.repo["notes"]
+        assert view.target == "D:\\AI model\\LocalChat\\model\\ggml-org\\gemma-4-E4B-it-GGUF"
+        assert quick.window.findChild(QObject, "installBrowse").property("visible")
+        view.setFolder("file:///E:/Модели")  # «Обзор…» gives a file:// address
+        assert view.folder == "E:/Модели" and view.target.startswith("E:/Модели\\ggml-org")
+        view.setDrive("home")
+        assert view.folder == "" and view.target.startswith("D:\\AI model\\LocalChat\\model")
         view.setProjector(False)
         view.setDrive("F")
         view.install("Q4_0")

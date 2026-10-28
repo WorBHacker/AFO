@@ -14,6 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR_ENV = "LOCALCHAT_DATA_DIR"
 HOME_ENV = "LOCALCHAT_HOME"
+MODELS_ENV = "LOCALCHAT_MODELS_DIR"
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,16 @@ def app_home() -> Path:
 def engines_home() -> Path:
     """Where the first-run wizard puts llama.cpp and llama-swap (10.2)."""
     return app_home() / "engines"
+
+
+def models_home() -> Path:
+    """Where the installer puts models unless told otherwise (10.1; 2026-10-28, the user's word): the `model` folder
+    in LocalChat's own folder - the program's root; $LOCALCHAT_MODELS_DIR overrides it (tests); a program folder one
+    may not write to (an install under Program Files) gives LocalChat's app folder instead."""
+    override = os.environ.get(MODELS_ENV)
+    if override:
+        return Path(override)
+    return (PROJECT_ROOT if os.access(PROJECT_ROOT, os.W_OK) else app_home()) / "model"
 
 
 def data_paths() -> DataPaths:

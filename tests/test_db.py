@@ -99,3 +99,19 @@ def test_the_data_folder_and_localchats_own(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
     if paths.os.name == "nt":
         assert paths.app_home() == tmp_path / "appdata" / "LocalChat"
+
+
+def test_models_go_into_localchats_own_model_folder(tmp_path, monkeypatch):
+    """2026-10-28 (the user's word): the installer's default place is the `model` folder in LocalChat's own folder;
+    LOCALCHAT_MODELS_DIR overrides it; a program folder one may not write to gives LocalChat's app folder."""
+    from common import paths
+
+    monkeypatch.delenv(paths.MODELS_ENV)
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path / "checkout")
+    (tmp_path / "checkout").mkdir()
+    monkeypatch.setenv(paths.HOME_ENV, str(tmp_path / "home"))
+    assert paths.models_home() == tmp_path / "checkout" / "model"
+    monkeypatch.setattr(paths.os, "access", lambda path, mode: False)  # under Program Files
+    assert paths.models_home() == tmp_path / "home" / "model"
+    monkeypatch.setenv(paths.MODELS_ENV, str(tmp_path / "mine"))
+    assert paths.models_home() == tmp_path / "mine"

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // «Установка моделей» (10.1, D37): local models from Hugging Face into llama-swap with one button. The curated list
 // says for each model the variant this computer runs best and whether it fits the video memory; «Варианты» shows
@@ -273,16 +274,45 @@ Sheet {
             font.pixelSize: 12
         }
         Segmented {
+            objectName: "installPlaces"
             width: parent.width
             options: Installer.drives
             value: Installer.folder === "" ? (Installer.drives.find(d => d.selected) || {}).id || "" : ""
             onPicked: (id) => Installer.setDrive(id)
         }
-        Field {
+        Row {
             width: parent.width
-            placeholderText: "Или своя папка, например F:\\Модели (необязательно)"
-            text: Installer.folder
-            onEditingFinished: Installer.setFolder(text)
+            spacing: 8
+            Field {
+                id: ownFolder
+                objectName: "installFolder"
+                width: parent.width - browse.width - parent.spacing
+                placeholderText: "Или своя папка, например F:\\Модели (необязательно)"
+                text: Installer.folder
+                onEditingFinished: Installer.setFolder(text)
+            }
+            PlainButton {
+                id: browse
+                objectName: "installBrowse"
+                iconName: "folder"
+                text: "Обзор…"
+                onClicked: folderPick.open()
+            }
+        }
+        FolderDialog {
+            id: folderPick
+            title: "Папка для моделей"
+            onAccepted: Installer.setFolder(selectedFolder.toString())
+        }
+        Text {
+            objectName: "installTarget"
+            visible: Installer.target !== ""
+            width: parent.width
+            wrapMode: Text.WrapAnywhere
+            text: "Сохранится в: " + Installer.target
+            color: Theme.p.faint
+            font.family: Theme.uiFont
+            font.pixelSize: 12
         }
         Repeater {
             model: Installer.variants

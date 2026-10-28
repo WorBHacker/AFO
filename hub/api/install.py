@@ -42,10 +42,13 @@ async def system(request: Request, client: Annotated[Client, Depends(require_app
         problem = ""
     except (mi.InstallError, llama_config.ConfigError) as exc:
         server, problem = "", str(exc)
-    best = mi.pick_drive(drives, 0)
-    return {"space": installer.space(), "drives": drives, "server": server, "problem": problem,
-            "folder": str(mi.models_root(best)) if best else "", "token": bool(installer.token()),
-            "purposes": mi.PURPOSES}  # fmt: skip
+    home = mi.models_home()
+    on = next((d for d in drives if str(home).upper().startswith(str(d["root"]).upper()[:2])), None)
+    return {"space": installer.space(), "drives": [{**d, "folder": str(mi.models_root(d))} for d in drives],
+            "server": server, "problem": problem, "folder": str(home),  # where a model goes unless told otherwise
+            "home": {"folder": str(home), "letter": on["letter"] if on else "", "words": on.get("words", "") if on
+                     else "", "kind": on.get("kind", "") if on else "", "free_gib": on["free_gib"] if on else None},
+            "token": bool(installer.token()), "purposes": mi.PURPOSES}  # fmt: skip
 
 
 @router.get("/catalog")

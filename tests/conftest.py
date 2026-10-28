@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from common.paths import DATA_DIR_ENV, HOME_ENV
+from common.paths import DATA_DIR_ENV, HOME_ENV, MODELS_ENV
 from hub.autostart import LLAMA_SWAP_START_ENV, RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
 from hub.engines import GITHUB_ENV
@@ -29,6 +29,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(LLAMA_SWAP_CONFIG_ENV, str(tmp_path / "no-llama-swap" / "config.yaml"))
     monkeypatch.setenv(LLAMA_SWAP_START_ENV, str(tmp_path / "no-llama-swap" / "start-llama-swap.cmd"))
     monkeypatch.setenv(HOME_ENV, str(tmp_path / "localchat-home"))
+    monkeypatch.setenv(MODELS_ENV, str(tmp_path / "localchat-model"))  # nor models into the checkout's `model` folder
     return data
 
 

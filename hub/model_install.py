@@ -4,8 +4,9 @@
   Each variant of a model is judged against this computer before anything is downloaded - whether it fits in the
   video memory (fast), goes partly into RAM (slower) or does not fit - from its size and its header's attention
   shape (the file's first bytes over the network); the one recommended is the best that fits the video memory.
-- Where: the fastest drive with room (NVMe, then SSD; an HDD loads a model many times slower), `X:\\LocalChat\\models`
-  (on the Windows drive `%LOCALAPPDATA%\\LocalChat\\models`), a folder per repository.
+- Where: the `model` folder in LocalChat's own folder by default (2026-10-28, the user's word; common/paths.py
+  models_home), or a drive the person picks - `X:\\LocalChat\\models` (on the Windows drive
+  `%LOCALAPPDATA%\\LocalChat\\models`) -, or a folder of their own; a folder per repository.
 - The download: one install at a time, resumable (a cut connection is tried again, and a part left by a stopped hub
   goes on after «Продолжить»), each file kept only when its sha256 matches what Hugging Face publishes.
 - The config: a block of its own at the end of llama-swap's `models:` (a copy of the file first, llama-swap must list
@@ -37,6 +38,7 @@ import httpx
 from common import disks
 from common.gguf import GGUFError, model_info
 from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
+from common.paths import models_home
 
 from . import hf, llama_config, store
 from .db import utc_now
@@ -414,12 +416,8 @@ class Installer:
             if drive is None:
                 raise InstallError(f"нет диска {spec['drive']}", 422)
             root = models_root(drive)
-        else:
-            drive = pick_drive(found["drives"], total / GIB)
-            if drive is None:
-                need = total / GIB + DISK_MARGIN_GIB
-                raise InstallError(f"ни на одном диске нет {need:.0f} ГБ свободного места", 507)
-            root = models_root(drive)
+        else:  # LocalChat's own `model` folder; too little room there - the check below says so
+            root = models_home()
         folder = root / repo.replace("/", os.sep)
         try:
             _check_room(folder, total)
