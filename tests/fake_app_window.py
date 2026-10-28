@@ -1,5 +1,6 @@
 """The agent's own test window for computer control (stage 9.6, D41): a small Qt form - a name, a password, a choice,
-a note, "Сохранить" and "Отправить" - that writes what happened into a file, so a test sees what the agent did.
+a note, "Сохранить" and "Отправить", a long history (most of it scrolled out of sight) and a message field Enter
+sends, as in a chat - that writes what happened into a file, so a test sees what the agent did.
 
 Usage: python fake_app_window.py <log file> [title]
 """
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -59,7 +61,27 @@ layout.addWidget(save_button)
 send_button = QPushButton("Отправить")
 send_button.clicked.connect(lambda: write(f"send name={name.text()}"))
 layout.addWidget(send_button)
-window.resize(360, 420)
+history = QScrollArea()
+history.setAccessibleName("История")
+lines = QWidget()
+lines_layout = QVBoxLayout(lines)
+for n in range(1, 301):
+    lines_layout.addWidget(QLabel(f"строка {n}"))
+history.setWidget(lines)
+history.setFixedHeight(90)
+layout.addWidget(history)
+message = QLineEdit()
+message.setAccessibleName("Сообщение")
+
+
+def sent() -> None:
+    write(f"message={message.text()}")
+    message.clear()
+
+
+message.returnPressed.connect(sent)
+layout.addWidget(message)
+window.resize(360, 560)
 window.show()
 write("ready")
 sys.exit(app.exec())

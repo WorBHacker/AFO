@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import ctypes
 import ctypes.wintypes as wt
 import json
@@ -66,12 +67,18 @@ TOOLS = [
     },
     {
         "name": "screen_look",
-        "description": "A window's elements as UI Automation sees them, numbered [n]: role, name, value, state, "
-        "place. Use the numbers in screen_act. With `question`, a snapshot of the window goes to the model with "
-        "vision and you get its answer in words (for what the tree does not say: a picture, a chart, colours).",
+        "description": "A window's elements in sight as UI Automation sees them, numbered [n]: role, name, value, "
+        "state, place; (focus) marks where typed text and keys go. Use the numbers in screen_act. With `part`, only "
+        "what is inside that element of your last look (when the look was cut). With `question`, a snapshot of the "
+        "window goes to the model with vision and you get its answer in words (for what the tree does not say: a "
+        "picture, a chart, colours).",
         "parameters": {
             "type": "object",
-            "properties": {"window": WINDOW, "question": {"type": "string"}},
+            "properties": {
+                "window": WINDOW,
+                "part": {"type": "integer", "description": "an element [n] of your last look of this window"},
+                "question": {"type": "string"},
+            },
             "required": ["window"],
         },
     },
@@ -144,6 +151,8 @@ FORBIDDEN = re.compile(
 )
 # what sends from the person's name: asked every time (D41)
 SENDS = re.compile(r"отправ|send\b|submit|опублик|publish|\bpost\b|ответить|reply|переслать|forward", re.IGNORECASE)
+# a field Enter does not send from (a search, an address)
+SEARCHES = re.compile(r"поиск|найти|search|find|фильтр|filter|адрес|address|url", re.IGNORECASE)
 BLOCKED_KEYS = {"win", "lwin", "rwin", "meta", "super"}  # the Start menu and the shell are outside the program
 BLOCKED_COMBOS = {("alt", "tab"), ("alt", "esc"), ("ctrl", "esc"), ("alt", "shift", "tab")}
 
@@ -184,6 +193,12 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     rect = wt.RECT()
     user32.GetWindowRect(wt.HWND(hwnd), ctypes.byref(rect))
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+
+def overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    """Two boxes (left, top, right, bottom): the part they share, None when none."""
+    box = (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
+    return box if box[2] > box[0] and box[3] > box[1] else None
 
 
 LINK = re.compile(r"^([a-z][a-z0-9+.-]{1,30}):\S+$", re.IGNORECASE)
@@ -469,6 +484,12 @@ def parse_keys(text: str) -> list[int]:
     return codes
 
 
+def enter_only(text: str) -> bool:
+    """Enter, or ctrl+Enter - what sends a chat's message; shift+Enter is a new line."""
+    names = [k.strip().lower() for k in text.split("+") if k.strip()]
+    return bool(names) and names[-1] in ("enter", "return") and set(names[:-1]) <= {"ctrl", "control"}
+
+
 def press(codes: list[int]) -> None:
     _send(*[_key(c) for c in codes], *[_key(c, up=True) for c in reversed(codes)])
 
@@ -529,38 +550,92 @@ class Uia:
 
     # --- in the thread ---
 
-    def elements(self, hwnd: int) -> list[dict[str, Any]]:
+    def elements(self, hwnd: int, part: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], int]:
         """The window's elements in the control view, depth first: role, name, value, state, place, and the
-        element itself (for the actions)."""
-        U = self.U
+        element itself (for the actions) - those in sight: an element outside the window, or scrolled out of its
+        list (outside its parent), is counted, not listed, with all inside it (a chat's whole history used to fill
+        the look before its input field was reached). `part`: an element of the last look - only what is inside it.
+        The element with the focus is marked; one the cut left out is added at the end."""
         window = self.uia.ElementFromHandle(wt.HWND(hwnd))
         walker = self.uia.ControlViewWalker
-        wx, wy, _w, _h = window_rect(hwnd)
+        wx, wy, ww, wh = window_rect(hwnd)
         out: list[dict[str, Any]] = []
+        hidden = 0
 
-        def add(element: Any, depth: int) -> None:
+        def add(element: Any, depth: int, clip: tuple[int, int, int, int]) -> None:
+            nonlocal hidden
             child = walker.GetFirstChildElement(element)
             while child and len(out) < MAX_NODES:
                 role = child.CurrentControlType
-                if role not in SKIPPED:
-                    rect = child.CurrentBoundingRectangle
-                    item = {"role": ROLES.get(role, "element"), "name": " ".join(child.CurrentName.split()),
-                            "password": bool(child.CurrentIsPassword), "enabled": bool(child.CurrentIsEnabled),
-                            "place": (rect.left - wx, rect.top - wy, rect.right - rect.left, rect.bottom - rect.top),
-                            "depth": depth, "element": child, "value": None, "toggled": None}  # fmt: skip
-                    if not item["password"]:
-                        value = child.GetCurrentPattern(U.UIA_ValuePatternId)
-                        if value:
-                            item["value"] = value.QueryInterface(U.IUIAutomationValuePattern).CurrentValue
-                    toggle = child.GetCurrentPattern(U.UIA_TogglePatternId)
-                    if toggle:
-                        item["toggled"] = toggle.QueryInterface(U.IUIAutomationTogglePattern).CurrentToggleState == 1
-                    out.append(item)
-                    add(child, depth + 1)
+                rect = child.CurrentBoundingRectangle
+                box = (rect.left, rect.top, rect.right, rect.bottom)
+                sized = box[2] > box[0] and box[3] > box[1]
+                inner = overlap(box, clip) if sized else clip  # a group of no size: its children say where they are
+                if inner is None:
+                    hidden += 1
+                elif role not in SKIPPED:
+                    out.append(self._describe(child, role, box, wx, wy, depth))
+                    add(child, depth + 1, inner)
                 child = walker.GetNextSiblingElement(child)
 
-        add(window, 0)
-        return out
+        frame = (wx, wy, wx + ww, wy + wh)
+        if part is None:
+            add(window, 0, frame)
+        else:
+            x, y, w, h = part["place"]
+            add(part["element"], 0, overlap((wx + x, wy + y, wx + x + w, wy + y + h), frame) or frame)
+        self._mark_focus(out, window, frame)
+        return out, hidden
+
+    def _describe(self, element: Any, role: int, box: tuple[int, int, int, int], wx: int, wy: int,
+                  depth: int) -> dict[str, Any]:  # fmt: skip
+        U = self.U
+        item = {"role": ROLES.get(role, "element"), "name": " ".join(element.CurrentName.split()),
+                "password": bool(element.CurrentIsPassword), "enabled": bool(element.CurrentIsEnabled),
+                "place": (box[0] - wx, box[1] - wy, box[2] - box[0], box[3] - box[1]), "depth": depth,
+                "element": element, "value": None, "toggled": None, "focus": False}  # fmt: skip
+        if not item["password"]:
+            value = element.GetCurrentPattern(U.UIA_ValuePatternId)
+            if value:
+                item["value"] = value.QueryInterface(U.IUIAutomationValuePattern).CurrentValue
+        toggle = element.GetCurrentPattern(U.UIA_TogglePatternId)
+        if toggle:
+            item["toggled"] = toggle.QueryInterface(U.IUIAutomationTogglePattern).CurrentToggleState == 1
+        return item
+
+    def _mark_focus(self, out: list[dict[str, Any]], window: Any, frame: tuple[int, int, int, int]) -> None:
+        focused = self.uia.GetFocusedElement()
+        if not focused or focused.CurrentProcessId != window.CurrentProcessId:
+            return
+        rect = focused.CurrentBoundingRectangle
+        box = (rect.left, rect.top, rect.right, rect.bottom)
+        if overlap(box, frame) is None:
+            return
+        item = self._describe(focused, focused.CurrentControlType, box, frame[0], frame[1], 0)
+        same = next((i for i in out if (i["role"], i["name"], i["place"]) == (item["role"], item["name"],
+                                                                              item["place"])), None)  # fmt: skip
+        if same is not None:
+            same["focus"] = True
+        elif len(out) >= MAX_NODES:  # the cut left it out: where the keys go is worth a line all the same
+            out.append({**item, "focus": True})
+
+    def focused_field(self, hwnd: int) -> dict[str, Any] | None:
+        """Where keys go in this window: None when the focus is not in it (unknown); else whether it is a field that
+        takes text (not a password), its name and its text (value None: it does not say)."""
+        U = self.U
+        focused = self.uia.GetFocusedElement()
+        window = self.uia.ElementFromHandle(wt.HWND(hwnd))
+        if not focused or focused.CurrentProcessId != window.CurrentProcessId:
+            return None
+        role = ROLES.get(focused.CurrentControlType, "element")
+        name = " ".join(focused.CurrentName.split())
+        value = None
+        found = None if focused.CurrentIsPassword else focused.GetCurrentPattern(U.UIA_ValuePatternId)
+        if found:
+            pattern = found.QueryInterface(U.IUIAutomationValuePattern)
+            value = None if pattern.CurrentIsReadOnly else pattern.CurrentValue
+        text = not focused.CurrentIsPassword and (role in ("edit", "document") or value is not None)
+        return {"text": text, "role": role, "name": name, "value": value}
 
     def act(self, item: dict[str, Any], action: str, text: str = "", direction: str = "", amount: int = 1) -> str:
         """An element's own pattern: no mouse and no keys. '' when it has none for this action."""
@@ -588,6 +663,8 @@ class Uia:
             found = pattern(U.UIA_ValuePatternId, U.IUIAutomationValuePattern)
             if found is None or found.CurrentIsReadOnly:
                 return ""
+            with contextlib.suppress(Exception):  # the focus there too: Enter after typing goes to this field
+                element.SetFocus()
             found.SetValue(text)
             return "typed"
         if action == "toggle":
@@ -629,10 +706,19 @@ class Uia:
         item["element"].SetFocus()
 
 
-def tree_text(window: dict[str, Any], items: list[dict[str, Any]]) -> str:
-    """The look as the model reads it: one numbered line per element."""
-    lines = [f"Window {window['id']} «{window['title']}» - {window['program']}; {len(items)} elements"
-             + (f" (the first {MAX_NODES})" if len(items) >= MAX_NODES else "") + ":"]  # fmt: skip
+def tree_text(window: dict[str, Any], items: list[dict[str, Any]], hidden: int = 0,
+              part: dict[str, Any] | None = None) -> str:  # fmt: skip
+    """The look as the model reads it: one numbered line per element; what was cut or is out of sight, and how to
+    see it."""
+    head = f"Window {window['id']} «{window['title']}» - {window['program']}"
+    if part is not None:
+        head += f", inside {part['role']} «{part['name'][:NAME_CHARS]}»"
+    head += f"; {len(items)} elements"
+    if len(items) >= MAX_NODES:
+        head += f" (the first {MAX_NODES}: for the rest look inside a part - screen_look with part=[n])"
+    if hidden:
+        head += f"; {hidden} more out of sight (scrolled away or outside the window) - scroll to see them"
+    lines = [head + ":"]
     for n, item in enumerate(items, 1):
         line = f"{'  ' * min(item['depth'], 8)}[{n}] {item['role']}"
         if item["name"]:
@@ -645,6 +731,8 @@ def tree_text(window: dict[str, Any], items: list[dict[str, Any]]) -> str:
             line += " [on]" if item["toggled"] else " [off]"
         if not item["enabled"]:
             line += " (disabled)"
+        if item.get("focus"):
+            line += " (focus)"
         x, y, w, h = item["place"]
         lines.append(f"{line} at {x},{y} {w}x{h}")
     return "\n".join(lines)
@@ -818,10 +906,11 @@ class Computer:
 
     async def _look(self, run_id: str, args: dict[str, Any]) -> str:
         window = await self.window(args.get("window"))
+        part = self._item(run_id, window, {"element": args.get("part")})
         uia = self._uia_now()
-        items = await uia.run(uia.elements, window["id"])
+        items, hidden = await uia.run(uia.elements, window["id"], part)
         self._looks[(run_id, window["id"])] = items
-        text = tree_text(window, items)
+        text = tree_text(window, items, hidden, part)
         question = " ".join(str(args.get("question") or "").split())
         if question:
             if self._see is None:
@@ -865,6 +954,18 @@ class Computer:
         shown = {"program": window["program"], "window": window["title"], "action": args.get("action"),
                  "element": name, "text": text[:300], "keys": args.get("keys") or ""}  # fmt: skip
         sends = args.get("action") == "click" and bool(SENDS.search(name))
+        if args.get("action") == "keys" and enter_only(str(args.get("keys") or "")):
+            # Enter in a field with text sends it (a chat, a form), as the send button would: asked the same. The
+            # window first comes in front - its own focus is where Enter will go; unknown is asked too.
+            await asyncio.to_thread(bring_to_front, window["id"])
+            uia = self._uia_now()
+            field = await uia.run(uia.focused_field, window["id"])
+            if field is None:
+                sends = True
+                shown = {**shown, "element": "окно не впереди — куда уйдёт Enter, не видно"}
+            elif field["text"] and field["value"] != "" and not SEARCHES.search(field["name"]):
+                sends = True
+                shown = {**shown, "element": field["name"] or "поле ввода", "text": str(field["value"] or "")[:300]}
         why = await ask("screen_send" if sends else "screen_act", shown, not sends)
         if why is not None:
             raise ScreenError(why)
@@ -941,9 +1042,13 @@ class Computer:
                 raise ScreenError("not done: the focus is in a password field - the user's (D41)")
             await asyncio.to_thread(type_text, str(args.get("text") or ""))
             return "typed where the focus is"
-        x, y = (item["place"][0] + item["place"][2] // 2, item["place"][1] + item["place"][3] // 2) if item else (
-            int(args["x"]), int(args["y"]))  # fmt: skip
         _wx, _wy, ww, wh = window["rect"]
+        if item is not None:  # the middle of what is in sight of it: a long list reaches far beyond the window
+            px, py, pw, ph = item["place"]
+            seen = overlap((px, py, px + pw, py + ph), (0, 0, ww, wh)) or (px, py, px + pw, py + ph)
+            x, y = (seen[0] + seen[2]) // 2, (seen[1] + seen[3]) // 2
+        else:
+            x, y = int(args["x"]), int(args["y"])
         if not (0 <= x < ww and 0 <= y < wh):
             raise ScreenError(f"{x},{y} is outside the window ({ww}x{wh})")
         if action == "scroll":

@@ -199,7 +199,7 @@ class AutonomyView(QObject):
             "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),  # the mode
             "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
-            "meta": " · ".join(p for p in (model, f"шагов {run.get('steps', 0)}",
+            "meta": " · ".join(p for p in (model, f"шагов {run['steps']}" if run.get("steps") else "",  # at its end
                                            presenter.money(run["cost_usd"]) if run.get("cost_usd") else "",
                                            local_time(run.get("created_at", ""))) if p),
             "steps": steps, "progress": f"{done} из {len(steps)}" if steps else "",

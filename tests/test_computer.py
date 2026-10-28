@@ -224,6 +224,76 @@ def test_an_autonomous_run_at_the_test_window(hub, test_window, autonomy):  # no
     assert (asked.count("screen_act") > 0) == (autonomy == "plan")  # «Сам»: no card for acting at all
 
 
+def test_what_is_in_sight_and_enter_that_sends(tmp_path, test_window, monkeypatch):
+    """2026-10-28 (the user's check: the agent sent the message, then went on checking until its step limit): a look
+    lists what is in sight - the rest of a long history is counted, not listed (it used to fill the look before the
+    input field was reached); a part is looked into on its own; Enter in a field with text is a send, asked every
+    time, as the send button is; in a search field, or shift+Enter, it is not."""
+    assert pc.enter_only("enter") and pc.enter_only("Ctrl+Enter") and not pc.enter_only("shift+enter")
+    assert not pc.enter_only("ctrl+s") and not pc.enter_only("")
+    assert (
+        pc.overlap((0, 0, 10, 10), (5, 5, 20, 20)) == (5, 5, 10, 10) and pc.overlap((0, 0, 5, 5), (5, 0, 9, 9)) is None
+    )
+    item = {"role": "edit", "name": "Сообщение", "password": False, "value": "", "toggled": None, "enabled": True,
+            "place": (1, 2, 3, 4), "depth": 0, "focus": True}  # fmt: skip
+    text = pc.tree_text({"id": 7, "title": "Чат", "program": "Telegram"}, [item], hidden=40)
+    assert text == ('Window 7 «Чат» - Telegram; 1 elements; 40 more out of sight (scrolled away or outside the window) '
+                    '- scroll to see them:\n[1] edit "Сообщение" (focus) at 1,2 3x4')  # fmt: skip
+    pressed = []
+    monkeypatch.setattr(pc, "bring_to_front", lambda hwnd: True)  # no real keys anywhere: the person's desktop
+    monkeypatch.setattr(pc, "press", pressed.append)
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    db.call(lambda c: allow(c, test_window["window"]["exe"]))
+    computer = pc.Computer(db, EventBus(db), tmp_path / "computer", watch_person=False)
+    run = db.call(lambda c: store.create_conversation(c, kind="agent_run", title="Тест"))
+    asked = []
+
+    async def ask(tool, shown, cover):
+        asked.append((tool, shown["element"], shown["text"], cover))
+        return "not done: the user said no" if shown["element"].startswith("окно не впереди") else None
+
+    async def go(name, **args):
+        return await computer.handle(run, {"name": name, "input": args}, asyncio.Event(), ask)
+
+    hwnd = test_window["window"]["id"]
+
+    async def scenario():
+        tree, _ = await go("screen_look", window=hwnd)
+        lines = tree.splitlines()
+        number = {line.split('"')[1]: int(line.split("[")[1].split("]")[0]) for line in lines[1:] if '"' in line}
+        typed = await go("screen_act", window=hwnd, action="type", element=number["Сообщение"], text="Привет")
+        uia = computer._uia_now()
+        unknown = await go("screen_act", window=hwnd, action="keys", keys="enter")  # its focus unseen: asked
+        uia.focused_field = lambda _hwnd: {"text": True, "role": "edit", "name": "Сообщение", "value": "Привет"}
+        sent = await go("screen_act", window=hwnd, action="keys", keys="enter")
+        uia.focused_field = lambda _hwnd: {"text": True, "role": "edit", "name": "Поиск", "value": "bekh"}
+        searched = await go("screen_act", window=hwnd, action="keys", keys="enter")
+        newline = await go("screen_act", window=hwnd, action="keys", keys="shift+enter")
+        part, _ = await go("screen_look", window=hwnd, part=number["История"])  # its numbers are the next ones
+        return lines, part, typed, unknown, sent, searched, newline
+
+    try:
+        lines, part, typed, unknown, sent, searched, newline = asyncio.run(scenario())
+    finally:
+        computer.close()
+    head = lines[0]
+    assert "more out of sight (scrolled away or outside the window) - scroll to see them" in head
+    assert any('text "строка 1"' in line for line in lines) and not any("строка 300" in line for line in lines)
+    assert any('edit "Сообщение"' in line for line in lines)  # the field under the long history is in the look
+    assert ", inside group «История»;" in part.splitlines()[0] and 'text "строка 1"' in part
+    assert typed[0].startswith("typed [") and unknown == ("not done: the user said no", True)
+    assert not sent[1] and not searched[1] and not newline[1]
+    assert [(tool, element, text) for tool, element, text, _cover in asked[1:]] == [
+        ("screen_send", "окно не впереди — куда уйдёт Enter, не видно", ""),
+        ("screen_send", "Сообщение", "Привет"),
+        ("screen_act", "", ""),
+        ("screen_act", "", ""),
+    ]
+    assert pressed == [[0x0D], [0x0D], [0x10, 0x0D]]  # the refused one was not pressed
+    db.close()
+
+
 def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):
     """A cloaked window (the input host's full-screen layer, a suspended Store app) is "visible" to Windows but not
     to the person: the agent does not get it."""

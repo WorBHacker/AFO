@@ -164,6 +164,37 @@ def test_each_step_waits_for_the_user(hub):  # noqa: F811
     assert steps[0]["status"] == "pending"  # not let start
 
 
+def test_an_agent_going_round_in_circles_hears_where_it_is(hub):  # noqa: F811
+    """2026-10-28 (the user's check: the message was sent, and the agent went on checking it for 60 more actions,
+    step 1 still «running», until the step limit): every 20 actions with the plan standing still, the agent hears it
+    - mark the step, or say what could not be confirmed and go on."""
+    agent = use(hub, Scripted("agent", [[PLAN], [step(1, "running")],
+                                        [("note", {"text": f"смотрю ещё раз {n}"}) for n in range(20)],
+                                        [("finish", {"summary": "Сделано.", "goal_met": True})]]))  # fmt: skip
+    run = ended(hub, start(hub))
+    assert run["status"] == "done"
+    told = json.dumps(agent.prompts[3:], ensure_ascii=False, default=str)
+    assert "20 actions since the plan last moved (step 1 «Прочитать README» is still running)" in told
+    assert "20 actions since" not in json.dumps(agent.prompts[:3], ensure_ascii=False, default=str)
+
+
+def test_at_the_step_limit_the_agent_still_reports(hub):  # noqa: F811
+    """At the step limit an autonomous run may still mark its step and finish: it ends with a report, not with
+    «the step limit was reached» and nothing said."""
+    agent = use(hub, Scripted("agent", [[PLAN], [step(1, "running")], [("note", {"text": "смотрю"})],
+                                        [("note", {"text": "ещё"})],
+                                        [step(1, "done", result="прочитан", check="файл открыт"),
+                                         ("finish", {"summary": "Шаги кончились: README прочитан, строки не "
+                                                                "посчитаны.", "goal_met": False})]]))  # fmt: skip
+    run = ended(hub, start(hub, max_steps=3))
+    said = results(agent)
+    assert said[2] == "Noted." and said[3] == autonomous.LIMIT  # an action at the limit: not run
+    assert run["status"] == "done" and run["report"]["goal_met"] is False
+    assert run["report"]["summary"].startswith("Шаги кончились")
+    steps = hub.get(f"/v1/runs/{run['id']}/plan").json()["plans"][0]["steps"]
+    assert steps[0]["status"] == "done"
+
+
 def test_the_user_writes_to_a_running_task(hub):  # noqa: F811
     """The input under a running task: a word the agent reads before its next step, or the answer it waits on."""
     agent = use(hub, Scripted("agent", [[PLAN], [("ask_user", {"question": "Какой файл?"})],

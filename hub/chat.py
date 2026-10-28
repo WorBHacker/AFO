@@ -329,7 +329,8 @@ class ChatService:
         fallback: dict | None = None  # the spare took over (once per run): from which model, and why
         tools = None
         scale, squeezed = 1.0, 0  # how far the length guess falls short for this model; requests sent shorter again
-        for step in range(limits.max_steps + 2):
+        last_words = 2 if limits.autonomous and self.autonomy is not None else 0  # turns to mark a step and report
+        for step in range(limits.max_steps + 2 + last_words):
             if limits.autonomous and self.autonomy is not None:  # paused by the user; what it should hear first
                 await self.autonomy.wait_resumed(conversation_id, cancel)
                 if cancel.is_set():
@@ -407,13 +408,17 @@ class ChatService:
                 return
             message_id = await self._save_step(conversation_id, model, completion, client_id, run)
             if step >= limits.max_steps:  # it keeps asking: answer without running, and let it finish (or stop)
-                await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, refuse=STEP_LIMIT)
-                if step > limits.max_steps:
+                last = bool(last_words)  # an autonomous run may still mark its step and report
+                await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel,
+                                         refuse=autonomous.LIMIT if last else STEP_LIMIT, counted=last,
+                                         let=autonomous.LAST_WORDS if last else frozenset())  # fmt: skip
+                if step > limits.max_steps + last_words:
                     outcome.status, outcome.detail = "error", f"the step limit ({limits.max_steps}) was reached"
                     await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
                     return
                 continue
-            await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, cloud=cloud)
+            await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, cloud=cloud,
+                                     counted=limits.autonomous)  # fmt: skip
             switch = self.autonomy.take_switch(conversation_id) if self.autonomy is not None else None
             if switch:  # the planner made the plan: the run's own model carries it out
                 found = await self._db.acall(lambda conn, m=switch: store.get_model(conn, m))
@@ -629,12 +634,15 @@ class ChatService:
         *,
         refuse: str = "",
         cloud: bool = False,
+        let: frozenset[str] = frozenset(),
+        counted: bool = False,
     ) -> None:
-        """Runs the calls (or answers them with `refuse`, or as not run once the user stopped) and stores the
-        results as one message."""
+        """Runs the calls (or answers them with `refuse` - but those in `let` -, or as not run once the user
+        stopped) and stores the results as one message. `counted`: an autonomous run's - each call is counted
+        (its plan standing still, D40)."""
         results = []
         for call in calls:
-            if refuse or cancel.is_set():
+            if (refuse and call["name"] not in let) or cancel.is_set():
                 results.append(tool_result_block(call["id"], call["name"], refuse or NOT_RUN, True))
                 continue
             await self._bus.publish(
@@ -692,6 +700,8 @@ class ChatService:
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error))
+            if counted and self.autonomy is not None:
+                await self.autonomy.acted(conversation_id, call["name"])
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "tool", results))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
 
