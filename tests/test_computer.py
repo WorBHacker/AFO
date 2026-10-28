@@ -223,3 +223,17 @@ def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):
     assert computer.top_windows()  # this desktop has some windows
     monkeypatch.setattr(computer, "cloaked", lambda hwnd: True)
     assert computer.top_windows() == []
+
+
+def test_localchat_itself_is_never_the_agents_to_control(monkeypatch):
+    """Whatever is allowed - IDLE runs in pythonw.exe as LocalChat's window does - LocalChat's own windows stay out."""
+    import os
+
+    from hub import computer
+
+    assert computer.is_localchat(os.getpid())  # the hub
+    lines = {1: ["C:\\Python314\\pythonw.exe", "-m", "app"], 2: ["C:\\Program Files\\LocalChat\\LocalChat.exe"],
+             3: ["C:\\Python314\\pythonw.exe", "C:\\Python314\\Lib\\idlelib\\idle.pyw"],
+             4: ["notepad.exe"]}  # fmt: skip
+    monkeypatch.setattr(computer, "_cmdline", lambda pid: lines.get(pid, []))
+    assert [pid for pid in lines if computer.is_localchat(pid)] == [1, 2]

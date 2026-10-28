@@ -44,6 +44,12 @@ SCAN_TIMEOUT_S = 90
 FIRST_SCAN = "programs.first_scan"  # settings: when the first look was made and what it found
 OFFER = "programs.offer"  # settings: the list is still to be offered after the first look
 DECISIONS = ("allow", "deny")
+# programs that run others: a shortcut to one of them (IDLE -> pythonw.exe idle.pyw, a folder -> explorer.exe, a
+# developer prompt -> cmd.exe) says nothing of a window - LocalChat's own window is a pythonw.exe one too. Such a
+# program is known by its windows' AppUserModelID only.
+HOSTS = frozenset({"explorer.exe", "python.exe", "pythonw.exe", "py.exe", "pyw.exe", "cmd.exe", "powershell.exe",
+                   "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe", "rundll32.exe", "mmc.exe", "msiexec.exe",
+                   "java.exe", "javaw.exe", "node.exe", "conhost.exe", "dllhost.exe", "svchost.exe"})  # fmt: skip
 
 _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)  # steam://, http://, ms-settings: - links, not programs
 _EXE_IN_ID = re.compile(r"([\w-]+\.exe)", re.IGNORECASE)  # Microsoft.Office.WINWORD.EXE.15 -> WINWORD.EXE
@@ -506,7 +512,8 @@ def dismiss_offer(conn) -> None:
 
 def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] | None:
     """The allowed program a window belongs to, by its process's .exe or its AppUserModelID; None - not allowed.
-    A desktop program by its exact .exe; a Store app by its package folder."""
+    A desktop program by its exact .exe (not a host of others: HOSTS); a Store app by its package folder (not one of
+    Windows' own)."""
     rows = conn.execute(
         "SELECT * FROM programs WHERE decision = 'allow' AND (removed_at IS NULL OR kind = 'manual')"
     ).fetchall()
@@ -523,7 +530,8 @@ def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] |
             # folder tells nothing - such an app is known by its windows' id only
             if folder and target.startswith(folder + os.sep) and not folder.startswith(windows + os.sep):
                 return program_json(row)
-        elif row["exe"] and norm(row["exe"]) == target:
+        elif row["exe"] and norm(row["exe"]) == target and (row["kind"] == "manual"  # chosen by its .exe, by hand
+                                                            or os.path.basename(target) not in HOSTS):  # fmt: skip
             return program_json(row)
     return None
 

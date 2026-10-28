@@ -250,6 +250,24 @@ def cloaked(hwnd: int) -> bool:
     return value.value != 0
 
 
+def _cmdline(pid: int) -> list[str]:
+    try:
+        return psutil.Process(pid).cmdline()
+    except psutil.Error, OSError:
+        return []
+
+
+def is_localchat(pid: int) -> bool:
+    """A window of LocalChat itself - the hub, the window (`-m app`), an installed LocalChat.exe: never the agent's
+    to control, whatever programs are allowed (it would answer its own approval cards)."""
+    if pid == os.getpid():
+        return True
+    parts = [p.lower() for p in _cmdline(pid)]
+    if any(p.endswith("localchat.exe") for p in parts):
+        return True
+    return any(p == "-m" and i + 1 < len(parts) and parts[i + 1] in ("app", "hub") for i, p in enumerate(parts))
+
+
 def top_windows() -> list[dict[str, Any]]:
     """Visible top-level windows with a title, front first: id, title, pid, exe, aumid, place."""
     found: list[int] = []
@@ -698,6 +716,8 @@ class Computer:
     async def windows(self) -> list[dict[str, Any]]:
         """The windows of allowed programs, each with its program's name."""
         found = await asyncio.to_thread(top_windows)
+
+        found = await asyncio.to_thread(lambda: [w for w in found if not is_localchat(w["pid"])])
 
         def allowed(conn) -> list[dict[str, Any]]:
             out = []
