@@ -4896,3 +4896,73 @@ def test_an_install_going_on_shows_in_the_status_bar_from_the_start(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_models_question_in_a_chat_and_the_chats_rights_chip(qapp):
+    """2026-10-28 (the user's word): a chat's model asks with answers to pick - the card over the input has them as
+    buttons, the input answers it too; the chat's rights are a chip of the input, each explained; an agent's question
+    has its answers as buttons."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.chat_questions = lambda cid: {"questions": []}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("chats")
+        opened(app)
+        options = [{"label": "README.md", "description": "описание проекта"}, {"label": "notes.txt"}]
+        send(app, "run.question", {"run_id": "c1", "id": "q7", "question": "Какой файл?", "options": options})
+        for _ in range(10):
+            QApplication.processEvents()
+        card = quick.window.findChild(QObject, "chatQuestion")
+        assert card.property("visible") and app.chatQuestion["question"] == "Какой файл?"
+        assert [o["label"] for o in app.chatQuestion["options"]] == ["README.md", "notes.txt"]  # its buttons
+        assert not [c for c in client.auto_calls if c[0] == "answer"]
+        app.answerChat("README.md")  # a button
+        wait_until(lambda: not app.bg.busy and ("answer", "c1", "q7", "README.md") in client.auto_calls)
+        assert app.chatQuestion == {} and app.flashText == "Ответ передан модели"
+        send(app, "run.question", {"run_id": "c1", "id": "q8", "question": "А дальше?", "options": []})
+        app.send("  своими словами  ")  # the input answers it
+        wait_until(lambda: not app.bg.busy and ("answer", "c1", "q8", "своими словами") in client.auto_calls)
+        send(app, "run.question", {"run_id": "other", "id": "q9", "question": "?", "options": []})
+        assert app.chatQuestion == {} and app.flashText.startswith("Модель спрашивает в «")  # another chat's
+
+        assert app.chatModeName == "Спрашивать"
+        items = app.chatModeItems
+        assert [i["id"] for i in items[1:]] == ["read_only", "ask", "sandbox", "trusted"] and all(
+            i["note"] for i in items[1:]) and items[2]["selected"]  # fmt: skip
+        assert quick.window.findChild(QObject, "chatModeChip").property("text") == "Спрашивать"
+        app.setChatMode("trusted")  # an open chat: saved at once
+        wait_until(lambda: not app.bg.busy and ("context", "c1", {"mode": "trusted"}) in client.log)
+        assert app.chatModeName == "Доверенный"
+        app.newChat()
+        app.setChatMode("read_only")  # a chat not made yet: with its first message
+        assert app.chatModeName == "Только чтение" and not [e for e in client.log if e[0] == "context" and e[1] == "c2"]
+        app.send("привет")
+        wait_until(lambda: not app.bg.busy and client.sent)
+        assert ("context", "c2", {"mode": "read_only"}) in client.log
+
+        view = app.autonomy_view  # an agent's question: its answers as buttons
+        client.run_list = [dict(AUTO_RUN)]
+        plan = {**AUTO_PLAN, "questions": [{"id": "q1", "question": "Считать пустые?", "status": "pending",
+                                            "options": [{"label": "Да"}, {"label": "Нет"}]}]}  # fmt: skip
+        client.run_plan = lambda run_id: plan
+        view.load()
+        app.setMode("agent")
+        view.select("auto1")
+        wait_until(lambda: not app.bg.busy and view.task.get("question", {}).get("options"))
+        for _ in range(10):
+            QApplication.processEvents()
+        assert [o["label"] for o in view.task["question"]["options"]] == ["Да", "Нет"]  # its buttons
+        view.answer("q1", "Нет")
+        wait_until(lambda: not app.bg.busy and ("answer", "auto1", "q1", "Нет") in client.auto_calls)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

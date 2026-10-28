@@ -176,6 +176,15 @@ class Answer(BaseModel):
     answer: str = Field(min_length=1, max_length=8000)
 
 
+@router.get("/conversations/{conversation_id}/questions")
+async def chat_questions(conversation_id: str, request: Request,
+                         client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
+    """A chat's questions still waiting for the user (its model's ask_user, Claude Code's own), with their options;
+    answered through /runs/{id}/questions/{question_id} like an agent's."""
+    found = await _db(request, lambda conn: autonomous.questions(conn, conversation_id))
+    return {"questions": [q for q in found if q["status"] == "pending"]}
+
+
 @router.post("/runs/{run_id}/questions/{question_id}")
 async def answer_question(
     run_id: str, question_id: str, body: Answer, request: Request, client: Annotated[Client, Depends(require_client)]

@@ -89,6 +89,7 @@ CHAT_TOOLS = [
     commands.RUN_COMMAND,
     web.WEB_FETCH,
     websearch.WEB_SEARCH,
+    autonomous.ASK_USER,  # a question with answers to pick (2026-10-28)
 ]  # a new chat's; older keep theirs
 # what only looks: an autonomous run may use it before its plan (the hub's reading tools, the web)
 READING = frozenset(
@@ -268,10 +269,13 @@ class ChatService:
             if on_end is not None:
                 if self.approvals is not None:
                     await self.approvals.expire(conversation_id)
+                if self.autonomy is not None:
+                    await self.autonomy.expire_all(conversation_id)  # its questions too: nobody waits for them now
                 await on_end(outcome)
 
     async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id):
-        """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10)."""
+        """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10) - or, with none
+        attached, in a folder of the chat's own."""
         try:
             if self.claude_code is None:
                 raise GatewayError("Claude Code is not set up in this hub")
@@ -298,6 +302,8 @@ class ChatService:
             self._runs.pop(conversation_id, None)
             if self.approvals is not None:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
+            if self.autonomy is not None:
+                await self.autonomy.expire_all(conversation_id)
 
     async def _steps(self, conversation_id, model: dict, effort: str, cancel, client_id, limits: Limits, outcome):
         attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))

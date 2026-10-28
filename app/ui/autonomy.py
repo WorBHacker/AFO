@@ -420,7 +420,7 @@ class AutonomyView(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         run_id = payload.get("run_id") or (payload.get("run") or {}).get("id") or ""
-        if kind == "run.question":
+        if kind == "run.question":  # a task's (a chat's question is the chat's: controller.py)
             self.app.flash("Агент спрашивает — ответ в режиме «Агент»", ms=10000)
             self.asked.emit("Агент спрашивает", str(payload.get("question", ""))[:200])
         if kind == "run.notice":  # the agent tells the user something (9.4)

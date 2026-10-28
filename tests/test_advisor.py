@@ -52,7 +52,7 @@ def test_what_rules_a_model_out_is_said(db):
     assert advice["recommended"] in ("local/coder", "local/big")
     assert [o["blocked"] is not None for o in advice["options"]][-1] is True  # the blocked ones last
     _advice, bare = ranked(db, conversation_id="bare")
-    assert bare["claude-code/default"]["blocked"].startswith("Claude Code работает в папке проекта")
+    assert bare["claude-code/default"]["blocked"] is None  # no project: a folder of the chat's own (2026-10-28)
     _advice, opened = ranked(db, conversation_id="open")
     assert opened["claude-code/default"]["blocked"] is None
     assert "платит подписка Claude Code" in opened["claude-code/default"]["reasons"]

@@ -25,6 +25,11 @@ Item {
     }
     function submit() {
         const message = area.text
+        if (App.chatQuestion.id && message.trim() !== "") {  // the model asked: the input answers it
+            area.text = ""
+            App.answerChat(message)
+            return
+        }
         if (!App.busyNow) {
             if (message.trim() === "") return
             area.text = ""
@@ -37,13 +42,81 @@ Item {
         function onDraftRestored(text) { if (area.text === "") area.text = text }
     }
 
+    // the model asks (its ask_user, Claude Code's question): the answers it offers, or one's own in the input
+    Rectangle {
+        id: asked
+        objectName: "chatQuestion"
+        visible: !!App.chatQuestion.id
+        x: (parent.width - composer.column) / 2
+        y: 4
+        width: composer.column
+        height: visible ? askedBody.height + 24 : 0
+        radius: 8
+        color: Theme.p.card
+        border.color: Theme.p.warn
+        Column {
+            id: askedBody
+            x: 14
+            y: 12
+            width: parent.width - 28
+            spacing: 8
+            Row {
+                spacing: 8
+                Icon { name: "chat"; size: 15; tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
+                Text {
+                    text: "Модель спрашивает"
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: App.chatQuestion.question || ""
+                color: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 14
+            }
+            Flow {
+                width: parent.width
+                spacing: 6
+                visible: (App.chatQuestion.options || []).length > 0
+                Repeater {
+                    model: App.chatQuestion.options || []
+                    delegate: PlainButton {
+                        required property var modelData
+                        required property int index
+                        objectName: "chatAnswer_" + index
+                        text: modelData.label
+                        onClicked: App.answerChat(modelData.label)
+                        ToolTip.visible: hovered && !!modelData.description
+                        ToolTip.delay: 400
+                        ToolTip.text: modelData.description || ""
+                    }
+                }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: (App.chatQuestion.options || []).length ? "Или напишите свой ответ в поле ниже — Enter отправит его"
+                                                              : "Ответьте в поле ниже — Enter отправит ответ"
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
+    }
+
     // a project the draft names without @: attach it?
     Rectangle {
         id: suggestion
         objectName: "mentionSuggestion"
         visible: Mentions.suggestions.length > 0
         x: card.x
-        y: 4
+        y: asked.visible ? asked.height + 10 : 4
         width: composer.column
         height: visible ? 34 : 0
         radius: 8
@@ -170,6 +243,14 @@ Item {
     }
 
     MenuPopup {
+        id: modeMenu
+        objectName: "chatModeMenu"
+        menuWidth: 440
+        wrapNotes: true
+        items: App.chatModeItems
+        onChosen: (id) => App.setChatMode(id)
+    }
+    MenuPopup {
         id: refusalMenu
         objectName: "chatRefusalMenu"
         menuWidth: 420
@@ -181,7 +262,7 @@ Item {
     Rectangle {
         id: card
         x: (parent.width - composer.column) / 2
-        y: suggestion.visible ? suggestion.height + 10 : 4
+        y: (suggestion.visible ? suggestion.y + suggestion.height + 6 : (asked.visible ? asked.height + 10 : 4))
         width: composer.column
         height: input.height + controls.height + 24
         radius: 8
@@ -239,7 +320,7 @@ Item {
                     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                             && !(event.modifiers & Qt.ShiftModifier)) {
                         event.accepted = true
-                        if (!App.busyNow) composer.submit()
+                        if (!App.busyNow || App.chatQuestion.id) composer.submit()
                     }
                 }
             }
@@ -267,6 +348,16 @@ Item {
                     iconName: "sparkle"
                     text: "Глубина: " + App.effortLabel
                     onClicked: composer.effortMenuRequested(effortChip)
+                }
+                Chip {
+                    id: modeChip
+                    objectName: "chatModeChip"
+                    iconName: "shield"
+                    text: App.chatModeName
+                    onClicked: { modeMenu.anchor = modeChip; modeMenu.open() }
+                    ToolTip.visible: hovered && !modeMenu.visible
+                    ToolTip.delay: 600
+                    ToolTip.text: "Права модели в этом чате: что она делает без вопроса"
                 }
                 Chip {
                     id: refusalChip
@@ -315,27 +406,29 @@ Item {
                 spacing: 10
                 AbstractButton {
                     id: send
+                    // stops the answer - unless the model asked and the input holds the user's answer to it
+                    readonly property bool stops: App.busyNow && !(App.chatQuestion.id && area.text.trim() !== "")
                     width: 32
                     height: 32
                     hoverEnabled: true
-                    enabled: App.busyNow || area.text.trim() !== ""
+                    enabled: send.stops || area.text.trim() !== ""
                     onClicked: composer.submit()
                     background: Rectangle {
                         radius: 6
-                        color: App.busyNow ? "transparent"
+                        color: send.stops ? "transparent"
                                : (send.enabled ? (send.hovered ? Theme.p.accent_hover : Theme.p.accent) : Theme.p.item_hover)
-                        border.color: App.busyNow ? Theme.p.error : "transparent"
+                        border.color: send.stops ? Theme.p.error : "transparent"
                     }
                     contentItem: Item {
                         Icon {
                             anchors.centerIn: parent
-                            name: App.busyNow ? "stop" : "send"
-                            tint: App.busyNow ? Theme.p.error : (send.enabled ? Theme.p.on_accent : Theme.p.faint)
+                            name: send.stops ? "stop" : "send"
+                            tint: send.stops ? Theme.p.error : (send.enabled ? Theme.p.on_accent : Theme.p.faint)
                         }
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: App.busyNow ? "Остановить ответ" : "Отправить (Enter)"
+                    ToolTip.text: send.stops ? "Остановить ответ" : "Отправить (Enter)"
                 }
             }
         }

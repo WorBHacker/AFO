@@ -10,7 +10,8 @@ leads the work with, and the hub keeping them honest:
                    it as an approval card: each_step / plan (the default) - yes, free - no.
     update_step  - a step running / done (only with how it was checked) / failed (after MAX_TRIES failures: another
                    way, a new plan or a question) / skipped (with why). At each_step a step starts only when approved.
-    ask_user     - a question the user answers in the window; the run waits.
+    ask_user     - a question the user answers in the window, with answers to pick (options); the run waits. Any
+                   chat has it too, and Claude Code's own questions come the same way (ask_question).
     finish       - the report: what was done, what not, the files, whether the goal is met.
 A model that stops without finishing is told what is left (a nudge, at most MAX_NUDGES in a row); one that acts on
 and on with its plan standing still (it checked the same thing over and over) is told where it is every STUCK_AFTER
@@ -45,6 +46,7 @@ LIMIT = ("not run: the step limit is reached. Call finish now with an honest rep
          "whether the goal is met.")  # fmt: skip
 MAX_STEPS_IN_PLAN = 30
 NOTE = "[LocalChat hub]"
+MAX_OPTIONS = 6  # answers offered with a question
 
 GUIDE = """You work on your own toward a goal, with the user watching (an autonomous agent). Work like this:
 1. Look first, if needed (read files, search), then call set_plan: numbered steps, each with how you will check it.
@@ -105,10 +107,18 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "ask_user",
         "description": "Ask the user a question and wait for the answer: a choice that is theirs, a missing fact, a "
-        "risk to accept. Ask one clear question; offer the options you see.",
+        "risk to accept. Ask one clear question; offer the answers you see in `options` - the user picks one with a "
+        "click, or writes their own.",
         "parameters": {
             "type": "object",
-            "properties": {"question": {"type": "string", "description": "The question, complete in itself."}},
+            "properties": {
+                "question": {"type": "string", "description": "The question, complete in itself."},
+                "options": {
+                    "type": "array",
+                    "description": f"Up to {MAX_OPTIONS} short answers to pick from (a few words each).",
+                    "items": {"type": "string"},
+                },
+            },
             "required": ["question"],
         },
     },
@@ -129,6 +139,7 @@ TOOLS: list[dict[str, Any]] = [
     },
 ]  # fmt: skip
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
+ASK_USER = next(t for t in TOOLS if t["name"] == "ask_user")  # chats have it too (2026-10-28)
 PLAN_FIRST = ("not done: make the plan first (set_plan) - look around with the reading tools if you need to, then "
               "plan; acting before a plan the user can see is not allowed")  # fmt: skip
 
@@ -225,7 +236,19 @@ def set_step(conn: sqlite3.Connection, run_id: str, version: int, n: int, *, sta
 def questions(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM run_questions WHERE conversation_id = ? ORDER BY created_at",
                         (run_id,)).fetchall()  # fmt: skip
-    return [dict(r) for r in rows]
+    return [{**dict(r), "options": json.loads(r["options"]) if r["options"] else []} for r in rows]
+
+
+def check_options(value: Any) -> list[dict[str, str]]:
+    """The answers offered with a question: strings, or {label, description} (Claude Code's); at most MAX_OPTIONS."""
+    out = []
+    for item in value if isinstance(value, list) else []:
+        label = item.get("label") if isinstance(item, dict) else item
+        label = " ".join(str(label or "").split())[:120]
+        if label and label not in [o["label"] for o in out]:
+            about = " ".join(str(item.get("description") or "").split())[:300] if isinstance(item, dict) else ""
+            out.append({"label": label, **({"description": about} if about else {})})
+    return out[:MAX_OPTIONS]
 
 
 def plan_text(steps: list[dict[str, Any]]) -> str:
@@ -263,6 +286,13 @@ class Autonomy:
     ) -> tuple[str, bool]:
         """`cloud`: the model answering is a cloud one - recall gives it only what a cloud model may read (Q24)."""
         run = await self.info(run_id)
+        if run is None and call["name"] == "ask_user":  # a chat's model asks: the same card, in the chat
+            args = call["input"] if isinstance(call["input"], dict) else {}
+            question = str(args.get("question") or "").strip()[:2000]
+            if not question:
+                return "ask a question (`question`)", True
+            answer = await self.ask_question(run_id, question, args.get("options"), cancel)
+            return (f"The user answered: {answer}", False) if answer is not None else ("not answered", True)
         if run is None:
             return "this tool is for an autonomous agent's run", True
         args = call["input"] if isinstance(call["input"], dict) else {}
@@ -362,29 +392,41 @@ class Autonomy:
         return f"Step {n} {status}. Next: step {nxt['n']} «{nxt['title']}».", False
 
     async def _ask(self, run: dict, args: dict, cancel: asyncio.Event) -> tuple[str, bool]:
-        run_id = run["conversation_id"]
         question = str(args.get("question") or "").strip()[:2000]
         if not question:
             raise AutonomyError("ask a question (`question`)")
+        answer = await self.ask_question(run["conversation_id"], question, args.get("options"), cancel)
+        if answer is None:
+            return "not answered: the run was stopped", True
+        return f"The user answered: {answer}", False
+
+    async def ask_question(
+        self, conversation_id: str, question: str, options: Any, cancel: asyncio.Event
+    ) -> str | None:
+        """A question in a conversation - an agent's task, a chat, Claude Code's own (2026-10-28) - with the answers
+        offered to pick; waits for the user's answer (None: stopped, or nobody can answer it now)."""
         qid = uuid.uuid4().hex[:12]
+        offered = check_options(options)
         await self._db.acall(
             lambda conn: conn.execute(
-                "INSERT INTO run_questions (id, conversation_id, question) VALUES (?, ?, ?)", (qid, run_id, question)
+                "INSERT INTO run_questions (id, conversation_id, question, options) VALUES (?, ?, ?, ?)",
+                (qid, conversation_id, question, json.dumps(offered, ensure_ascii=False) if offered else None),
             )
         )
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._answers[qid] = future
-        await self._bus.publish("run.question", {"run_id": run_id, "id": qid, "question": question})
+        await self._bus.publish("run.question", {"run_id": conversation_id, "id": qid, "question": question,
+                                                 "options": offered})  # fmt: skip
         stopping = asyncio.create_task(cancel.wait())
         try:
             await asyncio.wait({future, stopping}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             stopping.cancel()
             self._answers.pop(qid, None)
-        if not future.done():  # the run was stopped while it waited
+        if not future.done() or future.cancelled():  # stopped while it waited, or expired
             await self._expire(qid)
-            return "not answered: the run was stopped", True
-        return f"The user answered: {future.result()}", False
+            return None
+        return future.result()
 
     async def answer(self, run_id: str, qid: str, text: str, *, by: str) -> dict:
         text = text.strip()
@@ -417,13 +459,18 @@ class Autonomy:
     async def expire_all(self, run_id: str | None = None) -> int:
         """Questions nobody can answer now: the run ended, or the hub restarted (the agent asks again)."""
         where, args = ("AND conversation_id = ?", (run_id,)) if run_id else ("", ())
-        return await self._db.acall(
-            lambda conn: (
-                conn.execute(
-                    f"UPDATE run_questions SET status = 'expired' WHERE status = 'pending' {where}", args
-                ).rowcount
-            )
-        )
+
+        def expire(conn: sqlite3.Connection) -> list[str]:
+            ids = [r[0] for r in conn.execute(f"SELECT id FROM run_questions WHERE status = 'pending' {where}", args)]
+            conn.execute(f"UPDATE run_questions SET status = 'expired' WHERE status = 'pending' {where}", args)
+            return ids
+
+        gone = await self._db.acall(expire)
+        for qid in gone:  # whoever waits on them hears "not answered"
+            future = self._answers.get(qid)
+            if future is not None and not future.done():
+                future.cancel()
+        return len(gone)
 
     async def _finish(self, run: dict, args: dict) -> tuple[str, bool]:
         run_id = run["conversation_id"]

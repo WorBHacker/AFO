@@ -13,7 +13,6 @@ import sqlite3
 from typing import Any
 
 from . import budgets, model_settings, stats, store
-from .claude_code import PROVIDER as CLAUDE_CODE
 
 PRIORITIES = {  # weights of quality, speed, price
     "balanced": (0.4, 0.3, 0.3),
@@ -75,8 +74,6 @@ def advise(
         cloud = model["locality"] == "cloud"
         if cloud and local_only:
             blocked = f"«{', '.join(local_only)}» — только для локальных моделей (D10)"
-        elif model["provider"] == CLAUDE_CODE and not projects:
-            blocked = "Claude Code работает в папке проекта: прикрепите проект"
         elif model["prices"]:
             over = budgets.reached(conn, model["id"])
             if over and not all(b["hard_action"] == "ask" for b in over):

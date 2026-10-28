@@ -244,6 +244,9 @@ class HubClient:
     def run_plan(self, run_id: str) -> dict:
         return self._call("GET", f"/v1/runs/{run_id}/plan")
 
+    def chat_questions(self, conversation_id: str) -> dict:
+        return self._call("GET", f"/v1/conversations/{conversation_id}/questions")
+
     def answer_question(self, run_id: str, question_id: str, answer: str) -> dict:
         return self._call("POST", f"/v1/runs/{run_id}/questions/{question_id}", {"answer": answer})
 

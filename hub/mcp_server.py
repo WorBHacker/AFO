@@ -26,7 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from common import __version__
 
-from . import cards, context, links, notes, projects
+from . import cards, context, links, notes, projects, store
 from .auth import Client, bearer_token, find_client
 from .claude_code import CONVERSATION_HEADER, HUB_CLIENT
 from .projects import Project, ProjectError
@@ -40,6 +40,8 @@ INSTRUCTIONS = (
     "tools. Everything here only reads. Secrets appear as [REDACTED]."
 )
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+EDITS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})  # Claude Code's tools that change files
+CHANGES = EDITS | {"Bash"}  # and what a read-only chat refuses it
 ASKS_THE_USER = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 EVENTS_MAX = 100
 IN_PROCESS = Client(id="", name="in-process", cloud=True)  # a call without HTTP headers: treated as cloud
@@ -284,17 +286,42 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         client = await caller(ctx)
         conversation = ctx.headers.get(CONVERSATION_HEADER) if ctx.headers is not None else None
         turn = app.state.claude_code.turns.get(conversation) if client.name == HUB_CLIENT and conversation else None
+        if turn is not None and tool_name == "AskUserQuestion":  # its own questions: in the chat, answers to pick
+            return await answers_to(turn.conversation_id, input)
+        mode = "ask"
+        if turn is not None:
+            mode = (await app.state.db.acall(lambda conn: store.context_settings(conn, turn.conversation_id)))["mode"]
+        if mode == "read_only" and tool_name in CHANGES:  # the chat's rights (D17) hold for Claude Code too
+            return json.dumps({"behavior": "deny", "message": "This chat is read-only: say the change in words, the "
+                                                              "user makes it."})  # fmt: skip
+        if mode == "trusted" and tool_name in EDITS:
+            return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,
             input,
             conversation_id=turn.conversation_id if turn else None,
-            project_id=turn.project.id if turn else None,
+            project_id=turn.project.id if turn and turn.project else None,
             client_id=client.id or None,
-            root=turn.project.root if turn else None,
+            root=turn.root if turn else None,
         )
         if decision.allow:
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         return json.dumps({"behavior": "deny", "message": decision.comment}, ensure_ascii=False)
+
+    async def answers_to(conversation_id: str, data: dict[str, Any]) -> str:
+        """Claude Code's AskUserQuestion: each question asked in the chat with its options; the answers go back as
+        its input's `answers` ({question: answer})."""
+        answers: dict[str, str] = {}
+        for item in data.get("questions") or []:
+            question = " ".join(str(item.get("question") or "").split())[:2000] if isinstance(item, dict) else ""
+            if not question:
+                continue
+            answer = await app.state.autonomy.ask_question(conversation_id, question, item.get("options"),
+                                                           asyncio.Event())  # fmt: skip
+            if answer is None:
+                return json.dumps({"behavior": "deny", "message": "The user did not answer (the chat was stopped)."})
+            answers[question] = answer
+        return json.dumps({"behavior": "allow", "updatedInput": {**data, "answers": answers}}, ensure_ascii=False)
 
     # --- resources ---
 

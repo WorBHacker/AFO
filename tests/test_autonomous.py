@@ -269,3 +269,34 @@ def test_the_plan_comes_before_acting(hub):  # noqa: F811
     said = results(agent)
     assert said[0] == autonomous.PLAN_FIRST and "there is no plan" in said[1] and said[2].startswith("Report saved")
     assert run["report"]["goal_met"] is False
+
+
+def test_questions_come_with_answers_to_pick_in_a_task_and_in_a_chat(hub):  # noqa: F811
+    """2026-10-28 (the user's word): ask_user offers answers (options) - an agent's task shows them as buttons, and
+    an ordinary chat's model has the same tool now; a chat's question waits in the chat and its answer goes back."""
+    agent = use(hub, Scripted("agent", [
+        [PLAN], [("ask_user", {"question": "Считать пустые строки?", "options": ["Да", "Нет", "Да", " "]})],
+        [("finish", {"summary": "Посчитал.", "goal_met": True})],
+    ]))  # fmt: skip
+    run_id = start(hub, autonomy="free")
+    asked = wait(lambda: [q for q in hub.get(f"/v1/runs/{run_id}/plan").json()["questions"]
+                          if q["status"] == "pending"])[0]  # fmt: skip
+    assert asked["options"] == [{"label": "Да"}, {"label": "Нет"}]  # the same once, no empty one
+    hub.post(f"/v1/runs/{run_id}/questions/{asked['id']}", json={"answer": "Нет"})
+    assert ended(hub, run_id)["status"] == "done" and results(agent)[1] == "The user answered: Нет"
+
+    chat = use(hub, Scripted("chatty", [
+        [("ask_user", {"question": "Какой файл?", "options": ["README.md", "notes.txt"]})], "Беру README.md.",
+    ]))  # fmt: skip
+    cid = hub.post("/v1/conversations", json={}).json()["id"]
+    assert hub.post(f"/v1/conversations/{cid}/messages", json={"content": "посчитай строки",
+                                                               "model_id": "chatty/m"}).status_code == 202  # fmt: skip
+    waiting = wait(lambda: hub.get(f"/v1/conversations/{cid}/questions").json()["questions"])[0]
+    tools = json.loads(hub.app.state.db.call(lambda c: c.execute("SELECT tools FROM conversations WHERE id = ?",
+                                                                 (cid,)).fetchone()["tools"]))  # fmt: skip
+    assert "ask_user" in [t["name"] for t in tools]
+    assert waiting["question"] == "Какой файл?"
+    assert [o["label"] for o in waiting["options"]] == ["README.md", "notes.txt"]
+    hub.post(f"/v1/runs/{cid}/questions/{waiting['id']}", json={"answer": "README.md"})
+    wait(lambda: not hub.get(f"/v1/conversations/{cid}").json().get("busy") and len(chat.prompts) == 2)
+    assert results(chat)[0] == "The user answered: README.md"

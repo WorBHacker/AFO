@@ -43,6 +43,23 @@ def model_name(models: dict[str, dict], model_id: str | None) -> str:
     return models.get(model_id, {}).get("name") or model_id
 
 
+# a chat's rights (D17) as its input's chip shows them (2026-10-28, the user's word): how often the model asks
+CHAT_MODES = [
+    ("read_only", "Только чтение", "Модель только читает. Правки файлов предложит словами, команды не запускает."),
+    ("ask", "Спрашивать", "Каждую правку файла и команду модель показывает карточкой и ждёт вашего ответа."),
+    ("sandbox", "Песочница", "Правит без вопроса копию проекта (git worktree), потом вы смотрите изменения и "
+                            "применяете или отбрасываете. Нужен git-проект; Claude Code здесь спрашивает."),
+    ("trusted", "Доверенный", "Правит файлы без вопроса — каждую правку можно откатить. Команды и отправка — "
+                              "по-прежнему с вопросом."),
+]  # fmt: skip
+
+
+def chat_mode_items(mode: str) -> list[dict[str, Any]]:
+    return [{"section": "Права модели в этом чате — что она делает без вопроса", "id": ""}] + [
+        {"id": m, "name": n, "note": h, "icon": "shield", "selected": m == (mode or "ask")} for m, n, h in CHAT_MODES
+    ]
+
+
 # Strata's refusal vector (abliteration at runtime, 2026-10-28) for one chat or task: "" - as the model is set
 REFUSAL = [("on", "Включено", "Strata убирает у модели отказы отвечать (abliterated)."),
            ("off", "Выключено", "Обычная модель, как её выпустили: на некоторые темы может отказаться.")]  # fmt: skip

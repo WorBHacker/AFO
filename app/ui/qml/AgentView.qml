@@ -344,10 +344,30 @@ Item {
                     line: Theme.p.warn
                     title: "Агент спрашивает"
                     text: (view.task.question || {}).question || ""
+                    Flow {
+                        width: parent.width
+                        spacing: 6
+                        visible: ((view.task.question || {}).options || []).length > 0
+                        Repeater {
+                            model: (view.task.question || {}).options || []
+                            delegate: PlainButton {
+                                required property var modelData
+                                required property int index
+                                objectName: "agentAnswer_" + index
+                                text: modelData.label
+                                onClicked: Autonomy.answer(view.task.question.id, modelData.label)
+                                ToolTip.visible: hovered && !!modelData.description
+                                ToolTip.delay: 400
+                                ToolTip.text: modelData.description || ""
+                            }
+                        }
+                    }
                     Text {
                         width: parent.width
                         wrapMode: Text.Wrap
-                        text: "Ответьте в поле внизу — агент ждёт и продолжит после ответа."
+                        text: ((view.task.question || {}).options || []).length
+                              ? "Выберите ответ или напишите свой в поле внизу — агент ждёт и продолжит после ответа."
+                              : "Ответьте в поле внизу — агент ждёт и продолжит после ответа."
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12

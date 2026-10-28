@@ -310,17 +310,17 @@ def runs_started(hub):
 
 def test_projects_only_for_local_models_stay_closed(hub, tmp_path):
     cid = hub.http.post("/v1/conversations", json={}).json()["id"]
-    send(hub, cid, "hello")  # no project
+    send(hub, cid, "hello")  # no project: it works in a folder of the chat's own (2026-10-28)
     hub.wait_idle(cid)
+    assert len(runs(hub)) == 1
     hub.http.patch(f"/v1/projects/{hub.pid}", json={"cloud_ok": False})
     hub.http.put(f"/v1/conversations/{cid}/projects", json={"project_ids": [hub.pid]})
     send(hub, cid, "hello")
     hub.wait_idle(cid)
     errors = [e["payload"]["detail"] for e in
               hub.http.get("/v1/feed", params={"types": "chat.error"}).json()["events"]]  # fmt: skip
-    assert any("attach a project" in e for e in errors)
     assert any("only local models may see it (D10)" in e for e in errors)
-    assert not hub.log.exists()  # Claude Code was never started
+    assert len(runs(hub)) == 1  # with the local-only project Claude Code was not started
     refused = hub.http.post(f"/v1/projects/{hub.pid}/claude-code/terminal", json={})
     assert refused.status_code == 409 and "local models only" in refused.json()["detail"]
 
@@ -341,3 +341,45 @@ def test_status_and_a_terminal(hub):
     assert server["type"] == "http" and server["url"].endswith("/mcp") and CONVERSATION_HEADER not in server["headers"]
     hub.app.state.claude_code._find = lambda: None
     assert hub.http.get("/v1/claude-code").json()["installed"] is False
+
+
+def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
+    """2026-10-28 (the user's word): Claude Code in a chat with no project - an empty folder of the chat's own; its
+    AskUserQuestion comes to the chat with the options to pick, the answer goes back as its input's `answers`; the
+    chat's rights hold for it: «Только чтение» refuses its edit, «Доверенный» lets it through without a card."""
+    from tests.test_changes import wait
+
+    cid = hub.http.post("/v1/conversations", json={}).json()["id"]
+    send(hub, cid, "hello")
+    chat = hub.wait_idle(cid)
+    assert chat["messages"][-1]["content"][0]["text"].startswith("Ответ на:")
+    (first,) = runs(hub)
+    folder = data_paths().root / "claude-code" / "chats" / cid
+    assert first["cwd"] == str(folder) and folder.is_dir() and not any(folder.iterdir())
+    assert "no project attached" in first["argv"][first["argv"].index("--append-system-prompt") + 1]
+    send(hub, cid, "a question please")
+    asked = wait(lambda: hub.http.get(f"/v1/conversations/{cid}/questions").json()["questions"])[0]
+    assert asked["question"] == "Какой цвет?"
+    assert asked["options"] == [{"label": "Синий", "description": "спокойный"},
+                                {"label": "Красный", "description": "яркий"}]  # fmt: skip
+    assert hub.http.post(f"/v1/runs/{cid}/questions/{asked['id']}", json={"answer": "Синий"}).status_code == 200
+    chat = hub.wait_idle(cid)
+    assert chat["messages"][-1]["content"][0]["text"] == "Выбрано: Синий"
+    assert hub.http.get(f"/v1/conversations/{cid}/questions").json()["questions"] == []
+    assert runs(hub)[1]["argv"][runs(hub)[1]["argv"].index("--resume") + 1]  # the same session in the same folder
+
+    read_only = chat_with_project(hub)
+    hub.http.put(f"/v1/conversations/{read_only}/context", json={"mode": "read_only"})
+    send(hub, read_only, "edit notes.txt")
+    chat = hub.wait_idle(read_only)
+    assert chat["messages"][-1]["content"][0]["text"].startswith("Не стал править: This chat is read-only")
+    assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "свежий файл\n"
+    trusted = chat_with_project(hub)
+    hub.http.put(f"/v1/conversations/{trusted}/context", json={"mode": "trusted"})
+    send(hub, trusted, "edit notes.txt")
+    chat = hub.wait_idle(trusted)
+    assert chat["messages"][-1]["content"][0]["text"] == "Готово."
+    assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "правленый файл\n"
+    cards = hub.app.state.db.call(lambda c: c.execute("SELECT COUNT(*) FROM approvals WHERE conversation_id IN"
+                                                        " (?, ?)", (read_only, trusted)).fetchone()[0])  # fmt: skip
+    assert cards == 0  # no card for either: the chat's rights answered

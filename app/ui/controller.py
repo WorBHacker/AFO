@@ -102,6 +102,7 @@ class Controller(QObject):
     chatProjectsChanged = Signal()
     contextChanged = Signal()
     chatRefusalChanged = Signal()  # the chat's model or its own choice of Strata's refusal vector
+    chatQuestionChanged = Signal()  # the open chat's model asks (ask_user, Claude Code's AskUserQuestion)
     claudeCodeChanged = Signal()
     statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
@@ -162,6 +163,7 @@ class Controller(QObject):
         self._context_messages: list[dict[str, Any]] = []  # the open chat's stored context (system messages)
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
         self._context_rows: list[dict[str, Any]] = []
+        self._chat_ask: dict[str, Any] = {}  # the open chat's question waiting for the user: {id, question, options}
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
         self.modelChanged.connect(self.chatRefusalChanged)  # the refusal switch: only a model with Strata's vector
         self.contextChanged.connect(self.chatRefusalChanged)
@@ -358,6 +360,42 @@ class Controller(QObject):
             for pid in self._chat_projects
             if pid in known
         ]
+
+    # ---------- the model's question in this chat, the chat's rights (2026-10-28) ----------
+
+    @Property("QVariantMap", notify=chatQuestionChanged)
+    def chatQuestion(self) -> dict:
+        return self._chat_ask
+
+    def _set_chat_question(self, question: dict[str, Any] | None) -> None:
+        self._chat_ask = dict(question or {})
+        self.chatQuestionChanged.emit()
+
+    @Slot(str)
+    def answerChat(self, text: str) -> None:
+        """The answer to the open chat's question: an option picked, or the user's own words from the input."""
+        cid, qid, text = self.current, self._chat_ask.get("id"), text.strip()
+        if not (cid and qid and text):
+            return
+        self._set_chat_question(None)
+        self._call(lambda: self.client.answer_question(cid, qid, text), lambda _r: self.flash("Ответ передан модели"),
+                   lambda e: self.show_error(f"Ответ не принят: {e}"))  # fmt: skip
+
+    def _load_chat_question(self, cid: str) -> None:
+        def show(data: dict[str, Any]) -> None:
+            if cid == self.current:
+                pending = data.get("questions") or []
+                self._set_chat_question(pending[-1] if pending else None)
+
+        self._call(lambda: self.client.chat_questions(cid), show, lambda _e: None)
+
+    @Property(str, notify=contextChanged)
+    def chatModeName(self) -> str:
+        return dict((m, n) for m, n, _h in rows.CHAT_MODES).get(self._context_settings.get("mode") or "ask", "")
+
+    @Property(list, notify=contextChanged)
+    def chatModeItems(self) -> list:
+        return rows.chat_mode_items(self._context_settings.get("mode") or "ask")
 
     # ---------- Strata's refusal vector for this chat (2026-10-28) ----------
 
@@ -742,6 +780,7 @@ class Controller(QObject):
         self._think_timer.stop()
         self._set_chat_projects([], push=False)
         self._set_context([], None)
+        self._set_chat_question(None)
         self.currentChanged.emit()
         self.headerChanged.emit()
         self.busyChanged.emit()
@@ -803,9 +842,15 @@ class Controller(QObject):
 
     @Slot(str)
     def setChatMode(self, mode: str) -> None:
-        """The chat's rights (D17): read_only, ask, trusted - for the model's next writes."""
-        if mode in ("read_only", "ask", "sandbox", "trusted") and self.current:
+        """The chat's rights (D17): read_only, ask, sandbox, trusted - for the model's next writes; a chat not made
+        yet takes them with its first message."""
+        if mode not in ("read_only", "ask", "sandbox", "trusted"):
+            return
+        if self.current:
             self._save_context(mode=mode)
+        else:
+            self._context_settings = {**self._context_settings, "mode": mode}
+            self.contextChanged.emit()
 
     @Slot(str)
     def setChatInstructions(self, text: str) -> None:
@@ -876,6 +921,10 @@ class Controller(QObject):
     def _show_conversation(self, conversation_id: str, data: dict[str, Any]) -> None:
         if conversation_id != self.current:
             return  # the user moved on while this was loading
+        if data.get("busy"):
+            self._load_chat_question(conversation_id)  # it may be waiting on a question to the user
+        else:
+            self._set_chat_question(None)
         self.messages.reset(rows.rows_for(data["messages"], self.models))
         if conversation_id in self._stale_runs and not data.get("busy"):
             self._end_dead_run(conversation_id)  # read before the hub's status came: this says the same
@@ -1036,6 +1085,9 @@ class Controller(QObject):
 
     @Slot(str)
     def send(self, text: str) -> None:
+        if self._chat_ask.get("id") and text.strip():  # the model asked: these words are the answer
+            self.answerChat(text)
+            return
         if self.busyNow:
             self.stop()
             return
@@ -1072,15 +1124,17 @@ class Controller(QObject):
             self.flash("В контексте чата: " + ", ".join(said))
 
         refusal = (self._context_settings.get("refusal_vector") or "") if target is None else ""
+        mode = (self._context_settings.get("mode") or "ask") if target is None else "ask"
 
         def send() -> str:
             conversation_id = target or client.create_conversation()
             try:
                 if attach:  # a new chat takes the projects chosen before its first message
                     client.set_chat_projects(conversation_id, attach)
-                if pinned or refusal:  # and its refusal vector choice
+                if pinned or refusal or mode != "ask":  # and its refusal vector choice, its rights
                     client.set_context(conversation_id, **({"pinned": pinned} if pinned else {}),
-                                       **({"refusal_vector": refusal} if refusal else {}))  # fmt: skip
+                                       **({"refusal_vector": refusal} if refusal else {}),
+                                       **({"mode": mode} if mode != "ask" else {}))  # fmt: skip
                 client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
             except HubError as exc:
                 exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there
@@ -1260,7 +1314,9 @@ class Controller(QObject):
             self.agents.on_event(kind, payload)  # a run waits for the user, or goes on
         elif kind.startswith(("run.", "agents.")):
             self.agents.on_event(kind, payload)
-            if kind.startswith("run."):
+            if kind in ("run.question", "run.answered") and not self.autonomy_view.is_task(payload.get("run_id") or ""):
+                self._chat_question_event(kind, payload)  # a chat's model asks, not an agent's task
+            elif kind.startswith("run."):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
@@ -1291,6 +1347,19 @@ class Controller(QObject):
             for run_cid in list(self.live):  # an answer does not outlive the hub; nothing else would end it
                 self._end_dead_run(run_cid)
 
+    def _chat_question_event(self, kind: str, payload: dict[str, Any]) -> None:
+        cid = payload.get("run_id") or ""
+        if kind == "run.answered":
+            if cid == self.current and self._chat_ask.get("id") == payload.get("id"):
+                self._set_chat_question(None)
+            return
+        if cid == self.current:
+            self._set_chat_question({"id": payload.get("id"), "question": payload.get("question", ""),
+                                     "options": payload.get("options") or []})  # fmt: skip
+        else:
+            title = next((c["title"] for c in self.conversations if c["id"] == cid), "чат")
+            self.flash(f"Модель спрашивает в «{title}»", ms=10000)
+
     def _end_dead_run(self, conversation_id: str) -> None:
         """A run the hub no longer has (it stopped or restarted mid-answer): what was shown stays, marked cut. The
         chat is read again after a break, so the mark waits for that, too (`_interrupted`)."""
@@ -1308,6 +1377,8 @@ class Controller(QObject):
     def _run_ended(self, conversation_id: str | None) -> None:
         self.busy.discard(conversation_id)
         self.live.pop(conversation_id, None)
+        if conversation_id == self.current and self._chat_ask:
+            self._set_chat_question(None)  # the answer ended: its question went with it
         self._run_models.pop(conversation_id, None)
         if conversation_id == self.current:
             self._think_timer.stop()

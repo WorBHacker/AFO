@@ -14,6 +14,11 @@ so it reads the ecosystem through the same tools as any MCP client, and asks for
 (`--permission-prompt-tool mcp__localchat__approval_prompt`): its requests join the app's approval queue (D18).
 
 The same CLI can run interactively in a hub terminal (`terminal_command`): then it asks in its own window.
+
+A chat with no project (2026-10-28, the user's word) works too: Claude Code starts in an empty folder of that chat's
+own (`<data>/claude-code/chats/<chat>`), the user's files elsewhere. The chat's rights apply to what it asks (D17):
+«Только чтение» refuses its edits and commands, «Доверенный» lets its edits through without a card; its own questions
+(AskUserQuestion) come to the chat with their options to pick (`autonomous.Autonomy.ask_question`).
 """
 
 from __future__ import annotations
@@ -69,6 +74,10 @@ APPEND_PROMPT = (
     "confirmed by the user (get_project_card), and other projects' code, git, terminals, processes and recent "
     "events. Use them when the task touches another project or what is running. The user answers your permission "
     "requests in the LocalChat app; a denial may carry their comment - follow it."
+)
+NO_PROJECT_PROMPT = (
+    " This chat has no project attached: you start in an empty folder of the chat's own, and the user's files are "
+    "not there. Ask the user (AskUserQuestion) before you go looking for files elsewhere on their computer."
 )
 
 
@@ -297,7 +306,8 @@ class Turn:
     """A turn in progress: its process and what the approval tool needs to know about it."""
 
     conversation_id: str
-    project: Project
+    project: Project | None  # None: a chat with no project - Claude Code works in `root`, a folder of the chat's own
+    root: Path
     process: subprocess.Popen | None = None
 
 
@@ -358,10 +368,12 @@ class ClaudeCodeRunner:
             )
         return found
 
-    def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path]) -> list[str]:
+    def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path],
+                project: bool = True) -> list[str]:  # fmt: skip
+        prompt = APPEND_PROMPT + ("" if project else NO_PROJECT_PROMPT)
         argv = [*self.cli(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--include-partial-messages", "--mcp-config", str(config), "--permission-prompt-tool",
-                PERMISSION_TOOL, "--append-system-prompt", APPEND_PROMPT]  # fmt: skip
+                PERMISSION_TOOL, "--append-system-prompt", prompt]  # fmt: skip
         if model_ref != "default":
             argv += ["--model", model_ref]
         if resume:
@@ -385,19 +397,17 @@ class ClaudeCodeRunner:
         cancel: asyncio.Event,
         client_id: str | None,
     ) -> None:
-        if not projects:
-            raise GatewayError(
-                "Claude Code works in a project folder: attach a project to this chat (one that allows the cloud)"
-            )
-        project = projects[0]
+        project = projects[0] if projects else None
+        folder = project.root if project else self.chat_folder(conversation_id)
         session, earlier = await self._db.acall(lambda conn: _session_and_history(conn, conversation_id))
-        resume = session.get("id") if session.get("cwd") == str(project.root) else None  # a session lives in its folder
+        resume = session.get("id") if session.get("cwd") == str(folder) else None  # a session lives in its folder
         if not resume and earlier:
             text = f"<earlier_in_this_chat>\n{earlier}\n</earlier_in_this_chat>\n\n{text}"
         config = await asyncio.to_thread(self.mcp_config, conversation_id, conversation_id)
         argv = await asyncio.to_thread(self.command, model["model_ref"], config, resume=resume,
-                                       extra_dirs=[p.root for p in projects[1:]])  # fmt: skip
-        turn = Turn(conversation_id, project)
+                                       extra_dirs=[p.root for p in projects[1:]],
+                                       project=project is not None)  # fmt: skip
+        turn = Turn(conversation_id, project, folder)
         self.turns[conversation_id] = turn
         try:
             await self._turn(turn, argv, model, text, cancel, client_id)
@@ -406,16 +416,22 @@ class ClaudeCodeRunner:
             with contextlib.suppress(OSError):
                 config.unlink()
 
+    def chat_folder(self, conversation_id: str) -> Path:
+        """Where Claude Code works for a chat with no project: an empty folder of that chat's own."""
+        folder = self._paths.root / "claude-code" / "chats" / conversation_id
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
     async def _turn(self, turn, argv, model, text, cancel, client_id) -> None:
         loop = asyncio.get_running_loop()
         lines: asyncio.Queue[bytes | None] = asyncio.Queue()
         errors: collections.deque[str] = collections.deque(maxlen=STDERR_LINES)
         try:
-            process = await asyncio.to_thread(_start, argv, turn.project.root)
+            process = await asyncio.to_thread(_start, argv, turn.root)
         except OSError as exc:
             raise GatewayError(f"Claude Code did not start: {exc}") from exc
         turn.process = process
-        log.info("claude code turn for %s: pid %s in %s", turn.conversation_id, process.pid, turn.project.root)
+        log.info("claude code turn for %s: pid %s in %s", turn.conversation_id, process.pid, turn.root)
         _pipe_thread(process.stdout, lambda line: loop.call_soon_threadsafe(lines.put_nowait, line))
         _pipe_thread(process.stderr, lambda line: errors.append(line.decode("utf-8", "replace").rstrip()) if line
                      else None)  # fmt: skip
@@ -458,7 +474,7 @@ class ClaudeCodeRunner:
     async def _apply(self, turn: Turn, model: dict, step: Step) -> int | None:
         conversation_id = turn.conversation_id
         if step.kind == "session":
-            await self._db.acall(lambda conn: _save_session(conn, conversation_id, step.data, turn.project.root))
+            await self._db.acall(lambda conn: _save_session(conn, conversation_id, step.data, turn.root))
         elif step.kind == "delta" and step.data:
             payload = {"conversation_id": conversation_id, "kind": step.role, "text": step.data}
             await self._bus.publish("chat.delta", payload, persist=False)
@@ -475,7 +491,7 @@ class ClaudeCodeRunner:
         elif step.kind == "limit" and step.data.get("status") not in (None, "allowed"):
             # the subscription's limits (D12): near ("allowed_warning") or reached ("rejected") - into the feed
             payload = {"conversation_id": conversation_id, "info": step.data}
-            await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id)
+            await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id if turn.project else None)
         return None
 
     async def _finish(self, conversation_id, model, result, last_id, cancelled, errors, client_id, code) -> None:
