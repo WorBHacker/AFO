@@ -9,11 +9,18 @@ Evidence the hub looks for, for each pair of projects A and B:
   `.env.example` or docker-compose files - they share a database, a queue, a config.
 Each proposal keeps its evidence as lines a person can check. A confirmed link joins the map (L0) and lets a chat
 with A see B's live state too (D25); a rejected one is not proposed again.
+
+The hub looks again on its own (`Rescanner`, 2026-10-28; it was «Найти связи» only): QUIET_S after a project is
+added, moved or removed, after its dependency, compose or env files change, after a port opens or closes in a
+project's folder. New proposals go into the feed (`links.proposed`).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
@@ -22,6 +29,8 @@ from typing import Any
 from . import projects, search
 from .db import utc_now
 from .projects import Project, ProjectError
+
+log = logging.getLogger("hub.links")
 
 KINDS = {
     "uses": "использует",
@@ -171,6 +180,92 @@ def scan(all_projects: list[Project], ports: dict[str, dict[int, str]]) -> list[
             for kind, line in found:
                 proposals.setdefault((a.id, b.id, kind), []).append(line)
     return [{"a_id": a, "b_id": b, "kind": k, "evidence": lines} for (a, b, k), lines in proposals.items()]
+
+
+# --- looking again, by itself ---
+
+TRIGGER_FILES = {*DEPENDENCY_FILES, *ENV_FILES, ".gitmodules"}  # a change in one of these may make or break a link
+LONGEST = 5  # changes that keep coming (a port flapping) put the look off at most this many quiet spells
+
+
+def listening(found: dict[str, list[dict[str, Any]]]) -> dict[str, dict[int, str]]:
+    """The process monitor's picture as project id -> {port: process name} (not the hub's own)."""
+    return {pid: {port: p["name"] for p in procs if not p.get("hub") for port in p["ports"]}
+            for pid, procs in found.items()}  # fmt: skip
+
+
+async def look(db, processes) -> int:
+    """Looks for evidence between every pair of projects now; new proposals join the list. How many are new."""
+    everything = await db.acall(projects.list_projects)
+    found = processes.latest if processes.latest is not None else await processes.sample()
+    proposals = await asyncio.to_thread(scan, everything, listening(found))
+    return await db.acall(lambda conn: store_proposals(conn, proposals))
+
+
+def matters(event_type: str, payload: dict[str, Any]) -> bool:
+    """An event after which links may be different."""
+    if event_type in ("project.added", "project.removed", "project.moved", "port.opened", "port.closed"):
+        return True
+    if event_type == "project.files":
+        return bool(payload.get("more")) or any(Path(p).name in TRIGGER_FILES for p in payload.get("changed") or [])
+    return False
+
+
+class Rescanner:
+    """Looks for links again QUIET_S after the last event that may change them (see the module's note)."""
+
+    def __init__(self, bus, db, processes, quiet_s: float):
+        self._bus, self._db, self._processes, self._quiet_s = bus, db, processes, quiet_s
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._quiet_s > 0:
+            self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+    async def _loop(self) -> None:
+        clock = asyncio.get_running_loop()
+        subscription = self._bus.subscribe(("project.*", "port.*"))
+        first = deadline = None  # when the first change since the last look came; when to look
+        try:
+            while True:
+                wait = None if deadline is None else max(0.0, deadline - clock.time())
+                try:
+                    event = await asyncio.wait_for(subscription.queue.get(), wait)
+                except TimeoutError:  # quiet long enough after something that matters: look now
+                    first = deadline = None
+                    await self._look()
+                    continue
+                missed = subscription.overflowed  # it missed events: look anyway, and listen afresh
+                if missed:
+                    self._bus.unsubscribe(subscription)
+                    subscription = self._bus.subscribe(("project.*", "port.*"))
+                if missed or matters(event.type, event.payload):  # other events do not put the look off
+                    now = clock.time()
+                    first = now if first is None else first
+                    deadline = min(now + self._quiet_s, first + LONGEST * self._quiet_s)
+        finally:
+            self._bus.unsubscribe(subscription)
+
+    async def _look(self) -> None:
+        try:
+            added = await look(self._db, self._processes)
+        except Exception:
+            log.exception("looking for links between projects failed")
+            return
+        if added:
+            proposed = await self._db.acall(lambda conn: [k for k in list_links(conn) if k["status"] == "proposed"])
+            names = {p.id: p.name for p in await self._db.acall(projects.list_projects)}
+            shown = [{"a": names.get(k["a_id"], "?"), "b": names.get(k["b_id"], "?"), "kind": k["kind"]}
+                     for k in proposed[-added:]]  # fmt: skip
+            log.info("links proposed by themselves: %d", added)
+            await self._bus.publish("links.proposed", {"added": added, "links": shown})
+        await self._bus.publish("links.changed", {}, persist=False)
 
 
 # --- storing ---

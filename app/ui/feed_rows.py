@@ -102,6 +102,12 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
             note = f" ({p['description']})" if p.get("description") else ""
             return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
+        case "links.proposed":  # the hub looked again by itself after a change (2026-10-28)
+            found = p.get("links") or []
+            shown = "; ".join(f"{k.get('a')} → {k.get('b')}, {links_text.KIND_LABELS.get(k.get('kind', ''), 'связь')}"
+                              for k in found[:3]) + ("…" if len(found) > 3 else "")  # fmt: skip
+            return item("projects", "layers", f"Хаб нашёл возможные связи проектов: {p.get('added', len(found))}",
+                        f"{shown} — проверьте в обзоре проекта")  # fmt: skip
         case "programs.found":
             found = p.get("programs") or []
             names = ", ".join(f"«{f.get('name', '')}»" for f in found[:3]) + ("…" if len(found) > 3 else "")

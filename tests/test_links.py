@@ -94,6 +94,68 @@ def test_proposals_and_choices(pair):
     db.close()
 
 
+def test_links_looked_for_again_by_themselves(pair):
+    from hub.db import Database, migrate
+    from hub.events import EventBus
+
+    class Monitor:
+        def __init__(self):
+            self.latest = {"b": [{"pid": 7, "name": "python.exe", "ports": [8123]},
+                                 {"pid": 8, "name": "hub", "ports": [9], "hub": True}]}  # fmt: skip
+
+    assert links.listening(Monitor().latest) == {"b": {8123: "python.exe"}}  # not the hub's own
+    files = {"project_id": "f", "folders": [], "more": False}
+    assert not links.matters("project.files", {**files, "changed": ["src/app.js", "README.md"]})
+    assert links.matters("project.files", {**files, "changed": ["src/package.json"]})
+    assert links.matters("project.files", {**files, "changed": [], "more": True})  # too many to list
+    assert links.matters("port.closed", {}) and links.matters("project.moved", {})
+    assert not links.matters("project.git", {}) and not links.matters("project.changed", {})
+
+    async def main():
+        db = Database(data_paths().ensure().db)
+        db.call(migrate)
+        for p in pair:
+            db.call(lambda c, p=p: c.execute("INSERT INTO projects (id, name, path) VALUES (?, ?, ?)",
+                                             (p.id, p.name, p.path)))  # fmt: skip
+        bus = EventBus(db)
+        heard = bus.subscribe(("links.*",))
+        rescanner = links.Rescanner(bus, db, Monitor(), 0.2)
+        rescanner.start()
+        await asyncio.sleep(0)
+        await bus.publish("project.files", {**files, "changed": ["src/app.js"]}, persist=False)
+        await asyncio.sleep(0.4)
+        assert heard.queue.empty()  # a file that makes no links: no look
+
+        loop = asyncio.get_running_loop()
+        began = loop.time()
+        await bus.publish("project.files", {**files, "changed": ["pyproject.toml"]}, persist=False)
+        for _ in range(3):  # other changes keep coming: they do not put the look off
+            await asyncio.sleep(0.1)
+            await bus.publish("project.files", {**files, "changed": ["src/app.js"]}, persist=False)
+        event = await asyncio.wait_for(heard.queue.get(), 3)
+        assert loop.time() - began < 0.45
+        assert event.type == "links.proposed" and event.payload["added"] == 3
+        assert {(k["a"], k["b"], k["kind"]) for k in event.payload["links"]} == {
+            ("front", "back", "uses"), ("front", "back", "deploys_with"), ("back", "front", "shares")}  # fmt: skip
+        uses = next(k for k in db.call(links.list_links) if k["kind"] == "uses")
+        assert any("слушает python.exe" in line for line in uses["evidence"])
+        assert (await asyncio.wait_for(heard.queue.get(), 1)).type == "links.changed"
+
+        for _ in range(3):  # a port that opens and closes again: one look, after it settles
+            await bus.publish("port.opened", {"project_id": "b", "port": 8123}, persist=False)
+            await asyncio.sleep(0.05)
+        event = await asyncio.wait_for(heard.queue.get(), 3)
+        assert event.type == "links.changed" and event.id is None  # nothing new: no word in the feed
+        await asyncio.sleep(0.4)
+        assert heard.queue.empty()
+        stored = db.call(lambda c: c.execute("SELECT COUNT(*) FROM events WHERE type = 'links.proposed'").fetchone())
+        assert stored[0] == 1
+        await rescanner.stop()
+        db.close()
+
+    asyncio.run(main())
+
+
 class Echo:
     name = "fake"
 

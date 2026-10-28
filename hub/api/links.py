@@ -6,7 +6,6 @@ Reading is open to every client; scanning, confirming, rejecting, editing and de
 
 from __future__ import annotations
 
-import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -60,14 +59,7 @@ async def list_links(request: Request, client: Annotated[Client, Depends(require
 async def scan_links(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     """Looks for evidence between every pair of projects; new proposals join the list."""
     _app_only(client)
-    db = request.app.state.db
-    everything = await db.acall(projects.list_projects)
-    monitor = request.app.state.processes
-    found = monitor.latest if monitor.latest is not None else await monitor.sample()
-    ports = {pid: {port: p["name"] for p in procs if not p.get("hub") for port in p["ports"]}
-             for pid, procs in found.items()}  # fmt: skip
-    proposals = await asyncio.to_thread(links.scan, everything, ports)
-    added = await db.acall(lambda conn: links.store_proposals(conn, proposals))
+    added = await links.look(request.app.state.db, request.app.state.processes)
     await _changed(request)
     return {"added": added, "links": await _all(request)}
 

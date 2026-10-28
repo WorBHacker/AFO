@@ -5138,3 +5138,15 @@ def test_a_projects_folder_moved_gone_and_back_in_the_feed():
     )
     assert said("project.missing", path="F:/b") == ("Папка проекта «SiteTest» пропала", "F:/b", "warn")
     assert said("project.found", path="F:/b") == ("Папка проекта «SiteTest» снова на месте", "F:/b", "")
+
+
+def test_links_the_hub_found_by_itself_in_the_feed():
+    """2026-10-28: the hub looks for links again after a change; what it proposed goes into the feed."""
+    from app.ui.feed_rows import describe
+
+    found = [{"a": "front", "b": "back", "kind": "uses"}, {"a": "back", "b": "front", "kind": "shares"}]
+    row = describe({"type": "links.proposed", "payload": {"added": 2, "links": found}}, projects={}, chats={})
+    assert row["title"] == "Хаб нашёл возможные связи проектов: 2"
+    assert row["detail"] == "front → back, использует; back → front, общее — проверьте в обзоре проекта"
+    many = describe({"type": "links.proposed", "payload": {"added": 4, "links": found * 2}}, projects={}, chats={})
+    assert many["detail"].startswith("front → back, использует; back → front, общее; front → back, использует… —")
