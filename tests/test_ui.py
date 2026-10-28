@@ -4612,3 +4612,34 @@ def test_checking_the_system_and_collecting_the_logs(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_level_of_a_task_and_the_cards_words(qapp):
+    """10.x: a new task starts «Сам» unless the person chose otherwise; a running one changes its level; the card for
+    acting in a program says what «for the task» covers."""
+    from app.ui.approvals import approval_rows
+    from app.ui.autonomy import LEVEL_KEY
+    from app.ui.main import QuickApp
+
+    rows = approval_rows([{"id": "a1", "tool": "screen_act", "kind": "command", "input": {"program": "Telegram"},
+                           "preview": {"kind": "text", "text": "нажать"}}], projects={}, chats={})  # fmt: skip
+    assert rows[0]["chatScope"] == "«Telegram» до конца задачи"
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.autonomy_view
+        app.settings.remove(LEVEL_KEY)
+        view.newTask()
+        assert view.draft["autonomy"] == "free"  # «Сам» at first
+        view.setField("autonomy", "plan")
+        view.newTask()
+        assert view.draft["autonomy"] == "plan"  # the person's last choice
+        app.settings.remove(LEVEL_KEY)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

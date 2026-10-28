@@ -135,7 +135,8 @@ def approval_rows(
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)
-            "chatScope": "этот же вызов в этом чате" if cls == "command"
+            "chatScope": f"«{data.get('program') or 'программа'}» до конца задачи" if a.get("tool") == "screen_act"
+                         else "этот же вызов в этом чате" if cls == "command"
                          else "эта команда в этом чате" if a.get("kind") == "command"
                          else f"«{a.get('tool', '')[5:].partition('__')[2]}» в этом чате" if cls
                          else SCOPE_WORDS.get(a.get("tool", ""), f"все {a.get('tool')} в чате"),

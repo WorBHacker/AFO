@@ -40,6 +40,7 @@ TEMPLATES = [
     ("docs", "Порядок в документации", "Сверь README проекта с кодом и поправь устаревшее",
      "README соответствует коду; изменения перечислены"),
 ]  # fmt: skip
+LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
                          "max_replans": "3", "network": False}  # fmt: skip
@@ -177,6 +178,7 @@ class AutonomyView(QObject):
             "doneWhen": detail.get("done_when") or "", "status": status, "statusLabel": STATUSES.get(status, status),
             "live": run.get("status") in ("queued", "running"), "paused": bool(detail.get("paused")),
             "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),
+            "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
             "meta": " · ".join(p for p in (model, f"шагов {run.get('steps', 0)}",
                                            presenter.money(run["cost_usd"]) if run.get("cost_usd") else "",
@@ -270,7 +272,8 @@ class AutonomyView(QObject):
     def newTask(self) -> None:
         self._selected, self._detail, self._error = "", {}, ""
         model = self.app.role_model("executor") or self.app.modelId
-        self._draft = {**BLANK, "model_id": model, "planner_model_id": self.app.role_model("planner")}
+        self._draft = {**BLANK, "model_id": model, "planner_model_id": self.app.role_model("planner"),
+                       "autonomy": self._level()}  # fmt: skip
         self.selectionChanged.emit()
         self.changed.emit()
         self.tasksChanged.emit()
@@ -283,12 +286,35 @@ class AutonomyView(QObject):
         self.tasksChanged.emit()
         self._load_detail()
 
+    def _level(self) -> str:
+        """The level a new task starts with: the one chosen last time, «Сам» at first."""
+        chosen = str(self.app.settings.value(LEVEL_KEY, "free"))
+        return chosen if chosen in dict((a, n) for a, n, _h in AUTONOMY) else "free"
+
     @Slot(str, str)
     def setField(self, name: str, value: str) -> None:
         if name in BLANK and name != "project_ids":
             self._draft = {**self._draft, name: value}
             self._error = ""
+            if name == "autonomy":
+                self.app.settings.setValue(LEVEL_KEY, value)
             self.changed.emit()
+
+    @Slot(str)
+    def setLevel(self, autonomy: str) -> None:
+        """The open task's level, changed on the way (to «Сам»: it stops asking before acting in a program)."""
+        run_id = self._selected
+        if not run_id or self.app.client is None:
+            return
+
+        def done(result: dict[str, Any]) -> None:
+            name = dict((a, n) for a, n, _h in AUTONOMY).get(autonomy, autonomy)
+            self.app.flash(f"Самостоятельность: «{name}»" + (" — ждавший вопрос разрешён" if result.get("answered")
+                                                              else ""))  # fmt: skip
+            self._load_detail()
+
+        self.app.call_or_fail(lambda: self.app.client.set_autonomy(run_id, autonomy), done,
+                              lambda e: self.app.show_error(f"Не изменено: {e}"))  # fmt: skip
 
     @Slot(str, bool)
     def setFlag(self, name: str, value: bool) -> None:

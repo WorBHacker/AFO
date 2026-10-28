@@ -211,6 +211,32 @@ async def resume_run(run_id: str, request: Request, client: Annotated[Client, De
     return {"paused": False}
 
 
+class Level(BaseModel):
+    autonomy: str
+
+
+@router.put("/runs/{run_id}/autonomy")
+async def set_autonomy(run_id: str, body: Level, request: Request,
+                       client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
+    """The run's level changes on the way; «Сам» also answers what it waits on now (its plan, a step, acting in a
+    program); sending is still asked."""
+    _app_only(client)
+    if body.autonomy not in autonomous.AUTONOMY:
+        raise HTTPException(status_code=422, detail=f"autonomy: one of {', '.join(autonomous.AUTONOMY)}")
+    await _running_autonomous(request, run_id)
+    state = request.app.state
+    await state.db.acall(lambda conn: conn.execute("UPDATE agent_runs SET autonomy = ? WHERE conversation_id = ?",
+                                                   (body.autonomy, run_id)))  # fmt: skip
+    answered = []
+    if body.autonomy == "free":
+        for waiting in await state.approvals.pending():
+            if waiting["conversation_id"] == run_id and waiting["tool"] in ("screen_act", "start_step", "set_plan"):
+                await state.approvals.decide(waiting["id"], allow=True, by=client.name)
+                answered.append(waiting["id"])
+    await state.bus.publish("agent.run", {"run_id": run_id, "autonomy": body.autonomy})
+    return {"autonomy": body.autonomy, "answered": answered}
+
+
 class PlanEdit(BaseModel):
     steps: list[Any]
     reason: str = ""

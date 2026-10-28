@@ -163,6 +163,22 @@ def test_each_step_waits_for_the_user(hub):  # noqa: F811
     assert steps[0]["status"] == "pending"  # not let start
 
 
+def test_the_level_changes_on_the_way(hub):  # noqa: F811
+    """«Каждый шаг» waits on its plan; switched to «Сам», the plan it waits on is answered and the steps go on."""
+    use(hub, Scripted("agent", [[PLAN], [step(1, "running")], [step(1, "done", result="прочитан", check="да")],
+                                [("finish", {"summary": "Сделано.", "goal_met": True})]]))  # fmt: skip
+    run_id = start(hub, autonomy="each_step")
+    plan = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert plan["tool"] == "set_plan"
+    assert hub.put(f"/v1/runs/{run_id}/autonomy", json={"autonomy": "turbo"}).status_code == 422
+    changed = hub.put(f"/v1/runs/{run_id}/autonomy", json={"autonomy": "free"}).json()
+    assert changed == {"autonomy": "free", "answered": [plan["id"]]}
+    run = ended(hub, run_id)
+    assert run["status"] == "done" and run["autonomy"] == "free"
+    assert not [a for a in hub.get("/v1/approvals").json()["approvals"] if a["conversation_id"] == run_id]
+    assert hub.put(f"/v1/runs/{run_id}/autonomy", json={"autonomy": "plan"}).status_code in (404, 409)  # it ended
+
+
 def test_a_pause_the_users_plan_and_the_planner_handing_over(hub):  # noqa: F811
     planner = use(hub, Scripted("planner", [[PLAN]]))
     agent = use(hub, Scripted("agent", [[step(1, "running")], [step(1, "done", result="ok", check="видно")],

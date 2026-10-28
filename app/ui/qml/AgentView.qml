@@ -273,6 +273,23 @@ Item {
                     font.family: Theme.uiFont
                     font.pixelSize: 13
                 }
+                Row {
+                    visible: !!view.task.live && !!view.task.level
+                    spacing: 8
+                    Text {
+                        text: "Самостоятельность"
+                        color: Theme.p.muted
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Segmented {
+                        objectName: "agentLevel"
+                        options: Autonomy.autonomyOptions
+                        value: view.task.level || ""
+                        onPicked: (id) => Autonomy.setLevel(id)
+                    }
+                }
                 Text {
                     visible: !!view.task.doneWhen
                     width: parent.width

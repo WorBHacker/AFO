@@ -247,6 +247,9 @@ class HubClient:
     def answer_question(self, run_id: str, question_id: str, answer: str) -> dict:
         return self._call("POST", f"/v1/runs/{run_id}/questions/{question_id}", {"answer": answer})
 
+    def set_autonomy(self, run_id: str, autonomy: str) -> dict:
+        return self._call("PUT", f"/v1/runs/{run_id}/autonomy", {"autonomy": autonomy})
+
     def pause_run(self, run_id: str) -> dict:
         return self._call("POST", f"/v1/runs/{run_id}/pause")
 
