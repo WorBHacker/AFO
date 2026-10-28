@@ -940,7 +940,9 @@ class FakeClient:
         self.renamed.append((cid, title))
         return {"id": cid, "title": title}
 
-    def create_conversation(self):
+    def create_conversation(self, title="", home_project=None):
+        if home_project:  # a project's session (2026-10-28); an ordinary chat's making is not logged
+            self.log.append(("create", home_project))
         return "c2"
 
     def send(self, cid, text, model_id, effort, confirm_over_budget=False):
@@ -2809,8 +2811,10 @@ def test_chat_projects_and_tool_calls(app):
     send(app, "chat.message", {"conversation_id": "ct", "message": {"id": 22, "role": "tool", "content": [result]}})
     assert app.messages.rows[-1]["tools"][0]["summary"] == "branch main" and len(app.messages.rows) == 4
 
-    app.newChatAbout("p1")
-    assert app.mode == "chats" and app.currentId == "" and [p["id"] for p in app.chatProjects] == ["p1"]
+    app.newChatAbout("p1")  # a session of the project: it stays in «Проекты» (2026-10-28, the user's word)
+    assert app.mode == "projects" and app.showProjectChat and app.currentId == ""
+    assert [p["id"] for p in app.chatProjects] == ["p1"]
+    app.setMode("chats")
 
 
 def test_the_context_inspector(app):
@@ -4961,6 +4965,69 @@ def test_the_models_question_in_a_chat_and_the_chats_rights_chip(qapp):
         assert [o["label"] for o in view.task["question"]["options"]] == ["Да", "Нет"]  # its buttons
         view.answer("q1", "Нет")
         wait_until(lambda: not app.bg.busy and ("answer", "auto1", "q1", "Нет") in client.auto_calls)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_projects_sessions_stay_in_projects(qapp):
+    """2026-10-28 (the user's word): «Проекты» has the project's own chats under its files - «Новый сеанс» begins one,
+    it opens in place of the overview and never goes over to «Чаты»; «Чаты» lists only ordinary chats."""
+    from datetime import UTC, datetime
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        plain = client.conversations
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+        def conversations():
+            found = plain()
+            return {**found, "conversations": [{"id": "s1", "title": "Сеанс проекта", "updated_at": now,
+                                                "last_model_id": "llama-swap/coder", "home_project": "p1"},
+                                               *found["conversations"]]}  # fmt: skip
+
+        client.conversations = conversations
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.conversations and app.projects.items)
+        app.projects.openProject("p1")
+        wait_until(lambda: not app.bg.busy and app.projects.currentId == "p1")
+        assert "s1" not in [c["id"] for c in app.chats]  # «Чаты»: ordinary chats only
+        app.setMode("projects")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert [c["id"] for c in app.projectChats] == ["s1"] and not app.showProjectChat
+        assert quick.window.findChild(QObject, "projectChats").property("visible")
+        app.openProjectChat("s1")  # opens in «Проекты», in place of the overview
+        wait_until(lambda: not app.bg.busy and app.currentId == "s1")
+        assert app.mode == "projects" and app.showProjectChat
+        app.showProjectOverview()
+        assert not app.showProjectChat and app.mode == "projects"
+
+        app.newProjectChat()  # «Новый сеанс»
+        assert app.mode == "projects" and app.showProjectChat and app.currentId == ""
+        app.send("что в этом проекте?")
+        wait_until(lambda: not app.bg.busy and client.sent)
+        assert ("create", "p1") in client.log  # made as the project's session
+        assert app.mode == "projects" and app.showProjectChat and app.currentId == "c2"  # it stayed in «Проекты»
+
+        app.newChatAbout("p1")  # the overview's chat button: a session, still in «Проекты»
+        assert app.mode == "projects" and app.showProjectChat and app.currentId == ""
+        app.setMode("chats")  # «Чаты» never shows a project's session
+        assert app.currentId == "" and not app.showProjectChat
+        app.openChat("s1")  # a session opened from elsewhere (a card, the palette): in its project
+        wait_until(lambda: not app.bg.busy and app.currentId == "s1")
+        assert app.mode == "projects" and app.showProjectChat
+        app.openChat("c1")  # an ordinary chat from «Проекты»: back to «Чаты»
+        wait_until(lambda: not app.bg.busy and app.currentId == "c1")
+        assert app.mode == "chats" and not app.showProjectChat
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

@@ -106,9 +106,15 @@ class MessageRow:
         }
 
 
-def create_conversation(conn: sqlite3.Connection, *, kind: str = "chat", title: str = "") -> str:
+def create_conversation(conn: sqlite3.Connection, *, kind: str = "chat", title: str = "",
+                        home_project: str | None = None) -> str:  # fmt: skip
+    """`home_project`: a session of that project (begun in «Проекты», 2026-10-28) - it lives there, not in «Чаты»."""
     cid = uuid.uuid4().hex
-    conn.execute("INSERT INTO conversations (id, kind, title) VALUES (?, ?, ?)", (cid, kind, title))
+    conn.execute("INSERT INTO conversations (id, kind, title, home_project) VALUES (?, ?, ?, ?)",
+                 (cid, kind, title, home_project or None))  # fmt: skip
+    if home_project:  # its project is attached from the start
+        conn.execute("INSERT OR IGNORE INTO conversation_projects (conversation_id, project_id) VALUES (?, ?)",
+                     (cid, home_project))  # fmt: skip
     return cid
 
 
@@ -125,7 +131,7 @@ def list_conversations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Newest first; each with the model of its last answer (the app marks local and cloud chats)."""
     rows = conn.execute(
         """
-        SELECT c.id, c.kind, c.title, c.created_at, c.updated_at,
+        SELECT c.id, c.kind, c.title, c.created_at, c.updated_at, c.home_project,
                (SELECT m.model_id FROM messages m WHERE m.conversation_id = c.id AND m.role = 'assistant'
                 ORDER BY m.seq DESC LIMIT 1) AS last_model_id
         FROM conversations c WHERE c.archived = 0 ORDER BY c.updated_at DESC

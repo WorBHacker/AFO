@@ -103,6 +103,7 @@ class Controller(QObject):
     contextChanged = Signal()
     chatRefusalChanged = Signal()  # the chat's model or its own choice of Strata's refusal vector
     chatQuestionChanged = Signal()  # the open chat's model asks (ask_user, Claude Code's AskUserQuestion)
+    projectChatChanged = Signal()  # «Проекты»: the project's sessions, and whether one is open in the main area
     claudeCodeChanged = Signal()
     statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
@@ -164,7 +165,12 @@ class Controller(QObject):
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
         self._context_rows: list[dict[str, Any]] = []
         self._chat_ask: dict[str, Any] = {}  # the open chat's question waiting for the user: {id, question, options}
+        self._project_chat = False  # «Проекты»: the open session in the main area instead of the project's overview
+        self._new_home = ""  # a session not made yet: its project (it is made with its first message)
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
+        for signal in (self.chatsChanged, self.currentChanged, self.modeChanged, self.projects.projectChanged):
+            signal.connect(self.projectChatChanged)
+        self.projects.projectChanged.connect(self._project_switched)
         self.modelChanged.connect(self.chatRefusalChanged)  # the refusal switch: only a model with Strata's vector
         self.contextChanged.connect(self.chatRefusalChanged)
         self.projects.listChanged.connect(self.chatProjectsChanged)
@@ -209,7 +215,51 @@ class Controller(QObject):
 
     @Property(list, notify=chatsChanged)
     def chats(self) -> list:
-        return rows.chat_rows(self.conversations, self.busy, self.models)
+        """«Чаты»: the ordinary chats - a project's sessions live in «Проекты» (2026-10-28, the user's word)."""
+        return rows.chat_rows([c for c in self.conversations if not c.get("home_project")], self.busy, self.models)
+
+    # ---------- a project's sessions: its chats, in «Проекты» (2026-10-28, the user's word) ----------
+
+    @Property(list, notify=projectChatChanged)
+    def projectChats(self) -> list:
+        pid = self.projects.currentId
+        return rows.chat_rows([c for c in self.conversations if pid and c.get("home_project") == pid], self.busy,
+                              self.models) if pid else []  # fmt: skip
+
+    @Property(bool, notify=projectChatChanged)
+    def showProjectChat(self) -> bool:
+        """«Проекты» shows the open session (or a new one being written) instead of the project's overview."""
+        return self._mode == "projects" and self._project_chat and bool(self.projects.currentId)
+
+    def _home_of(self, conversation_id: str | None) -> str:
+        return next((c.get("home_project") or "" for c in self.conversations if c["id"] == conversation_id), "")
+
+    @Slot()
+    def newProjectChat(self) -> None:
+        """«Новый сеанс»: a chat of the open project - it stays in «Проекты»."""
+        pid = self.projects.currentId
+        if not pid:
+            return
+        self.newChat()
+        self._set_chat_projects([pid], push=False)
+        self._new_home, self._project_chat = pid, True
+        self.projectChatChanged.emit()
+
+    @Slot(str)
+    def openProjectChat(self, conversation_id: str) -> None:
+        self._project_chat = True
+        self.openChat(conversation_id)
+        self.projectChatChanged.emit()
+
+    @Slot()
+    def showProjectOverview(self) -> None:
+        self._project_chat = False
+        self.projectChatChanged.emit()
+
+    def _project_switched(self) -> None:
+        """Another project chosen: its overview, unless the open session is its own."""
+        if self._project_chat and self._home_of(self.current) != self.projects.currentId:
+            self._project_chat = False
 
     @Property(str, notify=currentChanged)
     def currentId(self) -> str:
@@ -771,6 +821,7 @@ class Controller(QObject):
 
     @Slot()
     def newChat(self) -> None:
+        self._new_home = ""  # an ordinary chat (newProjectChat sets its project after this)
         if self.role_model("chat"):  # the model the user chose for new chats (D39)
             self.chooseModel(self.role_model("chat"))
         self.current = None
@@ -787,10 +838,11 @@ class Controller(QObject):
 
     @Slot(str)
     def newChatAbout(self, project_id: str) -> None:
-        """A new chat with this project attached (from the project's overview)."""
-        self.setMode("chats")
-        self.newChat()
-        self._set_chat_projects([project_id], push=False)
+        """A new session of this project (from its overview): it stays in «Проекты» (2026-10-28, the user's word)."""
+        if project_id != self.projects.currentId:
+            self.projects.openProject(project_id)
+        self.setMode("projects")
+        self.newProjectChat()
 
     @Slot(str)
     def toggleChatProject(self, project_id: str) -> None:
@@ -905,6 +957,15 @@ class Controller(QObject):
 
     @Slot(str)
     def openChat(self, conversation_id: str) -> None:
+        home = self._home_of(conversation_id)
+        if home:  # a project's session opens in «Проекты», in its project
+            if home != self.projects.currentId:
+                self.projects.openProject(home)
+            self._project_chat = True
+            self.setMode("projects")
+        elif self._mode == "projects":  # an ordinary chat opened from «Проекты» (a card, the palette): «Чаты»
+            self._project_chat = False
+            self.setMode("chats")
         if conversation_id != self.current:
             self.current = conversation_id
             self.messages.reset([])
@@ -1126,8 +1187,10 @@ class Controller(QObject):
         refusal = (self._context_settings.get("refusal_vector") or "") if target is None else ""
         mode = (self._context_settings.get("mode") or "ask") if target is None else "ask"
 
+        home = self._new_home if target is None and self._project_chat else ""
+
         def send() -> str:
-            conversation_id = target or client.create_conversation()
+            conversation_id = target or client.create_conversation(home_project=home or None)
             try:
                 if attach:  # a new chat takes the projects chosen before its first message
                     client.set_chat_projects(conversation_id, attach)
@@ -1171,6 +1234,9 @@ class Controller(QObject):
         self.busy.add(conversation_id)
         if self.current is None:  # a new chat was made for this message
             self.current = conversation_id
+            if self._new_home and self._project_chat:  # a project's session: known as such before the list comes
+                self.conversations = [{"id": conversation_id, "kind": "chat", "title": "", "home_project":
+                                       self._new_home}, *self.conversations]  # fmt: skip
             self.load_conversations()
             self.openChat(conversation_id)
         self.busyChanged.emit()
@@ -1497,6 +1563,8 @@ class Controller(QObject):
             self._mode = mode
             self.settings.setValue("ui/mode", mode)
             self.modeChanged.emit()
+            if mode == "chats" and (self._home_of(self.current) or self._new_home):
+                self.newChat()  # «Чаты» never shows a project's session
 
     @Slot(str)
     def setTheme(self, mode: str) -> None:

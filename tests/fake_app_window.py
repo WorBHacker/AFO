@@ -82,6 +82,7 @@ def sent() -> None:
 message.returnPressed.connect(sent)
 layout.addWidget(message)
 window.resize(360, 560)
+window.move(-4000, -4000)  # out of the person's sight: it used to pop up over their work while the tests ran
 window.show()
 write("ready")
 sys.exit(app.exec())

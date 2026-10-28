@@ -310,8 +310,10 @@ class HubClient:
     def conversations(self) -> dict:
         return self._call("GET", "/v1/conversations")
 
-    def create_conversation(self, title: str = "") -> str:
-        return self._call("POST", "/v1/conversations", {"title": title})["id"]
+    def create_conversation(self, title: str = "", home_project: str | None = None) -> str:
+        """`home_project`: a session of that project - it lives in «Проекты», not in «Чаты»."""
+        body = {"title": title, **({"home_project": home_project} if home_project else {})}
+        return self._call("POST", "/v1/conversations", body)["id"]
 
     def conversation(self, conversation_id: str) -> dict:
         return self._call("GET", f"/v1/conversations/{conversation_id}")

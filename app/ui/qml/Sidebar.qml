@@ -107,9 +107,106 @@ Rectangle {
         visible: App.mode === "projects"
         y: tabs.y + tabs.height + 10
         width: parent.width
-        height: footer.y - y - 8
+        height: (projectChats.visible ? projectChats.y : footer.y) - y - 8
         onProjectMenuRequested: (anchor) => sidebar.projectMenuRequested(anchor)
         onAddRequested: sidebar.addProjectRequested()
+    }
+
+    // the project's sessions (2026-10-28, the user's word): its chats stay in «Проекты», not among «Чаты»
+    component PlainRow: AbstractButton {
+        id: row
+        property string iconName
+        property bool chosen: false
+        height: 32
+        hoverEnabled: true
+        background: Rectangle {
+            radius: 6
+            color: row.chosen ? Theme.p.item_selected : (row.hovered ? Theme.p.item_hover : "transparent")
+        }
+        contentItem: Item {
+            Icon {
+                x: 10
+                anchors.verticalCenter: parent.verticalCenter
+                name: row.iconName
+                size: 14
+                tint: row.chosen ? Theme.p.text_soft : Theme.p.faint
+            }
+            Text {
+                x: 32
+                width: parent.width - 40
+                anchors.verticalCenter: parent.verticalCenter
+                text: row.text
+                elide: Text.ElideRight
+                color: row.chosen ? Theme.p.text : Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
+        }
+    }
+    Item {
+        id: projectChats
+        objectName: "projectChats"
+        visible: App.mode === "projects" && Projects.currentId !== ""
+        x: 8
+        width: parent.width - 16
+        height: Math.min(Math.round(parent.height * 0.42), 110 + Math.max(1, App.projectChats.length) * 34)
+        y: footer.y - height - 8
+        Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
+        Text {
+            x: 10
+            y: 10
+            text: "Чаты проекта"
+            color: Theme.p.faint
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+        }
+        Column {
+            id: projectChatTop
+            y: 32
+            width: parent.width
+            spacing: 2
+            PlainRow {
+                objectName: "projectOverviewRow"
+                width: parent.width
+                iconName: "layers"
+                text: "Обзор проекта"
+                chosen: !App.showProjectChat
+                onClicked: App.showProjectOverview()
+            }
+            PlainRow {
+                objectName: "projectNewSession"
+                width: parent.width
+                iconName: "plus"
+                text: "Новый сеанс"
+                chosen: App.showProjectChat && App.currentId === ""
+                onClicked: App.newProjectChat()
+            }
+        }
+        ListView {
+            objectName: "projectChatList"
+            y: projectChatTop.y + projectChatTop.height + 4
+            width: parent.width
+            height: parent.height - y
+            clip: true
+            model: App.projectChats
+            spacing: 2
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ThinScrollBar {}
+            delegate: PlainRow {
+                required property var modelData
+                width: ListView.view.width
+                iconName: "chat"
+                text: modelData.title
+                chosen: App.showProjectChat && modelData.id === App.currentId
+                onClicked: App.openProjectChat(modelData.id)
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: (point) => sidebar.chatMenuRequested(modelData.id, parent.mapToItem(null, point.position.x,
+                                                                                                    point.position.y))
+                }
+            }
+        }
     }
 
     AbstractButton {

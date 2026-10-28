@@ -24,6 +24,7 @@ EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 class NewConversation(BaseModel):
     title: str = ""
+    home_project: str | None = None  # a session of this project: it lives in «Проекты» (2026-10-28)
 
 
 class ConversationPatch(BaseModel):
@@ -47,7 +48,15 @@ async def list_conversations(request: Request, client: Annotated[Client, Depends
 async def create_conversation(
     body: NewConversation, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
-    cid = await request.app.state.db.acall(lambda conn: store.create_conversation(conn, title=body.title))
+    def make(conn):
+        if body.home_project and conn.execute("SELECT 1 FROM projects WHERE id = ?", (body.home_project,)).fetchone() \
+                is None:  # fmt: skip
+            return None
+        return store.create_conversation(conn, title=body.title, home_project=body.home_project)
+
+    cid = await request.app.state.db.acall(make)
+    if cid is None:
+        raise HTTPException(status_code=404, detail="no such project")
     return {"id": cid}
 
 

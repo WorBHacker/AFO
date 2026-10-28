@@ -44,7 +44,7 @@ Window {
             onAgentsRequested: agentsSheet.open()
         }
         ChatView {
-            visible: App.mode === "chats"
+            visible: App.mode === "chats" || App.showProjectChat
             reserve: approvalBanner.visible ? approvalBanner.height + 10 : 0
             y: titleBar.height
             width: parent.width
@@ -52,7 +52,7 @@ Window {
         }
         SandboxBar {
             id: sandboxBar
-            visible: App.mode === "chats" && Sandbox.active
+            visible: (App.mode === "chats" || App.showProjectChat) && Sandbox.active
             anchors.bottom: composer.top
             width: parent.width
             onReviewRequested: sandboxSheet.open()
@@ -65,7 +65,7 @@ Window {
             reserveTop: approvalBanner.visible ? approvalBanner.height + 10 : 0
         }
         ProjectView {
-            visible: App.mode === "projects"
+            visible: App.mode === "projects" && !App.showProjectChat
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - (terminalPanel.visible ? terminalPanel.height : 0)
@@ -76,14 +76,14 @@ Window {
         }
         TerminalPanel {
             id: terminalPanel
-            visible: App.mode === "projects" && Projects.currentId !== "" && Terminals.panelOpen
+            visible: App.mode === "projects" && !App.showProjectChat && Projects.currentId !== "" && Terminals.panelOpen
             anchors.bottom: parent.bottom
             width: parent.width
             height: Math.min(Terminals.panelHeight, parent.height - titleBar.height - 160)
         }
         Composer {
             id: composer
-            visible: App.mode === "chats"
+            visible: App.mode === "chats" || App.showProjectChat
             anchors.bottom: parent.bottom
             width: parent.width
             onModelMenuRequested: (anchor) => modelMenu.openAt(anchor)

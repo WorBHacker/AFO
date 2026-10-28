@@ -362,3 +362,17 @@ def test_context_settings_shape_the_next_context(hub, repo):
     second = ask("два", 6)
     assert [b["key"] for b in second] == ["header", "tools"]  # nothing changed, the live state is off
     assert hub.get(f"/v1/conversations/{conv}").json()["context"]["live"] is False
+
+
+def test_a_projects_session_is_made_as_such(hub, repo):
+    """2026-10-28: a chat begun in «Проекты» is that project's session - its project attached from the start, and
+    the list says whose it is; an unknown project - 404."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    cid = hub.post("/v1/conversations", json={"home_project": pid}).json()["id"]
+    plain = hub.post("/v1/conversations", json={}).json()["id"]
+    assert hub.post("/v1/conversations", json={"home_project": "nope"}).status_code == 404
+    listed = {c["id"]: c for c in hub.get("/v1/conversations").json()["conversations"]}
+    assert listed[cid]["home_project"] == pid and listed[plain]["home_project"] is None
+    assert [p["id"] if isinstance(p, dict) else p for p in hub.get(f"/v1/conversations/{cid}").json()["projects"]] == [
+        pid
+    ]
