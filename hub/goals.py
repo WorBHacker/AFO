@@ -7,19 +7,23 @@ the chat ends (hub/chat.py calls turn_ended) it counts what the goal used, runs 
     continue  - not met, the limits are fine: a note of the hub (what is missing, what the user added meanwhile),
                 then the next turn;
     achieved  - every criterion is met;
-    blocked   - it needs the human: the turn failed (the model, a budget), or what is left only a judge can check;
+    blocked   - it needs the human: the turn failed (the model, a budget), the judge could not say, nobody can judge
+                the criteria in words, or tests were lost twice in a row;
     budget    - a limit is near: from soft_ratio of one on the worker gets its last turn (leave the files working,
                 write down what is done and what is left); after it the goal is parked.
 The user may pause it (the running turn finishes, no next one starts), resume it (a parked one with higher limits),
 clear it, and write to it while it works: steering, read at the start of the next turn. Active goals go on after a
 hub restart (D16).
 
-The check has two contours (Q26). First without a model: each criterion "command" runs in a hub terminal of its
-project (in «Песочница» - in the worktree) and must end with its exit code; a failure goes straight back to the
-worker with the command's last lines. Criteria in words ("semantic") are the judge's - a model that only reads
-(11.2); until it is there, a goal with such criteria stops for the human once its commands pass.
+The check has two contours (Q26, hub/judge.py). First without a model: each criterion "command" runs in a hub
+terminal of its project (in «Песочница» - in the worktree) and must end with its exit code; the files changed since
+the goal began must still parse; no test may be removed, skipped or commented out (that is REGRESSED by itself). A
+failure goes straight back to the worker - the command's last lines, the file and line. When all of that is clean,
+the judge - the model of the role «Проверка цели», or the one the goal names, that only reads - compares the
+contract with the diff and the output and says ACHIEVED / INCOMPLETE / REGRESSED with what is missing; its word goes
+to the worker. With no judge a goal of commands is met by them; one with criteria in words waits for the human.
 
-The contract lives apart from the conversation (migration 031); each check is only appended (D14), and the notes
+The contract lives apart from the conversation (migrations 031-032); each check is only appended (D14), and the notes
 between turns are stored as the hub's messages of the chat, visible like the rest.
 """
 
@@ -33,7 +37,7 @@ import sqlite3
 import uuid
 from typing import Any
 
-from . import approvals, commands, store
+from . import approvals, commands, judge, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -92,12 +96,17 @@ def _limits(data: Any, base: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _project_of(conn: sqlite3.Connection, conversation_id: str, ref: Any, n: int) -> str:
-    """The chat's attached project a criterion runs in: by id or by name; the only one when it says none."""
+def _attached(conn: sqlite3.Connection, conversation_id: str) -> list:
     attached = []
     for pid in store.conversation_projects(conn, conversation_id):
         with contextlib.suppress(ProjectError):
             attached.append(get_project(conn, pid))
+    return attached
+
+
+def _project_of(conn: sqlite3.Connection, conversation_id: str, ref: Any, n: int) -> str:
+    """The chat's attached project a criterion runs in: by id or by name; the only one when it says none."""
+    attached = _attached(conn, conversation_id)
     ref = str(ref or "").strip()
     if not ref and len(attached) == 1:
         return attached[0].id
@@ -172,8 +181,16 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
     if effort not in EFFORTS:
         raise GoalError(f"effort: one of {', '.join(EFFORTS)}")
     limits = _limits(data.get("limits"), DEFAULTS)
+    # the judge (11.2): the one named, else the role «Проверка цели» (read again at each check while none is named)
+    named = str(data.get("judge_model_id") or "") or None
+    judge_id = named or judge.role_model(conn)
+    if judge_id:  # said now, not after the first turn
+        try:
+            judge.check_model(conn, judge_id, _attached(conn, conversation_id))
+        except judge.JudgeError as exc:
+            raise GoalError(str(exc)) from None
     return {"objective": objective, "criteria": criteria, "constraints": constraints, "model_id": model_id,
-            "effort": effort, **limits}  # fmt: skip
+            "effort": effort, "judge_model_id": named, **limits}  # fmt: skip
 
 
 def create_goal(conn: sqlite3.Connection, conversation_id: str, contract: dict[str, Any], *, by: str) -> str:
@@ -182,10 +199,10 @@ def create_goal(conn: sqlite3.Connection, conversation_id: str, contract: dict[s
     goal_id = uuid.uuid4().hex[:12]
     conn.execute(
         "INSERT INTO goals (id, conversation_id, objective, constraints, model_id, effort, max_turns, max_tokens,"
-        " max_seconds, soft_ratio, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " max_seconds, soft_ratio, created_by, judge_model_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (goal_id, conversation_id, contract["objective"], json.dumps(contract["constraints"], ensure_ascii=False),
          contract["model_id"], contract["effort"], contract["max_turns"], contract["max_tokens"],
-         contract["max_minutes"] * 60, contract["soft_ratio"], by),
+         contract["max_minutes"] * 60, contract["soft_ratio"], by, contract.get("judge_model_id")),
     )  # fmt: skip
     for n, c in enumerate(contract["criteria"], 1):
         conn.execute(
@@ -304,29 +321,39 @@ def start_note(goal: dict[str, Any], *, head: str = "", said: list[str] | None =
     )
 
 
-def _missing_text(results: list[dict[str, Any]]) -> str:
+def _missing_text(results: list[dict[str, Any]], extra: list[str] | None = None) -> str:
+    """What a check found missing, as lines: the criteria not met, then what else the check found (`extra`: files
+    that do not parse, tests lost, the judge's items)."""
     out = []
     for r in results:
-        if r["met"]:
+        if r.get("met") or r["kind"] not in ("command", "semantic"):
             continue
         if r["kind"] == "semantic":
             out.append(f"- criterion {r['n']} (in words, the judge checks it): {r['rule']}")
             continue
         out.append(f"- criterion {r['n']}: `{r['command']}` {r['why']}" + (
             f". Its last lines:\n{r['tail']}" if r.get("tail") else ""))  # fmt: skip
-    return "\n".join(out)
+    return "\n".join([*out, *(f"- {item}" for item in extra or [])])
 
 
-def continue_note(goal: dict[str, Any], results: list[dict[str, Any]], said: list[str], *, head: str = "") -> str:
+def _check_text(found: dict[str, Any]) -> str:
+    missing = _missing_text(found["results"], found.get("extra") or [])
+    verdict = found.get("verdict") or "INCOMPLETE"
+    head = {"REGRESSED": "REGRESSED - something that worked was lost (see below); put it back first",
+            "INCOMPLETE": "not met"}.get(verdict, "not met")  # fmt: skip
+    text = f"CHECK OF YOUR LAST TURN: {head}.\n{missing}\n" if missing else ""
+    return text + (f"THE JUDGE SAYS: {found['feedback']}\n" if found.get("feedback") else "")
+
+
+def continue_note(goal: dict[str, Any], found: dict[str, Any], said: list[str], *, head: str = "") -> str:
     """The next turn's word (the user's plan 4.1): the goal, what the check found missing, what the user added."""
-    missing = _missing_text(results)
     words = "\n".join(said)
     return (
         f'{NOTE} <goal_loop type="continuation">\n'
         + (f"{head}\n" if head else "")
         + "The work on the goal goes on. No greetings, no report to the user - go straight to your tools.\n"
         f"GOAL: {goal['objective']}\n"
-        + (f"CHECK OF YOUR LAST TURN: not met.\n{missing}\n" if missing else "")
+        + _check_text(found)
         + (f"THE USER ADDED WHILE YOU WORKED - it comes first in this step:\n{words}\n" if words else "")
         + f"{usage_line(goal)}\n"
         "Do the next step toward the goal.\n"
@@ -334,9 +361,8 @@ def continue_note(goal: dict[str, Any], results: list[dict[str, Any]], said: lis
     )
 
 
-def last_turn_note(goal: dict[str, Any], results: list[dict[str, Any]], said: list[str]) -> str:
+def last_turn_note(goal: dict[str, Any], found: dict[str, Any], said: list[str]) -> str:
     """The last turn before the limit (the user's plan 4.2): stop experimenting, leave it working, hand it over."""
-    missing = _missing_text(results)
     words = "\n".join(said)
     return (
         f'{NOTE} <goal_loop type="budget_limit">\n'
@@ -348,10 +374,18 @@ def last_turn_note(goal: dict[str, Any], results: list[dict[str, Any]], said: li
         "2. Leave every file you changed in a working state - no half-written code.\n"
         "3. End with a handover report: what is done and checked; where the work stopped (the file and the line); "
         "what to do when the goal is resumed.\n"
-        + (f"CHECK OF YOUR LAST TURN: not met.\n{missing}\n" if missing else "")
+        + _check_text(found)
         + (f"THE USER ADDED WHILE YOU WORKED:\n{words}\n" if words else "")
         + "</goal_loop>"
     )
+
+
+def _found_of(check: dict[str, Any]) -> dict[str, Any]:
+    """A stored check as the notes read it (the next turn after a pause or a restart)."""
+    criteria = [r for r in check["results"] if r.get("kind") in ("command", "semantic")]
+    extra = next((r for r in check["results"] if r.get("kind") == "found"), {})
+    return {"results": criteria, "extra": extra.get("extra") or [], "feedback": extra.get("feedback") or "",
+            "verdict": check["verdict"]}  # fmt: skip
 
 
 # ---------------------------------------------------------------- the orchestrator
@@ -360,10 +394,11 @@ def last_turn_note(goal: dict[str, Any], results: list[dict[str, Any]], said: li
 class Goals:
     """Sets, pauses, resumes and clears chats' goals; after each turn of such a chat checks it and goes on, or not."""
 
-    def __init__(self, db: Database, bus: EventBus, chat: ChatService):
+    def __init__(self, db: Database, bus: EventBus, chat: ChatService, judging: judge.Judge):
         self._db = db
         self._bus = bus
         self._chat = chat
+        self._judge = judging  # what changed and the judge's verdict (11.2)
         self._locks: dict[str, asyncio.Lock] = {}  # one check at a time per chat
         self._counted: set[str] = set()  # chats whose running turn is the goal's: it counts even if paused meanwhile
 
@@ -404,9 +439,24 @@ class Goals:
             goal = await self._db.acall(create)
         except sqlite3.IntegrityError:
             raise GoalConflict("the chat has a goal already: clear it first") from None
+        await self._baselines(goal)
         await self._bus.publish("goal.set", {"conversation_id": conversation_id, "goal": goal})
         await self._turn(goal, start_note(goal))
         return await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
+
+    async def _baselines(self, goal: dict[str, Any]) -> None:
+        """Where each git project's files stand as the goal begins: the judge's diff runs from there (11.2)."""
+        for project in await self._chat.tool_projects(goal["conversation_id"]):
+            if not judge.is_git(project.root):
+                continue
+            try:
+                tree = await asyncio.to_thread(judge.snapshot, project.root)
+            except judge.JudgeError as exc:
+                log.warning("goal %s: no starting point for %s: %s", goal["id"], project.name, exc)
+                continue
+            await self._db.acall(lambda conn, p=project.id, t=tree: conn.execute(
+                "INSERT OR REPLACE INTO goal_baselines (goal_id, project_id, tree) VALUES (?, ?, ?)",
+                (goal["id"], p, t)))  # fmt: skip
 
     async def pause(self, conversation_id: str, *, by: str) -> dict[str, Any]:
         """No next turn starts; a turn running now finishes (and counts)."""
@@ -494,36 +544,106 @@ class Goals:
             if goal["status"] != "active":
                 return
             if outcome.status == "cancelled":
-                await self._checked(goal, "paused", None, [], "остановлено: ход прерван")
+                await self._checked(goal, "paused", None, {}, "остановлено: ход прерван")
                 return
             if outcome.status == "error" and not outcome.limited:
-                await self._checked(goal, "blocked", None, [], f"ход не удался: {outcome.detail}")
+                await self._checked(goal, "blocked", None, {}, f"ход не удался: {outcome.detail}")
                 return
             await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
                                     persist=False)  # fmt: skip
             results = await self._run_checks(goal)
-            commands_met = all(r["met"] for r in results if r["kind"] == "command")
-            judged = [r for r in results if r["kind"] == "semantic"]
-            if commands_met and not judged:
-                await self._checked(goal, "achieved", "ACHIEVED", results, "цель достигнута: все критерии выполнены")
+            found = await self._contour(goal, results)
+            goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
+            verdict = found["verdict"]
+            if verdict == "ACHIEVED":
+                await self._checked(goal, "achieved", "ACHIEVED", found, found["detail"])
                 return
-            if commands_met:  # the judge (11.2) is not there yet: the human decides what words mean
-                await self._checked(goal, "blocked", None, results, "команды прошли; критерии словами проверяете вы "
-                                    "(проверяющая модель — шаг 11.2): снимите цель или продолжите")  # fmt: skip
+            if found.get("blocked"):
+                await self._checked(goal, "blocked", verdict, found, found["blocked"])
+                return
+            if verdict == "REGRESSED" and await self._regressed_before(goal):
+                again = ("второй раз подряд потеряно то, что работало (тесты или ограничения): решите, как быть, и "
+                         "продолжите или снимите цель")  # fmt: skip
+                await self._checked(goal, "blocked", verdict, found, again)
                 return
             share = used(goal)
             if goal["last_turn"] or share >= 1.0:
-                await self._checked(goal, "budget", "INCOMPLETE", results, f"предел: {_limit_words(goal)}")
+                await self._checked(goal, "budget", verdict, found, f"предел: {_limit_words(goal)}")
                 return
             said = await self._take_steering(goal)
             if share >= goal["soft_ratio"]:
                 await self._db.acall(lambda conn: conn.execute("UPDATE goals SET last_turn = 1 WHERE id = ?",
                                                                (goal["id"],)))  # fmt: skip
-                await self._checked(goal, "last_turn", "INCOMPLETE", results, f"последний ход: {_limit_words(goal)}")
-                await self._turn(goal, last_turn_note(goal, results, said))
+                await self._checked(goal, "last_turn", verdict, found, f"последний ход: {_limit_words(goal)}")
+                await self._turn(goal, last_turn_note(goal, found, said))
                 return
-            await self._checked(goal, "continue", "INCOMPLETE", results, "")
-            await self._turn(goal, continue_note(goal, results, said))
+            await self._checked(goal, "continue", verdict, found, "")
+            await self._turn(goal, continue_note(goal, found, said))
+
+    async def _contour(self, goal: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+        """The check after the commands (Q26): what changed since the goal began, the hub's own look at it (syntax,
+        tests lost), then - when that is clean - the judge. {verdict, results, extra, feedback, evidence, judge?,
+        detail? (achieved), blocked? (why the human is needed)}."""
+        conversation_id = goal["conversation_id"]
+        projects = await self._chat.tool_projects(conversation_id)
+        bases = await self._db.acall(lambda conn: {r[0]: r[1] for r in conn.execute(
+            "SELECT project_id, tree FROM goal_baselines WHERE goal_id = ?", (goal["id"],))})  # fmt: skip
+        try:
+            evidence = await self._judge.evidence(conversation_id, projects, bases, goal["created_at"])
+        except Exception as exc:  # what changed is unknown: the commands still count
+            log.exception("goal %s: the changes could not be read", goal["id"])
+            evidence = judge.Evidence(notes=[f"the changes could not be read: {exc}"])
+        found: dict[str, Any] = {"results": results, "extra": evidence.missing(), "feedback": "",
+                                 "evidence": evidence.summary()}  # fmt: skip
+        commands_met = all(r["met"] for r in results if r["kind"] == "command")
+        semantic = [r for r in results if r["kind"] == "semantic"]
+        if evidence.sabotage:  # a green build bought by losing tests (the plan's rule 2): no judge needed
+            return {**found, "verdict": "REGRESSED", "feedback": "Tests were removed, skipped or commented out. Put "
+                    "them back and make the code pass them instead."}  # fmt: skip
+        if not commands_met or evidence.syntax:  # the first contour failed: straight back to the worker
+            return {**found, "verdict": "INCOMPLETE"}
+
+        def choose(conn):
+            judge_id = goal["judge_model_id"] or judge.role_model(conn)  # the role may be chosen since
+            if judge_id:
+                judge.check_model(conn, judge_id, projects)
+            return judge_id, judge.last_words(conn, conversation_id)
+
+        try:
+            judge_id, words = await self._db.acall(choose)
+        except judge.JudgeError as exc:
+            return {**found, "verdict": None, "blocked": f"проверяющая модель не может проверить: {exc}"}
+        if not judge_id:
+            if semantic:
+                nobody = ("команды прошли, а критерии словами проверить некому: выберите модель для роли «Проверка "
+                          "цели» и продолжите — или проверьте сами и снимите цель")  # fmt: skip
+                return {**found, "verdict": None, "blocked": nobody}
+            return {**found, "verdict": "ACHIEVED", "detail": "цель достигнута: все критерии выполнены"}
+        await self._bus.publish("goal.judging", {"conversation_id": conversation_id, "goal_id": goal["id"],
+                                                 "model_id": judge_id}, persist=False)  # fmt: skip
+        try:
+            said = await self._judge.ask(judge_id, judge.goal_prompt(goal, results, evidence, words),
+                                         conversation_id=conversation_id, meta={"goal_id": goal["id"]})  # fmt: skip
+        except judge.JudgeError as exc:
+            return {**found, "verdict": None, "blocked": f"проверяющая модель не ответила: {exc}"}
+        await self._db.acall(lambda conn: conn.execute(
+            "UPDATE goals SET tokens_used = tokens_used + ?, cost_usd = cost_usd + ? WHERE id = ?",
+            (said["tokens"], said["cost_usd"], goal["id"])))  # fmt: skip
+        found["judge"] = {k: said[k] for k in ("status", "missing", "feedback", "model_id")}
+        found = {**found, "verdict": said["status"], "extra": [*found["extra"], *said["missing"]],
+                 "feedback": said["feedback"]}  # fmt: skip
+        if said["status"] == "ACHIEVED":
+            for r in semantic:
+                r["met"] = True
+            await self._db.acall(lambda conn: conn.executemany(
+                "UPDATE goal_criteria SET verified = 1 WHERE goal_id = ? AND n = ?",
+                [(goal["id"], r["n"]) for r in semantic]))  # fmt: skip
+            found["detail"] = "цель достигнута: проверки прошли, проверяющая модель согласна"
+        return found
+
+    async def _regressed_before(self, goal: dict[str, Any]) -> bool:
+        last = await self._db.acall(lambda conn: checks(conn, goal["id"], 1))
+        return bool(last) and last[0]["verdict"] == "REGRESSED"
 
     async def _count(self, goal: dict[str, Any], outcome: Outcome) -> dict[str, Any]:
         totals = outcome.totals
@@ -580,10 +700,19 @@ class Goals:
             [(1 if r["met"] else 0, goal["id"], r["n"]) for r in results]))  # fmt: skip
         return results
 
-    async def _checked(self, goal: dict[str, Any], route: str, verdict: str | None, results: list[dict[str, Any]],
+    async def _checked(self, goal: dict[str, Any], route: str, verdict: str | None, found: dict[str, Any],
                        detail: str) -> None:  # fmt: skip
-        """The check is appended (D14), and the goal takes the way it found."""
-        missing = [line[2:] for line in _missing_text(results).splitlines() if line.startswith("- ")]
+        """The check is appended (D14), and the goal takes the way it found. `found` (from _contour): the criteria's
+        results, what else is missing, the judge's word, what changed - kept with the check."""
+        criteria = found.get("results") or []
+        missing = [line[2:] for line in _missing_text(criteria, found.get("extra")).splitlines()
+                   if line.startswith("- ")]  # fmt: skip
+        results = [*criteria, {"kind": "found", "extra": found.get("extra") or [], "feedback": found.get("feedback")
+                               or ""}]  # fmt: skip
+        if found.get("evidence"):
+            results.append({"kind": "changes", "projects": found["evidence"]})
+        if found.get("judge"):
+            results.append({"kind": "judge", **found["judge"]})
 
         def write(conn):
             cur = conn.execute(
@@ -617,7 +746,7 @@ class Goals:
         if not goal["turns_used"]:  # it never got through a turn: the contract again
             note = start_note(goal, head=head, said=said)
         else:
-            note = continue_note(goal, last[0]["results"] if last else [], said, head=head)
+            note = continue_note(goal, _found_of(last[0]) if last else {"results": []}, said, head=head)
         await self._turn(goal, note)
 
     async def _turn(self, goal: dict[str, Any], note: str) -> None:

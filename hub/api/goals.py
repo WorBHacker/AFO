@@ -43,6 +43,7 @@ class GoalBody(BaseModel):
     model_id: str = Field(min_length=1)
     effort: str = "medium"
     limits: Limits = Field(default_factory=Limits)
+    judge_model_id: str | None = None  # the model that checks it (11.2); left out - the role «Проверка цели»
 
 
 class Resume(BaseModel):

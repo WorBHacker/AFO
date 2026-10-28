@@ -12,7 +12,9 @@ leads the work with, and the hub keeping them honest:
                    way, a new plan or a question) / skipped (with why). At each_step a step starts only when approved.
     ask_user     - a question the user answers in the window, with answers to pick (options); the run waits. Any
                    chat has it too, and Claude Code's own questions come the same way (ask_question).
-    finish       - the report: what was done, what not, the files, whether the goal is met.
+    finish       - the report: what was done, what not, the files, whether the goal is met. «Met» is checked by the
+                   judge when the role «Проверка цели» has a model (hub/judge.py, D44): one it does not agree with
+                   goes back to the agent with what is missing (MAX_DISPUTES times), then the report says «not met».
 A model that stops without finishing is told what is left (a nudge, at most MAX_NUDGES in a row); one that acts on
 and on with its plan standing still (it checked the same thing over and over) is told where it is every STUCK_AFTER
 actions; at the step limit it may still mark its step and finish, so the run ends with a report. The user may pause
@@ -29,9 +31,10 @@ import sqlite3
 import uuid
 from typing import Any
 
-from . import memory
+from . import judge, memory, store
 from .db import Database, utc_now
 from .events import EventBus
+from .projects import ProjectError, get_project
 
 log = logging.getLogger("hub.autonomous")
 
@@ -47,6 +50,7 @@ LIMIT = ("not run: the step limit is reached. Call finish now with an honest rep
 MAX_STEPS_IN_PLAN = 30
 NOTE = "[LocalChat hub]"
 MAX_OPTIONS = 6  # answers offered with a question
+MAX_DISPUTES = 2  # «goal met» the judge does not agree with is sent back this often; then the report says «not met»
 
 GUIDE = """You work on your own toward a goal, with the user watching (an autonomous agent). Work like this:
 1. Look first, if needed (read files, search), then call set_plan: numbered steps, each with how you will check it.
@@ -281,6 +285,8 @@ class Autonomy:
         self._acts: dict[str, int] = {}  # actions since the plan last moved
         self._resumed: dict[str, asyncio.Event] = {}  # a paused run waits on its event
         self._switch: dict[str, str] = {}  # the planner made the plan: the run's model carries it out
+        self._disputes: dict[str, int] = {}  # «goal met» the judge sent back
+        self.judge: judge.Judge | None = None  # set by the server: checks «goal met» (D44, 11.2)
 
     async def info(self, run_id: str) -> dict[str, Any] | None:
         return await self._db.acall(lambda conn: run_info(conn, run_id))
@@ -486,11 +492,56 @@ class Autonomy:
                                 "met; if it cannot be done, finish with goal_met false and say why")  # fmt: skip
         report = {"summary": summary, "goal_met": bool(args.get("goal_met")), "done": _list(args.get("done")),
                   "not_done": _list(args.get("not_done")), "files": _list(args.get("files"))}  # fmt: skip
+        if report["goal_met"] and self.judge is not None:
+            disputed = await self._judged(run, report)
+            if disputed:
+                raise AutonomyError(disputed)
         await self._db.acall(lambda conn: conn.execute(
             "UPDATE agent_runs SET report = ? WHERE conversation_id = ?",
             (json.dumps(report, ensure_ascii=False), run_id)))  # fmt: skip
         await self._bus.publish("run.report", {"run_id": run_id, "report": report})
         return "Report saved. Write one short closing message for the user and call no more tools.", False
+
+    async def _judged(self, run: dict, report: dict) -> str | None:
+        """«Goal met» checked by the judge - the role «Проверка цели» - against the plan, the report and the run's
+        writes (D44): None when it agrees, or there is no judge, or it could not say (the report keeps why); else
+        what the agent reads. After MAX_DISPUTES the report is kept with «not met» and the judge's word."""
+        run_id = run["conversation_id"]
+
+        def read(conn):
+            judge_id = judge.role_model(conn)
+            if not judge_id:
+                return None
+            projects = []
+            for pid in store.conversation_projects(conn, run_id):
+                with contextlib.suppress(ProjectError):
+                    projects.append(get_project(conn, pid))
+            judge.check_model(conn, judge_id, projects)
+            began = conn.execute("SELECT created_at FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
+            return judge_id, projects, began[0], current_plan(conn, run_id)
+
+        try:
+            found = await self._db.acall(read)
+            if found is None:
+                return None
+            judge_id, projects, began, plan = found
+            evidence = await self.judge.evidence(run_id, projects, {}, began)
+            said = await self.judge.ask(judge_id, judge.run_prompt(run, plan, report, evidence),
+                                        conversation_id=run_id, meta={"run_id": run_id})  # fmt: skip
+        except judge.JudgeError as exc:
+            report["judge"] = {"status": None, "error": str(exc)}
+            return None
+        report["judge"] = {k: said[k] for k in ("status", "missing", "feedback", "model_id")}
+        if said["status"] == "ACHIEVED":
+            return None
+        count = self._disputes[run_id] = self._disputes.get(run_id, 0) + 1
+        if count > MAX_DISPUTES:  # it insists: the report stays, with the judge's word over its claim
+            report["goal_met"] = False
+            return None
+        missing = "; ".join(said["missing"]) or "not said"
+        return (f"not saved: the judge does not agree that the goal is met ({said['status']}). Missing: {missing}. "
+                f"{said['feedback']} Go on with the work (update_step), or finish with goal_met false and say "
+                "why.").replace("  ", " ")  # fmt: skip
 
     async def _memory(self, run: dict, name: str, args: dict, cancel: asyncio.Event, cloud: bool) -> tuple[str, bool]:
         """The agent's memory (9.3, Q24): its notes, the facts kept for good, the search through both."""
@@ -624,5 +675,5 @@ class Autonomy:
         return await self._db.acall(lambda conn: current_plan(conn, run_id))
 
     def forget(self, run_id: str) -> None:
-        for store_ in (self._notices, self._nudges, self._acts, self._resumed, self._switch):
+        for store_ in (self._notices, self._nudges, self._acts, self._resumed, self._switch, self._disputes):
             store_.pop(run_id, None)

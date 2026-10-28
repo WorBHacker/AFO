@@ -68,6 +68,7 @@ from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .goals import Goals
+from .judge import Judge
 from .links import Rescanner
 from .mail import MailTools
 from .mcp_client import McpServers
@@ -136,7 +137,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         )
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
-        app.state.goals = app.state.chat.goals = Goals(db, bus, app.state.chat)  # chats' goals (D44, 11.1)
+        app.state.judge = Judge(db, bus, gateway, paths.snapshots)  # checks goals and agents' reports (D44, 11.2)
+        app.state.goals = app.state.chat.goals = Goals(db, bus, app.state.chat, app.state.judge)  # D44, 11.1
+        app.state.autonomy.judge = app.state.judge
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
         app.state.mail = app.state.chat.mail = MailTools(db, secrets_store)  # the user's mailbox (9.4b, Q21)
         app.state.scheduler = Scheduler(db, bus, app.state.agents,  # goals on a schedule and on events (9.7)

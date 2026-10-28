@@ -4,6 +4,7 @@ resume (a parked goal with higher limits) and clear; a stopped turn pauses, a fa
 wait for the judge; what a goal refuses; an active goal going on after a hub restart."""
 
 import asyncio
+import json
 import threading
 
 from hub import goals
@@ -182,9 +183,95 @@ def test_criteria_in_words_wait_for_the_judge(hub, repo):  # noqa: F811
     set_goal(hub, conv, criteria=[{"command": "exit 0"}, {"rule": "В README сказано, как запускать"}])
     blocked = settled(hub, conv, "blocked")
     check = blocked["checks"][-1]
-    assert check["route"] == "blocked" and check["verdict"] is None and "шаг 11.2" in blocked["goal"]["detail"]
-    assert [r["met"] for r in check["results"]] == [True, None]
+    assert check["route"] == "blocked" and check["verdict"] is None
+    assert "проверить некому" in blocked["goal"]["detail"] and "«Проверка цели»" in blocked["goal"]["detail"]
+    assert [r["met"] for r in criteria(check)] == [True, None]
     assert check["missing"] == ["criterion 2 (in words, the judge checks it): В README сказано, как запускать"]
+
+
+def criteria(check):
+    return [r for r in check["results"] if r["kind"] in ("command", "semantic")]
+
+
+def verdict(status, missing=(), feedback=""):
+    return json.dumps({"status": status, "missing_items": list(missing), "feedback_for_worker": feedback},
+                      ensure_ascii=False)  # fmt: skip
+
+
+def test_the_judge_closes_a_goal_only_when_it_agrees(hub, repo):  # noqa: F811
+    referee = use(hub, Scripted("judge", [verdict("INCOMPLETE", ["в README нет строки о done.txt"], "Допиши README"),
+                                          verdict("ACHIEVED")]))  # fmt: skip
+    readme = [("edit_file", {"project": "proj", "path": "README.md", "old_text": "# Проект",
+                             "new_text": "# Проект\n\ndone.txt — признак готовности"})]  # fmt: skip
+    worker = use(hub, Gated("agent", [WRITE, "Записал done.txt.", readme, "Дописал README."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    (repo / ".env").write_text("API_KEY=sk-live-secret-0123456789abcdef\n", encoding="utf-8")
+    started = set_goal(hub, conv, judge_model_id="judge/m",
+                       criteria=[{"command": DONE}, {"rule": "В README сказано, что значит done.txt"}])  # fmt: skip
+    assert started["judge_model_id"] == "judge/m"
+    done = settled(hub, conv, "achieved")
+    first, second = done["checks"]
+    assert (first["route"], first["verdict"]) == ("continue", "INCOMPLETE")
+    assert first["missing"] == ["criterion 2 (in words, the judge checks it): В README сказано, что значит done.txt",
+                                "в README нет строки о done.txt"]  # fmt: skip
+    assert next(r for r in first["results"] if r["kind"] == "judge")["feedback"] == "Допиши README"
+    changed = next(r for r in second["results"] if r["kind"] == "changes")["projects"][0]
+    assert changed["how"] == "git" and {f["path"] for f in changed["files"]} == {"done.txt", "README.md"}
+    assert (second["verdict"], done["goal"]["detail"]) == ("ACHIEVED", "цель достигнута: проверки прошли, "
+                                                           "проверяющая модель согласна")  # fmt: skip
+    assert all(c["verified"] for c in done["goal"]["criteria"])
+    going = hub_note(worker.prompts[2])
+    assert "THE JUDGE SAYS: Допиши README" in going and "- в README нет строки о done.txt" in going
+    asked = referee.prompts[0][1]["content"]
+    assert "OBJECTIVE: Создать done.txt" in asked and "the hub ran it: met" in asked and "+ok" in asked
+    assert '<worker_claims unverified="true">\nЗаписал done.txt.' in asked and "sk-live-secret" not in asked
+    assert "added done.txt" in asked and ".env" not in asked
+    assert done["goal"]["tokens_used"] == 4 * 7 + 2 * 7  # the worker's four calls and the judge's two
+
+
+def test_lost_tests_are_regressed_without_the_judge_and_twice_stop_the_goal(hub, repo):  # noqa: F811
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_app.py").write_text("def test_one():\n    assert False\n", encoding="utf-8", newline="\n")
+    referee = use(hub, Scripted("judge", [verdict("ACHIEVED")]))
+    gone = [("write_file", {"project": "proj", "path": "tests/test_app.py", "content": "# пусто\n"})]
+    worker = use(hub, Gated("agent", [gone, "Убрал падающий тест.", "Ничего не менял."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, judge_model_id="judge/m", criteria=[{"command": "exit 0"}])
+    blocked = settled(hub, conv, "blocked")
+    assert [c["verdict"] for c in blocked["checks"]] == ["REGRESSED", "REGRESSED"] and referee.prompts == []
+    assert "tests/test_app.py: test(s) removed - test_one" in blocked["checks"][0]["missing"]
+    assert blocked["goal"]["detail"].startswith("второй раз подряд потеряно то, что работало")
+    note = hub_note(worker.prompts[2])
+    assert "CHECK OF YOUR LAST TURN: REGRESSED" in note and "Put them back" in note
+
+
+def test_a_file_that_does_not_parse_goes_back_before_the_judge(hub, repo):  # noqa: F811
+    referee = use(hub, Scripted("judge", [verdict("ACHIEVED")]))
+    broken = [("write_file", {"project": "proj", "path": "src/app.py", "content": "def f(:\n    pass\n"})]
+    fixed = [("write_file", {"project": "proj", "path": "src/app.py", "content": "def f():\n    pass\n"})]
+    worker = use(hub, Gated("agent", [broken, "Написал f.", fixed, "Поправил."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, judge_model_id="judge/m", criteria=[{"command": "exit 0"}])
+    done = settled(hub, conv, "achieved")
+    first = done["checks"][0]
+    assert first["verdict"] == "INCOMPLETE" and first["missing"] == ["proj/src/app.py, line 1: does not parse "
+                                                                     "(invalid syntax)"]  # fmt: skip
+    assert len(referee.prompts) == 1  # asked only once the file parsed
+
+
+def test_a_project_without_git_shows_the_hubs_own_writes(hub, tmp_path):  # noqa: F811
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    (folder / "README.md").write_text("# Без git\n", encoding="utf-8")
+    referee = use(hub, Scripted("judge", [verdict("ACHIEVED")]))
+    worker = use(hub, Gated("agent", [[("write_file", {"project": "plain", "path": "done.txt", "content": "ok\n"})],
+                                      "Записал."]))  # fmt: skip
+    _pid, conv = chat_with_project(hub, folder, worker)
+    set_goal(hub, conv, judge_model_id="judge/m", criteria=[{"command": DONE}])
+    settled(hub, conv, "achieved")
+    asked = referee.prompts[0][1]["content"]
+    assert "CHANGED (the hub's own writes): added done.txt" in asked and "+ok" in asked
+    assert "«plain»: not a git repository - only the hub's own writes are listed" in asked
 
 
 def test_what_a_goal_refuses(hub, repo):  # noqa: F811

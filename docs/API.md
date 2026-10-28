@@ -192,7 +192,7 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/goal` | токен | The chat's goal - the open one, else its last - with its recent checks and what the user wrote to it. |  |
-| PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits}` |
+| PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits, judge_model_id: str \| None = None}` |
 | POST | `/v1/conversations/{conversation_id}/goal/pause` | только окно | No next turn starts; the turn running now finishes. |  |
 | POST | `/v1/conversations/{conversation_id}/goal/resume` | только окно | Back to work (a parked goal with higher limits): the next turn starts. | тело `Resume \| None` |
 | DELETE | `/v1/conversations/{conversation_id}/goal` | только окно | The goal is given up; the turn running now finishes, no next one starts. |  |
@@ -455,7 +455,7 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `autostart.changed` | да | `login`, `llama_swap` | hub/api/autostart.py |
 | `budget.changed` | да | `budget`, `by`, `deleted` | hub/api/budgets.py |
 | `budget.overridden` | да | `model_id`, `client_id`, `budgets` | hub/chat.py |
-| `budget.{kind}` | да | `model_id`, `budget` | hub/api/model_settings.py, hub/api/openai.py, hub/chat.py |
+| `budget.{kind}` | да | `model_id`, `budget` | hub/api/model_settings.py, hub/api/openai.py, hub/chat.py, hub/judge.py |
 | `card.confirmed` | да | `project_id`, `name`, `version`, `restored_from` | hub/api/cards.py |
 | `card.drafted` | да | `project_id`, `name`, `model_id`, `cost_usd`, `update` | hub/api/cards.py |
 | `card.drafting` | нет | `project_id`, `model_id` | hub/api/cards.py |
@@ -486,6 +486,7 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `git.head` | да | `project_id` | hub/watch.py |
 | `goal.check` | да | `conversation_id`, `goal_id`, `check` | hub/goals.py |
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
+| `goal.judging` | нет | `conversation_id`, `goal_id`, `model_id` | hub/goals.py |
 | `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
 | `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal` | hub/goals.py |
 | `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
