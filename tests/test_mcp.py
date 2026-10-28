@@ -82,6 +82,8 @@ def test_a_local_client_reads_the_ecosystem(hub):
     assert set(found["tools"]) == TOOLS | {"approval_prompt"}  # and Claude Code's permission tool (D18)
     reading = [t for name, t in found["tools"].items() if name != "approval_prompt"]
     assert all(t.annotations.read_only_hint for t in reading)  # D17: all of them only read
+    # one text block, no structured copy: the real Claude Code refuses a permission answer that has one (2026-10-28)
+    assert all(t.output_schema is None for t in found["tools"].values())
     assert "- proj [local-only]" in found["map"] and "- shared: общая библиотека" in found["map"]
     assert '<project name="proj">' in found["card"]
     assert "src/app.py:3-4 function serve: def serve(port):" in found["symbol"]

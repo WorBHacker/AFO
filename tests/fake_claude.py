@@ -38,6 +38,10 @@ def ask_permission(config_path: str, tool_name: str, tool_name_arg: str, data: d
         call = {"name": tool, "arguments": {"tool_name": tool_name_arg, "input": data, "tool_use_id": "toolu_1"}}
         reply = http.post(server["url"], headers=headers,
                           json={"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": call}).json()  # fmt: skip
+    # as the real CLI (2.1.x): a structured result is not taken - it wants one text block (found live 2026-10-28)
+    if "structuredContent" in reply["result"]:
+        said = 'Expected a single text block param with type="text" and a string text value.'
+        return {"behavior": "deny", "message": f"Permission prompt tool returned an invalid result. {said}"}
     return json.loads(reply["result"]["content"][0]["text"])
 
 

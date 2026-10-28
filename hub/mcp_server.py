@@ -44,6 +44,9 @@ READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 EDITS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})  # Claude Code's tools that change files
 CHANGES = EDITS | {"Bash", "PowerShell"}  # and what a read-only chat refuses it (PowerShell: its Windows shell)
 ASKS_THE_USER = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+# every tool answers with one text block, no structured copy (`structured_output=False`): Claude Code takes the
+# structured one when it is there, and its --permission-prompt-tool then refuses the answer - «Permission prompt
+# tool returned an invalid result. Expected a single text block…» (found with the real CLI 2.1.308, 2026-10-28)
 EVENTS_MAX = 100
 IN_PROCESS = Client(id="", name="in-process", cloud=True)  # a call without HTTP headers: treated as cloud
 
@@ -108,7 +111,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
 
     # --- the map (D22 L0, D25) ---
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def get_ecosystem_map(ctx: Context) -> str:
         """All projects on this computer: name, one-line description, stack - and the confirmed links between
         them. Projects you may not read are listed by name only."""
@@ -117,7 +120,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         layer = context.map_layer_for_cloud if client.cloud else context.map_layer
         return clean(await asyncio.to_thread(layer, found, all_links))
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def get_project_card(project: ProjectName, ctx: Context) -> str:
         """What to know about a project before reading it: its card confirmed by the user (or, without one, its
         stack, structure and README), and the user's notes for models."""
@@ -132,7 +135,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             text += "\n\n" + notes.notes_layer(p.name, written)
         return clean(text)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def list_relations(ctx: Context) -> str:
         """The confirmed links between projects: which uses which, what they share, how (D25)."""
         client = await caller(ctx)
@@ -142,7 +145,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
 
     # --- code (D26) ---
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def list_files(
         project: ProjectName,
         ctx: Context,
@@ -152,7 +155,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         """A folder of a project: subfolders and files with sizes, as git shows them; secret files marked."""
         return await run("list_files", {"project": project, "path": path, "depth": depth}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def read_file(
         project: ProjectName,
         path: FilePath,
@@ -164,7 +167,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         args = {"project": project, "path": path, "start_line": start_line, "line_count": line_count}
         return await run("read_file", args, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def search_code(
         project: ProjectName,
         query: Annotated[str, Field(description="What to look for.")],
@@ -175,7 +178,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         """Lines of a project's files that match, with file and line number (ripgrep; up to 50)."""
         return await run("search_code", {"project": project, "query": query, "regex": regex, "glob": glob}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def find_symbol(
         project: ProjectName,
         name: Annotated[str, Field(description="A name or part of it; Class.method for a method.")],
@@ -185,19 +188,19 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         """Where a function, class, method, interface or type is defined (the hub's tree-sitter index)."""
         return await run("find_symbol", {"project": project, "name": name, "kind": kind or None}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def file_outline(project: ProjectName, path: FilePath, ctx: Context) -> str:
         """A code file's classes, functions and methods with their lines, nested as in the file."""
         return await run("file_outline", {"project": project, "path": path}, ctx)
 
     # --- git ---
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def git_status(project: ProjectName, ctx: Context) -> str:
         """A project's branch, commits ahead / behind, changed files, recent commits."""
         return await run("git_status", {"project": project}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def git_diff(
         project: ProjectName,
         ctx: Context,
@@ -206,7 +209,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         """A project's uncommitted changes as a unified diff (up to 400 lines)."""
         return await run("git_diff", {"project": project, "path": path}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def git_log(
         project: ProjectName,
         ctx: Context,
@@ -221,17 +224,17 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
 
     # --- what is happening (D4) ---
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def list_processes(project: ProjectName, ctx: Context) -> str:
         """Processes running in a project's folder: command, listening ports, CPU, memory."""
         return await run("list_processes", {"project": project}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def list_terminals(project: ProjectName, ctx: Context) -> str:
         """A project's terminals in the hub: running ones and recent ones, with their state."""
         return await run("terminal_output", {"project": project}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def read_terminal(
         project: ProjectName,
         terminal: Annotated[str, Field(description="The terminal's id or title, from list_terminals.")],
@@ -240,7 +243,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         """The last 100 lines a terminal of the project printed."""
         return await run("terminal_output", {"project": project, "terminal": terminal}, ctx)
 
-    @server.tool(annotations=READ_ONLY)
+    @server.tool(annotations=READ_ONLY, structured_output=False)
     async def get_events(
         ctx: Context,
         project: Annotated[str, Field(description="Only this project's events (optional).")] = "",
@@ -275,7 +278,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
 
     # --- Claude Code's permission requests (D18) ---
 
-    @server.tool(annotations=ASKS_THE_USER)
+    @server.tool(annotations=ASKS_THE_USER, structured_output=False)
     async def approval_prompt(
         tool_name: Annotated[str, Field(description="The tool Claude Code wants to run.")],
         input: Annotated[dict[str, Any], Field(description="Its input.")],  # the name Claude Code sends
