@@ -268,6 +268,12 @@ Sheet {
         spacing: 8
         PlainButton { iconName: "refresh"; text: "Обновить список моделей"; onClicked: App.syncModels() }
         PlainButton { iconName: "folder"; text: "Открыть папку данных"; onClicked: App.openFolder(App.dataDir) }
+        PlainButton {
+            objectName: "openCheck"
+            iconName: "activity"
+            text: "Проверить систему…"
+            onClicked: { sheet.close(); App.openUi("check-system") }
+        }
         PlainButton { iconName: "cpu"; text: "Выгрузить локальную модель"; onClicked: App.unloadLocal() }
         PlainButton { kind: "danger"; iconName: "power"; text: "Остановить хаб и выйти"; onClicked: App.stopHub() }
     }

@@ -70,7 +70,7 @@ def github(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
     FakeGitHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    monkeypatch.setattr(engines, "GITHUB_API", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{server.server_port}")
     yield server
     server.shutdown()
 

@@ -8,6 +8,7 @@ import pytest
 from common.paths import DATA_DIR_ENV, HOME_ENV
 from hub.autostart import LLAMA_SWAP_START_ENV, RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
+from hub.engines import GITHUB_ENV
 from hub.hf import BASE_ENV as HF_ENV
 from hub.llama_config import CONFIG_ENV as LLAMA_SWAP_CONFIG_ENV
 from hub.secrets import STORE_ENV
@@ -23,6 +24,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(RUN_STORE_ENV, "memory")  # nor the Windows registry's Run key (autostart)
     monkeypatch.setenv(CLI_ENV, str(tmp_path / "no-claude.exe"))  # the user's Claude Code CLI is never found or run
     monkeypatch.setenv(HF_ENV, "http://127.0.0.1:9")  # nor Hugging Face: a test that forgets its stand-in fails fast
+    monkeypatch.setenv(GITHUB_ENV, "http://127.0.0.1:9")  # nor GitHub (the wizard's engines, the system check)
     # nor the user's llama-swap (its config, its start script) or LocalChat's own folder in %LOCALAPPDATA% (10.3)
     monkeypatch.setenv(LLAMA_SWAP_CONFIG_ENV, str(tmp_path / "no-llama-swap" / "config.yaml"))
     monkeypatch.setenv(LLAMA_SWAP_START_ENV, str(tmp_path / "no-llama-swap" / "start-llama-swap.cmd"))

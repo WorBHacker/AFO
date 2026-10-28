@@ -16,11 +16,21 @@ Rectangle {
         width: parent.width - 32
         spacing: 4
         Text {
-            text: "Ошибка"
+            text: card.row?.title || "Ошибка"
             color: Theme.p.error
             font.family: Theme.uiFont
             font.pixelSize: 13
             font.weight: Font.DemiBold
+        }
+        Text {
+            visible: (card.row?.hint || "") !== ""
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: card.row?.hint || ""
+            color: Theme.p.text
+            font.family: Theme.uiFont
+            font.pixelSize: 14
+            lineHeight: 1.3
         }
         TextEdit {
             width: parent.width
@@ -29,7 +39,7 @@ Rectangle {
             textFormat: TextEdit.PlainText
             wrapMode: TextEdit.Wrap
             text: card.row?.text || ""
-            color: Theme.p.text_soft
+            color: (card.row?.hint || "") !== "" ? Theme.p.faint : Theme.p.text_soft
             selectionColor: Theme.p.selection
             font.family: Theme.uiFont
             font.pixelSize: 14

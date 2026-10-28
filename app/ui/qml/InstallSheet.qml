@@ -305,7 +305,8 @@ Sheet {
                         spacing: 2
                         Text {
                             text: variant.modelData.quant + " · " + variant.modelData.size
-                                  + (variant.modelData.recommended ? "  — рекомендую" : "")
+                                  + (variant.modelData.recommended ? "  — рекомендую"
+                                     : variant.modelData.pick !== "" ? "  — " + variant.modelData.pick : "")
                             color: Theme.p.text
                             font.family: Theme.uiFont
                             font.pixelSize: 13

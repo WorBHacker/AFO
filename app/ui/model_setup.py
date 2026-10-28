@@ -189,6 +189,23 @@ def history_rows(history: list[dict[str, Any]], current: int) -> list[dict[str, 
 
 
 CACHE_CHOICES = ("f16", "q8_0", "q4_0")
+# «Быстрее ↔ Качественнее» (10.6): the launch settings in plain words - how much the model remembers of a
+# conversation and how exactly; the memory estimate below says whether it fits
+LAUNCH_PRESETS = {"fast": {"context": 8192, "cache_type": "q8_0", "gpu_mode": "all"},
+                  "balanced": {"context": 32768, "cache_type": "q8_0", "gpu_mode": "all"},
+                  "quality": {"context": 65536, "cache_type": "f16", "gpu_mode": "all"}}  # fmt: skip
+
+
+def preset_draft(preset: str, draft: dict[str, str], trained: int | None) -> dict[str, str]:
+    """The launch fields for a preset: its context (no longer than the model was trained for), cache and layers."""
+    chosen = LAUNCH_PRESETS[preset]
+    context = min(chosen["context"], trained) if trained else chosen["context"]
+    return {**draft, "context": str(context), "cache_type": chosen["cache_type"], "gpu_mode": chosen["gpu_mode"],
+            "gpu_n": ""}  # fmt: skip
+
+
+def preset_of(draft: dict[str, str], trained: int | None) -> str:
+    return next((p for p in LAUNCH_PRESETS if draft and preset_draft(p, draft, trained) == draft), "")
 
 
 def launch_draft(view: dict[str, Any]) -> dict[str, str]:
@@ -349,6 +366,18 @@ class ModelSetup(QObject):
     @Property("QVariantMap", notify=changed)
     def launchDraft(self) -> dict:
         return self._launch_draft
+
+    @Property(str, notify=changed)
+    def launchPreset(self) -> str:
+        return preset_of(self._launch_draft, (self._launch.get("info") or {}).get("context_trained"))
+
+    @Slot(str)
+    def applyLaunchPreset(self, preset: str) -> None:
+        if self._launch_draft and preset in LAUNCH_PRESETS:
+            trained = (self._launch.get("info") or {}).get("context_trained")
+            self._launch_draft = preset_draft(preset, self._launch_draft, trained)
+            self._launch_status = ""
+            self.changed.emit()
 
     @Property(bool, notify=changed)
     def launchDirty(self) -> bool:

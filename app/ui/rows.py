@@ -8,6 +8,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from common.plain_errors import explain
+
 from .. import palette, presenter
 from ..render import Code, highlight_code, language_label, page, render_plain, render_segments
 
@@ -371,7 +373,10 @@ def live_row(model_id: str, models: dict[str, dict]) -> dict[str, Any]:
 
 
 def error_row(key: str, text: str) -> dict[str, Any]:
-    return {"key": key, "role": "error", "text": text, "html": page(render_plain(text))}
+    """An error card: the usual ones get a title and what to do in plain words (10.6), the technical text below."""
+    plain = explain(text)
+    return {"key": key, "role": "error", "text": text, "html": page(render_plain(text)),
+            "title": plain[0] if plain else "Ошибка", "hint": plain[1] if plain else ""}  # fmt: skip
 
 
 def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[dict[str, Any]]:

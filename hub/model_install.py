@@ -144,6 +144,17 @@ def recommend(found: list[dict[str, Any]], judged: dict[str, str], *, moe: bool 
     return min(anyhow, key=lambda v: v["size"])["quant"] if anyhow else None
 
 
+def extremes(found: list[dict[str, Any]], judged: dict[str, str]) -> dict[str, str | None]:
+    """«Быстрее ↔ Качественнее» (10.6): the smallest decent variant that fits the video memory (else the smallest that
+    runs at all), and the best one that runs at all, even partly in RAM."""
+    usable = [v for v in found if v["quant"] not in hf.SIXTEEN_BITS] or found
+    decent = [v for v in usable if v.get("bits") is None or MIN_BITS <= v["bits"] <= MAX_BITS] or usable
+    runs = [v for v in decent if judged.get(v["quant"]) not in (None, "no")]
+    fast = [v for v in runs if judged.get(v["quant"]) == "gpu"] or runs
+    return {"fast": min(fast, key=lambda v: v["size"])["quant"] if fast else None,
+            "quality": max(runs, key=lambda v: v["size"])["quant"] if runs else None}  # fmt: skip
+
+
 def projector(found: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The vision projector to take: an 8-bit one, else the smallest."""
     if not found:
@@ -323,8 +334,12 @@ class Installer:
         judged = {v["quant"]: verdict(v["size"], info, space, mmproj=lens["size"] if lens else 0, moe=moe)
                   for v in variants}  # fmt: skip
         best = recommend(variants, judged, moe=moe)
+        ends = extremes(variants, judged)
         shown = [{**v, "verdict": judged[v["quant"]], "words": VERDICTS[judged[v["quant"]]],
-                  "gb": round(v["size"] / 1e9, 1), "recommended": v["quant"] == best} for v in variants]  # fmt: skip
+                  "gb": round(v["size"] / 1e9, 1), "recommended": v["quant"] == best,
+                  "pick": "fast" if v["quant"] == ends["fast"] and ends["fast"] != best else
+                  "quality" if v["quant"] == ends["quality"] and ends["quality"] != best else ""}
+                 for v in variants]  # fmt: skip
         return {**found, "variants": shown, "recommended": best, "projector": lens, "space": space,
                 "header": info, "moe": moe, "drives": await asyncio.to_thread(self.drives)}  # fmt: skip
 

@@ -21,6 +21,8 @@ ROLES = [
     "streaming",
     "notice",
     "tools",
+    "title",  # an error card's plain words (10.6)
+    "hint",
 ]
 TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size", "secret"]
 

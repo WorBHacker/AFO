@@ -110,6 +110,14 @@ class HubClient:
         """The model loads with its settings first (minutes from a disk): the window waits as long as the hub."""
         return self._call("POST", f"/v1/llama/models/{model_id}/trial", timeout=330)
 
+    # --- «Проверить систему» and the logs for support (10.6) ---
+
+    def support_check(self) -> dict:
+        return self._call("GET", "/v1/support/check", timeout=60)
+
+    def support_report(self) -> dict:
+        return self._call("POST", "/v1/support/report", timeout=120)
+
     # --- the first-run wizard (10.2): this computer, the engine from GitHub, the first models ---
 
     def setup_state(self) -> dict:

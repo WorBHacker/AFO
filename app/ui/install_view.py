@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.plain_errors import explain
+
 if TYPE_CHECKING:
     from .controller import Controller
 
@@ -29,6 +31,7 @@ ACTIONS = {
     "done": [("remove", "Удалить", "danger")],
 }
 WHERE = {"gpu": "целиком в видеопамяти", "split": "частью в ОЗУ"}
+PICKS = {"fast": "быстрее", "quality": "качественнее"}  # «Быстрее ↔ Качественнее» beside the recommended one
 
 
 def gb(size: float, *, of_bytes: bool = True) -> str:
@@ -109,7 +112,8 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
         words, tone = verdict_of(v)
         bits = f"≈ {v['bits']:.1f}".replace(".", ",") + " бита на вес" if v.get("bits") else ""
         out.append({"quant": v["quant"], "size": gb(v["size"]), "bits": bits, "words": words, "tone": tone,
-                    "recommended": bool(v.get("recommended")), "parts": len(v.get("files") or [])})  # fmt: skip
+                    "recommended": bool(v.get("recommended")), "parts": len(v.get("files") or []),
+                    "pick": PICKS.get(v.get("pick") or "", "")})  # fmt: skip
     return out
 
 
@@ -132,6 +136,12 @@ def progress_text(job: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def with_hint(error: str) -> str:
+    """An install's error with what to do, when it is one of the usual (10.6)."""
+    plain = explain(error) if error else None
+    return f"{error}\n{plain[1]}" if plain and plain[1] not in error else error
+
+
 def trial_text(job: dict[str, Any]) -> str:
     trial = job.get("trial") or {}
     if trial.get("skipped"):
@@ -151,7 +161,7 @@ def trial_text(job: dict[str, Any]) -> str:
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
              "statusWords": STATUS.get(j["status"], j["status"]), "percent": j.get("percent") or 0.0,
-             "progress": progress_text(j), "error": j.get("error") or "", "trial": trial_text(j),
+             "progress": progress_text(j), "error": with_hint(j.get("error") or ""), "trial": trial_text(j),
              "live": j["status"] in ("queued", "downloading", "configuring", "trial"),
              "actions": [{"id": a, "label": label, "kind": kind} for a, label, kind in ACTIONS.get(j["status"], [])]}
             for j in jobs if j["status"] != "removed"]  # fmt: skip

@@ -386,6 +386,21 @@ Sheet {
                 visible: ModelSetup.launch.editable === true
                 text: "llama.cpp · " + (ModelSetup.launch.file || "") + (ModelSetup.launch.mmproj ? " · с проектором картинок" : "")
             }
+            Segmented {
+                objectName: "launchPreset"
+                visible: ModelSetup.launch.editable === true
+                width: parent.width
+                options: [{ id: "fast", name: "Быстрее" }, { id: "balanced", name: "Баланс" },
+                          { id: "quality", name: "Качественнее" }]
+                value: ModelSetup.launchPreset
+                onPicked: (id) => ModelSetup.applyLaunchPreset(id)
+            }
+            Note {
+                visible: ModelSetup.launch.editable === true
+                text: "Быстрее — модель помнит последние ~8 тыс. токенов разговора и целиком на видеокарте; Баланс — ~32 тыс.; "
+                      + "Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. Ниже — точные настройки и "
+                      + "оценка, поместится ли."
+            }
             Flow {
                 visible: ModelSetup.launch.editable === true
                 width: parent.width

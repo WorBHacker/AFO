@@ -475,6 +475,25 @@ class FakeClient:
         self.access = {**self.access, **changes}
         return dict(self.access)
 
+    def support_check(self):
+        self.install_calls.append(("check",))
+        return {
+            "lines": [
+                {"id": "hub", "title": "Хаб", "ok": True, "text": "работает", "advice": ""},
+                {
+                    "id": "disk-F",
+                    "title": "Диск F:",
+                    "ok": None,
+                    "text": "жёсткий диск",
+                    "advice": "Модели на жёстком диске загружаются в разы медленнее.",
+                },
+            ]
+        }
+
+    def support_report(self):
+        self.install_calls.append(("report",))
+        return {"path": "C:/data/reports/localchat-report.zip", "folder": "", **self.support_check()}
+
     def setup_state(self):
         return dict(self.setup)
 
@@ -4539,6 +4558,34 @@ def test_the_first_run_wizard(qapp):
         assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"
         view.dismiss()
         assert app.settings.value(DISMISSED, False, bool)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_checking_the_system_and_collecting_the_logs(qapp):
+    """10.6: «Проверить систему» runs when its sheet opens; «Собрать журналы» makes the report."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openUi("check-system")
+        sheet = quick.window.findChild(QObject, "checkSheet")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and app.check_view.lines)
+        view = app.check_view
+        assert view.summary == "Стоит взглянуть: 1" and [r["tone"] for r in view.lines] == ["ok", "warn"]
+        view.collect()
+        wait_until(lambda: not app.bg.busy and view.report)
+        assert app.flashText == "Журналы собраны: C:/data/reports/localchat-report.zip"
+        assert ("report",) in client.install_calls
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

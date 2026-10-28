@@ -25,6 +25,7 @@ from .agent_keys_view import AgentKeys
 from .agents import Agents
 from .approvals import Approvals
 from .autonomy import AutonomyView
+from .check_view import CheckView
 from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
@@ -180,6 +181,7 @@ class Controller(QObject):
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
         self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
         self.setup_view = SetupView(self)  # the first-run wizard (10.2)
+        self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
@@ -951,6 +953,7 @@ class Controller(QObject):
                 "agent-access",
                 "install-models",
                 "setup",
+                "check-system",
             ):
                 self.uiRequested.emit(value)
             elif value == "search-project":

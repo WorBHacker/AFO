@@ -46,6 +46,7 @@ from .api import (
     schedules,
     setup,
     stats,
+    support,
     system,
     terminals,
 )
@@ -227,6 +228,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(llama.router)
     app.include_router(install.router)
     app.include_router(setup.router)
+    app.include_router(support.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)
     app.include_router(mcp_servers.router)

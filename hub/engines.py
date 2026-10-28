@@ -12,6 +12,7 @@ releases, for a computer that has neither yet.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import threading
@@ -24,7 +25,14 @@ import httpx
 
 from . import hf
 
+GITHUB_ENV = "LOCALCHAT_GITHUB_API"  # tests point it at a stand-in
 GITHUB_API = "https://api.github.com"
+
+
+def github_api() -> str:
+    return (os.environ.get(GITHUB_ENV) or GITHUB_API).rstrip("/")
+
+
 LLAMA_CPP = "ggml-org/llama.cpp"
 LLAMA_SWAP = "mostlygeek/llama-swap"
 ASSET = re.compile(r"^llama-(b\d+)-bin-win-(cuda-(\d+)\.(\d+)|vulkan|cpu)-x64\.zip$")
@@ -50,8 +58,8 @@ class EngineError(Exception):
 
 async def _releases(http: httpx.AsyncClient, repo: str, path: str = "releases?per_page=30") -> Any:
     try:
-        response = await http.get(f"{GITHUB_API}/repos/{repo}/{path}", headers={"Accept": "application/vnd.github+json",
-                                                                                 **hf.headers()})  # fmt: skip
+        wanted = {"Accept": "application/vnd.github+json", **hf.headers()}
+        response = await http.get(f"{github_api()}/repos/{repo}/{path}", headers=wanted)
     except httpx.HTTPError as exc:
         raise EngineError(f"нет связи с GitHub ({exc.__class__.__name__})") from exc
     if response.status_code != 200:
