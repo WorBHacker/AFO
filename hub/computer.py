@@ -8,7 +8,8 @@ an answer in words; `screen_act` - click, type, toggle, select, expand, collapse
 Automation's own patterns: no mouse, no keys, whatever is in front), keys or a click at a point (real input: only
 with the window in front), focus, wait; `open_program` - start an allowed one. Looking goes without a question (an
 autonomous run may look before its plan); acting in a program is asked once per task (the answer "for this task"
-covers that program), and a click on what sends, posts or publishes - every time.
+covers that program) - not at all in a run the user let go on by itself («Сам») - and a click on what sends, posts
+or publishes - every time.
 
 Never by the agent (D41): a password field (UIA IsPassword) - not read, not typed in; what looks like card or bank
 details, a purchase, a payment or a transfer, accepting terms - the person does it. A window of a program not

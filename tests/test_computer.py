@@ -162,18 +162,23 @@ class Eyes:
         yield StreamEvent("end", usage={"input_tokens": 5, "output_tokens": 2}, stop_reason="end_turn")
 
 
-def answer_the_cards(hub):  # noqa: F811
-    """The person allows the program for the task, and the one send."""
-    first = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "screen_act"])[0]
-    assert first["kind"] == "command" and first["preview"]["text"] == "ввести «Имя»\nтекст: Борис"
-    assert first["preview"]["note"].startswith("«Python (тест)» · окно «")
-    hub.post(f"/v1/approvals/{first['id']}", json={"allow": True, "scope": "chat"})
+def answer_the_cards(hub, autonomy):  # noqa: F811
+    """The person approves the plan and allows the program for the task («План»), and the one send (both)."""
+    if autonomy == "plan":
+        plan = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "set_plan"])[0]
+        hub.post(f"/v1/approvals/{plan['id']}", json={"allow": True})
+        first = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "screen_act"])[0]
+        assert first["kind"] == "command" and first["preview"]["text"] == "ввести «Имя»\nтекст: Борис"
+        assert first["preview"]["note"].startswith("«Python (тест)» · окно «")
+        hub.post(f"/v1/approvals/{first['id']}", json={"allow": True, "scope": "chat"})
     send = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "screen_send"])[0]
     assert "отправка от вашего имени" in send["preview"]["note"]
     hub.post(f"/v1/approvals/{send['id']}", json={"allow": True})
 
 
-def test_an_autonomous_run_at_the_test_window(hub, test_window):  # noqa: F811
+@pytest.mark.parametrize("autonomy", ["plan", "free"])
+def test_an_autonomous_run_at_the_test_window(hub, test_window, autonomy):  # noqa: F811
+    """«План»: acting in the program is asked once for the task; «Сам»: not at all. Sending: asked in both."""
     hub.app.state.computer._watch = False  # the test's own input is nobody's
     db = hub.app.state.db
     db.call(lambda c: allow(c, test_window["window"]["exe"]))
@@ -185,15 +190,15 @@ def test_an_autonomous_run_at_the_test_window(hub, test_window):  # noqa: F811
         [("screen_look", {"window": hwnd, "question": "что на кнопке?"})],  # looking: before the plan too
         [("screen_act", {"window": hwnd, "action": "type", "element": 2, "text": "Борис"})],  # acting: refused
         [PLAN], [step(1, "running")],
-        [("screen_act", {"window": hwnd, "action": "type", "element": 2, "text": "Борис"})],  # asked: for the task
+        [("screen_act", {"window": hwnd, "action": "type", "element": 2, "text": "Борис"})],  # «План»: asked
         [("screen_act", {"window": hwnd, "action": "toggle", "element": 5})],  # covered
         [("screen_act", {"window": hwnd, "action": "click", "element": 10})],  # «Отправить»: asked every time
         [("finish", {"summary": "Имя вписано, отправлено.", "goal_met": True})],
     ]))  # fmt: skip
     with hub.websocket_connect("/v1/events", headers={**dict(hub.headers), "Host": "127.0.0.1:8765"}) as events:
         events.receive_json()  # the window is open: it draws the frame and has «stop» (D41)
-        run_id = start(hub)
-        answer_the_cards(hub)
+        run_id = start(hub, autonomy=autonomy)
+        answer_the_cards(hub, autonomy)
         run = ended(hub, run_id)
         frames = []
         while (event := events.receive_json())["type"] != "computer.released":
@@ -213,6 +218,10 @@ def test_an_autonomous_run_at_the_test_window(hub, test_window):  # noqa: F811
     assert {"screen_windows", "screen_look", "screen_act", "open_program"} <= {t["name"] for t in tools}
     assert len(db.call(lambda c: pc.journal(c, run_id))) == 3
     assert hub.app.state.computer._holder is None  # the run ended: its hold went
+    asked = db.call(lambda c: [r["tool"] for r in c.execute("SELECT tool FROM approvals WHERE conversation_id = ?",
+                                                            (run_id,))])  # fmt: skip
+    assert asked.count("screen_send") == 1  # sending: asked in both
+    assert (asked.count("screen_act") > 0) == (autonomy == "plan")  # «Сам»: no card for acting at all
 
 
 def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):

@@ -328,6 +328,7 @@ class ChatService:
         run = outcome.totals = RunTotals()
         fallback: dict | None = None  # the spare took over (once per run): from which model, and why
         tools = None
+        scale, squeezed = 1.0, 0  # how far the length guess falls short for this model; requests sent shorter again
         for step in range(limits.max_steps + 2):
             if limits.autonomous and self.autonomy is not None:  # paused by the user; what it should hear first
                 await self.autonomy.wait_resumed(conversation_id, cancel)
@@ -349,7 +350,8 @@ class ChatService:
                     lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
                 )
             # a long run outgrows the model's window: the oldest tool results give way in this request (hub/fit.py)
-            prompt, shortened = fit.fit(prompt, window=(model.get("capabilities") or {}).get("context"), tools=tools)
+            prompt, shortened = fit.fit(prompt, window=(model.get("capabilities") or {}).get("context"), tools=tools,
+                                        scale=scale)  # fmt: skip
             if shortened:
                 log.info("conversation %s: %d old messages shortened to fit %s's window", conversation_id, shortened,
                          model["id"])  # fmt: skip
@@ -357,6 +359,14 @@ class ChatService:
                 completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools,
                                                  params)  # fmt: skip
             except ProviderError as exc:  # the model failed: the spare answers instead, once (D39)
+                counted = fit.overflow(exc.detail)
+                if counted is not None and squeezed < 2 and not cancel.is_set():  # too long after all: shorter again
+                    squeezed += 1
+                    found = fit.calibrate(counted, prompt, tools) if counted else scale * 1.3
+                    scale = max(scale * 1.15, found * 1.05)
+                    log.info("conversation %s: %s refused the length (%s tokens): shorter again, x%.2f",
+                             conversation_id, model["id"], counted or "?", scale)  # fmt: skip
+                    continue
                 spare = None if fallback or cancel.is_set() else await self._spare(conversation_id, model)
                 if spare is None:
                     raise
@@ -366,6 +376,10 @@ class ChatService:
                 continue
             completion.settings_version = version
             completion.fallback = fallback
+            used = completion.usage or {}
+            counted = sum(int(used.get(k) or 0) for k in ("input_tokens", "cache_read", "cache_write"))
+            if counted and not used.get("estimated"):  # the model's own count corrects the guess for the next step
+                scale = fit.calibrate(counted, prompt, tools)
             if completion.refusal:
                 spare = None if fallback else await self._spare(conversation_id, model)
                 cost = await self._save_refusal(conversation_id, model, completion, client_id, final=spare is None)
@@ -652,6 +666,8 @@ class ChatService:
             elif call["name"] in computer.TOOL_NAMES and self.computer is not None:  # the desktop (9.6, D41)
 
                 async def ask(tool, shown, cover, call=call):
+                    if tool == "screen_act" and await self._on_its_own(conversation_id):
+                        return None  # «Сам»: in an allowed program without a card; sending is still asked
                     allowed, said = await self._ask_user(conversation_id, tool, shown, None, cancel, cover=cover)
                     return None if allowed else said
 
@@ -830,6 +846,16 @@ class ChatService:
             return row is not None
 
         return await self._db.acall(read)
+
+    async def _on_its_own(self, conversation_id: str) -> bool:
+        """An autonomous run the user let go on by itself («Сам», autonomy "free")."""
+
+        def level(conn) -> str:
+            row = conn.execute("SELECT autonomy FROM agent_runs WHERE conversation_id = ? AND kind = 'autonomous'",
+                               (conversation_id,)).fetchone()  # fmt: skip
+            return row["autonomy"] if row else ""
+
+        return await self._db.acall(level) == "free"
 
     async def _ask_user(
         self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
