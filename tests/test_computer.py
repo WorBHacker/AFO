@@ -237,3 +237,40 @@ def test_localchat_itself_is_never_the_agents_to_control(monkeypatch):
              4: ["notepad.exe"]}  # fmt: skip
     monkeypatch.setattr(computer, "_cmdline", lambda pid: lines.get(pid, []))
     assert [pid for pid in lines if computer.is_localchat(pid)] == [1, 2]
+
+
+def test_a_program_opens_a_link_of_its_own_kind(tmp_path, monkeypatch):
+    """Telegram opens tg://resolve?domain=NAME as the chat of exactly @NAME; a link goes only to the program Windows
+    opens it with, and never a web page, a file or the shell."""
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    telegram = "C:\\Users\\u\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe"
+
+    def add(conn):
+        found, _new = programs.add_manual(conn, telegram, "Telegram", "2026-10-28T00:00:00Z")
+        programs.decide(conn, found["id"], "allow", "app", "2026-10-28T00:00:00Z")
+
+    db.call(add)
+    computer = pc.Computer(db, EventBus(db), tmp_path / "computer", watch_person=False)
+    run = db.call(lambda c: store.create_conversation(c, kind="agent_run", title="Тест"))
+    opened, asked = [], []
+    monkeypatch.setattr(pc.os, "startfile", opened.append, raising=False)
+    monkeypatch.setattr(pc, "link_handler", lambda scheme: telegram.lower() if scheme == "tg" else "C:\\Other\\x.exe")
+
+    async def ask(tool, shown, cover):
+        asked.append(shown["text"])
+        return None
+
+    def go(**args):
+        return asyncio.run(computer.handle(run, {"name": "open_program", "input": args}, asyncio.Event(), ask))
+
+    said, failed = go(program="Telegram", link="tg://resolve?domain=bekh_jr")
+    assert not failed and "opens tg://resolve?domain=bekh_jr" in said
+    assert opened == ["tg://resolve?domain=bekh_jr"] and asked == ["tg://resolve?domain=bekh_jr"]  # on the card
+    for link, why in (("https://t.me/bekh_jr", "web pages"), ("file:///C:/x.exe", "web pages"),
+                      ("viber://chat?number=1", "does not open viber"), ("not a link", "web pages")):  # fmt: skip
+        said, failed = go(program="Telegram", link=link)
+        assert failed and why in said, (link, said)
+    assert len(opened) == 1  # nothing else was opened
+    assert pc.link_handler("tg") == telegram.lower()  # the stand-in; the real one reads the registry
+    assert any(t["name"] == "open_program" and "link" in t["parameters"]["properties"] for t in pc.TOOLS)

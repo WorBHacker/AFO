@@ -13,7 +13,7 @@ Item {
         id: frame
         objectName: "agentFrame"
         transientParent: null
-        visible: AgentScreen.active
+        visible: AgentScreen.shown
         flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowTransparentForInput
                | Qt.WindowDoesNotAcceptFocus
         color: "transparent"

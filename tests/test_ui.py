@@ -4161,11 +4161,21 @@ def test_the_agent_at_the_desktop_frame_and_stop(qapp):
         frame = quick.window.findChild(QObject, "agentFrame")
         bar = quick.window.findChild(QObject, "agentBar")
         assert frame is not None and bar is not None and not frame.property("visible")
+        places = {42: (100, 120, 360, 420)}
+        view.place = lambda hwnd: places.get(hwnd)  # where the window is now (the real one asks Windows)
         window = {"id": 42, "title": "Тестовое окно агента", "rect": [100, 120, 360, 420]}
         control = {"run_id": "r1", "window": window, "program": "Python (тест)", "action": "type"}
         app.on_event({"type": "computer.control", "payload": control})
         assert view.active and view.text == "Агент управляет компьютером · Python (тест)"
         wait_until(lambda: frame.property("visible") and bar.property("visible"))
+        start = frame.property("x")
+        places[42] = (400, 120, 500, 420)  # the person moves and widens the window between the agent's steps
+        wait_until(lambda: frame.property("x") != start)  # the frame follows by itself, no new step needed
+        assert view.frame[2] > 360 / 2  # wider too
+        del places[42]  # minimized (or gone): no frame around nothing; the bar and «Стоп» stay
+        wait_until(lambda: not frame.property("visible") and bar.property("visible"))
+        places[42] = (100, 120, 360, 420)
+        wait_until(lambda: frame.property("visible"))
         assert quick.notifier.stop_shown
         view.stop()
         wait_until(lambda: ("cancel_run", "r1") in client.log)

@@ -115,8 +115,20 @@ TOOLS = [
     },
     {
         "name": "open_program",
-        "description": "Start a program the user allowed, by its name as screen_windows or the user calls it.",
-        "parameters": {"type": "object", "properties": {"program": {"type": "string"}}, "required": ["program"]},
+        "description": "Start a program the user allowed, by its name as screen_windows or the user calls it - or "
+        "have it open a link of its own kind (`link`): Telegram opens tg://resolve?domain=NAME as the chat of exactly "
+        "@NAME, surer than its search, which mixes in strangers. Web pages and files are not links here.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "program": {"type": "string"},
+                "link": {
+                    "type": "string",
+                    "description": "A link the program itself opens (its own scheme, like tg://).",
+                },
+            },
+            "required": ["program"],
+        },
     },
 ]
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
@@ -171,6 +183,39 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int]:
     rect = wt.RECT()
     user32.GetWindowRect(wt.HWND(hwnd), ctypes.byref(rect))
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+
+
+LINK = re.compile(r"^([a-z][a-z0-9+.-]{1,30}):\S+$", re.IGNORECASE)
+NOT_LINKS = frozenset({"http", "https", "file", "ftp", "javascript", "data", "vbscript", "about", "shell"})
+
+
+def link_handler(scheme: str) -> str:
+    """The .exe Windows opens a link scheme with (its shell\\open\\command), '' when none."""
+    if sys.platform != "win32":
+        return ""
+    import winreg
+
+    for hive, key in ((winreg.HKEY_CURRENT_USER, rf"Software\Classes\{scheme}\shell\open\command"),
+                      (winreg.HKEY_CLASSES_ROOT, rf"{scheme}\shell\open\command")):  # fmt: skip
+        try:
+            with winreg.OpenKey(hive, key) as opened:
+                command = str(winreg.QueryValueEx(opened, "")[0]).strip()
+        except OSError:
+            continue
+        found = re.match(r'^"([^"]+)"|^(\S+\.exe)', command, re.IGNORECASE)
+        if found:
+            return os.path.expandvars(found.group(1) or found.group(2))
+    return ""
+
+
+def check_link(link: str, program: dict[str, Any], handler: str) -> None:
+    """A link the agent may have an allowed program open: of that program's own scheme - Windows opens it with that
+    very program - never a web page, a file or the shell."""
+    match = LINK.match(link)
+    if not match or match.group(1).lower() in NOT_LINKS:
+        raise ScreenError("link: a program's own link (like tg://resolve?domain=NAME); web pages and files are not")
+    if not handler or not program.get("exe") or programs.norm(handler) != programs.norm(program["exe"]):
+        raise ScreenError(f"«{program['name']}» does not open {match.group(1)}: links")
 
 
 def window_title(hwnd: int) -> str:
@@ -941,11 +986,20 @@ class Computer:
         program = await self._db.acall(find)
         if program is None:
             raise ScreenError(f"no allowed program «{args.get('program')}»: the user decides which (D43)")
+        link = str(args.get("link") or "").strip()
+        if link:
+            check_link(link, program, await asyncio.to_thread(link_handler, link.split(":", 1)[0]))
         await self._hold(run_id)
         why = await ask("screen_act", {"program": program["name"], "window": "", "action": "open", "element": "",
-                                       "text": "", "keys": ""}, True)  # fmt: skip
+                                       "text": link, "keys": ""}, True)  # fmt: skip
         if why is not None:
             raise ScreenError(why)
+        if link:
+            await asyncio.to_thread(os.startfile, link)
+            window = {"title": "", "program": program["name"]}
+            await self._db.acall(lambda conn: record(conn, run_id, window, {"action": "open", "link": link}, "opened",
+                                                     ""))  # fmt: skip
+            return f"«{program['name']}» opens {link}; look at its window in a moment - see screen_windows"
         if program.get("exe"):
             await asyncio.to_thread(os.startfile, program["exe"])
         elif program.get("aumid"):
