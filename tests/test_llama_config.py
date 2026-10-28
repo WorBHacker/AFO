@@ -192,7 +192,7 @@ def hub(tmp_path, monkeypatch):
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    monkeypatch.setattr("hub.api.llama.RELOAD_S", 2.0)
+    monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)
     app = create_app(HubSettings(paths=data_paths(), llama_swap_url=f"http://127.0.0.1:{server.server_port}",
                                  status_interval_s=0, process_interval_s=0))  # fmt: skip
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:

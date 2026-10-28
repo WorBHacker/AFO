@@ -115,6 +115,7 @@ class QuickApp:
         context.setContextProperty("Mail", self.controller.mail_view)
         context.setContextProperty("AgentKeys", self.controller.agent_keys)
         context.setContextProperty("Sandbox", self.controller.sandbox_view)
+        context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))

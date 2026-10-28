@@ -2,7 +2,8 @@
 
 Lucide's icons (app/ui/icons, ISC licence in LICENSE-lucide.txt; release 1.57.0), as their SVG files are, by the
 app's own names; a few of the app's own drawing where Lucide has none that fits (the window's minimize and maximize
-glyphs, the filled stop square). Tinted on request, so one icon serves every theme colour. Rendered by the CPU.
+glyphs, the filled stop square, a download arrow). Tinted on request, so one icon serves every theme colour. Rendered
+by the CPU.
 """
 
 import functools
@@ -33,6 +34,7 @@ PATHS = {
     "stop": '<rect x="7" y="7" width="10" height="10" rx="2" fill="{c}"/>',
     "min": '<path d="M7 12h10"/>',
     "max": '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
+    "download": '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
 }
 
 NAMES = frozenset(LUCIDE) | frozenset(PATHS)

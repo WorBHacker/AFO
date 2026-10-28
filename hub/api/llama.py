@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from pathlib import Path
 from typing import Annotated, Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -28,7 +26,6 @@ from .model_settings import run_check
 log = logging.getLogger("hub.llama")
 router = APIRouter(prefix="/v1/llama")
 PROVIDER = "llama-swap"
-RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
 
 
 def require_app(client: Annotated[Client, Depends(require_client)]) -> Client:
@@ -81,25 +78,7 @@ async def models(request: Request, client: Annotated[Client, Depends(require_app
 
 
 async def _verify(request: Request, ids: list[str], context: tuple[str, int] | None) -> tuple[bool, str]:
-    """Whether llama-swap read the file: it lists every model again (and the new context, when that changed)."""
-    url = f"{request.app.state.settings.llama_swap_url.rstrip('/')}/v1/models"
-    deadline = time.monotonic() + RELOAD_S
-    seen = ""
-    async with httpx.AsyncClient(timeout=3.0) as http:
-        while time.monotonic() < deadline:
-            try:
-                listed = {m["id"]: m for m in (await http.get(url)).json().get("data", [])}
-            except httpx.HTTPError, ValueError:
-                seen = "llama-swap не отвечает"
-            else:
-                missing = [m for m in ids if m not in listed]
-                said = context and ((listed.get(context[0]) or {}).get("meta") or {}).get("llamaswap", {}).get(
-                    "context")  # fmt: skip
-                if not missing and (context is None or said == context[1]):
-                    return True, ""
-                seen = f"llama-swap не видит: {', '.join(missing)}" if missing else "llama-swap ещё не перечитал файл"
-            await asyncio.sleep(0.5)
-    return False, seen
+    return await llama_config.reloaded(request.app.state.settings.llama_swap_url, ids, context)
 
 
 class Change(BaseModel):
@@ -120,7 +99,7 @@ async def change(request: Request, model_id: str, body: Change, client: Annotate
     ids = list(llama_config.model_blocks(new))
     context = (model_id, body.changes["context"]) if body.changes.get("context") else None
     verified, problem = await _verify(request, ids, context)
-    if not verified and problem != "llama-swap не отвечает":  # it read the file and something is wrong: undo
+    if not verified and problem != llama_config.NOT_ANSWERING:  # it read the file and something is wrong: undo
         await asyncio.to_thread(llama_config.restore, path, backup)
         raise HTTPException(status_code=502, detail=f"llama-swap не принял правку ({problem}) — конфиг возвращён")
     request.app.state.llama_trial = (model_id, backup)  # a failed trial of this model puts this copy back

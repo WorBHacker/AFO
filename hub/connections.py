@@ -48,6 +48,7 @@ BRAVE_SEARCH_KEY = "brave_search_api_key"
 TAVILY_API_KEY = "tavily_api_key"
 SEARXNG_URL = "searxng_url"
 TELEGRAM_TOKEN = "telegram_bot_token"
+HUGGINGFACE_TOKEN = "huggingface_token"  # hub/hf.py reads it (10.1)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,9 @@ CONNECTIONS: list[Connection] = [
                "https://api-dashboard.search.brave.com/app/keys", "BSA…"),
     Connection(TELEGRAM_TOKEN, "Telegram-бот", "token", "Подтверждения с телефона: токен вашего бота",
                "https://t.me/BotFather", "123456789:AA…"),
+    Connection(HUGGINGFACE_TOKEN, "Hugging Face", "token", "Установка закрытых моделей (Llama, часть Gemma): "
+               "токен для чтения. Лицензию модели примите сами на её странице; открытые модели ставятся и без него",
+               "https://huggingface.co/settings/tokens", "hf_…"),
 ]  # fmt: skip
 BY_NAME = {c.name: c for c in CONNECTIONS}
 TELEGRAM_FORMAT = re.compile(r"\d{5,}:[\w-]{20,}")

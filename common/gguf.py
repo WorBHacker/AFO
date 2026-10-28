@@ -53,38 +53,46 @@ def _value(f: BinaryIO, kind: int, keep: bool) -> Any:
     raise GGUFError(f"unknown value type {kind}")
 
 
-def read_header(path: Path, wanted: tuple[str, ...] = ()) -> dict[str, Any]:
-    """The header's keys: those named in `wanted` (or all scalar ones and short arrays when it is empty)."""
-    with open(path, "rb") as f:
-        if _read(f, 4) != b"GGUF":
-            raise GGUFError(f"{path.name} is not a GGUF file")
-        (version,) = struct.unpack("<I", _read(f, 4))
-        if version < 2:
-            raise GGUFError(f"GGUF version {version} is too old")
-        _tensors, keys = struct.unpack("<QQ", _read(f, 16))
-        if keys > MAX_KEYS:
-            raise GGUFError("too many keys for a GGUF header")
-        out: dict[str, Any] = {"gguf.version": version}
-        for _ in range(keys):
-            key = _string(f)
-            (kind,) = struct.unpack("<I", _read(f, 4))
-            keep = key in wanted if wanted else not key.startswith("tokenizer.")
-            value = _value(f, kind, keep)
-            if keep:
-                out[key] = value
-        return out
+def _keys(f: BinaryIO, name: str, wanted: tuple[str, ...], until_tokenizer: bool) -> dict[str, Any]:
+    if _read(f, 4) != b"GGUF":
+        raise GGUFError(f"{name} is not a GGUF file")
+    (version,) = struct.unpack("<I", _read(f, 4))
+    if version < 2:
+        raise GGUFError(f"GGUF version {version} is too old")
+    _tensors, keys = struct.unpack("<QQ", _read(f, 16))
+    if keys > MAX_KEYS:
+        raise GGUFError("too many keys for a GGUF header")
+    out: dict[str, Any] = {"gguf.version": version}
+    for _ in range(keys):
+        key = _string(f)
+        arch = out.get("general.architecture")
+        if until_tokenizer and key.startswith("tokenizer.") and arch and f"{arch}.block_count" in out:
+            break  # the model's own keys come before the tokenizer's long lists: they are not read at all
+        (kind,) = struct.unpack("<I", _read(f, 4))
+        keep = key in wanted if wanted else not key.startswith("tokenizer.")
+        value = _value(f, kind, keep)
+        if keep:
+            out[key] = value
+    return out
 
 
-@functools.lru_cache(maxsize=32)
-def _model_info(path: str, _size: int, _mtime: float) -> dict[str, Any]:
-    head = read_header(Path(path), ("general.architecture", "general.name"))
+def read_header(source: Path | BinaryIO, wanted: tuple[str, ...] = (), *, until_tokenizer: bool = False
+                ) -> dict[str, Any]:  # fmt: skip
+    """The header's keys: those named in `wanted` (or all scalar ones and short arrays when it is empty). The source
+    is a file or a stream read from its start (a download's first bytes: 10.1); `until_tokenizer` stops at the
+    tokenizer's keys once the architecture's are read."""
+    if isinstance(source, Path):
+        with open(source, "rb") as f:
+            return _keys(f, source.name, wanted, until_tokenizer)
+    return _keys(source, "the file", wanted, until_tokenizer)
+
+
+def header_info(head: dict[str, Any]) -> dict[str, Any]:
+    """What a memory estimate needs, from a header's keys (read_header)."""
     arch = head.get("general.architecture") or ""
-    names = ("block_count", "context_length", "embedding_length", "attention.head_count", "attention.head_count_kv",
-             "attention.key_length", "attention.value_length", "full_attention_interval")  # fmt: skip
-    found = read_header(Path(path), tuple(f"{arch}.{n}" for n in names))
 
     def number(name: str) -> int:
-        value = found.get(f"{arch}.{name}")
+        value = head.get(f"{arch}.{name}")
         if isinstance(value, list):  # per layer (some architectures): the largest
             value = max((v for v in value if isinstance(v, int | float)), default=0)
         return int(value or 0)
@@ -104,6 +112,11 @@ def _model_info(path: str, _size: int, _mtime: float) -> dict[str, Any]:
         "key_length": number("attention.key_length") or head_dim,
         "value_length": number("attention.value_length") or head_dim,
     }
+
+
+@functools.lru_cache(maxsize=32)
+def _model_info(path: str, _size: int, _mtime: float) -> dict[str, Any]:
+    return header_info(read_header(Path(path), until_tokenizer=True))
 
 
 def model_info(path: Path) -> dict[str, Any]:

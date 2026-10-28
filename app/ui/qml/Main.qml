@@ -116,8 +116,10 @@ Window {
         id: modelMenu
         menuWidth: 430
         items: App.pickerItems.concat([{ section: " ", id: "" },
-                                       { id: "+settings", name: "Настроить модели…", icon: "sliders" }])
-        onChosen: (id) => id === "+settings" ? modelsSheet.openFor(App.modelId) : App.chooseModel(id)
+                                       { id: "+settings", name: "Настроить модели…", icon: "sliders" },
+                                       { id: "+install", name: "Установить локальную модель…", icon: "download" }])
+        onChosen: (id) => id === "+settings" ? modelsSheet.openFor(App.modelId)
+                        : id === "+install" ? installSheet.open() : App.chooseModel(id)
         function openAt(item) { anchor = item; open() }
     }
     MenuPopup {
@@ -189,6 +191,7 @@ Window {
     MemorySheet { id: memorySheet }
     AgentAccessSheet { id: accessSheet }
     SandboxSheet { id: sandboxSheet }
+    InstallSheet { id: installSheet }
     NewProgramPopup {}
     ComputerFrame {}  // the agent at the desktop: its frame and «Стоп» (D41)
     RenameDialog { id: renameDialog }
@@ -204,6 +207,7 @@ Window {
             else if (what === "agents") agentsSheet.open()
             else if (what === "programs") programsSheet.open()
             else if (what === "model-settings") modelsSheet.openFor("")
+            else if (what === "install-models") installSheet.open()
             else if (what === "memory") memorySheet.open()
             else if (what === "agent-access") accessSheet.open()
             else if (what === "connections") connectionsSheet.open()

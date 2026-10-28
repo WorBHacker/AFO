@@ -27,6 +27,7 @@ TOPICS = [
     "schedule.*",
     "mail.*",
     "sandbox.*",
+    "install.*",
     "system.*",
     "secrets.*",
     "connections.*",

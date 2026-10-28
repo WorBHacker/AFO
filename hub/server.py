@@ -29,6 +29,7 @@ from .api import (
     conversations,
     editor,
     events_ws,
+    install,
     links,
     llama,
     mail,
@@ -50,6 +51,7 @@ from .api import (
 from .api import (
     autostart as autostart_api,
 )
+from .api.model_settings import run_check
 from .approvals import ApprovalQueue
 from .auth import ensure_app_token
 from .autonomous import Autonomy
@@ -64,6 +66,7 @@ from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .mail import MailTools
 from .mcp_client import McpServers
+from .model_install import Installer
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects
@@ -131,6 +134,15 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store,
                                          quiet=app.state.scheduler.quiet_now)  # fmt: skip
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
+        app.state.installer = Installer(
+            db,
+            bus,
+            gateway,
+            secrets_store,
+            llama_swap_url=settings.llama_swap_url,
+            status=lambda: app.state.status.latest,
+        )  # local models (10.1, D37)
+        app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
@@ -154,6 +166,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        if await app.state.installer.start():
+            log.info("model installs left going by the last hub wait for «Продолжить»")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
         await asyncio.to_thread(prune, paths.root / "computer")  # snapshots past their term (D30)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
@@ -182,6 +196,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.programs.stop()
             await app.state.backup.stop()
             await app.state.scheduler.stop()
+            await app.state.installer.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -203,6 +218,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(models.router)
     app.include_router(model_settings.router)
     app.include_router(llama.router)
+    app.include_router(install.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)
     app.include_router(mcp_servers.router)

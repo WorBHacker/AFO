@@ -335,6 +335,8 @@ class FakeClient:
         self.sandboxed = []
         self.sandbox_calls = []
         self.schedule_calls = []
+        self.install_calls = []
+        self.install_jobs_list = []
         self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
         self.access = {
@@ -464,6 +466,134 @@ class FakeClient:
         self.access_calls.append(changes)
         self.access = {**self.access, **changes}
         return dict(self.access)
+
+    def install_system(self):
+        return {
+            "space": {"gpu": "RTX 5080", "vram_total_gib": 15.9, "vram_gib": 14.2, "ram_gib": 42.0, "loaded": []},
+            "drives": [
+                {"letter": "D", "kind": "nvme", "words": "NVMe", "free_gib": 456.5},
+                {"letter": "F", "kind": "hdd", "words": "жёсткий диск (медленно)", "free_gib": 233.0},
+            ],
+            "server": "${llama_server}",
+            "problem": "",
+            "folder": "D:\\LocalChat\\models",
+            "token": False,
+        }
+
+    def install_catalog(self):
+        best = {"quant": "Q8_0", "size": 8_030_000_000, "verdict": "gpu", "words": "помещается в видеопамять — быстро"}
+        return {
+            "models": [
+                {
+                    "id": "gemma-4-e4b",
+                    "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+                    "name": "Gemma 4 E4B",
+                    "purposes": ["chat", "vision"],
+                    "purpose_words": ["Разговоры", "Картинки"],
+                    "about": {"ru": "Небольшая"},
+                    "license": "apache-2.0",
+                    "gated": False,
+                    "recommended": best,
+                    "installed": [],
+                    "moe": False,
+                },
+                {
+                    "id": "gpt-oss-120b",
+                    "repo": "ggml-org/gpt-oss-120b-GGUF",
+                    "name": "gpt-oss 120B",
+                    "purposes": ["chat", "code"],
+                    "purpose_words": ["Разговоры", "Код"],
+                    "about": {"ru": "Очень большая"},
+                    "license": "apache-2.0",
+                    "recommended": None,
+                    "smallest": {"quant": "MXFP4", "size": 63_390_000_000},
+                    "installed": [],
+                },
+            ]
+        }
+
+    def install_search(self, query):
+        self.install_calls.append(("search", query))
+        return {
+            "models": [
+                {
+                    "repo": "someone/Tiny-abliterated-GGUF",
+                    "downloads": 1_234_567,
+                    "likes": 12,
+                    "license": "mit",
+                    "unrestricted": True,
+                    "gated": False,
+                    "updated": "2026-10-01",
+                }
+            ]
+        }
+
+    def install_repo(self, repo):
+        return {
+            "repo": repo,
+            "license": "apache-2.0",
+            "params": 7_600_000_000,
+            "context_trained": 131072,
+            "unrestricted": False,
+            "gated": False,
+            "page": "https://huggingface.co/" + repo,
+            "projector": {"file": "mmproj-Q8_0.gguf", "size": 560_000_000},
+            "variants": [
+                {
+                    "quant": "Q4_0",
+                    "size": 4_590_000_000,
+                    "bits": 4.9,
+                    "verdict": "gpu",
+                    "words": "помещается в видеопамять — быстро",
+                    "recommended": False,
+                    "files": [{}],
+                },
+                {
+                    "quant": "Q8_0",
+                    "size": 8_030_000_000,
+                    "bits": 8.5,
+                    "verdict": "gpu",
+                    "words": "помещается в видеопамять — быстро",
+                    "recommended": True,
+                    "files": [{}],
+                },
+            ],
+        }
+
+    def install(self, spec):
+        self.install_calls.append(("install", spec))
+        job = {
+            "id": "j1",
+            "repo": spec["repo"],
+            "quant": spec["quant"],
+            "name": "Gemma 4 E4B " + spec["quant"],
+            "model_id": "gemma-4-e4b-it-q8_0",
+            "status": "queued",
+            "done_bytes": 0,
+            "total_bytes": 8_590_000_000,
+            "percent": 0.0,
+            "error": "",
+            "trial": {},
+            "files": [],
+        }
+        self.install_jobs_list = [job]
+        return {"job": job}
+
+    def install_jobs(self):
+        return {"jobs": list(self.install_jobs_list)}
+
+    def install_act(self, job_id, action):
+        self.install_calls.append((action, job_id))
+        job = {**self.install_jobs_list[0], "status": {"pause": "paused", "resume": "queued"}.get(action, "cancelled")}
+        return {"job": job}
+
+    def install_forget(self, job_id):
+        self.install_calls.append(("forget", job_id))
+        return {"forgotten": job_id}
+
+    def install_remove(self, model_id):
+        self.install_calls.append(("remove", model_id))
+        return {"job": {**self.install_jobs_list[0], "status": "removed"}}
 
     def sandbox(self, conversation_id):
         return {"projects": [dict(x) for x in self.sandboxed]}
@@ -4202,6 +4332,87 @@ def test_a_sandbox_chat_in_the_window(qapp):
         wait_until(lambda: not app.bg.busy and view.count == 0)
         app.setChatMode("ask")
         wait_until(lambda: not view.active)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_installing_a_local_model_from_the_window(qapp):
+    from PySide6.QtCore import QObject
+
+    from app.ui.install_view import gb, progress_text, trial_text
+    from app.ui.main import QuickApp
+
+    assert gb(8_030_000_000) == "8,0 ГБ" and gb(14.2, of_bytes=False) == "14,2 ГБ"
+    assert progress_text({"status": "downloading", "done_bytes": 2_000_000_000, "total_bytes": 8_000_000_000,
+                          "speed": 20_000_000}) == "2,0 ГБ из 8,0 ГБ · 20,0 МБ/с · ещё ≈ 5 мин"  # fmt: skip
+    assert trial_text({"status": "done", "trial": {"seconds": 4.6, "tok_s": 85.4, "where": "gpu", "tries": [{}, {}]}}
+                      ) == "загрузилась и ответила за 4,6 с · 85 ток/с · целиком в видеопамяти · с 2-й попытки — " \
+                           "настройки уменьшены"  # fmt: skip
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = quick.window.findChild(QObject, "installSheet")
+        app.openUi("install-models")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.catalog)
+        assert view.systemText.startswith("RTX 5080: для новой модели ≈ 14,2 ГБ видеопамяти · ОЗУ свободно ≈ 42,0 ГБ")
+        rows = view.catalog
+        assert rows[0]["offer"] == "Q8_0 · 8,0 ГБ" and rows[0]["tone"] == "ok" and rows[0]["canInstall"]
+        assert rows[1]["tone"] == "error" and "63,4 ГБ" in rows[1]["words"] and not rows[1]["canInstall"]
+        view.setPurpose("code")
+        assert [r["id"] for r in view.catalog] == ["gpt-oss-120b"]
+        view.setPurpose("")
+        assert [d["id"] for d in view.drives] == ["D", "F"] and view.drives[0]["selected"] and view.drives[1]["slow"]
+
+        view.installRecommended("ggml-org/gemma-4-E4B-it-GGUF")
+        wait_until(lambda: not app.bg.busy and view.tab == "jobs")
+        assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q8_0",
+                                                        "drive": "D"})  # fmt: skip
+        assert view.activeCount == 1 and view.jobs[0]["statusWords"] == "в очереди"
+        half = {"id": "j1", "done_bytes": 4_295_000_000, "total_bytes": 8_590_000_000, "speed": 21_700_000}
+        app.on_event({"type": "install.progress", "payload": half})
+        row = view.jobs[0]
+        assert row["percent"] == 50.0 and row["progress"].startswith("4,3 ГБ из 8,6 ГБ · 21,7 МБ/с")
+        assert [a["id"] for a in row["actions"]] == ["pause", "cancel"]
+        view.act("j1", "pause")
+        wait_until(lambda: not app.bg.busy and view.jobs[0]["status"] == "paused")
+        assert [a["label"] for a in view.jobs[0]["actions"]] == ["Продолжить", "Отменить"]
+        done = {**client.install_jobs_list[0], "status": "done", "done_bytes": 8_590_000_000, "percent": 100.0,
+                "trial": {"seconds": 4.6, "tok_s": 480.0, "where": "gpu", "tries": [{"ok": True}]}}  # fmt: skip
+        client.install_jobs_list = [done]
+        app.on_event({"type": "install.changed", "payload": {"job": done}})
+        wait_until(lambda: not app.bg.busy)
+        assert app.flashText.startswith("Модель «Gemma 4 E4B Q8_0» установлена: загрузилась и ответила за 4,6 с")
+        assert view.activeCount == 0 and view.jobs[0]["trial"].endswith("целиком в видеопамяти")
+        view.act("j1", "remove")
+        assert app.question["title"] == "Удалить модель «Gemma 4 E4B Q8_0»?" and "8,6 ГБ" in app.question["text"]
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and not view.jobs)
+        assert client.install_calls[-1] == ("remove", "gemma-4-e4b-it-q8_0")
+
+        view.setTab("search")
+        view.search("tiny")
+        wait_until(lambda: not app.bg.busy and view.found)
+        assert view.found[0]["badges"] == ["снятые ограничения"] and view.found[0]["note"].startswith("↓ 1,2 млн")
+        view.openRepo("ggml-org/gemma-4-E4B-it-GGUF")
+        wait_until(lambda: not app.bg.busy and view.variants)
+        assert quick.window.findChild(QObject, "installRepo").property("visible")
+        assert [(v["quant"], v["size"], v["recommended"]) for v in view.variants] == [
+            ("Q4_0", "4,6 ГБ", False), ("Q8_0", "8,0 ГБ", True)]  # fmt: skip
+        assert view.repo["projectorText"] == "Понимать картинки (+0,6 ГБ)" and "7,6 млрд" in view.repo["notes"]
+        view.setProjector(False)
+        view.setDrive("F")
+        view.install("Q4_0")
+        wait_until(lambda: not app.bg.busy and view.tab == "jobs")
+        assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q4_0",
+                                                        "projector": False, "drive": "F"})  # fmt: skip
+        view.closeRepo()
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "updated": "2026-10-28",
+  "about": "The curated list of local models the installer offers first (stage 10.1, Q15, Q17): ordinary versions from their makers or llama.cpp's own ggml-org, GGUF for llama.cpp. Sizes, variants, licences and sha256 come from Hugging Face live; this list names only the repositories and says what each is for.",
+  "models": [
+    {
+      "id": "qwen3.5-0.8b",
+      "repo": "ggml-org/Qwen3.5-0.8B-GGUF",
+      "name": "Qwen3.5 0.8B",
+      "purposes": ["chat"],
+      "about": {
+        "ru": "Совсем маленькая: работает даже на компьютере без видеокарты. Простые вопросы и короткие тексты.",
+        "en": "Tiny: runs even on a computer without a graphics card. Simple questions and short texts."
+      }
+    },
+    {
+      "id": "qwen3-1.7b",
+      "repo": "ggml-org/Qwen3-1.7B-GGUF",
+      "name": "Qwen3 1.7B",
+      "purposes": ["chat"],
+      "about": {
+        "ru": "Маленькая и быстрая: для слабых компьютеров и ноутбуков. Умеет рассуждать перед ответом.",
+        "en": "Small and fast: for weaker computers and laptops. Can think before it answers."
+      }
+    },
+    {
+      "id": "gemma-4-e4b",
+      "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+      "name": "Gemma 4 E4B",
+      "purposes": ["chat", "vision"],
+      "about": {
+        "ru": "Небольшая модель Google: разговоры на многих языках и вопросы о картинках. Хватит 6–8 ГБ видеопамяти.",
+        "en": "A small Google model: conversation in many languages and questions about images. 6–8 GB of video memory is enough."
+      }
+    },
+    {
+      "id": "qwen2.5-coder-7b",
+      "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "name": "Qwen2.5 Coder 7B",
+      "purposes": ["code"],
+      "about": {
+        "ru": "Помощник программиста от Qwen: пишет и объясняет код, дописывает строки. Хватит 8 ГБ видеопамяти.",
+        "en": "Qwen's programming helper: writes and explains code, completes lines. 8 GB of video memory is enough."
+      }
+    },
+    {
+      "id": "qwen2.5-vl-7b",
+      "repo": "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF",
+      "name": "Qwen2.5 VL 7B",
+      "purposes": ["vision"],
+      "about": {
+        "ru": "Смотрит на картинки и снимки экрана: читает текст, описывает, отвечает на вопросы о них.",
+        "en": "Looks at pictures and screenshots: reads the text, describes them, answers questions about them."
+      }
+    },
+    {
+      "id": "gemma-4-12b",
+      "repo": "ggml-org/gemma-4-12B-it-GGUF",
+      "name": "Gemma 4 12B",
+      "purposes": ["chat", "vision"],
+      "about": {
+        "ru": "Средняя модель Google: хорошо пишет и переводит, понимает картинки. Нужно 10–12 ГБ видеопамяти.",
+        "en": "A mid-size Google model: writes and translates well, understands images. Needs 10–12 GB of video memory."
+      }
+    },
+    {
+      "id": "gpt-oss-20b",
+      "repo": "ggml-org/gpt-oss-20b-GGUF",
+      "name": "gpt-oss 20B",
+      "purposes": ["chat", "code"],
+      "moe": true,
+      "about": {
+        "ru": "Открытая модель OpenAI: рассуждает, работает с инструментами, пишет код. Нужно около 14 ГБ видеопамяти.",
+        "en": "OpenAI's open model: reasons, uses tools, writes code. Needs about 14 GB of video memory."
+      }
+    },
+    {
+      "id": "gemma-4-26b-a4b",
+      "repo": "ggml-org/gemma-4-26B-A4B-it-GGUF",
+      "name": "Gemma 4 26B A4B",
+      "purposes": ["chat", "vision"],
+      "moe": true,
+      "about": {
+        "ru": "Большая модель Google из «экспертов»: умная и при этом быстрая, понимает картинки. Лучше всего с 16 ГБ видеопамяти.",
+        "en": "A large Google mixture-of-experts model: smart yet fast, understands images. Best with 16 GB of video memory."
+      }
+    },
+    {
+      "id": "qwen3-coder-30b-a3b",
+      "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+      "name": "Qwen3 Coder 30B A3B",
+      "purposes": ["code"],
+      "moe": true,
+      "about": {
+        "ru": "Сильный помощник программиста для агентов и больших проектов. Быстрый: работает и наполовину в ОЗУ.",
+        "en": "A strong programming helper for agents and large projects. Fast: works even half in RAM."
+      }
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "repo": "ggml-org/Qwen3.6-35B-A3B-GGUF",
+      "name": "Qwen3.6 35B A3B",
+      "purposes": ["chat", "code", "vision"],
+      "moe": true,
+      "about": {
+        "ru": "Универсальная модель из «экспертов»: разговоры, код и картинки; быстрая и наполовину в ОЗУ.",
+        "en": "An all-round mixture-of-experts model: conversation, code and images; fast even half in RAM."
+      }
+    },
+    {
+      "id": "qwen3.8-27b",
+      "repo": "ggml-org/Qwen3.8-27B-GGUF",
+      "name": "Qwen3.8 27B",
+      "purposes": ["chat", "code", "vision"],
+      "about": {
+        "ru": "Одна из самых сильных моделей для дома: рассуждает, пишет код, понимает картинки. Нужно 20–24 ГБ видеопамяти, иначе медленнее.",
+        "en": "One of the strongest models for home use: reasons, codes, understands images. Needs 20–24 GB of video memory, slower otherwise."
+      }
+    },
+    {
+      "id": "gpt-oss-120b",
+      "repo": "ggml-org/gpt-oss-120b-GGUF",
+      "name": "gpt-oss 120B",
+      "purposes": ["chat", "code"],
+      "moe": true,
+      "about": {
+        "ru": "Очень большая открытая модель OpenAI: для компьютеров с 64 ГБ ОЗУ и больше. Большая часть живёт в ОЗУ.",
+        "en": "OpenAI's very large open model: for computers with 64 GB of RAM or more. Most of it lives in RAM."
+      }
+    }
+  ]
+}

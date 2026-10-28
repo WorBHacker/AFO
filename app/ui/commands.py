@@ -23,6 +23,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("terminals", "Показать или скрыть терминалы", "terminal", "Ctrl `", False),
     ("models", "Выбрать модель…", "cpu", "", False),
     ("model-settings", "Настройка моделей: параметры, промпты, цены…", "sliders", "", False),
+    ("install-models", "Установить локальную модель…", "download", "", False),
     ("memory", "Память агента: факты и навыки…", "layers", "", False),
     ("agent-access", "Папки и сайты для агента…", "folder", "", False),
     ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),

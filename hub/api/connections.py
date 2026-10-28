@@ -253,6 +253,14 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
         except websearch.SearchError as exc:
             return False, str(exc)
         return True, f"поиск работает: результатов — {len(found)}"
+    if connection.name == conns.HUGGINGFACE_TOKEN:
+        from .. import hf
+
+        try:
+            who = await hf.whoami(state.secrets.get(connection.name))
+        except hf.HubError as exc:
+            return False, str(exc)
+        return True, f"токен принят: {who}"
     if connection.name == conns.TELEGRAM_TOKEN:
         try:
             me = await state.telegram.me()

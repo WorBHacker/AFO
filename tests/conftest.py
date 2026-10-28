@@ -8,6 +8,7 @@ import pytest
 from common.paths import DATA_DIR_ENV
 from hub.autostart import RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
+from hub.hf import BASE_ENV as HF_ENV
 from hub.secrets import STORE_ENV
 
 
@@ -20,6 +21,7 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(STORE_ENV, "memory")
     monkeypatch.setenv(RUN_STORE_ENV, "memory")  # nor the Windows registry's Run key (autostart)
     monkeypatch.setenv(CLI_ENV, str(tmp_path / "no-claude.exe"))  # the user's Claude Code CLI is never found or run
+    monkeypatch.setenv(HF_ENV, "http://127.0.0.1:9")  # nor Hugging Face: a test that forgets its stand-in fails fast
     return data
 
 

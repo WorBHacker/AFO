@@ -110,6 +110,35 @@ class HubClient:
         """The model loads with its settings first (minutes from a disk): the window waits as long as the hub."""
         return self._call("POST", f"/v1/llama/models/{model_id}/trial", timeout=330)
 
+    # --- local models from Hugging Face (10.1, D37): the hub downloads, writes the config, tries the model ---
+
+    def install_system(self) -> dict:
+        return self._call("GET", "/v1/install/system")
+
+    def install_catalog(self) -> dict:
+        return self._call("GET", "/v1/install/catalog", timeout=90)
+
+    def install_search(self, query: str) -> dict:
+        return self._call("GET", "/v1/install/search", params={"q": query}, timeout=60)
+
+    def install_repo(self, repo: str) -> dict:
+        return self._call("GET", f"/v1/install/repo/{repo}", timeout=60)
+
+    def install(self, spec: dict) -> dict:
+        return self._call("POST", "/v1/install", spec, timeout=60)
+
+    def install_jobs(self) -> dict:
+        return self._call("GET", "/v1/install/jobs")
+
+    def install_act(self, job_id: str, action: str) -> dict:
+        return self._call("POST", f"/v1/install/jobs/{job_id}/{action}")
+
+    def install_forget(self, job_id: str) -> dict:
+        return self._call("DELETE", f"/v1/install/jobs/{job_id}")
+
+    def install_remove(self, model_id: str) -> dict:
+        return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
+
     def restore_llama(self, backup: str) -> dict:
         return self._call("POST", "/v1/llama/restore", {"backup": backup}, timeout=60)
 

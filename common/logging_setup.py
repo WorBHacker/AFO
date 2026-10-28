@@ -50,6 +50,8 @@ def setup_logging(
         setattr(handler, _MARK, True)
         root.addHandler(handler)
 
+    # every HTTP request at INFO would bury the log (and a download's signed CDN links): only trouble is written
+    logging.getLogger("httpx").setLevel(max(level, logging.WARNING))
     log = logging.getLogger(component)
 
     def log_uncaught(exc_type, exc, tb) -> None:

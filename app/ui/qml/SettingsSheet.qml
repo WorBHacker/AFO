@@ -49,6 +49,12 @@ Sheet {
         text: "Настройка моделей…"
         onClicked: { sheet.close(); App.openUi("model-settings") }
     }
+    PlainButton {
+        objectName: "openInstallModels"
+        iconName: "download"
+        text: "Установить локальную модель…"
+        onClicked: { sheet.close(); App.openUi("install-models") }
+    }
 
     SectionTitle { text: "Подключения" }
     Text {

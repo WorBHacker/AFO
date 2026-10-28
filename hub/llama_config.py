@@ -10,18 +10,24 @@ otherwise the copy comes back. Models served by Strata are only shown: their pro
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from common.paths import PROJECT_ROOT
 
 CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
 DEFAULT_CONFIG = PROJECT_ROOT.parent / "llama-swap" / "config.yaml"
 KEEP_BACKUPS = 10
+RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
+NOT_ANSWERING = "llama-swap не отвечает"
 
 # the launch settings: the flags that carry each (the first is written when the flag is new)
 FLAGS = {
@@ -283,3 +289,132 @@ def restore(path: Path, backup: Path) -> None:
     partial = path.with_name(f"{path.name}.part")
     shutil.copy2(backup, partial)
     os.replace(partial, path)
+
+
+async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,
+                   timeout_s: float | None = None) -> tuple[bool, str]:  # fmt: skip
+    """Whether llama-swap read the file: it lists every model again (and the new context, when that changed)."""
+    url = f"{base_url.rstrip('/')}/v1/models"
+    deadline = time.monotonic() + (timeout_s or RELOAD_S)
+    seen = ""
+    async with httpx.AsyncClient(timeout=3.0) as http:
+        while time.monotonic() < deadline:
+            try:
+                listed = {m["id"]: m for m in (await http.get(url)).json().get("data", [])}
+            except httpx.HTTPError, ValueError:
+                seen = NOT_ANSWERING
+            else:
+                missing = [m for m in ids if m not in listed]
+                said = context and ((listed.get(context[0]) or {}).get("meta") or {}).get("llamaswap", {}).get(
+                    "context")  # fmt: skip
+                if not missing and (context is None or said == context[1]):
+                    return True, ""
+                seen = f"llama-swap не видит: {', '.join(missing)}" if missing else "llama-swap ещё не перечитал файл"
+            await asyncio.sleep(0.5)
+    return False, seen
+
+
+# --- a model the installer adds and takes away (stage 10.1): its own block at the end of `models:` ---
+
+
+def server_command(text: str) -> str:
+    """How this config starts llama-server: its macro (`${llama_server}`), else the program an llama.cpp model
+    runs; a config without either has no llama.cpp to give a new model."""
+    for name, value in macros(text).items():
+        if "llama-server" in value:
+            return f"${{{name}}}"
+    for model_id in model_blocks(text):
+        view = model_view(text, model_id)
+        if view["engine"] == "llama.cpp":
+            program = next(t for t in _TOKEN.findall(view["command"]) if "llama-server" in t)
+            return program if program.startswith(("'", '"')) else f'"{program}"' if " " in program else program
+    raise ConfigError("в config.yaml нет llama-server: сначала нужна сборка llama.cpp (мастер первого запуска)")
+
+
+def quoted(value: str) -> str:
+    """A YAML double-quoted string with nothing to escape in it (llama-swap and this module's reader agree on it):
+    double quotes become single ones, backslashes forward slashes."""
+    return '"' + value.replace('"', "'").replace("\\", "/").replace("\n", " ") + '"'
+
+
+def free_id(text: str, base: str) -> str:
+    """A model id the config does not have yet: lower case letters, digits, dots, dashes."""
+    slug = re.sub(r"[^a-z0-9._-]+", "-", base.lower()).strip("-.") or "model"
+    taken = set(model_blocks(text))
+    found, n = slug, 2
+    while found in taken:
+        found, n = f"{slug}-{n}", n + 1
+    return found
+
+
+def model_block(model_id: str, *, name: str, description: str, server: str, model: str, mmproj: str = "",
+                mmproj_on_gpu: bool = True, context: int, gpu_layers: str | int, cache_type: str = "q8_0",
+                ttl: int = 0, metadata: dict[str, Any] | None = None) -> str:  # fmt: skip
+    """A llama.cpp model's block for `models:`, written the way the user's own models are: one option per line of
+    the `cmd`, the metadata llama-swap passes on to the hub's catalog."""
+    layers = "--fit on" if gpu_layers == "auto" else f"-ngl {99 if gpu_layers == 'all' else int(gpu_layers)}"
+    lines = [f"  {quoted(model_id)}:", f"    name: {quoted(name)}", f"    description: {quoted(description)}"]
+    if ttl:
+        lines.append(f"    ttl: {ttl}")
+    lines += ["    cmd: |", f"      {server}", f"      -m {quoted(model.replace(os.sep, '/'))}"]
+    if mmproj:
+        lines.append(f"      --mmproj {quoted(mmproj.replace(os.sep, '/'))}" + ("" if mmproj_on_gpu
+                                                                             else " --no-mmproj-offload"))  # fmt: skip
+    lines += [
+        f"      {layers} -fa on -c {context} -ctk {cache_type} -ctv {cache_type} -np 1",
+        "      --jinja",
+        "      --host 127.0.0.1 --port ${PORT}",
+        "    checkEndpoint: /health",
+        "    metadata:",
+        "      engine: llama.cpp",
+        f"      context: {context}",
+        f"      vision: {'true' if mmproj else 'false'}",
+    ]
+    for key, value in (metadata or {}).items():
+        lines.append(f"      {key}: {quoted(str(value))}")
+    return "\n".join(lines)
+
+
+def _in_groups(lines: list[str], model_id: str) -> bool:
+    section = _section(lines, "groups")
+    if section is None:
+        return False
+    named = re.compile(rf"(?<![\w.-]){re.escape(model_id)}(?![\w.-])")  # a member: a list item or in [a, b]
+    return any(named.search(line.split("#", 1)[0]) for line in lines[section[0] : section[1]])
+
+
+def add_model(text: str, model_id: str, block: str) -> str:
+    """The config with a new model's block after the last model; every other line as it was."""
+    if model_id in model_blocks(text):
+        raise ConfigError(f"модель {model_id} в config.yaml уже есть")
+    lines = text.splitlines()
+    section = _section(lines, "models")
+    if section is None:
+        raise ConfigError("в config.yaml нет раздела models")
+    at = section[1]
+    while at > section[0] and not lines[at - 1].strip():
+        at -= 1
+    tail = [""] if at < len(lines) else []
+    lines[at:at] = ["", *block.splitlines(), *tail]
+    out = "\n".join(lines) + "\n"
+    if set(model_blocks(out)) != {*model_blocks(text), model_id}:
+        raise ConfigError("новая модель задела другие — не записано")
+    return out
+
+
+def remove_model(text: str, model_id: str) -> str:
+    """The config without this model's block (and the blank line before it)."""
+    blocks = model_blocks(text)
+    if model_id not in blocks:
+        raise ConfigError(f"в config.yaml нет модели {model_id}")
+    lines = text.splitlines()
+    if _in_groups(lines, model_id):
+        raise ConfigError(f"модель {model_id} входит в группу (groups:) — уберите её оттуда в config.yaml сами")
+    start, end = blocks[model_id]
+    while start > 0 and not lines[start - 1].strip():
+        start -= 1
+    del lines[start:end]
+    out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    if set(model_blocks(out)) != set(blocks) - {model_id}:
+        raise ConfigError("удаление задело другие модели — не записано")
+    return out

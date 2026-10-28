@@ -29,6 +29,7 @@ from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
 from .feed import Feed
+from .install_view import InstallView
 from .mail_view import MailView
 from .mcp_view import McpView
 from .memory_view import MemoryView
@@ -176,6 +177,7 @@ class Controller(QObject):
         self.mail_view = MailView(self)  # the agent's mailbox, a section of Connections (9.4b, Q21)
         self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
+        self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
@@ -914,7 +916,16 @@ class Controller(QObject):
                 self.newChat()
             elif value.startswith("mode:"):
                 self.setMode(value.removeprefix("mode:"))
-            elif value in ("feed", "approvals", "agents", "programs", "model-settings", "memory", "agent-access"):
+            elif value in (
+                "feed",
+                "approvals",
+                "agents",
+                "programs",
+                "model-settings",
+                "memory",
+                "agent-access",
+                "install-models",
+            ):
                 self.uiRequested.emit(value)
             elif value == "search-project":
                 self.setMode("projects")
@@ -1188,6 +1199,8 @@ class Controller(QObject):
                 self.autonomy_view.on_event(kind, payload)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind.startswith("install."):
+            self.install_view.on_event(kind, payload)
         elif kind.startswith("sandbox."):
             self.sandbox_view.on_event(kind, payload)
         elif kind == "agent.keys":
