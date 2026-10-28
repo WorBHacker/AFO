@@ -82,3 +82,20 @@ def test_transaction_rolls_back_on_error(db):
         conn.execute("INSERT INTO settings (key, value) VALUES ('a', '1')")
         raise RuntimeError("stop")
     assert db.call(lambda c: c.execute("SELECT COUNT(*) FROM settings").fetchone()[0]) == 0
+
+
+def test_the_data_folder_and_localchats_own(tmp_path, monkeypatch):
+    """10.3: LOCALCHAT_DATA_DIR; a checkout that keeps its data in <project>/data keeps it; else LocalChat's folder."""
+    from common import paths
+
+    monkeypatch.delenv(paths.DATA_DIR_ENV)
+    monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path / "checkout")
+    monkeypatch.setenv(paths.HOME_ENV, str(tmp_path / "home"))
+    assert paths.data_paths().root == tmp_path / "home" / "data"
+    assert paths.engines_home() == tmp_path / "home" / "engines"
+    (tmp_path / "checkout" / "data").mkdir(parents=True)
+    assert paths.data_paths().root == tmp_path / "checkout" / "data"
+    monkeypatch.delenv(paths.HOME_ENV)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    if paths.os.name == "nt":
+        assert paths.app_home() == tmp_path / "appdata" / "LocalChat"

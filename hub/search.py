@@ -21,12 +21,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from common.paths import PROJECT_ROOT
+from common.paths import PROJECT_ROOT, app_home
 
 from . import projects
 from .projects import CACHES, NOISE, ProjectError
 
-RIPGREP = PROJECT_ROOT / "tools" / "ripgrep" / "rg.exe"
+RIPGREP = PROJECT_ROOT / "tools" / "ripgrep" / "rg.exe"  # a checkout's own copy; an installed one: app_home()/tools
 MAX_RESULTS = 500
 PER_FILE = 50
 MAX_LINE = 300
@@ -37,7 +37,10 @@ _NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def ripgrep() -> str | None:
-    return str(RIPGREP) if RIPGREP.is_file() else shutil.which("rg")
+    for found in (RIPGREP, app_home() / "tools" / "ripgrep" / "rg.exe"):
+        if found.is_file():
+            return str(found)
+    return shutil.which("rg")
 
 
 def search(

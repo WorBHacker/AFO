@@ -2,10 +2,12 @@
 
 - At login: a value in the user's Run key (HKCU\\...\\CurrentVersion\\Run, "LocalChat hub") that runs `pythonw -m hub`
   - no console, no administrator rights. Off until the user turns it on in Settings; off again removes the value.
-- llama-swap: when the hub starts and llama-swap does not answer on this computer, the hub runs its start script
-  (`D:\\AI model\\llama-swap\\start-llama-swap.cmd`, or the one LOCALCHAT_LLAMA_SWAP_START names) hidden and on its
-  own - it keeps running when the hub stops, as the hub does when the window closes (D2). On unless the user turns it
-  off in Settings. Its output goes to data/logs/llama-swap.out.log.
+- llama-swap: when the hub starts and llama-swap does not answer on this computer, the hub starts it hidden and on
+  its own - it keeps running when the hub stops, as the hub does when the window closes (D2). What it starts:
+  LOCALCHAT_LLAMA_SWAP_START, else the script or llama-swap.exe chosen in Settings (10.3), else the start script beside
+  LocalChat's folder on the computer it was built on, else the llama-swap.exe the first-run wizard put in LocalChat's
+  engines (10.2) - an .exe gets the config (hub/llama_config.py) and the address. On unless the user turns it off in
+  Settings. Its output goes to data/logs/llama-swap.out.log.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from common.paths import PROJECT_ROOT
+from common.paths import PROJECT_ROOT, engines_home
 
 from .db import utc_now
 
@@ -35,6 +37,8 @@ RUN_STORE_ENV = "LOCALCHAT_RUN_KEY"  # "memory": tests and throwaway runs never 
 LLAMA_SWAP_START_ENV = "LOCALCHAT_LLAMA_SWAP_START"
 DEFAULT_LLAMA_SWAP_START = PROJECT_ROOT.parent / "llama-swap" / "start-llama-swap.cmd"
 LLAMA_SWAP_SETTING = "autostart.llama_swap"
+START_SETTING = "llama_swap.start"  # the script or llama-swap.exe chosen in the window (10.3)
+configured_start: Path | None = None  # the chosen one, as the hub read it from its settings
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 READY_TIMEOUT_S = 60.0  # llama-swap itself starts in a second; models load only when asked
 BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
@@ -116,7 +120,56 @@ def set_login(store: RunStore, on: bool) -> None:
 
 
 def llama_swap_script() -> Path:
-    return Path(os.environ.get(LLAMA_SWAP_START_ENV) or DEFAULT_LLAMA_SWAP_START)
+    """What starts llama-swap: a .cmd script or llama-swap.exe (see the module's text for the order)."""
+    if os.environ.get(LLAMA_SWAP_START_ENV):
+        return Path(os.environ[LLAMA_SWAP_START_ENV])
+    if configured_start is not None:
+        return configured_start
+    if DEFAULT_LLAMA_SWAP_START.is_file():
+        return DEFAULT_LLAMA_SWAP_START
+    return engines_home() / "llama-swap" / "llama-swap.exe"
+
+
+def start_source() -> str:
+    return "env" if os.environ.get(LLAMA_SWAP_START_ENV) else "chosen" if configured_start is not None else "default"
+
+
+def start_command(script: Path, url: str) -> list[str]:
+    """The command for a script, or for llama-swap.exe with the config and the address it should listen on."""
+    if script.suffix.lower() != ".exe":
+        return ["cmd", "/c", str(script)]
+    from .llama_config import config_path
+
+    parts = urlsplit(url)
+    listen = f"{parts.hostname or '127.0.0.1'}:{parts.port or 8080}"
+    return [str(script), "--config", str(config_path()), "--listen", listen, "--watch-config"]
+
+
+def load_choices(conn: sqlite3.Connection) -> None:
+    """The paths chosen in the window (10.3) into this module and llama_config (at the hub's start and on a change)."""
+    from . import llama_config
+
+    def chosen(key: str) -> Path | None:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        value = json.loads(row["value"]) if row else ""
+        return Path(value) if value else None
+
+    global configured_start
+    configured_start = chosen(START_SETTING)
+    llama_config.configured = chosen(llama_config.CONFIG_SETTING)
+
+
+def set_choice(conn: sqlite3.Connection, key: str, path: str) -> None:
+    """A path chosen in the window ('' - back to the default)."""
+    if path:
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+            " value = excluded.value, updated_at = excluded.updated_at",
+            (key, json.dumps(path), utc_now()),
+        )
+    else:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    load_choices(conn)
 
 
 def llama_swap_wanted(conn: sqlite3.Connection) -> bool:
@@ -141,15 +194,15 @@ async def answers(url: str, transport: httpx.AsyncBaseTransport | None = None) -
     return response.status_code < 500
 
 
-def spawn(script: Path, log_file: Path) -> None:
-    """The script on its own, hidden: it outlives the hub (D2). Inside a job that forbids leaving, it ends with it."""
+def spawn(command: list[str], cwd: Path, log_file: Path) -> None:
+    """The command on its own, hidden: it outlives the hub (D2). Inside a job that forbids leaving, it ends with it."""
     log_file.parent.mkdir(parents=True, exist_ok=True)
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     with open(log_file, "ab") as out:
         for extra in (BREAKAWAY, 0) if os.name == "nt" else (0,):
             try:
-                subprocess.Popen(["cmd", "/c", str(script)], cwd=script.parent, stdin=subprocess.DEVNULL, stdout=out,
-                                 stderr=subprocess.STDOUT, creationflags=flags | extra, close_fds=True)  # fmt: skip
+                subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                 creationflags=flags | extra, close_fds=True)  # fmt: skip
                 return
             except PermissionError:
                 continue
@@ -168,7 +221,7 @@ async def ensure_llama_swap(url: str, script: Path, wanted: bool, log_file: Path
     if not script.is_file():
         return "missing"
     log.info("llama-swap does not answer on %s: starting %s", url, script)
-    await asyncio.to_thread(starter, script, log_file)
+    await asyncio.to_thread(starter, start_command(script, url), script.parent, log_file)
     deadline = asyncio.get_running_loop().time() + ready_timeout
     while asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.5)

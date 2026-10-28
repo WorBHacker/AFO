@@ -434,8 +434,9 @@ class HubClient:
     def autostart(self) -> dict:
         return self._call("GET", "/v1/autostart")
 
-    def set_autostart(self, **change: bool) -> dict:
-        """login (the hub at Windows login), llama_swap (the hub starts it)."""
+    def set_autostart(self, **change: bool | str) -> dict:
+        """login (the hub at Windows login), llama_swap (the hub starts it); llama_swap_config, llama_swap_start - the
+        files chosen in the window ('' - the default; 10.3)."""
         return self._call("PUT", "/v1/autostart", change)
 
     # --- connections (D13): keys, tokens and addresses behind the user's password ---

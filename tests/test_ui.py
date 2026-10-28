@@ -4418,3 +4418,33 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_choosing_where_llama_swap_is(qapp):
+    """10.3: «Настройки → Запуск» shows llama-swap's config and start and takes the files chosen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.started.update(llama_swap_config="D:/swap/config.yaml", llama_swap_config_found=True,
+                              llama_swap_config_source="default", llama_swap_script_source="default")  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.autostart.get("llama_swap_config"))
+        app.openUi("settings")
+        wait_until(lambda: quick.window.findChild(QObject, "settingsSheet").property("opened"))
+        app.chooseLlamaSwap("llama_swap_config", "file:///E:/models/swap.yaml")
+        wait_until(lambda: not app.bg.busy and app.autostart["llama_swap_config"] == "E:/models/swap.yaml")
+        assert app.flashText == "Конфиг llama-swap: E:/models/swap.yaml"
+        app.chooseLlamaSwap("llama_swap_start", "")
+        wait_until(lambda: not app.bg.busy and app.autostart.get("llama_swap_start") == "")
+        app.chooseLlamaSwap("login", "x")  # only the two paths
+        assert "login" not in [k for k, v in app.autostart.items() if v == "x"]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

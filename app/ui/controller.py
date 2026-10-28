@@ -465,6 +465,27 @@ class Controller(QObject):
 
         self._call(lambda: self.client.set_autostart(**{what: on}), done)
 
+    @Slot(str, str)
+    def chooseLlamaSwap(self, what: str, url: str) -> None:
+        """llama-swap's config or its start (a script or llama-swap.exe) as a file chosen in the window; '' - back to
+        the default (10.3)."""
+        if what not in ("llama_swap_config", "llama_swap_start") or self.client is None:
+            return
+        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
+
+        def done(found: dict[str, Any]) -> None:
+            self._set_autostart(found)
+            shown = found["llama_swap_config"] if what == "llama_swap_config" else found["llama_swap_script"]
+            self.flash(f"{'Конфиг' if what == 'llama_swap_config' else 'Запуск'} llama-swap: {shown}")
+
+        self.call_or_fail(lambda: self.client.set_autostart(**{what: path}), done,
+                          lambda e: self.show_error(f"Не выбрано: {e}"))  # fmt: skip
+
+    @Slot(str)
+    def openFolder(self, path: str) -> None:
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     def _set_claude_code(self, status: dict[str, Any]) -> None:
         self._claude_code = status
         self.claudeCodeChanged.emit()

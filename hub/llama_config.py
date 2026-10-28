@@ -21,10 +21,12 @@ from typing import Any
 
 import httpx
 
-from common.paths import PROJECT_ROOT
+from common.paths import PROJECT_ROOT, engines_home
 
 CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
+CONFIG_SETTING = "llama_swap.config"  # the file chosen in the window (the settings table)
 DEFAULT_CONFIG = PROJECT_ROOT.parent / "llama-swap" / "config.yaml"
+configured: Path | None = None  # the chosen file, as the hub read it from its settings
 KEEP_BACKUPS = 10
 RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
 NOT_ANSWERING = "llama-swap не отвечает"
@@ -51,7 +53,18 @@ class ConfigError(ValueError):
 
 
 def config_path() -> Path:
-    return Path(os.environ.get(CONFIG_ENV) or DEFAULT_CONFIG)
+    """llama-swap's config: LOCALCHAT_LLAMA_SWAP_CONFIG; the file chosen in the window's settings (10.3); the one
+    beside LocalChat's folder on the computer it was built on; else the one the first-run wizard writes (10.2)."""
+    if os.environ.get(CONFIG_ENV):
+        return Path(os.environ[CONFIG_ENV])
+    if configured is not None:
+        return configured
+    return DEFAULT_CONFIG if DEFAULT_CONFIG.is_file() else engines_home() / "llama-swap" / "config.yaml"
+
+
+def config_source() -> str:
+    """Where config_path() comes from: env | chosen | default."""
+    return "env" if os.environ.get(CONFIG_ENV) else "chosen" if configured is not None else "default"
 
 
 def _unquote(value: str) -> str:

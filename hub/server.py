@@ -93,6 +93,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if applied:
             log.info("database %s: applied migrations %s", paths.db, applied)
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
+        db.call(autostart.load_choices)  # llama-swap's config and its start, as chosen in the window (10.3)
         bus = EventBus(db)
         secrets_store = secret_store if secret_store is not None else default_secret_store()
         gateway = build_default_gateway(db, settings.llama_swap_url, secrets_store)

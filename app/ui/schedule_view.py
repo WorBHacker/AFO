@@ -256,6 +256,8 @@ class SchedulesView(QObject):
     @Slot(bool, str, str)
     def setQuiet(self, enabled: bool, start: str, end: str) -> None:
         change = {"enabled": enabled, "from": start.strip(), "to": end.strip()}
+        if all(self.quiet.get(k) == v for k, v in change.items()):
+            return  # a field left without a change
         self._change(lambda: self.app.client.set_quiet(**change), "Тихие часы сохранены")
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:

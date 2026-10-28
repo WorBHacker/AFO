@@ -1,4 +1,9 @@
-"""Where LocalChat keeps its data (D29): database, logs, terminal logs, file snapshots, backups."""
+"""Where LocalChat keeps its data (D29) and what it installs (stage 10.3, D37).
+
+LocalChat's own folder is `%LOCALAPPDATA%/LocalChat` (LOCALCHAT_HOME overrides it): its data (database, logs,
+snapshots...), the engines the first-run wizard brings (llama.cpp, llama-swap), tools (ripgrep). A checkout that
+kept its data in `<project>/data` before (the first computer LocalChat was built on) keeps it there.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR_ENV = "LOCALCHAT_DATA_DIR"
+HOME_ENV = "LOCALCHAT_HOME"
 
 
 @dataclass(frozen=True)
@@ -60,7 +66,26 @@ class DataPaths:
         return self
 
 
+def app_home() -> Path:
+    """LocalChat's own folder: $LOCALCHAT_HOME, else %LOCALAPPDATA%/LocalChat (~/.local/share/LocalChat elsewhere)."""
+    override = os.environ.get(HOME_ENV)
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "LocalChat"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "LocalChat"
+
+
+def engines_home() -> Path:
+    """Where the first-run wizard puts llama.cpp and llama-swap (10.2)."""
+    return app_home() / "engines"
+
+
 def data_paths() -> DataPaths:
-    """The data folder: $LOCALCHAT_DATA_DIR when set (tests use it), otherwise <project>/data."""
+    """The data folder: $LOCALCHAT_DATA_DIR when set (tests use it); <project>/data when a checkout already keeps its
+    data there; otherwise <LocalChat's own folder>/data."""
     override = os.environ.get(DATA_DIR_ENV)
-    return DataPaths(Path(override) if override else PROJECT_ROOT / "data")
+    if override:
+        return DataPaths(Path(override))
+    legacy = PROJECT_ROOT / "data"
+    return DataPaths(legacy if legacy.is_dir() else app_home() / "data")
