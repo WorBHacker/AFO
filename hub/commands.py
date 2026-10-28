@@ -58,20 +58,39 @@ def command_of(args: dict[str, Any]) -> str:
 async def run(terminals: Any, project: Project, args: dict[str, Any], *, by: str) -> str:
     """Runs the command and waits for it (or for the timeout); what the model reads."""
     command = command_of(args)
+    timeout = args.get("timeout_s", DEFAULT_TIMEOUT_S)
+    if isinstance(timeout, bool) or not isinstance(timeout, int):
+        raise ToolError("`timeout_s` must be a whole number of seconds")
+    title = "Модель: " + (command if len(command) <= TITLE_CHARS else command[: TITLE_CHARS - 1] + "…")
+    done = await execute(terminals, project, command, folder=args.get("path") or "", timeout=timeout, by=by,
+                         title=title)  # fmt: skip
+    lines = done["lines"]
+    count = limit("terminal_lines")
+    tail = "\n".join(lines[-count:])
+    shown = f"last {min(len(lines), count)} of {len(lines)} lines" if lines else "no output"
+    if done["status"] == "running":
+        head = (f"still running after {done['timeout']} s in terminal {done['terminal']} ({title}); it goes on - "
+                f"read it later with terminal_output. {shown}:")  # fmt: skip
+    else:
+        head = f"exit code {done['exit_code']}; {shown}:"
+    return clean(f"$ {command}\n{head}\n{tail}")
+
+
+async def execute(
+    terminals: Any, project: Project, command: str, *, folder: Any = "", timeout: int = DEFAULT_TIMEOUT_S, by: str,
+    title: str,
+) -> dict[str, Any]:  # fmt: skip
+    """Runs a command line in a terminal of the hub inside the project (`folder` - a folder in it) and waits for it,
+    at most `timeout` seconds: {terminal, status (ended / running), exit_code, lines (its plain output), timeout}."""
     if terminals is None:
         raise ToolError("terminals are not available")
-    folder = args.get("path") or ""
     if not isinstance(folder, str):
         raise ToolError("`path` must be a folder inside the project")
     try:
         cwd = resolve_inside(project.root, folder) if folder else project.root
     except ProjectError as exc:
         raise ToolError(str(exc)) from exc
-    timeout = args.get("timeout_s", DEFAULT_TIMEOUT_S)
-    if isinstance(timeout, bool) or not isinstance(timeout, int):
-        raise ToolError("`timeout_s` must be a whole number of seconds")
     timeout = max(1, min(timeout, MAX_TIMEOUT_S))
-    title = "Модель: " + (command if len(command) <= TITLE_CHARS else command[: TITLE_CHARS - 1] + "…")
     info = await terminals.create(cwd=cwd, by=by, project_id=project.id, command=command, title=title)
     deadline = time.monotonic() + timeout
     while info["status"] == "running" and time.monotonic() < deadline:
@@ -79,12 +98,5 @@ async def run(terminals: Any, project: Project, args: dict[str, Any], *, by: str
         info = await terminals.get(info["id"])
     output = await terminals.output(info["id"], 256 * 1024)
     lines = plain_terminal_text(output.get("data", "")).rstrip("\n").splitlines()
-    count = limit("terminal_lines")
-    tail = "\n".join(lines[-count:])
-    shown = f"last {min(len(lines), count)} of {len(lines)} lines" if lines else "no output"
-    if info["status"] == "running":
-        head = (f"still running after {timeout} s in terminal {info['id']} ({title}); it goes on - read it later "
-                f"with terminal_output. {shown}:")  # fmt: skip
-    else:
-        head = f"exit code {info['exit_code']}; {shown}:"
-    return clean(f"$ {command}\n{head}\n{tail}")
+    return {"terminal": info["id"], "status": info["status"], "exit_code": info.get("exit_code"), "lines": lines,
+            "timeout": timeout}  # fmt: skip

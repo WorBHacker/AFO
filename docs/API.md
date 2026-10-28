@@ -185,6 +185,19 @@
 | POST | `/v1/conversations/{conversation_id}/messages` | токен | `send_message()` | тело `{content: str, model_id: str, effort: str = 'medium', confirm_over_budget: bool = False}` |
 | POST | `/v1/conversations/{conversation_id}/cancel` | токен | `cancel_run()` |  |
 
+### goals
+
+/v1/conversations/{id}/goal - a chat's goal (stage 11.1, D44): the chat works turn after turn until the hub's check says it is met, a limit is reached, or it needs the human.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/conversations/{conversation_id}/goal` | токен | The chat's goal - the open one, else its last - with its recent checks and what the user wrote to it. |  |
+| PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits}` |
+| POST | `/v1/conversations/{conversation_id}/goal/pause` | только окно | No next turn starts; the turn running now finishes. |  |
+| POST | `/v1/conversations/{conversation_id}/goal/resume` | только окно | Back to work (a parked goal with higher limits): the next turn starts. | тело `Resume \| None` |
+| DELETE | `/v1/conversations/{conversation_id}/goal` | только окно | The goal is given up; the turn running now finishes, no next one starts. |  |
+| POST | `/v1/conversations/{conversation_id}/goal/steer` | только окно | The user's word while the goal works: read at the start of the next turn, without stopping this one. | тело `{text: str}` |
+
 ### connections
 
 /v1/connections - API keys, tokens and addresses (D13) behind the user's password. The desktop app only.
@@ -471,6 +484,11 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `file.changed` | да | `change`, `project_id` | hub/chat.py |
 | `file.reverted` | да | `change`, `project_id` | hub/api/changes.py |
 | `git.head` | да | `project_id` | hub/watch.py |
+| `goal.check` | да | `conversation_id`, `goal_id`, `check` | hub/goals.py |
+| `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
+| `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
+| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal` | hub/goals.py |
+| `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
 | `hub.shutdown_requested` | да | `by` | hub/api/system.py |
 | `hub.started` | да | `version`, `migrations_applied` | hub/server.py |
 | `hub.stopping` | да | — | hub/server.py |

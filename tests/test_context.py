@@ -69,6 +69,14 @@ def test_a_context_message_holds_what_changed(repo):
     again = context.context_blocks(all_projects=[mine], attached=[mine], previous=context.previous_digests([Row]),
                                    live=live)  # fmt: skip
     assert [b["key"] for b in again] == ["header", "live:p1", "tools"]  # nothing else changed
+    assert "may change files and run commands; the user approves each" in first[-1]["text"]  # «Спрашивать»
+    rights = {
+        mode: context.context_blocks(all_projects=[mine], attached=[mine], previous={}, live=live,
+                                     settings={"mode": mode})[-1]["text"]
+        for mode in context.RIGHTS_NOTES
+    }  # fmt: skip
+    assert "read-only: you cannot change files" in rights["read_only"]
+    assert "sandbox copy" in rights["sandbox"] and "without asking; destructive" in rights["trusted"]
 
     local = context.render(first, cloud=False)
     cloud = context.render(first, cloud=True)

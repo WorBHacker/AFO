@@ -29,6 +29,7 @@ from .api import (
     conversations,
     editor,
     events_ws,
+    goals,
     install,
     links,
     llama,
@@ -66,6 +67,7 @@ from .db import Database, migrate
 from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
+from .goals import Goals
 from .links import Rescanner
 from .mail import MailTools
 from .mcp_client import McpServers
@@ -134,6 +136,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         )
         app.state.agents = AgentRunner(db, bus, app.state.chat)  # the hub's own agents (stage 5, D16)
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
+        app.state.goals = app.state.chat.goals = Goals(db, bus, app.state.chat)  # chats' goals (D44, 11.1)
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
         app.state.mail = app.state.chat.mail = MailTools(db, secrets_store)  # the user's mailbox (9.4b, Q21)
         app.state.scheduler = Scheduler(db, bus, app.state.agents,  # goals on a schedule and on events (9.7)
@@ -195,6 +198,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         resumed = await app.state.agents.start()
         if resumed:
             log.info("agent runs going on after a restart: %s", resumed)
+        goals_on = asyncio.create_task(_resume_goals(app))  # once the catalog is read: their models must be known
         log.info("hub ready, app token in %s", token_file)
         try:
             # the MCP app is mounted, not run: its session manager lives in the hub's lifespan
@@ -203,8 +207,11 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         finally:
             catalog.cancel()
             servers.cancel()
+            goals_on.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await servers
+            with contextlib.suppress(asyncio.CancelledError):
+                await goals_on
             await app.state.mcp.stop()
             await app.state.keeper.stop()
             app.state.computer.close()
@@ -250,6 +257,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(mail.router)
     app.include_router(sandbox.router)
     app.include_router(conversations.router)
+    app.include_router(goals.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)
     app.include_router(editor.router)
@@ -272,6 +280,19 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))
     return app
+
+
+async def _resume_goals(app: FastAPI) -> None:
+    """Chats' goals the last hub left at work go on (D44, D16) - after the first catalog sync."""
+    with contextlib.suppress(Exception):
+        await app.state.initial_sync
+    try:
+        resumed = await app.state.goals.start()
+    except Exception:
+        log.exception("chats' goals did not go on after the restart")
+        return
+    if resumed:
+        log.info("chats' goals going on after a restart: %s", resumed)
 
 
 async def _initial_sync(app: FastAPI) -> None:

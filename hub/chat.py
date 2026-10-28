@@ -31,6 +31,9 @@ A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in th
 (hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
 keeps its own session, so the hub stores no context messages for it. Other models get its answers as text only:
 its tool calls belong to Claude Code's tools, not the hub's.
+
+A chat with a goal (D44, hub/goals.py) works turn after turn: when a turn ends, the goal checks its criteria and
+either stops or starts the next turn itself (go_on) with a note of the hub - what is missing, what the user added.
 """
 
 from __future__ import annotations
@@ -131,6 +134,7 @@ class ChatService:
         self.computer: computer.Computer | None = None  # the autonomous agent's hands on the desktop (9.6, D41)
         self.mail: mail.MailTools | None = None  # the user's mailbox (9.4b, Q21)
         self.sandboxes: Path | None = None  # data/worktrees: «Песочница» chats write there (D17, 9.4b)
+        self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
 
     @property
     def busy(self) -> list[str]:
@@ -242,6 +246,50 @@ class ChatService:
         )
         task.add_done_callback(lambda t: t.exception())
 
+    async def go_on(
+        self,
+        conversation_id: str,
+        model_id: str,
+        note: str,
+        *,
+        limits: Limits,
+        effort: str = DEFAULT_EFFORT,
+        client_id: str | None = None,
+    ) -> None:
+        """A turn the hub starts itself in a chat - a goal's next one (D44): its word to the model (a hub note, not
+        the user's), then the chat's loop; the goal hears how the turn ended, like any turn of that chat. Raises
+        GatewayError when it cannot start (busy, the model gone, the cloud or a budget says no)."""
+        if conversation_id in self._runs:
+            raise GatewayError("this conversation already has a run in progress")
+        cancel = self._runs[conversation_id] = asyncio.Event()  # taken at once: nothing starts in between
+        try:
+            model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
+            if model is None or not model["enabled"]:
+                raise GatewayError(f"model {model_id!r} is not available now")
+            if model["provider"] == CLAUDE_CODE:
+                raise GatewayError("Claude Code carries no goal yet (stage 11.7)")
+            if model["locality"] == "cloud":
+                await self._check_cloud(conversation_id)
+            if model["prices"]:
+                await self._check_budgets(model_id, False, client_id)
+            await self._hub_note(conversation_id, note)
+            await self._use_limits(model_id)
+            await self._store_context(conversation_id)
+        except BaseException:
+            self._runs.pop(conversation_id, None)
+            raise
+        task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
+        task.add_done_callback(lambda t: t.exception())
+
+    async def tool_projects(self, conversation_id: str) -> list:
+        """The chat's projects as its tools see them: in «Песочница» a git project is its worktree (D17, 9.4b)."""
+        attached, settings = await self._db.acall(
+            lambda conn: (_attached(conn, conversation_id), store.context_settings(conn, conversation_id))
+        )
+        if settings["mode"] == "sandbox" and self.sandboxes is not None:
+            return await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, attached)
+        return attached
+
     async def _run(
         self,
         conversation_id: str,
@@ -255,6 +303,7 @@ class ChatService:
         on_end: Callable[[Outcome], Awaitable[None]] | None = None,
     ):
         outcome = outcome or Outcome()
+        began = time.monotonic()
         try:
             await self._steps(conversation_id, model, effort, cancel, client_id, limits or Limits(), outcome)
             if outcome.status == "running":
@@ -270,12 +319,18 @@ class ChatService:
                                                    "model_id": model["id"]})  # fmt: skip
         finally:
             self._runs.pop(conversation_id, None)
+            outcome.seconds = time.monotonic() - began
             if on_end is not None:
                 if self.approvals is not None:
                     await self.approvals.expire(conversation_id)
                 if self.autonomy is not None:
                     await self.autonomy.expire_all(conversation_id)  # its questions too: nobody waits for them now
                 await on_end(outcome)
+            elif self.goals is not None:  # a chat's turn: its goal checks it and goes on, or not (D44)
+                try:
+                    await self.goals.turn_ended(conversation_id, outcome)
+                except Exception:
+                    log.exception("the goal of %s did not take the turn's end", conversation_id)
 
     async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id):
         """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10) - or, with none
@@ -426,6 +481,7 @@ class ChatService:
                                          let=autonomous.LAST_WORDS if last else frozenset())  # fmt: skip
                 if step > limits.max_steps + last_words:
                     outcome.status, outcome.detail = "error", f"the step limit ({limits.max_steps}) was reached"
+                    outcome.limited = True
                     await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
                     return
                 continue
@@ -1082,6 +1138,8 @@ class Outcome:
     status: str = "running"
     detail: str = ""
     totals: RunTotals | None = None
+    seconds: float = 0.0  # how long the run took
+    limited: bool = False  # it ended at its step limit (an error for a chat, a turn's end for a goal)
 
 
 class RunTotals:
