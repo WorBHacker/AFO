@@ -7,9 +7,11 @@ confirmed version is kept and any can be brought back. The confirmed card is the
 of the automatic summary. A card that names a file or folder that is gone says so where it is used.
 
 Each confirmed version remembers what it was confirmed against - git HEAD, the top-level folders, the dependency
-files. When the project has moved on noticeably since (dependencies changed, folders came or went, many commits),
-the hub says the card may be outdated, and a model can draft an update that rewrites only the sections the
-changes touch (D24).
+files. When the project has moved on noticeably since, the hub says the card may be outdated, and a model can draft
+an update that rewrites only the sections the changes touch (D24). Noticeably (Q3, 2026-10-28): SIGNIFICANT_COMMITS
+commits or more; a top-level folder came or went (as git shows the tree: an ignored `build/` does not count); in a
+dependency or build file, what a card speaks of changed (`facts`: which packages - not their versions -, which
+commands and entry points; in a Dockerfile, a compose file or a Makefile, anything but blank lines and comments).
 
 Cards live in the hub; nothing is written into the project (D23 - an export comes later, on request).
 """
@@ -22,6 +24,7 @@ import json
 import os
 import re
 import sqlite3
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +58,9 @@ UPDATE_INSTRUCTIONS = (
     f"Если менять нечего, выведи: {NO_CHANGES}"
 )
 SIGNIFICANT_COMMITS = 20  # this many commits since the card was confirmed make it worth a look
+REQUIREMENT = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")  # a package's name at the start of a requirement
+PACKAGE_JSON_DEPS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+PACKAGE_JSON_SAYS = ("scripts", "bin", "main", "type", "workspaces", "engines")  # how it is run and built
 PATH_IN_TEXT = re.compile(r"`([A-Za-z0-9_.\-/\\]+/?)`")
 
 
@@ -129,13 +135,73 @@ def prompt(project: Project) -> list[dict[str, Any]]:
 # --- what the card was confirmed against, and what changed since (D24) ---
 
 
+def _requirement(text: str) -> str:
+    found = REQUIREMENT.match(text)
+    return re.sub(r"[-_.]+", "-", found.group(1)).lower() if found else text.strip()
+
+
+def _pyproject(data: dict[str, Any]) -> dict[str, Any]:
+    project, poetry = data.get("project", {}), data.get("tool", {}).get("poetry", {})
+    deps = {_requirement(r) for r in project.get("dependencies", [])}
+    for extra in project.get("optional-dependencies", {}).values():
+        deps |= {_requirement(r) for r in extra}
+    for group in data.get("dependency-groups", {}).values():
+        deps |= {_requirement(r) for r in group if isinstance(r, str)}
+    deps |= set(poetry.get("dependencies", {})) | set(poetry.get("dev-dependencies", {}))
+    for group in poetry.get("group", {}).values():
+        deps |= set(group.get("dependencies", {}))
+    return {"deps": sorted(deps), "scripts": {**poetry.get("scripts", {}), **project.get("scripts", {})},
+            "gui": project.get("gui-scripts", {}), "python": project.get("requires-python"),
+            "build": data.get("build-system", {}).get("build-backend"),
+            "workspace": data.get("tool", {}).get("uv", {}).get("workspace")}  # fmt: skip
+
+
+def facts(name: str, data: bytes) -> Any:
+    """What a card may say about a dependency or build file: which packages (not their versions - a version bump
+    is not worth a look at the card), which commands and entry points; for the rest (a Dockerfile, a compose file,
+    a Makefile), its lines without blanks and comments. The file's text when it does not parse."""
+    text = data.decode("utf-8", "replace")
+    try:
+        match name:
+            case "package.json":
+                d = json.loads(text)
+                deps = sorted({k for key in PACKAGE_JSON_DEPS for k in d.get(key) or {}})
+                return {"deps": deps, **{k: d.get(k) for k in PACKAGE_JSON_SAYS}}
+            case "composer.json":
+                d = json.loads(text)
+                return {"deps": sorted({*(d.get("require") or {}), *(d.get("require-dev") or {})}),
+                        "scripts": d.get("scripts"), "autoload": d.get("autoload")}  # fmt: skip
+            case "pyproject.toml":
+                return _pyproject(tomllib.loads(text))
+            case "Cargo.toml":
+                d = tomllib.loads(text)
+                deps = {k: sorted(d.get(k) or {}) for k in ("dependencies", "dev-dependencies", "build-dependencies")}
+                return {**deps, "bin": d.get("bin"), "workspace": (d.get("workspace") or {}).get("members")}
+            case "requirements.txt":
+                lines = (line.strip() for line in text.splitlines())
+                return sorted({_requirement(line) for line in lines if line and not line.startswith(("#", "-"))})
+            case "go.mod":
+                return sorted(set(re.findall(r"^\s*(?:require\s+)?([\w.\-]+\.[\w.\-/]+)\s+v\d", text, re.M)))
+            case "Gemfile":
+                return sorted(set(re.findall(r"^\s*gem\s+[\"']([^\"']+)", text, re.M)))
+    except ValueError:  # JSONDecodeError and TOMLDecodeError are both
+        return text
+    lines = (line.strip() for line in text.splitlines())
+    return [line for line in lines if line and not line.startswith(("#", "//"))]
+
+
+def _digest(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:16]
+
+
 def _head_sha(root: Path) -> str | None:
     result = projects.git(root, "rev-parse", "HEAD")
     return result.stdout.decode().strip() if result.returncode == 0 else None
 
 
 def snapshot(project: Project) -> dict[str, Any]:
-    """The project as the card is confirmed: git HEAD, top-level folders, digests of the dependency files."""
+    """The project as the card is confirmed: git HEAD, top-level folders, digests of the dependency files - of their
+    bytes (`deps`; what versions confirmed before 2026-10-28 are compared by) and of their `facts`."""
     root = project.root
     if not root.is_dir():
         return {}
@@ -143,13 +209,15 @@ def snapshot(project: Project) -> dict[str, Any]:
         top = projects.tree(root)
     except ProjectError, OSError:
         top = []
-    deps = {}
+    deps, said = {}, {}
     for name in DEPENDENCY_FILES:
         try:
-            deps[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()[:16]
+            data = (root / name).read_bytes()
         except OSError:
             continue
-    return {"head": _head_sha(root), "folders": sorted(e["name"] for e in top if e["dir"]), "deps": deps}
+        deps[name], said[name] = hashlib.sha256(data).hexdigest()[:16], _digest(facts(name, data))
+    folders = sorted(e["name"] for e in top if e["dir"])
+    return {"head": _head_sha(root), "folders": folders, "deps": deps, "facts": said}
 
 
 def changes_since(project: Project, baseline: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -166,7 +234,8 @@ def changes_since(project: Project, baseline: dict[str, Any] | None) -> dict[str
             result = projects.git(project.root, "rev-list", "--count", f"{baseline['head']}..HEAD")
             commits = int(result.stdout.decode().strip()) if result.returncode == 0 else None  # rewritten history
     before, after = set(baseline.get("folders", [])), set(now["folders"])
-    old_deps, new_deps = baseline.get("deps", {}), now["deps"]
+    kind = "facts" if "facts" in baseline else "deps"  # a baseline kept before 2026-10-28: bytes
+    old_deps, new_deps = baseline.get(kind, {}), now[kind]
     changed = sorted(name for name in set(old_deps) | set(new_deps) if old_deps.get(name) != new_deps.get(name))
     found = {"commits": commits, "new_folders": sorted(after - before), "gone_folders": sorted(before - after),
              "dependencies": changed}  # fmt: skip

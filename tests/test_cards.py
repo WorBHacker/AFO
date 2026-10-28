@@ -57,6 +57,8 @@ def test_what_changed_since_the_card(repo):
 
     asked = cards.update_prompt(p, CARD, then)[1]["content"]
     assert "изменились файлы зависимостей и сборки: Dockerfile, pyproject.toml" in asked
+    old_kind = {k: v for k, v in then.items() if k != "facts"}  # a version confirmed before 2026-10-28: by bytes
+    assert cards.changes_since(p, old_kind)["dependencies"] == ["Dockerfile", "pyproject.toml"]
     assert "## pyproject.toml (сейчас)\n[project]" in asked and "dependencies = ['httpx']" in asked
     assert "step 19" in asked and "## Дерево папок сейчас" in asked
     assert "## Проект сейчас\n# Проект «proj»" in cards.update_prompt(p, CARD, None)[1]["content"]  # no baseline
@@ -212,3 +214,47 @@ def test_the_card_api(hub, repo):
     hub.portal.call(hub.app.state.gateway.sync_catalog)
     refused = hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "fake/echo"})
     assert refused.status_code == 409 and "local-only" in refused.text
+
+
+def test_what_in_a_dependency_file_is_worth_a_look_at_the_card(repo):
+    """Q3, 2026-10-28: a version bump or a reformatted file does not make the card look outdated; a new package, a
+    new command, a changed entry point does."""
+    p = project(repo.resolve())
+    files = {
+        "package.json": '{"name": "web", "version": "1.0.0", "dependencies": {"react": "^18.0.0"},\n'
+        ' "scripts": {"dev": "vite"}}',
+        "pyproject.toml": '[project]\nname = "x"\nversion = "1"\ndependencies = ["httpx>=0.27", "Pydantic_Core"]\n',
+        "requirements.txt": "# pinned\nfastapi==0.110\n-r base.txt\n",
+        "Cargo.toml": '[package]\nname = "x"\nversion = "0.1.0"\n[dependencies]\nserde = "1"\n',
+        "go.mod": "module example.com/x\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.9.1\n)\n",
+        "Dockerfile": "FROM python:3.12\nRUN pip install .\n",
+    }
+    for name, text in files.items():
+        (repo / name).write_text(text, encoding="utf-8")
+    then = cards.snapshot(p)
+    same = {
+        "package.json": '{\n  "name": "web",\n  "version": "1.4.2",\n  "dependencies": {"react": "^18.3.1"},\n'
+        '  "scripts": {"dev": "vite"}\n}\n',
+        "pyproject.toml": '[project]\nname = "x"\nversion = "2"\ndependencies = ["httpx>=0.28", "pydantic-core"]\n',
+        "requirements.txt": "fastapi==0.115  # newer\n",
+        "Cargo.toml": '[package]\nname = "x"\nversion = "0.2.0"\n[dependencies]\nserde = { version = "1.0.200" }\n',
+        "go.mod": "module example.com/x\n\ngo 1.22\n\nrequire (\n\tgithub.com/gin-gonic/gin v1.10.0\n)\n",
+        "Dockerfile": "# the image\nFROM python:3.12\n\nRUN pip install .\n",
+    }
+    for name, text in same.items():
+        (repo / name).write_text(text, encoding="utf-8")
+    quiet = cards.changes_since(p, then)
+    assert quiet["dependencies"] == [] and quiet["significant"] is False
+    worth = {
+        "package.json": same["package.json"].replace('"vite"', '"vite --host"'),  # how it is run
+        "pyproject.toml": same["pyproject.toml"] + '[project.scripts]\nx = "x.cli:main"\n',  # a new command
+        "requirements.txt": "fastapi==0.115\nuvicorn\n",  # a new package
+        "Cargo.toml": same["Cargo.toml"] + "tokio = '1'\n",
+        "go.mod": same["go.mod"].replace(")", "\tgorm.io/gorm v1.25.0\n)"),
+        "Dockerfile": same["Dockerfile"].replace("3.12", "3.13"),
+    }
+    for name, text in worth.items():
+        (repo / name).write_text(text, encoding="utf-8")
+    loud = cards.changes_since(p, then)
+    assert loud["dependencies"] == sorted(files) and loud["significant"]
+    assert cards.facts("package.json", b"{not json") == "{not json"  # unreadable: its text, so any change counts
