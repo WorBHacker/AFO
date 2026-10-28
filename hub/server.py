@@ -74,6 +74,7 @@ from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects, set_path
 from .retention import Keeper
+from .ripgrep import Fetcher
 from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
@@ -162,6 +163,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         )  # fmt: skip
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.rescanner = Rescanner(bus, db, app.state.processes, settings.links_quiet_s)
+        app.state.ripgrep = Fetcher(bus, enabled=settings.fetch_ripgrep)
         app.state.programs = ProgramCatalog(bus, db, settings.programs_interval_s)
         app.state.backup = DailyBackup(paths.db, paths.backups, settings.backup_interval_s)
         app.state.keeper = Keeper(db, paths.root)  # what the hub keeps on disk within D30's limits
@@ -175,6 +177,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.watcher.start(db.call(list_projects))
         app.state.processes.start()
         app.state.rescanner.start()
+        app.state.ripgrep.start()
         app.state.programs.start()
         app.state.backup.start()
         await app.state.terminals.start(prune=False)  # its logs are pruned with the rest (hub/retention.py)
@@ -211,6 +214,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.watcher.stop()
             await app.state.processes.stop()
             await app.state.rescanner.stop()
+            await app.state.ripgrep.stop()
             await app.state.programs.stop()
             await app.state.backup.stop()
             await app.state.scheduler.stop()

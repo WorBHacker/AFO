@@ -539,3 +539,4 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `terminal.output` | нет | `terminal_id`, `offset`, `data` | hub/terminals.py |
 | `terminal.removed` | нет | `terminal_id` | hub/api/terminals.py |
 | `terminal.started` | да | `terminal` | hub/terminals.py |
+| `tools.fetched` | да | `tool`, `version`, `path` | hub/ripgrep.py |

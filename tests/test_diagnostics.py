@@ -62,9 +62,13 @@ models:
 
     monkeypatch.setattr(autostart, "answers", silent)
     monkeypatch.setattr(httpx.AsyncClient, "head", lambda self, url: _refused())
+    monkeypatch.setattr(diagnostics.search, "ripgrep", lambda: None)
     state = types.SimpleNamespace(settings=types.SimpleNamespace(paths=DataPaths(tmp_path / "data").ensure(),
-                                                                 llama_swap_url="http://127.0.0.1:8080"))  # fmt: skip
+                                                                 llama_swap_url="http://127.0.0.1:8080"),
+                                  ripgrep=types.SimpleNamespace(error="нет связи с GitHub (ConnectError)"))  # fmt: skip
     lines = {line["id"]: line for line in asyncio.run(diagnostics.check(state))}
+    assert lines["ripgrep"]["ok"] is None and "обходом файлов" in lines["ripgrep"]["text"]
+    assert lines["ripgrep"]["advice"].endswith("когда будет связь (сейчас: нет связи с GitHub (ConnectError)).")
     assert lines["hub"]["ok"] and lines["llama-swap"]["ok"] is False and "Запуск" in lines["llama-swap"]["advice"]
     assert lines["config"]["ok"] and "моделей — 1" in lines["config"]["text"]
     assert lines["gpu"]["ok"] is None and "сборка для процессора" in lines["gpu"]["advice"]

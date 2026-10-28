@@ -32,6 +32,7 @@ class HubSettings:
     backup_interval_s: float = 0.0  # checks for today's database copy (D29); 0: never
     folder_check_s: float = 0.0  # projects' folders gone, moved, back (hub/watch.py); 0: never by themselves - tests
     links_quiet_s: float = 0.0  # links looked for again this long after a change (hub/links.py); 0: never - tests
+    fetch_ripgrep: bool = False  # ripgrep from its GitHub release when there is none (hub/ripgrep.py); not in tests
 
     @classmethod
     def from_env(cls) -> HubSettings:
@@ -45,4 +46,5 @@ class HubSettings:
             backup_interval_s=3600.0,
             folder_check_s=5.0,
             links_quiet_s=20.0,
+            fetch_ripgrep=True,
         )

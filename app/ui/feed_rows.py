@@ -102,6 +102,9 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
             kind = links_text.KIND_LABELS.get(p.get("kind", ""), "связь")
             note = f" ({p['description']})" if p.get("description") else ""
             return item("projects", "layers", f"Связь: {p.get('a_name')} → {p.get('b_name')}, {kind}{note}")
+        case "tools.fetched":  # ripgrep, fetched by the hub when there was none (2026-10-28)
+            what = f"{p.get('tool', '')} {p.get('version', '')}".strip()
+            return item("projects", "search", f"Поставлен {what} — поиск по проектам теперь быстрый", p.get("path", ""))
         case "links.proposed":  # the hub looked again by itself after a change (2026-10-28)
             found = p.get("links") or []
             shown = "; ".join(f"{k.get('a')} → {k.get('b')}, {links_text.KIND_LABELS.get(k.get('kind', ''), 'связь')}"

@@ -1,8 +1,9 @@
 """Searching a project's files (stage 2, D26): ripgrep when it is there, a plain walk when it is not.
 
-ripgrep lives in tools/ripgrep (fetched from its GitHub release, not kept in the repository) or on PATH. It follows
-.gitignore by itself; cache folders (node_modules, .venv, ...) are left out in any project. Without ripgrep the hub
-walks the files git shows (or, outside git, everything but noise) and matches lines itself - slower, same results.
+ripgrep lives in a checkout's tools/ripgrep (not kept in the repository), in LocalChat's app folder (where the hub
+puts it when there is none: hub/ripgrep.py) or on PATH. It follows .gitignore by itself; cache folders
+(node_modules, .venv, ...) are left out in any project. Without ripgrep the hub walks the files git shows (or,
+outside git, everything but noise) and matches lines itself - slower, same results.
 
 Results are grouped by file: line number, the line (cut to MAX_LINE characters around the first match) and where
 the matches are in it, in characters, for highlighting. At most `limit` matches in all and PER_FILE in one file.

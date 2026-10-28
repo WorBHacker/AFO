@@ -25,7 +25,7 @@ import httpx
 from common import __version__, hardware
 from common.disks import drives
 
-from . import autostart, engines, hf, llama_config, secret_filter
+from . import autostart, engines, hf, llama_config, search, secret_filter
 from .setup import page_file
 from .system_status import memory_sample
 
@@ -145,6 +145,12 @@ async def check(state: Any) -> list[dict[str, Any]]:
         said = "нет файлов: " + ", ".join(str(f) for f in missing[:3])
         lines.append(_line("files", "Файлы моделей", False, said, advice))
 
+    rg = search.ripgrep()
+    trouble = getattr(getattr(state, "ripgrep", None), "error", "")  # the hub's last try to fetch it (hub/ripgrep.py)
+    advice = "" if rg else "Хаб скачает ripgrep с GitHub сам, когда будет связь"
+    advice += f" (сейчас: {trouble})." if advice and trouble else "." if advice else ""
+    said = f"ripgrep: {rg}" if rg else "ripgrep нет — поиск идёт медленнее, обходом файлов"
+    lines.append(_line("ripgrep", "Поиск по проектам", True if rg else None, said, advice))
     async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
         for key, site in (("hf", hf.base_url()), ("github", engines.github_api())):
             try:
