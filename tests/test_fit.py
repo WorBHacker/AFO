@@ -1,0 +1,65 @@
+"""A conversation longer than the model's window still gets an answer (D14, D22): the request is shortened - the
+oldest tool results first, then long old texts - and the last messages, the system prompt and the stored
+conversation stay whole. An agent's run of 38 looks at a window outgrew Flash-Next's 64K once (2026-10-28)."""
+
+from hub import fit, store
+from hub.gateway.base import Model
+from tests.test_chat import BASE, WS_HOST, auth, drain_until, hub, register_fake  # noqa: F401 - the hub fixture
+
+_ = (BASE, WS_HOST)
+
+
+def long_run(looks: int, size: int) -> list[dict]:
+    prompt = [{"role": "system", "content": "Ты агент."}, {"role": "user", "content": "найди чат"}]
+    for n in range(looks):
+        prompt.append({"role": "assistant", "content": "", "tool_calls": [{"id": f"c{n}", "name": "screen_look",
+                                                                           "input": {}}]})  # fmt: skip
+        prompt.append({"role": "tool", "tool_call_id": f"c{n}", "name": "screen_look", "content": "x" * size})
+    return prompt
+
+
+def test_the_oldest_tool_results_give_way_first():
+    prompt = long_run(38, 6000)  # some 76 000 "tokens" of looks
+    assert fit.fit(prompt, window=None) == (prompt, 0)  # a window not known: as it is
+    assert fit.fit(prompt[:4], window=65536) == (prompt[:4], 0)  # it fits: as it is
+    out, shortened = fit.fit(prompt, window=65536)
+    assert sum(fit.tokens(e) for e in out) <= fit.room(65536) and shortened > 0
+    assert len(out) == len(prompt) and [e["role"] for e in out] == [e["role"] for e in prompt]  # pairs kept
+    assert out[2 + 1]["content"].startswith("[screen_look: прежний результат (6000 знаков) убран")
+    assert out[-fit.KEEP_TAIL :] == prompt[-fit.KEEP_TAIL :] and out[0] == prompt[0]  # the last ones, the system
+    assert prompt[3]["content"] == "x" * 6000  # the caller's prompt is not changed
+
+    talk = [{"role": "system", "content": "s"}] + [
+        {"role": r, "content": "слово " * 3000, "provider": "anthropic", "provider_raw": {"x": 1}}
+        for r in ("user", "assistant") * 6
+    ]
+    out, shortened = fit.fit(talk, window=20000)
+    first = out[1]
+    assert "[…]" in first["content"] and "provider_raw" not in first and shortened >= 1
+    assert out[-1] == talk[-1]
+
+
+def test_a_chat_past_its_window_still_asks_the_model(hub):  # noqa: F811
+    provider = register_fake(hub, models=[Model("fake/echo", "fake", "echo", "Echo", "local", {"context": 12000}, {})])
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={"title": "t"}).json()["id"]
+
+    def grow(conn):
+        for n in range(20):
+            store.add_message(conn, conv, "assistant", [{"type": "tool_call", "id": f"c{n}", "name": "read_file",
+                                                         "input": {"path": "a.py"}}], model_id="fake/echo")  # fmt: skip
+            store.add_message(conn, conv, "tool", [{"type": "tool_result", "id": f"c{n}", "name": "read_file",
+                                                    "output": "строка кода\n" * 300}])  # fmt: skip
+
+    hub.app.state.db.call(grow)
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        hub.post(
+            f"/v1/conversations/{conv}/messages", headers=auth(hub), json={"content": "и?", "model_id": "fake/echo"}
+        )
+        drain_until(ws, "chat.done")
+    sent = provider.last_prompt
+    assert sum(fit.tokens(m) for m in sent) <= fit.room(12000)  # with the tool definitions: within the window
+    assert sent[-2]["content"].startswith("строка кода")  # the very last result stays whole
+    assert any("убран, чтобы разговор поместился" in str(m.get("content")) for m in sent)
+    stored = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
+    assert any(b.get("output", "").startswith("строка кода") for m in stored for b in m["content"])  # kept whole

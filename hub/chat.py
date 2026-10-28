@@ -53,6 +53,7 @@ from . import (
     commands,
     computer,
     context,
+    fit,
     limits,
     links,
     mail,
@@ -347,6 +348,11 @@ class ChatService:
                 tools = await self._db.acall(
                     lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
                 )
+            # a long run outgrows the model's window: the oldest tool results give way in this request (hub/fit.py)
+            prompt, shortened = fit.fit(prompt, window=(model.get("capabilities") or {}).get("context"), tools=tools)
+            if shortened:
+                log.info("conversation %s: %d old messages shortened to fit %s's window", conversation_id, shortened,
+                         model["id"])  # fmt: skip
             try:
                 completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools,
                                                  params)  # fmt: skip
