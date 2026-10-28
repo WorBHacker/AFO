@@ -426,6 +426,10 @@ class InstallView(QObject):
 
         self.app.call_or_fail(lambda: self.app.client.install(spec), done, failed)
 
+    def startInstall(self, repo: str, quant: str) -> None:
+        """An install the wizard asks for (10.2): the drive this sheet would choose."""
+        self._start({"repo": repo, "quant": quant})
+
     @Slot(str)
     def installRecommended(self, repo: str) -> None:
         model = next((m for m in self._catalog if m["repo"] == repo), None)

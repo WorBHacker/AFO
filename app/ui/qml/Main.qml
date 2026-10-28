@@ -192,7 +192,8 @@ Window {
     AgentAccessSheet { id: accessSheet }
     SandboxSheet { id: sandboxSheet }
     InstallSheet { id: installSheet }
-    NewProgramPopup {}
+    WizardSheet { id: wizardSheet }
+    NewProgramPopup { held: wizardSheet.opened }
     ComputerFrame {}  // the agent at the desktop: its frame and «Стоп» (D41)
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
@@ -208,6 +209,7 @@ Window {
             else if (what === "programs") programsSheet.open()
             else if (what === "model-settings") modelsSheet.openFor("")
             else if (what === "install-models") installSheet.open()
+            else if (what === "setup") wizardSheet.open()
             else if (what === "memory") memorySheet.open()
             else if (what === "agent-access") accessSheet.open()
             else if (what === "connections") connectionsSheet.open()

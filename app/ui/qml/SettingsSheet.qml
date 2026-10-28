@@ -56,6 +56,12 @@ Sheet {
         text: "Установить локальную модель…"
         onClicked: { sheet.close(); App.openUi("install-models") }
     }
+    PlainButton {
+        objectName: "openWizard"
+        iconName: "sparkle"
+        text: "Мастер первого запуска…"
+        onClicked: { sheet.close(); App.openUi("setup") }
+    }
 
     SectionTitle { text: "Подключения" }
     Text {

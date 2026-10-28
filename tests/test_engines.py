@@ -1,0 +1,75 @@
+"""The engines for a computer that has none yet (stage 10.2, D37, Q19): which llama.cpp build its graphics card wants,
+which GitHub release holds it, the archives unpacked safely, and llama-swap's first config."""
+
+import zipfile
+
+import pytest
+
+from common.hardware import build_for
+from hub import engines
+from hub import llama_config as lc
+
+
+def release(tag, *names, draft=False):
+    return {"tag_name": tag, "draft": draft, "assets": [
+        {"name": n, "browser_download_url": f"https://github.com/x/{n}", "size": 10, "digest": "sha256:" + "a" * 64}
+        for n in names]}  # fmt: skip
+
+
+def test_the_build_a_graphics_card_wants():
+    rtx = {"name": "RTX 5080", "vendor": "nvidia", "vram_gib": 15.9}
+    igpu = {"name": "Intel(R) Graphics", "vendor": "intel", "vram_gib": 2.0}
+    radeon = {"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0}
+    assert build_for([rtx, igpu], {"cuda": 13030})["build"] == "cuda-13"
+    assert build_for([rtx], {"cuda": 12080})["build"] == "cuda-12"
+    assert build_for([rtx], None)["build"] == "vulkan"  # the driver did not answer
+    assert build_for([radeon, igpu], None) == {"build": "vulkan", "card": "Radeon RX 9070",
+                                               "why": "видеокарта AMD или Intel: сборка с Vulkan"}  # fmt: skip
+    assert build_for([igpu], None)["build"] == "cpu"  # an integrated card sharing 2 GB of RAM: no faster
+    assert build_for([], None)["build"] == "cpu"
+
+
+def test_the_release_that_holds_the_build():
+    releases = [
+        {"tag_name": "v0.7.0", "assets": []},  # not a build
+        release("b11950", "llama-b11950-bin-win-cpu-x64.zip"),  # the CUDA archives are not up yet
+        release("b11946", "llama-b11946-bin-win-cuda-12.4-x64.zip", "llama-b11946-bin-win-cuda-13.4-x64.zip",
+                "llama-b11946-bin-win-cuda-13.4-arm64.zip", "cudart-llama-bin-win-cuda-13.4-x64.zip",
+                "cudart-llama-bin-win-cuda-12.4-x64.zip", "llama-b11946-bin-win-vulkan-x64.zip"),
+    ]  # fmt: skip
+    cuda = engines.pick_llama_cpp(releases, "cuda-13")
+    assert cuda["tag"] == "b11946" and [a["name"] for a in cuda["assets"]] == [
+        "llama-b11946-bin-win-cuda-13.4-x64.zip", "cudart-llama-bin-win-cuda-13.4-x64.zip"]  # fmt: skip
+    assert cuda["assets"][0]["sha256"] == "a" * 64
+    assert engines.pick_llama_cpp(releases, "cpu")["tag"] == "b11950"  # the newest that has it
+    assert [a["name"] for a in engines.pick_llama_cpp(releases, "vulkan")["assets"]] == [
+        "llama-b11946-bin-win-vulkan-x64.zip"]  # fmt: skip
+    no_runtime = [release("b1", "llama-b1-bin-win-cuda-12.4-x64.zip")]
+    assert engines.pick_llama_cpp(no_runtime, "cuda-12") is None  # useless without the CUDA runtime
+    swap = engines.pick_llama_swap(release("v268", "llama-swap_268_linux_amd64.tar.gz",
+                                           "llama-swap_268_windows_amd64.zip"))  # fmt: skip
+    assert swap["tag"] == "v268" and swap["assets"][0]["name"] == "llama-swap_268_windows_amd64.zip"
+
+
+def test_archives_unpack_inside_their_folder_and_the_first_config(tmp_path):
+    good = tmp_path / "good.zip"
+    with zipfile.ZipFile(good, "w") as zf:
+        zf.writestr("llama-server.exe", b"MZ")
+        zf.writestr("ggml-cuda.dll", b"MZ")
+    folder = tmp_path / "engines" / "llama.cpp" / "b1-cuda-13"
+    assert sorted(engines.unpack(good, folder)) == ["ggml-cuda.dll", "llama-server.exe"]
+    assert engines.server_in(folder) == folder / "llama-server.exe"
+    evil = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as zf:
+        zf.writestr("../../outside.txt", b"x")
+    with pytest.raises(engines.EngineError, match="вне папки"):
+        engines.unpack(evil, tmp_path / "x")
+    assert not (tmp_path / "outside.txt").exists()
+
+    config = tmp_path / "engines" / "llama-swap" / "config.yaml"
+    engines.write_config(config, folder / "llama-server.exe")
+    text = config.read_text(encoding="utf-8")
+    assert lc.model_blocks(text) == {} and lc.server_command(text) == "${llama_server}"
+    assert lc.macros(text)["llama_server"].endswith('b1-cuda-13/llama-server.exe"')
+    with pytest.raises(engines.EngineError, match="не трогаю"):
+        engines.write_config(config, folder / "llama-server.exe")

@@ -39,6 +39,7 @@ from .programs import Programs
 from .projects import Projects
 from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
+from .setup_view import SetupView
 from .terminals import Terminals
 from .theme import Theme
 
@@ -178,6 +179,8 @@ class Controller(QObject):
         self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
         self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
+        self.setup_view = SetupView(self)  # the first-run wizard (10.2)
+        self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
@@ -439,6 +442,7 @@ class Controller(QObject):
         self.schedules_view.load()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
+        self.setup_view.load()  # a computer without an engine for local models: the wizard opens (10.2)
         if self.current:
             self.openChat(self.current)
 
@@ -946,6 +950,7 @@ class Controller(QObject):
                 "memory",
                 "agent-access",
                 "install-models",
+                "setup",
             ):
                 self.uiRequested.emit(value)
             elif value == "search-project":
@@ -1222,6 +1227,8 @@ class Controller(QObject):
             self.programs.on_event(kind, payload)
         elif kind.startswith("install."):
             self.install_view.on_event(kind, payload)
+        elif kind.startswith("setup."):
+            self.setup_view.on_event(kind, payload)
         elif kind.startswith("sandbox."):
             self.sandbox_view.on_event(kind, payload)
         elif kind == "agent.keys":

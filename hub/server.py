@@ -44,6 +44,7 @@ from .api import (
     projects,
     sandbox,
     schedules,
+    setup,
     stats,
     system,
     terminals,
@@ -74,6 +75,7 @@ from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
+from .setup import Setup
 from .system_status import StatusMonitor
 from .telegram import TelegramBot
 from .terminals import TerminalManager
@@ -144,6 +146,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             status=lambda: app.state.status.latest,
         )  # local models (10.1, D37)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
+        app.state.setup = Setup(
+            db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
+        )  # the first-run wizard (10.2)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
@@ -198,6 +203,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.backup.stop()
             await app.state.scheduler.stop()
             await app.state.installer.stop()
+            await app.state.setup.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -220,6 +226,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(model_settings.router)
     app.include_router(llama.router)
     app.include_router(install.router)
+    app.include_router(setup.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)
     app.include_router(mcp_servers.router)

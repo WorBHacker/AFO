@@ -337,6 +337,14 @@ class FakeClient:
         self.schedule_calls = []
         self.install_calls = []
         self.install_jobs_list = []
+        self.setup = {
+            "needed": False,
+            "answering": True,
+            "engine": {},
+            "cards": [],
+            "builds": {},
+            "job": {"status": "idle"},
+        }
         self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
         self.access = {
@@ -466,6 +474,38 @@ class FakeClient:
         self.access_calls.append(changes)
         self.access = {**self.access, **changes}
         return dict(self.access)
+
+    def setup_state(self):
+        return dict(self.setup)
+
+    def setup_models(self):
+        best = {"quant": "Q8_0", "size": 8_030_000_000, "verdict": "gpu", "words": "помещается в видеопамять — быстро"}
+        return {
+            "models": {
+                "chat": {
+                    "name": "Gemma 4 E4B",
+                    "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+                    "recommended": best,
+                    "installed": [],
+                },
+                "code": {
+                    "name": "Qwen2.5 Coder 7B",
+                    "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                    "recommended": {**best, "size": 8_100_000_000},
+                    "installed": ["x"],
+                },
+                "vision": None,
+            }
+        }
+
+    def setup_engine(self, build=""):
+        self.install_calls.append(("engine", build))
+        self.setup["job"] = {"status": "downloading", "build": build, "done": 0, "total": 0, "step": ""}
+        return {"job": dict(self.setup["job"])}
+
+    def setup_cancel(self):
+        self.install_calls.append(("engine-cancel",))
+        return {"job": {"status": "cancelled"}}
 
     def install_system(self):
         return {
@@ -4443,6 +4483,62 @@ def test_choosing_where_llama_swap_is(qapp):
         wait_until(lambda: not app.bg.busy and app.autostart.get("llama_swap_start") == "")
         app.chooseLlamaSwap("login", "x")  # only the two paths
         assert "login" not in [k for k, v in app.autostart.items() if v == "x"]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_first_run_wizard(qapp):
+    """10.2: a computer without an engine opens the wizard by itself, once; the engine's progress; the first models."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+    from app.ui.setup_view import DISMISSED
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.setup = {"needed": True, "answering": False, "folder": "C:/Users/u/AppData/Local/LocalChat/engines",
+                        "engine": {"config_found": False}, "job": {"status": "idle"},
+                        "cards": [{"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0},
+                                  {"name": "Intel(R) Graphics", "vendor": "intel", "vram_gib": 2.0}],
+                        "build": {"build": "vulkan", "card": "Radeon RX 9070",
+                                  "why": "видеокарта AMD или Intel: сборка с Vulkan"},
+                        "builds": {"cuda-13": "NVIDIA, CUDA 13", "vulkan": "Vulkan (AMD, Intel, NVIDIA)",
+                                   "cpu": "только процессор"},
+                        "memory": {"ram_total_gib": 32.0, "commit_limit_gib": 36.0},
+                        "page_file": {"gib": 4.0, "advice": "Файл подкачки — 4 ГБ."}}  # fmt: skip
+        app.attach(client, start_events=False)
+        sheet = quick.window.findChild(QObject, "wizardSheet")
+        wait_until(lambda: not app.bg.busy and sheet.property("opened"))  # opened by itself
+        view = app.setup_view
+        assert view.cards == ["Radeon RX 9070 — 16 ГБ видеопамяти", "Intel(R) Graphics — 2 ГБ видеопамяти"]
+        assert view.build == "vulkan" and view.memoryText == "ОЗУ 32 ГБ · файл подкачки ≈ 4 ГБ"
+        assert view.engineText.startswith("Движка для локальных моделей ещё нет") and view.pageAdvice
+        view.setBuild("cpu")
+        view.installEngine()
+        wait_until(lambda: not app.bg.busy and view.jobStatus == "downloading")
+        assert client.install_calls[-1] == ("engine", "cpu")
+        job = {"status": "downloading", "build": "cpu", "done": 12_000_000, "total": 48_000_000,
+               "step": "llama.cpp b200 (только процессор) и llama-swap v300"}  # fmt: skip
+        app.on_event({"type": "setup.progress", "payload": {"job": job}})
+        assert view.jobPercent == 25.0 and view.jobText == ("Скачиваю llama.cpp b200 (только процессор) и llama-swap "
+                                                            "v300 — 12 МБ из 48 МБ")  # fmt: skip
+        client.setup = {**client.setup, "needed": False, "answering": True, "job": {"status": "done"}}
+        app.on_event({"type": "setup.changed", "payload": {"job": {"status": "done"}}})
+        wait_until(lambda: not app.bg.busy and view.models and view.models[0]["name"])
+        rows = view.models
+        assert [(r["title"], r["offer"], r["canInstall"], r["installed"]) for r in rows] == [
+            ("Разговоры", "Q8_0 · 8,0 ГБ", True, False), ("Код", "Q8_0 · 8,1 ГБ", True, True),
+            ("Картинки", "", False, False)]  # fmt: skip
+        view.installModel("chat")
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
+        assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"
+        view.dismiss()
+        assert app.settings.value(DISMISSED, False, bool)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
