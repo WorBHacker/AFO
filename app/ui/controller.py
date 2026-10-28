@@ -83,6 +83,9 @@ class LiveRun:
         return bool(self.reasoning) and not self.text
 
 
+SIDEBAR_WIDTH, SIDEBAR_MIN, SIDEBAR_MAX = 264, 200, 560  # the sidebar: as it was, and how far it may go
+
+
 class Controller(QObject):
     chatsChanged = Signal()
     currentChanged = Signal()  # another chat (or a new one) is open
@@ -104,6 +107,8 @@ class Controller(QObject):
     chatRefusalChanged = Signal()  # the chat's model or its own choice of Strata's refusal vector
     chatQuestionChanged = Signal()  # the open chat's model asks (ask_user, Claude Code's AskUserQuestion)
     projectChatChanged = Signal()  # «Проекты»: the project's sessions, and whether one is open in the main area
+    projectChatsHeightChanged = Signal()  # the line over «Чаты проекта», dragged
+    sidebarWidthChanged = Signal()  # the sidebar's right edge, dragged
     claudeCodeChanged = Signal()
     statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
@@ -233,6 +238,27 @@ class Controller(QObject):
 
     def _home_of(self, conversation_id: str | None) -> str:
         return next((c.get("home_project") or "" for c in self.conversations if c["id"] == conversation_id), "")
+
+    @Property(int, notify=sidebarWidthChanged)
+    def sidebarWidth(self) -> int:
+        """The sidebar's width, as the user dragged its right edge (2026-10-28, the user's word); kept between runs."""
+        return int(self.settings.value("ui/sidebarWidth", SIDEBAR_WIDTH) or SIDEBAR_WIDTH)
+
+    @Slot(int)
+    def setSidebarWidth(self, width: int) -> None:
+        """0: the usual width back (a double click on the edge)."""
+        self.settings.setValue("ui/sidebarWidth", max(SIDEBAR_MIN, min(width, SIDEBAR_MAX)) if width else SIDEBAR_WIDTH)
+        self.sidebarWidthChanged.emit()
+
+    @Property(int, notify=projectChatsHeightChanged)
+    def projectChatsHeight(self) -> int:
+        """How tall «Чаты проекта» is, as the user dragged its line (0: as tall as its chats need)."""
+        return int(self.settings.value("projects/chatsHeight", 0) or 0)
+
+    @Slot(int)
+    def setProjectChatsHeight(self, height: int) -> None:
+        self.settings.setValue("projects/chatsHeight", max(0, min(height, 4000)))
+        self.projectChatsHeightChanged.emit()
 
     @Slot()
     def newProjectChat(self) -> None:

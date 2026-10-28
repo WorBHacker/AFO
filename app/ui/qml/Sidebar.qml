@@ -149,9 +149,36 @@ Rectangle {
         visible: App.mode === "projects" && Projects.currentId !== ""
         x: 8
         width: parent.width - 16
-        height: Math.min(Math.round(parent.height * 0.42), 110 + Math.max(1, App.projectChats.length) * 34)
+        // as tall as the user dragged its line (kept between runs), else as its chats need; files keep 200px
+        readonly property int natural: Math.min(Math.round(parent.height * 0.42), 110 + Math.max(1, App.projectChats.length) * 34)
+        height: App.projectChatsHeight > 0
+                ? Math.max(76, Math.min(App.projectChatsHeight, footer.y - projectsPanel.y - 210)) : natural
         y: footer.y - height - 8
-        Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
+        Rectangle {
+            width: parent.width
+            height: grip.containsMouse || grip.pressed ? 2 : 1
+            color: grip.containsMouse || grip.pressed ? Theme.p.accent : Theme.p.hairline
+        }
+        // the line moves up and down (2026-10-28, the user's word); a double click: back to as tall as needed
+        MouseArea {
+            id: grip
+            objectName: "projectChatsGrip"
+            y: -4
+            width: parent.width
+            height: 9
+            hoverEnabled: true
+            cursorShape: Qt.SizeVerCursor
+            property real startY
+            property int startHeight
+            onPressed: (mouse) => { startY = mapToItem(null, 0, mouse.y).y; startHeight = projectChats.height }
+            onPositionChanged: (mouse) => {
+                if (pressed) App.setProjectChatsHeight(startHeight - (mapToItem(null, 0, mouse.y).y - startY))
+            }
+            onDoubleClicked: App.setProjectChatsHeight(0)
+            ToolTip.visible: containsMouse && !pressed
+            ToolTip.delay: 800
+            ToolTip.text: "Потяните вверх или вниз. Двойной щелчок — по размеру списка"
+        }
         Text {
             x: 10
             y: 10

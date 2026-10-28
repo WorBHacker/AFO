@@ -5004,7 +5004,22 @@ def test_a_projects_sessions_stay_in_projects(qapp):
         for _ in range(10):
             QApplication.processEvents()
         assert [c["id"] for c in app.projectChats] == ["s1"] and not app.showProjectChat
-        assert quick.window.findChild(QObject, "projectChats").property("visible")
+        block = quick.window.findChild(QObject, "projectChats")
+        assert block.property("visible") and app.projectChatsHeight == 0  # as tall as its chats need
+        natural = block.property("height")
+        app.setProjectChatsHeight(260)  # its line dragged up: kept in app.ini
+        for _ in range(5):
+            QApplication.processEvents()
+        assert block.property("height") == 260 and int(app.settings.value("projects/chatsHeight")) == 260
+        app.setProjectChatsHeight(10)  # too low: the list keeps its header and two rows
+        for _ in range(5):
+            QApplication.processEvents()
+        assert block.property("height") == 76
+        app.setProjectChatsHeight(0)  # a double click: back to as tall as needed
+        for _ in range(5):
+            QApplication.processEvents()
+        assert block.property("height") == natural
+        app.settings.remove("projects/chatsHeight")
         app.openProjectChat("s1")  # opens in «Проекты», in place of the overview
         wait_until(lambda: not app.bg.busy and app.currentId == "s1")
         assert app.mode == "projects" and app.showProjectChat
@@ -5030,6 +5045,38 @@ def test_a_projects_sessions_stay_in_projects(qapp):
         assert app.mode == "chats" and not app.showProjectChat
         for _ in range(10):
             QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_sidebar_is_as_wide_as_dragged(qapp):
+    """2026-10-28 (the user's word): the sidebar's right edge moves; its width is kept, within limits; a double click
+    gives the usual width back."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        quick.window.resize(1280, 860)
+        sidebar = quick.window.findChild(QObject, "sidebar")
+        assert app.sidebarWidth == 264 and sidebar.property("width") == 264
+        assert quick.window.findChild(QObject, "sidebarGrip") is not None
+        app.setSidebarWidth(380)
+        for _ in range(5):
+            QApplication.processEvents()
+        assert sidebar.property("width") == 380 and int(app.settings.value("ui/sidebarWidth")) == 380
+        app.setSidebarWidth(50)  # too narrow: the least it may be
+        assert app.sidebarWidth == 200
+        app.setSidebarWidth(5000)  # too wide: the most, and the window keeps its main area
+        for _ in range(5):
+            QApplication.processEvents()
+        assert app.sidebarWidth == 560 and sidebar.property("width") == 560
+        app.setSidebarWidth(0)  # a double click
+        assert app.sidebarWidth == 264
+        app.settings.remove("ui/sidebarWidth")
         assert quick.warnings == []
     finally:
         quick.close()

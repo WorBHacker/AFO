@@ -20,13 +20,43 @@ Window {
 
     Sidebar {
         id: sidebar
-        width: 264
+        objectName: "sidebar"
+        width: Math.max(200, Math.min(App.sidebarWidth, root.width - 480))  // the main area keeps 480px
         height: parent.height - statusBar.height
         onThemeMenuRequested: (anchor) => themeMenu.openAt(anchor)
         onSettingsRequested: settingsSheet.open()
         onChatMenuRequested: (chatId, at) => chatMenu.openFor(chatId, at)
         onProjectMenuRequested: (anchor) => projectMenu.openBelow(anchor)
         onAddProjectRequested: folderDialog.open()
+    }
+
+    // the sidebar's right edge moves left and right (2026-10-28, the user's word); a double click: the usual width
+    MouseArea {
+        id: sidebarGrip
+        objectName: "sidebarGrip"
+        z: 3
+        x: sidebar.width - 4
+        width: 8
+        height: sidebar.height
+        hoverEnabled: true
+        cursorShape: Qt.SizeHorCursor
+        property real startX
+        property int startWidth
+        onPressed: (mouse) => { startX = mapToItem(null, mouse.x, 0).x; startWidth = sidebar.width }
+        onPositionChanged: (mouse) => {
+            if (pressed) App.setSidebarWidth(startWidth + (mapToItem(null, mouse.x, 0).x - startX))
+        }
+        onDoubleClicked: App.setSidebarWidth(0)
+        Rectangle {
+            x: 3
+            width: 2
+            height: parent.height
+            visible: sidebarGrip.containsMouse || sidebarGrip.pressed
+            color: Theme.p.accent
+        }
+        ToolTip.visible: containsMouse && !pressed
+        ToolTip.delay: 800
+        ToolTip.text: "Потяните влево или вправо. Двойной щелчок — обычная ширина"
     }
 
     Item {
