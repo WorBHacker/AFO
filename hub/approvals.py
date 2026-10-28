@@ -220,6 +220,8 @@ def _diff(tool: str, data: dict[str, Any], root: Path | None) -> str:
             else:  # the file is gone, or the text is not in it: show the edit itself
                 before, after = (before or "") + old, (after if after is not None else "") + new
     shown = path.relative_to(root).as_posix() if root is not None and path.is_relative_to(root) else name
+    if shown == name and path.is_absolute():  # no project to count from (an outside client): its folder and name,
+        shown = "/".join(path.parts[-2:])  # not a whole C:/Users/... line cut off in the card (2026-10-28)
     lines = difflib.unified_diff(
         (before or "").splitlines(keepends=True),
         (after or "").splitlines(keepends=True),

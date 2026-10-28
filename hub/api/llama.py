@@ -62,9 +62,15 @@ async def _listing(request: Request) -> dict[str, Any]:
     text = _read(path)
     try:
         ids = list(llama_config.model_blocks(text))
-        views = [llama_config.model_view(text, model_id) for model_id in ids]
     except llama_config.ConfigError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    views = []
+    for model_id in ids:  # a block the hub cannot read is said on its own row; the others still show (2026-10-28)
+        try:
+            views.append(llama_config.model_view(text, model_id))
+        except llama_config.ConfigError as exc:
+            views.append({"id": model_id, "name": model_id, "engine": "other", "editable": False, "ttl": 0,
+                          "command": "", "problem": str(exc)})  # fmt: skip
     for view in views:
         view.update(await asyncio.to_thread(_files, view))
     status = request.app.state.status.latest or {}

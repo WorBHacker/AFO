@@ -141,6 +141,19 @@ def _cmd_lines(lines: list[str], start: int, end: int) -> tuple[int, int]:
     return head + 1, last
 
 
+def _command(lines: list[str], start: int, end: int) -> tuple[str, bool]:
+    """A model's command and whether it is the `cmd: |` block the window edits; a one-line `cmd: ...` (llama-swap
+    takes it too) is read, not edited (2026-10-28: such a block made the whole list of launch settings fail)."""
+    try:
+        first, last = _cmd_lines(lines, start, end)
+    except ConfigError:
+        head = next((i for i in range(start, end) if re.match(r"^\s+cmd:\s*\S", lines[i])), None)
+        if head is None:
+            raise
+        return _unquote(lines[head].split("cmd:", 1)[1].strip()), False
+    return " ".join(line.strip() for line in lines[first:last]), True
+
+
 def _flag(tokens: list[str], names: tuple[str, ...]) -> int | None:
     return next((i for i, t in enumerate(tokens) if t in names), None)
 
@@ -153,8 +166,7 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     lines = text.splitlines()
     start, end = blocks[model_id]
     block = lines[start:end]
-    first, last = _cmd_lines(lines, start, end)
-    cmd = " ".join(line.strip() for line in lines[first:last])
+    cmd, edited_here = _command(lines, start, end)
     for name, value in macros(text).items():
         cmd = cmd.replace(f"${{{name}}}", value)
     tokens = _TOKEN.findall(cmd)
@@ -167,8 +179,11 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     ttl = next((int(m.group(1)) for line in block if (m := re.match(r"^\s{4}ttl:\s*(\d+)", line))), 0)
     name = next((_unquote(m.group(1)) for line in block if (m := re.match(r"^\s{4}name:\s*(.+?)\s*$", line))),
                 model_id)  # fmt: skip
-    view: dict[str, Any] = {"id": model_id, "name": name, "engine": engine, "editable": engine == "llama.cpp",
-                            "ttl": ttl, "command": cmd}  # fmt: skip
+    editable = engine == "llama.cpp" and edited_here
+    view: dict[str, Any] = {"id": model_id, "name": name, "engine": engine, "editable": editable, "ttl": ttl,
+                            "command": cmd}  # fmt: skip
+    if engine == "llama.cpp" and not edited_here:
+        view["problem"] = "команда записана в одну строку — её настройки меняются в самом config.yaml"
     if engine == "strata":
         view["profile"] = value("model") or next((_unquote(tokens[i + 1]) for i, t in enumerate(tokens)
                                                   if t == "--profile" and i + 1 < len(tokens)), "")  # fmt: skip
@@ -349,7 +364,10 @@ def server_command(text: str) -> str:
         if "llama-server" in value:
             return f"${{{name}}}"
     for model_id in model_blocks(text):
-        view = model_view(text, model_id)
+        try:
+            view = model_view(text, model_id)
+        except ConfigError:  # a block it cannot read (a proxy, no cmd): the next one may tell
+            continue
         if view["engine"] == "llama.cpp":
             program = next(t for t in _TOKEN.findall(view["command"]) if "llama-server" in t)
             return program if program.startswith(("'", '"')) else f'"{program}"' if " " in program else program

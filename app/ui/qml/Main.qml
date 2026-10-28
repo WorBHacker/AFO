@@ -229,6 +229,19 @@ Window {
     RenameDialog { id: renameDialog }
     ConfirmDialog {}
 
+    // the wizard opening by itself (10.2) waits while the keys are in an open panel or list: it would take them from
+    // a comment being typed in a card (2026-10-28); asked for from Settings, it opens at once
+    property bool wizardWaits: false
+    function openWizardWhenFree() {
+        let item = root.activeFocusItem
+        while (item && item !== Overlay.overlay)
+            item = item.parent
+        wizardWaits = !!item
+        if (!wizardWaits)
+            wizardSheet.open()
+    }
+    Timer { interval: 400; repeat: true; running: root.wizardWaits; onTriggered: root.openWizardWhenFree() }
+
     Connections {
         target: App
         function onUiRequested(what) {
@@ -241,6 +254,7 @@ Window {
             else if (what === "model-settings") modelsSheet.openFor("")
             else if (what === "install-models") installSheet.open()
             else if (what === "setup") wizardSheet.open()
+            else if (what === "setup-first-run") root.openWizardWhenFree()
             else if (what === "check-system") checkSheet.open()
             else if (what === "memory") memorySheet.open()
             else if (what === "agent-access") accessSheet.open()

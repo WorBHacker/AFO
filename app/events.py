@@ -48,6 +48,7 @@ TOPICS = [
     "note.*",
     "links.*",
     "link.*",
+    "tools.*",  # ripgrep fetched by the hub (hub/ripgrep.py)
     "hub.*",
     "approval.*",
     "claude_code.*",

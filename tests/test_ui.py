@@ -4681,6 +4681,42 @@ def test_the_first_run_wizard(qapp):
         quick.close()
 
 
+def test_the_wizard_waits_while_a_list_is_open(qapp):
+    """2026-10-28: the wizard opening by itself does not take the keys from an open list (a comment being typed in an
+    approval card): it opens once the list closes. Asked for from Settings, it opens at once."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        listed = quick.window.findChild(QObject, "approvalsList")
+        sheet = quick.window.findChild(QObject, "wizardSheet")
+        app.openUi("approvals")
+        wait_until(lambda: listed.property("opened"))
+        listed.property("contentItem").forceActiveFocus()  # the user types in it (a comment in a card)
+        app.setup_view.openRequested.emit()  # the hub said: this computer needs the wizard
+        for _ in range(20):
+            QApplication.processEvents()
+        assert not sheet.property("visible") and listed.property("opened")
+        QMetaObject.invokeMethod(listed, "close")
+        wait_until(lambda: sheet.property("opened"))
+        QMetaObject.invokeMethod(sheet, "close")
+        wait_until(lambda: not sheet.property("visible"))
+        app.openUi("approvals")
+        wait_until(lambda: listed.property("opened"))
+        app.openUi("setup")  # from Settings or the command palette: the user asked
+        wait_until(lambda: sheet.property("opened"))
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_checking_the_system_and_collecting_the_logs(qapp):
     """10.6: «Проверить систему» runs when its sheet opens; «Собрать журналы» makes the report."""
     from PySide6.QtCore import QObject

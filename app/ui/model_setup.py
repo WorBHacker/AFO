@@ -364,8 +364,8 @@ class ModelSetup(QObject):
     def launch(self) -> dict:
         view = self._launch
         return {"engine": view.get("engine", ""), "editable": bool(view.get("editable")),
-                "profile": view.get("profile", ""), "file": view.get("file", ""),
-                "mmproj": view.get("mmproj", "")} if view else {}  # fmt: skip
+                "profile": view.get("profile", ""), "file": view.get("file", ""), "mmproj": view.get("mmproj", ""),
+                "problem": view.get("problem", "")} if view else {}  # fmt: skip
 
     @Property("QVariantMap", notify=changed)
     def launchDraft(self) -> dict:
@@ -539,7 +539,9 @@ class ModelSetup(QObject):
             except OSError as exc:
                 self.app.show_error(f"Файл не записан: {exc}")
                 return
-            self.app.flash(f"Настройки {len(data.get('models') or {})} моделей записаны в {path.name}")
+            count = len(data.get("models") or {})
+            whose = presenter.plural(count, "модели", "моделей", "моделей")
+            self.app.flash(f"Настройки {count} {whose} записаны в {path.name}")
 
         self.app.call_or_fail(lambda: self.app.client.export_model_settings(), write,
                               lambda e: self.app.show_error(f"Не выгружено: {e}"))  # fmt: skip

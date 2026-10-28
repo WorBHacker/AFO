@@ -21,6 +21,8 @@ def test_the_usual_errors_in_plain_words():
         "llama-swap: ggml_vulkan: ErrorOutOfDeviceMemory": "Не хватает памяти",
         "llama-swap: cannot list models (All connection attempts failed)": "Локальные модели не запущены",
         "llama-swap: 502 upstream command exited prematurely": "Модель не запустилась",
+        "llama-swap: failed to start command 'C:/x/llama-server.exe --port 10001': fork/exec C:/x/llama-server.exe: "
+        "The system cannot find the path specified.": "Программа модели не найдена",
         "anthropic: 401 invalid x-api-key": "Ключ не подошёл",
         "openai: 429 Rate limit reached for requests": "Поставщик просит подождать",
         "openrouter: 402 insufficient credits": "Закончились деньги на счёте",

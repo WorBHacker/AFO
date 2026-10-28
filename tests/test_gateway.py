@@ -1,6 +1,7 @@
 """The OpenAI-compatible adapter: model listing, SSE parsing, loading/reasoning/content split, cost."""
 
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -81,6 +82,27 @@ def test_loading_lines_are_separated_from_reasoning():
     assert [e.kind for e in events if e.kind == "loading"]  # loading was reported
     assert all(e.kind != "reasoning" for e in events)  # ...and not as reasoning
     assert [e.text for e in events if e.kind == "content"] == ["ready"]
+
+
+def test_the_loading_banner_in_pieces():
+    """llama-swap v267+ (found live 2026-10-28): the banner in pieces of five characters between lines of ━; none of
+    it is reasoning, the model's own reasoning after it is; a stream that only looks like the banner's start is not
+    lost; the reasoning of a model already loaded starts at once."""
+    banner = ["━━━━━", "\n", "llama", "-swap", " load", "ing m", "odel:", " code", "r", "\n", "\n", "Done!", " (0.4",
+              "7s)", "\n", "━━━━━", "\n", " ", "\n"]  # fmt: skip
+    lines = [json.dumps({"choices": [{"delta": {"reasoning_content": piece}}]}) for piece in banner]
+    body = sse(*lines, '{"choices":[{"delta":{"reasoning_content":"I think"}}]}',
+               '{"choices":[{"delta":{"content":"ready"}}]}')  # fmt: skip
+    events = asyncio.run(collect(provider_with(lambda request: httpx.Response(200, content=body))))
+    assert "".join(e.text for e in events if e.kind == "loading") == "".join(banner)
+    assert [e.text for e in events if e.kind == "reasoning"] == ["I think"]
+    assert [e.text for e in events if e.kind == "content"] == ["ready"]
+
+    for pieces, kinds in (([" ━", "ll"], [("reasoning", " ━ll")]),  # held to the end: let through
+                          (["let me", " see"], [("reasoning", "let me"), ("reasoning", " see")])):  # fmt: skip
+        body = sse(*[json.dumps({"choices": [{"delta": {"reasoning_content": p}}]}) for p in pieces])
+        events = asyncio.run(collect(provider_with(lambda request, body=body: httpx.Response(200, content=body))))
+        assert [(e.kind, e.text) for e in events if e.kind != "end"] == kinds
 
 
 def test_http_error_becomes_provider_error():

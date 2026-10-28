@@ -200,7 +200,7 @@ class Controller(QObject):
         self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
         self.setup_view = SetupView(self)  # the first-run wizard (10.2)
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
-        self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup"))
+        self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
@@ -579,6 +579,9 @@ class Controller(QObject):
         self.hubChanged.emit()
 
     def reload_all(self) -> None:
+        # first: on a computer without an engine the wizard opens by itself (10.2) - right away, not ~15 s later
+        # behind the other calls (4 threads), over whatever the user has started doing by then (2026-10-28)
+        self.setup_view.load()
         self.load_models()
         self.load_conversations()
         self.refresh_status()
@@ -594,7 +597,6 @@ class Controller(QObject):
         self.loadRetention()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
-        self.setup_view.load()  # a computer without an engine for local models: the wizard opens (10.2)
         if self.current:
             self.openChat(self.current)
 

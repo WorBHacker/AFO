@@ -410,6 +410,10 @@ Sheet {
                 visible: ModelSetup.launch.editable === true
                 text: "llama.cpp · " + (ModelSetup.launch.file || "") + (ModelSetup.launch.mmproj ? " · с проектором картинок" : "")
             }
+            Note {  // a block the window does not edit: a one-line command, or one the hub cannot read
+                visible: !!ModelSetup.launch.problem
+                text: ModelSetup.launch.problem || ""
+            }
             Segmented {
                 objectName: "launchPreset"
                 visible: ModelSetup.launch.editable === true

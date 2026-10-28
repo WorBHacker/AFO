@@ -27,6 +27,13 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
         "llama-swap не отвечает. Включите «Хаб сам запускает llama-swap» в «Настройки → Запуск» и перезапустите хаб, "
         "или откройте «Первый запуск», если движок ещё не установлен.",
     ),
+    (  # llama-swap could not run the model's program at all (found live 2026-10-28)
+        re.compile(r"(?i)failed to start command|fork/exec"),  # not a model's own file: that is the next rule
+        "Программа модели не найдена",
+        "llama-swap не нашёл программу, которой запускается модель: путь в config.yaml неверный или движок удалили. "
+        "Установите движок в «Первом запуске» или поправьте путь в config.yaml; «Проверить систему» покажет, "
+        "где он.",
+    ),
     (
         re.compile(
             r"(?i)upstream command exited|exited prematurely|exit status|failed to load model|"

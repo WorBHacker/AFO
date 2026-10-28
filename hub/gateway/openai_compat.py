@@ -3,7 +3,8 @@
 
 llama-swap streams model-swap progress in the reasoning field, prefixed `llama-swap loading model:`
 (sendLoadingState). Those lines are separated out as "loading" events, so they never land in the saved
-reasoning, and the time-to-first-token clock starts only once loading is done.
+reasoning, and the time-to-first-token clock starts only once loading is done. Since llama-swap v267 the banner
+comes in pieces of a few characters between two lines of ━ (`_Banner`; found live 2026-10-28).
 
 Tools go out as OpenAI functions (llama.cpp serves them for models started with --jinja); a call streams in
 fragments by index and is put together at the end. Arguments that are not valid JSON are passed on marked
@@ -26,6 +27,54 @@ from .base import Model, ProviderError, StreamEvent
 log = logging.getLogger("hub.gateway.openai")
 
 LOADING_PREFIX = "llama-swap loading model:"
+RULE = "━"  # llama-swap's banner lines
+
+
+class _Banner:
+    """llama-swap's loading banner at the start of the reasoning. Pieces are held while they may still be its start
+    («━━━━━», «\n», «llama», «-swap», « load»…); its lines, «Done! (0.5s)» and the closing ━ line after it are
+    loading; anything else lets the held pieces through as the model's own reasoning."""
+
+    def __init__(self) -> None:
+        self.held = ""
+        self.state = "start"  # start -> on -> tail -> over
+        self.line_open = False  # the «Done! (…)» line has not ended yet
+
+    def feed(self, think: str, text: str) -> tuple[list[str], str, str, bool]:
+        """(pieces that are loading, reasoning and text to go on with, whether loading has just finished)."""
+        if self.state == "over":
+            return [], think, text, False
+        if self.state == "start":
+            if text or not think:  # the answer (or a tool call) came first: no banner
+                self.state = "over"
+                return [], self.flush() + think, text, False
+            self.held += think
+            head = self.held.lstrip().lstrip(RULE).lstrip()
+            if head.startswith(LOADING_PREFIX):
+                self.state = "on"
+                return [self.flush()], "", "", False
+            if LOADING_PREFIX.startswith(head):
+                return [], "", "", False  # it may still be the banner
+            self.state = "over"
+            return [], self.flush(), text, False
+        piece = think or text
+        if self.state == "on":
+            if "Done!" in piece:
+                self.state, self.line_open = "tail", "\n" not in piece.split("Done!", 1)[1]
+                return [piece], "", "", True
+            return [piece] if piece else [], "", "", False
+        if text:  # tail: the answer begins
+            self.state = "over"
+            return [], think, text, False
+        if self.line_open or not think.strip().strip(RULE):  # the rest of «Done!», the closing line, blanks
+            self.line_open = self.line_open and "\n" not in think
+            return [think] if think else [], "", "", False
+        self.state = "over"
+        return [], think, text, False
+
+    def flush(self) -> str:
+        held, self.held = self.held, ""
+        return held
 
 
 class OpenAICompatProvider:
@@ -116,7 +165,7 @@ class OpenAICompatProvider:
         details: list[dict[str, Any]] = []  # OpenRouter's reasoning_details, to be sent back unchanged
         started = time.monotonic()
         first_at: float | None = None
-        in_loading = False
+        banner = _Banner()
         chunks = 0
         usage: dict = {}
         timings: dict = {}
@@ -159,14 +208,11 @@ class OpenAICompatProvider:
                     think = delta.get("reasoning_content") or delta.get("reasoning") or ""
                     text = delta.get("content") or ""
                     details += [d for d in delta.get("reasoning_details") or [] if isinstance(d, dict)]
-                    if think and not in_loading and first_at is None and think.lstrip().startswith(LOADING_PREFIX):
-                        in_loading = True
-                    if in_loading:
-                        yield StreamEvent("loading", think or text)
-                        if "Done!" in (think + text):
-                            in_loading = False
-                            started = time.monotonic()  # TTFT is measured after the swap finishes
-                        continue
+                    loading, think, text, loaded = banner.feed(think, text)
+                    for piece in loading:
+                        yield StreamEvent("loading", piece)
+                    if loaded:
+                        started = time.monotonic()  # TTFT is measured after the swap finishes
                     if think or text:
                         first_at = first_at or time.monotonic()
                         chunks += 1
@@ -177,6 +223,9 @@ class OpenAICompatProvider:
                         yield StreamEvent("content", text)
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: {exc}") from exc
+        if held := banner.flush():  # it ended while still looking like the banner's start: the model's own
+            thought.append(held)
+            yield StreamEvent("reasoning", held)
         yield StreamEvent(
             "end",
             usage=self.priced(model_ref, _usage(usage, chunks), usage),

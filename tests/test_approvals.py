@@ -52,6 +52,8 @@ def test_previews_show_what_the_file_would_become(tmp_path):
     edit = preview("Edit", {"file_path": str(tmp_path / "app.py"), "old_string": "two", "new_string": "2"}, tmp_path)
     assert edit["kind"] == "diff" and "--- a/app.py" in edit["text"] and "-two\n+2\n" in edit["text"]
     assert " one\n" in edit["text"]  # with its context, from the real file
+    outside = preview("Edit", {"file_path": str(tmp_path / "app.py"), "old_string": "two", "new_string": "2"}, None)
+    assert f"--- a/{tmp_path.name}/app.py\n" in outside["text"]  # an outside client: its folder, not the whole path
     new = preview("Write", {"file_path": "new.txt", "content": "hello\n"}, tmp_path)
     assert "--- /dev/null" in new["text"] and "+hello\n" in new["text"]
     multi = preview(

@@ -240,3 +240,31 @@ def test_a_model_that_does_not_start_gets_its_old_settings_back(hub):
     back = hub.post("/v1/llama/restore", json={"backup": copies[0]}).json()
     assert back["verified"] and hub.config.read_text(encoding="utf-8") == CONFIG
     assert hub.post("/v1/llama/restore", json={"backup": "../hub.db"}).status_code == 404
+
+
+def test_a_one_line_command_is_read_not_edited(tmp_path, monkeypatch):
+    """2026-10-28: llama-swap takes `cmd: <one line>` too; such a model shows in the window (not editable, said why)
+    and a block the hub cannot read at all no longer makes the whole list of launch settings fail."""
+    short = '  "short":\n    name: "Short"\n    cmd: ${llama_server} -m "F:/models/s.gguf" -c 4096 --port ${PORT}\n'
+    text = CONFIG + "\n" + short
+    view = lc.model_view(text, "short")
+    assert view["engine"] == "llama.cpp" and view["editable"] is False and "одну строку" in view["problem"]
+    assert '"D:/llama.cpp/llama-server.exe" -m "F:/models/s.gguf" -c 4096' in view["command"]
+    assert lc.model_view(text, "big")["editable"] is True  # the others as before
+    broken = text + '\n  "odd":\n    name: "Odd"\n    proxy: http://127.0.0.1:9999\n'
+    config = tmp_path / "config.yaml"
+    config.write_text(broken, encoding="utf-8")
+    monkeypatch.setenv(lc.CONFIG_ENV, str(config))
+    app = create_app(HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
+                                 process_interval_s=0))  # fmt: skip
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        client.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        listed = {m["id"]: m for m in client.get("/v1/llama/models").json()["models"]}
+    assert list(listed) == ["fast", "big", "huge", "short", "odd"]
+    assert listed["big"]["editable"] and not listed["short"]["editable"]
+    assert listed["odd"]["editable"] is False and "cmd" in listed["odd"]["problem"]
+    odd_first = (
+        'models:\n  "odd":\n    proxy: http://127.0.0.1:9999\n\n'
+        '  "m":\n    cmd: |\n      "D:/llama.cpp/llama-server.exe" -m "F:/m.gguf" --port ${PORT}\n'
+    )
+    assert lc.server_command(odd_first) == '"D:/llama.cpp/llama-server.exe"'  # no macro: a model's, past "odd"
