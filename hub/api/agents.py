@@ -146,6 +146,7 @@ class Goal(BaseModel):
     max_replans: int = autonomous.DEFAULTS["max_replans"]
     budget_usd: float | None = autonomous.DEFAULTS["budget_usd"]
     network: bool = False  # its Python scripts may reach the network (9.4)
+    refusal_vector: bool | None = None  # Strata's refusal vector for this task (its model must have one); None: as set
 
 
 @router.post("/runs/autonomous", status_code=201)

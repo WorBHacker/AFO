@@ -72,6 +72,14 @@ Item {
         onChosen: (id) => { if (id) Autonomy.toggleProject(id) }
     }
     MenuPopup {
+        id: refusalMenu
+        objectName: "agentRefusalMenu"
+        menuWidth: 420
+        wrapNotes: true
+        items: Autonomy.refusalItems
+        onChosen: (id) => Autonomy.chooseRefusal(id)
+    }
+    MenuPopup {
         id: whenMenu
         menuWidth: 400
         wrapNotes: true
@@ -270,6 +278,17 @@ Item {
                     ToolTip.visible: hovered && !projectMenu.visible
                     ToolTip.delay: 500
                     ToolTip.text: "Проекты, файлы которых агент видит и может менять. Без проектов — работает с сетью, расчётами и программами"
+                }
+                Chip {
+                    id: refusalChip
+                    objectName: "agentRefusal"
+                    visible: !composer.running && Autonomy.refusalShown
+                    iconName: "key"
+                    text: Autonomy.refusalName
+                    onClicked: { refusalMenu.anchor = refusalChip; refusalMenu.open() }
+                    ToolTip.visible: hovered && !refusalMenu.visible
+                    ToolTip.delay: 500
+                    ToolTip.text: "Вектор Strata, который убирает у модели отказы отвечать, — для этой задачи"
                 }
                 Chip {
                     id: whenChip

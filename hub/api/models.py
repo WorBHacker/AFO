@@ -7,7 +7,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import store
+from .. import model_settings, store
 from ..auth import Client
 from .deps import require_client
 
@@ -17,10 +17,17 @@ router = APIRouter(prefix="/v1")
 @router.get("/models")
 async def models(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     rows = await request.app.state.db.acall(store.list_models)
+    settings = await request.app.state.db.acall(model_settings.all_current)
     gateway = request.app.state.gateway
-    # each model says which of the answer's parameters it takes (D39): the window shows only those
-    rows = [{**row, "accepts": sorted(gateway.accepts(row["id"]))} for row in rows]
-    return {"providers": gateway.providers, "models": rows}
+    out = []
+    for row in rows:
+        accepts = gateway.accepts(row["id"])  # which of the answer's parameters it takes (D39): the window shows those
+        item = {**row, "accepts": sorted(accepts)}
+        if "refusal_vector" in accepts:  # how it is set: a new task's switch starts from it (on unless set off)
+            params = settings.get(row["id"], (0, {}))[1].get("params") or {}
+            item["refusal_vector"] = params.get("refusal_vector", True)
+        out.append(item)
+    return {"providers": gateway.providers, "models": out}
 
 
 @router.post("/models/sync")

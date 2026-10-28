@@ -264,7 +264,8 @@ def test_what_is_in_sight_and_enter_that_sends(tmp_path, test_window, monkeypatc
         number = {line.split('"')[1]: int(line.split("[")[1].split("]")[0]) for line in lines[1:] if '"' in line}
         typed = await go("screen_act", window=hwnd, action="type", element=number["Сообщение"], text="Привет")
         uia = computer._uia_now()
-        unknown = await go("screen_act", window=hwnd, action="keys", keys="enter")  # its focus unseen: asked
+        uia.focused_field = lambda _hwnd: None  # the focus in another window (the person's): unseen, so asked
+        unknown = await go("screen_act", window=hwnd, action="keys", keys="enter")
         uia.focused_field = lambda _hwnd: {"text": True, "role": "edit", "name": "Сообщение", "value": "Привет"}
         sent = await go("screen_act", window=hwnd, action="keys", keys="enter")
         uia.focused_field = lambda _hwnd: {"text": True, "role": "edit", "name": "Поиск", "value": "bekh"}

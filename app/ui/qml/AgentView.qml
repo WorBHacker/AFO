@@ -248,7 +248,7 @@ Item {
                     objectName: "agentStatus"
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: [view.task.statusLabel, view.task.autonomy ? "режим «" + view.task.autonomy + "»" : "", view.task.meta]
+                    text: [view.task.statusLabel, view.task.autonomy ? "режим «" + view.task.autonomy + "»" : "", view.task.refusal, view.task.meta]
                           .filter(s => !!s).join(" · ")
                     color: view.task.status === "waiting" ? Theme.p.warn : view.task.status === "error" ? Theme.p.error : Theme.p.faint
                     font.family: Theme.uiFont

@@ -49,7 +49,8 @@ ROLES = [("chat", "Модель нового чата", "выбирается с
 BLANK: dict[str, Any] = {"name": "", "hidden": False, "context": "", "tools": "", "vision": "", "price_input": "",
                          "price_output": "", "price_cache_read": "", "price_cache_write": "", "temperature": "",
                          "top_p": "", "top_k": "", "min_p": "", "repeat_penalty": "", "max_tokens": "", "stop": "",
-                         "thinking": "", "preset": "", "effort": "", "system_prompt": "", "roles": {},
+                         "thinking": "", "refusal_vector": "", "preset": "", "effort": "", "system_prompt": "",
+                         "roles": {},
                          **{f"budget_{name}": "" for name, _label in BUDGETS}}  # fmt: skip
 
 
@@ -92,6 +93,7 @@ def draft_of(settings: dict[str, Any]) -> dict[str, Any]:
         "vision": "" if "vision" not in caps else "yes" if caps["vision"] else "no",
         "stop": "\n".join(params.get("stop") or []),
         "thinking": "" if "thinking" not in params else "on" if params["thinking"] else "off",
+        "refusal_vector": "" if "refusal_vector" not in params else "on" if params["refusal_vector"] else "off",
         "preset": settings.get("preset", ""),
         "effort": settings.get("effort", ""),
         "system_prompt": settings.get("system_prompt", ""),
@@ -144,6 +146,8 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
         params["stop"] = stops
     if draft["thinking"] in ("on", "off") and "thinking" in accepts:
         params["thinking"] = draft["thinking"] == "on"
+    if draft["refusal_vector"] in ("on", "off") and "refusal_vector" in accepts:
+        params["refusal_vector"] = draft["refusal_vector"] == "on"
     if params:
         out["params"] = params
     budget = {}

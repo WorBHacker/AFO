@@ -29,7 +29,8 @@ NUMBERS: dict[str, tuple[type, float, float]] = {
     "repeat_penalty": (float, 0.5, 2.0),
     "max_tokens": (int, 1, 1_000_000),
 }
-PARAMS = (*NUMBERS, "stop", "thinking")
+# "refusal_vector": a Strata model's refusal vector (abliteration at runtime) on or off - only where the model has one
+PARAMS = (*NUMBERS, "stop", "thinking", "refusal_vector")
 STOP_MAX = 4  # stop sequences: the fewest any provider takes (OpenAI-compatible APIs)
 
 # "Точно / Баланс / Творчески": each fills only what the model's provider takes
@@ -82,6 +83,10 @@ def check_params(params: Any) -> dict[str, Any]:
         elif name == "thinking":
             if not isinstance(value, bool):
                 raise SettingsError("размышления: да или нет")
+            out[name] = value
+        elif name == "refusal_vector":
+            if not isinstance(value, bool):
+                raise SettingsError("снятие отказов: да или нет")
             out[name] = value
         else:
             raise SettingsError(f"неизвестный параметр «{name}»")

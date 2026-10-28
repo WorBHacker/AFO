@@ -40,6 +40,9 @@ class OpenAICompatProvider:
         "stop": "stop",
     }
     thinking_switch = True  # thinking can be turned off (llama.cpp: the chat template's enable_thinking)
+    # Strata's per-request switch of the control vector it was started with: here a refusal-direction projection
+    # (abliteration at runtime), off = the stock model; llama-swap's metadata says which models have one
+    VECTOR_FIELD = "experimental_speed_projection"
 
     def __init__(
         self,
@@ -55,6 +58,7 @@ class OpenAICompatProvider:
         self.locality = locality
         self._key_getter = key_getter or (lambda: api_key)  # read on every use: the user may change the key
         self._transport = transport  # tests inject a mock; production leaves it None
+        self._vectors: set[str] = set()  # the models (and their aliases) with a refusal vector to switch, as listed
 
     def _headers(self) -> dict[str, str]:
         key = self._key_getter()
@@ -68,6 +72,7 @@ class OpenAICompatProvider:
             except httpx.HTTPError as exc:
                 raise ProviderError(f"{self.name}: cannot list models ({exc})") from exc
         models = []
+        vectors: set[str] = set()
         for item in response.json().get("data", []):
             ref = item["id"]
             # llama-swap nests the config's metadata (meta.llamaswap) and also says the context itself
@@ -75,6 +80,8 @@ class OpenAICompatProvider:
             meta = {**meta, **(meta.get("llamaswap") or {})}
             if item.get("context_length") and not meta.get("context"):
                 meta["context"] = item["context_length"]
+            if refusal_vector(meta):
+                vectors |= {ref, *(item.get("aliases") or [])}
             models.append(
                 Model(
                     id=f"{self.name}/{ref}",
@@ -86,10 +93,12 @@ class OpenAICompatProvider:
                         "vision": bool(meta.get("vision")),
                         "context": meta.get("context"),
                         "description": item.get("description", ""),
+                        **({"refusal_vector": True} if refusal_vector(meta) else {}),
                     },
                     prices={},  # local models are free; a cloud OpenAI-compat provider fills this in
                 )
             )
+        self._vectors = vectors
         return models
 
     async def stream_chat(
@@ -178,7 +187,8 @@ class OpenAICompatProvider:
         )
 
     def accepts(self, model_ref: str) -> frozenset[str]:
-        return frozenset(self.param_names) | ({"thinking"} if self.thinking_switch else frozenset())
+        return (frozenset(self.param_names) | ({"thinking"} if self.thinking_switch else frozenset())
+                | ({"refusal_vector"} if model_ref in self._vectors else frozenset()))  # fmt: skip
 
     # --- hooks for the cloud providers (cloud_openai.py) ---
 
@@ -208,6 +218,8 @@ class OpenAICompatProvider:
                 body[self.param_names[name]] = value
         if (params or {}).get("thinking") is False and self.thinking_switch:
             self.no_thinking(body)
+        if isinstance((params or {}).get("refusal_vector"), bool) and model_ref in self._vectors:
+            body[self.VECTOR_FIELD] = params["refusal_vector"]
         return body
 
     def no_thinking(self, body: dict[str, Any]) -> None:
@@ -232,6 +244,15 @@ class OpenAICompatProvider:
 
     def price(self, model_ref: str, counted: dict[str, int], reported: dict[str, Any]) -> int | None:
         return None
+
+
+def refusal_vector(meta: dict[str, Any]) -> bool:
+    """A Strata model whose abliteration is a vector applied at runtime (not baked into its weights): it can be
+    switched per request. llama-swap's metadata says so: `engine: strata` and `abliteration: runtime ...`, or
+    `refusal_vector: true`."""
+    if meta.get("refusal_vector") is True:
+        return True
+    return str(meta.get("engine", "")).lower() == "strata" and "runtime" in str(meta.get("abliteration", "")).lower()
 
 
 def wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

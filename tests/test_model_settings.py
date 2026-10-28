@@ -4,6 +4,7 @@ OpenAI proxy sending them (the client's over the model's), and the API - the des
 
 import asyncio
 import json
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -92,6 +93,45 @@ def test_each_provider_takes_its_own_parameters():
     assert "thinking" not in router.accepts("x/y")
     body = router.request_body("x/y", [{"role": "user", "content": "hi"}], "high", None, {"repeat_penalty": 1.2})
     assert body["repetition_penalty"] == 1.2 and "repeat_penalty" not in body
+
+
+def test_stratas_refusal_vector_is_switched_only_where_it_runs_as_a_vector():
+    """2026-10-28 (the user's word): a Strata model whose abliteration is a vector applied at runtime (llama-swap's
+    metadata: engine strata, abliteration runtime ...) takes «refusal_vector» - sent as Strata's per-request
+    experimental_speed_projection; one abliterated in its weights does not (nothing to switch)."""
+    import httpx
+
+    listed = {"data": [
+        {"id": "coder", "name": "Coder", "meta": {"llamaswap": {
+            "engine": "strata", "abliteration": "runtime refusal-vector projection (layers 4-44)", "context": 65536}}},
+        {"id": "flash-next", "name": "Flash", "meta": {"llamaswap": {
+            "engine": "strata", "abliteration": "weights (SC117 GSQ-RCO transplant)"}}},
+        {"id": "own", "name": "Own", "meta": {"llamaswap": {"refusal_vector": True}}},
+        {"id": "plain", "name": "Plain", "meta": {"llamaswap": {"engine": "llama.cpp"}}}]}  # fmt: skip
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=listed))
+    llama = OpenAICompatProvider("llama-swap", "http://127.0.0.1:9", transport=transport)
+    assert "refusal_vector" not in llama.accepts("coder")  # not listed yet: not known
+    models = {m.model_ref: m for m in asyncio.run(llama.list_models())}
+    assert models["coder"].capabilities["refusal_vector"] is True and models["own"].capabilities["refusal_vector"]
+    assert (
+        "refusal_vector" not in models["flash-next"].capabilities
+        and "refusal_vector" not in models["plain"].capabilities
+    )
+    assert "refusal_vector" in llama.accepts("coder") and "refusal_vector" not in llama.accepts("flash-next")
+    hi = [{"role": "user", "content": "hi"}]
+    assert (
+        llama.request_body("coder", hi, "low", None, {"refusal_vector": False})["experimental_speed_projection"]
+        is False
+    )
+    assert (
+        llama.request_body("coder", hi, "low", None, {"refusal_vector": True})["experimental_speed_projection"] is True
+    )
+    assert "experimental_speed_projection" not in llama.request_body("coder", hi, "low", None)  # not set: Strata's own
+    assert "experimental_speed_projection" not in llama.request_body("flash-next", hi, "low", None,
+                                                                     {"refusal_vector": False})  # fmt: skip
+    assert model_settings.check_params({"refusal_vector": False}) == {"refusal_vector": False}
+    with pytest.raises(SettingsError, match="снятие отказов"):
+        model_settings.check_params({"refusal_vector": "off"})
 
 
 def test_claude_openai_and_gemini_requests():
@@ -359,3 +399,46 @@ def test_settings_out_to_a_file_and_back(hub):
     now = hub.get("/v1/model_settings", params={"model_id": "tune/m"}).json()
     assert now["settings"]["params"] == {"temperature": 0.9} and now["history"][0]["by"] == "app (импорт)"
     assert hub.post("/v1/model_settings/import", json={"data": {"models": {}}}).status_code == 422
+
+
+class Vectored(Tunable):
+    """A local model with Strata's refusal vector: it takes «refusal_vector»."""
+
+    name = "vec"
+
+    def __init__(self):
+        super().__init__()
+        self.models = [Model("vec/m", "vec", "m", "Coder", "local", {"refusal_vector": True}, {})]
+
+    def accepts(self, model_ref):
+        return frozenset({"temperature", "refusal_vector"})
+
+
+def test_the_refusal_vector_set_for_the_model_and_chosen_for_a_task(hub):
+    """The model's setting goes with every answer; an autonomous task's own choice wins over it; the window learns
+    the setting from the catalog (a new task's switch starts from it)."""
+    vec = Vectored()
+    hub.app.state.gateway.register(vec)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    listed = {m["id"]: m for m in hub.get("/v1/models").json()["models"]}
+    assert listed["vec/m"]["refusal_vector"] is True and "refusal_vector" not in listed["tune/m"]  # on unless set off
+    hub.put("/v1/model_settings", json={"model_id": "vec/m", "settings": {"params": {"refusal_vector": False}}})
+    assert {m["id"]: m for m in hub.get("/v1/models").json()["models"]}["vec/m"]["refusal_vector"] is False
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    with hub.websocket_connect("/v1/events", headers={"Authorization": f"Bearer {hub.token}", **WS_HOST}) as ws:
+        ws.receive_json()
+        hub.post(f"/v1/conversations/{conv}/messages", json={"content": "привет", "model_id": "vec/m"})
+        while ws.receive_json()["type"] != "chat.done":
+            pass
+    assert vec.sent[-1]["params"] == {"refusal_vector": False}  # the model's setting
+    body = {"goal": "Ответь одним словом", "model_id": "vec/m", "autonomy": "free"}
+    assert hub.post("/v1/runs/autonomous", json={**body, "refusal_vector": "may be"}).status_code == 422
+    run_id = hub.post("/v1/runs/autonomous", json={**body, "refusal_vector": True}).json()["id"]
+    deadline = time.monotonic() + 20
+    while hub.get(f"/v1/runs/{run_id}").json()["status"] in ("queued", "running") and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert vec.sent[-1]["params"] == {"refusal_vector": True}  # the task's own choice over the model's
+    assert hub.get(f"/v1/runs/{run_id}/plan").json()["refusal_vector"] == 1
+    plain = hub.post("/v1/runs/autonomous", json=body).json()["id"]
+    assert hub.get(f"/v1/runs/{plain}/plan").json()["refusal_vector"] is None  # not chosen: as the model is set
+    hub.post(f"/v1/runs/{plain}/cancel")

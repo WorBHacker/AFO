@@ -1105,6 +1105,11 @@ def _answer_setup(conn, conversation_id: str, model_id: str, accepts: frozenset[
     params = dict(own.get("params") or {})
     if chat["preset"]:
         params.update(model_settings.preset_params(chat["preset"], accepts))
+    task = conn.execute(
+        "SELECT refusal_vector FROM agent_runs WHERE conversation_id = ?", (conversation_id,)
+    ).fetchone()
+    if task is not None and task["refusal_vector"] is not None:  # the task's own choice wins over the model's
+        params["refusal_vector"] = bool(task["refusal_vector"])
     return system, model_settings.clean_params(params, accepts), number
 
 

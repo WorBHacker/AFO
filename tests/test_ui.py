@@ -4726,3 +4726,61 @@ def test_the_agent_input_as_a_chat(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_refusal_switch_for_a_model_and_a_new_task(qapp):
+    """2026-10-28 (the user's word): a Strata model with a refusal vector gets «Снятие отказов» in its settings, and a
+    new agent task gets its own switch - starting from how the model is set; a model without one shows none."""
+    from PySide6.QtCore import QObject
+
+    from app.ui import model_setup as ms
+    from app.ui.main import QuickApp
+
+    draft = ms.draft_of({"params": {"refusal_vector": False}})
+    assert draft["refusal_vector"] == "off"
+    assert ms.settings_of(draft, ["refusal_vector"]) == {"params": {"refusal_vector": False}}
+    assert ms.settings_of({**draft, "refusal_vector": ""}, ["refusal_vector"]) == {}  # as the model is
+    assert ms.settings_of(draft, ["temperature"]) == {}  # a model without the vector: not sent
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        vectored = {"id": "llama-swap/flash", "model_ref": "flash", "name": "Flash", "locality": "local", "prices": {},
+                    "accepts": ["refusal_vector", "temperature"], "refusal_vector": False}  # fmt: skip
+        client.models = lambda: [*MODELS, vectored]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and "llama-swap/flash" in app.models)
+        view = app.autonomy_view
+        app.setMode("agent")
+        view.newTask()
+        view.setField("model_id", "llama-swap/coder")
+        assert not view.refusalShown  # its abliteration is in its weights, or none: nothing to switch
+        view.setField("model_id", "llama-swap/flash")
+        for _ in range(10):
+            QApplication.processEvents()
+        chip = quick.window.findChild(QObject, "agentRefusal")
+        assert view.refusalShown and chip.property("visible") and chip.property("text") == "Снятие отказов: выкл"
+        items = view.refusalItems
+        assert items[1]["name"] == "Как в настройках модели" and items[1]["note"] == "Сейчас там: выключено."
+        assert (
+            items[1]["selected"] and [i["id"] for i in items[2:]] == ["on", "off"] and all(i["note"] for i in items[1:])
+        )
+        view.chooseRefusal("on")
+        assert view.refusalName == "Снятие отказов: вкл" and view.refusalItems[2]["selected"]
+        assert view.submit("Ответь одним словом") is True
+        wait_until(lambda: not app.bg.busy and client.auto_calls)
+        assert (
+            client.auto_calls[0][1]["refusal_vector"] is True
+            and client.auto_calls[0][1]["model_id"] == "llama-swap/flash"
+        )
+        view.newTask()
+        view.setField("model_id", "llama-swap/flash")
+        view.chooseRefusal("model")
+        from app.ui.autonomy import goal_body
+
+        assert goal_body({**view._draft, "goal": "x"})["refusal_vector"] is None  # as the model is set
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

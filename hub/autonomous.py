@@ -143,7 +143,7 @@ class AutonomyError(ValueError):
 def run_info(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT conversation_id, kind, goal, done_when, autonomy, max_replans, planner_model_id, model_id, report,"
-        " status FROM agent_runs WHERE conversation_id = ?",
+        " status, refusal_vector FROM agent_runs WHERE conversation_id = ?",
         (run_id,),
     ).fetchone()
     if row is None or row["kind"] != "autonomous":

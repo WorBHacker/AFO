@@ -233,10 +233,10 @@ def create_run(
     if goal:
         conn.execute(
             "UPDATE agent_runs SET kind = 'autonomous', goal = ?, done_when = ?, autonomy = ?, max_replans = ?,"
-            " planner_model_id = ?, network = ?, schedule_id = ? WHERE conversation_id = ?",
+            " planner_model_id = ?, network = ?, schedule_id = ?, refusal_vector = ? WHERE conversation_id = ?",
             (goal["goal"], goal.get("done_when") or None, goal["autonomy"], goal["max_replans"],
              goal.get("planner_model_id") or None, int(bool(goal.get("network"))), goal.get("schedule_id"),
-             conversation_id),
+             None if goal.get("refusal_vector") is None else int(bool(goal["refusal_vector"])), conversation_id),
         )  # fmt: skip
     return conversation_id
 
@@ -254,6 +254,9 @@ def check_goal(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]
     planner = str(data.get("planner_model_id") or "")
     if planner and (planner.startswith(f"{CLAUDE_CODE}/") or store.get_model(conn, planner) is None):
         raise AgentError(f"unknown planner model {planner!r}")
+    vector = data.get("refusal_vector")
+    if vector is not None and not isinstance(vector, bool):
+        raise AgentError("refusal_vector: true, false or none (as the model is set)")
     defaults = autonomous.DEFAULTS
     budget = data.get("budget_usd", defaults["budget_usd"])
     if budget is not None and (not isinstance(budget, int | float) or budget <= 0):
@@ -261,6 +264,7 @@ def check_goal(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]
     return {"goal": goal, "done_when": " ".join(str(data.get("done_when") or "").split()), "autonomy": autonomy,
             "network": bool(data.get("network")), "computer": bool(data.get("computer", True)),
             "schedule_id": str(data.get("schedule_id") or "") or None,  # a schedule's run (9.7): may it use the screen
+            "refusal_vector": vector,  # Strata's refusal vector for this task; None: as the model is set
             "planner_model_id": planner, "max_steps": _within(data.get("max_steps", defaults["max_steps"]), STEPS,
                                                               "max_steps"),
             "max_minutes": _within(data.get("max_minutes", defaults["max_minutes"]), MINUTES, "max_minutes"),

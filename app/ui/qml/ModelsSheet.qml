@@ -321,6 +321,30 @@ Sheet {
                 onPicked: (id) => ModelSetup.setField("thinking", id)
             }
         }
+        // a Strata model whose abliteration is a vector applied while it runs: switched per answer (2026-10-28)
+        Column {
+            visible: ModelSetup.accepts.indexOf("refusal_vector") >= 0
+            width: parent.width
+            spacing: 4
+            Row {
+                spacing: 10
+                Label { text: "Снятие отказов (abliterated)"; anchors.verticalCenter: parent.verticalCenter }
+                Segmented {
+                    objectName: "modelRefusalVector"
+                    options: [{ id: "", name: "как у модели" }, { id: "on", name: "включено" }, { id: "off", name: "выключено" }]
+                    value: ModelSetup.draft.refusal_vector || ""
+                    onPicked: (id) => ModelSetup.setField("refusal_vector", id)
+                }
+            }
+            Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Strata накладывает на модель вектор, который убирает отказы отвечать. Выключено — обычная модель, как её выпустили: на некоторые темы может отказаться. «Как у модели» — включено. Модель не перезагружается; у новой задачи агента можно выбрать своё."
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
         Column {
             width: parent.width
             spacing: 4

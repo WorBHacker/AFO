@@ -55,7 +55,11 @@ TEMPLATES = [
 LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
-                         "max_replans": "3", "network": False}  # fmt: skip
+                         "max_replans": "3", "network": False, "refusal_vector": ""}  # fmt: skip
+# a Strata model's refusal vector for one task ("" - as the model is set)
+REFUSAL = [("on", "Включено", "Strata убирает у модели отказы отвечать (abliterated)."),
+           ("off", "Выключено", "Обычная модель, как её выпустили: на некоторые темы может отказаться.")]  # fmt: skip
+REFUSAL_SAID = {1: "снятие отказов вкл", 0: "снятие отказов выкл"}
 
 
 def utc_now() -> str:
@@ -139,7 +143,8 @@ def goal_body(draft: dict[str, Any]) -> dict[str, Any]:
             "planner_model_id": draft["planner_model_id"] or None, "project_ids": list(draft["project_ids"]),
             "autonomy": draft["autonomy"], "max_steps": whole("max_steps", "Шагов"),
             "max_minutes": whole("max_minutes", "Минут"), "max_replans": whole("max_replans", "Новых планов"),
-            "budget_usd": budget, "network": bool(draft.get("network"))}  # fmt: skip
+            "budget_usd": budget, "network": bool(draft.get("network")),
+            "refusal_vector": {"on": True, "off": False}.get(draft.get("refusal_vector") or "")}  # fmt: skip
 
 
 class AutonomyView(QObject):
@@ -197,6 +202,7 @@ class AutonomyView(QObject):
             "doneWhen": detail.get("done_when") or "", "status": status, "statusLabel": STATUSES.get(status, status),
             "live": run.get("status") in ("queued", "running"), "paused": bool(detail.get("paused")),
             "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),  # the mode
+            "refusal": REFUSAL_SAID.get(detail.get("refusal_vector"), ""),  # the task's own choice
             "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
             "meta": " · ".join(p for p in (model, f"шагов {run['steps']}" if run.get("steps") else "",  # at its end
@@ -285,6 +291,38 @@ class AutonomyView(QObject):
             {"who": "you", "text": text, "at": at, "expired": False} for at, text in self._said.get(self._selected, [])
         ]
         return sorted(rows, key=lambda r: r["at"])
+
+    # ---------- Strata's refusal vector for this task (2026-10-28) ----------
+
+    def _model_vector(self) -> bool | None:
+        """How the draft's model is set (True: on), None when it has no vector to switch."""
+        model = self.app.models.get(self._draft["model_id"]) or {}
+        return bool(model.get("refusal_vector", True)) if "refusal_vector" in (model.get("accepts") or []) else None
+
+    def _vector_on(self) -> bool:
+        chosen = self._draft.get("refusal_vector") or ""
+        return chosen == "on" if chosen else bool(self._model_vector())
+
+    @Property(bool, notify=changed)
+    def refusalShown(self) -> bool:
+        return self._model_vector() is not None
+
+    @Property(str, notify=changed)
+    def refusalName(self) -> str:
+        return "Снятие отказов: " + ("вкл" if self._vector_on() else "выкл")
+
+    @Property(list, notify=changed)
+    def refusalItems(self) -> list:
+        chosen = self._draft.get("refusal_vector") or ""
+        model = "включено" if self._model_vector() else "выключено"
+        return [{"section": "Снятие отказов (abliterated) — для этой задачи", "id": ""},
+                {"id": "model", "name": "Как в настройках модели", "note": f"Сейчас там: {model}.", "icon": "sliders",
+                 "selected": not chosen}] + [
+            {"id": a, "name": n, "note": h, "icon": "key", "selected": a == chosen} for a, n, h in REFUSAL]  # fmt: skip
+
+    @Slot(str)
+    def chooseRefusal(self, choice: str) -> None:
+        self.setField("refusal_vector", "" if choice == "model" else choice)
 
     @Property(list, constant=True)
     def limitFields(self) -> list:
