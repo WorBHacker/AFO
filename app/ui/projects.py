@@ -32,6 +32,7 @@ class Projects(QObject):
     projectChanged = Signal()
     gitChanged = Signal()
     fileChanged = Signal()
+    fileShownChanged = Signal()
     processesChanged = Signal()
     cardChanged = Signal()
     exportChanged = Signal()
@@ -51,6 +52,7 @@ class Projects(QObject):
         self._marks: dict[str, str] = {}
         self._file: dict[str, Any] = {}
         self._file_data: dict[str, Any] | None = None  # the hub's answer, kept to colour again on a theme switch
+        self._shown: dict[str, Any] = {}  # what the viewer shows: see fileShown
         self._diff_text = ""
         self._processes: dict[str, list[dict[str, Any]]] = {}  # project id -> its processes, from the hub
         self._tree_gen = 0
@@ -117,6 +119,12 @@ class Projects(QObject):
     @Property("QVariantMap", notify=fileChanged)
     def file(self) -> dict:
         return self._file
+
+    @Property("QVariantMap", notify=fileShownChanged)
+    def fileShown(self) -> dict:
+        """The open file (or its diff) for the viewer, in pieces: {chunks, rich, columns, digits, key}. Apart from
+        `file`, which changes more often (its git mark, a line to show) and so does not carry the text each time."""
+        return self._shown
 
     @Property(str, notify=fileChanged)
     def openPath(self) -> str:
@@ -448,6 +456,12 @@ class Projects(QObject):
 
     # ================= a file =================
 
+    @Slot()
+    def copyFile(self) -> None:
+        """The whole open file to the clipboard (a selection with the mouse stays within one piece of the viewer)."""
+        if self._file_data is not None and not self._file_data.get("binary"):
+            self.app.copy(self._file_data.get("text", ""))
+
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
         if self._goto is not None and self._goto[0] != path:
@@ -463,18 +477,19 @@ class Projects(QObject):
         self._file_gen += 1
         generation = self._file_gen
 
-        def fetch() -> tuple[dict[str, Any] | None, str]:
+        def fetch() -> tuple[dict[str, Any], str, tuple[str, dict[str, Any], dict[str, Any] | None]]:
             data = self.app.client.file(pid, path) if exists else None
+            data = data or {"path": path, "size": 0, "binary": False, "text": "", "missing": True}
             text = self.app.client.diff(pid, path)["diff"] if diff else ""
-            return data, text
+            # coloured here, off the window's thread (~1 s per MB); again there only if the theme changes meanwhile
+            theme = palette.current().name
+            return data, text, (theme, project_rows.file_view(data), project_rows.diff_view(text) if diff else None)
 
-        def show(found: tuple[dict[str, Any] | None, str]) -> None:
+        def show(found: tuple[dict[str, Any], str, tuple[str, dict[str, Any], dict[str, Any] | None]]) -> None:
             if generation != self._file_gen or self.currentId != pid:
                 return
-            data, text = found
-            self._file_data = data or {"path": path, "size": 0, "binary": False, "text": "", "missing": True}
-            self._diff_text = text
-            self._render_file(diff)
+            self._file_data, self._diff_text, (theme, view, shown) = found
+            self._render_file(diff, (view, shown) if theme == palette.current().name else None)
 
         def failed(error: Exception) -> None:
             if generation != self._file_gen:
@@ -488,25 +503,28 @@ class Projects(QObject):
 
         self.app._call(fetch, show, failed)
 
-    def _render_file(self, diff: bool) -> None:
+    def _render_file(self, diff: bool, ready: tuple[dict[str, Any], dict[str, Any] | None] | None = None) -> None:
+        """`ready`: the file view and the diff view, coloured already in the current theme."""
         data = self._file_data
         if data is None:
             return
-        view = project_rows.file_view(data)
+        view, shown = ready or (project_rows.file_view(data), project_rows.diff_view(self._diff_text) if diff else None)
         mark = self._marks.get(data["path"], "")
         view["missing"] = bool(data.get("missing"))
         view["hasDiff"] = bool(mark) and mark != "•"
         view["mark"] = mark
         view["diffMode"] = diff
         view.update(self._goto_fields(data) if not diff else {"gotoLine": 0, "gotoOffset": -1, "gotoSeq": 0})
-        if diff:
-            shown = project_rows.diff_view(self._diff_text)
-            view["diff"] = shown["code"]
-            view["diffRich"] = shown["rich"]
-            view["diffColumns"] = shown["columns"]
+        chunks = view.pop("chunks", [])
+        body = {"chunks": chunks, "rich": view.get("rich", False), "columns": view.get("columns", 0),
+                "digits": view.get("digits", 1)}  # fmt: skip
+        if diff and shown is not None:
+            body = {"chunks": shown["chunks"], "rich": shown["rich"], "columns": shown["columns"], "digits": 0}
             view["diffEmpty"] = not self._diff_text
         self._file = view
+        self._shown = {**body, "key": data["path"] + (":diff" if diff else "")}
         self.fileChanged.emit()
+        self.fileShownChanged.emit()
 
     @Slot(bool)
     def showDiff(self, diff: bool) -> None:
@@ -516,8 +534,9 @@ class Projects(QObject):
     @Slot()
     def closeFile(self) -> None:
         self._file_gen += 1
-        self._file, self._file_data, self._diff_text = {}, None, ""
+        self._file, self._file_data, self._diff_text, self._shown = {}, None, "", {}
         self.fileChanged.emit()
+        self.fileShownChanged.emit()
 
     def _restyle(self) -> None:
         if self._file_data is not None:

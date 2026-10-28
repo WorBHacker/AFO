@@ -1045,7 +1045,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "copy"
                     tip: "Копировать содержимое"
-                    onClicked: App.copy(view.file.text || "")
+                    onClicked: Projects.copyFile()
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
@@ -1161,19 +1161,10 @@ Item {
             width: parent.width
             height: parent.height - fileHead.height
             visible: !!view.file.diffMode || (!view.file.binary && !view.file.missing)
-            code: view.file.diffMode ? (view.file.diff || "") : (view.file.code || "")
-            numbers: view.file.numbers || ""
-            rich: view.file.diffMode ? !!view.file.diffRich : !!view.file.rich
-            columns: (view.file.diffMode ? view.file.diffColumns : view.file.columns) || 0
+            source: Projects.fileShown
             showNumbers: !view.file.diffMode
             gotoOffset: view.file.gotoOffset === undefined ? -1 : view.file.gotoOffset
             gotoSeq: view.file.gotoSeq || 0
-            // another file (or the diff instead of the file) starts at the top; a refresh keeps the place
-            property string shown
-            onCodeChanged: {
-                const now = (view.file.path || "") + (view.file.diffMode ? ":diff" : "")
-                if (now !== shown) { shown = now; contentX = 0; contentY = 0 }
-            }
         }
 
         Text {

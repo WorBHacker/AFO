@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import html
+import io
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,6 +151,28 @@ def _highlighted(code: str, lang: str, theme: str) -> str:
     except ClassNotFound:
         lexer = TextLexer()
     return highlight(code, lexer, _formatter()).rstrip("\n")
+
+
+def highlight_lines(code: str, lang: str) -> list[str]:
+    """The code coloured a line at a time, for the viewer that shows a long file in pieces: a token over several lines
+    (a docstring) is closed at each line's end and opened again on the next. Blank lines at the start stay (pygments
+    drops them by default: the colours slid off their line numbers)."""
+    try:
+        lexer = get_lexer_by_name(lang, stripnl=False) if lang else TextLexer(stripnl=False)
+    except ClassNotFound:
+        lexer = TextLexer(stripnl=False)
+    rows: list[list[tuple[Any, str]]] = [[]]
+    for token, value in lexer.get_tokens(code):
+        first, *rest = value.split("\n")
+        if first:
+            rows[-1].append((token, first))
+        rows.extend([(token, part)] if part else [] for part in rest)
+    formatter, out = _formatter(), []
+    for row in rows[: code.count("\n") + 1]:  # the lexer's own last newline is not a line
+        buffer = io.StringIO()
+        formatter.format(row, buffer)
+        out.append(buffer.getvalue())
+    return out
 
 
 def render_plain(text: str) -> str:
