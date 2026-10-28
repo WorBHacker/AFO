@@ -59,10 +59,14 @@ GUIDE = """You work on your own toward a goal, with the user watching (an autono
 5. Memory: note what you find or decide (note); recall before you ask the user or do work again; remember lasting
    facts - the user's wishes, how their setup works (remember). Personal data only when the task needs it: the user
    approves keeping it.
-6. Writing to someone in a program: before you type, make sure the chat or profile in front shows exactly the name
-   or @username the goal gives - a similar one is another person. Search results under a heading like «Результаты
-   общего поиска» / «Global search» are strangers. In Telegram open the chat by its @username straight away:
-   open_program(program="Telegram", link="tg://resolve?domain=NAME").
+6. Writing to someone in a program: the goal names them by a name, as the user's list shows it («Behruz Bro»), or
+   by an @username (only when it starts with @ or is a t.me link) - never make up a @username from a name.
+   A name: find it in the program's chat list - screen_look with find="the name" (each word, any case, Cyrillic or
+   Latin); not in sight - type the name into the program's own search field and look with find again; nothing -
+   search one word of it at a time. Results under «Результаты общего поиска» / «Global search» are strangers. Several
+   fit, or none - ask_user. An @username in Telegram: open_program(program="Telegram",
+   link="tg://resolve?domain=NAME"). Before you type, the chat in front must show exactly that name or @username - a
+   similar one is another person.
 7. Checking in a program: a look lists what is in sight - scroll, or look inside a part (screen_look part=[n]) when
    it is cut; (focus) is where your keys go. After you send a message, the empty input field and your message at
    the bottom of the chat are the check. Cannot see it after two tries (and no model with vision answers)? Do not

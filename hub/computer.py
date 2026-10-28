@@ -68,14 +68,17 @@ TOOLS = [
         "name": "screen_look",
         "description": "A window's elements in sight as UI Automation sees them, numbered [n]: role, name, value, "
         "state, place; (focus) marks where typed text and keys go. Use the numbers in screen_act. With `part`, only "
-        "what is inside that element of your last look (when the look was cut). With `question`, a snapshot of the "
-        "window goes to the model with vision and you get its answer in words (for what the tree does not say: a "
-        "picture, a chart, colours).",
+        "what is inside that element of your last look (when the look was cut). With `find`, only the elements whose "
+        "name or text has every word of it - any case, Cyrillic and Latin alike: find='behruz bro' shows «Behruz "
+        "Bro» and «Бехруз Бро» in a chat list (the numbers stay those of the whole look). With `question`, a "
+        "snapshot of the window goes to the model with vision and you get its answer in words (for what the tree "
+        "does not say: a picture, a chart, colours).",
         "parameters": {
             "type": "object",
             "properties": {
                 "window": WINDOW,
                 "part": {"type": "integer", "description": "an element [n] of your last look of this window"},
+                "find": {"type": "string", "description": "a name or words to find among the elements in sight"},
                 "question": {"type": "string"},
             },
             "required": ["window"],
@@ -123,8 +126,9 @@ TOOLS = [
     {
         "name": "open_program",
         "description": "Start a program the user allowed, by its name as screen_windows or the user calls it - or "
-        "have it open a link of its own kind (`link`): Telegram opens tg://resolve?domain=NAME as the chat of exactly "
-        "@NAME, surer than its search, which mixes in strangers. Web pages and files are not links here.",
+        "have it open a link of its own kind (`link`): when the goal gives an @username, Telegram opens "
+        "tg://resolve?domain=NAME as the chat of exactly @NAME. A name is not a username: never make one up from it - "
+        "find the name in the program (screen_look find=). Web pages and files are not links here.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -150,6 +154,29 @@ FORBIDDEN = re.compile(
 )
 # what sends from the person's name: asked every time (D41)
 SENDS = re.compile(r"отправ|send\b|submit|опублик|publish|\bpost\b|ответить|reply|переслать|forward", re.IGNORECASE)
+# a name as the agent looks for it (2026-10-28: «behruz bro» became a made-up @behruz_bro): any case, Cyrillic as
+# Latin (х and x as h, as Uzbek and Russian names are spelt both ways), no apostrophes, @ or _
+CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ",
+                    ["a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s",
+                     "t", "u", "f", "h", "ts", "ch", "sh", "sh", "", "y", "", "e", "yu", "ya", "o", "q", "g", "h"],
+                    strict=True))  # fmt: skip
+
+
+def name_key(text: str) -> str:
+    """A name as words to compare: «Ulug'bek Aka» -> 'ulugbek aka', «Бехруз» -> 'behruz', '@behruz_bro' -> 'behruz
+    bro'."""
+    latin = "".join(CYRILLIC.get(ch, ch) for ch in str(text).lower())
+    latin = latin.replace("kh", "h").replace("x", "h")
+    latin = re.sub(r"['’ʻʼ`]", "", latin)
+    return " ".join(re.sub(r"[^\w]+|_", " ", latin).split())
+
+
+def name_fits(query: str, text: str) -> bool:
+    """Every word of the query is in the text (as part of a word: 'behr' fits «Behruz»)."""
+    words, found = name_key(query).split(), name_key(text)
+    return bool(words) and all(word in found for word in words)
+
+
 # a field Enter does not send from (a search, an address)
 SEARCHES = re.compile(r"поиск|найти|search|find|фильтр|filter|адрес|address|url", re.IGNORECASE)
 BLOCKED_KEYS = {"win", "lwin", "rwin", "meta", "super"}  # the Start menu and the shell are outside the program
@@ -706,20 +733,31 @@ class Uia:
 
 
 def tree_text(window: dict[str, Any], items: list[dict[str, Any]], hidden: int = 0,
-              part: dict[str, Any] | None = None) -> str:  # fmt: skip
+              part: dict[str, Any] | None = None, find: str = "") -> str:  # fmt: skip
     """The look as the model reads it: one numbered line per element; what was cut or is out of sight, and how to
-    see it."""
+    see it. `find`: only the elements whose name or text fits it (`name_fits`), with their numbers in the whole
+    look - and what to do when none does."""
     head = f"Window {window['id']} «{window['title']}» - {window['program']}"
     if part is not None:
         head += f", inside {part['role']} «{part['name'][:NAME_CHARS]}»"
-    head += f"; {len(items)} elements"
+    shown = list(enumerate(items, 1))
+    if find:
+        shown = [(n, i) for n, i in shown if name_fits(find, i["name"]) or name_fits(find, str(i["value"] or ""))]
+        head += f"; {len(shown)} of {len(items)} elements fit «{find}»"
+        if not shown:
+            return (
+                head + ". Not in sight: scroll the list, or type the name into the program's own search field "
+                "and look with find again; nothing - one word of the name at a time. Do not make up a @username."
+            )
+    else:
+        head += f"; {len(items)} elements"
     if len(items) >= MAX_NODES:
         head += f" (the first {MAX_NODES}: for the rest look inside a part - screen_look with part=[n])"
     if hidden:
         head += f"; {hidden} more out of sight (scrolled away or outside the window) - scroll to see them"
     lines = [head + ":"]
-    for n, item in enumerate(items, 1):
-        line = f"{'  ' * min(item['depth'], 8)}[{n}] {item['role']}"
+    for n, item in shown:
+        line = f"{'  ' * min(item['depth'], 8) if not find else ''}[{n}] {item['role']}"
         if item["name"]:
             line += f' "{item["name"][:NAME_CHARS]}"'
         if item["password"]:
@@ -893,7 +931,7 @@ class Computer:
         uia = self._uia_now()
         items, hidden = await uia.run(uia.elements, window["id"], part)
         self._looks[(run_id, window["id"])] = items
-        text = tree_text(window, items, hidden, part)
+        text = tree_text(window, items, hidden, part, " ".join(str(args.get("find") or "").split()))
         question = " ".join(str(args.get("question") or "").split())
         if question:
             if self._see is None:

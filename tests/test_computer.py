@@ -275,12 +275,19 @@ def test_what_is_in_sight_and_enter_that_sends(tmp_path, test_window, monkeypatc
         searched = await go("screen_act", window=hwnd, action="keys", keys="enter")
         newline = await go("screen_act", window=hwnd, action="keys", keys="shift+enter")
         part, _ = await go("screen_look", window=hwnd, part=number["История"])  # its numbers are the next ones
-        return lines, part, typed, unknown, sent, searched, newline
+        found = [(await go("screen_look", window=hwnd, find=name))[0] for name in ("behruz bro", "Бехруз", "nobody")]
+        return lines, part, typed, unknown, sent, searched, newline, found
 
     try:
-        lines, part, typed, unknown, sent, searched, newline = asyncio.run(scenario())
+        lines, part, typed, unknown, sent, searched, newline, found = asyncio.run(scenario())
     finally:
         computer.close()
+    # a chat found by its name, not a made-up @username (2026-10-28): every word, any case, Cyrillic as Latin
+    whole = {line.split('"')[1]: line.split("]")[0] + "]" for line in lines[1:] if '"' in line}
+    assert "1 of " in found[0].splitlines()[0] and "fit «behruz bro»" in found[0].splitlines()[0]
+    assert found[0].splitlines()[1].startswith(f'{whole["Behruz Bro"].strip()} listitem "Behruz Bro"')
+    assert '"Behruz Bro"' in found[1] and '"Бехруз Каримов"' in found[1] and '"Asadullo Aka"' not in found[1]
+    assert "0 of " in found[2] and "one word of the name at a time" in found[2] and "@username" in found[2]
     head = lines[0]
     assert "more out of sight (scrolled away or outside the window) - scroll to see them" in head
     assert any('text "строка 1"' in line for line in lines) and not any("строка 300" in line for line in lines)
@@ -296,6 +303,25 @@ def test_what_is_in_sight_and_enter_that_sends(tmp_path, test_window, monkeypatc
     ]
     assert pressed == [[0x0D], [0x0D], [0x10, 0x0D]]  # the refused one was not pressed
     db.close()
+
+
+def test_a_name_as_the_agent_looks_for_it():
+    """2026-10-28: «напиши behruz bro» became a made-up @behruz_bro that Telegram did not know. A name is found in
+    the list by its words - any case, Cyrillic as Latin, х and x as h - and the guide says not to make up usernames."""
+    assert pc.name_key("Ulug'bek  Aka") == "ulugbek aka" and pc.name_key("@behruz_bro") == "behruz bro"
+    assert pc.name_key("Хуршид") == pc.name_key("Xurshid") == pc.name_key("Khurshid") == "hurshid"
+    assert pc.name_fits("behruz bro", "Behruz Bro") and pc.name_fits("БЕХРУЗ БРО", "Behruz Bro")
+    assert pc.name_fits("behr", "Behruz Bro") and pc.name_fits("bro behruz", "Behruz Bro")  # words, any order
+    assert not pc.name_fits("behruz bro", "Behruz Karimov") and not pc.name_fits("", "Behruz Bro")
+    items = [{"role": "listitem", "name": n, "password": False, "value": None, "toggled": None, "enabled": True,
+              "place": (0, 20 * i, 200, 20), "depth": 3, "focus": False}
+             for i, n in enumerate(["Избранное", "Behruz Bro", "Ulug'bek Aka"])]  # fmt: skip
+    text = pc.tree_text({"id": 7, "title": "Telegram", "program": "Telegram"}, items, find="behruz bro")
+    assert text == (
+        'Window 7 «Telegram» - Telegram; 1 of 3 elements fit «behruz bro»:\n[2] listitem "Behruz Bro" at 0,20 200x20'
+    )  # its number in the whole look
+    guide = __import__("hub.autonomous", fromlist=["GUIDE"]).GUIDE
+    assert "never make up a @username from a name" in guide and 'find="the name"' in guide
 
 
 def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QLabel,
     QLineEdit,
+    QListWidget,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -70,6 +71,11 @@ for n in range(1, 301):
 history.setWidget(lines)
 history.setFixedHeight(90)
 layout.addWidget(history)
+chats = QListWidget()  # a chat list, as a messenger's: names to find (2026-10-28)
+chats.setAccessibleName("Чаты")
+chats.addItems(["Behruz Bro", "Бехруз Каримов", "Asadullo Aka"])
+chats.setFixedHeight(70)
+layout.addWidget(chats)
 message = QLineEdit()
 message.setAccessibleName("Сообщение")
 
