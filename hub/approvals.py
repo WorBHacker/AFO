@@ -219,9 +219,12 @@ def _diff(tool: str, data: dict[str, Any], root: Path | None) -> str:
                 after = after.replace(old, new) if edit.get("replace_all") else after.replace(old, new, 1)
             else:  # the file is gone, or the text is not in it: show the edit itself
                 before, after = (before or "") + old, (after if after is not None else "") + new
-    shown = path.relative_to(root).as_posix() if root is not None and path.is_relative_to(root) else name
-    if shown == name and path.is_absolute():  # no project to count from (an outside client): its folder and name,
-        shown = "/".join(path.parts[-2:])  # not a whole C:/Users/... line cut off in the card (2026-10-28)
+    if root is not None and path.is_relative_to(root):
+        shown = path.relative_to(root).as_posix()
+    elif path.is_absolute():  # no project to count from (an outside client): its folder and name, not a whole
+        shown = "/".join(path.parts[-2:])  # C:/Users/... line cut off in the card (2026-10-28)
+    else:
+        shown = name
     lines = difflib.unified_diff(
         (before or "").splitlines(keepends=True),
         (after or "").splitlines(keepends=True),

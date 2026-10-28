@@ -9,7 +9,9 @@ Item {
     objectName: "approvalBanner"
     property real column: 780
     property real room: 600  // the height the card may take: from its top to the composer
-    readonly property bool wanted: Approvals.cardCount > 0 && (App.mode === "chats" || App.mode === "agent")
+    // a project's session open in «Проекты» too: without its card a Claude Code session there seemed stuck (2026-10-28)
+    readonly property bool wanted: Approvals.cardCount > 0 && (App.mode === "chats" || App.mode === "agent"
+                                                                || App.showProjectChat)
     property var shown: ({})  // kept while the card fades out after the last answer
     signal finished()  // the last request is answered: the keyboard goes back to the composer
 
@@ -25,7 +27,7 @@ Item {
         const had = shown && shown.id ? shown.id : ""
         if (next && next.id) {
             shown = next
-            if (next.id !== had && App.mode !== "projects" && !banner.typing())
+            if (next.id !== had && (App.mode !== "projects" || App.showProjectChat) && !banner.typing())
                 Qt.callLater(card.forceActiveFocus)
         } else if (had && card.activeFocus) {
             banner.finished()

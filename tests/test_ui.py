@@ -5102,6 +5102,19 @@ def test_a_projects_sessions_stay_in_projects(qapp):
         app.openProjectChat("s1")  # opens in «Проекты», in place of the overview
         wait_until(lambda: not app.bg.busy and app.currentId == "s1")
         assert app.mode == "projects" and app.showProjectChat
+        # its requests show over it, as in «Чаты» (2026-10-28: a Claude Code session waited unseen)
+        banner = quick.window.findChild(QObject, "approvalBanner")
+        app.flash("")
+        listing = {"command": "Get-ChildItem"}
+        waiting = {**APPROVAL, "id": "ap-s1", "conversation_id": "s1", "tool": "PowerShell", "kind": "command",
+                   "input": listing, "preview": {"kind": "command", "text": listing["command"]}}  # fmt: skip
+        app.approvals.on_event("approval.requested", {"approval": waiting})
+        wait_until(lambda: banner.property("opacity") == 1)
+        assert app.approvals.card["id"] == "ap-s1" and "ждёт подтверждения" not in app.flashText
+        app.showProjectOverview()
+        wait_until(lambda: not banner.property("visible"))  # the overview: the shield says it
+        app.openProjectChat("s1")
+        app.approvals.on_event("approval.decided", {"approval": {**waiting, "status": "allowed"}})
         app.showProjectOverview()
         assert not app.showProjectChat and app.mode == "projects"
 

@@ -339,7 +339,8 @@ class Approvals(QObject):
             self._latest = approval.get("conversation_id") or ""
             (row,) = self._rows([approval])
             who = row["who"]
-            shown = bool(self._latest) and self._latest == self._open() and self.app.mode in ("chats", "agent")
+            here = self.app.mode in ("chats", "agent") or self.app.showProjectChat  # where the chat's card shows
+            shown = bool(self._latest) and self._latest == self._open() and here
             if not shown:  # the open chat's card says it itself
                 self.app.flash(f"{who} ждёт подтверждения — значок щита в заголовке", ms=8000)
             self.requested.emit(f"{who} ждёт подтверждения", " · ".join(s for s in (row["title"], row["where"]) if s))
