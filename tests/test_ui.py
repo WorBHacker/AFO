@@ -4056,6 +4056,13 @@ def test_the_agent_mode_in_the_window(qapp):
             "сбивался",
             "Считать пустые?",
         )
+        # a run's error in plain words above its technical text (2026-10-28: an 8K model's context ran out)
+        run = next(r for r in view._runs if r["id"] == "auto1")
+        run["detail"] = "llama-swap: HTTP 400: request (15961 tokens) exceeds the available context size (8192 tokens)"
+        assert view.task["detailPlain"].startswith("Разговор не помещается в модель — ")
+        assert "Запуск в llama-swap → Контекст" in view.task["detailPlain"]
+        run["detail"] = ""
+        assert view.task["detailPlain"] == ""
         assert quick.window.findChild(QObject, "agentQuestion").property("visible")
         view.answer("q1", "  нет  ")
         view.pause()

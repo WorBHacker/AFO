@@ -9,8 +9,11 @@ English and code alike) against the window less room for the answer and the tool
    stay paired, as providers require);
 2. then long old texts keep only their beginning and end;
 3. the last messages stay whole while that is enough - the model works from them; a small window takes their tool
-   results too, all but the very last. When even that is not enough, the request goes as it is and the provider
-   says so (in plain words: «Разговор не помещается в модель»).
+   results too, all but the very last;
+4. then the very last result keeps its beginning and end, as much as the window has left (2026-10-28: an agent with
+   an 8K model looked at a whole Telegram chat - 250 elements, ~6800 tokens - and the run ended). When even that is
+   not enough, the request goes as it is and the provider says so (in plain words: «Разговор не помещается в
+   модель»).
 Before that, always: a look at a window (screen_look - a long tree of its elements) is stale once the agent has
 looked again; only the last LOOKS_KEPT looks go whole, the older ones as a note - the request stays small and fast.
 
@@ -36,8 +39,11 @@ STUB = ("[{name}: прежний результат ({chars} знаков) уб�
 LOOKS = frozenset({"screen_look"})  # stale once the agent looked again
 LOOKS_KEPT = 2
 STALE = "[{name}: прежний осмотр окна ({chars} знаков) убран — окно с тех пор менялось; смотрите последний осмотр]"
-OVERFLOW = re.compile(r"(?i)exceed\w*\s+(?:the\s+)?context|context\s+(?:window|length)|maximum\s+context|"
-                      r"prompt\s+is\s+too\s+long|too\s+many\s+tokens")  # fmt: skip
+OVERFLOW = re.compile(r"(?i)exceed\w*\s+(?:the\s+)?(?:available\s+)?context|context\s+(?:window|length)|"
+                      r"maximum\s+context|prompt\s+is\s+too\s+long|too\s+many\s+tokens")  # fmt: skip
+LAST_MIN = 1500  # the very last result keeps at least this many characters
+CUT = ("\n[… урезано, чтобы поместиться в контекст модели: {kept} знаков из {chars}. Нужна середина - смотрите частью "
+       "(screen_look с part= или find=) или читайте меньше за раз …]\n")  # fmt: skip
 
 
 def tokens(value: Any) -> int:
@@ -62,7 +68,11 @@ def overflow(detail: str) -> int | None:
     None - not that refusal."""
     if not OVERFLOW.search(detail or ""):
         return None
-    counted = re.search(r"(?i)prompt\s*\((\d+)\s*tokens?\)|(\d+)\s*(?:input\s+)?tokens?\s*>", detail)
+    counted = re.search(
+        r"(?i)(?:prompt|request)\s*\((\d+)\s*tokens?\)|(\d+)\s*(?:input\s+)?tokens?\s*>"
+        r'|"n_prompt_tokens"\s*:\s*(\d+)',
+        detail,
+    )  # llama.cpp: «request (15961 tokens) exceeds …»
     return int(next(g for g in counted.groups() if g)) if counted else 0
 
 
@@ -131,5 +141,15 @@ def fit(prompt: list[dict[str, Any]], *, window: int | None, tools: list[dict] |
         total -= before - cost(entry)
         shortened += 1
         if total <= budget:
-            break
+            return out, shortened
+    last = next((i for i in range(len(out) - 1, -1, -1) if out[i]["role"] == "tool"), None)
+    text = out[last].get("content") if last is not None else None
+    if isinstance(text, str) and len(text) > LAST_MIN:  # 4. the very last result: its beginning and end
+        entry = out[last]
+        others = total - cost(entry)
+        keep = max(LAST_MIN, int((budget - others) * CHARS_PER_TOKEN / scale) - len(CUT) - 300)  # its fields, escapes
+        if keep < len(text):
+            head = keep * 2 // 3
+            entry["content"] = text[:head] + CUT.format(kept=keep, chars=len(text)) + text[-(keep - head) :]
+            shortened += 1
     return out, shortened

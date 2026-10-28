@@ -62,6 +62,28 @@ def test_the_models_own_count_and_its_refusal():
     assert fit.overflow("anthropic: prompt is too long: 210000 tokens > 200000 maximum") == 210000
     assert fit.overflow("openai: This model's maximum context length is 128000 tokens") == 0  # said, not counted
     assert fit.overflow("llama-swap: 502 upstream command exited prematurely") is None
+    llama_cpp = ('llama-swap: HTTP 400: {"error":{"code":400,"message":"request (15961 tokens) exceeds the available '
+                 'context size (8192 tokens), try increasing it","type":"exceed_context_size_error",'
+                 '"n_prompt_tokens":15961,"n_ctx":8192}}')  # fmt: skip
+    assert fit.overflow(llama_cpp) == 15961  # its own words (2026-10-28): the request goes again, shorter
+
+
+def test_a_small_window_cuts_the_last_result_too():
+    """2026-10-28: an agent on an 8K model looked at a whole Telegram chat (250 elements, ~6800 tokens) right after
+    a few short steps; nothing older was long enough to give way, so the last look keeps its beginning and end."""
+    prompt = [
+        *long_run(6, 200),
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "look", "name": "screen_look", "input": {}}]},
+        {"role": "tool", "tool_call_id": "look", "name": "screen_look",
+         "content": "начало осмотра " + "элемент " * 2500 + " конец осмотра"},
+    ]  # fmt: skip
+    out, shortened = fit.fit(prompt, window=8192)
+    last = out[-1]["content"]
+    assert shortened >= 1 and fit.estimate(out) <= fit.room(8192)
+    assert last.startswith("начало осмотра") and last.endswith("конец осмотра") and "урезано" in last
+    assert "screen_look с part= или find=" in last and prompt[-1]["content"].count("элемент") == 2500
+    starved, _ = fit.fit(prompt, window=8192, tools=[{"description": "x" * 21000}])  # tools take the whole room
+    assert len(starved[-1]["content"]) >= fit.LAST_MIN  # the last result never goes below its minimum
 
 
 def test_a_chat_past_its_window_still_asks_the_model(hub):  # noqa: F811

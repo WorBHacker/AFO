@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.plain_errors import explain
+
 from .. import presenter
 from .project_rows import local_time
 from .rows import model_name, model_vector, refusal_items, refusal_name
@@ -202,6 +204,7 @@ class AutonomyView(QObject):
             "refusal": REFUSAL_SAID.get(detail.get("refusal_vector"), ""),  # the task's own choice
             "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
+            "detailPlain": " — ".join(explain(run.get("detail") or "") or ()),  # the usual errors in plain words
             "meta": " · ".join(p for p in (model, f"шагов {run['steps']}" if run.get("steps") else "",  # at its end
                                            presenter.money(run["cost_usd"]) if run.get("cost_usd") else "",
                                            local_time(run.get("created_at", ""))) if p),

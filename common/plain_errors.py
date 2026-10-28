@@ -80,7 +80,8 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
         re.compile(r"(?i)context (length|window)|too many tokens|maximum context|prompt is too long|exceeds the"),
         "Разговор не помещается в модель",
         "Разговор стал длиннее, чем модель может прочитать. Начните новый чат или выберите модель с большим "
-        "контекстом.",
+        "контекстом; у локальной модели контекст можно поднять: «Настройка моделей → Запуск в llama-swap → Контекст» "
+        "(агенту нужно не меньше 32768).",
     ),
     (
         re.compile(

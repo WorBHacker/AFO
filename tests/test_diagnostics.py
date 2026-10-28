@@ -28,6 +28,8 @@ def test_the_usual_errors_in_plain_words():
         "openrouter: 402 insufficient credits": "Закончились деньги на счёте",
         "deepseek: All connection attempts failed": "Нет связи с интернетом",
         "gemini: The input token count exceeds the maximum context": "Разговор не помещается в модель",
+        "llama-swap: HTTP 400: request (15961 tokens) exceeds the available context size (8192 tokens)":
+            "Разговор не помещается в модель",
         "no answer in 5 minutes": "Модель отвечает слишком долго",
     }  # fmt: skip
     for text, title in cases.items():

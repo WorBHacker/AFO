@@ -373,14 +373,24 @@ Item {
                         font.pixelSize: 12
                     }
                 }
+                Text {  // the usual errors in plain words, what to do; the technical text below, for whoever helps
+                    objectName: "taskDetailPlain"
+                    visible: !!view.task.detailPlain
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: view.task.detailPlain || ""
+                    color: Theme.p.error
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
                 Text {
                     visible: !!view.task.detail
                     width: parent.width
                     wrapMode: Text.Wrap
                     text: view.task.detail || ""
-                    color: Theme.p.error
+                    color: view.task.detailPlain ? Theme.p.faint : Theme.p.error
                     font.family: Theme.uiFont
-                    font.pixelSize: 13
+                    font.pixelSize: view.task.detailPlain ? 12 : 13
                 }
 
                 // ---------- the user's own plan ----------
