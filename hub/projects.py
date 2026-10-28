@@ -125,6 +125,13 @@ def update_project(
     return get_project(conn, project_id)
 
 
+def set_path(conn: sqlite3.Connection, project_id: str, path: Path) -> Project:
+    """The project's folder moved (renamed on the same disk, hub/watch.py found it): its new place."""
+    conn.execute("UPDATE projects SET path = ?, updated_at = ? WHERE id = ?",
+                 (str(path.resolve()), utc_now(), project_id))  # fmt: skip
+    return get_project(conn, project_id)
+
+
 def remove_project(conn: sqlite3.Connection, project_id: str) -> bool:
     return bool(conn.execute("DELETE FROM projects WHERE id = ?", (project_id,)).rowcount)
 

@@ -80,6 +80,14 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
         case "project.removed":
             name = projects.get(p.get("id", ""), "") or p.get("name", "")
             return item("projects", "folder", f"Проект «{name}» убран из списка" if name else "Проект убран из списка")
+        case "project.moved":  # its folder renamed or moved on the disk: the hub follows it (2026-10-28)
+            return item("projects", "folder", f"Папка проекта «{p.get('name', '')}» переименована — путь обновлён",
+                        f"{p.get('from', '')} → {p.get('to', '')}")  # fmt: skip
+        case "project.missing":
+            return item("projects", "folder", f"Папка проекта «{p.get('name', '')}» пропала", p.get("path", ""),
+                        "warn")  # fmt: skip
+        case "project.found":
+            return item("projects", "folder", f"Папка проекта «{p.get('name', '')}» снова на месте", p.get("path", ""))
         case "terminal.started":
             info = p.get("terminal") or {}
             return item("terminals", "terminal", f"Запущен терминал: {info.get('title', '')}", info.get("cwd", ""))

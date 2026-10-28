@@ -12,6 +12,11 @@ there, collected per project and handled on the event loop FLUSH_S after the fir
 
 Both events are live only (not stored): the files and git are the record. Git runs read-only and without the index
 lock (hub/projects.py), so reading it never sets off the watcher again.
+
+A project's folder that goes away (2026-10-28; it was silently no longer watched until the hub restarted) is noticed
+within `check_s` (the real hub's 5 s): renamed or moved on the same disk - found again by its file id (NTFS keeps
+it) among its old neighbours, the project's path changes and watching goes on (`project.moved`); gone - not watched,
+`project.missing`; back again - watched, `project.found`. Those three are stored: they are the feed's.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import contextlib
 import logging
 import os
 import subprocess
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +40,27 @@ from . import projects
 from .projects import CACHES, Project, ProjectError
 
 log = logging.getLogger("hub.watch")
+
+
+def _observer() -> Any:
+    """The observer, with watchdog's Windows emitter closing its folder's handle once. watchdog 6 closes it when the
+    watched folder is deleted, and again when the watch is unscheduled: the second CloseHandle hits whatever handle
+    reused that number - the whole hub fell («Fatal Python error: ... ReleaseSemaphore failed», 2026-10-28)."""
+    if sys.platform != "win32":
+        return Observer()
+    from watchdog.observers import winapi
+    from watchdog.observers.api import DEFAULT_OBSERVER_TIMEOUT, BaseObserver
+    from watchdog.observers.read_directory_changes import WindowsApiEmitter
+
+    class OnceEmitter(WindowsApiEmitter):
+        def on_thread_stop(self) -> None:
+            # no lock: watchdog stops a deleted folder's emitter from inside its own (not re-entrant) lock
+            handle, self._whandle = self._whandle, None
+            if handle:
+                winapi.close_directory_handle(handle)
+
+    return BaseObserver(OnceEmitter, timeout=DEFAULT_OBSERVER_TIMEOUT)
+
 
 FLUSH_S = 0.4
 MAX_LISTED = 200
@@ -127,8 +154,14 @@ class _Handler(FileSystemEventHandler):
 class ProjectWatcher:
     """Watches projects' folders and publishes `project.files` and `project.git` on the bus."""
 
-    def __init__(self, bus, *, ignore: Iterable[Path] = (), flush_s: float = FLUSH_S):
+    def __init__(self, bus, *, ignore: Iterable[Path] = (), flush_s: float = FLUSH_S, listed=None, relocate=None,
+                 check_s: float = 0.0):  # fmt: skip
+        """`listed`: async, every listed project now; `relocate`: async (project_id, new folder) -> the project as it
+        is then - both from the hub's database, for the folders' check (none given: no check)."""
         self._bus = bus
+        self._listed, self._relocate, self._check_s = listed, relocate, check_s
+        self._ids: dict[str, tuple[int, int]] = {}  # project -> its folder's (device, file id), to find it moved
+        self._missing: set[str] = set()
         self.ignore = tuple(_norm(str(p)) for p in ignore)  # folders never reported, e.g. the hub's own data
         self._flush_s = flush_s
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -148,7 +181,10 @@ class ProjectWatcher:
         """Must be called on the event loop."""
         self._loop = asyncio.get_running_loop()
         for project in found:
-            self.watch(project)
+            if not self.watch(project) and not project.root.is_dir():
+                self._missing.add(project.id)
+        if self._listed is not None and self._check_s > 0:
+            self._spawn(self._check_loop())
 
     def watch(self, project: Project) -> bool:
         if self._loop is None or project.id in self._watches:
@@ -157,7 +193,7 @@ class ProjectWatcher:
             log.info("project %s: folder %s is missing, not watched", project.id, project.path)
             return False
         if self._observer is None:
-            self._observer = Observer()
+            self._observer = _observer()
             self._observer.daemon = True
             self._observer.start()
         try:
@@ -166,6 +202,9 @@ class ProjectWatcher:
             log.warning("project %s: cannot watch %s (%s)", project.id, project.path, exc)
             return False
         self._watches[project.id] = (project, handle)
+        with contextlib.suppress(OSError):
+            stat = project.root.stat()
+            self._ids[project.id] = (stat.st_dev, stat.st_ino)
         log.info("watching project %s at %s", project.id, project.path)
         self._spawn(self.refresh_git(project.id))  # the state to compare the first change with
         return True
@@ -191,6 +230,41 @@ class ProjectWatcher:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._loop = None
+
+    # --- the folders themselves: gone, moved, back ---
+
+    async def _check_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._check_s)
+            try:
+                await self.check(await self._listed())
+            except Exception:
+                log.exception("checking the projects' folders failed")
+
+    async def check(self, found: Iterable[Project]) -> None:
+        """Each listed project's folder against what is watched (see the module's note)."""
+        for project in found:
+            here = await asyncio.to_thread(project.root.is_dir)
+            if project.id in self._watches and not here:
+                self.unwatch(project.id)
+                moved = await asyncio.to_thread(find_moved, project.root, self._ids.get(project.id))
+                if moved is not None and self._relocate is not None:
+                    renamed = await self._relocate(project.id, moved)
+                    self.watch(renamed)
+                    log.info("project %s moved: %s -> %s", project.id, project.path, renamed.path)
+                    await self._bus.publish("project.moved", {"project_id": project.id, "name": project.name,
+                                                              "from": project.path, "to": renamed.path,
+                                                              "project": renamed.to_json()})  # fmt: skip
+                else:
+                    self._missing.add(project.id)
+                    log.info("project %s: folder %s is gone", project.id, project.path)
+                    await self._bus.publish("project.missing", {"project_id": project.id, "name": project.name,
+                                                                "path": project.path})  # fmt: skip
+            elif project.id not in self._watches and here and self.watch(project):
+                if project.id in self._missing:
+                    self._missing.discard(project.id)
+                    await self._bus.publish("project.found", {"project_id": project.id, "name": project.name,
+                                                              "path": project.path})  # fmt: skip
 
     # --- from the observer's thread to the loop ---
 
@@ -273,6 +347,25 @@ class ProjectWatcher:
                     return
         finally:
             self._git_running.discard(project_id)
+
+
+def find_moved(root: Path, file_id: tuple[int, int] | None) -> Path | None:
+    """The folder that was `root`, renamed or moved among its old neighbours (its parent, and the parent's parent):
+    the one with the same (device, file id). None: not found - deleted, or moved further."""
+    if not file_id or not file_id[1]:
+        return None
+    for place in (root.parent, root.parent.parent):
+        try:
+            entries = list(place.iterdir()) if place.is_dir() else []
+        except OSError:
+            continue
+        for entry in entries:
+            with contextlib.suppress(OSError):
+                if entry.is_dir():
+                    stat = entry.stat()
+                    if (stat.st_dev, stat.st_ino) == file_id:
+                        return entry
+    return None
 
 
 def head_change(before: dict[str, Any] | None, after: dict[str, Any]) -> dict[str, Any] | None:

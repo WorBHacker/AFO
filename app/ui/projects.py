@@ -532,7 +532,7 @@ class Projects(QObject):
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "project.removed":
             self._forget(payload.get("id", ""))
-        elif kind in ("project.added", "project.changed"):
+        elif kind in ("project.added", "project.changed", "project.moved", "project.missing", "project.found"):
             self.load(catch_up=False)
         elif kind == "processes.changed":
             self._set_processes(payload.get("projects") or {})

@@ -5121,3 +5121,20 @@ def test_what_the_hub_keeps_in_the_settings(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_a_projects_folder_moved_gone_and_back_in_the_feed():
+    """2026-10-28: the feed says when a project's folder was renamed (and the hub followed it), went, came back."""
+    from app.ui.feed_rows import describe
+
+    def said(kind, **payload):
+        row = describe({"type": kind, "payload": {"name": "SiteTest", **payload}}, projects={}, chats={})
+        return row["title"], row["detail"], row["level"]
+
+    assert said("project.moved", **{"from": "F:/a", "to": "F:/b"}) == (
+        "Папка проекта «SiteTest» переименована — путь обновлён",
+        "F:/a → F:/b",
+        "",
+    )
+    assert said("project.missing", path="F:/b") == ("Папка проекта «SiteTest» пропала", "F:/b", "warn")
+    assert said("project.found", path="F:/b") == ("Папка проекта «SiteTest» снова на месте", "F:/b", "")

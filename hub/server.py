@@ -71,7 +71,7 @@ from .mcp_client import McpServers
 from .model_install import Installer
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
-from .projects import list_projects
+from .projects import list_projects, set_path
 from .retention import Keeper
 from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
@@ -154,7 +154,11 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
-        app.state.watcher = ProjectWatcher(bus, ignore=[paths.root])
+        app.state.watcher = ProjectWatcher(
+            bus, ignore=[paths.root], listed=lambda: db.acall(list_projects),
+            relocate=lambda pid, folder: db.acall(lambda conn: set_path(conn, pid, folder)),
+            check_s=settings.folder_check_s,
+        )  # fmt: skip
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.programs = ProgramCatalog(bus, db, settings.programs_interval_s)
         app.state.backup = DailyBackup(paths.db, paths.backups, settings.backup_interval_s)

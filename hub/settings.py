@@ -30,6 +30,7 @@ class HubSettings:
     schedule_tick_s: float = 0.0  # how often schedules are looked at (9.7); 0: never by themselves - tests
     programs_interval_s: float = 0.0  # looks for new programs (D43); 0: only when asked - tests never scan
     backup_interval_s: float = 0.0  # checks for today's database copy (D29); 0: never
+    folder_check_s: float = 0.0  # projects' folders gone, moved, back (hub/watch.py); 0: never by themselves - tests
 
     @classmethod
     def from_env(cls) -> HubSettings:
@@ -41,4 +42,5 @@ class HubSettings:
             programs_interval_s=600.0,
             schedule_tick_s=20.0,
             backup_interval_s=3600.0,
+            folder_check_s=5.0,
         )

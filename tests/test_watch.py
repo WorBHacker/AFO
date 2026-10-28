@@ -189,3 +189,77 @@ def test_the_hub_watches_projects_while_they_are_listed(repo):
         assert app.state.watcher.watched == {pid}
         assert client.delete(f"/v1/projects/{pid}").status_code == 204
         assert app.state.watcher.watched == set()
+
+
+def test_a_projects_folder_renamed_gone_and_back(tmp_path):
+    """2026-10-28 (a debt of 5.4): a project's folder renamed on the disk is found again by its file id - the path
+    follows it and watching goes on; deleted - not watched, said once; back - watched again."""
+    import dataclasses
+    import shutil
+
+    class Recorder:
+        def __init__(self):
+            self.events = []
+
+        async def publish(self, event_type, payload=None, *, project_id=None, persist=True):
+            self.events.append((event_type, payload, persist))
+
+        def kinds(self):
+            return [e[0] for e in self.events]
+
+    folder = tmp_path / "proj"
+    (folder / "src").mkdir(parents=True)
+    (folder / "a.txt").write_text("a", encoding="utf-8")
+    listed = [project(folder)]
+
+    async def relocate(project_id, new):
+        listed[0] = dataclasses.replace(listed[0], path=str(new.resolve()))
+        return listed[0]
+
+    async def scenario():
+        bus = Recorder()
+        watcher = ProjectWatcher(bus, relocate=relocate)  # no check_s: the test checks itself
+        watcher.start(list(listed))
+        assert watcher.watched == {"p1"}
+        renamed = tmp_path / "proj-renamed"
+        folder.rename(renamed)
+        await watcher.check(list(listed))
+        moved = [e for e in bus.events if e[0] == "project.moved"]
+        assert len(moved) == 1 and moved[0][2] is True  # stored: the feed's
+        assert moved[0][1]["from"] == str(folder) and moved[0][1]["to"] == str(renamed.resolve())
+        assert listed[0].path == str(renamed.resolve()) and watcher.watched == {"p1"}
+        (renamed / "new.txt").write_text("x", encoding="utf-8")  # watched at its new place
+        await until(lambda: "project.files" in bus.kinds())
+        shutil.rmtree(renamed)
+        await watcher.check(list(listed))
+        await watcher.check(list(listed))  # said once
+        assert bus.kinds().count("project.missing") == 1 and watcher.watched == set()
+        renamed.mkdir()
+        await watcher.check(list(listed))
+        assert "project.found" in bus.kinds() and watcher.watched == {"p1"}
+        await watcher.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_deleted_folders_handle_is_closed_once(monkeypatch, tmp_path):
+    """watchdog 6 closed a deleted folder's handle twice (when it went, and when unscheduled): the second CloseHandle
+    hit a reused number and the hub fell. The hub's emitter closes it once."""
+    import sys
+
+    import pytest
+
+    if sys.platform != "win32":
+        pytest.skip("the Windows emitter")
+    import watchdog.observers.winapi as winapi
+
+    from hub import watch
+
+    closed = []
+    monkeypatch.setattr(winapi, "close_directory_handle", closed.append)  # no real CloseHandle in a test
+    observer = watch._observer()
+    emitter = observer._emitter_class(observer.event_queue, watch.ObservedWatch(str(tmp_path), recursive=True))
+    emitter._whandle = 1234
+    emitter.on_thread_stop()
+    emitter.on_thread_stop()
+    assert closed == [1234]
