@@ -9,7 +9,7 @@ import pytest
 
 from hub import web
 from hub.tools import ToolError
-from tests.test_changes import edit, finished, result_of, say, setup_chat, wait
+from tests.test_changes import edit, finished, new_chat, result_of, say, setup_chat, wait
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 PAGE = (
@@ -82,16 +82,21 @@ def fetch_call(url):
 
 
 def test_reading_the_web_is_asked_and_taints_the_chat(hub, repo, site):  # noqa: F811
-    steps = [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}]]
-    _pid, conv, _provider = setup_chat(hub, repo, steps, mode="trusted")
+    pid, conv, provider = setup_chat(hub, repo, [[fetch_call(f"{site}/doc")]])
     say(hub, conv)
     asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "web_fetch" and asked["kind"] == "network" and asked["preview"]["text"] == f"{site}/doc"
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
-    # the page is read; then the edit - in a trusted chat - is asked all the same: the chat has read the web (D19)
-    write = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "edit_file"])[0]
+    assert "# Установка" in result_of(finished(hub, conv))["output"]
+
+    # a trusted chat reads the page without a card (2026-10-28); but then its edit is asked: it has read the web (D19)
+    provider.steps += [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}]]
+    trusted = new_chat(hub, pid, "trusted")
+    say(hub, trusted)
+    write = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert write["tool"] == "edit_file"  # the first card: the read went by itself
     hub.post(f"/v1/approvals/{write['id']}", json={"allow": True})
-    messages = finished(hub, conv)
+    messages = finished(hub, trusted)
     results = [b for m in messages if m["role"] == "tool" for b in m["content"]]
     assert "# Установка" in results[0]["output"] and results[1]["error"] is False
 

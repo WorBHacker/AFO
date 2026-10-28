@@ -22,8 +22,10 @@ allow the cloud and sees the others by name (D10); it gets no chat where a local
 The model may also write files of the chat's projects (stage 5, D17): write_file and edit_file are asked in the
 approval queue with a diff, unless the chat is trusted or an answer "for this chat" / a rule of the project covers
 them; a read-only chat refuses them. Each write is kept as a change that can be undone (hub/changes.py). And it may
-run commands (run_command, hub/commands.py) in a hub terminal: asked every time unless the project's whitelist or
-an answer for the chat covers that very command - destructive and network commands always.
+run commands (run_command, hub/commands.py) in a hub terminal: asked unless the project's whitelist or an answer for
+the chat covers that very command - destructive and network commands always. A trusted chat asks nothing but a
+destructive action (the user's word 2026-10-28: commands, the network and sending too) - until it reads the web
+(D19): from then on it asks like any other.
 
 A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in the chat's project instead
 (hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
@@ -66,6 +68,7 @@ from . import (
     web,
     websearch,
 )
+from .approvals import trusted_skips
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -763,8 +766,8 @@ class ChatService:
                 "or throws it away"), False  # fmt: skip
 
     async def _run_command(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
-        """A command the model wants run: asked (a trusted chat too; the project's whitelist and the chat's answers
-        aside), then run in a hub terminal the user sees, waited for."""
+        """A command the model wants run: asked (the project's whitelist, the chat's answers and a trusted chat's
+        ordinary commands aside), then run in a hub terminal the user sees, waited for."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
         if settings["mode"] == "read_only":
@@ -775,9 +778,11 @@ class ChatService:
         except ToolError as exc:
             return str(exc), True
         tainted = await self._read_the_web(conversation_id)
-        allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=not tainted)
-        if not allowed:
-            return why, True
+        if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args):
+            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
+                                                cover=not tainted)  # fmt: skip
+            if not allowed:
+                return why, True
         try:
             return await commands.run(self.terminals, project, args, by="model"), False
         except ToolError as exc:
@@ -787,13 +792,14 @@ class ChatService:
             return f"the command did not start: {exc}", True
 
     async def _web_fetch(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
-        """A page the model wants to read: asked unless the site is on the short list or the project's (D19)."""
+        """A page the model wants to read: asked unless the site is on the short list or the project's (D19), or
+        the chat is trusted."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             url = web.check_url(args.get("url"))
         except ToolError as exc:
             return str(exc), True
-        if web.site(url) not in web.ALLOWED_SITES:
+        if web.site(url) not in web.ALLOWED_SITES and not await self._trusted(conversation_id):
             project = ctx.projects[0] if ctx.projects else None  # the chat's project keeps "always" answers
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
             if not allowed:
@@ -804,8 +810,8 @@ class ChatService:
             return str(exc), True
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
-        """A search the model wants: asked every time - the query leaves this computer (D19) - with the engine the
-        user connected (Brave Search or their SearXNG)."""
+        """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is
+        trusted; with the engine the user connected (their SearXNG, Tavily or Brave Search)."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             query = websearch.query_of(args)
@@ -819,9 +825,10 @@ class ChatService:
                     "key in the window's Connections"), True  # fmt: skip
         project = ctx.projects[0] if ctx.projects else None
         shown = {"query": query, "engine": websearch.ENGINES[engine]}
-        allowed, why = await self._ask_user(conversation_id, call["name"], shown, project, cancel)
-        if not allowed:
-            return why, True
+        if not await self._trusted(conversation_id):
+            allowed, why = await self._ask_user(conversation_id, call["name"], shown, project, cancel)
+            if not allowed:
+                return why, True
         try:  # the first engine connected; when it fails, the next one
             count = args.get("count") or websearch.DEFAULT_COUNT
             answered, found = await websearch.search_any(query, store=self.secrets, db=self._db, count=count)
@@ -830,9 +837,10 @@ class ChatService:
         return websearch.as_text(query, answered, found), False
 
     async def _mcp_tool(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
-        """An outside MCP server's tool (9.5, D42), as its class says: a read runs; a write is asked unless the chat
-        is trusted (an answer for the chat covers it); a command is asked, the same input covered; network, send
-        and destructive are asked every time. A read-only chat reads only."""
+        """An outside MCP server's tool (9.5, D42), as its class says: a read runs; a write is asked (an answer for
+        the chat covers it); a command is asked, the same input covered; network, send and destructive are asked
+        every time. A trusted chat asks only a destructive one (until it reads the web, D19); a read-only chat reads
+        only."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         cls = self.mcp.tool_class(call["name"])
         if cls != "read":
@@ -840,13 +848,17 @@ class ChatService:
             if settings["mode"] == "read_only":
                 return READ_ONLY, True
             tainted = await self._read_the_web(conversation_id)
-            if cls != "write" or settings["mode"] != "trusted" or tainted:
+            if settings["mode"] != "trusted" or tainted or cls == "destructive":
                 project = ctx.projects[0] if ctx.projects else None
                 allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                     cover=not tainted)  # fmt: skip
                 if not allowed:
                     return why, True
         return await self.mcp.call(call["name"], args, cancel)
+
+    async def _trusted(self, conversation_id: str) -> bool:
+        settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
+        return settings["mode"] == "trusted"
 
     async def _read_the_web(self, conversation_id: str) -> bool:
         """Has the model in this chat read a web page, searched, or used an outside MCP tool that goes out there?

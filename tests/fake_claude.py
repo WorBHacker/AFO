@@ -1,7 +1,8 @@
 """A stand-in for the `claude` CLI in tests: speaks its stream-json, asks for permission through the hub's MCP.
 
 What it does depends on the user's message: "edit" - asks to edit notes.txt through --permission-prompt-tool and
-edits it if allowed; "question" - asks the user (AskUserQuestion, through the same tool) and says what was picked;
+edits it if allowed; "run" - asks to run a PowerShell command ("run push": a destructive one) and says the verdict;
+"question" - asks the user (AskUserQuestion, through the same tool) and says what was picked;
 "limit" - hits a subscription limit; "hang" - waits until stopped; anything else - one answer.
 It writes what it was started with (arguments, environment, input, folder) to $FAKE_CLAUDE_LOG, a line per run.
 """
@@ -88,6 +89,13 @@ def main() -> int:
         emit({"type": "assistant", "parent_tool_use_id": None,
               "message": {"id": "m2", "content": [{"type": "text", "text": answer}]}})  # fmt: skip
         turns = 2
+    elif "run" in text:
+        command = "git push --force origin main" if "push" in text else "node make_docx.js"
+        verdict = ask_permission(option(argv, "--mcp-config"), option(argv, "--permission-prompt-tool"),
+                                 "PowerShell", {"command": command, "description": "run it"})  # fmt: skip
+        said = f"Выполнил: {command}" if verdict["behavior"] == "allow" else f"Не стал: {verdict['message']}"
+        emit({"type": "assistant", "parent_tool_use_id": None,
+              "message": {"id": "m1", "content": [{"type": "text", "text": said}]}})  # fmt: skip
     elif "question" in text:
         options = [{"label": "Синий", "description": "спокойный"}, {"label": "Красный", "description": "яркий"}]
         asked = {"questions": [{"question": "Какой цвет?", "header": "Цвет", "multiSelect": False, "options": options}]}

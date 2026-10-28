@@ -26,7 +26,7 @@ def test_network_commands_are_never_covered():
 
 def test_a_command_is_asked_run_in_a_terminal_and_whitelisted(hub, repo):  # noqa: F811
     command = "Write-Output 'привет из модели'; exit 3"
-    pid, conv, provider = setup_chat(hub, repo, [[run(command)]], mode="trusted")  # trust does not cover commands
+    pid, conv, provider = setup_chat(hub, repo, [[run(command)]])
     say(hub, conv)
     asked = answer_next(hub, scope="project")
     assert asked["tool"] == "run_command" and asked["kind"] == "command" and asked["preview"]["text"] == command
@@ -57,6 +57,27 @@ def test_network_and_destructive_commands_are_asked_every_time(hub, repo):  # no
     assert asked["destructive"] is True
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "без push"})
     assert result_of(finished(hub, other))["output"] == "not done: the user said no - без push"
+
+
+def test_a_trusted_chat_runs_commands_without_asking_but_destructive_ones(hub, repo):  # noqa: F811
+    """2026-10-28, the user's word: «Доверенный» runs commands - the network ones too - without a card; a destructive
+    one is still asked, every time."""
+    _pid, conv, provider = setup_chat(hub, repo, [[run("Write-Output trusted")]], mode="trusted")
+    say(hub, conv)
+    result = result_of(finished(hub, conv))
+    assert result["error"] is False and "trusted" in result["output"]
+    provider.steps.append([run("pip install --dry-run nothing-at-all")])
+    say(hub, conv)
+    finished(hub, conv)
+    assert hub.get("/v1/approvals").json()["approvals"] == []
+    cards = hub.app.state.db.call(lambda c: c.execute("SELECT COUNT(*) FROM approvals").fetchone()[0])
+    assert cards == 0  # neither was asked
+    provider.steps.append([run("git push origin main")])
+    say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["destructive"] is True and asked["conversation_id"] == conv
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    finished(hub, conv)
 
 
 def test_what_is_refused_and_a_command_that_goes_on(hub, repo):  # noqa: F811

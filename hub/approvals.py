@@ -100,6 +100,12 @@ def destructive(tool: str, data: dict[str, Any]) -> bool:
     return tool in COMMAND_TOOLS and bool(DESTRUCTIVE.search(str(data.get("command", ""))))
 
 
+def trusted_skips(tool: str, data: dict[str, Any]) -> bool:
+    """What a trusted chat (D17) does without asking: writes, commands, the network, sending - the user's word
+    2026-10-28 - all but a destructive action, which is asked every time and allowed by its button only (D38)."""
+    return not destructive(tool, data)
+
+
 def network(tool: str, data: dict[str, Any]) -> bool:
     if CLASSED.get(tool) in ("network", "send") or tool == "mail_send":
         return True

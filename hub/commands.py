@@ -1,9 +1,10 @@
 """Commands the hub's models run (stage 5, D17): run_command, in a terminal of the hub the user sees in the app.
 
 A command is asked in the approval queue every time, unless an answer "for this chat" or the project's rule (its
-whitelist: "always in this project" on that exact command) covers it; a trusted chat is no exception - trust covers
-writing files, not running things. Destructive commands (git push, rm -r...) and commands that reach the network
-(installs, downloads, D19) are asked every time and never covered. The command runs through the terminal manager -
+whitelist: "always in this project" on that exact command) covers it, or the chat is trusted (since 2026-10-28, the
+user's word: a trusted chat runs commands without asking). Destructive commands (git push, rm -r...) are asked every
+time, a trusted chat too; commands that reach the network (installs, downloads, D19) are never covered by an
+answer or a rule. The command runs through the terminal manager -
 a pseudo-console like any terminal the user opens, with its log - and the tool waits for it to end (up to a timeout),
 then gives the model the exit code and the last lines. A command still running after the timeout (a server) keeps
 running; the model reads it later with terminal_output.

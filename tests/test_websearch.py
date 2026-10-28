@@ -11,7 +11,7 @@ from hub import connections as conns
 from hub import websearch
 from hub.db import Database, migrate
 from hub.secrets import MemorySecretStore
-from tests.test_changes import edit, finished, result_of, say, setup_chat, wait
+from tests.test_changes import edit, finished, new_chat, result_of, say, setup_chat, wait
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 BRAVE = {
@@ -115,14 +115,19 @@ def search_call(query="difflib cutoff"):
 def test_a_search_is_asked_and_taints_the_chat(hub, repo, engines):  # noqa: F811
     hub.app.state.secrets.set(conns.BRAVE_SEARCH_KEY, "BSA-good-key")
     steps = [[search_call()], [{"id": "w1", "name": "edit_file", "input": edit()}]]
-    _pid, conv, _provider = setup_chat(hub, repo, steps, mode="trusted")
+    pid, conv, provider = setup_chat(hub, repo, steps[:1])
     say(hub, conv)
     asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "web_search" and asked["kind"] == "network"
     assert asked["preview"] == {"kind": "text", "text": "difflib cutoff", "note": "Brave Search"}
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
-    # a trusted chat - but it has searched the web, so its edit is asked all the same (D19)
-    write = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "edit_file"])[0]
+    finished(hub, conv)
+    # a trusted chat searches without a card (2026-10-28) - but then its edit is asked: it has searched the web (D19)
+    provider.steps += steps
+    conv = new_chat(hub, pid, "trusted")
+    say(hub, conv)
+    write = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert write["tool"] == "edit_file"
     hub.post(f"/v1/approvals/{write['id']}", json={"allow": True})
     messages = finished(hub, conv)
     results = [b for m in messages if m["role"] == "tool" for b in m["content"]]

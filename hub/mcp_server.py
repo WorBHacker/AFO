@@ -27,6 +27,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from common import __version__
 
 from . import cards, context, links, notes, projects, store
+from .approvals import trusted_skips
 from .auth import Client, bearer_token, find_client
 from .claude_code import CONVERSATION_HEADER, HUB_CLIENT
 from .projects import Project, ProjectError
@@ -41,7 +42,7 @@ INSTRUCTIONS = (
 )
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 EDITS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})  # Claude Code's tools that change files
-CHANGES = EDITS | {"Bash"}  # and what a read-only chat refuses it
+CHANGES = EDITS | {"Bash", "PowerShell"}  # and what a read-only chat refuses it (PowerShell: its Windows shell)
 ASKS_THE_USER = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
 EVENTS_MAX = 100
 IN_PROCESS = Client(id="", name="in-process", cloud=True)  # a call without HTTP headers: treated as cloud
@@ -294,7 +295,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         if mode == "read_only" and tool_name in CHANGES:  # the chat's rights (D17) hold for Claude Code too
             return json.dumps({"behavior": "deny", "message": "This chat is read-only: say the change in words, the "
                                                               "user makes it."})  # fmt: skip
-        if mode == "trusted" and tool_name in EDITS:
+        if mode == "trusted" and trusted_skips(tool_name, input):  # all but a destructive one (2026-10-28)
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,
