@@ -104,7 +104,8 @@ def test_a_goal_planned_carried_out_checked_and_reported(hub):  # noqa: F811
     sent = [t["name"] for t in hub.app.state.db.call(lambda c: __import__("json").loads(
         c.execute("SELECT tools FROM conversations WHERE id = ?", (run_id,)).fetchone()[0]))]  # fmt: skip
     at = sent.index("set_plan")  # its own tools, together, after the profile's
-    assert sent[at : at + 7] == ["set_plan", "update_step", "ask_user", "finish", "note", "remember", "recall"]
+    assert sent[at : at + 6] == ["set_plan", "update_step", "finish", "note", "remember", "recall"]
+    assert sent.count("ask_user") == 1  # the chat's and the agent's are one definition (2026-10-28)
     plan = hub.get(f"/v1/runs/{run_id}/plan").json()
     assert [p["version"] for p in plan["plans"]] == [1, 2] and plan["plans"][1]["reason"] == "сбивался"
     assert [(s["status"], s["attempts"]) for s in plan["plans"][0]["steps"]] == [("done", 0), ("failed", 3)]

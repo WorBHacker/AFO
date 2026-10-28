@@ -212,7 +212,9 @@ def test_all_tools_by_default_means_no_delegation(hub):  # noqa: F811
     plain = profile(hub, name="Обычный", tools=[])
     ended(hub, hub.post(f"/v1/agents/{plain['id']}/runs", json={"task": "x"}).json()["id"])
     names = [t["name"] for t in provider.calls[0][1]]
-    assert "delegate_task" not in names and "run_command" in names
+    assert "delegate_task" not in names and "web_fetch" in names
+    assert "run_command" not in names and "read_file" not in names  # no projects: no project tools (2026-10-28)
+    assert len(names) == len(set(names))  # one definition per name
 
 
 def test_stopping_the_coordinator_stops_its_sub_run(hub, repo):  # noqa: F811

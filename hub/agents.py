@@ -28,7 +28,7 @@ import time
 import uuid
 from typing import Any
 
-from . import agent_tools, autonomous, computer, mail, memory, store
+from . import agent_tools, autonomous, compact, computer, mail, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
@@ -222,7 +222,10 @@ def create_run(
     wanted = profile["tools"] or DEFAULT_TOOLS
     screen = computer.TOOLS if goal and goal.get("computer", True) else []  # a schedule's run: only if allowed (Q23)
     extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + mail.TOOLS + screen + (outside or []) if goal else []
-    tools = [t for t in AGENT_TOOLS if t["name"] in wanted] + extra
+    # sized to the model: one per name, no project tools without projects, short for a small window (hub/compact.py)
+    window = (model.get("capabilities") or {}).get("context")
+    tools = compact.for_model([t for t in AGENT_TOOLS if t["name"] in wanted] + extra, window,
+                              projects=bool(project_ids))  # fmt: skip
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"

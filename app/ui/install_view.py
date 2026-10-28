@@ -268,6 +268,9 @@ class InstallView(QObject):
         self._projector = True
         self._jobs: list[dict[str, Any]] = []
         self._jobs_loading = False
+        # what events said while a load of the list was on its way (id -> the job, None: forgotten): newer than what
+        # that load read, so it goes over its answer - else a stale «загружается» could outlive «установлена»
+        self._heard: dict[str, dict[str, Any] | None] = {}
         self._busy = False
 
     # ================= for QML =================
@@ -425,13 +428,17 @@ class InstallView(QObject):
 
     def _load_jobs(self) -> None:
         def show(data: dict[str, Any]) -> None:
-            self._jobs, self._jobs_loading = data.get("jobs", []), False
+            heard, self._heard = self._heard, {}
+            jobs = [{**j, **(heard.get(j["id"]) or {})} for j in data.get("jobs", []) if heard.get(j["id"], j)]
+            known = {j["id"] for j in jobs}
+            fresh = [j for i, j in heard.items() if j and i not in known]  # began after the load read the list
+            self._jobs, self._jobs_loading = fresh + jobs, False
             self.changed.emit()
 
         def failed(_error: Exception) -> None:
-            self._jobs_loading = False
+            self._jobs_loading, self._heard = False, {}
 
-        self._jobs_loading = True
+        self._jobs_loading, self._heard = True, {}
         self.app._call(lambda: self.app.client.install_jobs(), show, failed)
 
     def _load_catalog(self) -> None:
@@ -616,6 +623,8 @@ class InstallView(QObject):
             job = payload.get("job") or {}
             before = next((j["status"] for j in self._jobs if j["id"] == job.get("id")), "")
             self._upsert(job)
+            if self._jobs_loading and job.get("id"):
+                self._heard[job["id"]] = {**(self._heard.get(job["id"]) or {}), **job}
             if job.get("status") == "done" and before != "done":
                 self.app.flash(f"Модель «{job.get('name')}» установлена: {trial_text(job) or 'готова'}")
                 self.app.load_models()
@@ -640,4 +649,6 @@ class InstallView(QObject):
             self.changed.emit()
         elif kind == "install.forgotten":
             self._jobs = [j for j in self._jobs if j["id"] != payload.get("id")]
+            if self._jobs_loading and payload.get("id"):
+                self._heard[payload["id"]] = None
             self.changed.emit()

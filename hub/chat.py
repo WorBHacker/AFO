@@ -53,6 +53,7 @@ from . import (
     cards,
     changes,
     commands,
+    compact,
     computer,
     context,
     fit,
@@ -354,8 +355,10 @@ class ChatService:
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
             # the web tools are for any chat, with projects or without (D19) - the definitions it was first sent,
             # even after the hub's tools changed
-            if tools is None:  # a new chat gets the outside MCP servers' tools ready now too (D42)
-                current = [*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])]
+            if tools is None:  # a new chat gets the outside MCP servers' tools ready now too (D42) - sized to its
+                # model's window (hub/compact.py; projects may come later in a chat: their tools stay)
+                current = compact.for_model([*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])],
+                                            (model.get("capabilities") or {}).get("context"))  # fmt: skip
                 tools = await self._db.acall(
                     lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
                 )

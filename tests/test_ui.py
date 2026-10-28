@@ -5254,3 +5254,18 @@ def test_a_long_file_in_pieces():
     plain = project_rows.code_view("a\r\nb\r\n" * n, "notes.unknownext")
     assert [c["start"] for c in plain["chunks"]] == [0, 2 * n]  # Windows line ends counted as plain ones
     assert all(c["code"].count("\n") == n - 1 for c in plain["chunks"])
+
+
+def test_a_finished_install_is_not_undone_by_a_stale_list(app):
+    """2026-10-28 (a flaky test found it): the jobs list loading while «установлена» arrives - the list's answer was
+    read before, says «загружается», and used to overwrite the event: the status bar would keep a finished install
+    going. What events say during a load goes over its answer; one forgotten meanwhile does not come back."""
+    view = app.install_view
+    stale = {"id": "j1", "name": "Gemma", "status": "downloading", "done_bytes": 1, "total_bytes": 2, "percent": 50.0,
+             "error": "", "trial": {}, "files": []}  # fmt: skip
+    app.client.install_jobs_list = [stale, {**stale, "id": "j2", "name": "Qwen"}]
+    view._load_jobs()  # on its way: it answers with the list as it was
+    app.on_event({"type": "install.changed", "payload": {"job": {**stale, "status": "done", "percent": 100.0}}})
+    app.on_event({"type": "install.forgotten", "payload": {"id": "j2"}})
+    wait_until(lambda: not app.bg.busy and not view._jobs_loading)
+    assert [(j["id"], j["status"]) for j in view._jobs] == [("j1", "done")] and view.activeCount == 0
