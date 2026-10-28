@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// 26px: the hub and its port, the active model, this session's tokens and cost, short messages; on the right the
-// loaded local model, VRAM, Windows' commit charge and the GPU.
+// 26px: the hub and its port, the active model, this session's tokens and cost, short messages; on the right a model
+// being installed (its percent, speed, time left - a click opens «Установки»), the loaded local model, VRAM, Windows'
+// commit charge and the GPU.
 Rectangle {
     id: bar
     signal budgetsRequested()
@@ -54,10 +55,48 @@ Rectangle {
 
     Small {
         x: left.x + left.width + 16
-        width: right.x - x - 16
+        width: (installing.visible ? installing.x : right.x) - x - 16
         elide: Text.ElideRight
         text: App.flashText
         color: App.flashError ? Theme.p.warn : Theme.p.text_soft
+    }
+
+    Row {
+        id: installing
+        objectName: "statusInstall"
+        visible: Installer.status.name !== ""
+        anchors.right: right.left
+        anchors.rightMargin: 14
+        height: parent.height
+        spacing: 6
+        HoverHandler { id: installHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: Installer.showJobs() }
+        ToolTip.visible: installHover.hovered
+        ToolTip.text: Installer.status.tip
+        // a narrow bar: the name gives way first, then the speed and time left (the tooltip says it all)
+        readonly property real room: right.x - (left.x + left.width) - 40
+        readonly property bool roomy: room >= fullText.width + progressBar.width + 50
+        TextMetrics { id: fullText; font.family: Theme.uiFont; font.pixelSize: 12; text: Installer.status.text }
+        Icon { name: "download"; size: 13; tint: Theme.p.accent; anchors.verticalCenter: parent.verticalCenter }
+        Small {
+            width: Math.max(0, Math.min(implicitWidth, installing.room - progressBar.width - installText.implicitWidth - 60))
+            visible: installing.roomy && width > 24
+            elide: Text.ElideRight
+            text: Installer.status.name
+        }
+        Rectangle {
+            id: progressBar
+            width: 44; height: 4; radius: 2
+            color: Theme.p.hairline
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, Installer.status.percent || 0))
+                height: 4; radius: 2
+                color: Theme.p.accent
+            }
+        }
+        Small { id: installText; text: installing.roomy ? Installer.status.text : Installer.status.short }
+        Separator { anchors.verticalCenter: parent.verticalCenter }
     }
 
     Row {

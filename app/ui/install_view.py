@@ -30,6 +30,7 @@ ACTIONS = {
     "cancelled": [("forget", "Убрать", "plain")],
     "done": [("remove", "Удалить", "danger")],
 }
+LIVE = ("queued", "downloading", "configuring", "trial")
 WHERE = {"gpu": "целиком в видеопамяти", "split": "частью в ОЗУ"}
 PICKS = {"fast": "быстрее", "quality": "качественнее"}  # «Быстрее ↔ Качественнее» beside the recommended one
 
@@ -84,7 +85,8 @@ def catalog_rows(models: list[dict[str, Any]], purpose: str = "") -> list[dict[s
             offer = ""
         else:
             words, tone, offer = m.get("error", ""), "error", ""
-        out.append({"id": m["id"], "repo": m["repo"], "name": m["name"], "about": (m.get("about") or {}).get("ru", ""),
+        out.append({"id": m["id"], "repo": m["repo"], "quant": best["quant"] if best else "", "name": m["name"],
+                    "about": (m.get("about") or {}).get("ru", ""),
                     "purposes": " · ".join(m.get("purpose_words") or []), "license": m.get("license", ""),
                     "gated": bool(m.get("gated")), "words": words, "tone": tone, "offer": offer,
                     "installed": installed,
@@ -156,6 +158,60 @@ def progress_text(job: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def percent_of(job: dict[str, Any]) -> float:
+    total = job.get("total_bytes") or 0
+    return float(job.get("percent") or (round(100 * (job.get("done_bytes") or 0) / total, 1) if total else 0.0))
+
+
+def job_state(job: dict[str, Any] | None) -> dict[str, Any]:
+    """An install where its model's «Установить» was (2026-10-28, the user's word): pause or go on, ✕ to cancel (or
+    to take a failed one away), and its progress in the line under the name."""
+    if not job:
+        return {}
+    actions = {a: label for a, label, _kind in ACTIONS.get(job["status"], [])}
+    primary = next((a for a in ("pause", "resume") if a in actions), "")
+    pct = percent_of(job)
+    progress = progress_text(job)
+    words = STATUS.get(job["status"], job["status"])
+    if job["status"] == "downloading" and progress:
+        line = f"{pct:.0f} % · {progress}"
+    elif job["status"] == "paused":
+        line = f"на паузе · {pct:.0f} %" + (f" · {progress}" if progress else "")
+    elif job["status"] == "failed":
+        line = f"не вышло: {job.get('error') or ''}".rstrip(": ")
+    else:
+        line = words
+    return {"id": job["id"], "status": job["status"], "live": job["status"] in (*LIVE, "paused"), "percent": pct,
+            "line": line, "primary": primary, "primaryLabel": actions.get(primary, ""),
+            "dismiss": "cancel" if "cancel" in actions else "forget" if "forget" in actions else "",
+            "installed": job["status"] == "done"}  # fmt: skip
+
+
+def status_line(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """The status bar's word on the install going on: its name, percent, speed, time left; '' - none goes on."""
+    live = [j for j in jobs if j["status"] in LIVE]
+    if not live:
+        return {"name": "", "text": "", "short": "", "percent": 0.0, "tip": ""}
+    job = live[0]
+    pct = percent_of(job)
+    if job["status"] == "downloading":
+        speed = job.get("speed") or 0
+        bits = [f"{pct:.0f} %"]
+        if speed > 0:
+            left = ((job.get("total_bytes") or 0) - (job.get("done_bytes") or 0)) / speed
+            bits += [
+                f"{speed / 1e6:.1f}".replace(".", ",") + " МБ/с",
+                f"ещё ≈ {max(1, round(left / 60))} мин" if left >= 60 else f"ещё ≈ {max(1, round(left))} с",
+            ]
+        text = " · ".join(bits)
+    else:
+        text = STATUS.get(job["status"], job["status"])
+    more = f" (и ещё {len(live) - 1})" if len(live) > 1 else ""
+    tip = f"Установка «{job['name']}»: {progress_text(job) or STATUS.get(job['status'], '')}. Нажмите — «Установки»"
+    short = f"{pct:.0f} %" if job["status"] == "downloading" else text  # a narrow status bar
+    return {"name": f"{job['name']}{more}", "text": text, "short": short, "percent": pct / 100, "tip": tip}
+
+
 def with_hint(error: str) -> str:
     """An install's error with what to do, when it is one of the usual (10.6)."""
     plain = explain(error) if error else None
@@ -211,6 +267,7 @@ class InstallView(QObject):
         self._folder = ""
         self._projector = True
         self._jobs: list[dict[str, Any]] = []
+        self._jobs_loading = False
         self._busy = False
 
     # ================= for QML =================
@@ -237,7 +294,8 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def catalog(self) -> list:
-        return catalog_rows(self._catalog, self._purpose)
+        return [{**r, "job": job_state(self._job_for(r["repo"], r["quant"]))} if r["quant"] else {**r, "job": {}}
+                for r in catalog_rows(self._catalog, self._purpose)]  # fmt: skip
 
     @Property(bool, notify=changed)
     def catalogLoading(self) -> bool:
@@ -295,7 +353,30 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def variants(self) -> list:
-        return variant_rows(self._repo)
+        return [{**v, "job": job_state(self._job_for(self._repo_name, v["quant"]))} for v in variant_rows(self._repo)]
+
+    def _job_for(self, repo: str, quant: str) -> dict[str, Any] | None:
+        """The install of this variant still on the list (not cancelled, not removed) - the newest."""
+        found = [j for j in self._jobs if j["repo"] == repo and j.get("quant") == quant
+                 and j["status"] not in ("cancelled", "removed")]  # fmt: skip
+        return found[0] if found else None  # the list is newest first
+
+    @Property("QVariantMap", notify=changed)
+    def status(self) -> dict:
+        """The status bar: the install going on (text, 0-1, tooltip)."""
+        return status_line(self._jobs)
+
+    @Slot()
+    def showJobs(self) -> None:
+        """The status bar clicked: the sheet open on «Установки»."""
+        self._repo_name, self._repo, self._repo_error, self._tab = "", {}, "", "jobs"
+        self.changed.emit()
+        self.app.openUi("install-models")
+
+    def load_jobs(self) -> None:
+        """At connecting: an install going on shows in the status bar before the sheet is ever opened."""
+        if self.app.client is not None:
+            self._load_jobs()
 
     @Property(list, notify=changed)
     def drives(self) -> list:
@@ -344,10 +425,14 @@ class InstallView(QObject):
 
     def _load_jobs(self) -> None:
         def show(data: dict[str, Any]) -> None:
-            self._jobs = data.get("jobs", [])
+            self._jobs, self._jobs_loading = data.get("jobs", []), False
             self.changed.emit()
 
-        self.app._call(lambda: self.app.client.install_jobs(), show, lambda _e: None)
+        def failed(_error: Exception) -> None:
+            self._jobs_loading = False
+
+        self._jobs_loading = True
+        self.app._call(lambda: self.app.client.install_jobs(), show, failed)
 
     def _load_catalog(self) -> None:
         self._catalog_loading, self._catalog_error = True, ""
@@ -449,9 +534,8 @@ class InstallView(QObject):
         def done(result: dict[str, Any]) -> None:
             self._busy = False
             job = result.get("job") or {}
-            self._upsert(job)
-            self._tab = "jobs"
-            self.app.flash(f"Устанавливаю «{job.get('name', '')}» — ход загрузки на вкладке «Установки»")
+            self._upsert(job)  # its row now has «Пауза» and ✕; the status bar shows how it goes
+            self.app.flash(f"Устанавливаю «{job.get('name', '')}» — ход внизу окна и на вкладке «Установки»")
             self.changed.emit()
 
         def failed(error: Exception) -> None:
@@ -541,6 +625,8 @@ class InstallView(QObject):
                 self.app.flash(f"«{job.get('name')}»: {job.get('error')}", error=True)
             self.changed.emit()
         elif kind == "install.progress":
+            if not any(j["id"] == payload.get("id") for j in self._jobs) and not self._jobs_loading:
+                self._load_jobs()  # started before this window looked: the list first
             for j in self._jobs:
                 if j["id"] == payload.get("id"):
                     done, total = payload["done_bytes"], payload["total_bytes"]

@@ -11,6 +11,68 @@ Sheet {
     title: "Установка моделей"
     iconName: "download"
     width: Math.min(820, (parent ? parent.width : 960) * 0.94)
+
+    // «Установить» - and once pressed, in its place: «Пауза» / «Продолжить» and ✕ to cancel (2026-10-28, the user's
+    // word); an installed one says so
+    component JobButtons: Row {
+        id: jb
+        property var job: ({})
+        property string name
+        property bool primary: false
+        property bool can: true
+        signal install()
+        spacing: 6
+        PlainButton {
+            objectName: jb.name
+            visible: !jb.job.id
+            kind: jb.primary ? "primary" : "plain"
+            iconName: "download"
+            text: "Установить"
+            enabled: !Installer.busy && jb.can
+            onClicked: jb.install()
+        }
+        PlainButton {
+            objectName: jb.name + "_" + (jb.job.primary || "")
+            visible: !!jb.job.primary
+            kind: jb.job.primary === "resume" ? "primary" : "plain"
+            iconName: jb.job.primary === "pause" ? "pause" : "play"
+            text: jb.job.primaryLabel || ""
+            onClicked: Installer.act(jb.job.id, jb.job.primary)
+        }
+        IconButton {
+            objectName: jb.name + "_" + (jb.job.dismiss || "")
+            visible: !!jb.job.dismiss
+            implicitWidth: 32
+            implicitHeight: 32
+            iconName: "close"
+            tint: Theme.p.error
+            hoverTint: Theme.p.error
+            tip: jb.job.dismiss === "cancel" ? "Отменить установку" : "Убрать из списка"
+            onClicked: Installer.act(jb.job.id, jb.job.dismiss)
+        }
+        Text {
+            visible: !!jb.job.id && !jb.job.primary && !jb.job.dismiss
+            text: jb.job.installed ? "✓ установлена" : (jb.job.line || "")
+            color: jb.job.installed ? Theme.p.ok : Theme.p.muted
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+            anchors.verticalCenter: parent.verticalCenter
+        }
+    }
+    // how an install goes, under its row: a thin bar
+    component JobBar: Rectangle {
+        property var job: ({})
+        visible: !!job.live
+        height: 3
+        radius: 1.5
+        color: Theme.p.hairline
+        Rectangle {
+            width: parent.width * Math.max(0, Math.min(1, (parent.job.percent || 0) / 100))
+            height: parent.height
+            radius: 1.5
+            color: parent.job.status === "paused" ? Theme.p.warn : Theme.p.accent
+        }
+    }
     onAboutToShow: Installer.load()
 
     function tone(t) { return t === "ok" ? Theme.p.ok : t === "warn" ? Theme.p.warn : t === "error" ? Theme.p.error : Theme.p.muted }
@@ -118,23 +180,23 @@ Sheet {
                         spacing: 6
                         Rectangle { width: 8; height: 8; radius: 4; color: sheet.tone(card.modelData.tone); anchors.verticalCenter: parent.verticalCenter }
                         Text {
-                            text: (card.modelData.offer ? card.modelData.offer + " — " : "") + card.modelData.words
-                            color: Theme.p.text_soft
+                            text: (card.modelData.offer ? card.modelData.offer + " — " : "")
+                                  + (card.modelData.job.live ? card.modelData.job.line : card.modelData.words)
+                            color: card.modelData.job.live ? Theme.p.accent : Theme.p.text_soft
                             font.family: Theme.uiFont
                             font.pixelSize: 12
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
+                    JobBar { job: card.modelData.job; width: Math.min(parent.width, 360) }
                     Row {
                         spacing: 8
-                        PlainButton {
-                            objectName: "installRecommended_" + card.modelData.id
-                            kind: "primary"
-                            iconName: "download"
-                            text: "Установить"
-                            visible: card.modelData.canInstall
-                            enabled: !Installer.busy
-                            onClicked: Installer.installRecommended(card.modelData.repo)
+                        JobButtons {
+                            name: "installRecommended_" + card.modelData.id
+                            job: card.modelData.job
+                            primary: true
+                            visible: card.modelData.canInstall || !!card.modelData.job.id
+                            onInstall: Installer.installRecommended(card.modelData.repo)
                         }
                         PlainButton {
                             text: "Варианты…"
@@ -342,23 +404,34 @@ Sheet {
                             font.pixelSize: 13
                         }
                         Text {
-                            text: [variant.modelData.words, variant.modelData.bits].filter(s => s).join(" · ")
-                            color: Theme.p.faint
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: variant.modelData.job.live || variant.modelData.job.status === "failed"
+                                  ? variant.modelData.job.line
+                                  : [variant.modelData.words, variant.modelData.bits].filter(s => s).join(" · ")
+                            color: variant.modelData.job.live ? Theme.p.accent
+                                   : variant.modelData.job.status === "failed" ? Theme.p.error : Theme.p.faint
                             font.family: Theme.uiFont
                             font.pixelSize: 11
                         }
                     }
                 }
-                PlainButton {
-                    objectName: "installVariant_" + variant.modelData.quant
+                JobButtons {
                     anchors.right: parent.right
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    kind: variant.modelData.recommended ? "primary" : "plain"
-                    iconName: "download"
-                    text: "Установить"
-                    enabled: !Installer.busy && variant.modelData.tone !== "error"
-                    onClicked: Installer.install(variant.modelData.quant)
+                    name: "installVariant_" + variant.modelData.quant
+                    job: variant.modelData.job
+                    primary: variant.modelData.recommended
+                    can: variant.modelData.tone !== "error"
+                    onInstall: Installer.install(variant.modelData.quant)
+                }
+                JobBar {
+                    job: variant.modelData.job
+                    x: 12
+                    width: parent.width - 24
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 4
                 }
             }
         }

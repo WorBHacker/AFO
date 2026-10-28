@@ -4464,18 +4464,42 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert [d["id"] for d in places] == ["home", "D", "F"] and places[0]["selected"] and places[2]["slow"]
         assert places[0]["name"] == "Папка LocalChat (D: NVMe) · свободно 456,5 ГБ"
 
+        assert view.status["name"] == "" and not quick.window.findChild(QObject, "statusInstall").property("visible")
         view.installRecommended("ggml-org/gemma-4-E4B-it-GGUF")
-        wait_until(lambda: not app.bg.busy and view.tab == "jobs")
+        wait_until(lambda: not app.bg.busy and view.jobs)
         assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q8_0"})
+        assert view.tab == "catalog"  # it stays: the row itself shows the install now (2026-10-28, the user's word)
         assert view.activeCount == 1 and view.jobs[0]["statusWords"] == "в очереди"
+        card = view.catalog[0]["job"]  # «Установить» gave way to «Пауза» and ✕
+        assert (card["primary"], card["primaryLabel"], card["dismiss"], card["line"]) == ("pause", "Пауза", "cancel",
+                                                                                           "в очереди")  # fmt: skip
         half = {"id": "j1", "done_bytes": 4_295_000_000, "total_bytes": 8_590_000_000, "speed": 21_700_000}
         app.on_event({"type": "install.progress", "payload": half})
         row = view.jobs[0]
         assert row["percent"] == 50.0 and row["progress"].startswith("4,3 ГБ из 8,6 ГБ · 21,7 МБ/с")
         assert [a["id"] for a in row["actions"]] == ["pause", "cancel"]
+        assert view.catalog[0]["job"]["line"] == "50 % · 4,3 ГБ из 8,6 ГБ · 21,7 МБ/с · ещё ≈ 3 мин"
+        bar = view.status  # the status bar at the bottom of the window
+        assert (bar["name"], bar["text"], bar["percent"]) == ("Gemma 4 E4B Q8_0", "50 % · 21,7 МБ/с · ещё ≈ 3 мин", 0.5)
+        assert bar["tip"].endswith("Нажмите — «Установки»")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "statusInstall").property("visible")
         view.act("j1", "pause")
         wait_until(lambda: not app.bg.busy and view.jobs[0]["status"] == "paused")
         assert [a["label"] for a in view.jobs[0]["actions"]] == ["Продолжить", "Отменить"]
+        paused = view.catalog[0]["job"]
+        assert (paused["primary"], paused["primaryLabel"], paused["line"]) == (
+            "resume",
+            "Продолжить",
+            "на паузе · 50 % · 4,3 ГБ из 8,6 ГБ",
+        )
+        assert view.status["name"] == ""  # nothing goes on: the status bar says nothing
+        sheet.close()
+        view.setTab("catalog")
+        view.showJobs()  # the status bar clicked: the sheet on «Установки»
+        wait_until(lambda: sheet.property("opened"))
+        assert view.tab == "jobs" and view.repoName == ""
         done = {**client.install_jobs_list[0], "status": "done", "done_bytes": 8_590_000_000, "percent": 100.0,
                 "trial": {"seconds": 4.6, "tok_s": 480.0, "where": "gpu", "tries": [{"ok": True}]}}  # fmt: skip
         client.install_jobs_list = [done]
@@ -4508,7 +4532,8 @@ def test_installing_a_local_model_from_the_window(qapp):
         view.setProjector(False)
         view.setDrive("F")
         view.install("Q4_0")
-        wait_until(lambda: not app.bg.busy and view.tab == "jobs")
+        wait_until(lambda: not app.bg.busy and view.variants[0]["job"])
+        assert view.variants[0]["job"]["primary"] == "pause" and view.variants[1]["job"] == {}  # only its own row
         assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q4_0",
                                                         "projector": False, "drive": "F"})  # fmt: skip
         view.closeRepo()
@@ -4839,6 +4864,35 @@ def test_the_refusal_switch_in_a_chat(qapp):
         assert app.chatRefusalName == "Снятие отказов: выкл" and app.chatRefusalItems[1]["selected"]
         for _ in range(10):
             QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_an_install_going_on_shows_in_the_status_bar_from_the_start(qapp):
+    """2026-10-28: the window learns of an install going on as it connects - the status bar shows it before the
+    sheet is ever opened, and follows its progress."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.install_jobs_list = [{"id": "j9", "repo": "ggml-org/Qwen3-1.7B-GGUF", "quant": "Q8_0",
+                                     "name": "Qwen3 1.7B Q8_0", "model_id": "qwen3-1.7b-q8_0", "status": "downloading",
+                                     "done_bytes": 1_100_000_000, "total_bytes": 2_200_000_000,
+                                     "percent": 50.0}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.install_view.status["name"])
+        assert app.install_view.status["name"] == "Qwen3 1.7B Q8_0" and app.install_view.status["text"] == "50 %"
+        progress = {"id": "j9", "done_bytes": 1_650_000_000, "total_bytes": 2_200_000_000, "speed": 22_000_000}
+        app.on_event({"type": "install.progress", "payload": progress})
+        assert app.install_view.status["text"] == "75 % · 22,0 МБ/с · ещё ≈ 25 с"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "statusInstall").property("visible")
         assert quick.warnings == []
     finally:
         quick.close()
