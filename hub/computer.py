@@ -241,13 +241,22 @@ def process_exe(pid: int) -> str:
         return ""
 
 
+def cloaked(hwnd: int) -> bool:
+    """A window Windows keeps out of sight though it is "visible": the input host's full-screen layer, a suspended
+    Store app, a window on another virtual desktop. The person does not see it; the agent does not get it."""
+    value = ctypes.c_int()
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(wt.HWND(hwnd), 14, ctypes.byref(value), 4):  # DWMWA_CLOAKED
+        return False
+    return value.value != 0
+
+
 def top_windows() -> list[dict[str, Any]]:
     """Visible top-level windows with a title, front first: id, title, pid, exe, aumid, place."""
     found: list[int] = []
 
     @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
     def each(hwnd, _lparam):
-        if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0:
+        if user32.IsWindowVisible(hwnd) and user32.GetWindowTextLengthW(hwnd) > 0 and not cloaked(int(hwnd)):
             found.append(int(hwnd))
         return True
 

@@ -213,3 +213,13 @@ def test_an_autonomous_run_at_the_test_window(hub, test_window):  # noqa: F811
     assert {"screen_windows", "screen_look", "screen_act", "open_program"} <= {t["name"] for t in tools}
     assert len(db.call(lambda c: pc.journal(c, run_id))) == 3
     assert hub.app.state.computer._holder is None  # the run ended: its hold went
+
+
+def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):
+    """A cloaked window (the input host's full-screen layer, a suspended Store app) is "visible" to Windows but not
+    to the person: the agent does not get it."""
+    from hub import computer
+
+    assert computer.top_windows()  # this desktop has some windows
+    monkeypatch.setattr(computer, "cloaked", lambda hwnd: True)
+    assert computer.top_windows() == []

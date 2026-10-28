@@ -21,7 +21,9 @@ def resolver(paths):
     return lambda app_id: paths.get(app_id, "")
 
 
-def test_what_the_start_menu_holds():
+def test_what_the_start_menu_holds(tmp_path):
+    viber = tmp_path / "Viber.exe"
+    viber.write_bytes(b"MZ")
     entries = [
         {"Name": "7-Zip File Manager", "AppID": "{6D809377-6AF0-444B-8957-A3773F02200E}\\7-Zip\\7zFM.exe"},
         {"Name": "7-Zip Help", "AppID": "{6D809377-6AF0-444B-8957-A3773F02200E}\\7-Zip\\7-zip.chm"},  # help
@@ -30,6 +32,7 @@ def test_what_the_start_menu_holds():
         {"Name": "Settings", "AppID": "ms-settings:"},  # a link too
         {"Name": "Word", "AppID": "Microsoft.Office.WINWORD.EXE.15"},
         {"Name": "Telegram", "AppID": "Telegram.TelegramDesktop"},  # an id only
+        {"Name": "Viber", "AppID": "Viber.Desktop", "Target": str(viber)},  # an id, and its shortcut's .exe
         {"Name": "Old tool", "AppID": "C:\\Gone\\tool.exe"},  # left behind by an uninstall
         {"Name": "7-Zip again", "AppID": "{6D809377-6AF0-444B-8957-A3773F02200E}\\7-Zip\\7zFM.exe"},  # the same
         {"Name": "", "AppID": "x"},
@@ -44,7 +47,8 @@ def test_what_the_start_menu_holds():
     }
     found = programs.from_start(entries, packages, resolver(paths))
     by_name = {f.name: f for f in found}
-    assert set(by_name) == {"7-Zip File Manager", "Блокнот", "Word", "Telegram"}
+    assert set(by_name) == {"7-Zip File Manager", "Блокнот", "Word", "Telegram", "Viber"}
+    assert (by_name["Viber"].aumid, by_name["Viber"].exe) == ("Viber.Desktop", str(viber))  # its windows carry no id
     assert by_name["7-Zip File Manager"].kind == "desktop" and by_name["7-Zip File Manager"].key.startswith("exe:")
     notepad = by_name["Блокнот"]
     assert (notepad.kind, notepad.publisher, notepad.version) == ("store", "Microsoft Corporation", "11.2607.14.0")
@@ -159,6 +163,20 @@ def test_what_the_agent_may_control(tmp_path):
     assert allowed(aumid="calc!APP") == "Калькулятор"
     assert allowed(exe=f"{PF}\\Office\\WINWORD.EXE") is None  # denied
     assert allowed(exe="C:\\Other\\app.exe") is None  # not in the catalog at all
+
+    # a part of Windows' own package beside an allowed app of it (the input host beside «Архивация Windows»)
+    cbs = "C:\\Windows\\SystemApps\\MicrosoftWindows.Client.CBS_cw5n1h2txyewy"
+    backup = Found("aumid:cbs!backup", "Архивация Windows", "store", folder=cbs,
+                   aumid="MicrosoftWindows.Client.CBS_cw5n1h2txyewy!WindowsBackup")  # fmt: skip
+    telegram = Found("aumid:telegram.telegramdesktop", "Telegram", "desktop", aumid="Telegram.TelegramDesktop",
+                     exe="C:\\Users\\u\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe")  # fmt: skip
+    db.call(lambda c: programs.apply_scan(c, [notepad, store, word, backup, telegram], "t3"))
+    ids = {p["name"]: p["id"] for p in db.call(programs.list_programs)}
+    for name in ("Архивация Windows", "Telegram"):
+        db.call(lambda c, n=name: programs.decide(c, ids[n], "allow", "app", "t4"))
+    assert allowed(exe=cbs + "\\TextInputHost.exe") is None
+    assert allowed(aumid="MicrosoftWindows.Client.CBS_cw5n1h2txyewy!WindowsBackup") == "Архивация Windows"
+    assert allowed(exe="c:\\users\\u\\appdata\\roaming\\telegram desktop\\telegram.exe") == "Telegram"
 
 
 def stand_in(found):

@@ -53,6 +53,12 @@ POWERSHELL = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $start = @(Get-StartApps | Select-Object Name, AppID)
+$targets = @{}
+$apps = (New-Object -ComObject Shell.Application).NameSpace('shell:::{4234d49b-0245-4df3-b780-3893943456e1}')
+foreach ($item in $apps.Items()) {
+    $targets[$item.Path] = $item.ExtendedProperty('System.Link.TargetParsingPath')
+}
+foreach ($entry in $start) { $entry | Add-Member -NotePropertyName Target -NotePropertyValue $targets[$entry.AppID] }
 $packages = @(Get-AppxPackage | Where-Object { -not $_.IsFramework } |
     Select-Object PackageFamilyName, InstallLocation, Version, Publisher)
 @{ start = $start; packages = $packages } | ConvertTo-Json -Depth 3 -Compress
@@ -120,8 +126,12 @@ def from_start(
                 found = Found(f"exe:{norm(path)}", name, "desktop", exe=path, folder=os.path.dirname(path))
             elif "\\" in app_id or "/" in app_id:
                 continue  # a path that is not there (left behind by an uninstall)
-            else:  # a desktop program known by its id only (an AppUserModelID): its windows carry the same id
-                found = Found(f"aumid:{app_id.lower()}", name, "desktop", aumid=app_id)
+            else:  # a desktop program known by its id only (an AppUserModelID): its windows may carry the id,
+                # or not (Telegram's do not) - then its shortcut's .exe tells them
+                target = str(entry.get("Target") or "")
+                exe = target if target.lower().endswith(".exe") and os.path.isfile(target) else ""
+                found = Found(f"aumid:{app_id.lower()}", name, "desktop", aumid=app_id, exe=exe,
+                              folder=os.path.dirname(exe) if exe else "")  # fmt: skip
         out.setdefault(found.key, found)
     return list(out.values())
 
@@ -501,6 +511,7 @@ def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] |
         "SELECT * FROM programs WHERE decision = 'allow' AND (removed_at IS NULL OR kind = 'manual')"
     ).fetchall()
     target = norm(exe)
+    windows = norm(os.environ.get("WINDIR") or "C:\\Windows")
     for row in rows:
         if aumid and row["aumid"] and row["aumid"].lower() == aumid.lower():
             return program_json(row)
@@ -508,7 +519,9 @@ def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] |
             continue
         if row["kind"] == "store":
             folder = norm(row["folder"]).rstrip(os.sep)
-            if folder and target.startswith(folder + os.sep):
+            # a package of Windows itself hosts many parts (the input host beside «Архивация Windows»): its
+            # folder tells nothing - such an app is known by its windows' id only
+            if folder and target.startswith(folder + os.sep) and not folder.startswith(windows + os.sep):
                 return program_json(row)
         elif row["exe"] and norm(row["exe"]) == target:
             return program_json(row)
