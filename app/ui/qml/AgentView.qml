@@ -1,18 +1,19 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// The Agent mode's main area (D40): a new task's form - the goal, what "done" means, a template, the model and the
-// planner, the projects, how much on its own, the limits - or the open task: its goal and state, the plan as it goes,
-// the agent's question with an answer field, pause / go on / stop, the user's own plan, and the report.
-// Its approvals come as the card over this view, as in a chat (D38).
+// The Agent mode's main area (D40), as a chat (2026-10-28): the input at the bottom (AgentComposer) takes a new
+// task's goal or, while a task runs, a word to the agent. Above it: with no task open, «what should the agent do?»
+// with templates; the open task - its goal as the user's message, the plan as it goes, the agent's questions and the
+// user's answers, the user's own plan, the report. Its approvals come as the card over this view, as in a chat (D38).
 Item {
     id: view
     objectName: "agentView"
     readonly property var task: Autonomy.task
     readonly property bool open: Autonomy.selectedId !== ""
     property bool editing: false
+    property bool follow: true  // the thread keeps its end in sight until the user scrolls up
     property real reserveTop: 0  // the approval card's room over the view
-    onOpenChanged: editing = false
+    onOpenChanged: { editing = false; follow = true }
 
     component Label: Text {
         color: Theme.p.faint
@@ -20,20 +21,11 @@ Item {
         font.pixelSize: 12
         font.weight: Font.DemiBold
     }
-    component Note: Text {
-        width: parent ? parent.width : 400
-        wrapMode: Text.Wrap
-        color: Theme.p.muted
-        font.family: Theme.uiFont
-        font.pixelSize: 13
-        lineHeight: 1.25
-    }
     component Area: Rectangle {
         id: box
         property alias text: input.text
         property string hint
         property string name
-        signal edited(string text)
         height: 96
         radius: 6
         color: Theme.p.card
@@ -53,42 +45,178 @@ Item {
                 font.pixelSize: 13
                 padding: 10
                 background: null
-                onEditingFinished: box.edited(text)
             }
+        }
+    }
+    // the user's words: a card on the right, as in a chat
+    component Said: Item {
+        id: said
+        property string text
+        property string note
+        width: parent ? parent.width : 400
+        height: bubble.height
+        Rectangle {
+            id: bubble
+            anchors.right: parent.right
+            width: Math.min(said.width * 0.8, Math.max(saidText.implicitWidth, saidNote.implicitWidth) + 32)
+            height: saidBody.height + 24
+            radius: 8
+            color: Theme.p.card
+            border.color: Theme.p.hairline
+            Column {
+                id: saidBody
+                x: 16
+                y: 12
+                width: parent.width - 32
+                spacing: 4
+                TextEdit {
+                    id: saidText
+                    width: Math.min(said.width * 0.8 - 32, implicitWidth)
+                    readOnly: true
+                    selectByMouse: true
+                    textFormat: TextEdit.PlainText
+                    wrapMode: TextEdit.Wrap
+                    text: said.text
+                    color: Theme.p.text
+                    selectionColor: Theme.p.selection
+                    selectedTextColor: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 14
+                }
+                Text {
+                    id: saidNote
+                    visible: said.note !== ""
+                    width: Math.min(said.width * 0.8 - 32, implicitWidth)
+                    wrapMode: Text.Wrap
+                    text: said.note
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+            }
+        }
+    }
+    // the agent's words: on the left, after its mark; a framed card when it needs the user (a question, the report)
+    component Told: Item {
+        id: told
+        property string text
+        property string title
+        property bool framed: false
+        property color line: Theme.p.hairline_strong
+        default property alias extra: toldExtra.data
+        width: parent ? parent.width : 400
+        height: Math.max(26, toldBody.height + (framed ? 24 : 0))
+        Rectangle {
+            anchors.fill: parent
+            radius: 8
+            visible: told.framed
+            color: Theme.p.card
+            border.color: told.line
+        }
+        Icon {
+            x: told.framed ? 12 : 0
+            y: told.framed ? 13 : 1
+            name: "agent"
+            size: 17
+            tint: Theme.p.accent
+        }
+        Column {
+            id: toldBody
+            x: told.framed ? 40 : 28
+            y: told.framed ? 12 : 0
+            width: parent.width - x - (told.framed ? 14 : 0)
+            spacing: 6
+            Text {
+                visible: told.title !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: told.title
+                color: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+            }
+            TextEdit {
+                visible: told.text !== ""
+                width: parent.width
+                readOnly: true
+                selectByMouse: true
+                textFormat: TextEdit.PlainText
+                wrapMode: TextEdit.Wrap
+                text: told.text
+                color: Theme.p.text
+                selectionColor: Theme.p.selection
+                selectedTextColor: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 14
+            }
+            Column { id: toldExtra; width: parent.width; spacing: 6 }
         }
     }
 
     Flickable {
-        anchors.fill: parent
+        id: flick
+        width: parent.width
+        height: parent.height - composer.height
         contentHeight: column.height + 48
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ThinScrollBar {}
+        onMovementEnded: view.follow = atYEnd
+        onContentHeightChanged: if (view.open && view.follow) contentY = Math.max(0, contentHeight - height)
 
         Column {
             id: column
             y: 24 + view.reserveTop
             x: (view.width - width) / 2
             width: Math.min(780, view.width - 48)
-            spacing: 14
+            spacing: 16
 
-            // ================= a new task =================
+            // ================= no task open: what should the agent do? =================
             Column {
                 objectName: "agentForm"
                 visible: !view.open
                 width: parent.width
-                spacing: 12
+                spacing: 14
 
+                Item { width: 1; height: Math.max(0, (flick.height - 360) / 3) }
+                Icon { name: "agent"; size: 30; tint: Theme.p.accent; anchors.horizontalCenter: parent.horizontalCenter }
                 Text {
-                    text: "Новая задача для агента"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Что сделать агенту?"
                     color: Theme.p.text
                     font.family: Theme.uiFont
-                    font.pixelSize: 20
+                    font.pixelSize: 24
                     font.weight: Font.DemiBold
                 }
-                Note { text: "Агент сам составит план, выполнит шаги инструментами хаба, проверит каждый и в конце напишет отчёт. Вы видите план и каждый шаг, отвечаете на его вопросы и можете остановить его в любой момент." }
+                Text {
+                    width: Math.min(parent.width, 600)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: "Напишите задачу в поле внизу — как человеку. Агент составит план, выполнит шаги, проверит себя и напишет отчёт. Под полем — режим, модель, проекты, время запуска и ограничения: нажмите любое, чтобы увидеть, что оно значит."
+                    color: Theme.p.muted
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    lineHeight: 1.3
+                }
+                Flow {
+                    width: parent.width
+                    spacing: 6
+                    Repeater {
+                        model: Autonomy.templates
+                        delegate: Chip {
+                            required property var modelData
+                            iconName: "sparkle"
+                            menu: false
+                            text: modelData.name
+                            onClicked: composer.useTemplate(modelData.id)
+                        }
+                    }
+                }
                 Row {
                     spacing: 8
+                    anchors.horizontalCenter: parent.horizontalCenter
                     PlainButton {
                         objectName: "agentMemory"
                         iconName: "layers"
@@ -102,202 +230,128 @@ Item {
                         onClicked: App.openUi("agent-access")
                     }
                 }
-                Flow {
-                    width: parent.width
-                    spacing: 6
-                    Repeater {
-                        model: Autonomy.templates
-                        delegate: Chip {
-                            required property var modelData
-                            iconName: "sparkle"
-                            menu: false
-                            text: modelData.name
-                            onClicked: Autonomy.applyTemplate(modelData.id)
-                        }
-                    }
-                }
-                Label { text: "Цель" }
-                Area {
-                    width: parent.width
-                    name: "agentGoal"
-                    hint: "Что агент должен сделать — так же, как вы сказали бы человеку"
-                    text: Autonomy.draft.goal || ""
-                    onEdited: (text) => Autonomy.setField("goal", text)
-                }
-                Label { text: "Готово, когда" }
-                Field {
-                    objectName: "agentDoneWhen"
-                    width: parent.width
-                    placeholderText: "Например: «все тесты проходят» — по этому агент проверит себя в конце"
-                    text: Autonomy.draft.done_when || ""
-                    onEditingFinished: Autonomy.setField("done_when", text)
-                }
-                Row {
-                    spacing: 8
-                    PlainButton {
-                        id: modelButton
-                        objectName: "agentModel"
-                        iconName: "cpu"
-                        text: "Работает: " + (Autonomy.draft.modelName || "")
-                        onClicked: { modelMenu.anchor = modelButton; modelMenu.open() }
-                    }
-                    PlainButton {
-                        id: plannerButton
-                        iconName: "layers"
-                        text: "Планирует: " + (Autonomy.draft.plannerName || "")
-                        onClicked: { plannerMenu.anchor = plannerButton; plannerMenu.open() }
-                    }
-                }
-                MenuPopup {
-                    id: modelMenu
-                    menuWidth: 430
-                    items: Autonomy.modelChoices
-                    onChosen: (id) => Autonomy.setField("model_id", id)
-                }
-                MenuPopup {
-                    id: plannerMenu
-                    menuWidth: 430
-                    items: [{ id: "*same", name: "та же модель", icon: "layers" }].concat(Autonomy.modelChoices)
-                    onChosen: (id) => Autonomy.setField("planner_model_id", id === "*same" ? "" : id)
-                }
-                Label { text: "Проекты — агент видит и меняет только их" }
-                Flow {
-                    width: parent.width
-                    spacing: 6
-                    Text {
-                        visible: Autonomy.projectChoices.length === 0
-                        text: "Проектов нет: агент будет работать без файлов проектов (сеть, расчёты)."
-                        color: Theme.p.faint
-                        font.family: Theme.uiFont
-                        font.pixelSize: 12
-                    }
-                    Repeater {
-                        model: Autonomy.projectChoices
-                        delegate: Chip {
-                            required property var modelData
-                            iconName: "folder"
-                            menu: false
-                            text: modelData.name
-                            active: modelData.selected
-                            onClicked: Autonomy.toggleProject(modelData.id)
-                        }
-                    }
-                }
-                Row {
-                    spacing: 10
-                    Label { text: "Скриптам Python — в сеть"; anchors.verticalCenter: parent.verticalCenter }
-                    Segmented {
-                        objectName: "agentNetwork"
-                        options: [{ id: "no", name: "нельзя" }, { id: "yes", name: "можно" }]
-                        value: Autonomy.draft.network ? "yes" : "no"
-                        onPicked: (id) => Autonomy.setFlag("network", id === "yes")
-                    }
-                }
-                Label { text: "Сколько сам" }
-                Segmented {
-                    objectName: "agentAutonomy"
-                    options: Autonomy.autonomyOptions
-                    value: Autonomy.draft.autonomy || "plan"
-                    onPicked: (id) => Autonomy.setField("autonomy", id)
-                }
-                Text {
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    text: (Autonomy.autonomyOptions.find(o => o.id === Autonomy.draft.autonomy) || {}).hint || ""
-                    color: Theme.p.muted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 12
-                }
-                Flow {
-                    width: parent.width
-                    spacing: 12
-                    Repeater {
-                        model: [{ id: "max_steps", name: "Шагов, не больше" }, { id: "max_minutes", name: "Минут" },
-                                { id: "budget_usd", name: "Бюджет, $ (платные)" }, { id: "max_replans", name: "Новых планов" }]
-                        delegate: Column {
-                            required property var modelData
-                            width: 150
-                            spacing: 4
-                            Label { text: modelData.name }
-                            Field {
-                                width: parent.width
-                                text: Autonomy.draft[modelData.id] || ""
-                                onEditingFinished: Autonomy.setField(modelData.id, text)
-                            }
-                        }
-                    }
-                }
-                SchedulePanel { width: parent.width }
-                Text {
-                    objectName: "agentError"
-                    visible: text !== ""
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    text: Autonomy.error
-                    color: Theme.p.error
-                    font.family: Theme.uiFont
-                    font.pixelSize: 13
-                }
-                PlainButton {
-                    objectName: "agentStart"
-                    kind: "primary"
-                    iconName: Schedules.draft.when === "now" ? "bolt" : "refresh"
-                    text: Schedules.draft.when === "now" ? "Начать" : "Запланировать"
-                    onClicked: Schedules.draft.when === "now" ? Autonomy.start() : Schedules.create()
-                }
             }
 
-            // ================= the open task =================
+            // ================= the open task, as a chat =================
             Column {
                 objectName: "agentTask"
                 visible: view.open
                 width: parent.width
-                spacing: 12
+                spacing: 14
 
-                Text {
+                Said {
                     objectName: "agentTaskGoal"
-                    width: parent.width
-                    wrapMode: Text.Wrap
                     text: view.task.goal || ""
-                    color: Theme.p.text
-                    font.family: Theme.uiFont
-                    font.pixelSize: 18
-                    font.weight: Font.DemiBold
+                    note: view.task.doneWhen ? "Готово, когда: " + view.task.doneWhen : ""
                 }
                 Text {
+                    objectName: "agentStatus"
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: [view.task.statusLabel, view.task.autonomy ? "сам: " + view.task.autonomy : "", view.task.meta]
+                    text: [view.task.statusLabel, view.task.autonomy ? "режим «" + view.task.autonomy + "»" : "", view.task.meta]
                           .filter(s => !!s).join(" · ")
-                    color: view.task.status === "waiting" ? Theme.p.warn : view.task.status === "error" ? Theme.p.error : Theme.p.muted
+                    color: view.task.status === "waiting" ? Theme.p.warn : view.task.status === "error" ? Theme.p.error : Theme.p.faint
                     font.family: Theme.uiFont
-                    font.pixelSize: 13
+                    font.pixelSize: 12
                 }
-                Row {
-                    visible: !!view.task.live && !!view.task.level
-                    spacing: 8
+
+                // ---------- the plan ----------
+                Told {
+                    title: view.task.planVersion ? "План · версия " + view.task.planVersion + (view.task.progress ? " · сделано " + view.task.progress : "")
+                                                 : (view.task.live ? "Составляю план…" : "Плана нет")
+                    text: view.task.planReason ? "Почему новый план: " + view.task.planReason : ""
+                    Column {
+                        objectName: "agentSteps"
+                        width: parent.width
+                        spacing: 4
+                        Repeater {
+                            model: view.task.steps || []
+                            delegate: Item {
+                                required property var modelData
+                                width: parent.width
+                                height: stepBody.height + 10
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 6
+                                    color: modelData.status === "running" ? Theme.p.item_selected : "transparent"
+                                }
+                                Icon {
+                                    x: 6
+                                    y: 7
+                                    name: modelData.icon
+                                    size: 15
+                                    tint: modelData.status === "done" ? Theme.p.ok : modelData.status === "failed" ? Theme.p.error
+                                          : modelData.status === "running" ? Theme.p.accent : Theme.p.faint
+                                }
+                                Column {
+                                    id: stepBody
+                                    x: 30
+                                    y: 5
+                                    width: parent.width - 38
+                                    spacing: 2
+                                    Text {
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        text: modelData.n + ". " + modelData.title + "  ·  " + modelData.label
+                                        color: modelData.status === "pending" ? Theme.p.text_soft : Theme.p.text
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 13
+                                    }
+                                    Text {
+                                        visible: modelData.check !== "" && modelData.note === ""
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        text: "проверка: " + modelData.check
+                                        color: Theme.p.faint
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 12
+                                    }
+                                    Text {
+                                        visible: modelData.note !== ""
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        text: modelData.note
+                                        color: modelData.status === "failed" ? Theme.p.error : Theme.p.muted
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------- the talk: its questions, the user's answers and words on the way ----------
+                Repeater {
+                    objectName: "agentThread"
+                    model: Autonomy.thread
+                    delegate: Item {
+                        required property var modelData
+                        width: parent.width
+                        height: modelData.who === "you" ? youRow.height : agentRow.height
+                        Said { id: youRow; visible: modelData.who === "you"; text: modelData.text }
+                        Told {
+                            id: agentRow
+                            visible: modelData.who !== "you"
+                            text: modelData.text + (modelData.expired ? "\n(вопрос снят — ответа не было)" : "")
+                        }
+                    }
+                }
+                Told {
+                    objectName: "agentQuestion"
+                    visible: !!(view.task.question && view.task.question.id)
+                    framed: true
+                    line: Theme.p.warn
+                    title: "Агент спрашивает"
+                    text: (view.task.question || {}).question || ""
                     Text {
-                        text: "Самостоятельность"
-                        color: Theme.p.muted
+                        width: parent.width
+                        wrapMode: Text.Wrap
+                        text: "Ответьте в поле внизу — агент ждёт и продолжит после ответа."
+                        color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
-                        anchors.verticalCenter: parent.verticalCenter
                     }
-                    Segmented {
-                        objectName: "agentLevel"
-                        options: Autonomy.autonomyOptions
-                        value: view.task.level || ""
-                        onPicked: (id) => Autonomy.setLevel(id)
-                    }
-                }
-                Text {
-                    visible: !!view.task.doneWhen
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    text: "Готово, когда: " + (view.task.doneWhen || "")
-                    color: Theme.p.text_soft
-                    font.family: Theme.uiFont
-                    font.pixelSize: 13
                 }
                 Text {
                     visible: !!view.task.detail
@@ -307,166 +361,6 @@ Item {
                     color: Theme.p.error
                     font.family: Theme.uiFont
                     font.pixelSize: 13
-                }
-                Flow {
-                    width: parent.width
-                    spacing: 8
-                    PlainButton {
-                        objectName: "agentPause"
-                        visible: !!view.task.live
-                        iconName: view.task.paused ? "bolt" : "stop"
-                        text: view.task.paused ? "Продолжить" : "Пауза"
-                        onClicked: view.task.paused ? Autonomy.resume() : Autonomy.pause()
-                    }
-                    PlainButton {
-                        objectName: "agentStop"
-                        visible: !!view.task.live
-                        kind: "danger"
-                        iconName: "close"
-                        text: "Остановить"
-                        onClicked: Autonomy.stop()
-                    }
-                    PlainButton {
-                        objectName: "agentEditPlan"
-                        visible: !!view.task.live && view.task.planVersion > 0
-                        iconName: "edit"
-                        text: "Изменить план"
-                        onClicked: { planEditor.text = view.task.planText; view.editing = true }
-                    }
-                    PlainButton {
-                        objectName: "agentLog"
-                        iconName: "chat"
-                        text: "Весь ход работы"
-                        onClicked: Autonomy.openLog()
-                    }
-                }
-
-                // ---------- the agent's question ----------
-                Rectangle {
-                    objectName: "agentQuestion"
-                    visible: !!(view.task.question && view.task.question.id)
-                    width: parent.width
-                    height: questionBody.height + 28
-                    radius: 8
-                    color: Theme.p.card
-                    border.color: Theme.p.warn
-                    Column {
-                        id: questionBody
-                        x: 14
-                        y: 14
-                        width: parent.width - 28
-                        spacing: 10
-                        Row {
-                            spacing: 8
-                            Icon { name: "chat"; size: 16; tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
-                            Text {
-                                text: "Агент спрашивает"
-                                color: Theme.p.text
-                                font.family: Theme.uiFont
-                                font.pixelSize: 14
-                                font.weight: Font.DemiBold
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                        }
-                        Text {
-                            width: parent.width
-                            wrapMode: Text.Wrap
-                            text: (view.task.question || {}).question || ""
-                            color: Theme.p.text
-                            font.family: Theme.uiFont
-                            font.pixelSize: 14
-                        }
-                        Area { id: answerBox; width: parent.width; height: 72; name: "agentAnswer"; hint: "Ваш ответ" }
-                        PlainButton {
-                            objectName: "agentAnswerSend"
-                            kind: "primary"
-                            iconName: "send"
-                            text: "Ответить"
-                            onClicked: { Autonomy.answer(view.task.question.id, answerBox.text); answerBox.text = "" }
-                        }
-                    }
-                }
-
-                // ---------- the plan ----------
-                Row {
-                    spacing: 8
-                    SectionTitle { text: view.task.planVersion ? "План · версия " + view.task.planVersion : "План ещё не составлен" }
-                    Text {
-                        visible: !!view.task.progress
-                        text: "· " + (view.task.progress || "")
-                        color: Theme.p.faint
-                        font.family: Theme.uiFont
-                        font.pixelSize: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                }
-                Text {
-                    visible: !!view.task.planReason
-                    width: parent.width
-                    wrapMode: Text.Wrap
-                    text: "Почему новый план: " + (view.task.planReason || "")
-                    color: Theme.p.muted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 12
-                }
-                Column {
-                    objectName: "agentSteps"
-                    width: parent.width
-                    spacing: 6
-                    Repeater {
-                        model: view.task.steps || []
-                        delegate: Item {
-                            required property var modelData
-                            width: parent.width
-                            height: stepBody.height + 12
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 6
-                                color: modelData.status === "running" ? Theme.p.item_selected : "transparent"
-                            }
-                            Icon {
-                                x: 8
-                                y: 8
-                                name: modelData.icon
-                                size: 15
-                                tint: modelData.status === "done" ? Theme.p.ok : modelData.status === "failed" ? Theme.p.error
-                                      : modelData.status === "running" ? Theme.p.accent : Theme.p.faint
-                            }
-                            Column {
-                                id: stepBody
-                                x: 32
-                                y: 6
-                                width: parent.width - 40
-                                spacing: 2
-                                Text {
-                                    width: parent.width
-                                    wrapMode: Text.Wrap
-                                    text: modelData.n + ". " + modelData.title + "  ·  " + modelData.label
-                                    color: modelData.status === "pending" ? Theme.p.text_soft : Theme.p.text
-                                    font.family: Theme.uiFont
-                                    font.pixelSize: 13
-                                }
-                                Text {
-                                    visible: modelData.check !== "" && modelData.note === ""
-                                    width: parent.width
-                                    wrapMode: Text.Wrap
-                                    text: "проверка: " + modelData.check
-                                    color: Theme.p.faint
-                                    font.family: Theme.uiFont
-                                    font.pixelSize: 12
-                                }
-                                Text {
-                                    visible: modelData.note !== ""
-                                    width: parent.width
-                                    wrapMode: Text.Wrap
-                                    text: modelData.note
-                                    color: modelData.status === "failed" ? Theme.p.error : Theme.p.muted
-                                    font.family: Theme.uiFont
-                                    font.pixelSize: 12
-                                }
-                            }
-                        }
-                    }
                 }
 
                 // ---------- the user's own plan ----------
@@ -491,61 +385,82 @@ Item {
                 }
 
                 // ---------- the report ----------
-                Rectangle {
+                Told {
                     objectName: "agentReport"
                     visible: !!(view.task.report && view.task.report.summary)
-                    width: parent.width
-                    height: reportBody.height + 28
-                    radius: 8
-                    color: Theme.p.card
-                    border.color: (view.task.report || {}).goalMet ? Theme.p.ok : Theme.p.hairline_strong
-                    Column {
-                        id: reportBody
-                        x: 14
-                        y: 14
-                        width: parent.width - 28
-                        spacing: 8
-                        Text {
-                            text: "Отчёт · " + ((view.task.report || {}).verdict || "")
-                            color: (view.task.report || {}).goalMet ? Theme.p.ok : Theme.p.warn
-                            font.family: Theme.uiFont
-                            font.pixelSize: 14
-                            font.weight: Font.DemiBold
-                        }
-                        Text {
+                    framed: true
+                    line: (view.task.report || {}).goalMet ? Theme.p.ok : Theme.p.hairline_strong
+                    title: "Отчёт · " + ((view.task.report || {}).verdict || "")
+                    text: (view.task.report || {}).summary || ""
+                    Repeater {
+                        model: [{ name: "Сделано", items: (view.task.report || {}).done || [] },
+                                { name: "Не сделано", items: (view.task.report || {}).notDone || [] },
+                                { name: "Файлы", items: (view.task.report || {}).files || [] }]
+                        delegate: Text {
+                            required property var modelData
+                            visible: modelData.items.length > 0
                             width: parent.width
                             wrapMode: Text.Wrap
-                            text: (view.task.report || {}).summary || ""
-                            color: Theme.p.text
+                            text: modelData.name + ": " + modelData.items.join("; ")
+                            color: Theme.p.text_soft
                             font.family: Theme.uiFont
-                            font.pixelSize: 13
-                            lineHeight: 1.3
-                        }
-                        PlainButton {
-                            objectName: "agentKeepSkill"
-                            visible: !!(view.task.report || {}).goalMet
-                            iconName: "check"
-                            text: "Сохранить как навык"
-                            onClicked: Memory.keepSkill(view.task.id, view.task.goal)
-                        }
-                        Repeater {
-                            model: [{ name: "Сделано", items: (view.task.report || {}).done || [] },
-                                    { name: "Не сделано", items: (view.task.report || {}).notDone || [] },
-                                    { name: "Файлы", items: (view.task.report || {}).files || [] }]
-                            delegate: Text {
-                                required property var modelData
-                                visible: modelData.items.length > 0
-                                width: reportBody.width
-                                wrapMode: Text.Wrap
-                                text: modelData.name + ": " + modelData.items.join("; ")
-                                color: Theme.p.text_soft
-                                font.family: Theme.uiFont
-                                font.pixelSize: 12
-                            }
+                            font.pixelSize: 12
                         }
                     }
+                    PlainButton {
+                        objectName: "agentKeepSkill"
+                        visible: !!(view.task.report || {}).goalMet
+                        iconName: "check"
+                        text: "Сохранить как навык"
+                        onClicked: Memory.keepSkill(view.task.id, view.task.goal)
+                    }
+                }
+                Text {
+                    visible: !view.task.live
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    text: "Задача закончена. Новую можно написать в поле внизу."
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
                 }
             }
+
+            // ---------- a new task's «when», by time or on an event ----------
+            Rectangle {
+                visible: !Autonomy.running && Schedules.draft.when !== "now"
+                width: parent.width
+                height: schedule.height + 28
+                radius: 8
+                color: Theme.p.card
+                border.color: Theme.p.hairline
+                SchedulePanel {
+                    id: schedule
+                    x: 14
+                    y: 14
+                    width: parent.width - 28
+                    chooser: false
+                }
+            }
+            Text {
+                objectName: "agentError"
+                visible: text !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: Autonomy.error
+                color: Theme.p.error
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
         }
+    }
+
+    AgentComposer {
+        id: composer
+        anchors.bottom: parent.bottom
+        width: parent.width
+        height: implicitHeight
+        onEditPlanRequested: { planEditor.text = view.task.planText; view.editing = true }
     }
 }

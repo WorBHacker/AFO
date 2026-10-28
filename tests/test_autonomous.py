@@ -2,6 +2,7 @@
 failures that call for another way, the user approving the plan (or each step), a question and its answer, nudges
 when the model stops before its report, a pause, the user's own plan, the planner handing over to the run's model."""
 
+import json
 import time
 
 from hub import autonomous
@@ -161,6 +162,27 @@ def test_each_step_waits_for_the_user(hub):  # noqa: F811
     assert run["status"] == "done" and run["report"]["goal_met"] is False
     steps = hub.get(f"/v1/runs/{run_id}/plan").json()["plans"][0]["steps"]
     assert steps[0]["status"] == "pending"  # not let start
+
+
+def test_the_user_writes_to_a_running_task(hub):  # noqa: F811
+    """The input under a running task: a word the agent reads before its next step, or the answer it waits on."""
+    agent = use(hub, Scripted("agent", [[PLAN], [("ask_user", {"question": "Какой файл?"})],
+                                        [("finish", {"summary": "Сделано.", "goal_met": True})]]))  # fmt: skip
+    run_id = start(hub, autonomy="plan")
+    plan = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert hub.post(f"/v1/runs/{run_id}/message", json={"text": "   "}).status_code == 422
+    noted = hub.post(f"/v1/runs/{run_id}/message", json={"text": " Только README, другие файлы не трогай "})
+    assert noted.json() == {"noted": True}
+    hub.post(f"/v1/approvals/{plan['id']}", json={"allow": True})
+    question = wait(lambda: [q for q in hub.get(f"/v1/runs/{run_id}/plan").json()["questions"]
+                             if q["status"] == "pending"])[0]  # fmt: skip
+    assert hub.post(f"/v1/runs/{run_id}/message", json={"text": "README.md"}).json() == {"answered": question["id"]}
+    run = ended(hub, run_id)
+    assert run["status"] == "done"
+    seen = json.dumps(agent.prompts[1:], ensure_ascii=False, default=str)
+    assert "The user writes to you now - take it into account from your next step: Только README, другие" in seen
+    assert results(agent)[1] == "The user answered: README.md"
+    assert hub.post(f"/v1/runs/{run_id}/message", json={"text": "ещё"}).status_code in (404, 409)  # it ended
 
 
 def test_the_level_changes_on_the_way(hub):  # noqa: F811

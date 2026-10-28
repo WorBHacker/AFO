@@ -211,6 +211,34 @@ async def resume_run(run_id: str, request: Request, client: Annotated[Client, De
     return {"paused": False}
 
 
+class Message(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/runs/{run_id}/message")
+async def message_run(run_id: str, body: Message, request: Request,
+                      client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
+    """The user writes to a running task, as in a chat: the answer to the question it waits on, or else a word it
+    reads before its next step (another limit, a hint, a change of mind)."""
+    _app_only(client)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Пустое сообщение")
+    await _running_autonomous(request, run_id)
+    state = request.app.state
+    waiting = next((q for q in await _db(request, lambda conn: autonomous.questions(conn, run_id))
+                    if q.get("status") == "pending"), None)  # fmt: skip
+    if waiting is not None:
+        try:
+            await state.autonomy.answer(run_id, waiting["id"], text, by=client.name)
+        except autonomous.AutonomyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"answered": waiting["id"]}
+    state.autonomy.notify(run_id, f"The user writes to you now - take it into account from your next step: {text}")
+    await state.bus.publish("agent.run", {"run_id": run_id, "message": text})
+    return {"noted": True}
+
+
 class Level(BaseModel):
     autonomy: str
 

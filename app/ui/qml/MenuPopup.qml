@@ -8,6 +8,7 @@ Popup {
     property Item anchor
     property point at: Qt.point(-1, -1)  // open at a point (a right click) instead of above `anchor`
     property int menuWidth: 300
+    property bool wrapNotes: false  // a note that explains the choice: whole, on several lines
     signal chosen(string id)
 
     parent: Overlay.overlay
@@ -60,7 +61,7 @@ Popup {
         AbstractButton {
             id: entry
             property var info: ({})
-            height: info.note ? 46 : 36
+            height: info.note ? (menu.wrapNotes ? body.implicitHeight + 16 : 46) : 36
             hoverEnabled: true
             enabled: info.enabled !== false
             opacity: enabled ? 1 : 0.5
@@ -78,6 +79,7 @@ Popup {
                     tint: Theme.p.text_soft
                 }
                 Column {
+                    id: body
                     x: 36
                     width: parent.width - 80
                     anchors.verticalCenter: parent.verticalCenter
@@ -94,7 +96,9 @@ Popup {
                         width: parent.width
                         visible: !!entry.info.note
                         text: entry.info.note || ""
-                        elide: Text.ElideRight
+                        elide: menu.wrapNotes ? Text.ElideNone : Text.ElideRight
+                        wrapMode: menu.wrapNotes ? Text.Wrap : Text.NoWrap
+                        lineHeight: 1.15
                         color: entry.info.loaded ? Theme.p.ok : Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12

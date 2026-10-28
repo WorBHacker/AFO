@@ -247,6 +247,10 @@ class HubClient:
     def answer_question(self, run_id: str, question_id: str, answer: str) -> dict:
         return self._call("POST", f"/v1/runs/{run_id}/questions/{question_id}", {"answer": answer})
 
+    def message_run(self, run_id: str, text: str) -> dict:
+        """A word to a running task: the answer to its question, or something it reads before its next step."""
+        return self._call("POST", f"/v1/runs/{run_id}/message", {"text": text})
+
     def set_autonomy(self, run_id: str, autonomy: str) -> dict:
         return self._call("PUT", f"/v1/runs/{run_id}/autonomy", {"autonomy": autonomy})
 

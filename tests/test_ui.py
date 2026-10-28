@@ -754,6 +754,15 @@ class FakeClient:
         self.auto_calls.append(("answer", run_id, question_id, answer))
         return {"id": question_id}
 
+    def message_run(self, run_id, text):
+        self.auto_calls.append(("message", run_id, text))
+        waiting = run_id == "auto1" and not any(c[0] == "message" for c in self.auto_calls[:-1])
+        return {"answered": "q1"} if waiting else {"noted": True}
+
+    def set_autonomy(self, run_id, autonomy):
+        self.auto_calls.append(("autonomy", run_id, autonomy))
+        return {"autonomy": autonomy, "answered": []}
+
     def pause_run(self, run_id):
         self.auto_calls.append(("pause", run_id))
 
@@ -4615,7 +4624,7 @@ def test_checking_the_system_and_collecting_the_logs(qapp):
 
 
 def test_the_level_of_a_task_and_the_cards_words(qapp):
-    """10.x: a new task starts «Сам» unless the person chose otherwise; a running one changes its level; the card for
+    """10.x: a new task starts «Авто» unless the person chose otherwise; a running one changes its level; the card for
     acting in a program says what «for the task» covers."""
     from app.ui.approvals import approval_rows
     from app.ui.autonomy import LEVEL_KEY
@@ -4633,10 +4642,84 @@ def test_the_level_of_a_task_and_the_cards_words(qapp):
         view = app.autonomy_view
         app.settings.remove(LEVEL_KEY)
         view.newTask()
-        assert view.draft["autonomy"] == "free"  # «Сам» at first
+        assert view.draft["autonomy"] == "free"  # «Авто» at first
         view.setField("autonomy", "plan")
         view.newTask()
         assert view.draft["autonomy"] == "plan"  # the person's last choice
+        app.settings.remove(LEVEL_KEY)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_agent_input_as_a_chat(qapp):
+    """2026-10-28: the Agent mode works as a chat - the goal is typed in the input, its mode / model / projects /
+    «when» / limits are chips with explanations; under a running task the same input answers the agent's question or
+    gives it another limit, and the mode chip changes the running task's mode."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.autonomy import AUTONOMY, LEVEL_KEY
+    from app.ui.main import QuickApp
+
+    assert [name for _id, name, _hint in AUTONOMY] == ["Авто", "Сначала план", "Каждый шаг"]
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.run_list = [dict(AUTO_RUN), dict(RUN)]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.autonomy_view.tasks)
+        view = app.autonomy_view
+        app.settings.remove(LEVEL_KEY)
+        app.setMode("agent")
+        view.newTask()
+        for _ in range(10):
+            QApplication.processEvents()
+        assert not view.running and view.modeName == "Авто" and view.modeHint.startswith("Работает сам")
+        modes = view.modes
+        assert modes[0]["section"] and [m["name"] for m in modes[1:]] == ["Авто", "Сначала план", "Каждый шаг"]
+        assert modes[1]["selected"] and all(m["note"] for m in modes[1:])  # each mode explained
+        limits = view.limitFields
+        assert [f["id"] for f in limits] == ["done_when", "max_steps", "max_minutes", "budget_usd", "max_replans"]
+        assert all(f["hint"] for f in limits)
+        assert view.limitsText == "100 шагов · 60 мин · $1" and view.projectsText == "Без проектов"
+        assert view.placeholder.startswith("Что сделать агенту?")
+        assert quick.window.findChild(QObject, "agentMode").property("text") == "Авто"
+        assert quick.window.findChild(QObject, "agentModeHint").property("text").startswith("«Авто» — Работает сам")
+        view.chooseMode("each_step")  # no task running: the next task's mode, remembered
+        assert view.draft["autonomy"] == "each_step" and app.settings.value(LEVEL_KEY) == "each_step"
+        view.setField("model_id", "")
+        assert view.submit("Посчитать строки") is False and view.error.startswith("Выберите модель")  # stays
+        view.setField("model_id", app.modelId)
+        assert view.submit("   ") is False
+        assert view.submit(" Посчитать строки в README ") is True
+        wait_until(lambda: not app.bg.busy and client.auto_calls)
+        started = client.auto_calls[0]
+        assert started[0] == "start" and started[1]["goal"] == "Посчитать строки в README"
+        assert started[1]["autonomy"] == "each_step"
+
+        view.select("auto1")  # running, with a question waiting
+        wait_until(lambda: not app.bg.busy and view.task.get("planVersion") == 2)
+        assert view.running and view.modeName == "Сначала план"  # the task's own mode
+        assert view.placeholder.startswith("Ответ на вопрос агента")
+        assert view.thread == []  # the waiting question is the card under the thread
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "agentQuestion").property("visible")
+        assert quick.window.findChild(QObject, "agentStop").property("visible")
+        assert not quick.window.findChild(QObject, "agentModel").property("visible")  # a new task's chips hide
+        assert view.submit("нет") is True
+        wait_until(lambda: not app.bg.busy and app.flashText == "Ответ передан агенту")
+        assert view.submit("И не трогай другие файлы") is True
+        wait_until(lambda: not app.bg.busy and view.thread)
+        assert [(r["who"], r["text"]) for r in view.thread] == [("you", "И не трогай другие файлы")]
+        assert app.flashText == "Агент прочтёт это перед следующим шагом"
+        view.chooseMode("free")  # a running task: its mode changes on the way
+        wait_until(lambda: not app.bg.busy and ("autonomy", "auto1", "free") in client.auto_calls)
+        assert ("message", "auto1", "нет") in client.auto_calls
+        assert app.settings.value(LEVEL_KEY) == "each_step"  # the running task's mode is not the next task's
         app.settings.remove(LEVEL_KEY)
         for _ in range(10):
             QApplication.processEvents()

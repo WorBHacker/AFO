@@ -172,7 +172,8 @@ def test_the_card_api(hub, repo):
     other = {"Authorization": f"Bearer {cline}"}
     assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "fake/echo"}, headers=other).status_code == 403
     assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "fake/echo"}).status_code == 202
-    state = wait(hub, lambda: (s := hub.get(f"/v1/projects/{pid}/card").json())["draft"] and s)
+    # the draft is saved a moment before "drafting" goes off: wait for both
+    state = wait(hub, lambda: (s := hub.get(f"/v1/projects/{pid}/card").json())["draft"] and not s["drafting"] and s)
     assert state["draft"]["text"] == CARD and state["drafting"] is False
     assert "# Проект «proj»" in writer.seen[0][1]["content"]
     usage = hub.app.state.db.call(lambda c: c.execute("SELECT meta FROM usage").fetchone()["meta"])

@@ -1,14 +1,17 @@
 """The Agent mode of the window (stage 9.2, D40): the autonomous agent's tasks beside the chats and the projects.
 
-The sidebar lists the tasks - running, waiting for the user, finished; the main area holds a new task's form (the
-goal, what "done" means, a template, the model and the planner, the projects, how much on its own, the limits) or
-the open task: its goal and state, the plan as it goes (each step's state, its result and how it was checked), the
-agent's question with an answer field, pause / go on / stop, the user's own plan, and the report at the end. Its
-approvals come as the card over the view, as in a chat (D38); the whole course of work opens as a chat.
+The sidebar lists the tasks - running, waiting for the user, finished. The main area works as a chat (2026-10-28,
+the user's word): the input at the bottom takes a new task's goal - its mode, model, projects, limits and «when» are
+chips under it, each choice explained in its menu, as in Claude's own apps - or, while a task runs, a word to the
+agent: the answer to its question, or another limit it reads before its next step; the mode chip changes the running
+task's mode too. Above: the open task - its goal and state, the plan as it goes (each step's state, its result and
+how it was checked), the agent's question, the user's own plan, and the report at the end. Its approvals come as the
+card over the view, as in a chat (D38); the whole course of work opens as a chat.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
@@ -20,10 +23,19 @@ from .rows import model_name
 if TYPE_CHECKING:
     from .controller import Controller
 
-AUTONOMY = [("each_step", "Каждый шаг", "утверждаете план и каждый шаг"),
-            ("plan", "План", "утверждаете план, дальше — по правам"),
-            ("free", "Сам", "без утверждений: в разрешённых программах действует без вопросов; отправка, запись "
-                            "и команды — с вопросом")]  # fmt: skip
+# the modes, as the person reads them: who decides what (named so «Сам» can no longer read as "I do it myself")
+AUTONOMY = [("free", "Авто", "Работает сам: план не утверждается, в разрешённых программах действует без вопросов. "
+                             "Спрашивает только о рискованном — отправка сообщений, запись в проекты, команды, сеть."),
+            ("plan", "Сначала план", "Покажет план — вы его утверждаете. Дальше работает сам; первое действие в "
+                                     "каждой программе спросит один раз."),
+            ("each_step", "Каждый шаг", "Утверждаете план и каждый шаг перед его началом. Медленнее всего, но всё "
+                                        "под вашим контролем.")]  # fmt: skip
+LIMITS = [("done_when", "Готово, когда", "По этому агент проверит себя в конце, например «все тесты проходят». "
+                                        "Можно оставить пустым — тогда он сверится с самой целью."),
+          ("max_steps", "Шагов, не больше", "Сколько действий агент может сделать, прежде чем остановится."),
+          ("max_minutes", "Минут, не больше", "Сколько времени задача может идти."),
+          ("budget_usd", "Бюджет, $", "Сколько можно потратить на платные модели; локальные — бесплатно."),
+          ("max_replans", "Новых планов", "Сколько раз агент может переделать план, если пошло не так.")]  # fmt: skip
 STATUSES = {"queued": "в очереди", "running": "идёт", "waiting": "ждёт вас", "done": "готово", "error": "ошибка",
             "cancelled": "остановлено", "paused": "пауза"}  # fmt: skip
 STEP_STATES = {"pending": ("ждёт", "dots"), "running": ("идёт", "refresh"), "done": ("готово", "check"),
@@ -44,6 +56,11 @@ LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
                          "max_replans": "3", "network": False}  # fmt: skip
+
+
+def utc_now() -> str:
+    """As the hub writes its times (questions, answers): the thread sorts the user's words among them."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def task_rows(runs: list[dict[str, Any]], selected: str, paused: set[str]) -> list[dict[str, Any]]:
@@ -130,6 +147,7 @@ class AutonomyView(QObject):
     changed = Signal()  # the open task (or the form)
     selectionChanged = Signal()
     asked = Signal(str, str)  # an agent's question: a notice outside the window when it is not in front
+    goalBack = Signal(str)  # the task did not start: its goal back into the input
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -138,7 +156,8 @@ class AutonomyView(QObject):
         self._selected = ""
         self._detail: dict[str, Any] = {}
         self._paused: set[str] = set()
-        self._draft: dict[str, Any] = dict(BLANK)
+        self._said: dict[str, list[tuple[str, str]]] = {}  # run id -> (when, text) the user wrote to it on the way
+        self._draft: dict[str, Any] = {**BLANK, "autonomy": self._level()}
         self._error = ""
         self._access: dict[str, Any] = {"folders": [], "domains": [], "default_domains": []}
 
@@ -177,7 +196,7 @@ class AutonomyView(QObject):
             "id": self._selected, "goal": detail.get("goal") or run.get("goal") or "",
             "doneWhen": detail.get("done_when") or "", "status": status, "statusLabel": STATUSES.get(status, status),
             "live": run.get("status") in ("queued", "running"), "paused": bool(detail.get("paused")),
-            "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),
+            "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),  # the mode
             "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
             "meta": " · ".join(p for p in (model, f"шагов {run.get('steps', 0)}",
@@ -205,6 +224,137 @@ class AutonomyView(QObject):
     @Property(list, constant=True)
     def autonomyOptions(self) -> list:
         return [{"id": a, "name": n, "hint": h} for a, n, h in AUTONOMY]
+
+    # ---------- the input at the bottom, as in a chat ----------
+
+    def _running(self) -> bool:
+        """A task is open and still going: the input writes to it."""
+        run = next((r for r in self._runs if r["id"] == self._selected), {}) if self._selected else {}
+        return run.get("status") in ("queued", "running")
+
+    def _mode(self) -> str:
+        return (self._detail.get("autonomy") or "") if self._running() else self._draft["autonomy"]
+
+    @Property(bool, notify=changed)
+    def running(self) -> bool:
+        return self._running()
+
+    @Property(list, notify=changed)
+    def modes(self) -> list:
+        """The mode chip's menu: each mode with what it means."""
+        current = self._mode()
+        return [{"section": "Режим — кто что решает", "id": ""}] + [
+            {"id": a, "name": n, "note": h, "icon": "shield", "selected": a == current} for a, n, h in AUTONOMY
+        ]
+
+    @Property(str, notify=changed)
+    def modeName(self) -> str:
+        return dict((a, n) for a, n, _h in AUTONOMY).get(self._mode(), "")
+
+    @Property(str, notify=changed)
+    def modeHint(self) -> str:
+        return dict((a, h) for a, _n, h in AUTONOMY).get(self._mode(), "")
+
+    @Property(list, notify=changed)
+    def projectItems(self) -> list:
+        """The projects chip's menu: a click adds or removes one."""
+        chosen = set(self._draft["project_ids"])
+        rows = [{"id": p["id"], "name": p["name"], "icon": "folder", "selected": p["id"] in chosen}
+                for p in self.app.projects.items]  # fmt: skip
+        return [{"section": "Проекты — агент видит и меняет только их", "id": ""}] + (
+            rows
+            or [
+                {"id": "", "name": "Проектов нет", "note": "агент будет работать без файлов проектов", "enabled": False}
+            ]
+        )
+
+    @Property(list, notify=changed)
+    def thread(self) -> list:
+        """The open task's talk, as in a chat: the agent's questions, the user's answers and words on the way."""
+        if not self._selected:
+            return []
+        rows = []
+        for q in self._detail.get("questions") or []:
+            if q["status"] == "pending":  # the one it waits on: the card under the thread
+                continue
+            rows.append({"who": "agent", "text": q["question"], "at": q.get("created_at") or "",
+                         "expired": q["status"] == "expired"})  # fmt: skip
+            if q.get("answer"):
+                rows.append({"who": "you", "text": q["answer"], "at": q.get("answered_at") or "", "expired": False})
+        rows += [
+            {"who": "you", "text": text, "at": at, "expired": False} for at, text in self._said.get(self._selected, [])
+        ]
+        return sorted(rows, key=lambda r: r["at"])
+
+    @Property(list, constant=True)
+    def limitFields(self) -> list:
+        return [{"id": k, "name": n, "hint": h} for k, n, h in LIMITS]
+
+    @Property(str, notify=changed)
+    def limitsText(self) -> str:
+        d = self._draft
+        parts = [f"{d['max_steps']} шагов", f"{d['max_minutes']} мин"]
+        if str(d.get("budget_usd") or "").strip():
+            parts.append(f"${d['budget_usd']}")
+        return " · ".join(parts)
+
+    @Property(str, notify=changed)
+    def projectsText(self) -> str:
+        names = {p["id"]: p["name"] for p in self.app.projects.items}
+        chosen = [names.get(p, p) for p in self._draft["project_ids"]]
+        return ", ".join(chosen) if chosen else "Без проектов"
+
+    @Property(str, notify=changed)
+    def placeholder(self) -> str:
+        if not self._running():
+            return "Что сделать агенту? Опишите, как человеку.  Enter — начать, Shift+Enter — новая строка"
+        if any(q["status"] == "pending" for q in self._detail.get("questions") or []):
+            return "Ответ на вопрос агента…  Enter — отправить"
+        return "Написать агенту по ходу работы: уточнение, ограничение — он учтёт со следующего шага"
+
+    @Slot(str)
+    def chooseMode(self, autonomy: str) -> None:
+        """The mode chip: a running task's mode changes on the way; otherwise the next task's."""
+        if self._running():
+            self.setLevel(autonomy)
+        else:
+            self.setField("autonomy", autonomy)
+
+    @Slot(str, result=bool)
+    def submit(self, text: str) -> bool:
+        """The input sent: a word to the running task, or a new task with this goal (now or as scheduled)."""
+        text = text.strip()
+        if not text:
+            return False
+        if self._running():
+            self.message(text)
+            return True
+        if self._selected:  # a finished task is open: the input starts a new one
+            self.newTask()
+        self._draft = {**self._draft, "goal": text}
+        self._error = ""
+        schedules = self.app.schedules_view
+        if schedules.draft.get("when", "now") == "now":
+            self.start()
+            return not self._error  # a goal the form refused stays in the input
+        schedules.create()
+        return not schedules.error
+
+    @Slot(str)
+    def message(self, text: str) -> None:
+        run_id = self._selected
+
+        def done(result: dict[str, Any]) -> None:
+            if result.get("answered"):
+                self.app.flash("Ответ передан агенту")
+            else:  # the hub keeps it for the agent only: the thread here remembers it
+                self._said.setdefault(run_id, []).append((utc_now(), text))
+                self.app.flash("Агент прочтёт это перед следующим шагом")
+            self._load_detail()
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.message_run(run_id, text), done,
+                              lambda e: self.app.show_error(f"Не передано: {e}"))  # fmt: skip
 
     @Property(list, constant=True)
     def templates(self) -> list:
@@ -287,7 +437,7 @@ class AutonomyView(QObject):
         self._load_detail()
 
     def _level(self) -> str:
-        """The level a new task starts with: the one chosen last time, «Сам» at first."""
+        """The mode a new task starts with: the one chosen last time, «Авто» at first."""
         chosen = str(self.app.settings.value(LEVEL_KEY, "free"))
         return chosen if chosen in dict((a, n) for a, n, _h in AUTONOMY) else "free"
 
@@ -302,15 +452,14 @@ class AutonomyView(QObject):
 
     @Slot(str)
     def setLevel(self, autonomy: str) -> None:
-        """The open task's level, changed on the way (to «Сам»: it stops asking before acting in a program)."""
+        """The open task's mode, changed on the way (to «Авто»: it stops asking before acting in a program)."""
         run_id = self._selected
         if not run_id or self.app.client is None:
             return
 
         def done(result: dict[str, Any]) -> None:
             name = dict((a, n) for a, n, _h in AUTONOMY).get(autonomy, autonomy)
-            self.app.flash(f"Самостоятельность: «{name}»" + (" — ждавший вопрос разрешён" if result.get("answered")
-                                                              else ""))  # fmt: skip
+            self.app.flash(f"Режим: «{name}»" + (" — ждавший вопрос разрешён" if result.get("answered") else ""))
             self._load_detail()
 
         self.app.call_or_fail(lambda: self.app.client.set_autonomy(run_id, autonomy), done,
@@ -401,6 +550,7 @@ class AutonomyView(QObject):
         def failed(error: Exception) -> None:
             self._error = f"Не началось: {error}"
             self.changed.emit()
+            self.goalBack.emit(body["goal"])
 
         self.app.call_or_fail(lambda: self.app.client.start_autonomous(body), done, failed)
 

@@ -9,6 +9,7 @@ Column {
     objectName: "schedulePanel"
     spacing: 8
     readonly property var d: Schedules.draft
+    property bool chooser: true  // «now / by time / on an event» here; the Agent input has it as a chip
 
     component Label: Text {
         color: Theme.p.faint
@@ -24,8 +25,9 @@ Column {
         font.pixelSize: 12
     }
 
-    Label { text: "Когда" }
+    Label { visible: panel.chooser; text: "Когда" }
     Segmented {
+        visible: panel.chooser
         objectName: "scheduleWhen"
         options: Schedules.whenOptions
         value: panel.d.when
