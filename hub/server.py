@@ -60,7 +60,7 @@ from .autonomous import Autonomy
 from .backup import DailyBackup
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
-from .computer import Computer, prune, vision_eyes
+from .computer import Computer, vision_eyes
 from .connections import ConnectionLock
 from .db import Database, migrate
 from .editor import Editor
@@ -72,6 +72,7 @@ from .model_install import Installer
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects
+from .retention import Keeper
 from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
@@ -157,6 +158,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.programs = ProgramCatalog(bus, db, settings.programs_interval_s)
         app.state.backup = DailyBackup(paths.db, paths.backups, settings.backup_interval_s)
+        app.state.keeper = Keeper(db, paths.root)  # what the hub keeps on disk within D30's limits
         app.state.terminals = TerminalManager(bus, db, paths.terminals)
         app.state.chat.terminals, app.state.chat.processes = app.state.terminals, app.state.processes
         app.state.symbols = app.state.chat.symbols  # one index for the window's queries and the models' tools
@@ -168,7 +170,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.processes.start()
         app.state.programs.start()
         app.state.backup.start()
-        await app.state.terminals.start()
+        await app.state.terminals.start(prune=False)  # its logs are pruned with the rest (hub/retention.py)
+        app.state.keeper.start()
         expired = await app.state.approvals.start()
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
@@ -176,7 +179,6 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
-        await asyncio.to_thread(prune, paths.root / "computer")  # snapshots past their term (D30)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
             log.info("open questions of autonomous runs expired")
@@ -194,6 +196,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             with contextlib.suppress(asyncio.CancelledError):
                 await servers
             await app.state.mcp.stop()
+            await app.state.keeper.stop()
             app.state.computer.close()
             with contextlib.suppress(asyncio.CancelledError):
                 await catalog

@@ -109,6 +109,7 @@ class Controller(QObject):
     projectChatChanged = Signal()  # «Проекты»: the project's sessions, and whether one is open in the main area
     projectChatsHeightChanged = Signal()  # the line over «Чаты проекта», dragged
     sidebarWidthChanged = Signal()  # the sidebar's right edge, dragged
+    retentionChanged = Signal()  # how long and how much the hub keeps (D30)
     claudeCodeChanged = Signal()
     statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
@@ -140,6 +141,7 @@ class Controller(QObject):
         self.budgets: list[dict[str, Any]] = []
         self._key_set = False
         self._autostart: dict[str, Any] = {}
+        self._retention: dict[str, Any] = {}
         self._status = rows.status_parts(None)
         self._hub_state = "connecting"
         self._title = "Новый чат"
@@ -589,11 +591,53 @@ class Controller(QObject):
         self.autonomy_view.load()
         self.schedules_view.load()
         self.install_view.load_jobs()  # an install going on: in the status bar before the sheet is opened
+        self.loadRetention()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
         self.setup_view.load()  # a computer without an engine for local models: the wizard opens (10.2)
         if self.current:
             self.openChat(self.current)
+
+    # ---------- what the hub keeps on disk (D30, 2026-10-28) ----------
+
+    @Property("QVariantMap", notify=retentionChanged)
+    def retention(self) -> dict:
+        found = self._retention
+        if not found:
+            return {}
+        return {"days": str(found["days"]), "maxGb": f"{found['max_gb']:g}".replace(".", ","),
+                "usage": rows.kept_text(found.get("usage") or {})}  # fmt: skip
+
+    @Slot()
+    def loadRetention(self) -> None:
+        if self.client is not None:
+            self._call(lambda: self.client.retention(), self._set_retention, lambda _e: None)
+
+    def _set_retention(self, found: dict[str, Any]) -> None:
+        self._retention = found
+        self.retentionChanged.emit()
+
+    @Slot(str, str)
+    def setRetention(self, days: str, max_gb: str) -> None:
+        try:
+            whole, size = int(days.strip()), float(max_gb.strip().replace(",", "."))
+        except ValueError:
+            self.show_error("Хранение: дни — целое число, размер — число гигабайт")
+            return
+        if self._retention and (whole, size) == (self._retention["days"], self._retention["max_gb"]):
+            return
+        self.call_or_fail(lambda: self.client.set_retention(whole, size),
+                          lambda found: (self._set_retention(found), self.flash("Сроки хранения сохранены")),
+                          lambda e: self.show_error(f"Не сохранено: {e}"))  # fmt: skip
+
+    @Slot()
+    def pruneKept(self) -> None:
+        def done(found: dict[str, Any]) -> None:
+            self._set_retention(found)
+            gone = sum((found.get("removed") or {}).values())
+            self.flash(f"Удалено старых файлов: {gone}" if gone else "Старого нет — всё в пределах")
+
+        self.call_or_fail(lambda: self.client.prune_kept(), done, lambda e: self.show_error(f"Не вышло: {e}"))
 
     def _set_autostart(self, found: dict[str, Any]) -> None:
         self._autostart = found

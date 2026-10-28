@@ -244,6 +244,15 @@ class HubClient:
     def run_plan(self, run_id: str) -> dict:
         return self._call("GET", f"/v1/runs/{run_id}/plan")
 
+    def retention(self) -> dict:
+        return self._call("GET", "/v1/support/retention")
+
+    def set_retention(self, days: int, max_gb: float) -> dict:
+        return self._call("PUT", "/v1/support/retention", {"days": days, "max_gb": max_gb})
+
+    def prune_kept(self) -> dict:
+        return self._call("POST", "/v1/support/retention/prune")
+
     def chat_questions(self, conversation_id: str) -> dict:
         return self._call("GET", f"/v1/conversations/{conversation_id}/questions")
 

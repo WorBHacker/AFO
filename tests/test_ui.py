@@ -757,6 +757,19 @@ class FakeClient:
     def run_plan(self, run_id):
         return AUTO_PLAN if run_id == "auto1" else {**AUTO_PLAN, "plans": [], "questions": []}
 
+    def retention(self):
+        return {"days": 90, "max_gb": 2.0, "usage": {"snapshots": {"bytes": 12 * 1024**2, "files": 3},
+                                                     "screens": {"bytes": 0, "files": 0},
+                                                     "terminals": {"bytes": 3 * 1024**3, "files": 9}}}  # fmt: skip
+
+    def set_retention(self, days, max_gb):
+        self.log.append(("retention", days, max_gb))
+        return {**self.retention(), "days": days, "max_gb": max_gb}
+
+    def prune_kept(self):
+        self.log.append(("prune",))
+        return {**self.retention(), "removed": {"snapshots": 2, "screens": 0, "terminals": 1}}
+
     def answer_question(self, run_id, question_id, answer):
         self.auto_calls.append(("answer", run_id, question_id, answer))
         return {"id": question_id}
@@ -5077,6 +5090,34 @@ def test_the_sidebar_is_as_wide_as_dragged(qapp):
         app.setSidebarWidth(0)  # a double click
         assert app.sidebarWidth == 264
         app.settings.remove("ui/sidebarWidth")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_what_the_hub_keeps_in_the_settings(qapp):
+    """2026-10-28 (D30, Q4): «Настройки → Хаб» says how long and how much the hub keeps and what it takes now; the
+    limits are set there, and «Очистить старое сейчас» prunes at once."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.retention)
+        kept = app.retention
+        assert (kept["days"], kept["maxGb"]) == ("90", "2")
+        assert kept["usage"] == "снимки файлов 12 МБ · снимки экрана 0 МБ · журналы терминалов 3,0 ГБ"
+        app.setRetention("90", "2")  # nothing changed: nothing sent
+        app.setRetention("тридцать", "2")
+        assert app.flashError and not [e for e in client.log if e[0] == "retention"]
+        app.setRetention("30", "1,5")
+        wait_until(lambda: not app.bg.busy and ("retention", 30, 1.5) in client.log)
+        assert app.retention["days"] == "30" and app.retention["maxGb"] == "1,5"
+        app.pruneKept()
+        wait_until(lambda: not app.bg.busy and ("prune",) in client.log)
+        assert app.flashText == "Удалено старых файлов: 3"
         assert quick.warnings == []
     finally:
         quick.close()

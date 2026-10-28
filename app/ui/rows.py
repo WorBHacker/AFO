@@ -54,6 +54,16 @@ CHAT_MODES = [
 ]  # fmt: skip
 
 
+def kept_text(usage: dict[str, dict[str, int]]) -> str:
+    """What the hub keeps on disk now, by kind (D30): «снимки файлов 12 МБ · снимки экрана 40 МБ · …»."""
+    names = [("snapshots", "снимки файлов"), ("screens", "снимки экрана"), ("terminals", "журналы терминалов")]
+    return " · ".join(f"{word} {mb((usage.get(kind) or {}).get('bytes', 0))}" for kind, word in names)
+
+
+def mb(size: int) -> str:
+    return f"{size / 1024**3:.1f} ГБ".replace(".", ",") if size >= 1024**3 else f"{round(size / 1024**2)} МБ"
+
+
 def chat_mode_items(mode: str) -> list[dict[str, Any]]:
     return [{"section": "Права модели в этом чате — что она делает без вопроса", "id": ""}] + [
         {"id": m, "name": n, "note": h, "icon": "shield", "selected": m == (mode or "ask")} for m, n, h in CHAT_MODES

@@ -277,6 +277,53 @@ Sheet {
         PlainButton { iconName: "cpu"; text: "Выгрузить локальную модель"; onClicked: App.unloadLocal() }
         PlainButton { kind: "danger"; iconName: "power"; text: "Остановить хаб и выйти"; onClicked: App.stopHub() }
     }
+    // D30: snapshots of changed files, the agent's screen snapshots, terminal logs - a term and a size per kind
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "Хранение: копии файлов до и после правок моделей (для отката), снимки экрана агента и журналы "
+              + "терминалов. Старше срока или сверх предела — удаляются, сначала самые старые; разговоры, задачи и "
+              + "расходы хранятся всегда."
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+    Flow {
+        width: parent.width
+        spacing: 8
+        Text { text: "Хранить, дней"; color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Field {
+            id: keepDays
+            objectName: "retentionDays"
+            width: 72
+            text: App.retention.days || ""
+            onEditingFinished: App.setRetention(text, keepGb.text)
+        }
+        Text { text: "не больше, ГБ каждого вида"; color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Field {
+            id: keepGb
+            objectName: "retentionGb"
+            width: 72
+            text: App.retention.maxGb || ""
+            onEditingFinished: App.setRetention(keepDays.text, text)
+        }
+        PlainButton {
+            objectName: "retentionPrune"
+            iconName: "trash"
+            text: "Очистить старое сейчас"
+            onClicked: App.pruneKept()
+        }
+    }
+    Text {
+        objectName: "retentionUsage"
+        visible: text !== ""
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: App.retention.usage ? "Сейчас: " + App.retention.usage : ""
+        color: Theme.p.faint
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
 
     SectionTitle { text: "О программе" }
     Text {

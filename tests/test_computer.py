@@ -49,7 +49,10 @@ def test_keys_words_and_pictures(tmp_path):
     old.write_bytes(picture)
     os.utime(old, (time.time() - 100 * 86400,) * 2)
     (tmp_path / "run" / "new.png").write_bytes(picture)
-    assert pc.prune(tmp_path) == 1 and [p.name for p in (tmp_path / "run").iterdir()] == ["new.png"]
+    from hub import retention  # snapshots past their term go (D30); the journal's rows stay
+
+    assert retention.prune_screens(tmp_path, days=90, max_bytes=10**9) == 1
+    assert [p.name for p in (tmp_path / "run").iterdir()] == ["new.png"]
 
 
 @pytest.fixture

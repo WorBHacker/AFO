@@ -1,0 +1,170 @@
+"""What the hub keeps on disk, within D30's limits (2026-10-28; Q4's default size): the files before and after the
+models' changes (data/snapshots, by hash), the agent's screen snapshots (data/computer) and the terminals' logs
+(data/terminals, hub/terminals.py) - each kind kept `days` and within `max_gb`, the oldest going first. Conversations,
+runs, events and spending are kept always (D30).
+
+The limits are the user's (`settings` row "retention", the window's «Настройки → Хаб → Хранение»); the hub prunes at
+its start and every PRUNE_EVERY_S. A snapshot still needed by a change younger than `days` stays; when it goes, the
+change can no longer be undone (changes.py says so), its row stays.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import sqlite3
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from .db import Database, utc_now
+from .terminals import prune_logs
+
+log = logging.getLogger("hub.retention")
+
+SETTING = "retention"
+DEFAULTS = {"days": 90, "max_gb": 2.0}  # D30's term; Q4's size - per kind
+DAYS = (7, 3650)
+MAX_GB = (0.1, 1000.0)
+PRUNE_EVERY_S = 6 * 3600
+GIB = 1024**3
+
+
+class RetentionError(ValueError):
+    """A limit the hub does not take; the message says which, in words for the window."""
+
+
+def current(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (SETTING,)).fetchone()
+    saved = json.loads(row["value"]) if row else {}
+    return {**DEFAULTS, **{k: v for k, v in saved.items() if k in DEFAULTS}}
+
+
+def save(conn: sqlite3.Connection, days: Any, max_gb: Any) -> dict[str, Any]:
+    if isinstance(days, bool) or not isinstance(days, int) or not DAYS[0] <= days <= DAYS[1]:
+        raise RetentionError(f"сколько дней хранить: целое от {DAYS[0]} до {DAYS[1]}")
+    if isinstance(max_gb, bool) or not isinstance(max_gb, int | float) or not MAX_GB[0] <= max_gb <= MAX_GB[1]:
+        raise RetentionError(f"предел размера: от {MAX_GB[0]:g} до {MAX_GB[1]:g} ГБ")
+    value = {"days": days, "max_gb": float(max_gb)}
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+        " value = excluded.value, updated_at = excluded.updated_at",
+        (SETTING, json.dumps(value), utc_now()),
+    )
+    return value
+
+
+# ---------------------------------------------------------------- the kinds
+
+
+def _files(folder: Path, pattern: str) -> list[tuple[Path, int, float]]:
+    out = []
+    if folder.is_dir():
+        for path in folder.glob(pattern):
+            with contextlib.suppress(OSError):
+                if path.is_file():
+                    stat = path.stat()
+                    out.append((path, stat.st_size, stat.st_mtime))
+    return out
+
+
+def _thin(found: list[tuple[Path, int, float]], cutoff: float, max_bytes: int) -> int:
+    """Those older than `cutoff` (seconds), then the oldest until the rest fit `max_bytes`: `found` is (path, size,
+    last used), any order."""
+    removed = 0
+    total = sum(size for _path, size, _at in found)
+    for path, size, at in sorted(found, key=lambda f: f[2]):
+        if at >= cutoff and total <= max_bytes:
+            break
+        with contextlib.suppress(OSError):
+            path.unlink()
+            removed += 1
+            total -= size
+    return removed
+
+
+def prune_snapshots(conn: sqlite3.Connection, folder: Path, *, days: int, max_bytes: int,
+                    now: float | None = None) -> int:  # fmt: skip
+    """The changed files' snapshots: each is as old as the youngest change that needs it (a card's export, or one
+    nothing refers to, as its file)."""
+    now = time.time() if now is None else now
+    used: dict[str, float] = {}
+    for row in conn.execute("SELECT before_hash, after_hash, created_at FROM file_changes").fetchall():
+        at = _seconds(row["created_at"])
+        for name in (row["before_hash"], row["after_hash"]):
+            if name and at > used.get(name, 0.0):
+                used[name] = at
+    found = [(path, size, max(used.get(path.name, 0.0), 0.0) or mtime) for path, size, mtime in _files(folder, "*")]
+    return _thin(found, now - days * 86400, max_bytes)
+
+
+def prune_screens(folder: Path, *, days: int, max_bytes: int, now: float | None = None) -> int:
+    """The agent's screen snapshots (data/computer/<run>/*.png); a run's folder left empty goes too."""
+    now = time.time() if now is None else now
+    removed = _thin(_files(folder, "*/*.png"), now - days * 86400, max_bytes)
+    if folder.is_dir():
+        for run in folder.iterdir():
+            with contextlib.suppress(OSError):
+                if run.is_dir() and not any(run.iterdir()):
+                    run.rmdir()
+    return removed
+
+
+def _seconds(at: str | None) -> float:
+    try:
+        return datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def usage(root: Path) -> dict[str, dict[str, int]]:
+    """How much each kind takes now: {kind: {bytes, files}}."""
+    kinds = {"snapshots": _files(root / "snapshots", "*"), "screens": _files(root / "computer", "*/*.png"),
+             "terminals": _files(root / "terminals", "*.log")}  # fmt: skip
+    return {kind: {"bytes": sum(f[1] for f in found), "files": len(found)} for kind, found in kinds.items()}
+
+
+def prune_all(conn: sqlite3.Connection, root: Path, now: float | None = None) -> dict[str, int]:
+    """Every kind within the user's limits now: how many files each lost."""
+    limits = current(conn)
+    days, max_bytes = int(limits["days"]), int(float(limits["max_gb"]) * GIB)
+    moment = datetime.fromtimestamp(now, UTC) if now is not None else None
+    return {
+        "snapshots": prune_snapshots(conn, root / "snapshots", days=days, max_bytes=max_bytes, now=now),
+        "screens": prune_screens(root / "computer", days=days, max_bytes=max_bytes, now=now),
+        "terminals": prune_logs(conn, root / "terminals", keep_days=days, max_total_bytes=max_bytes, now=moment),
+    }
+
+
+class Keeper:
+    """Prunes at the hub's start and every PRUNE_EVERY_S after."""
+
+    def __init__(self, db: Database, root: Path):
+        self._db = db
+        self._root = root
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+    async def prune(self) -> dict[str, int]:
+        return await self._db.acall(lambda conn: prune_all(conn, self._root))
+
+    async def _loop(self) -> None:
+        while True:
+            try:
+                removed = await self.prune()
+                if any(removed.values()):
+                    log.info("kept within the limits (D30), removed: %s", removed)
+            except Exception:
+                log.exception("pruning what the hub keeps failed")
+            await asyncio.sleep(PRUNE_EVERY_S)

@@ -55,7 +55,6 @@ VALUE_CHARS = 200
 WAIT_MAX_S = 30.0
 HUMAN_QUIET_S = 3.0  # the person's input this recent pauses the agent
 SNAPSHOT_MAX_SIDE = 1600
-KEEP_DAYS = 90  # the snapshots' term (D30)
 
 WINDOW = {"type": "integer", "description": "the window's id from screen_windows"}
 TOOLS = [
@@ -754,22 +753,6 @@ def record(conn: sqlite3.Connection, run_id: str, window: dict[str, Any], action
 def journal(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM computer_actions WHERE conversation_id = ? ORDER BY id", (run_id,)).fetchall()
     return [{**dict(r), "action": json.loads(r["action"])} for r in rows]
-
-
-def prune(folder: Path, days: int = KEEP_DAYS) -> int:
-    """Snapshots older than D30's term go; the journal's rows stay (their file is then gone)."""
-    if not folder.is_dir():
-        return 0
-    cutoff = time.time() - days * 86400
-    removed = 0
-    for path in folder.glob("*/*.png"):
-        try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
-                removed += 1
-        except OSError:
-            continue
-    return removed
 
 
 # ---------------------------------------------------------------- the agent's eyes and hands
