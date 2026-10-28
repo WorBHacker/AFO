@@ -7,6 +7,7 @@ events (EventThread). Streamed deltas are kept for every chat, so switching chat
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +31,7 @@ from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
 from .feed import Feed
+from .goal_view import GoalView
 from .install_view import InstallView
 from .mail_view import MailView
 from .mcp_view import McpView
@@ -54,6 +56,7 @@ THINK_TICK_MS = 100
 FLASH_MS = 6000
 MODES = ("chats", "projects", "agent")
 NOT_CONNECTED = "Хаб ещё не подключён"
+GOAL_COMMAND = re.compile(r"^/(?:цель|goal)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)  # opens the goal's card
 HUB_STATES = {
     "connecting": "подключение…",
     "up": "подключён",
@@ -202,6 +205,9 @@ class Controller(QObject):
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
+        self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
+        self.currentChanged.connect(self.goal_view.load)
+        self.modelChanged.connect(self.goal_view.editorChanged)  # the card names the model, its price; Claude Code
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -1221,6 +1227,13 @@ class Controller(QObject):
         if self._chat_ask.get("id") and text.strip():  # the model asked: these words are the answer
             self.answerChat(text)
             return
+        wish = GOAL_COMMAND.match(text.strip())
+        if wish:  # «/цель …»: the goal's contract card, with these words (D44)
+            self.goal_view.openEditor(wish.group(1) or "")
+            return
+        if self.goal_view.steering and text.strip():  # the goal works: the words go to it, read at its next turn
+            self.goal_view.steer(text)
+            return
         if self.busyNow:
             self.stop()
             return
@@ -1304,15 +1317,46 @@ class Controller(QObject):
 
     def _sent(self, conversation_id: str) -> None:
         self.busy.add(conversation_id)
-        if self.current is None:  # a new chat was made for this message
+        self._adopt(conversation_id)
+        self.busyChanged.emit()
+        self.chatsChanged.emit()
+
+    def _adopt(self, conversation_id: str) -> None:
+        if self.current is None:  # a new chat was made for this message (or goal)
             self.current = conversation_id
             if self._new_home and self._project_chat:  # a project's session: known as such before the list comes
                 self.conversations = [{"id": conversation_id, "kind": "chat", "title": "", "home_project":
                                        self._new_home}, *self.conversations]  # fmt: skip
             self.load_conversations()
             self.openChat(conversation_id)
-        self.busyChanged.emit()
-        self.chatsChanged.emit()
+
+    def ensure_chat(self, done, failed) -> None:
+        """The open chat to `done` - made now, with the projects, rights and refusal choice picked for it, when it is
+        a new one: a chat is made with its first message, and a goal may come before any (D44)."""
+        if self.current:
+            done(self.current)
+            return
+        client = self.client
+        attach = list(self._chat_projects)
+        refusal = self._context_settings.get("refusal_vector") or ""
+        mode = self._context_settings.get("mode") or "ask"
+        home = self._new_home if self._project_chat else ""
+
+        def make() -> str:
+            conversation_id = client.create_conversation(home_project=home or None)
+            if attach:
+                client.set_chat_projects(conversation_id, attach)
+            if refusal or mode != "ask":
+                client.set_context(conversation_id, **({"refusal_vector": refusal} if refusal else {}),
+                                   **({"mode": mode} if mode != "ask" else {}))  # fmt: skip
+            return conversation_id
+
+        def made(conversation_id: str) -> None:
+            self._adopt(conversation_id)
+            self.chatsChanged.emit()
+            done(conversation_id)
+
+        self.call_or_fail(make, made, failed)
 
     @Slot()
     def stop(self) -> None:
@@ -1464,6 +1508,8 @@ class Controller(QObject):
             self.setup_view.on_event(kind, payload)
         elif kind.startswith("sandbox."):
             self.sandbox_view.on_event(kind, payload)
+        elif kind.startswith("goal."):
+            self.goal_view.on_event(kind, payload)
         elif kind == "agent.keys":
             self.agent_keys.on_event(kind, payload)
         elif kind.startswith("mail."):
@@ -1548,9 +1594,7 @@ class Controller(QObject):
                 }
             self.messages.update(live, **row)
             return
-        self.messages.append(
-            rows.user_row(message) if message["role"] == "user" else rows.assistant_row(message, self.models)
-        )
+        self.messages.append(rows.message_row(message, self.models))
 
     def _ensure_live_row(self) -> None:
         if self.messages.find("live") < 0:

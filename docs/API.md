@@ -193,6 +193,7 @@
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/goal` | токен | The chat's goal - the open one, else its last - with its recent checks and what the user wrote to it. |  |
 | PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits, judge_model_id: str \| None = None}` |
+| POST | `/v1/conversations/{conversation_id}/goal/draft` | только окно | A contract drafted by a model from the user's words, for the window to show and change; nothing is set. | тело `{text: str, model_id: str = ''}` |
 | POST | `/v1/conversations/{conversation_id}/goal/pause` | только окно | No next turn starts; the turn running now finishes. |  |
 | POST | `/v1/conversations/{conversation_id}/goal/resume` | только окно | Back to work (a parked goal with higher limits): the next turn starts. | тело `Resume \| None` |
 | DELETE | `/v1/conversations/{conversation_id}/goal` | только окно | The goal is given up; the turn running now finishes, no next one starts. |  |

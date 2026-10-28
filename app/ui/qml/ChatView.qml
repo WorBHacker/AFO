@@ -38,6 +38,7 @@ ListView {
             // while the model resets, a delegate may outlive its row for a moment
             sourceComponent: !slot.model ? null
                              : slot.model.role === "user" ? userMessage
+                             : slot.model.role === "hub" ? hubNote
                              : slot.model.role === "error" ? errorMessage : assistantMessage
             onLoaded: {
                 item.row = Qt.binding(() => slot.model)
@@ -46,6 +47,7 @@ ListView {
         }
     }
     Component { id: userMessage; UserMessage {} }
+    Component { id: hubNote; HubNote {} }
     Component { id: assistantMessage; AssistantMessage {} }
     Component { id: errorMessage; ErrorMessage {} }
 

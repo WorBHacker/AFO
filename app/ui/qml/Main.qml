@@ -79,6 +79,13 @@ Window {
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - composer.height - (sandboxBar.visible ? sandboxBar.height : 0)
+                    - (goalBar.visible ? goalBar.height : 0)
+        }
+        GoalBar {
+            id: goalBar
+            visible: (App.mode === "chats" || App.showProjectChat) && Goal.shown
+            anchors.bottom: sandboxBar.visible ? sandboxBar.top : composer.top
+            width: parent.width
         }
         SandboxBar {
             id: sandboxBar
@@ -221,6 +228,7 @@ Window {
     MemorySheet { id: memorySheet }
     AgentAccessSheet { id: accessSheet }
     SandboxSheet { id: sandboxSheet }
+    GoalSheet { id: goalSheet }
     InstallSheet { id: installSheet }
     WizardSheet { id: wizardSheet }
     CheckSheet { id: checkSheet }
@@ -242,6 +250,10 @@ Window {
     }
     Timer { interval: 400; repeat: true; running: root.wizardWaits; onTriggered: root.openWizardWhenFree() }
 
+    Connections {
+        target: Goal
+        function onOpenRequested() { goalSheet.open() }
+    }
     Connections {
         target: App
         function onUiRequested(what) {

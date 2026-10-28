@@ -30,6 +30,11 @@ Item {
             App.answerChat(message)
             return
         }
+        if (Goal.steering && message.trim() !== "") {  // the goal works: a word to it, read at its next turn
+            area.text = ""
+            App.send(message)
+            return
+        }
         if (!App.busyNow) {
             if (message.trim() === "") return
             area.text = ""
@@ -280,8 +285,9 @@ Item {
                 id: area
                 objectName: "composerInput"
                 wrapMode: TextArea.Wrap
-                placeholderText: App.busyNow ? "Пока модель отвечает, можно набирать следующий вопрос…"
-                                             : "Спросите что-нибудь…  @ — проект или файл, Enter — отправить, Shift+Enter — новая строка"
+                placeholderText: Goal.steering ? "Цель в работе: напишите уточнение — модель прочтёт его в начале следующего хода, не прерывая этот"
+                                 : App.busyNow ? "Пока модель отвечает, можно набирать следующий вопрос…"
+                                 : "Спросите что-нибудь…  @ — проект или файл, /цель — работать до результата, Enter — отправить"
                 placeholderTextColor: Theme.p.faint
                 color: Theme.p.text
                 selectionColor: Theme.p.selection
@@ -320,7 +326,8 @@ Item {
                     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
                             && !(event.modifiers & Qt.ShiftModifier)) {
                         event.accepted = true
-                        if (!App.busyNow || App.chatQuestion.id) composer.submit()
+                        if (!App.busyNow || App.chatQuestion.id || (Goal.steering && area.text.trim() !== ""))
+                            composer.submit()
                     }
                 }
             }
@@ -358,6 +365,28 @@ Item {
                     ToolTip.visible: hovered && !modeMenu.visible
                     ToolTip.delay: 600
                     ToolTip.text: "Права модели в этом чате: что она делает без вопроса"
+                }
+                Chip {
+                    id: goalChip
+                    objectName: "goalChip"
+                    visible: Goal.available || Goal.shown
+                    iconName: "target"
+                    menu: false
+                    active: Goal.shown
+                    text: Goal.shown ? "Цель: " + Goal.statusText : "Цель"
+                    onClicked: {
+                        if (Goal.shown) {
+                            Goal.toggle()
+                            return
+                        }
+                        const wish = area.text
+                        area.text = ""
+                        Goal.openEditor(wish)
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: Goal.shown ? "Подробнее о цели: критерии, чего не хватает"
+                                             : "Режим «Цель»: модель работает ход за ходом, пока хаб не убедится, что цель достигнута. То же — «/цель …» в поле"
                 }
                 Chip {
                     id: refusalChip
@@ -406,8 +435,10 @@ Item {
                 spacing: 10
                 AbstractButton {
                     id: send
-                    // stops the answer - unless the model asked and the input holds the user's answer to it
-                    readonly property bool stops: App.busyNow && !(App.chatQuestion.id && area.text.trim() !== "")
+                    // stops the answer - unless the model asked and the input holds the user's answer to it, or the
+                    // goal works and the input holds a word for it
+                    readonly property bool stops: App.busyNow && area.text.trim() === "" || App.busyNow
+                                                  && !App.chatQuestion.id && !Goal.steering
                     width: 32
                     height: 32
                     hoverEnabled: true
@@ -428,7 +459,8 @@ Item {
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: send.stops ? "Остановить ответ" : "Отправить (Enter)"
+                    ToolTip.text: send.stops ? "Остановить ответ" : Goal.steering ? "Передать уточнение цели (Enter)"
+                                                                                  : "Отправить (Enter)"
                 }
             }
         }

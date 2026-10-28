@@ -44,6 +44,8 @@ IDLE_S = 30.0  # without a token: look again this often
 BACKOFF_S = (2, 5, 15, 60)
 PREVIEW_LINES = 30
 DECIDED = {"allowed": "✅ Разрешено", "denied": "⛔ Отклонено", "expired": "⌛ Не дождался ответа"}
+GOAL_WORDS = {"achieved": "🎯 Цель достигнута", "blocked": "✋ Цель ждёт вас (решение — в окне LocalChat)",
+              "budget": "⏳ Цель дошла до предела (продолжить можно в окне)"}  # fmt: skip
 
 
 # --- linking a chat ---
@@ -224,7 +226,7 @@ class TelegramBot:
 
     async def _follow(self) -> None:
         subscription = self._bus.subscribe(("approval.requested", "approval.decided", "run.finished",
-                                            "run.question", "run.notice"))  # fmt: skip
+                                            "run.question", "run.notice", "goal.status"))  # fmt: skip
         while True:
             try:
                 event = await asyncio.wait_for(subscription.queue.get(), 60)
@@ -268,6 +270,14 @@ class TelegramBot:
             head = "Агент спрашивает (ответ — в окне LocalChat)" if kind == "run.question" else "Агент сообщает"
             body = html.escape(str(payload.get("question") or payload.get("text") or ""))
             await self._call("sendMessage", chat_id=chat, text=f"<b>{head}</b>\n{body}", parse_mode="HTML")
+            return
+        if kind == "goal.status":  # a chat's goal met, or waiting for the human (D44): what to do is in the window
+            head = GOAL_WORDS.get(payload.get("status") or "")
+            if head:
+                goal = payload.get("goal") or {}
+                text = (f"<b>{head}</b>\n{html.escape(str(goal.get('objective') or ''))}\n"
+                        f"<i>{html.escape(str(payload.get('detail') or ''))}</i>")  # fmt: skip
+                await self._call("sendMessage", chat_id=chat, text=text, parse_mode="HTML")
             return
         if kind == "run.finished":
             run = payload.get("run") or {}

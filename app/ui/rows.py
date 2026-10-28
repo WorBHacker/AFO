@@ -5,6 +5,7 @@ Colours live inside the HTML, so rows are rendered again after a theme switch (t
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -104,6 +105,28 @@ def is_local(models: dict[str, dict], model_id: str | None) -> bool:
 def user_row(message: dict[str, Any]) -> dict[str, Any]:
     text, _ = presenter.split_blocks(message["content"])
     return {"key": f"m{message['id']}", "role": "user", "text": text, "html": page(render_plain(text))}
+
+
+# the hub's word to the model between its turns (D40, D44): a line in the chat, its text on a click
+HUB_NOTES = {"start": "договор цели", "continuation": "продолжение цели", "budget_limit": "последний ход цели"}
+GOAL_LOOP = re.compile(r'<goal_loop type="(\w+)">')
+
+
+def hub_row(message: dict[str, Any]) -> dict[str, Any]:
+    text, _ = presenter.split_blocks(message["content"])
+    found = GOAL_LOOP.search(text)
+    what = HUB_NOTES.get(found.group(1), "цель") if found else "напоминание"
+    notes = []
+    if found:
+        missing = sum(1 for line in text.splitlines() if line.startswith("- ") and "HARD CONSTRAINTS" not in line)
+        if "CHECK OF YOUR LAST TURN" in text and missing:
+            notes.append(f"не выполнено: {missing}")
+        if "THE JUDGE SAYS" in text:
+            notes.append("слово проверяющей модели")
+        if "THE USER ADDED" in text:
+            notes.append("ваше уточнение")
+    return {"key": f"m{message['id']}", "role": "hub", "text": text, "html": "", "title": f"Хаб → модели: {what}",
+            "note": " · ".join(notes), "goal": bool(found)}  # fmt: skip
 
 
 def assistant_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, Any]:
@@ -442,14 +465,23 @@ def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[di
             for index, tools in answered(out, m["content"]).items():
                 out[index]["tools"] = tools
             continue
-        out.append(user_row(m) if m["role"] == "user" else assistant_row(m, models))
+        out.append(message_row(m, models))
     return out
+
+
+def message_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, Any]:
+    """A stored user or assistant message as its row; the hub's notes to the model are rows of their own."""
+    if message["role"] == "user":
+        return hub_row(message) if any(b.get("hub") for b in message["content"]) else user_row(message)
+    return assistant_row(message, models)
 
 
 def restyled(row: dict[str, Any]) -> dict[str, Any]:
     """The same row with its HTML rendered in the current theme."""
     if row["role"] == "assistant":
         return {**row, "segments": segments(row["markdown"])}
+    if row["role"] == "hub":
+        return row
     return {**row, "html": page(render_plain(row["text"]))}
 
 

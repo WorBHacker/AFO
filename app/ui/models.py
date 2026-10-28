@@ -21,8 +21,9 @@ ROLES = [
     "streaming",
     "notice",
     "tools",
-    "title",  # an error card's plain words (10.6)
+    "title",  # an error card's plain words (10.6); the hub's note to the model (D44)
     "hint",
+    "note",  # the hub's note: what it says, in short
 ]
 TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size", "secret"]
 

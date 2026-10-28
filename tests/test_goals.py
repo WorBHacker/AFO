@@ -259,6 +259,46 @@ def test_a_file_that_does_not_parse_goes_back_before_the_judge(hub, repo):  # no
     assert len(referee.prompts) == 1  # asked only once the file parsed
 
 
+def test_a_model_drafts_the_contract_from_the_wish(hub, repo):  # noqa: F811
+    (repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\ntestpaths = ['tests']\n", encoding="utf-8")
+    answer = json.dumps(
+        {
+            "objective": "Тесты проходят",
+            "criteria": [
+                {"command": "pytest -q", "project": "PROJ", "expected_exit_code": 0},
+                {"command": "git push origin main", "project": "proj"},
+                {"rule": "README говорит, как запускать"},
+            ],
+            "constraints": ["не трогать .github"],
+            "limits": {"max_turns": 999, "max_minutes": 30},
+        },
+        ensure_ascii=False,
+    )
+    worker = use(hub, Gated("agent", ["Вот договор: " + answer]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    url = f"/v1/conversations/{conv}/goal/draft"
+    found = hub.post(url, json={"text": "сделай, чтобы тесты проходили", "model_id": "agent/m"}).json()
+    assert found["model_id"] == "agent/m"  # no model for «Проверка цели»: the chat's own drafts
+    assert found["draft"] == {
+        "objective": "Тесты проходят", "constraints": ["не трогать .github"], "limits": {"max_turns": 500,
+                                                                                       "max_minutes": 30},
+        "criteria": [{"kind": "command", "command": "pytest -q", "project": "proj", "expected_exit_code": 0},
+                     {"kind": "semantic", "rule": "README говорит, как запускать"}]}  # fmt: skip
+    assert found["notes"] == ["команда «git push origin main» убрана: проверка только смотрит"]
+    asked = worker.prompts[0][1]["content"]
+    assert '<project name="proj">' in asked and "TOP LEVEL:" in asked and "pyproject.toml:\n[tool.pytest" in asked
+    assert "<wish>\nсделай, чтобы тесты проходили\n</wish>" in asked
+    assert worker.prompts[0][0]["content"].startswith("You turn what a user wants into a goal contract")
+    referee = use(hub, Scripted("judge", ["не JSON", "опять не JSON"]))
+    hub.put("/v1/model_settings", json={"model_id": "", "settings": {"roles": {"judge": "judge/m"}}})
+    failed = hub.post(url, json={"text": "ещё раз", "model_id": "agent/m"})
+    assert failed.status_code == 422 and "the draft did not come" in failed.json()["detail"]
+    assert len(referee.prompts) == 2  # the model of «Проверка цели» drafts now; asked once more, then given up
+    metas = hub.app.state.db.call(lambda c: [json.loads(r[0])["purpose"] for r in c.execute(
+        "SELECT meta FROM usage WHERE model_id IN ('agent/m', 'judge/m')")])  # fmt: skip
+    assert metas.count("goal_draft") == 3
+
+
 def test_a_project_without_git_shows_the_hubs_own_writes(hub, tmp_path):  # noqa: F811
     folder = tmp_path / "plain"
     folder.mkdir()

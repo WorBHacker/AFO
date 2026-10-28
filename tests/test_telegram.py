@@ -161,6 +161,23 @@ def test_polling_and_a_finished_run(bot):
     assert api.sent()[-1]["text"] == "Агент «Ревьюер»: готово"
 
 
+def test_a_chats_goal_met_or_waiting_goes_to_the_phone(bot):
+    tg, api, db, _queue = bot
+    db.call(lambda c: telegram._set(c, telegram.CHAT_KEY, CHAT))
+    goal = {"objective": "Тесты <src> проходят"}
+
+    async def scenario():
+        await tg._send("goal.status", {"status": "achieved", "detail": "цель достигнута", "goal": goal})
+        await tg._send("goal.status", {"status": "blocked", "detail": "проверяющая модель не ответила", "goal": goal})
+        await tg._send("goal.status", {"status": "paused", "detail": "на паузе (app)", "goal": goal})  # not sent
+
+    asyncio.run(scenario())
+    texts = [body["text"] for body in api.sent()]
+    assert texts == ["<b>🎯 Цель достигнута</b>\nТесты &lt;src&gt; проходят\n<i>цель достигнута</i>",
+                     "<b>✋ Цель ждёт вас (решение — в окне LocalChat)</b>\nТесты &lt;src&gt; проходят\n"
+                     "<i>проверяющая модель не ответила</i>"]  # fmt: skip
+
+
 def test_without_a_token_nothing_is_sent(bot):
     tg, api, db, _queue = bot
     db.call(lambda c: telegram._set(c, telegram.CHAT_KEY, CHAT))

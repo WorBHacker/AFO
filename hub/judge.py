@@ -48,6 +48,7 @@ MAX_PATHS = 300
 WORDS_CHARS = 3_000
 EFFORT = "medium"
 TRIES = 2  # an answer that is not the JSON asked for is asked once more
+FORM = '{"status": ..., "missing_items": [...], "feedback_for_worker": ...}'
 
 SYSTEM = """You are an independent auditor of whether a goal is met (the judge). You cannot change anything: you only \
 read what the hub gives you and judge it.
@@ -416,16 +417,24 @@ class Judge:
     async def ask(self, model_id: str, prompt: str, *, conversation_id: str, meta: dict[str, Any]) -> dict[str, Any]:
         """The judge's verdict: {status, missing, feedback, model_id, tokens, cost_usd}. Raises JudgeError when it
         cannot say (the model failed or is held back by a budget, or twice answered other than asked)."""
+        return await self.complete(model_id, SYSTEM, prompt, parse, conversation_id=conversation_id,
+                                   meta={"purpose": "judge", **meta}, form=FORM)  # fmt: skip
+
+    async def complete(self, model_id: str, system: str, prompt: str, read: Any, *, conversation_id: str | None,
+                       meta: dict[str, Any], form: str) -> dict[str, Any]:  # fmt: skip
+        """One question to a model, outside any conversation's turns (the judge, the goal's draft): its answer
+        read by `read` (None: not in the form asked - asked once more, with `form`); its use recorded under `meta`
+        (D12). {**what read gave, model_id, tokens, cost_usd}; JudgeError when there is no such answer."""
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
         if model is None or not model["enabled"]:
-            raise JudgeError(f"the judge's model {model_id!r} is not available now")
+            raise JudgeError(f"the model {model_id!r} is not available now")
         if model["prices"] and await self._db.acall(lambda conn: budgets.reached(conn, model_id)):
             raise JudgeError(f"the budget of «{model['name']}» is used up")
         provider, model_ref = self._gateway.resolve(model_id)
         own = (await self._db.acall(lambda conn: model_settings.current(conn, model_id)))[1]
         params = model_settings.clean_params(own.get("params") or {}, self._gateway.accepts(model_id))
         extra = {"params": params} if params else {}
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         tokens, cost = 0, 0.0
         for _attempt in range(TRIES):
             text, end = [], None
@@ -445,19 +454,18 @@ class Judge:
 
             def write(conn, usage=usage, spent=spent):
                 store.record_usage(conn, client_id=None, conversation_id=conversation_id, message_id=None,
-                                   model_id=model_id, usage=usage, cost_usd=spent,
-                                   meta={"purpose": "judge", **meta})  # fmt: skip
+                                   model_id=model_id, usage=usage, cost_usd=spent, meta=meta)  # fmt: skip
                 return budgets.crossed(conn, model_id, spent)
 
             for kind, budget in await self._db.acall(write):
                 await self._bus.publish(f"budget.{kind}", {"model_id": model_id, "budget": budget})
             if end is not None and end.refusal:
-                raise JudgeError(f"the judge declined: {end.refusal}")
+                raise JudgeError(f"the model declined: {end.refusal}")
             answer = "".join(text)
-            verdict = parse(answer)
-            if verdict is not None:
-                return {**verdict, "model_id": model_id, "tokens": tokens, "cost_usd": cost}
+            found = read(answer)
+            if found is not None:
+                return {**found, "model_id": model_id, "tokens": tokens, "cost_usd": cost}
             messages += [{"role": "assistant", "content": answer},
-                         {"role": "user", "content": "That is not the JSON asked for. Answer with the JSON object "
-                          'only: {"status": ..., "missing_items": [...], "feedback_for_worker": ...}'}]  # fmt: skip
-        raise JudgeError("the judge did not answer in the form asked (JSON)")
+                         {"role": "user", "content": f"That is not the JSON asked for. Answer with the JSON object "
+                          f"only: {form}"}]  # fmt: skip
+        raise JudgeError("the model did not answer in the form asked (JSON)")

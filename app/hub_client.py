@@ -183,6 +183,32 @@ class HubClient:
 
     # --- «Песочница» (D17, 9.4b): what a chat changed in its worktree ---
 
+    # --- a chat's goal (stage 11, D44) ---
+
+    def goal(self, conversation_id: str) -> dict:
+        return self._call("GET", f"/v1/conversations/{conversation_id}/goal")
+
+    def set_goal(self, conversation_id: str, contract: dict) -> dict:
+        return self._call("PUT", f"/v1/conversations/{conversation_id}/goal", contract)["goal"]
+
+    def draft_goal(self, conversation_id: str, text: str, model_id: str) -> dict:
+        # a local model may load from disk first
+        return self._call("POST", f"/v1/conversations/{conversation_id}/goal/draft",
+                          {"text": text, "model_id": model_id}, timeout=600)  # fmt: skip
+
+    def pause_goal(self, conversation_id: str) -> dict:
+        return self._call("POST", f"/v1/conversations/{conversation_id}/goal/pause")["goal"]
+
+    def resume_goal(self, conversation_id: str, limits: dict | None = None) -> dict:
+        return self._call("POST", f"/v1/conversations/{conversation_id}/goal/resume",
+                          {"limits": limits} if limits else None)["goal"]  # fmt: skip
+
+    def clear_goal(self, conversation_id: str) -> dict:
+        return self._call("DELETE", f"/v1/conversations/{conversation_id}/goal")["goal"]
+
+    def steer_goal(self, conversation_id: str, text: str) -> dict:
+        return self._call("POST", f"/v1/conversations/{conversation_id}/goal/steer", {"text": text})
+
     def sandbox(self, conversation_id: str) -> dict:
         return self._call("GET", f"/v1/conversations/{conversation_id}/sandbox")
 

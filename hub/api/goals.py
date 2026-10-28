@@ -54,6 +54,11 @@ class Steer(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class Wish(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)  # what the user wants, in their words
+    model_id: str = ""  # the chat's model: it drafts when the role «Проверка цели» has none
+
+
 def _app_only(client: Client) -> None:
     if client.name != APP_CLIENT:
         raise HTTPException(status_code=403, detail="only the desktop app may set and steer a chat's goal")
@@ -86,6 +91,14 @@ async def set_goal(conversation_id: str, body: GoalBody, request: Request,
     data["limits"] = _given(body.limits)
     goal = await _call(request.app.state.goals.set(conversation_id, data, by=client.name))
     return {"goal": goal}
+
+
+@router.post("/conversations/{conversation_id}/goal/draft")
+async def draft_goal(conversation_id: str, body: Wish, request: Request,
+                     client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
+    """A contract drafted by a model from the user's words, for the window to show and change; nothing is set."""
+    _app_only(client)
+    return await _call(request.app.state.goals.draft(conversation_id, body.text, body.model_id))
 
 
 @router.post("/conversations/{conversation_id}/goal/pause", status_code=202)

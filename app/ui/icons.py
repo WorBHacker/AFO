@@ -36,6 +36,8 @@ PATHS = {
     '<rect x="13.5" y="6" width="3.5" height="12" rx="1" fill="{c}"/>',
     "play": '<path d="M8.5 6v12l9.5-6z" fill="{c}"/>',
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    "target": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>'
+    '<circle cx="12" cy="12" r="1.2" fill="{c}"/>',
     "min": '<path d="M7 12h10"/>',
     "max": '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
     "download": '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',

@@ -27,6 +27,7 @@ TOPICS = [
     "schedule.*",
     "mail.*",
     "sandbox.*",
+    "goal.*",  # a chat's goal (D44)
     "install.*",
     "setup.*",
     "system.*",

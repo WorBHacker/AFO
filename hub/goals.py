@@ -380,6 +380,88 @@ def last_turn_note(goal: dict[str, Any], found: dict[str, Any], said: list[str])
     )
 
 
+# ---------------------------------------------------------------- the goal's draft (the plan's «goal compiler», 7.6)
+
+DRAFT_SYSTEM = """You turn what a user wants into a goal contract for an AI worker. The worker works on it turn after \
+turn in the user's projects; after each turn the hub checks the contract's criteria itself.
+Make it measurable. Prefer criteria the hub can run: one PowerShell command line in an attached project and the exit \
+code that means done - the project's tests, a build, a check such as `if (Test-Path done.txt) { exit 0 } else { exit \
+1 }`. Add a criterion in words only for what no command can check. A command only looks: never install, download, \
+push or delete. Add the hard constraints the wish implies (what must not be touched). Suggest limits: turns (5 to 40) \
+and minutes. Write the objective, the rules and the constraints in the user's language.
+Answer with JSON only:
+{"objective": "...", "criteria": [{"command": "...", "project": "<an attached project's name>", \
+"expected_exit_code": 0}, {"rule": "..."}], "constraints": ["..."], "limits": {"max_turns": 20, "max_minutes": 60}}"""
+DRAFT_FORM = '{"objective": ..., "criteria": [...], "constraints": [...], "limits": {...}}'
+MANIFESTS = ("package.json", "pyproject.toml", "pytest.ini", "setup.cfg", "Cargo.toml", "go.mod", "Makefile",
+             "CMakeLists.txt", "build.gradle", "pom.xml")  # fmt: skip
+LISTED = 60  # a project's top-level names the draft sees
+MANIFEST_LINES = 40
+
+
+def draft_context(projects: list, *, cloud: bool) -> str:
+    """What the draft's model learns of the chat's projects: the top level and the build files - for a cloud model
+    only of projects that allow the cloud (D10), the others by name (blocking: the disk)."""
+    parts = []
+    for p in projects:
+        if cloud and not p.cloud_ok:
+            parts.append(f'<project name="{p.name}">only local models may see it</project>')
+            continue
+        try:
+            names = sorted(n.name + ("/" if n.is_dir() else "") for n in p.root.iterdir() if not n.name.startswith("."))
+        except OSError:
+            names = []
+        found = [f"{name}:\n" + clean("\n".join((p.root / name).read_text(encoding="utf-8", errors="replace")
+                                               .splitlines()[:MANIFEST_LINES]))
+                 for name in MANIFESTS if (p.root / name).is_file()]  # fmt: skip
+        parts.append(f'<project name="{p.name}">\nTOP LEVEL: {", ".join(names[:LISTED])}\n' + "\n".join(found) +
+                     "\n</project>")  # fmt: skip
+    return "\n".join(parts) or "(no project is attached: criteria in words only, or the chat's own folder)"
+
+
+def read_draft(text: str, project_names: list[str]) -> dict[str, Any] | None:
+    """The draft's JSON made fit for the contract form: what does not fit is left out (and said in `notes`)."""
+    start, end = text.find("{"), text.rfind("}")
+    try:
+        data = json.loads(text[start : end + 1]) if 0 <= start < end else None
+    except json.JSONDecodeError:
+        data = None
+    if not isinstance(data, dict) or not str(data.get("objective") or "").strip():
+        return None
+    notes: list[str] = []
+    criteria = []
+    for item in data.get("criteria") or []:
+        if not isinstance(item, dict):
+            continue
+        command = " ".join(str(item.get("command") or "").split())
+        if command:
+            if approvals.destructive("run_command", {"command": command}) or approvals.network(
+                "run_command", {"command": command}
+            ):
+                notes.append(f"команда «{command}» убрана: проверка только смотрит")
+                continue
+            project = str(item.get("project") or "")
+            match = next((n for n in project_names if n.casefold() == project.casefold()), None)
+            if match is None and project_names:
+                match = project_names[0]
+            code = item.get("expected_exit_code", 0)
+            criteria.append({"kind": "command", "command": command, "project": match or "",
+                             "expected_exit_code": code if isinstance(code, int) and not isinstance(code, bool)
+                             else 0})  # fmt: skip
+        elif str(item.get("rule") or "").strip():
+            criteria.append({"kind": "semantic", "rule": " ".join(str(item["rule"]).split())[:1000]})
+    limits = data.get("limits") if isinstance(data.get("limits"), dict) else {}
+    out_limits = {}
+    for key in ("max_turns", "max_minutes"):
+        low, high = BOUNDS[key]
+        value = limits.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out_limits[key] = max(low, min(value, high))
+    constraints = [" ".join(str(c).split())[:500] for c in data.get("constraints") or [] if str(c).strip()]
+    return {"objective": " ".join(str(data["objective"]).split())[:4000], "criteria": criteria[:MAX_CRITERIA],
+            "constraints": constraints[:MAX_CONSTRAINTS], "limits": out_limits, "notes": notes}  # fmt: skip
+
+
 def _found_of(check: dict[str, Any]) -> dict[str, Any]:
     """A stored check as the notes read it (the next turn after a pause or a restart)."""
     criteria = [r for r in check["results"] if r.get("kind") in ("command", "semantic")]
@@ -443,6 +525,37 @@ class Goals:
         await self._bus.publish("goal.set", {"conversation_id": conversation_id, "goal": goal})
         await self._turn(goal, start_note(goal))
         return await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
+
+    async def draft(self, conversation_id: str, text: str, model_id: str) -> dict[str, Any]:
+        """A contract drafted by a model from the user's words (the plan's goal compiler): the model of the role
+        «Проверка цели», else the chat's own. Nothing is set: the window shows it to be checked and changed."""
+        text = text.strip()[:4000]
+        if not text:
+            raise GoalError("say what you want (`text`)")
+
+        def read(conn):
+            if not store.conversation_exists(conn, conversation_id):
+                raise GoalMissing("no such conversation")
+            chosen = judge.role_model(conn) or model_id
+            return chosen, store.get_model(conn, chosen) if chosen else None, _attached(conn, conversation_id)
+
+        chosen, model, projects = await self._db.acall(read)
+        if model is None or not model["enabled"]:
+            raise GoalError("choose the chat's model first: it drafts the goal (or the model of «Проверка цели»)")
+        if model["provider"] == CLAUDE_CODE:
+            raise GoalError("Claude Code does not draft goals: choose another model, or one for «Проверка цели»")
+        context = await asyncio.to_thread(draft_context, projects, cloud=model["locality"] == "cloud")
+        names = [p.name for p in projects]
+        prompt = clean(f"<projects>\n{context}\n</projects>\n<wish>\n{text}\n</wish>\nWrite the goal contract. "
+                       "Answer with the JSON only.")  # fmt: skip
+        try:
+            found = await self._judge.complete(chosen, DRAFT_SYSTEM, prompt, lambda answer: read_draft(answer, names),
+                                               conversation_id=conversation_id, meta={"purpose": "goal_draft"},
+                                               form=DRAFT_FORM)  # fmt: skip
+        except judge.JudgeError as exc:
+            raise GoalError(f"the draft did not come: {exc}") from None
+        return {"draft": {k: found[k] for k in ("objective", "criteria", "constraints", "limits")},
+                "notes": found["notes"], "model_id": chosen, "cost_usd": found["cost_usd"]}  # fmt: skip
 
     async def _baselines(self, goal: dict[str, Any]) -> None:
         """Where each git project's files stand as the goal begins: the judge's diff runs from there (11.2)."""
