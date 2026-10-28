@@ -41,7 +41,7 @@ def job_text(job: dict[str, Any]) -> str:
     if status == "starting":
         return "Запускаю llama-swap…"
     if status == "done":
-        return "Движок установлен и запущен"
+        return "Движок обновлён" if job.get("update") else "Движок установлен и запущен"
     if status == "failed":
         return f"Не вышло: {job.get('error')}"
     if status == "cancelled":
@@ -74,6 +74,7 @@ class SetupView(QObject):
         self._models_loading = False
         self._build = ""
         self._asked = False
+        self._update: dict[str, Any] = {}  # the llama.cpp build running and the newest of its kind (10.4)
 
     # ================= for QML =================
 
@@ -164,8 +165,40 @@ class SetupView(QObject):
                     self.openRequested.emit()
             if not state.get("needed") and not self._models and not self._models_loading:
                 self._load_models()
+            if not state.get("needed"):
+                self._load_update()
 
         self.app._call(lambda: self.app.client.setup_state(), show, lambda _e: None)
+
+    def _load_update(self) -> None:
+        def show(found: dict[str, Any]) -> None:
+            self._update = found
+            self.changed.emit()
+
+        self.app._call(lambda: self.app.client.setup_update_info(), show, lambda _e: None)
+
+    @Property(str, notify=changed)
+    def updateText(self) -> str:
+        found = self._update
+        if not found.get("current"):
+            return ""
+        if found.get("newer"):
+            return (f"llama.cpp {found['current']} — есть новее: {found['latest']}. Обновление встанет рядом со "
+                    "старой сборкой, конфиг llama-swap получит путь к новой (копия прежнего — рядом).")  # fmt: skip
+        return f"llama.cpp {found['current']} — самая новая сборка"
+
+    @Property(bool, notify=changed)
+    def updateAvailable(self) -> bool:
+        return bool(self._update.get("newer"))
+
+    @Slot()
+    def updateEngine(self) -> None:
+        def done(result: dict[str, Any]) -> None:
+            self._state = {**self._state, "job": result.get("job") or {}}
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.setup_update(), done,
+                              lambda e: self.app.show_error(f"Движок не обновить: {e}"))  # fmt: skip
 
     def _load_models(self) -> None:
         self._models_loading = True

@@ -106,15 +106,83 @@ class Setup:
 
     # --- the engine ---
 
-    def start(self, build: str) -> dict[str, Any]:
+    def start(self, build: str, *, update: bool = False) -> dict[str, Any]:
         if build not in BUILDS:
             raise ValueError(f"сборка — одна из {', '.join(BUILDS)}")
         if self._task is not None and not self._task.done():
             return dict(self.job)
         self._cancel = threading.Event()
-        self.job = {"status": "downloading", "build": build, "done": 0, "total": 0, "error": "", "step": ""}
-        self._task = asyncio.create_task(self._run(build))
+        self.job = {"status": "downloading", "build": build, "done": 0, "total": 0, "error": "", "step": "",
+                    "update": update}  # fmt: skip
+        self._task = asyncio.create_task(self._update(build) if update else self._run(build))
         return dict(self.job)
+
+    # --- a newer llama.cpp (10.4): beside the old build, the config's macro pointed at it ---
+
+    def _server(self) -> Path | None:
+        config = llama_config.config_path()
+        try:
+            text = config.read_text(encoding="utf-8")
+            command = llama_config.server_command(text)
+        except OSError, llama_config.ConfigError:
+            return None
+        if command.startswith("${"):
+            command = llama_config.macros(text).get(command.strip("${}"), "")
+        return Path(command.strip("'\"")) if command else None
+
+    async def update_info(self) -> dict[str, Any]:
+        """The build running now and the newest of its kind on GitHub."""
+        server = await asyncio.to_thread(self._server)
+        running = await asyncio.to_thread(engines.running_build, server) if server else None
+        if running is None:
+            return {"current": "", "build": "", "latest": "", "newer": False, "server": str(server or "")}
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+            latest = (await engines.llama_cpp_release(http, running["build"]))["tag"]
+        return {"current": running["tag"], "build": running["build"], "latest": latest,
+                "newer": engines.newer(latest, running["tag"]), "server": str(server)}  # fmt: skip
+
+    async def _update(self, build: str) -> None:
+        loop = asyncio.get_running_loop()
+
+        def report(done: int, total: int) -> None:
+            self.job.update(done=done, total=total)
+            now = time.monotonic()
+            if now - self._shown >= PROGRESS_S:
+                self._shown = now
+                asyncio.run_coroutine_threadsafe(self._publish("setup.progress", False), loop)
+
+        try:
+            await self._publish()
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                cpp = await engines.llama_cpp_release(http, build)
+            folder = engines_home() / "llama.cpp" / f"{cpp['tag']}-{build}"
+            self.job.update(total=sum(a["size"] for a in cpp["assets"]), tag=cpp["tag"],
+                            step=f"llama.cpp {cpp['tag']} ({BUILDS[build]})")  # fmt: skip
+            await self._publish()
+            await asyncio.to_thread(self._fetch, cpp["assets"], engines_home() / "downloads", folder, 0, report)
+            server = engines.server_in(folder)
+            path = llama_config.config_path()
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            command = llama_config.server_command(text)
+            if not command.startswith("${"):
+                raise engines.EngineError("в config.yaml llama-server указан в каждой модели, а не в макросе — "
+                                          f"поменяйте путь на {server} сами")  # fmt: skip
+            new = llama_config.set_macro(text, command.strip("${}"), "'\"" + str(server).replace("\\", "/") + "\"'")
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != llama_config.NOT_ANSWERING:
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise engines.EngineError(f"llama-swap не принял новый конфиг ({problem}) — возвращён прежний")
+            self.job.update(status="done", step="", backup=backup.name)
+        except engines.EngineError as exc:
+            self.job.update(status="failed", error=str(exc))
+        except Exception as exc:
+            if self._cancel.is_set():
+                self.job.update(status="cancelled", error="")
+            else:
+                log.exception("the engine's update failed")
+                self.job.update(status="failed", error=f"не вышло: {exc}")
+        await self._publish()
 
     def cancel(self) -> None:
         self._cancel.set()

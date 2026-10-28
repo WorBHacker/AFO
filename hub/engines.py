@@ -153,6 +153,27 @@ def fetch(assets: list[dict[str, Any]], downloads: Path, folder: Path, *, report
         unpack(dest, folder)
 
 
+def running_build(server: Path) -> dict[str, str] | None:
+    """Which llama.cpp build a llama-server is - its tag (b<number>, from its folder) and kind (by the libraries
+    beside it: CUDA 13 or 12, Vulkan, the processor's); None when it is not there."""
+    if not server.is_file():
+        return None
+    tag = next((m.group(1) for part in reversed(server.parent.parts) if (m := re.match(r"^(b\d+)", part))), "")
+    names = {p.name.lower() for p in server.parent.iterdir()}
+    if any(n.startswith("ggml-cuda") for n in names):
+        build = "cuda-12" if any(re.match(r"(cudart|cublas)64_12", n) for n in names) else "cuda-13"
+    elif any(n.startswith("ggml-vulkan") for n in names):
+        build = "vulkan"
+    else:
+        build = "cpu"
+    return {"tag": tag, "build": build}
+
+
+def newer(latest: str, current: str) -> bool:
+    numbers = [int(t[1:]) if re.fullmatch(r"b\d+", t or "") else -1 for t in (latest, current)]
+    return numbers[0] > numbers[1] >= 0
+
+
 def server_in(folder: Path) -> Path:
     """llama-server.exe in an unpacked build (at its top or one folder down)."""
     found = next(iter(sorted(folder.rglob("llama-server.exe"), key=lambda p: len(p.parts))), None)

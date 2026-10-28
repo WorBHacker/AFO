@@ -129,6 +129,12 @@ class HubClient:
     def setup_engine(self, build: str = "") -> dict:
         return self._call("POST", "/v1/setup/engine", {"build": build}, timeout=30)
 
+    def setup_update_info(self) -> dict:
+        return self._call("GET", "/v1/setup/update", timeout=30)
+
+    def setup_update(self) -> dict:
+        return self._call("POST", "/v1/setup/update", timeout=30)
+
     def setup_cancel(self) -> dict:
         return self._call("POST", "/v1/setup/engine/cancel")
 

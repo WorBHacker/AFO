@@ -136,3 +136,63 @@ def test_the_engine_for_a_computer_that_has_none(hub, github, monkeypatch, tmp_p
     cuda = tmp_path / "localchat-home" / "engines" / "llama.cpp" / "b200-cuda-13"
     assert (cuda / "cudart64_13.dll").exists() and (cuda / "llama-server.exe").exists()
     assert (swap / "config.yaml").read_text(encoding="utf-8") == text  # an existing config is never overwritten
+
+
+def test_which_build_runs_and_the_macro_it_lives_in(tmp_path):
+    cuda = tmp_path / "llama.cpp" / "b11899"
+    cuda.mkdir(parents=True)
+    for name in ("llama-server.exe", "ggml-cuda.dll", "cudart64_13.dll"):
+        (cuda / name).write_bytes(b"MZ")
+    assert engines.running_build(cuda / "llama-server.exe") == {"tag": "b11899", "build": "cuda-13"}
+    vulkan = tmp_path / "engines" / "llama.cpp" / "b200-vulkan"
+    vulkan.mkdir(parents=True)
+    (vulkan / "llama-server.exe").write_bytes(b"MZ")
+    (vulkan / "ggml-vulkan.dll").write_bytes(b"MZ")
+    assert engines.running_build(vulkan / "llama-server.exe") == {"tag": "b200", "build": "vulkan"}
+    assert engines.running_build(tmp_path / "nowhere" / "llama-server.exe") is None
+    text = """macros:
+  llama_server: '"D:/old/llama-server.exe"'   # the build
+  other: "x"
+models:
+  "a":
+    cmd: |
+      ${llama_server} -m a.gguf
+"""
+    new = lc.set_macro(text, "llama_server", "'\"E:/new/llama-server.exe\"'")
+    assert lc.macros(new) == {"llama_server": '"E:/new/llama-server.exe"', "other": "x"}
+    assert "# the build" in new and new.replace("E:/new", "D:/old") == text
+
+
+def test_the_engine_is_updated_beside_the_old_one(hub, github, monkeypatch, tmp_path):  # noqa: F811
+    old = tmp_path / "llama.cpp" / "b100"
+    old.mkdir(parents=True)
+    for name in ("llama-server.exe", "ggml-vulkan.dll"):
+        (old / name).write_bytes(b"MZ")
+    config = tmp_path / "config.yaml"
+    config.write_text(f"""macros:
+  llama_server: '"{(old / "llama-server.exe").as_posix()}"'
+models:
+  "a":
+    cmd: |
+      ${{llama_server}} -m a.gguf
+      --port ${{PORT}}
+""", encoding="utf-8")  # fmt: skip
+    monkeypatch.setenv(lc.CONFIG_ENV, str(config))
+    monkeypatch.setattr(lc, "RELOAD_S", 0.5)  # no llama-swap here: the write is kept, not checked
+    found = hub.get("/v1/setup/update").json()
+    assert found == {"current": "b100", "build": "vulkan", "latest": "b200", "newer": True, "server": str(old /
+                     "llama-server.exe")}  # fmt: skip
+    job = hub.post("/v1/setup/update").json()["job"]
+    assert job["status"] == "downloading" and job["update"]
+    deadline = time.monotonic() + 20
+    while hub.get("/v1/setup").json()["job"]["status"] in ("downloading", "starting"):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    done = hub.get("/v1/setup").json()["job"]
+    assert done["status"] == "done", done
+    new = tmp_path / "localchat-home" / "engines" / "llama.cpp" / "b200-vulkan" / "llama-server.exe"
+    text = config.read_text(encoding="utf-8")
+    assert lc.macros(text)["llama_server"] == '"' + new.as_posix() + '"' and set(lc.model_blocks(text)) == {"a"}
+    assert (old / "llama-server.exe").exists()  # the old build stays (a model may still run on it)
+    assert list(tmp_path.glob("config.yaml.bak-*"))  # a copy of the config first
+    assert hub.get("/v1/setup/update").json()["newer"] is False

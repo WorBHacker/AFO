@@ -110,9 +110,21 @@ def macros(text: str) -> dict[str, str]:
     out = {}
     for i in range(*(section or (0, 0))):
         match = re.match(r"^\s+([\w-]+):\s*(.+?)\s*$", lines[i])
-        if match:
-            out[match.group(1)] = _unquote(match.group(2))
+        if match:  # a comment after the value is not part of it
+            out[match.group(1)] = _unquote(re.sub(r"\s+#.*$", "", match.group(2)))
     return out
+
+
+def set_macro(text: str, name: str, value: str) -> str:
+    """The config with one macro's value replaced (its comment kept); every other line as it was."""
+    lines = text.splitlines()
+    section = _section(lines, "macros")
+    for i in range(*(section or (0, 0))):
+        match = re.match(rf"^(\s+{re.escape(name)}:\s*)(\S.*?)(\s+#.*)?$", lines[i])
+        if match:
+            lines[i] = match.group(1) + value + (match.group(3) or "")
+            return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    raise ConfigError(f"в config.yaml нет макроса {name}")
 
 
 def _cmd_lines(lines: list[str], start: int, end: int) -> tuple[int, int]:

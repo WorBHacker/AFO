@@ -522,6 +522,13 @@ class FakeClient:
         self.setup["job"] = {"status": "downloading", "build": build, "done": 0, "total": 0, "step": ""}
         return {"job": dict(self.setup["job"])}
 
+    def setup_update_info(self):
+        return {"current": "b11899", "build": "cuda-13", "latest": "b11946", "newer": True, "server": "x"}
+
+    def setup_update(self):
+        self.install_calls.append(("update",))
+        return {"job": {"status": "downloading", "update": True, "done": 0, "total": 0}}
+
     def setup_cancel(self):
         self.install_calls.append(("engine-cancel",))
         return {"job": {"status": "cancelled"}}
@@ -4556,6 +4563,10 @@ def test_the_first_run_wizard(qapp):
         view.installModel("chat")
         wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
         assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"
+        wait_until(lambda: not app.bg.busy and view.updateAvailable)
+        assert view.updateText.startswith("llama.cpp b11899 — есть новее: b11946")
+        view.updateEngine()
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1] == ("update",))
         view.dismiss()
         assert app.settings.value(DISMISSED, False, bool)
         for _ in range(10):

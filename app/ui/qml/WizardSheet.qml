@@ -69,6 +69,20 @@ Sheet {
         color: Setup.jobStatus === "failed" ? Theme.p.error : Setup.jobStatus === "done" ? Theme.p.ok : Theme.p.muted
         font.pixelSize: 12
     }
+    Note {
+        objectName: "wizardUpdate"
+        visible: !Setup.needed && Setup.updateText !== ""
+        text: Setup.updateText
+        color: Theme.p.muted
+        font.pixelSize: 12
+    }
+    PlainButton {
+        objectName: "wizardUpdateEngine"
+        visible: !Setup.needed && Setup.updateAvailable && Setup.jobStatus !== "downloading"
+        iconName: "refresh"
+        text: "Обновить движок"
+        onClicked: Setup.updateEngine()
+    }
     Row {
         spacing: 8
         PlainButton {
