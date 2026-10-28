@@ -22,7 +22,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import budgets, cards, export, notes, projects, store
+from .. import budgets, cards, export, model_settings, notes, projects, store
 from ..auth import APP_CLIENT, Client
 from ..cards import CardError
 from ..export import ExportError
@@ -174,8 +174,12 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
         else:
             messages = await asyncio.to_thread(cards.update_prompt, project, *current)
         provider, model_ref = app.state.gateway.resolve(model["id"])
+        # the answer's parameters the user set for this model (D39) - temperature, thinking, Strata's refusal vector
+        own = (await db.acall(lambda conn: model_settings.current(conn, model["id"])))[1]
+        params = model_settings.clean_params(own.get("params") or {}, app.state.gateway.accepts(model["id"]))
+        extra = {"params": params} if params else {}
         text, end = [], None
-        async for event in provider.stream_chat(model_ref, messages, DRAFT_EFFORT, asyncio.Event()):
+        async for event in provider.stream_chat(model_ref, messages, DRAFT_EFFORT, asyncio.Event(), **extra):
             if event.kind == "content":
                 text.append(event.text)
             elif event.kind == "end":

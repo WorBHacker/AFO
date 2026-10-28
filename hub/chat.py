@@ -1105,6 +1105,8 @@ def _answer_setup(conn, conversation_id: str, model_id: str, accepts: frozenset[
     params = dict(own.get("params") or {})
     if chat["preset"]:
         params.update(model_settings.preset_params(chat["preset"], accepts))
+    if chat["refusal_vector"]:  # the chat's own choice of Strata's refusal vector, over the model's
+        params["refusal_vector"] = chat["refusal_vector"] == "on"
     task = conn.execute(
         "SELECT refusal_vector FROM agent_runs WHERE conversation_id = ?", (conversation_id,)
     ).fetchone()

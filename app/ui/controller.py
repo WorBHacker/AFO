@@ -101,6 +101,7 @@ class Controller(QObject):
     modeChanged = Signal()
     chatProjectsChanged = Signal()
     contextChanged = Signal()
+    chatRefusalChanged = Signal()  # the chat's model or its own choice of Strata's refusal vector
     claudeCodeChanged = Signal()
     statsChanged = Signal()
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
@@ -162,6 +163,8 @@ class Controller(QObject):
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
         self._context_rows: list[dict[str, Any]] = []
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
+        self.modelChanged.connect(self.chatRefusalChanged)  # the refusal switch: only a model with Strata's vector
+        self.contextChanged.connect(self.chatRefusalChanged)
         self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
         self.mentions = Mentions(self)
@@ -355,6 +358,35 @@ class Controller(QObject):
             for pid in self._chat_projects
             if pid in known
         ]
+
+    # ---------- Strata's refusal vector for this chat (2026-10-28) ----------
+
+    @Property(bool, notify=chatRefusalChanged)
+    def chatRefusalShown(self) -> bool:
+        return rows.model_vector(self.models, self._model_id) is not None
+
+    @Property(str, notify=chatRefusalChanged)
+    def chatRefusalName(self) -> str:
+        return rows.refusal_name(self.models, self._model_id, self._context_settings.get("refusal_vector") or "")
+
+    @Property(list, notify=chatRefusalChanged)
+    def chatRefusalItems(self) -> list:
+        return rows.refusal_items(self.models, self._model_id, self._context_settings.get("refusal_vector") or "",
+                                  "этого чата")  # fmt: skip
+
+    @Slot(str)
+    def setChatRefusal(self, choice: str) -> None:
+        """This chat's own choice («model» - as the model is set), from its next answer on; a chat not made yet takes
+        it with its first message."""
+        value = "" if choice == "model" else choice
+        if value not in ("", "on", "off"):
+            return
+        if self.current:
+            self._save_context(refusal_vector=value)
+        else:
+            self._context_settings = {**self._context_settings, "refusal_vector": value}
+            self.contextChanged.emit()
+        self.flash(rows.refusal_name(self.models, self._model_id, value) + " — в этом чате со следующего ответа")
 
     @Property(list, notify=contextChanged)
     def contextBlocks(self) -> list:
@@ -1038,13 +1070,16 @@ class Controller(QObject):
             said = [f"проект {names[pid]}" for pid in added] + [f"файл {path}" for _pid, path in files]
             self.flash("В контексте чата: " + ", ".join(said))
 
+        refusal = (self._context_settings.get("refusal_vector") or "") if target is None else ""
+
         def send() -> str:
             conversation_id = target or client.create_conversation()
             try:
                 if attach:  # a new chat takes the projects chosen before its first message
                     client.set_chat_projects(conversation_id, attach)
-                if pinned:
-                    client.set_context(conversation_id, pinned=pinned)
+                if pinned or refusal:  # and its refusal vector choice
+                    client.set_context(conversation_id, **({"pinned": pinned} if pinned else {}),
+                                       **({"refusal_vector": refusal} if refusal else {}))  # fmt: skip
                 client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
             except HubError as exc:
                 exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there

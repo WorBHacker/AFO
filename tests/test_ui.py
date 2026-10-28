@@ -4784,3 +4784,47 @@ def test_the_refusal_switch_for_a_model_and_a_new_task(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_refusal_switch_in_a_chat(qapp):
+    """2026-10-28 (the user's word): the chat input has «Снятие отказов» for a model with Strata's vector - each chat
+    its own, starting from the model's setting; a new chat takes it with its first message, an open one at once."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        vectored = {"id": "llama-swap/flash", "model_ref": "flash", "name": "Flash", "locality": "local", "prices": {},
+                    "accepts": ["refusal_vector", "temperature"], "refusal_vector": False}  # fmt: skip
+        client.models = lambda: [*MODELS, vectored]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and "llama-swap/flash" in app.models)
+        app.setMode("chats")
+        app.newChat()
+        app.chooseModel("anthropic/claude-opus-5-5")
+        assert not app.chatRefusalShown
+        app.chooseModel("llama-swap/flash")
+        for _ in range(10):
+            QApplication.processEvents()
+        chip = quick.window.findChild(QObject, "chatRefusal")
+        assert app.chatRefusalShown and chip.property("visible") and chip.property("text") == "Снятие отказов: выкл"
+        items = app.chatRefusalItems
+        assert items[0]["section"].endswith("для этого чата") and items[1]["note"] == "Сейчас там: выключено."
+        app.setChatRefusal("on")  # a chat not made yet: with its first message
+        assert app.chatRefusalName == "Снятие отказов: вкл" and not [e for e in client.log if e[0] == "context"]
+        app.send("привет")
+        wait_until(lambda: not app.bg.busy and client.sent)
+        assert ("context", "c2", {"refusal_vector": "on"}) in client.log and app.current == "c2"
+        app.setChatRefusal("model")  # an open chat: saved at once
+        wait_until(lambda: not app.bg.busy and ("context", "c2", {"refusal_vector": ""}) in client.log)
+        assert app.chatRefusalName == "Снятие отказов: выкл"
+        app.newChat()  # a new chat starts from the model's setting again
+        assert app.chatRefusalName == "Снятие отказов: выкл" and app.chatRefusalItems[1]["selected"]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()

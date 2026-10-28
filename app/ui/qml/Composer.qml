@@ -169,6 +169,15 @@ Item {
         }
     }
 
+    MenuPopup {
+        id: refusalMenu
+        objectName: "chatRefusalMenu"
+        menuWidth: 420
+        wrapNotes: true
+        items: App.chatRefusalItems
+        onChosen: (id) => App.setChatRefusal(id)
+    }
+
     Rectangle {
         id: card
         x: (parent.width - composer.column) / 2
@@ -241,8 +250,10 @@ Item {
             x: 10
             y: input.y + input.height + 4
             width: parent.width - 20
-            height: 34
-            Row {
+            height: Math.max(34, chips.height + 4)
+            Flow {  // the chips wrap onto a second line when they do not fit beside the send button
+                id: chips
+                width: parent.width - sendRow.width - 12
                 spacing: 6
                 anchors.verticalCenter: parent.verticalCenter
                 Chip {
@@ -256,6 +267,17 @@ Item {
                     iconName: "sparkle"
                     text: "Глубина: " + App.effortLabel
                     onClicked: composer.effortMenuRequested(effortChip)
+                }
+                Chip {
+                    id: refusalChip
+                    objectName: "chatRefusal"
+                    visible: App.chatRefusalShown
+                    iconName: "key"
+                    text: App.chatRefusalName
+                    onClicked: { refusalMenu.anchor = refusalChip; refusalMenu.open() }
+                    ToolTip.visible: hovered && !refusalMenu.visible
+                    ToolTip.delay: 600
+                    ToolTip.text: "Вектор Strata, который убирает у модели отказы отвечать, — для этого чата"
                 }
                 Chip {
                     id: projectChip
@@ -286,8 +308,10 @@ Item {
                 }
             }
             Row {
+                id: sendRow
                 anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 1
                 spacing: 10
                 AbstractButton {
                     id: send

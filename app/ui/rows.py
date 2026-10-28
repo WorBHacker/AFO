@@ -43,6 +43,32 @@ def model_name(models: dict[str, dict], model_id: str | None) -> str:
     return models.get(model_id, {}).get("name") or model_id
 
 
+# Strata's refusal vector (abliteration at runtime, 2026-10-28) for one chat or task: "" - as the model is set
+REFUSAL = [("on", "Включено", "Strata убирает у модели отказы отвечать (abliterated)."),
+           ("off", "Выключено", "Обычная модель, как её выпустили: на некоторые темы может отказаться.")]  # fmt: skip
+
+
+def model_vector(models: dict[str, dict], model_id: str | None) -> bool | None:
+    """How a model with Strata's refusal vector is set (True: on, the default); None when it has none to switch."""
+    model = models.get(model_id or "") or {}
+    return bool(model.get("refusal_vector", True)) if "refusal_vector" in (model.get("accepts") or []) else None
+
+
+def refusal_name(models: dict[str, dict], model_id: str | None, chosen: str) -> str:
+    """The chip: what this chat or task gets - its own choice, else the model's."""
+    on = chosen == "on" if chosen else bool(model_vector(models, model_id))
+    return "Снятие отказов: " + ("вкл" if on else "выкл")
+
+
+def refusal_items(models: dict[str, dict], model_id: str | None, chosen: str, whose: str) -> list[dict[str, Any]]:
+    """The chip's menu: as the model is set (and how that is now), on, off - each explained."""
+    model = "включено" if model_vector(models, model_id) else "выключено"
+    return [{"section": f"Снятие отказов (abliterated) — для {whose}", "id": ""},
+            {"id": "model", "name": "Как в настройках модели", "note": f"Сейчас там: {model}.", "icon": "sliders",
+             "selected": not chosen}] + [
+        {"id": a, "name": n, "note": h, "icon": "key", "selected": a == chosen} for a, n, h in REFUSAL]  # fmt: skip
+
+
 def is_local(models: dict[str, dict], model_id: str | None) -> bool:
     model = models.get(model_id or "")
     return model.get("locality") == "local" if model else (model_id or "").startswith("llama-swap/")

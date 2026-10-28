@@ -177,7 +177,8 @@ def conversation_tools(
     return chosen
 
 
-CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": ""}
+CONTEXT_DEFAULTS = {"map": True, "live": True, "pinned": [], "instructions": "", "preset": "", "refusal_vector": ""}
+VECTOR_WORDS = {None: "", 1: "on", 0: "off"}  # a chat's Strata refusal vector: '' - as the model is set
 MAX_PINNED = 10
 MODES = ("read_only", "ask", "sandbox", "trusted")  # a chat's rights (D17); sandbox: a git worktree (9.4b)
 
@@ -185,12 +186,13 @@ MODES = ("read_only", "ask", "sandbox", "trusted")  # a chat's rights (D17); san
 def context_settings(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
     """What this chat's context includes: the map, the live state, pinned files [{project_id, path}]; its rights
     mode (D17): read_only, ask (the default) or trusted; its own instructions and preset of the answer's parameters
-    (D39, '' - as the model has them)."""
+    (D39, '' - as the model has them); Strata's refusal vector for it ('' / on / off, 2026-10-28)."""
     row = conn.execute("SELECT * FROM conversation_context WHERE conversation_id = ?", (conversation_id,)).fetchone()
     if row is None:
         return {**CONTEXT_DEFAULTS, "pinned": [], "mode": "ask"}
     return {"map": bool(row["map"]), "live": bool(row["live"]), "pinned": json.loads(row["pinned"]),
-            "mode": row["mode"], "instructions": row["instructions"], "preset": row["preset"]}  # fmt: skip
+            "mode": row["mode"], "instructions": row["instructions"], "preset": row["preset"],
+            "refusal_vector": VECTOR_WORDS.get(row["refusal_vector"], "")}  # fmt: skip
 
 
 def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **changes: Any) -> dict[str, Any]:
@@ -205,14 +207,17 @@ def set_context_settings(conn: sqlite3.Connection, conversation_id: str, **chang
         raise ValueError(f"unknown mode {settings['mode']!r}: {', '.join(MODES)}")
     if settings["preset"] and settings["preset"] not in model_settings.PRESETS:
         raise ValueError(f"unknown preset {settings['preset']!r}: {', '.join(model_settings.PRESETS)}")
+    if settings["refusal_vector"] not in ("", "on", "off"):
+        raise ValueError(f"unknown refusal vector choice {settings['refusal_vector']!r}: '', on or off")
     settings["instructions"] = str(settings["instructions"]).strip()[: model_settings.SYSTEM_PROMPT_MAX]
+    vector = {"": None, "on": 1, "off": 0}[settings["refusal_vector"]]
     conn.execute(
-        "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode, instructions, preset)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (conversation_id) DO UPDATE SET map = excluded.map,"
-        " live = excluded.live, pinned = excluded.pinned, mode = excluded.mode, instructions = excluded.instructions,"
-        " preset = excluded.preset",
+        "INSERT INTO conversation_context (conversation_id, map, live, pinned, mode, instructions, preset,"
+        " refusal_vector) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (conversation_id) DO UPDATE SET"
+        " map = excluded.map, live = excluded.live, pinned = excluded.pinned, mode = excluded.mode,"
+        " instructions = excluded.instructions, preset = excluded.preset, refusal_vector = excluded.refusal_vector",
         (conversation_id, int(settings["map"]), int(settings["live"]), json.dumps(settings["pinned"]),
-         settings["mode"], settings["instructions"], settings["preset"]),
+         settings["mode"], settings["instructions"], settings["preset"], vector),
     )  # fmt: skip
     return settings
 

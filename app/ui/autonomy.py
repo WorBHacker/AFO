@@ -18,7 +18,7 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from .. import presenter
 from .project_rows import local_time
-from .rows import model_name
+from .rows import model_name, model_vector, refusal_items, refusal_name
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -56,9 +56,6 @@ LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
                          "max_replans": "3", "network": False, "refusal_vector": ""}  # fmt: skip
-# a Strata model's refusal vector for one task ("" - as the model is set)
-REFUSAL = [("on", "Включено", "Strata убирает у модели отказы отвечать (abliterated)."),
-           ("off", "Выключено", "Обычная модель, как её выпустили: на некоторые темы может отказаться.")]  # fmt: skip
 REFUSAL_SAID = {1: "снятие отказов вкл", 0: "снятие отказов выкл"}
 
 
@@ -294,31 +291,18 @@ class AutonomyView(QObject):
 
     # ---------- Strata's refusal vector for this task (2026-10-28) ----------
 
-    def _model_vector(self) -> bool | None:
-        """How the draft's model is set (True: on), None when it has no vector to switch."""
-        model = self.app.models.get(self._draft["model_id"]) or {}
-        return bool(model.get("refusal_vector", True)) if "refusal_vector" in (model.get("accepts") or []) else None
-
-    def _vector_on(self) -> bool:
-        chosen = self._draft.get("refusal_vector") or ""
-        return chosen == "on" if chosen else bool(self._model_vector())
-
     @Property(bool, notify=changed)
     def refusalShown(self) -> bool:
-        return self._model_vector() is not None
+        return model_vector(self.app.models, self._draft["model_id"]) is not None
 
     @Property(str, notify=changed)
     def refusalName(self) -> str:
-        return "Снятие отказов: " + ("вкл" if self._vector_on() else "выкл")
+        return refusal_name(self.app.models, self._draft["model_id"], self._draft.get("refusal_vector") or "")
 
     @Property(list, notify=changed)
     def refusalItems(self) -> list:
-        chosen = self._draft.get("refusal_vector") or ""
-        model = "включено" if self._model_vector() else "выключено"
-        return [{"section": "Снятие отказов (abliterated) — для этой задачи", "id": ""},
-                {"id": "model", "name": "Как в настройках модели", "note": f"Сейчас там: {model}.", "icon": "sliders",
-                 "selected": not chosen}] + [
-            {"id": a, "name": n, "note": h, "icon": "key", "selected": a == chosen} for a, n, h in REFUSAL]  # fmt: skip
+        return refusal_items(self.app.models, self._draft["model_id"], self._draft.get("refusal_vector") or "",
+                             "этой задачи")  # fmt: skip
 
     @Slot(str)
     def chooseRefusal(self, choice: str) -> None:

@@ -94,6 +94,7 @@ class ContextSettings(BaseModel):
     mode: Literal["read_only", "ask", "sandbox", "trusted"] | None = None  # the chat's rights (D17, 9.4b)
     instructions: str | None = None  # the chat's own system prompt (D39)
     preset: Literal["", "precise", "balanced", "creative"] | None = None  # over the model's parameters
+    refusal_vector: Literal["", "on", "off"] | None = None  # Strata's refusal vector for this chat; '' - as the model
 
 
 @router.put("/conversations/{conversation_id}/context")
@@ -109,8 +110,8 @@ async def set_context(
         if store.get_title(conn, conversation_id) is None:
             return None
         return store.set_context_settings(conn, conversation_id, map=body.map, live=body.live, pinned=pinned,
-                                          mode=body.mode, instructions=body.instructions,
-                                          preset=body.preset)  # fmt: skip
+                                          mode=body.mode, instructions=body.instructions, preset=body.preset,
+                                          refusal_vector=body.refusal_vector)  # fmt: skip
 
     settings = await request.app.state.db.acall(write)
     if settings is None:

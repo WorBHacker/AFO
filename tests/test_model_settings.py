@@ -442,3 +442,41 @@ def test_the_refusal_vector_set_for_the_model_and_chosen_for_a_task(hub):
     plain = hub.post("/v1/runs/autonomous", json=body).json()["id"]
     assert hub.get(f"/v1/runs/{plain}/plan").json()["refusal_vector"] is None  # not chosen: as the model is set
     hub.post(f"/v1/runs/{plain}/cancel")
+
+
+def test_a_chats_own_refusal_vector_and_the_cards_draft(hub, tmp_path):
+    """2026-10-28 (the user's word): a chat chooses Strata's refusal vector for itself (over the model's setting, ''
+    back to it); a project card's draft is written with the model's own parameters now, the switch among them."""
+    vec = Vectored()
+    hub.app.state.gateway.register(vec)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    hub.put("/v1/model_settings", json={"model_id": "vec/m", "settings": {"params": {"refusal_vector": False,
+                                                                                     "temperature": 0.3}}})  # fmt: skip
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+
+    def ask():
+        with hub.websocket_connect("/v1/events", headers={"Authorization": f"Bearer {hub.token}", **WS_HOST}) as ws:
+            ws.receive_json()
+            hub.post(f"/v1/conversations/{conv}/messages", json={"content": "привет", "model_id": "vec/m"})
+            while ws.receive_json()["type"] != "chat.done":
+                pass
+        return vec.sent[-1]["params"]
+
+    assert hub.get(f"/v1/conversations/{conv}").json()["context"]["refusal_vector"] == ""
+    assert ask() == {"refusal_vector": False, "temperature": 0.3}  # the model's
+    assert hub.put(f"/v1/conversations/{conv}/context", json={"refusal_vector": "maybe"}).status_code == 422
+    assert hub.put(f"/v1/conversations/{conv}/context", json={"refusal_vector": "on"}).json()["refusal_vector"] == "on"
+    assert ask() == {"refusal_vector": True, "temperature": 0.3}  # the chat's own, over the model's
+    assert hub.get(f"/v1/conversations/{conv}").json()["context"]["refusal_vector"] == "on"
+    hub.put(f"/v1/conversations/{conv}/context", json={"refusal_vector": ""})
+    assert ask() == {"refusal_vector": False, "temperature": 0.3}  # back to the model's
+
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    (folder / "README.md").write_text("# Проект\n", encoding="utf-8")
+    pid = hub.post("/v1/projects", json={"path": str(folder)}).json()["id"]
+    assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "vec/m"}).status_code == 202
+    deadline = time.monotonic() + 20
+    while not hub.get(f"/v1/projects/{pid}/card").json()["draft"] and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert vec.sent[-1]["params"] == {"refusal_vector": False, "temperature": 0.3}  # the card: the model's settings
