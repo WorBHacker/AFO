@@ -51,6 +51,7 @@ from typing import Any
 
 from . import (
     agent_tools,
+    attachments,
     autonomous,
     budgets,
     cards,
@@ -135,6 +136,7 @@ class ChatService:
         self.mail: mail.MailTools | None = None  # the user's mailbox (9.4b, Q21)
         self.sandboxes: Path | None = None  # data/worktrees: «Песочница» chats write there (D17, 9.4b)
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
+        self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
 
     @property
     def busy(self) -> list[str]:
@@ -149,11 +151,13 @@ class ChatService:
         effort: str = DEFAULT_EFFORT,
         client_id: str | None = None,
         confirm_over_budget: bool = False,
+        files: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Appends the user message and starts the assistant run. Returns the stored user message.
 
         A paid model whose budget is used up is refused before anything is stored (BudgetReached), unless every
         such budget allows asking and the user confirmed (`confirm_over_budget`); the override is logged.
+        `files`: files and pictures sent with the message ({name, data (base64)}, hub/attachments.py).
         """
         if conversation_id in self._runs:
             raise GatewayError("this conversation already has a run in progress")
@@ -166,12 +170,13 @@ class ChatService:
             await self._check_cloud(conversation_id)
         if model["prices"]:  # local models are free and never held back
             await self._check_budgets(model_id, confirm_over_budget, client_id)
-        user_blocks = [{"type": "text", "text": text}]
+        sent = await self._attached_files(model, files or [])
+        user_blocks = [*([{"type": "text", "text": text}] if text.strip() or not sent else []), *sent]
 
         def write(conn):
             title = None
             if not store.get_title(conn, conversation_id):  # an untitled chat is named after its first message
-                title = _title_from(text)
+                title = _title_from(text if text.strip() else ", ".join(b["name"] for b in sent))
                 store.set_title(conn, conversation_id, title)
             return store.add_message(conn, conversation_id, "user", user_blocks), title
 
@@ -186,11 +191,43 @@ class ChatService:
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
         if agent:
+            if sent:  # Claude Code reads the files itself, from where they are put for it
+                text = await asyncio.to_thread(self._files_for_agent, conversation_id, user_msg.id, text, sent)
             task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id))
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
         task.add_done_callback(lambda t: t.exception())  # surface a crash to the loop's handler
         return user_msg.to_json()
+
+    async def _attached_files(self, model: dict, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The blocks of the files sent with a message - refused (GatewayError) when one cannot be read, or when
+        the model, as its settings say, does not see pictures."""
+        if not files:
+            return []
+        if self.blobs is None:
+            raise GatewayError("files are not kept in this hub")
+        try:
+            found = await asyncio.to_thread(attachments.blocks, self.blobs, files)
+        except attachments.AttachmentError as exc:
+            raise GatewayError(str(exc)) from None
+        sees = (model.get("capabilities") or {}).get("vision")
+        if attachments.has_images(found) and model["provider"] != CLAUDE_CODE and sees is False:
+            raise GatewayError(f"«{model['name']}» не видит картинки: выберите модель со зрением — или отметьте "
+                               "«картинки» в настройке модели, если она их видит")  # fmt: skip
+        return found
+
+    def _files_for_agent(self, conversation_id: str, message_id: int, text: str, sent: list[dict[str, Any]]) -> str:
+        """Claude Code's message with the files: put in a folder of the chat, their paths said (blocking)."""
+        folder = self.blobs.parent / "attachments" / conversation_id / str(message_id)  # type: ignore[union-attr]
+        folder.mkdir(parents=True, exist_ok=True)
+        paths = []
+        for block in sent:
+            data = attachments.load(self.blobs, block["blob"]) or b""  # type: ignore[arg-type]
+            target = folder / (Path(block["name"]).name or "file")
+            target.write_bytes(data)
+            paths.append(str(target))
+        listed = "\n".join(f"- {p}" for p in paths)
+        return (f"{text}\n\n" if text.strip() else "") + f"Files sent with this message (read them):\n{listed}"
 
     async def _check_budgets(self, model_id: str, confirmed: bool, client_id: str | None) -> None:
         over = await self._db.acall(lambda conn: budgets.reached(conn, model_id))
@@ -404,7 +441,7 @@ class ChatService:
                 for notice in self.autonomy.take_notices(conversation_id):
                     await self._hub_note(conversation_id, notice)
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
-            prompt = _to_prompt(history, cloud=cloud)
+            prompt = _to_prompt(history, cloud=cloud, blobs=self.blobs)
             if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
                 prompt = [{"role": "system", "content": system}, *prompt]
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
@@ -1256,7 +1293,8 @@ def _linked_ids(ids: set[str], all_links: list[dict[str, Any]]) -> list[str]:
     )  # fmt: skip
 
 
-def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False) -> list[dict[str, Any]]:
+def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: Path | None = None
+               ) -> list[dict[str, Any]]:  # fmt: skip
     """The conversation as OpenAI-shape {role, content}: visible text only, reasoning left out (D14).
 
     An assistant turn also carries the provider's message as received, so that provider can replay its own
@@ -1301,9 +1339,13 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False) -> list[
             for b in message.content
             if b.get("type") == "tool_call"
         ]
+        if message.role == "user":  # with the files sent along: their text, their pictures
+            text = attachments.prompt_text(message.content)
         if not text and message.role != "user" and not calls:
             continue
         entry: dict[str, Any] = {"role": message.role, "content": text}
+        if message.role == "user" and attachments.has_images(message.content):
+            entry["images"] = attachments.images(blobs, message.content)
         if calls:
             entry["tool_calls"] = calls
         if message.provider_raw is not None and message.model_id:

@@ -368,9 +368,12 @@ class HubClient:
     def delete_conversation(self, conversation_id: str) -> None:
         self._call("DELETE", f"/v1/conversations/{conversation_id}")
 
-    def send(self, conversation_id: str, text: str, model_id: str, effort: str, *, confirm_over_budget=False) -> dict:
+    def send(self, conversation_id: str, text: str, model_id: str, effort: str, *, confirm_over_budget=False,
+             files: list[dict] | None = None) -> dict:  # fmt: skip
         body = {"content": text, "model_id": model_id, "effort": effort, "confirm_over_budget": confirm_over_budget}
-        return self._call("POST", f"/v1/conversations/{conversation_id}/messages", body)
+        if files:  # files and pictures sent with it: {name, data (base64)}
+            body["files"] = files
+        return self._call("POST", f"/v1/conversations/{conversation_id}/messages", body, timeout=120 if files else None)
 
     def cancel(self, conversation_id: str) -> bool:
         return self._call("POST", f"/v1/conversations/{conversation_id}/cancel")["cancelled"]

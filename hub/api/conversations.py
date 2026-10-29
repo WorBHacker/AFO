@@ -31,11 +31,17 @@ class ConversationPatch(BaseModel):
     title: str = Field(max_length=200)
 
 
+class SentFile(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    data: str  # the file's bytes, base64
+
+
 class SendMessage(BaseModel):
-    content: str = Field(min_length=1)
+    content: str = ""  # may be empty when files go with it
     model_id: str = Field(min_length=1)
     effort: str = DEFAULT_EFFORT
     confirm_over_budget: bool = False  # the user saw that a budget is used up and sends anyway
+    files: list[SentFile] = Field(default_factory=list)  # files and pictures sent with it (2026-10-29)
 
 
 @router.get("/conversations")
@@ -182,6 +188,8 @@ async def send_message(
 ) -> dict:
     if body.effort not in EFFORTS:
         raise HTTPException(status_code=422, detail=f"effort must be one of {sorted(EFFORTS)}")
+    if not body.content.strip() and not body.files:
+        raise HTTPException(status_code=422, detail="an empty message: write something or send a file")
     exists = await request.app.state.db.acall(lambda conn: store.conversation_exists(conn, conversation_id))
     if not exists:
         raise HTTPException(status_code=404, detail="no such conversation")
@@ -193,6 +201,7 @@ async def send_message(
             effort=body.effort,
             client_id=client.id,
             confirm_over_budget=body.confirm_over_budget,
+            files=[f.model_dump() for f in body.files],
         )
     except BudgetReached as exc:
         detail = {

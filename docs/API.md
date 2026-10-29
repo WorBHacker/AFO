@@ -182,7 +182,7 @@
 | PUT | `/v1/conversations/{conversation_id}/projects` | только окно | The projects this chat works with (D27): its tools reach only these, its prompt describes them. | тело `{project_ids: list[str]}` |
 | PATCH | `/v1/conversations/{conversation_id}` | токен | `rename_conversation()` | тело `{title: str}` |
 | DELETE | `/v1/conversations/{conversation_id}` | токен | `delete_conversation()` |  |
-| POST | `/v1/conversations/{conversation_id}/messages` | токен | `send_message()` | тело `{content: str, model_id: str, effort: str = 'medium', confirm_over_budget: bool = False}` |
+| POST | `/v1/conversations/{conversation_id}/messages` | токен | `send_message()` | тело `{content: str = '', model_id: str, effort: str = 'medium', confirm_over_budget: bool = False, files: list[SentFile]}` |
 | POST | `/v1/conversations/{conversation_id}/cancel` | токен | `cancel_run()` |  |
 
 ### goals

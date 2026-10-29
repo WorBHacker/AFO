@@ -2,6 +2,7 @@
 younger than the term needs them, the screen snapshots and the terminal logs go past it, every kind stays within its
 size (the oldest first); the limits are the user's, through the API and the window."""
 
+import json
 import os
 import time
 
@@ -77,18 +78,37 @@ def test_screens_and_logs_go_past_the_term_and_over_the_size(tmp_path):
                                 " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"))  # fmt: skip
     aged(tmp_path / "snapshots" / "x", 1)
     removed = db.call(lambda c: retention.prune_all(c, tmp_path))
-    assert removed == {"snapshots": 0, "screens": 0, "terminals": 1}  # the user's limits: 90 days by default
+    assert removed == {"snapshots": 0, "screens": 0, "terminals": 1, "files": 0, "copies": 0}  # 90 days by default
     used = retention.usage(tmp_path)
     assert used["snapshots"] == {"bytes": 100, "files": 1} and used["terminals"]["files"] == 0
+    db.close()
+
+
+def test_files_sent_with_messages_stay_while_a_message_names_them(tmp_path):
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    named, orphan, fresh = "a" * 64, "b" * 64, "c" * 64
+    for name, days in ((named, 400), (orphan, 400), (fresh, 1)):
+        aged(tmp_path / "blobs" / name, days)
+    db.call(lambda c: c.execute("INSERT INTO conversations (id, kind) VALUES ('c1', 'chat')"))
+    content = json.dumps([{"type": "image", "name": "x.png", "media_type": "image/png", "blob": named}])
+    db.call(lambda c: c.execute("INSERT INTO messages (conversation_id, seq, role, content, created_at) VALUES"
+                                " ('c1', 1, 'user', ?, '2025-01-01T00:00:00Z')", (content,)))  # fmt: skip
+    copy = aged(tmp_path / "attachments" / "c1" / "7" / "plan.txt", 400)
+    pasted = aged(tmp_path / "pasted" / "картинка.png", 400)
+    removed = db.call(lambda c: retention.prune_all(c, tmp_path))
+    assert removed["files"] == 1 and removed["copies"] == 2  # the orphan, old; the old copies
+    assert sorted(p.name for p in (tmp_path / "blobs").iterdir()) == [named, fresh]
+    assert not copy.exists() and not pasted.exists() and not (tmp_path / "attachments" / "c1").exists()
     db.close()
 
 
 def test_the_api_reads_sets_and_prunes(hub):  # noqa: F811
     found = hub.get("/v1/support/retention").json()
     assert (found["days"], found["max_gb"]) == (90, 2.0) and set(found["usage"]) == {"snapshots", "screens",
-                                                                                      "terminals"}  # fmt: skip
+                                                                                      "terminals", "files"}  # fmt: skip
     assert hub.put("/v1/support/retention", json={"days": 2, "max_gb": 1}).status_code == 422
     saved = hub.put("/v1/support/retention", json={"days": 30, "max_gb": 0.5}).json()
     assert (saved["days"], saved["max_gb"]) == (30, 0.5)
     pruned = hub.post("/v1/support/retention/prune").json()
-    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals"}
+    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals", "files", "copies"}

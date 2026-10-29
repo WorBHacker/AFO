@@ -1,7 +1,8 @@
 """What the hub keeps on disk, within D30's limits (2026-10-28; Q4's default size): the files before and after the
 models' changes (data/snapshots, by hash), the agent's screen snapshots (data/computer) and the terminals' logs
 (data/terminals, hub/terminals.py) - each kind kept `days` and within `max_gb`, the oldest going first. Conversations,
-runs, events and spending are kept always (D30).
+runs, events and spending are kept always (D30) - and so are the files and pictures their messages name
+(data/blobs); working copies of sent files (data/attachments, data/pasted) go like the snapshots.
 
 The limits are the user's (`settings` row "retention", the window's «Настройки → Хаб → Хранение»); the hub prunes at
 its start and every PRUNE_EVERY_S. A snapshot still needed by a change younger than `days` stays; when it goes, the
@@ -113,6 +114,37 @@ def prune_screens(folder: Path, *, days: int, max_bytes: int, now: float | None 
     return removed
 
 
+def prune_blobs(conn: sqlite3.Connection, folder: Path, *, days: int, now: float | None = None) -> int:
+    """Files and pictures sent with messages (data/blobs): kept while a message names them - conversations are kept
+    always (D30), and a picture goes with every request of its chat; one no message names (a send that was refused,
+    a deleted chat) goes after `days`."""
+    now = time.time() if now is None else now
+    named: set[str] = set()
+    for (content,) in conn.execute("SELECT content FROM messages WHERE content LIKE '%\"blob\"%'"):
+        with contextlib.suppress(ValueError, TypeError):
+            named |= {b["blob"] for b in json.loads(content) if isinstance(b, dict) and b.get("blob")}
+    removed = 0
+    for path, _size, mtime in _files(folder, "*"):
+        if path.name not in named and mtime < now - days * 86400:
+            with contextlib.suppress(OSError):
+                path.unlink()
+                removed += 1
+    return removed
+
+
+def prune_copies(folder: Path, pattern: str, *, days: int, max_bytes: int, now: float | None = None) -> int:
+    """Working copies of sent files - Claude Code's (data/attachments/<chat>/<message>/...), the window's pasted
+    pictures (data/pasted): kept `days` and within `max_bytes`; empty folders go too."""
+    now = time.time() if now is None else now
+    removed = _thin(_files(folder, pattern), now - days * 86400, max_bytes)
+    if folder.is_dir():
+        for path in sorted(folder.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            with contextlib.suppress(OSError):
+                if path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+    return removed
+
+
 def _seconds(at: str | None) -> float:
     try:
         return datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
@@ -123,7 +155,7 @@ def _seconds(at: str | None) -> float:
 def usage(root: Path) -> dict[str, dict[str, int]]:
     """How much each kind takes now: {kind: {bytes, files}}."""
     kinds = {"snapshots": _files(root / "snapshots", "*"), "screens": _files(root / "computer", "*/*.png"),
-             "terminals": _files(root / "terminals", "*.log")}  # fmt: skip
+             "terminals": _files(root / "terminals", "*.log"), "files": _files(root / "blobs", "*")}  # fmt: skip
     return {kind: {"bytes": sum(f[1] for f in found), "files": len(found)} for kind, found in kinds.items()}
 
 
@@ -136,6 +168,9 @@ def prune_all(conn: sqlite3.Connection, root: Path, now: float | None = None) ->
         "snapshots": prune_snapshots(conn, root / "snapshots", days=days, max_bytes=max_bytes, now=now),
         "screens": prune_screens(root / "computer", days=days, max_bytes=max_bytes, now=now),
         "terminals": prune_logs(conn, root / "terminals", keep_days=days, max_total_bytes=max_bytes, now=moment),
+        "files": prune_blobs(conn, root / "blobs", days=days, now=now),
+        "copies": prune_copies(root / "attachments", "*/*/*", days=days, max_bytes=max_bytes, now=now)
+        + prune_copies(root / "pasted", "*", days=days, max_bytes=max_bytes, now=now),
     }
 
 

@@ -57,7 +57,8 @@ CHAT_MODES = [
 
 def kept_text(usage: dict[str, dict[str, int]]) -> str:
     """What the hub keeps on disk now, by kind (D30): «снимки файлов 12 МБ · снимки экрана 40 МБ · …»."""
-    names = [("snapshots", "снимки файлов"), ("screens", "снимки экрана"), ("terminals", "журналы терминалов")]
+    names = [("snapshots", "снимки файлов"), ("screens", "снимки экрана"), ("terminals", "журналы терминалов"),
+             ("files", "файлы из чатов")]  # fmt: skip
     return " · ".join(f"{word} {mb((usage.get(kind) or {}).get('bytes', 0))}" for kind, word in names)
 
 
@@ -104,7 +105,9 @@ def is_local(models: dict[str, dict], model_id: str | None) -> bool:
 
 def user_row(message: dict[str, Any]) -> dict[str, Any]:
     text, _ = presenter.split_blocks(message["content"])
-    return {"key": f"m{message['id']}", "role": "user", "text": text, "html": page(render_plain(text))}
+    files = [{"name": b.get("name", ""), "picture": b["type"] == "image"}
+             for b in message["content"] if b.get("type") in ("image", "file")]  # fmt: skip
+    return {"key": f"m{message['id']}", "role": "user", "text": text, "html": page(render_plain(text)), "files": files}
 
 
 # the hub's word to the model between its turns (D40, D44): a line in the chat, its text on a click

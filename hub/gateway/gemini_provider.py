@@ -313,6 +313,9 @@ def to_wire(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, li
                     part["thoughtSignature"] = PLACEHOLDER_SIGNATURE
                 parts.append(part)
             add("model", parts)
+        elif message.get("images"):  # the pictures sent with it (2026-10-29)
+            add("user", [*({"inlineData": {"mimeType": i["media_type"], "data": i["data"]}} for i in message["images"]),
+                         {"text": message["content"] or ""}])  # fmt: skip
         elif message["content"]:
             add("user", [{"text": message["content"]}])
     return "\n\n".join(system_parts), turns

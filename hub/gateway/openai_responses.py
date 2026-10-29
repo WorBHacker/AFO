@@ -233,6 +233,11 @@ def to_input(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, l
             items += [{"type": "function_call", "call_id": c["id"], "name": c["name"],
                        "arguments": json.dumps(c["input"], ensure_ascii=False)}
                       for c in message.get("tool_calls") or []]  # fmt: skip
+        elif message.get("images"):  # the pictures sent with it (2026-10-29)
+            items.append({"role": "user", "content": [
+                {"type": "input_text", "text": message["content"] or ""},
+                *({"type": "input_image", "image_url": f"data:{i['media_type']};base64,{i['data']}"}
+                  for i in message["images"])]})  # fmt: skip
         elif message["content"]:
             items.append({"role": "user", "content": message["content"]})
     return "\n\n".join(instructions), items

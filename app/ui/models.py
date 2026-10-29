@@ -24,6 +24,7 @@ ROLES = [
     "title",  # an error card's plain words (10.6); the hub's note to the model (D44)
     "hint",
     "note",  # the hub's note: what it says, in short
+    "files",  # the files and pictures sent with the user's message
 ]
 TREE_ROLES = ["key", "name", "path", "depth", "dir", "open", "status", "size", "secret"]
 

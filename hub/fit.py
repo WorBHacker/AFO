@@ -31,6 +31,7 @@ import re
 from typing import Any
 
 CHARS_PER_TOKEN = 3.0
+IMAGE_TOKENS = 1200  # a picture sent with a message (models count 250 to 1600 for one)
 KEEP_TAIL = 8  # the last messages stay whole
 TOOL_MIN = 400  # a tool result shorter than this is not worth cutting
 TEXT_MAX = 2000  # an old text longer than this keeps its beginning and end
@@ -47,9 +48,13 @@ CUT = ("\n[… урезано, чтобы поместиться в контек
 
 
 def tokens(value: Any) -> int:
-    """About how many tokens a message (or the tool definitions) takes."""
+    """About how many tokens a message (or the tool definitions) takes; a picture sent with it counts as
+    IMAGE_TOKENS, not as the length of its base64."""
     if not value:
         return 0
+    if isinstance(value, dict) and value.get("images"):
+        rest = {k: v for k, v in value.items() if k != "images"}
+        return tokens(rest) + IMAGE_TOKENS * len(value["images"])
     return int(len(json.dumps(value, ensure_ascii=False, default=str)) / CHARS_PER_TOKEN) + 4
 
 

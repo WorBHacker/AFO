@@ -6,10 +6,12 @@ events (EventThread). Streamed deltas are kept for every chat, so switching chat
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
@@ -87,6 +89,25 @@ class LiveRun:
 
 
 SIDEBAR_WIDTH, SIDEBAR_MIN, SIDEBAR_MAX = 264, 200, 560  # the sidebar: as it was, and how far it may go
+MAX_FILES, MAX_FILE_BYTES = 10, 20 * 1024 * 1024  # with one message, as the hub takes them (hub/attachments.py)
+PICTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def file_size(size: int) -> str:
+    """«840 Б», «12 КБ», «1,4 МБ»."""
+    if size < 1024:
+        return f"{size} Б"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.0f} КБ"
+    return f"{size / (1024 * 1024):.1f} МБ".replace(".", ",")
+
+
+def read_files(files: list[dict[str, Any]]) -> list[dict[str, str]] | None:
+    """The files for the hub: {name, data (base64)} (blocking: off the window's thread)."""
+    if not files:
+        return None
+    return [{"name": f["name"], "data": base64.b64encode(Path(f["path"]).read_bytes()).decode("ascii")}
+            for f in files]  # fmt: skip
 
 
 class Controller(QObject):
@@ -95,6 +116,7 @@ class Controller(QObject):
     headerChanged = Signal()  # its title or the line under it: not a switch, the view keeps its place
     modelChanged = Signal()
     effortChanged = Signal()
+    attachmentsChanged = Signal()  # the files going with the next message
     busyChanged = Signal()
     hubChanged = Signal()
     statusChanged = Signal()
@@ -175,6 +197,8 @@ class Controller(QObject):
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
         self._context_rows: list[dict[str, Any]] = []
         self._chat_ask: dict[str, Any] = {}  # the open chat's question waiting for the user: {id, question, options}
+        self._files: list[dict[str, Any]] = []  # files for the next message: {path, name, size, picture}
+        self.modelChanged.connect(self.attachmentsChanged)  # «sees pictures?» is the model's
         self._project_chat = False  # «Проекты»: the open session in the main area instead of the project's overview
         self._new_home = ""  # a session not made yet: its project (it is made with its first message)
         self.modelChanged.connect(self.chatProjectsChanged)  # a cloud model sees local-only projects by name
@@ -1230,6 +1254,73 @@ class Controller(QObject):
 
     # ================= sending =================
 
+    # ---------- files and pictures with the message (2026-10-29, the user's word) ----------
+
+    @Property(list, notify=attachmentsChanged)
+    def attachments(self) -> list:
+        return [{"name": f["name"], "size": file_size(f["size"]), "picture": f["picture"]} for f in self._files]
+
+    @Property(str, notify=attachmentsChanged)
+    def attachWarning(self) -> str:
+        """A picture for a model whose settings say it does not see pictures: the hub would refuse it."""
+        model = self.models.get(self._model_id) or {}
+        sees = (model.get("capabilities") or {}).get("vision")
+        if any(f["picture"] for f in self._files) and model.get("provider") != "claude-code" and sees is False:
+            return f"«{model.get('name') or self._model_id}» не видит картинки — выберите модель со зрением"
+        return ""
+
+    def _set_files(self, files: list[dict[str, Any]]) -> None:
+        self._files = files
+        self.attachmentsChanged.emit()
+
+    @Slot(list)
+    def attachFiles(self, urls: list) -> None:
+        """Files chosen in the dialog or dropped on the composer (file:// URLs or paths)."""
+        files = list(self._files)
+        for url in urls:
+            text = url.toString() if isinstance(url, QUrl) else str(url)
+            path = Path(QUrl(text).toLocalFile() if text.startswith("file:") else text)
+            if not path.is_file():
+                continue
+            size = path.stat().st_size
+            if len(files) >= MAX_FILES:
+                self.show_error(f"Не больше {MAX_FILES} файлов в одном сообщении")
+                break
+            if size > MAX_FILE_BYTES:
+                self.show_error(f"«{path.name}» больше {MAX_FILE_BYTES // (1024 * 1024)} МБ — такой не отправить")
+                continue
+            if any(f["path"] == str(path) for f in files):
+                continue
+            files.append({"path": str(path), "name": path.name, "size": size,
+                          "picture": path.suffix.lower() in PICTURE_SUFFIXES})  # fmt: skip
+        self._set_files(files)
+
+    @Slot(int)
+    def removeAttachment(self, index: int) -> None:
+        if 0 <= index < len(self._files):
+            self._set_files([f for i, f in enumerate(self._files) if i != index])
+
+    @Slot(result=bool)
+    def pasteImage(self) -> bool:
+        """Ctrl+V in the composer: a picture on the clipboard (a screenshot) or files copied in Explorer go with
+        the message; plain text is pasted as usual (False)."""
+        clipboard = QGuiApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime is not None and mime.hasUrls() and all(u.isLocalFile() for u in mime.urls()):
+            self.attachFiles([u.toLocalFile() for u in mime.urls()])
+            return True
+        image = clipboard.image()
+        if image.isNull():
+            return False
+        folder = self.paths.root / "pasted"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"картинка-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        if not image.save(str(path), "PNG"):
+            self.show_error("Картинка из буфера не сохранилась")
+            return True
+        self.attachFiles([str(path)])
+        return True
+
     @Slot(str)
     def send(self, text: str) -> None:
         if self._chat_ask.get("id") and text.strip():  # the model asked: these words are the answer
@@ -1246,7 +1337,7 @@ class Controller(QObject):
             self.stop()
             return
         text = text.strip()
-        if not text or self.client is None:
+        if (not text and not self._files) or self.client is None:
             if text:
                 self.draftRestored.emit(text)
             return
@@ -1256,8 +1347,12 @@ class Controller(QObject):
             return
         self._send(text, self._model_id, self._effort, self.current)
 
-    def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False) -> None:
+    def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False,
+              sending: list[dict[str, Any]] | None = None) -> None:  # fmt: skip
         client = self.client
+        if sending is None:  # the files go with this message; back in the composer if it does not go out
+            sending = list(self._files)
+            self._set_files([])
         # @project attaches the project, @project/file also pins the file (D27) - before the message goes out, so
         # the context stored with it already has them
         ids, files = mentions.mentioned(text, self.projects.items)
@@ -1291,7 +1386,12 @@ class Controller(QObject):
                     client.set_context(conversation_id, **({"pinned": pinned} if pinned else {}),
                                        **({"refusal_vector": refusal} if refusal else {}),
                                        **({"mode": mode} if mode != "ask" else {}))  # fmt: skip
-                client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed)
+                client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed,
+                            files=read_files(sending))  # fmt: skip
+            except OSError as exc:  # a file gone or locked since it was chosen
+                error = HubError(f"файл не прочитался: {exc}")
+                error.conversation_id = conversation_id
+                raise error from exc
             except HubError as exc:
                 exc.conversation_id = conversation_id  # a chat made for this message: a retry goes there
                 raise
@@ -1301,6 +1401,8 @@ class Controller(QObject):
             if made:  # the chat made for a message that did not go out stays empty: remove it
                 self.bg.run(lambda: client.delete_conversation(made))
             self.draftRestored.emit(text)
+            if sending and not self._files:
+                self._set_files(sending)
 
         def failed(error: Exception) -> None:
             made = getattr(error, "conversation_id", None) if target is None else None
@@ -1310,7 +1412,7 @@ class Controller(QObject):
 
                     def decide(yes: bool) -> None:
                         if yes:
-                            self._send(text, model_id, effort, made or target, confirmed=True)
+                            self._send(text, model_id, effort, made or target, confirmed=True, sending=sending)
                         else:
                             give_up(made)
 

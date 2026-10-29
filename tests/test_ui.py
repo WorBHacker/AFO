@@ -959,12 +959,17 @@ class FakeClient:
             self.log.append(("create", home_project))
         return "c2"
 
-    def send(self, cid, text, model_id, effort, confirm_over_budget=False):
+    def goal(self, cid):  # a chat's goal (D44): none here
+        return {"goal": None, "checks": [], "steering": [], "checking": False}
+
+    def send(self, cid, text, model_id, effort, confirm_over_budget=False, files=None):
         if self.over_budget is not None and not (confirm_over_budget and self.over_budget):
             data = {"code": "budget_exceeded", "budgets": [REACHED], "can_confirm": self.over_budget}
             raise HubError("budget reached", code="budget_exceeded", data=data)
         self.sent.append((cid, text, model_id, effort, confirm_over_budget))
         self.log.append(("send", cid, text))
+        if files:
+            self.files_sent = files
         return {}
 
     def cancel(self, cid):
@@ -5237,7 +5242,8 @@ def test_what_the_hub_keeps_in_the_settings(qapp):
         wait_until(lambda: not app.bg.busy and app.retention)
         kept = app.retention
         assert (kept["days"], kept["maxGb"]) == ("90", "2")
-        assert kept["usage"] == "снимки файлов 12 МБ · снимки экрана 0 МБ · журналы терминалов 3,0 ГБ"
+        assert kept["usage"] == ("снимки файлов 12 МБ · снимки экрана 0 МБ · журналы терминалов 3,0 ГБ · "
+                                 "файлы из чатов 0 МБ")  # fmt: skip
         app.setRetention("90", "2")  # nothing changed: nothing sent
         app.setRetention("тридцать", "2")
         assert app.flashError and not [e for e in client.log if e[0] == "retention"]

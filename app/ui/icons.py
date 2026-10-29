@@ -38,6 +38,8 @@ PATHS = {
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     "target": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>'
     '<circle cx="12" cy="12" r="1.2" fill="{c}"/>',
+    "image": '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/>'
+    '<path d="m4.5 17.5 5-5 4 4 2-2 4 4"/>',
     "min": '<path d="M7 12h10"/>',
     "max": '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
     "download": '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',

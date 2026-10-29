@@ -268,6 +268,9 @@ def to_wire(
             blocks = replay_blocks(raw.get("content") or [])
         if not blocks and message["content"]:
             blocks = [{"type": "text", "text": message["content"]}]
+        if role == "user" and message.get("images"):  # the pictures sent with it, before its text (2026-10-29)
+            blocks = [{"type": "image", "source": {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
+                      for i in message["images"]] + blocks  # fmt: skip
         if role == "assistant" and message.get("tool_calls") and not any(b["type"] == "tool_use" for b in blocks):
             # another model's tool calls: Claude takes them as its own tool_use blocks
             blocks += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["input"]}

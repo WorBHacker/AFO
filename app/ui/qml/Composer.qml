@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // The input card: text that grows with what you type, the model and effort chips, send / stop.
 Item {
@@ -36,7 +37,7 @@ Item {
             return
         }
         if (!App.busyNow) {
-            if (message.trim() === "") return
+            if (message.trim() === "" && App.attachments.length === 0) return
             area.text = ""
         }
         App.send(message)
@@ -247,6 +248,12 @@ Item {
         }
     }
 
+    FileDialog {
+        id: fileDialog
+        title: "Файлы и картинки для модели"
+        fileMode: FileDialog.OpenFiles
+        onAccepted: App.attachFiles(selectedFiles)
+    }
     MenuPopup {
         id: modeMenu
         objectName: "chatModeMenu"
@@ -269,15 +276,95 @@ Item {
         x: (parent.width - composer.column) / 2
         y: (suggestion.visible ? suggestion.y + suggestion.height + 6 : (asked.visible ? asked.height + 10 : 4))
         width: composer.column
-        height: input.height + controls.height + 24
+        height: input.y + input.height + controls.height + 18
         radius: 8
         color: Theme.p.card
-        border.color: area.activeFocus ? Theme.p.hairline_strong : Theme.p.hairline
+        border.color: dropHere.containsDrag ? Theme.p.accent : area.activeFocus ? Theme.p.hairline_strong : Theme.p.hairline
+
+        // files dropped on the composer go with the next message (2026-10-29)
+        DropArea {
+            id: dropHere
+            anchors.fill: parent
+            onDropped: (drop) => { if (drop.hasUrls) App.attachFiles(drop.urls) }
+        }
+
+        // the files and pictures going with the next message
+        Column {
+            id: attached
+            objectName: "attachments"
+            visible: App.attachments.length > 0
+            x: 10
+            y: 8
+            width: parent.width - 20
+            spacing: 6
+            Flow {
+                width: parent.width
+                spacing: 6
+                Repeater {
+                    model: App.attachments
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+                        width: fileRow.implicitWidth + 12
+                        height: 28
+                        radius: 6
+                        color: Theme.p.item_hover
+                        border.color: Theme.p.hairline
+                        Row {
+                            id: fileRow
+                            x: 8
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 6
+                            Icon {
+                                name: modelData.picture ? "image" : "file"
+                                size: 14
+                                tint: Theme.p.text_soft
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: modelData.name
+                                width: Math.min(implicitWidth, 220)
+                                elide: Text.ElideMiddle
+                                color: Theme.p.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: modelData.size
+                                color: Theme.p.faint
+                                font.family: Theme.uiFont
+                                font.pixelSize: 11
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            IconButton {
+                                objectName: "removeAttachment_" + index
+                                implicitWidth: 20
+                                implicitHeight: 20
+                                iconName: "close"
+                                tip: "Не отправлять этот файл"
+                                anchors.verticalCenter: parent.verticalCenter
+                                onClicked: App.removeAttachment(index)
+                            }
+                        }
+                    }
+                }
+            }
+            Text {
+                visible: App.attachWarning !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: App.attachWarning
+                color: Theme.p.warn
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
 
         ScrollView {
             id: input
             x: 6
-            y: 6
+            y: attached.visible ? attached.y + attached.height + 2 : 6
             width: parent.width - 12
             height: Math.min(200, Math.max(40, area.implicitHeight))
             ScrollBar.vertical: ThinScrollBar {}
@@ -305,6 +392,10 @@ Item {
                 Timer { id: mentionsLook; interval: 0; onTriggered: Mentions.typed(area.text, area.cursorPosition) }
                 onActiveFocusChanged: if (!activeFocus) Mentions.close()
                 Keys.onPressed: (event) => {
+                    if (event.matches(StandardKey.Paste) && App.pasteImage()) {  // a picture or files: attached
+                        event.accepted = true
+                        return
+                    }
                     if (mentionMenu.visible) {  // the @-menu has the keys it needs
                         const count = Mentions.items.length
                         if (event.key === Qt.Key_Down || event.key === Qt.Key_Up) {
@@ -432,7 +523,15 @@ Item {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 1
-                spacing: 10
+                spacing: 6
+                IconButton {
+                    objectName: "attachButton"
+                    implicitWidth: 32
+                    implicitHeight: 32
+                    iconName: "clip"
+                    tip: "Приложить файлы или картинки — их можно и перетащить в поле, и вставить Ctrl+V"
+                    onClicked: fileDialog.open()
+                }
                 AbstractButton {
                     id: send
                     // stops the answer - unless the model asked and the input holds the user's answer to it, or the
@@ -442,7 +541,7 @@ Item {
                     width: 32
                     height: 32
                     hoverEnabled: true
-                    enabled: send.stops || area.text.trim() !== ""
+                    enabled: send.stops || area.text.trim() !== "" || App.attachments.length > 0
                     onClicked: composer.submit()
                     background: Rectangle {
                         radius: 6

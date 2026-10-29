@@ -314,6 +314,8 @@ def wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             text = f"<context>\n{message['content']}\n</context>"
             if out[-1]["role"] == "user" and isinstance(out[-1]["content"], str):
                 out[-1] = {**out[-1], "content": out[-1]["content"] + "\n\n" + text}
+            elif out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):  # a turn with pictures
+                out[-1] = {**out[-1], "content": [*out[-1]["content"], {"type": "text", "text": text}]}
             else:
                 out.append({"role": "user", "content": text})
             continue
@@ -321,11 +323,19 @@ def wire_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def data_url(image: dict[str, str]) -> str:
+    """A picture of a prompt message ({media_type, data}) as a data: URL."""
+    return f"data:{image['media_type']};base64,{image['data']}"
+
+
 def to_wire(message: dict[str, Any]) -> dict[str, Any]:
     """One hub prompt message as the OpenAI chat API takes it."""
     if message["role"] == "tool":
         return {"role": "tool", "tool_call_id": message["tool_call_id"], "content": message["content"]}
     wire: dict[str, Any] = {"role": message["role"], "content": message["content"]}
+    if message["role"] == "user" and message.get("images"):  # the pictures sent with it (2026-10-29)
+        pictures = [{"type": "image_url", "image_url": {"url": data_url(i)}} for i in message["images"]]
+        wire["content"] = [{"type": "text", "text": message["content"] or ""}, *pictures]
     if message.get("tool_calls"):
         wire["content"] = message["content"] or None
         wire["tool_calls"] = [
