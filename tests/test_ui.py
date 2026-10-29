@@ -5149,6 +5149,49 @@ def test_a_projects_sessions_stay_in_projects(qapp):
         quick.close()
 
 
+def test_a_file_opens_over_the_projects_session(qapp):
+    """2026-10-29 (the user's word: «почему нельзя открыть файлы внутри проекта»): with a project's session open, a
+    file chosen in the tree or found by search loaded behind the session and never showed. It shows now; «Обзор
+    проекта» shows the overview, the open file closed."""
+    from datetime import UTC, datetime
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        plain = client.conversations
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        session = {"id": "s1", "title": "Сеанс", "updated_at": now, "home_project": "p1"}
+        client.conversations = lambda: {**plain(), "conversations": [session, *plain()["conversations"]]}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.conversations and app.projects.items)
+        app.projects.openProject("p1")
+        app.setMode("projects")
+        wait_until(lambda: not app.bg.busy and app.projects.currentId == "p1")
+        app.openProjectChat("s1")
+        wait_until(lambda: not app.bg.busy and app.showProjectChat)
+        code = quick.window.findChild(QObject, "codeView")
+        app.projects.openFile("README.md", False)  # a click in the tree
+        wait_until(lambda: not app.bg.busy and app.projects.openPath == "README.md")
+        assert not app.showProjectChat and app.mode == "projects" and code.property("visible")
+        app.openProjectChat("s1")
+        wait_until(lambda: not app.bg.busy and app.showProjectChat)
+        app.projects.openFileAt("src/app.py", 2)  # a search result
+        wait_until(lambda: not app.bg.busy and app.projects.openPath == "src/app.py")
+        assert not app.showProjectChat and code.property("visible")
+        app.showProjectOverview()  # «Обзор проекта»: the overview, not the file
+        assert app.projects.openPath == "" and quick.window.findChild(QObject, "projectOverview").property("visible")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_sidebar_is_as_wide_as_dragged(qapp):
     """2026-10-28 (the user's word): the sidebar's right edge moves; its width is kept, within limits; a double click
     gives the usual width back."""

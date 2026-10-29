@@ -287,8 +287,16 @@ class Controller(QObject):
 
     @Slot()
     def showProjectOverview(self) -> None:
-        self._project_chat = False
-        self.projectChatChanged.emit()
+        """«Обзор проекта»: the overview - an open file closes."""
+        self.projects.closeFile()
+        self.show_project_view()
+
+    def show_project_view(self) -> None:
+        """The project's view (its overview or the open file) in the main area instead of a session: a file chosen
+        in the tree or found by search shows (2026-10-29: it opened behind the session, unseen)."""
+        if self._project_chat:
+            self._project_chat = False
+            self.projectChatChanged.emit()
 
     def _project_switched(self) -> None:
         """Another project chosen: its overview, unless the open session is its own."""

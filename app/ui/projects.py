@@ -355,8 +355,8 @@ class Projects(QObject):
         self.load_notes()
         self.load_links()
         self.load_changes()
-        if self._file:
-            self.openFile(self._file["path"], bool(self._file.get("diffMode")))
+        if self._file:  # read again where it is shown: a session in front stays in front
+            self._load_file(self._file["path"], bool(self._file.get("diffMode")))
 
     def reload_tree(self) -> None:
         pid = self.current["id"]
@@ -448,7 +448,7 @@ class Projects(QObject):
         path = self._file.get("path")
         if path and before.get(path) != self._marks.get(path):
             if self._file.get("diffMode"):  # e.g. staged: the diff against the index is another one now
-                self.openFile(path, True)
+                self._load_file(path, True)
             else:
                 mark = self._marks.get(path, "")
                 self._file = {**self._file, "mark": mark, "hasDiff": bool(mark) and mark != "•"}
@@ -464,6 +464,7 @@ class Projects(QObject):
 
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
+        self.app.show_project_view()  # over a session of the project, the file shows (2026-10-29)
         if self._goto is not None and self._goto[0] != path:
             self._goto = None  # a file opened from the tree starts at its top
         self._load_file(path, diff)
@@ -660,6 +661,7 @@ class Projects(QObject):
     @Slot(str, int)
     def openFileAt(self, path: str, line: int) -> None:
         """Opens the file (or keeps it open) and shows the line."""
+        self.app.show_project_view()
         self._goto_seq += 1
         self._goto = (path, line)
         if self._file.get("path") == path and not self._file.get("diffMode") and self._file_data is not None:
