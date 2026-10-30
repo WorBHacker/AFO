@@ -273,7 +273,7 @@ class TelegramBot:
             return
         if kind == "goal.status":  # a chat's goal met, or waiting for the human (D44): what to do is in the window
             head = GOAL_WORDS.get(payload.get("status") or "")
-            if head:
+            if head and not payload.get("proving"):  # a run of the proving ground (D45): not the person's goal
                 goal = payload.get("goal") or {}
                 text = (f"<b>{head}</b>\n{html.escape(str(goal.get('objective') or ''))}\n"
                         f"<i>{html.escape(str(payload.get('detail') or ''))}</i>")  # fmt: skip

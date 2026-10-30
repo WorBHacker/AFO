@@ -93,7 +93,9 @@ def add_project(conn: sqlite3.Connection, path: str, name: str = "") -> Project:
 
 
 def list_projects(conn: sqlite3.Connection) -> list[Project]:
-    return [_row(r) for r in conn.execute("SELECT * FROM projects ORDER BY name COLLATE NOCASE").fetchall()]
+    """The user's projects - not the proving ground's copies (D45: they live in their runs, by id)."""
+    return [_row(r) for r in conn.execute(
+        "SELECT * FROM projects WHERE scratch = 0 ORDER BY name COLLATE NOCASE").fetchall()]  # fmt: skip
 
 
 def get_project(conn: sqlite3.Connection, project_id: str) -> Project:

@@ -1,0 +1,10 @@
+{
+  "title": "Почини FizzBuzz",
+  "level": "лёгкое",
+  "about": "Функция возвращает не то для чисел, кратных 15. Нужно найти ошибку по тестам и не трогать тесты.",
+  "objective": "В fizzbuzz.py функция fizzbuzz работает неверно. Почини её так, чтобы тесты test_fizzbuzz.py проходили. Python запускай так: {python}",
+  "criteria": [{"command": "{python} -m unittest -q", "expected_exit_code": 0}],
+  "constraints": ["Не менять test_fizzbuzz.py"],
+  "limits": {"max_turns": 6, "max_minutes": 10},
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "FizzBuzz верен на числах от 1 до 100, тесты не тронуты"}]
+}

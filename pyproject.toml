@@ -29,6 +29,7 @@ dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's 
 include = ["hub*", "app*", "common*"]
 
 [tool.setuptools.package-data]
+"hub" = ["model_catalog.json", "proving_tasks/*/task.json", "proving_tasks/*/files/**/*", "proving_tasks/*/exam/*"]
 "hub.db" = ["migrations/*.sql"]
 "app.ui" = ["qml/*.qml", "icons/*.svg", "icons/*.txt", "fonts/*.ttf", "fonts/*.txt"]
 

@@ -1,0 +1,10 @@
+2026-10-01 08:00:00 INFO service started
+2026-10-01 08:00:05 ERROR E404 page not found
+2026-10-01 08:01:10 WARN slow answer
+2026-10-01 08:02:00 ERROR E500 internal error
+2026-10-01 08:02:01 ERROR E404 page not found
+
+2026-10-01 08:03:30 error E500 lower case: not an ERROR line
+2026-10-01 08:04:00 ERROR
+2026-10-01 08:05:00 ERROR X1 not a code
+2026-10-01 08:06:00	ERROR	E500	tab separated

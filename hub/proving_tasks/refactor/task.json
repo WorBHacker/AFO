@@ -1,0 +1,11 @@
+{
+  "title": "Вынеси повторяющийся код",
+  "level": "среднее",
+  "about": "Рефакторинг: вынести расчёт цены с НДС в функцию и ничего не сломать. Скрытая проверка смотрит в сам код и сверяет поведение.",
+  "objective": "В inventory.py расчёт цены с НДС (умножение на 1.2 и округление до копеек) повторяется в трёх функциях. Вынеси его в функцию price_with_tax(price) и используй её во всех трёх местах. Поведение не должно измениться, тесты test_inventory.py должны проходить, тесты не меняй. Python: {python}",
+  "criteria": [{"command": "{python} -m unittest -q", "expected_exit_code": 0},
+               {"command": "{python} check_refactor.py", "expected_exit_code": 0}],
+  "constraints": ["Не менять test_inventory.py и check_refactor.py"],
+  "limits": {"max_turns": 8, "max_minutes": 15},
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "одна функция вместо трёх копий, поведение то же, тесты не тронуты"}]
+}

@@ -170,6 +170,7 @@ def test_a_chats_goal_met_or_waiting_goes_to_the_phone(bot):
         await tg._send("goal.status", {"status": "achieved", "detail": "цель достигнута", "goal": goal})
         await tg._send("goal.status", {"status": "blocked", "detail": "проверяющая модель не ответила", "goal": goal})
         await tg._send("goal.status", {"status": "paused", "detail": "на паузе (app)", "goal": goal})  # not sent
+        await tg._send("goal.status", {"status": "achieved", "detail": "", "goal": goal, "proving": True})  # a run's
 
     asyncio.run(scenario())
     texts = [body["text"] for body in api.sent()]

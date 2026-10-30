@@ -112,6 +112,11 @@ READING = frozenset(
     }
 )
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
+# a run of the proving ground (D45): nobody watches it - what would be asked is refused, a question answered at once
+PROVING_NO = ("not done: on the proving ground nobody approves this (it is destructive, goes to the network, or "
+              "comes after reading the web) - do the task another way")  # fmt: skip
+PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the task and the files, and go on; "
+                 "say in your answer what you assumed")  # fmt: skip
 
 
 class ChatService:
@@ -137,6 +142,7 @@ class ChatService:
         self.sandboxes: Path | None = None  # data/worktrees: «Песочница» chats write there (D17, 9.4b)
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
+        self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
 
     @property
     def busy(self) -> list[str]:
@@ -196,7 +202,7 @@ class ChatService:
             task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id))
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
-        task.add_done_callback(lambda t: t.exception())  # surface a crash to the loop's handler
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # surface a crash to the loop's handler
         return user_msg.to_json()
 
     async def _attached_files(self, model: dict, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -281,7 +287,7 @@ class ChatService:
                 conversation_id, model, effort, cancel, client_id, limits=limits, outcome=Outcome(), on_end=on_end
             )
         )
-        task.add_done_callback(lambda t: t.exception())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     async def go_on(
         self,
@@ -316,7 +322,7 @@ class ChatService:
             self._runs.pop(conversation_id, None)
             raise
         task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
-        task.add_done_callback(lambda t: t.exception())
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     async def tool_projects(self, conversation_id: str) -> list:
         """The chat's projects as its tools see them: in «Песочница» a git project is its worktree (D17, 9.4b)."""
@@ -363,7 +369,8 @@ class ChatService:
                 if self.autonomy is not None:
                     await self.autonomy.expire_all(conversation_id)  # its questions too: nobody waits for them now
                 await on_end(outcome)
-            elif self.goals is not None:  # a chat's turn: its goal checks it and goes on, or not (D44)
+            elif self.goals is not None and not _stopping():  # a chat's turn: its goal checks it, goes on or not
+                # (D44) - not when the hub stops: the goal goes on after the restart
                 try:
                     await self.goals.turn_ended(conversation_id, outcome)
                 except Exception:
@@ -761,6 +768,8 @@ class ChatService:
             acting = not reading and not own
             if acting and self.autonomy is not None and await self.autonomy.needs_plan(conversation_id):
                 output, error = autonomous.PLAN_FIRST, True  # an autonomous run acts only after its plan (D40)
+            elif call["name"] == autonomous.ASK_USER["name"] and conversation_id in self.proving:
+                output, error = PROVING_ASKED, False  # nobody answers on the proving ground (D45)
             elif call["name"] in changes.WRITE_TOOL_NAMES:
                 output, error = await self._write_file(conversation_id, call, ctx, cancel)
             elif call["name"] == commands.RUN_COMMAND["name"]:
@@ -986,6 +995,8 @@ class ChatService:
     ) -> tuple[bool, str | None]:
         """Asks in the approval queue and waits - or stops waiting when the user stops the run. (True, approval id)
         when allowed; (False, what the model should read) otherwise."""
+        if conversation_id in self.proving:  # nobody watches a run of the proving ground to say yes (D45)
+            return False, PROVING_NO
         if self.approvals is None:
             return False, "not done: the hub has no approval queue to ask the user"
         asking = asyncio.create_task(self.approvals.ask(
@@ -1151,6 +1162,12 @@ class BudgetReached(GatewayError):
         super().__init__(f"budget reached: {names}")
         self.budgets = over
         self.can_confirm = can_confirm
+
+
+def _stopping() -> bool:
+    """This run's task is being cancelled - the hub stops."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 def _title_from(text: str) -> str:

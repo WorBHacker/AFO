@@ -60,6 +60,9 @@ MAX_CONSTRAINTS = 20
 CHECK_TIMEOUT_S = 300  # a criterion's command, by default
 TAIL_LINES = 30  # of a failed criterion's command, for the worker
 TITLE_CHARS = 48
+NO_JUDGE = "none"  # `judge_model_id` that says: no judge, not even the role's (the proving ground's exams, D45)
+REGRESSED_AGAIN = "второй раз подряд потеряно то, что работало (тесты или ограничения)"
+ASK_PERSON = ": решите, как быть, и продолжите или снимите цель"  # left out of an exam's table (D45)
 
 
 class GoalError(ValueError):
@@ -183,7 +186,7 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
     limits = _limits(data.get("limits"), DEFAULTS)
     # the judge (11.2): the one named, else the role «Проверка цели» (read again at each check while none is named)
     named = str(data.get("judge_model_id") or "") or None
-    judge_id = named or judge.role_model(conn)
+    judge_id = None if named == NO_JUDGE else named or judge.role_model(conn)
     if judge_id:  # said now, not after the first turn
         try:
             judge.check_model(conn, judge_id, _attached(conn, conversation_id))
@@ -636,8 +639,10 @@ class Goals:
             "UPDATE goals SET status = ?, detail = ?, updated_at = ?, ended_at = ? WHERE id = ?",
             (status, detail, now, now if ended else None, goal["id"])))  # fmt: skip
         changed = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
+        # a run of the proving ground (D45) is not the person's goal: its end is told by the exam, not by a notice
         await self._bus.publish("goal.status", {"conversation_id": goal["conversation_id"], "goal_id": goal["id"],
-                                                "status": status, "detail": detail, "goal": changed})  # fmt: skip
+                                                "status": status, "detail": detail, "goal": changed,
+                                                "proving": goal["conversation_id"] in self._chat.proving})  # fmt: skip
         return changed
 
     # ---------- after a turn ----------
@@ -675,9 +680,7 @@ class Goals:
                 await self._checked(goal, "blocked", verdict, found, found["blocked"])
                 return
             if verdict == "REGRESSED" and await self._regressed_before(goal):
-                again = ("второй раз подряд потеряно то, что работало (тесты или ограничения): решите, как быть, и "
-                         "продолжите или снимите цель")  # fmt: skip
-                await self._checked(goal, "blocked", verdict, found, again)
+                await self._checked(goal, "blocked", verdict, found, REGRESSED_AGAIN + ASK_PERSON)
                 return
             share = used(goal)
             if goal["last_turn"] or share >= 1.0:
@@ -718,6 +721,8 @@ class Goals:
 
         def choose(conn):
             judge_id = goal["judge_model_id"] or judge.role_model(conn)  # the role may be chosen since
+            if judge_id == NO_JUDGE:  # the commands alone decide (an exam without a judge, D45)
+                judge_id = None
             if judge_id:
                 judge.check_model(conn, judge_id, projects)
             return judge_id, judge.last_words(conn, conversation_id)

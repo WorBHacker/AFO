@@ -1,0 +1,10 @@
+{
+  "title": "Отчёт по продажам",
+  "level": "лёгкое",
+  "about": "Посчитать суммы по регионам из CSV и записать JSON. Проверяется каждая цифра.",
+  "objective": "Посчитай по sales.csv сумму продаж (столбец amount) по каждому региону и запиши в report.json объект {\"регион\": сумма}, суммы округли до 2 знаков после запятой. Python, если нужен: {python}",
+  "criteria": [{"command": "if (Test-Path report.json) { exit 0 } else { exit 1 }", "expected_exit_code": 0}],
+  "constraints": ["Не менять sales.csv"],
+  "limits": {"max_turns": 5, "max_minutes": 10},
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в report.json ровно все регионы и верные суммы"}]
+}

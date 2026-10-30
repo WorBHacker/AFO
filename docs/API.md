@@ -199,6 +199,22 @@
 | DELETE | `/v1/conversations/{conversation_id}/goal` | только окно | The goal is given up; the turn running now finishes, no next one starts. |  |
 | POST | `/v1/conversations/{conversation_id}/goal/steer` | только окно | The user's word while the goal works: read at the start of the next turn, without stopping this one. | тело `{text: str}` |
 
+### proving
+
+/v1/proving - the proving ground and the models' exam (stage 12, D45): the tasks, a try of one with a model, exams of chosen tasks on chosen models with their table.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/proving/tasks` | токен | The proving ground's tasks, the easy ones first. |  |
+| POST | `/v1/proving/try` | только окно | One task for one model on a fresh copy: its chat (with the goal) is ready to watch. | тело `{task_id: str, model_id: str}` |
+| GET | `/v1/proving/runs` | токен | The tries («Попробовать»), the newest first. |  |
+| DELETE | `/v1/proving/runs/{run_id}` | только окно | A try gone, with its copy, chat and project. |  |
+| GET | `/v1/proving/exams` | токен | The exams, the newest first, each with its runs and its table per model. |  |
+| POST | `/v1/proving/exams` | только окно | Chosen tasks on chosen models, one run after another, each on its own copy. | тело `{model_ids: list[str], task_ids: list[str], judge: bool = False}` |
+| GET | `/v1/proving/exams/{exam_id}` | токен | An exam with its runs and its table per model. |  |
+| POST | `/v1/proving/exams/{exam_id}/stop` | только окно | The run going now ends; those waiting are skipped. |  |
+| DELETE | `/v1/proving/exams/{exam_id}` | только окно | An exam gone, with its runs' copies, chats and projects. |  |
+
 ### connections
 
 /v1/connections - API keys, tokens and addresses (D13) behind the user's password. The desktop app only.
@@ -489,7 +505,7 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
 | `goal.judging` | нет | `conversation_id`, `goal_id`, `model_id` | hub/goals.py |
 | `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
-| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal` | hub/goals.py |
+| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving` | hub/goals.py |
 | `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
 | `hub.shutdown_requested` | да | `by` | hub/api/system.py |
 | `hub.started` | да | `version`, `migrations_applied` | hub/server.py |
@@ -528,6 +544,9 @@ If the client reads too slowly its queue overflows and the hub closes with code 
 | `project.missing` | да | `project_id`, `name`, `path` | hub/watch.py |
 | `project.moved` | да | `project_id`, `name`, `from`, `to`, `project` | hub/watch.py |
 | `project.removed` | да | `id`, `name` | hub/api/projects.py |
+| `proving.deleted` | да | `exam_id`, `run_id` | hub/proving.py |
+| `proving.exam` | да | `exam` | hub/proving.py |
+| `proving.run` | да | `run` | hub/proving.py |
 | `rules.changed` | нет | `project_id` | hub/api/changes.py |
 | `run.answered` | да | `run_id`, `id`, `by` | hub/autonomous.py |
 | `run.finished` | да | `run` | hub/agents.py |

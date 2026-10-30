@@ -1,0 +1,10 @@
+{
+  "title": "README по коду",
+  "level": "среднее",
+  "about": "Описать программу командной строки по её коду. Скрытая проверка ищет в README каждый параметр, значения по умолчанию и пример запуска.",
+  "objective": "Напиши README.md для tool.py: что программа делает, как её запустить, все её параметры командной строки — с описанием и значением по умолчанию — и пример запуска. Запустить её можно так: {python} tool.py --help",
+  "criteria": [{"command": "if (Test-Path README.md) { exit 0 } else { exit 1 }", "expected_exit_code": 0}],
+  "constraints": ["Не менять tool.py"],
+  "limits": {"max_turns": 5, "max_minutes": 10},
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в README все параметры, значения по умолчанию, форматы и пример; tool.py не тронут"}]
+}

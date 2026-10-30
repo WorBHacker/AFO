@@ -43,6 +43,7 @@ from .api import (
     processes,
     programs,
     projects,
+    proving,
     sandbox,
     schedules,
     setup,
@@ -76,6 +77,7 @@ from .model_install import Installer
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import list_projects, set_path
+from .proving import ProvingGround
 from .retention import Keeper
 from .ripgrep import Fetcher
 from .schedule import Scheduler
@@ -140,6 +142,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         app.state.judge = Judge(db, bus, gateway, paths.snapshots)  # checks goals and agents' reports (D44, 11.2)
         app.state.goals = app.state.chat.goals = Goals(db, bus, app.state.chat, app.state.judge)  # D44, 11.1
+        app.state.proving = ProvingGround(db, bus, app.state.chat, app.state.goals, paths.root / "proving")  # D45
         app.state.autonomy.judge = app.state.judge
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token
         app.state.mail = app.state.chat.mail = MailTools(db, secrets_store)  # the user's mailbox (9.4b, Q21)
@@ -202,6 +205,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         resumed = await app.state.agents.start()
         if resumed:
             log.info("agent runs going on after a restart: %s", resumed)
+        if await app.state.proving.start():  # before the goals go on: the proving ground's do not
+            log.info("runs of the proving ground left going by the last hub are stopped")
         goals_on = asyncio.create_task(_resume_goals(app))  # once the catalog is read: their models must be known
         log.info("hub ready, app token in %s", token_file)
         try:
@@ -262,6 +267,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(sandbox.router)
     app.include_router(conversations.router)
     app.include_router(goals.router)
+    app.include_router(proving.router)
     app.include_router(connections.router)
     app.include_router(autostart_api.router)
     app.include_router(editor.router)

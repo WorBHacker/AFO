@@ -1,0 +1,10 @@
+{
+  "title": "Разбор журнала",
+  "level": "среднее",
+  "about": "Написать функцию по описанию. Видимые тесты простые, скрытые проверяют краевые случаи: пустые и кривые строки, лишние пробелы, CRLF.",
+  "objective": "Допиши функцию count_errors в logparse.py точно по её описанию (docstring) и проверь на app.log. Тесты test_logparse.py должны проходить, тесты не меняй. Python: {python}",
+  "criteria": [{"command": "{python} -m unittest -q", "expected_exit_code": 0}],
+  "constraints": ["Не менять test_logparse.py"],
+  "limits": {"max_turns": 8, "max_minutes": 15},
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "краевые случаи из описания функции"}]
+}
