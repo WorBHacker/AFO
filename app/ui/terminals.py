@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 import pyte
 from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
-from PySide6.QtGui import QGuiApplication
 
 from ..tasks import Background
 from .models import RowModel
@@ -487,7 +486,7 @@ class Terminals(QObject):
     @Slot()
     def paste(self) -> None:
         emu = self._emus.get(self._current)
-        text = QGuiApplication.clipboard().text()
+        text = self.app._clipboard().text()
         if emu is None or not text or not self.currentRunning:
             return
         text = text.replace("\r\n", "\r").replace("\n", "\r")

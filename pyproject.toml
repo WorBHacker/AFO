@@ -20,6 +20,7 @@ hub = [
     "tree-sitter-c>=0.24", "tree-sitter-cpp>=0.23",
     "mcp>=2.3",  # stage 4: the hub's MCP server (D32), the official SDK
     "comtypes>=1.4",  # stage 9.6: Windows UI Automation for the agent at the desktop (D41)
+    "pypdf>=6.21",  # 2026-10-29: the text of a PDF sent with a message (hub/attachments.py)
 ]
 app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "websockets>=17", "markdown-it-py>=4.0", "pygments>=2.21", "pyte>=0.8"]
 dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's TestClient wants now

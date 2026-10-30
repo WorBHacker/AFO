@@ -1614,9 +1614,9 @@ def test_theme_switch_rerenders_the_html(app):
     assert app.settings.value("ui/theme") == "light"
 
 
-def test_copy_puts_text_on_the_clipboard(app):
+def test_copy_puts_text_on_the_clipboard(app, clipboard_stand_in):
     app.copy("print(1)")
-    assert QApplication.clipboard().text() == "print(1)"
+    assert clipboard_stand_in.text() == "print(1)"
     assert app.flashText == "Скопировано"
 
 
@@ -2440,7 +2440,7 @@ def test_project_rows():
     assert (view["name"], view["folder"], view["linesText"], view["sizeText"]) == ("app.py", "src", "2 строки", "26 Б")
 
 
-def test_projects_tree_files_and_git(app):
+def test_projects_tree_files_and_git(app, clipboard_stand_in):
     projects = app.projects
     assert [p["id"] for p in projects.projectList] == ["p1"] and projects.currentId == ""
     projects.openProject("p1")
@@ -2472,7 +2472,7 @@ def test_projects_tree_files_and_git(app):
     assert "chunks" not in projects.file and "text" not in projects.file  # the text goes to the viewer alone
     assert projects.fileShown["key"] == "src/app.py" and projects.fileShown["rich"]
     projects.copyFile()
-    assert QApplication.clipboard().text() == FILES["src/app.py"]
+    assert clipboard_stand_in.text() == FILES["src/app.py"]
     projects.showDiff(True)
     wait_until(lambda: projects.file.get("diffMode"))
     assert "+print('new')" in projects.fileShown["chunks"][0]["code"] and projects.fileShown["rich"]

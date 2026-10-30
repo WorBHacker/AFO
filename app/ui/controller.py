@@ -1300,11 +1300,16 @@ class Controller(QObject):
         if 0 <= index < len(self._files):
             self._set_files([f for i, f in enumerate(self._files) if i != index])
 
+    def _clipboard(self):
+        """The system clipboard - every read and write of the window's goes through here, so tests put a stand-in
+        in its place and never touch the user's own (2026-10-30)."""
+        return QGuiApplication.clipboard()
+
     @Slot(result=bool)
     def pasteImage(self) -> bool:
         """Ctrl+V in the composer: a picture on the clipboard (a screenshot) or files copied in Explorer go with
         the message; plain text is pasted as usual (False)."""
-        clipboard = QGuiApplication.clipboard()
+        clipboard = self._clipboard()
         mime = clipboard.mimeData()
         if mime is not None and mime.hasUrls() and all(u.isLocalFile() for u in mime.urls()):
             self.attachFiles([u.toLocalFile() for u in mime.urls()])
@@ -1774,7 +1779,7 @@ class Controller(QObject):
 
     @Slot(str)
     def copy(self, text: str) -> None:
-        QGuiApplication.clipboard().setText(text)
+        self._clipboard().setText(text)
         self.flash("Скопировано", ms=2000)
 
     @Slot(str)

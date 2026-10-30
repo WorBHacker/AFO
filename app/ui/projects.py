@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QDesktopServices
 
 from .. import palette
 from ..hub_client import HubError
@@ -968,5 +968,5 @@ class Projects(QObject):
     def copyPath(self, path: str) -> None:
         if self.current:
             full = Path(self.current["path"]) / path if path else Path(self.current["path"])
-            QGuiApplication.clipboard().setText(str(full))
+            self.app._clipboard().setText(str(full))
             self.app.flash("Путь скопирован", ms=2000)

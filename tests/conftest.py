@@ -33,6 +33,43 @@ def isolated_data_dir(tmp_path, monkeypatch):
     return data
 
 
+class StandInClipboard:
+    """The clipboard as the window uses it - text, a picture, copied files' URLs - kept in the test."""
+
+    def __init__(self):
+        self.held_text = ""
+        self.held_image = None
+        self.held_urls: list[str] = []
+
+    def setText(self, text):  # Qt's names
+        self.held_text = text
+
+    def text(self):
+        return self.held_text
+
+    def image(self):
+        from PySide6.QtGui import QImage
+
+        return self.held_image if self.held_image is not None else QImage()
+
+    def mimeData(self):
+        from PySide6.QtCore import QMimeData, QUrl
+
+        data = QMimeData()
+        if self.held_urls:
+            data.setUrls([QUrl(u) for u in self.held_urls])
+        return data
+
+
+@pytest.fixture(autouse=True)
+def clipboard_stand_in(monkeypatch):
+    """No test touches the user's clipboard (2026-10-30: copy buttons and Ctrl+V tests replaced what the user had
+    copied): the window's reads and writes go to a stand-in, the test's own."""
+    board = StandInClipboard()
+    monkeypatch.setattr("app.ui.controller.Controller._clipboard", lambda _self: board)
+    return board
+
+
 @pytest.fixture
 def restore_logging():
     """setup_logging changes process-wide state; put it back after the test."""

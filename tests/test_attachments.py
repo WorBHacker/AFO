@@ -4,8 +4,8 @@ gets the pictures its own way; the request's size counts a picture, not its base
 pictures is not sent one; the window's composer takes files, pictures from the clipboard, and sends them."""
 
 import base64
-import importlib.util
 import io
+import sys
 import zipfile
 
 import pytest
@@ -65,8 +65,38 @@ def test_what_a_file_becomes(tmp_path):
     assert "не текст и не картинка" in refused({"name": "app.exe", "data": b64(b"MZ\x00\x00\x00binary")})
     assert "пустой" in refused({"name": "a.txt", "data": ""})
     assert "повреждённым" in refused({"name": "a.txt", "data": "не base64!"})
-    if importlib.util.find_spec("pypdf") is None:  # without it a PDF is refused with why
-        assert "нужен пакет pypdf" in refused({"name": "a.pdf", "data": b64(b"%PDF-1.7\n...")})
+    assert "PDF не читается" in refused({"name": "a.pdf", "data": b64(b"%PDF-1.7\n...")})  # a broken one
+
+
+def pdf(pages: list[str]) -> bytes:
+    """A PDF with a line of text on each page, made without libraries."""
+    objects = ["<< /Type /Catalog /Pages 2 0 R >>", "", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for text in pages:
+        stream = f"BT /F1 18 Tf 72 720 Td ({text}) Tj ET"
+        objects.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {len(objects)} 0 R "
+                       "/Resources << /Font << /F1 3 0 R >> >> >>")  # fmt: skip
+        kids.append(f"{len(objects)} 0 R")
+    objects[1] = f"<< /Type /Pages /Kids [{' '.join(kids)}] /Count {len(kids)} >>"
+    out, offsets = b"%PDF-1.4\n", []
+    for n, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{n} 0 obj\n{body}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets).encode()
+    return out + f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+
+
+def test_a_pdf_is_read_page_by_page(tmp_path, monkeypatch):
+    (found,) = attachments.blocks(tmp_path, [{"name": "отчёт.pdf", "data": b64(pdf(["Hello from page one",
+                                                                                  "Second page text"]))}])  # fmt: skip
+    assert found["type"] == "file" and found["source"] == "pdf"
+    assert found["text"] == "Hello from page one\n\nSecond page text"
+    monkeypatch.setitem(sys.modules, "pypdf", None)  # without the package: refused with why
+    with pytest.raises(attachments.AttachmentError, match="нужен пакет pypdf"):
+        attachments.blocks(tmp_path, [{"name": "a.pdf", "data": b64(pdf(["x"]))}])
     with pytest.raises(attachments.AttachmentError):
         attachments.blocks(tmp_path, [{"name": f"{n}.txt", "data": b64(b"x")} for n in range(11)])
 
@@ -137,9 +167,28 @@ def test_claude_code_gets_the_files_paths(tmp_path):
     assert text == f"Посмотри\n\nFiles sent with this message (read them):\n- {path}" and path.read_text() == "plan"
 
 
+class Clipboard:
+    """The clipboard as the composer reads it: a picture, or files copied in Explorer (file: URLs), or neither."""
+
+    def __init__(self, image):
+        self.held = image
+        self.copied: list[str] = []
+
+    def image(self):
+        return self.held
+
+    def mimeData(self):
+        from PySide6.QtCore import QMimeData, QUrl
+
+        data = QMimeData()
+        if self.copied:
+            data.setUrls([QUrl(u) for u in self.copied])
+        return data
+
+
 def test_the_composer_takes_files_and_pictures(qapp, tmp_path):
     from PySide6.QtCore import QObject
-    from PySide6.QtGui import QGuiApplication, QImage
+    from PySide6.QtGui import QImage
 
     from app.ui import rows
     from app.ui.main import QuickApp
@@ -168,10 +217,14 @@ def test_the_composer_takes_files_and_pictures(qapp, tmp_path):
         assert [a["name"] for a in app.attachments] == ["кадр.png"]
         image = QImage(4, 4, QImage.Format.Format_RGB32)
         image.fill(0xFF0000)
-        QGuiApplication.clipboard().setImage(image)
+        board = Clipboard(image)  # a stand-in: the user's own clipboard is never touched
+        app._clipboard = lambda: board
         assert app.pasteImage() and app.attachments[-1]["name"].startswith("картинка-")
-        QGuiApplication.clipboard().setText("просто текст")
+        board.held = QImage()  # text only on it
         assert app.pasteImage() is False  # plain text is pasted as usual
+        board.held, board.copied = QImage(), [notes.as_uri()]  # files copied in Explorer
+        assert app.pasteImage() and app.attachments[-1]["name"] == "notes.md"
+        app.removeAttachment(2)
         app.send("")  # files only: they go
         wait_until(lambda: not app.bg.busy and client.sent)
         names = [f["name"] for f in client.files_sent]
