@@ -116,6 +116,7 @@ class QuickApp:
         context.setContextProperty("AgentKeys", self.controller.agent_keys)
         context.setContextProperty("Sandbox", self.controller.sandbox_view)
         context.setContextProperty("Goal", self.controller.goal_view)
+        context.setContextProperty("Proving", self.controller.proving_view)
         context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Setup", self.controller.setup_view)
         context.setContextProperty("Check", self.controller.check_view)
@@ -137,6 +138,7 @@ class QuickApp:
         self.controller.programs.requested.connect(self.notifier.notify)  # the question waits in the window
         self.controller.autonomy_view.asked.connect(self.notifier.notify)  # an agent's question waits too
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
+        self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
         self.notifier.opened.connect(self._front)
         self.notifier.quiet = self.controller.schedules_view.quiet_now  # notices wait out the quiet hours (Q23)
         view = self.controller.computer_view  # «Стоп» in the tray's menu too, while the agent acts (D41)

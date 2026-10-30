@@ -38,6 +38,8 @@ PATHS = {
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     "target": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>'
     '<circle cx="12" cy="12" r="1.2" fill="{c}"/>',
+    "flask": '<path d="M9 3.5h6"/><path d="M10 3.5v5.5L5 18a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8-3L14 9V3.5"/>'
+    '<path d="M7.5 14.5h9"/>',
     "image": '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/>'
     '<path d="m4.5 17.5 5-5 4 4 2-2 4 4"/>',
     "min": '<path d="M7 12h10"/>',

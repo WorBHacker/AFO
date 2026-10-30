@@ -229,6 +229,7 @@ Window {
     AgentAccessSheet { id: accessSheet }
     SandboxSheet { id: sandboxSheet }
     GoalSheet { id: goalSheet }
+    ProvingSheet { id: provingSheet }
     InstallSheet { id: installSheet }
     WizardSheet { id: wizardSheet }
     CheckSheet { id: checkSheet }

@@ -113,6 +113,7 @@ Item {
                 }
             }
         }
+        IconButton { objectName: "provingButton"; iconName: "flask"; implicitWidth: 38; tip: "Полигон: задания и экзамен моделей"; onClicked: Proving.open() }
         IconButton { objectName: "agentsButton"; iconName: "agent"; implicitWidth: 38; tip: "Агенты (Ctrl+Shift+G)"; onClicked: bar.agentsRequested() }
         IconButton { iconName: "activity"; implicitWidth: 38; tip: "Лента событий (Ctrl+E)"; onClicked: bar.feedRequested() }
         Rectangle { width: 1; height: 18; color: Theme.p.hairline; anchors.verticalCenter: parent.verticalCenter }

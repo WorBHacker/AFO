@@ -183,6 +183,33 @@ class HubClient:
 
     # --- «Песочница» (D17, 9.4b): what a chat changed in its worktree ---
 
+    # --- the proving ground and the models' exam (stage 12, D45) ---
+
+    def proving_tasks(self) -> list[dict]:
+        return self._call("GET", "/v1/proving/tasks")["tasks"]
+
+    def proving_try(self, task_id: str, model_id: str) -> dict:
+        return self._call("POST", "/v1/proving/try", {"task_id": task_id, "model_id": model_id}, timeout=120)["run"]
+
+    def proving_runs(self) -> list[dict]:
+        return self._call("GET", "/v1/proving/runs")["runs"]
+
+    def delete_proving_run(self, run_id: str) -> None:
+        self._call("DELETE", f"/v1/proving/runs/{run_id}")
+
+    def proving_exams(self) -> list[dict]:
+        return self._call("GET", "/v1/proving/exams")["exams"]
+
+    def start_exam(self, model_ids: list[str], task_ids: list[str], judge: bool) -> dict:
+        return self._call("POST", "/v1/proving/exams", {"model_ids": model_ids, "task_ids": task_ids,
+                                                        "judge": judge})["exam"]  # fmt: skip
+
+    def stop_exam(self, exam_id: str) -> dict:
+        return self._call("POST", f"/v1/proving/exams/{exam_id}/stop")["exam"]
+
+    def delete_exam(self, exam_id: str) -> None:
+        self._call("DELETE", f"/v1/proving/exams/{exam_id}", timeout=120)
+
     # --- a chat's goal (stage 11, D44) ---
 
     def goal(self, conversation_id: str) -> dict:

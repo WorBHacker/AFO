@@ -28,6 +28,7 @@ TOPICS = [
     "mail.*",
     "sandbox.*",
     "goal.*",  # a chat's goal (D44)
+    "proving.*",  # the proving ground and the models' exam (D45)
     "install.*",
     "setup.*",
     "system.*",

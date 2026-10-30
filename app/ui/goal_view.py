@@ -310,7 +310,7 @@ class GoalView(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         cid = payload.get("conversation_id") or ""
-        if kind == "goal.status" and payload.get("status") in NOTICES:
+        if kind == "goal.status" and payload.get("status") in NOTICES and not payload.get("proving"):
             goal = payload.get("goal") or {}
             self.noticed.emit(NOTICES[payload["status"]], f"{goal.get('objective', '')}\n{payload.get('detail', '')}")
             if cid != (self.app.current or ""):

@@ -8,6 +8,12 @@ Drawer {
     property string iconName
     default property alias content: body.data
 
+    // scrolls the panel so that one of its items shows at the top
+    function reveal(item) {
+        const y = item.mapToItem(body, 0, 0).y
+        flick.contentY = Math.max(0, Math.min(y - 8, flick.contentHeight - flick.height))
+    }
+
     edge: Qt.RightEdge
     width: Math.min(480, (parent ? parent.width : 960) * 0.9)
     height: parent ? parent.height : 600
@@ -48,6 +54,7 @@ Drawer {
             }
         }
         Flickable {
+            id: flick
             objectName: "sheetFlick"
             y: head.height
             width: parent.width

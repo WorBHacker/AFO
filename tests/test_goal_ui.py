@@ -160,7 +160,8 @@ def test_the_goal_in_the_window(qapp):  # noqa: F811
 
         other = {"conversation_id": "c9", "status": "achieved", "detail": "цель достигнута",
                  "goal": {"objective": "Другая"}}  # fmt: skip
-        app.on_event({"type": "goal.status", "payload": other})
+        app.on_event({"type": "goal.status", "payload": {**other, "conversation_id": "c8", "proving": True}})
+        app.on_event({"type": "goal.status", "payload": other})  # a run of the proving ground above: no notice
         assert noticed == [("Цель достигнута", "Другая\nцель достигнута")]
         assert app.flashText == "Цель достигнута: «Другая»"
 

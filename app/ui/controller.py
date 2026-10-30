@@ -42,6 +42,7 @@ from .model_setup import ModelSetup
 from .models import RowModel
 from .programs import Programs
 from .projects import Projects
+from .proving_view import ProvingView
 from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
 from .setup_view import SetupView
@@ -232,6 +233,8 @@ class Controller(QObject):
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
         self.currentChanged.connect(self.goal_view.load)
         self.modelChanged.connect(self.goal_view.editorChanged)  # the card names the model, its price; Claude Code
+        self.proving_view = ProvingView(self)  # the proving ground and the models' exam (D45, 12.2)
+        self.modelChanged.connect(self.proving_view.changed)  # «пробует …»: the chat's model
         self._claude_code: dict[str, Any] = {}  # is the user's Claude Code CLI there (stage 4, D8)
         self._stats: dict[str, Any] = {}  # what the hub learnt about its models and spending (stage 6, D11, D12)
         self._advice: dict[str, Any] = {}  # which model for the open chat (D11): shown, never switched to by itself
@@ -1235,6 +1238,8 @@ class Controller(QObject):
                 self.askDeleteChat("")
             elif value == "stop-hub":
                 self.stopHub()
+            elif value == "proving":
+                self.proving_view.open()
 
     @Slot()
     def stopHub(self) -> None:
@@ -1625,6 +1630,8 @@ class Controller(QObject):
             self.sandbox_view.on_event(kind, payload)
         elif kind.startswith("goal."):
             self.goal_view.on_event(kind, payload)
+        elif kind.startswith("proving."):
+            self.proving_view.on_event(kind, payload)
         elif kind == "agent.keys":
             self.agent_keys.on_event(kind, payload)
         elif kind.startswith("mail."):
