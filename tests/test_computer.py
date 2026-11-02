@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from hub import agent_tools, model_settings, programs, store
 from hub import computer as pc
-from hub import model_settings, programs, store
 from hub.db import Database, migrate
 from hub.events import EventBus
 from hub.gateway.base import Model, StreamEvent
@@ -399,3 +399,10 @@ def test_what_the_screen_shows_is_secret_filtered(tmp_path, monkeypatch):
     monkeypatch.setattr(computer, "_look", look)
     output, error = asyncio.run(computer.handle("r1", {"name": "screen_look", "input": {"window": 7}}, None, None))
     assert not error and key not in output and "[REDACTED]" in output
+    # a cloud model sees other programs' windows only once the user lets it (Q20, D46)
+    looked = {"name": "screen_look", "input": {"window": 7}}
+    output, error = asyncio.run(computer.handle("r1", looked, None, None, cloud=True))
+    assert error and "did not let the cloud see other programs' windows" in output
+    db.call(lambda c: agent_tools.set_setting(c, agent_tools.SCREEN_CLOUD, True))
+    output, error = asyncio.run(computer.handle("r1", looked, None, None, cloud=True))
+    assert not error and "[REDACTED]" in output

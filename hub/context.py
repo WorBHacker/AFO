@@ -59,7 +59,8 @@ RIGHTS_NOTES = {
     "sandbox": "With your write and command tools you change files and run commands in a sandbox copy of each git "
     "project, without asking; the user reviews the diff and applies it.",
     "trusted": "With your write and command tools you may change files and run commands without asking; destructive "
-    "actions are still asked, and so is everything once you have read the web.",
+    "actions are still asked, and so is everything once you have read what others wrote (the web, letters, other "
+    "programs' screens); with a local-only project in the chat, reading the web is asked too.",
 }
 
 

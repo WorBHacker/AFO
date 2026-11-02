@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+from urllib.parse import urlsplit
 
 from ..db import Database
 from ..secrets import ANTHROPIC_API_KEY, SecretStore
@@ -72,6 +74,18 @@ class Gateway:
         return result
 
 
+def locality_of(url: str) -> str:
+    """llama-swap on this computer is local; at another address - another machine, even the user's own - what a chat
+    sends leaves this one, so it counts as the cloud for D10 (D46)."""
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return "local"
+    try:
+        return "local" if ipaddress.ip_address(host).is_loopback else "cloud"
+    except ValueError:
+        return "cloud"
+
+
 def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStore) -> Gateway:
     """The gateway: local models through llama-swap, Claude by API key (D34), Gemini, OpenAI, DeepSeek and OpenRouter
     by API key (D6), and Claude Code when its CLI is installed (stage 4, D8) - the chat runs those through
@@ -85,7 +99,7 @@ def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStor
     from .openai_responses import OpenAIProvider
 
     gateway = Gateway(db)
-    gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality="local"))
+    gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality=locality_of(llama_swap_url)))
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
     gateway.register(GeminiProvider(lambda: secrets.get(GEMINI_API_KEY)))
     gateway.register(OpenAIProvider(lambda: secrets.get(OPENAI_API_KEY)))

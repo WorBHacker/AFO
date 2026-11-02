@@ -22,12 +22,19 @@ py -3.14 -m venv .venv
 .venv/Scripts/python.exe -m pip install -e ".[hub,app,dev]"
 ```
 
+Точные версии, с которыми LocalChat собран и проверен, — в `requirements.lock`; поставить ровно их:
+
+```bash
+.venv/Scripts/python.exe -m pip install -r requirements.lock -e . --no-deps
+```
+
 Проверки:
 
 ```bash
 .venv/Scripts/ruff.exe check .
 .venv/Scripts/ruff.exe format --check .
 .venv/Scripts/python.exe -m pytest
+.venv/Scripts/pip-audit.exe -r requirements.lock   # известные уязвимости зависимостей (спрашивает базу PyPI)
 ```
 
 Запуск окна: двойной щелчок по `LocalChat.cmd` (без консоли) или

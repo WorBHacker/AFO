@@ -90,7 +90,18 @@ def test_reading_the_web_is_asked_and_taints_the_chat(hub, repo, site):  # noqa:
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
     assert "# Установка" in result_of(finished(hub, conv))["output"]
 
-    # a trusted chat reads the page without a card (2026-10-28); but then its edit is asked: it has read the web (D19)
+    # a trusted chat with a local-only project asks the page: its address could carry the project's code (D46)
+    provider.steps += [[fetch_call(f"{site}/doc?q=x")]]
+    trusted = new_chat(hub, pid, "trusted")
+    say(hub, trusted)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "web_fetch" and asked["preview"]["text"] == f"{site}/doc?q=x"
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    finished(hub, trusted)
+
+    # a trusted chat whose projects may go to the cloud reads the page without a card (2026-10-28); but then its
+    # edit is asked: it has read the web (D19)
+    hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})
     provider.steps += [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}]]
     trusted = new_chat(hub, pid, "trusted")
     say(hub, trusted)

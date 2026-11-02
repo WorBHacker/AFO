@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -56,7 +56,17 @@ class Cancelled(Exception):
 
 
 def base_url() -> str:
-    return (os.environ.get(BASE_ENV) or DEFAULT_BASE).rstrip("/")
+    return safe_base(os.environ.get(BASE_ENV), DEFAULT_BASE)
+
+
+def safe_base(override: str | None, default: str) -> str:
+    """An address set in the environment (tests' stand-ins) - https, or http to this computer only: what a program is
+    downloaded from never goes over the open network unencrypted (D46). Anything else: the default."""
+    if override:
+        parts = urlsplit(override)
+        if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1")):
+            return override.rstrip("/")
+    return default.rstrip("/")
 
 
 def headers(token: str | None = None) -> dict[str, str]:

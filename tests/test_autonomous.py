@@ -71,6 +71,20 @@ def step(n, status, **more):
     return ("update_step", {"step": n, "status": status, **more})
 
 
+def test_a_cloud_model_never_gets_a_run_with_a_local_only_project(hub, repo):  # noqa: F811
+    """The audit (D46) feared a local planner would read a local-only project and hand it to a cloud run model: the
+    run is refused before anything is read (D10) - the handover checks again all the same."""
+    project = hub.post("/v1/projects", json={"path": str(repo)}).json()  # local-only, as every new project
+    planner = use(hub, Scripted("planner", [[PLAN]]))
+    cloudy = Scripted("cloudy", [[step(1, "running")]])
+    cloudy.models = [Model("cloudy/m", "cloudy", "m", "Cloudy", "cloud", {}, {})]
+    use(hub, cloudy)
+    body = {"goal": "x", "model_id": "cloudy/m", "planner_model_id": "planner/m", "project_ids": [project["id"]]}
+    refused = hub.post("/v1/runs/autonomous", json=body)
+    assert refused.status_code == 422 and "only local models may see it" in refused.json()["detail"]
+    assert planner.prompts == [] and cloudy.prompts == []
+
+
 def test_a_goal_planned_carried_out_checked_and_reported(hub):  # noqa: F811
     agent = use(hub, Scripted("agent", [
         [PLAN],

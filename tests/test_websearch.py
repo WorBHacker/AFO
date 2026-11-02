@@ -122,7 +122,17 @@ def test_a_search_is_asked_and_taints_the_chat(hub, repo, engines):  # noqa: F81
     assert asked["preview"] == {"kind": "text", "text": "difflib cutoff", "note": "Brave Search"}
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
     finished(hub, conv)
-    # a trusted chat searches without a card (2026-10-28) - but then its edit is asked: it has searched the web (D19)
+    # a trusted chat with a local-only project asks the search: the query could carry its code (D46)
+    provider.steps += steps[:1]
+    conv = new_chat(hub, pid, "trusted")
+    say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "web_search"
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    finished(hub, conv)
+    # a trusted chat whose projects may go to the cloud searches without a card (2026-10-28) - but then its edit is
+    # asked: it has searched the web (D19)
+    hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})
     provider.steps += steps
     conv = new_chat(hub, pid, "trusted")
     say(hub, conv)

@@ -30,7 +30,7 @@ GITHUB_API = "https://api.github.com"
 
 
 def github_api() -> str:
-    return (os.environ.get(GITHUB_ENV) or GITHUB_API).rstrip("/")
+    return hf.safe_base(os.environ.get(GITHUB_ENV), GITHUB_API)
 
 
 LLAMA_CPP = "ggml-org/llama.cpp"
@@ -140,7 +140,12 @@ def unpack(archive: Path, folder: Path) -> list[str]:
 
 def fetch(assets: list[dict[str, Any]], downloads: Path, folder: Path, *, report: Callable[[int, int], None],
           cancel: threading.Event) -> None:  # fmt: skip
-    """Each archive downloaded (sha256 checked) and unpacked into `folder` (blocking: in a thread)."""
+    """Each archive downloaded (sha256 checked - an archive GitHub gives none for is refused) and unpacked into
+    `folder` (blocking: in a thread)."""
+    missing = [a["name"] for a in assets if not a.get("sha256")]
+    if missing:  # without it a changed or broken file would be run (D46): as ripgrep, nothing is put in
+        raise EngineError(f"GitHub не дал контрольную сумму для {', '.join(missing)}: без неё программа не ставится — "
+                          "попробуйте позже или выберите другую сборку")  # fmt: skip
     total = sum(a["size"] for a in assets)
     base = 0
     downloads.mkdir(parents=True, exist_ok=True)

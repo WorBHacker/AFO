@@ -304,6 +304,8 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             tainted = not reads and await app.state.chat.read_the_web(turn.conversation_id)
             if reads:
                 app.state.chat.outside.add(turn.conversation_id)
+        if reads and turn is not None and not await app.state.chat.web_trusted(turn.conversation_id):
+            mode = "ask"  # a local-only project in the chat: its code could leave in the address or query (D46)
         if mode == "trusted" and not tainted and trusted_skips(tool_name, input):  # all but a destructive one
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(

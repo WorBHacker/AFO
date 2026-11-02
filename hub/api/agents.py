@@ -294,15 +294,19 @@ async def edit_plan(run_id: str, body: PlanEdit, request: Request, client: Annot
 # --- what the autonomous agent may reach beyond projects (stage 9.4) ---
 
 
+def _access(conn) -> dict:
+    return {
+        "folders": agent_tools.folders(conn),
+        "domains": agent_tools.domains(conn),
+        "default_domains": agent_tools.DEFAULT_DOMAINS,
+        "screen_cloud": agent_tools.screen_cloud(conn),
+    }
+
+
 @router.get("/agent/access")
 async def agent_access(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     _app_only(client)
-
-    def read(conn):
-        return {"folders": agent_tools.folders(conn), "domains": agent_tools.domains(conn),
-                "default_domains": agent_tools.DEFAULT_DOMAINS}  # fmt: skip
-
-    return await _db(request, read)
+    return await _db(request, _access)
 
 
 class Key(BaseModel):
@@ -363,8 +367,9 @@ async def delete_agent_key(name: str, request: Request, client: Annotated[Client
 
 
 class Access(BaseModel):
-    folders: list[dict[str, Any]] | None = None  # [{path, write}]
+    folders: list[dict[str, Any]] | None = None  # [{path, write, cloud}]
     domains: list[str] | None = None
+    screen_cloud: bool | None = None  # a cloud model may read other programs' windows (Q20, D46)
 
 
 @router.put("/agent/access")
@@ -376,8 +381,9 @@ async def set_agent_access(body: Access, request: Request, client: Annotated[Cli
             agent_tools.set_setting(conn, agent_tools.FOLDERS, agent_tools.check_folders(body.folders))
         if body.domains is not None:
             agent_tools.set_setting(conn, agent_tools.DOMAINS, agent_tools.check_domains(body.domains))
-        return {"folders": agent_tools.folders(conn), "domains": agent_tools.domains(conn),
-                "default_domains": agent_tools.DEFAULT_DOMAINS}  # fmt: skip
+        if body.screen_cloud is not None:
+            agent_tools.set_setting(conn, agent_tools.SCREEN_CLOUD, body.screen_cloud)
+        return _access(conn)
 
     try:
         found = await request.app.state.db.acall(write)

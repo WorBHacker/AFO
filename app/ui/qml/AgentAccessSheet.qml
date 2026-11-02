@@ -16,7 +16,7 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Вне проектов агент видит только эти папки. Читает их без вопроса (файлы с секретами — никогда), пишет — если папке разрешена запись, и каждую запись показывает вам с diff. Скрипты Python работают в своей папке задачи, без сети (если в задаче не включено), каждый — с вашего разрешения."
+        text: "Вне проектов агент видит только эти папки. Читает их без вопроса (файлы с секретами — никогда), пишет — если папке разрешена запись, и каждую запись показывает вам с diff. Облачная модель читает папку, только если у неё горит облако — как проект «можно в облако». Скрипты Python работают в своей папке задачи, без сети (если в задаче не включено), каждый — с вашего разрешения."
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -44,7 +44,7 @@ Sheet {
                 Icon { x: 4; anchors.verticalCenter: parent.verticalCenter; name: "folder"; tint: Theme.p.muted }
                 Text {
                     x: 28
-                    width: parent.width - x - write.width - remove.width - 20
+                    width: parent.width - x - write.width - cloud.width - remove.width - 28
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.path
                     elide: Text.ElideMiddle
@@ -54,12 +54,24 @@ Sheet {
                 }
                 Segmented {
                     id: write
-                    anchors.right: remove.left
+                    anchors.right: cloud.left
                     anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
                     options: [{ id: "read", name: "читать" }, { id: "write", name: "и писать" }]
                     value: modelData.write ? "write" : "read"
                     onPicked: (id) => Autonomy.setFolderWrite(modelData.path, id === "write")
+                }
+                IconButton {
+                    id: cloud
+                    objectName: "accessFolderCloud"
+                    anchors.right: remove.left
+                    anchors.rightMargin: 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "cloud"
+                    tint: modelData.cloud ? Theme.p.accent : Theme.p.faint
+                    tip: modelData.cloud ? "Облачная модель тоже читает эту папку — нажмите, чтобы только локальные"
+                                         : "Эту папку читают только локальные модели — нажмите, чтобы и облачные"
+                    onClicked: Autonomy.setFolderCloud(modelData.path, !modelData.cloud)
                 }
                 IconButton {
                     id: remove
@@ -82,6 +94,15 @@ Sheet {
         id: folderDialog
         title: "Папка для агента"
         onAccepted: Autonomy.addFolder(selectedFolder.toString())
+    }
+
+    SectionTitle { text: "Окна программ" }
+    Switch {
+        objectName: "accessScreenCloud"
+        width: parent.width
+        text: "Облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной)"
+        checked: Autonomy.screenCloud
+        onToggled: Autonomy.setScreenCloud(checked)
     }
 
     SectionTitle { text: "Сайты без вопроса" }

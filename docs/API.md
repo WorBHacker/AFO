@@ -414,7 +414,7 @@
 | GET | `/v1/agent/keys` | только окно | The user's API keys for http_request: name, host, header - and whether set; never a key. |  |
 | PUT | `/v1/agent/keys/{name}` | токен | A key behind the connections' password (D13): the hub adds it to the requests to its host only. | тело `{host: str, header: str = 'Authorization', prefix: str = 'Bearer ', value: str = ''}` |
 | DELETE | `/v1/agent/keys/{name}` | токен | `delete_agent_key()` |  |
-| PUT | `/v1/agent/access` | только окно | `set_agent_access()` | тело `{folders: list[dict[str, Any]] \| None = None, domains: list[str] \| None = None}` |
+| PUT | `/v1/agent/access` | только окно | `set_agent_access()` | тело `{folders: list[dict[str, Any]] \| None = None, domains: list[str] \| None = None, screen_cloud: bool \| None = None}` |
 
 ### stats
 

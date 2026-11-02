@@ -43,7 +43,7 @@ from typing import Any
 
 import psutil
 
-from . import model_settings, programs, store
+from . import agent_tools, model_settings, programs, store
 from .db import Database
 from .events import EventBus
 from .secret_filter import clean
@@ -897,8 +897,15 @@ class Computer:
 
     # --- the tools ---
 
-    async def handle(self, run_id: str, call: dict[str, Any], cancel: asyncio.Event, ask: Ask) -> tuple[str, bool]:
+    async def handle(
+        self, run_id: str, call: dict[str, Any], cancel: asyncio.Event, ask: Ask, *, cloud: bool = False
+    ) -> tuple[str, bool]:
+        """`cloud`: the model answering is a cloud one - it reads other programs' windows only if the user let it
+        (Q20, D46); acting on them goes by the same rules as for any model."""
         args = call["input"] if isinstance(call["input"], dict) else {}
+        if cloud and call["name"] in READING and not await self._db.acall(agent_tools.screen_cloud):
+            return ("not done: you are a cloud model, and the user did not let the cloud see other programs' windows "
+                    "(«Папки и сайты для агента»); a local model can look"), True  # fmt: skip
         try:
             match call["name"]:
                 case "screen_windows":  # what another program shows may hold a key or a password (D10, D46)

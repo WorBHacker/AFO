@@ -4154,6 +4154,16 @@ def test_folders_and_sites_for_the_agent_in_the_window(qapp, tmp_path):
         assert client.access_calls[0]["folders"][-1] == {"path": tmp_path.as_posix(), "write": False}
         assert {"domains": ["pypi.org", "api.example.com", "docs.python.org"]} in client.access_calls
         assert client.access_calls[-1] == {"domains": ["docs.python.org", "pypi.org"]}
+        # the cloud (D46): a folder a cloud model may read, the windows of programs - both off until turned on
+        assert not view.screenCloud and not view.accessFolders[-1].get("cloud")
+        view.setFolderCloud(view.accessFolders[-1]["path"], True)
+        wait_until(lambda: not app.bg.busy and view.accessFolders[-1].get("cloud"))
+        assert view.accessFolders[-1]["write"]  # the folder's writing kept
+        switch = quick.window.findChild(QObject, "accessScreenCloud")
+        switch.toggle()
+        QMetaObject.invokeMethod(switch, "toggled")
+        wait_until(lambda: not app.bg.busy and view.screenCloud)
+        assert client.access_calls[-1] == {"screen_cloud": True}
         view.newTask()
         view.setFlag("network", True)
         view.setField("goal", "Скачать курс валют")

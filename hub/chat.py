@@ -541,6 +541,8 @@ class ChatService:
             if switch:  # the planner made the plan: the run's own model carries it out
                 found = await self._db.acall(lambda conn, m=switch: store.get_model(conn, m))
                 if found is not None and found["enabled"]:
+                    if found["locality"] == "cloud":  # the planner may have read a local-only project for it (D10)
+                        await self._check_cloud(conversation_id)
                     model = found
                     provider, model_ref, cloud, ctx, system, params, version = await setup(model)
                     await self._bus.publish("chat.fallback", {"conversation_id": conversation_id,
@@ -791,7 +793,7 @@ class ChatService:
                     allowed, said = await self._ask_user(conversation_id, tool, data, None, cancel, cover=cover)
                     return None if allowed else said
 
-                output, error = await self.toolbox.handle(conversation_id, call, cancel, ask)
+                output, error = await self.toolbox.handle(conversation_id, call, cancel, ask, cloud=cloud)
             elif call["name"] in computer.TOOL_NAMES and self.computer is not None:  # the desktop (9.6, D41)
 
                 async def ask(tool, shown, cover, call=call):
@@ -800,7 +802,7 @@ class ChatService:
                     allowed, said = await self._ask_user(conversation_id, tool, shown, None, cancel, cover=cover)
                     return None if allowed else said
 
-                output, error = await self.computer.handle(conversation_id, call, cancel, ask)
+                output, error = await self.computer.handle(conversation_id, call, cancel, ask, cloud=cloud)
             elif call["name"] in mail.TOOL_NAMES and self.mail is not None:  # the mailbox (9.4b, Q21)
 
                 async def ask(tool, shown, cover, call=call):
@@ -905,13 +907,13 @@ class ChatService:
 
     async def _web_fetch(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A page the model wants to read: asked unless the site is on the short list or the project's (D19), or
-        the chat is trusted."""
+        the chat is trusted and holds no local-only project (D46)."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             url = web.check_url(args.get("url"))
         except ToolError as exc:
             return str(exc), True
-        if web.site(url) not in web.ALLOWED_SITES and not await self._trusted(conversation_id):
+        if web.site(url) not in web.ALLOWED_SITES and not await self.web_trusted(conversation_id):
             project = ctx.projects[0] if ctx.projects else None  # the chat's project keeps "always" answers
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
             if not allowed:
@@ -923,7 +925,8 @@ class ChatService:
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is
-        trusted; with the engine the user connected (their SearXNG, Tavily or Brave Search)."""
+        trusted and holds no local-only project (D46); with the engine the user connected (their SearXNG, Tavily or
+        Brave Search)."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             query = websearch.query_of(args)
@@ -937,7 +940,7 @@ class ChatService:
                     "key in the window's Connections"), True  # fmt: skip
         project = ctx.projects[0] if ctx.projects else None
         shown = {"query": query, "engine": websearch.ENGINES[engine]}
-        if not await self._trusted(conversation_id):
+        if not await self.web_trusted(conversation_id):
             allowed, why = await self._ask_user(conversation_id, call["name"], shown, project, cancel)
             if not allowed:
                 return why, True
@@ -971,6 +974,13 @@ class ChatService:
     async def _trusted(self, conversation_id: str) -> bool:
         settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
         return settings["mode"] == "trusted"
+
+    async def web_trusted(self, conversation_id: str) -> bool:
+        """A trusted chat reads the web without asking (the user's word 2026-10-28) - unless a local-only project is
+        attached: its code could leave in a page's address or a query (D10; the user's choice 2026-11-02, D46)."""
+        if not await self._trusted(conversation_id):
+            return False
+        return all(p.cloud_ok for p in await self._db.acall(lambda conn: _attached(conn, conversation_id)))
 
     async def read_the_web(self, conversation_id: str) -> bool:
         """Has the model in this chat brought in what someone else wrote - a web page, a search, a letter, an API's

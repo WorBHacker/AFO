@@ -4,6 +4,8 @@ the user, the read-only commands nobody is asked about - and all of it through a
 
 import asyncio
 import json
+import os
+import time
 
 import httpx
 import pytest
@@ -55,6 +57,16 @@ def test_only_the_folders_the_user_allowed(db, tmp_path):
     note = db.call(at.context_note)
     assert f"- {reports.resolve()} (write)" in note and "docs.python.org" in note
 
+    # a cloud model reads only a folder the user let the cloud see (D10, D46): none is, at first
+    with pytest.raises(at.AgentToolError, match="did not let the cloud see"):
+        db.call(lambda c: at.folder_read(c, str(reports / "2026" / "итог.md"), cloud=True))
+    with pytest.raises(at.AgentToolError, match="did not let the cloud see"):
+        db.call(lambda c: at.folder_list(c, str(inbox), cloud=True))
+    db.call(lambda c: at.set_setting(c, at.FOLDERS, at.check_folders([{"path": str(reports), "cloud": True},
+                                                                        {"path": str(inbox)}])))  # fmt: skip
+    assert db.call(lambda c: at.folder_read(c, str(reports / "2026" / "итог.md"), cloud=True)).startswith("# Итог")
+    assert not db.call(at.screen_cloud)  # other programs' windows: local models only, until turned on (Q20)
+
 
 def test_python_in_its_sandbox(tmp_path):
     folder = at.sandbox_dir(tmp_path / "sandbox", "run:1/x")
@@ -69,6 +81,27 @@ def test_python_in_its_sandbox(tmp_path):
     out, failed = at.run_python(folder, "import os\nprint(sorted(k for k in os.environ if 'KEY' in k.upper()))", 30,
                                 network=False)  # fmt: skip
     assert out.startswith("[]")  # the hub's environment (its keys) does not reach the script
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a Windows job")
+def test_the_time_limit_stops_what_a_script_started_and_memory_is_bounded(tmp_path, monkeypatch):
+    """The audit (D46): a script's own child lived on after the time limit; now the Windows job stops it too. A
+    script and its children together get no more memory than the limit."""
+    import psutil
+
+    folder = at.sandbox_dir(tmp_path / "sandbox", "run2")
+    code = ("import subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "open('child.pid', 'w').write(str(child.pid))\n"
+            "time.sleep(120)")  # fmt: skip
+    started = time.monotonic()
+    out, failed = at.run_python(folder, code, 3, network=False)
+    assert failed and "longer than 3 s" in out and time.monotonic() - started < 30
+    child = int((folder / "child.pid").read_text())
+    assert wait(lambda: not psutil.pid_exists(child))
+    monkeypatch.setattr(at, "SCRIPT_MEMORY", 200 * 1024**2)
+    out, failed = at.run_python(folder, "data = bytearray(400 * 1024**2)\nprint('got it')", 30, network=False)
+    assert failed and "MemoryError" in out and "got it" not in out
 
 
 def test_requests_to_allowed_hosts_and_the_rest_asked(db):

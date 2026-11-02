@@ -2,11 +2,13 @@
 a sandbox, HTTP requests to allowed addresses with the user's keys, and a word to the user.
 
     folder_list / folder_read / folder_write - only inside the folders the user listed (settings «agent.folders»),
-        each read or written only where it says so; paths resolved, so a link cannot lead out; secret files are
-        never read, and what is read goes through the secret filter. Writing asks, with the diff (D17).
-    run_python - a script in the run's own folder (data/sandbox/<run>), the hub's Python, a time limit, no network
-        unless allowed (best effort: the socket module refuses to connect; it is not a container - the script runs as
-        the user, so it is always asked, with its code).
+        each read or written only where it says so, and read by a cloud model only where the user let the cloud see
+        it (D10, D46); paths resolved, so a link cannot lead out; secret files are never read, and what is read goes
+        through the secret filter. Writing asks, with the diff (D17).
+    run_python - a script in the run's own folder (data/sandbox/<run>), the hub's Python, a time limit and a memory
+        limit for it and every process it starts (a Windows job: the limit stops them all, D46), no network unless
+        allowed (best effort: the socket module refuses to connect; it is not a container - the script runs as the
+        user, so it is always asked, with its code).
     http_request - GET or POST to an address: asked each time (D19) unless its host is on the allowed list (settings
         «agent.domains», a few documentation sites at first); `key` names one of the user's own API keys from
         Connections - the hub adds it to the request, the model never sees it, and only for that key's own host.
@@ -25,12 +27,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from . import winjob
 from .db import utc_now
 from .secret_filter import clean, is_secret_file
 
-FOLDERS = "agent.folders"  # settings: [{"path": ..., "write": bool}]
+FOLDERS = "agent.folders"  # settings: [{"path": ..., "write": bool, "cloud": bool}]
 DOMAINS = "agent.domains"  # settings: hosts the agent may reach without asking
 KEYS = "agent.keys"  # settings: [{"name", "host", "header", "prefix"}]; the value is a secret "agent_key.<name>"
+SCREEN_CLOUD = "agent.screen_cloud"  # settings: a cloud model may read other programs' windows (Q20)
 KEY_SECRET = "agent_key."
 DEFAULT_DOMAINS = ["docs.python.org", "pypi.org", "developer.mozilla.org", "learn.microsoft.com", "docs.github.com",
                    "en.wikipedia.org", "ru.wikipedia.org"]  # fmt: skip
@@ -39,6 +43,7 @@ LIST_MAX = 300
 PYTHON_TIMEOUT = (60, 600)  # default, most
 OUTPUT_LINES = 200
 HTTP_MAX = 200_000
+SCRIPT_MEMORY = 2 * 1024**3  # a script and what it starts, together
 NO_NETWORK = (
     "import socket\n"
     "def _refuse(*a, **k):\n"
@@ -61,8 +66,9 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": {"type": "object", "properties": {"path": PATH, "content": {"type": "string"}},
                     "required": ["path", "content"]}},
     {"name": "run_python", "description": "Run a Python script in your own sandbox folder (its working directory; "
-     "files you make there stay for this task). No network unless the task allows it; a time limit. The user "
-     "approves each script, seeing its code. Print what you need: the output comes back (its last lines).",
+     "files you make there stay for this task). No network unless the task allows it (a guard, not a wall: do not try "
+     "to get round it); a time limit and 2 GB of memory for it and what it starts. The user approves each script, "
+     "seeing its code. Print what you need: the output comes back (its last lines).",
      "parameters": {"type": "object", "properties": {
          "code": {"type": "string"}, "timeout_s": {"type": "integer", "description": "At most 600; 60 if left out."}},
          "required": ["code"]}},
@@ -97,6 +103,12 @@ def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
     )
 
 
+def screen_cloud(conn: sqlite3.Connection) -> bool:
+    """Whether a cloud model may read what other programs' windows show (their elements as text; a snapshot goes to a
+    local model only). Off unless the user turns it on (Q20, D46)."""
+    return bool(_setting(conn, SCREEN_CLOUD, False))
+
+
 def folders(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [f for f in _setting(conn, FOLDERS, []) if isinstance(f, dict) and f.get("path")]
 
@@ -120,7 +132,7 @@ def check_folders(value: Any) -> list[dict[str, Any]]:
         resolved = path.resolve()
         if resolved == Path(resolved.anchor):
             raise AgentToolError("a whole drive is too much: choose a folder")
-        out.append({"path": str(resolved), "write": bool(item.get("write"))})
+        out.append({"path": str(resolved), "write": bool(item.get("write")), "cloud": bool(item.get("cloud"))})
     return out
 
 
@@ -152,23 +164,28 @@ def check_keys(value: Any) -> list[dict[str, Any]]:
     return out
 
 
-def allowed_path(conn: sqlite3.Connection, raw: str, *, write: bool = False) -> Path:
-    """The path, if it lies inside an allowed folder (for writing: one allowed for writing)."""
+def allowed_path(conn: sqlite3.Connection, raw: str, *, write: bool = False, cloud: bool = False) -> Path:
+    """The path, if it lies inside an allowed folder (for writing: one allowed for writing; for a cloud model's
+    reading: one the user let the cloud see - by default none is, as a project is local-only, D10, D46)."""
     if not raw:
         raise AgentToolError("give a path")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise AgentToolError("give a full path inside an allowed folder")
     resolved = path.resolve()
-    for folder in folders(conn):
-        if resolved.is_relative_to(Path(folder["path"])) and (folder["write"] or not write):
+    inside = [f for f in folders(conn) if resolved.is_relative_to(Path(f["path"]))]
+    for folder in inside:
+        if (folder["write"] or not write) and (folder.get("cloud") or not cloud):
             return resolved
+    if cloud and inside:
+        raise AgentToolError("not read: you are a cloud model, and the user did not let the cloud see this folder "
+                             "(«Папки и сайты для агента»)")  # fmt: skip
     raise AgentToolError("not done: that path is outside the folders the user allowed you"
                          + (" for writing" if write else ""))  # fmt: skip
 
 
-def folder_list(conn: sqlite3.Connection, raw: str) -> str:
-    path = allowed_path(conn, raw)
+def folder_list(conn: sqlite3.Connection, raw: str, *, cloud: bool = False) -> str:
+    path = allowed_path(conn, raw, cloud=cloud)
     if not path.is_dir():
         raise AgentToolError("not a folder")
     entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
@@ -177,8 +194,8 @@ def folder_list(conn: sqlite3.Connection, raw: str) -> str:
     return f"{path}:\n" + ("\n".join(lines) or "(empty)") + more
 
 
-def folder_read(conn: sqlite3.Connection, raw: str) -> str:
-    path = allowed_path(conn, raw)
+def folder_read(conn: sqlite3.Connection, raw: str, *, cloud: bool = False) -> str:
+    path = allowed_path(conn, raw, cloud=cloud)
     if not path.is_file():
         raise AgentToolError("not a file")
     if is_secret_file(path.name):
@@ -209,16 +226,23 @@ def run_python(folder: Path, code: str, timeout_s: int, *, network: bool) -> tup
     }
     env["PYTHONIOENCODING"] = "utf-8"
     try:
-        done = subprocess.run([sys.executable, "-I", "-X", "utf8", str(script)], cwd=folder, capture_output=True,
-                              timeout=timeout_s, env=env, stdin=subprocess.DEVNULL,
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
-    except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout or b"").decode("utf-8", "replace") + (exc.stderr or b"").decode("utf-8", "replace")
-        return _tail(out) + f"\n[stopped: longer than {timeout_s} s]", True
+        with winjob.Job(SCRIPT_MEMORY) as job:  # the time limit stops what it started too; its memory is bounded
+            process = subprocess.Popen([sys.executable, "-I", "-X", "utf8", str(script)], cwd=folder, env=env,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+            job.add(process)
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                job.kill()
+                process.kill()
+                stdout, stderr = process.communicate()
+                out = stdout.decode("utf-8", "replace") + stderr.decode("utf-8", "replace")
+                return _tail(out) + f"\n[stopped: longer than {timeout_s} s]", True
     finally:
         script.unlink(missing_ok=True)
-    out = done.stdout.decode("utf-8", "replace") + done.stderr.decode("utf-8", "replace")
-    return _tail(out) + f"\n[exit code {done.returncode}]", done.returncode != 0
+    out = stdout.decode("utf-8", "replace") + stderr.decode("utf-8", "replace")
+    return _tail(out) + f"\n[exit code {process.returncode}]", process.returncode != 0
 
 
 def _tail(text: str) -> str:
@@ -264,17 +288,18 @@ class AgentToolbox:
         self._transport = transport  # tests give a stand-in for the network
         self._secrets = secrets  # the user's API keys for http_request (9.4b): the model never sees them
 
-    async def handle(self, run_id: str, call: dict[str, Any], cancel, ask) -> tuple[str, bool]:
-        """`ask(tool, data, cover)`: the run's approval - None when allowed, else what the model reads."""
+    async def handle(self, run_id: str, call: dict[str, Any], cancel, ask, *, cloud: bool = False) -> tuple[str, bool]:
+        """`ask(tool, data, cover)`: the run's approval - None when allowed, else what the model reads. `cloud`: the
+        model answering is a cloud one - it reads only the folders the user let the cloud see."""
         import asyncio
 
         args = call["input"] if isinstance(call["input"], dict) else {}
         name = call["name"]
         try:
             if name == "folder_list":
-                return await self._db.acall(lambda conn: folder_list(conn, str(args.get("path") or ""))), False
+                return await self._db.acall(lambda c: folder_list(c, str(args.get("path") or ""), cloud=cloud)), False
             if name == "folder_read":
-                return await self._db.acall(lambda conn: folder_read(conn, str(args.get("path") or ""))), False
+                return await self._db.acall(lambda c: folder_read(c, str(args.get("path") or ""), cloud=cloud)), False
             if name == "folder_write":
                 path = await self._db.acall(lambda conn: allowed_path(conn, str(args.get("path") or ""), write=True))
                 content = str(args.get("content") or "")

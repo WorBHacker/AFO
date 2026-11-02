@@ -532,6 +532,19 @@ class AutonomyView(QObject):
     def setFolderWrite(self, path: str, write: bool) -> None:
         self._save_access(folders=[{**f, "write": write} if f["path"] == path else f for f in self.accessFolders])
 
+    @Slot(str, bool)
+    def setFolderCloud(self, path: str, cloud: bool) -> None:
+        """A cloud model may read this folder too (D10, D46): by default only local ones do."""
+        self._save_access(folders=[{**f, "cloud": cloud} if f["path"] == path else f for f in self.accessFolders])
+
+    @Property(bool, notify=changed)
+    def screenCloud(self) -> bool:
+        return bool(self._access.get("screen_cloud"))
+
+    @Slot(bool)
+    def setScreenCloud(self, on: bool) -> None:
+        self._save_access(screen_cloud=on)
+
     @Slot(str)
     def setDomains(self, text: str) -> None:
         hosts = [h for h in text.replace(",", " ").split() if h]

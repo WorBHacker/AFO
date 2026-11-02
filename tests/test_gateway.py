@@ -8,6 +8,7 @@ import pytest
 
 from hub.gateway.base import cost_usd
 from hub.gateway.openai_compat import OpenAICompatProvider
+from hub.gateway.registry import locality_of
 
 
 def sse(*chunks: str) -> bytes:
@@ -142,3 +143,13 @@ def test_cancel_stops_the_stream_but_still_ends():
 )
 def test_cost(usage, prices, expected):
     assert cost_usd(usage, prices) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("url", "locality"),
+    [("http://127.0.0.1:8080", "local"), ("http://localhost:8080/v1", "local"), ("http://[::1]:8080", "local"),
+     ("http://192.168.1.20:8080", "cloud"), ("https://gpu.example.com", "cloud"), ("http://box:8080", "cloud")],
+)  # fmt: skip
+def test_a_llama_swap_elsewhere_counts_as_the_cloud(url, locality):
+    """The audit (D46): what a chat sends to llama-swap on another machine leaves this one - D10 treats it so."""
+    assert locality_of(url) == locality

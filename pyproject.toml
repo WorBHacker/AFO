@@ -23,7 +23,8 @@ hub = [
     "pypdf>=6.21",  # 2026-10-29: the text of a PDF sent with a message (hub/attachments.py)
 ]
 app = ["PySide6-Essentials>=6.12", "httpx>=0.28", "websockets>=17", "markdown-it-py>=4.0", "pygments>=2.21", "pyte>=0.8"]
-dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16"]  # httpx2: what Starlette's TestClient wants now
+dev = ["ruff>=0.14", "pytest>=8.4", "httpx2>=2.16", "pip-audit>=2.9"]  # httpx2: what Starlette's TestClient wants now
+# the exact versions it is built and tested with: requirements.lock (D46)
 
 [tool.setuptools.packages.find]
 include = ["hub*", "app*", "common*"]

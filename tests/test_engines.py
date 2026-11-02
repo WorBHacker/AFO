@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 from common.hardware import build_for
-from hub import engines
+from hub import engines, hf
 from hub import llama_config as lc
 
 
@@ -73,3 +73,21 @@ def test_archives_unpack_inside_their_folder_and_the_first_config(tmp_path):
     assert lc.macros(text)["llama_server"].endswith('b1-cuda-13/llama-server.exe"')
     with pytest.raises(engines.EngineError, match="не трогаю"):
         engines.write_config(config, folder / "llama-server.exe")
+
+
+def test_an_archive_without_its_sha256_is_not_put_in(tmp_path):
+    """The audit (D46): a release GitHub gave no digest for is refused, as ripgrep's is - nothing is downloaded."""
+    asset = {"name": "llama-b1-bin-win-cpu-x64.zip", "url": "https://github.com/x/a.zip", "size": 10, "sha256": None}
+    with pytest.raises(engines.EngineError, match="контрольную сумму"):
+        engines.fetch([asset], tmp_path / "dl", tmp_path / "engine", report=lambda n, t: None, cancel=None)
+    assert not (tmp_path / "dl").exists()
+
+
+@pytest.mark.parametrize(
+    ("override", "used"),
+    [(None, "https://huggingface.co"), ("https://mirror.example/", "https://mirror.example"),
+     ("http://127.0.0.1:9001", "http://127.0.0.1:9001"), ("http://mirror.example", "https://huggingface.co"),
+     ("ftp://x", "https://huggingface.co")],
+)  # fmt: skip
+def test_download_addresses_from_the_environment_are_https_or_this_computer(override, used):
+    assert hf.safe_base(override, "https://huggingface.co") == used
