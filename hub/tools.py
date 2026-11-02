@@ -17,6 +17,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from common import invisible
+
 from . import projects, search
 from .limits import DEFAULTS, limit
 from .projects import Project, ProjectError
@@ -187,6 +189,9 @@ class ToolContext:
     terminals: Any = None  # hub.terminals.TerminalManager
     processes: Any = None  # hub.processes.ProcessMonitor
     symbols: SymbolIndex = field(default_factory=SymbolIndex)  # the hub's shared index
+    # the chat's: "<project id>:<path>" -> sha256 of the version its model read - write_file over a file changed since
+    # (or never read) is refused (D46); None where nobody keeps it (MCP)
+    seen: dict[str, str] | None = None
     by_name: dict[str, Project] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -283,6 +288,8 @@ def _read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     data = projects.read_file(project.root, path)
     if data["binary"]:
         return f"{data['path']} is a binary file ({data['size']} bytes)"
+    if ctx.seen is not None and data["sha256"]:  # the version this chat's model has read (D46)
+        ctx.seen[f"{project.id}:{data['path']}"] = data["sha256"]
     lines = data["text"].replace("\r\n", "\n").split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -293,9 +300,15 @@ def _read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     end = start + len(part) - 1
     width = len(str(end))
     body = "\n".join(f"{n:>{width}}| {line}" for n, line in enumerate(part, start))
-    head = f"{data['path']} (lines {start}-{end} of {total}{', file cut at 2 MB' if data['truncated'] else ''})"
+    notes = [", file cut at 2 MB" if data["truncated"] else "",
+             f", {data['eol']} line ends" if data["eol"] in ("CRLF", "CRLF+LF") else "",
+             f", {data['encoding']}" if data["encoding"] not in ("utf-8", "") else ""]  # fmt: skip
+    head = f"{data['path']} (lines {start}-{end} of {total}{''.join(notes)})"
     more = f"\n[{total - end} more lines: read on with start_line={end + 1}]" if end < total else ""
-    return f"{head}\n{body}{more}"
+    hidden = [n for n in invisible.lines_with("\n".join(part)) if n]  # numbered within the part
+    warn = (f"\n[invisible characters (bidi or zero-width) on lines {', '.join(str(start + n - 1) for n in hidden)}: "
+            "the code may read differently from what it does - tell the user]") if hidden else ""  # fmt: skip
+    return f"{head}\n{body}{more}{warn}"
 
 
 def _search(args: dict[str, Any], ctx: ToolContext) -> str:

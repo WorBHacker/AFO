@@ -132,6 +132,7 @@ def approval_rows(
             "note": short_path(str(preview.get("note") or ""), roots) if preview.get("kind") == "diff"
                     else str(preview.get("note") or ""),
             "previewKind": preview.get("kind", "text"),
+            "hidden": str(preview.get("hidden") or ""),  # invisible characters in it (D46): a warning above it
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)

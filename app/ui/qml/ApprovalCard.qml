@@ -114,6 +114,17 @@ FocusScope {
             font.pixelSize: 12
         }
         Text {
+            objectName: "approvalHidden"
+            width: parent.width
+            visible: text !== ""
+            text: card.request.hidden ? "⚠ " + card.request.hidden : ""
+            wrapMode: Text.Wrap
+            color: Theme.p.error
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+        }
+        Text {
             width: parent.width
             visible: text !== ""
             text: card.request.note || ""

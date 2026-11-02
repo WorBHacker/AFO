@@ -214,3 +214,62 @@ def test_stopping_while_asking(hub, repo):  # noqa: F811
     assert result["error"] is True and result["output"].startswith("not run")
     assert hub.get("/v1/approvals").json()["approvals"] == []  # the request closed with the run
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")
+
+
+# --- the audit (D46): nothing lost on a write ---
+
+
+def test_a_write_keeps_the_files_mark_and_line_ends(repo):
+    """write_file over a Windows file with a byte order mark keeps both; edit_file puts CRLF into what it adds even
+    when old_text is one line (it mixed line ends before)."""
+    p = project(repo)
+    (repo / "win.txt").write_bytes(b"\xef\xbb\xbfone\r\ntwo\r\n")
+    whole = changes.plan("write_file", p, {"project": "proj", "path": "win.txt", "content": "uno\ndos\ntres\n"})
+    assert whole.after == b"\xef\xbb\xbfuno\r\ndos\r\ntres\r\n"
+    added = changes.plan("edit_file", p, edit("win.txt", "two", "two\nthree"))  # a one-line old_text
+    assert added.after == b"\xef\xbb\xbfone\r\ntwo\r\nthree\r\n"
+    (repo / "unix.txt").write_bytes(b"a\nb\n")
+    assert changes.plan("write_file", p, {"project": "proj", "path": "unix.txt", "content": "x\r\ny\r\n"}).after \
+        == b"x\ny\n"  # fmt: skip
+
+
+def test_a_write_is_whole_or_not_at_all(tmp_path, monkeypatch):
+    """Written beside the file, then put in its place: no half file, no temporary file left; a file another program
+    holds for a moment is waited out."""
+    target = tmp_path / "a.txt"
+    target.write_text("old", encoding="utf-8")
+    replace, tries = changes.os.replace, []
+
+    def busy_once(src, dst):
+        tries.append(dst)
+        if len(tries) == 1:
+            raise PermissionError(32, "the file is used by another process")
+        replace(src, dst)
+
+    monkeypatch.setattr(changes.os, "replace", busy_once)
+    changes.write_atomic(target, b"new")
+    assert target.read_bytes() == b"new" and len(tries) == 2 and [p.name for p in tmp_path.iterdir()] == ["a.txt"]
+    monkeypatch.setattr(changes.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError(32, "held")))
+    with pytest.raises(PermissionError):
+        changes.write_atomic(target, b"newer")
+    assert target.read_bytes() == b"new" and [p.name for p in tmp_path.iterdir()] == ["a.txt"]  # the old one stays
+
+
+def test_write_file_does_not_overwrite_what_the_model_has_not_read(hub, repo):  # noqa: F811
+    """A whole new content over a file the model never read in this chat - or the user changed since - is refused;
+    after reading it the write goes through, and the model knows its own write."""
+    read = {"id": "r1", "name": "read_file", "input": {"project": "proj", "path": "README.md"}}
+    whole = {"id": "w1", "name": "write_file", "input": {"project": "proj", "path": "README.md", "content": "# A\n"}}
+    again = {"id": "w2", "name": "write_file", "input": {"project": "proj", "path": "README.md", "content": "# B\n"}}
+    _pid, conv, provider = setup_chat(hub, repo, [[whole], [read], [whole], [again]], mode="trusted")
+    say(hub, conv)
+    results = [b for m in finished(hub, conv) if m["role"] == "tool" for b in m["content"]]
+    assert results[0]["error"] and "have not read it in this chat" in results[0]["output"]
+    assert not results[2]["error"] and not results[3]["error"]  # read, then written; its own write it knows
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# B\n"
+    provider.steps += [[whole]]
+    (repo / "README.md").write_text("# Правка человека\n", encoding="utf-8")  # the user, meanwhile
+    say(hub, conv)
+    result = [b for m in finished(hub, conv) if m["role"] == "tool" for b in m["content"]][-1]
+    assert result["error"] and "has changed since you read it" in result["output"]
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Правка человека\n"

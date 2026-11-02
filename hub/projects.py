@@ -7,6 +7,7 @@ status, log and diff never take the index lock (GIT_OPTIONAL_LOCKS=0), so they d
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -285,18 +286,32 @@ def read_file(root: Path, rel: str, max_bytes: int = MAX_READ_BYTES) -> dict[str
     size = path.stat().st_size
     with path.open("rb") as handle:
         data = handle.read(max_bytes)
-    result: dict[str, Any] = {"path": _rel(root, path), "size": size, "truncated": size > len(data)}
-    if b"\0" in data[:BINARY_SNIFF]:
-        return {**result, "binary": True, "text": "", "encoding": ""}
-    for encoding in ("utf-8", "cp1251"):
-        try:
-            text = data.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
+    truncated = size > len(data)
+    result: dict[str, Any] = {"path": _rel(root, path), "size": size, "truncated": truncated,
+                              "sha256": "" if truncated else hashlib.sha256(data).hexdigest()}  # fmt: skip
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):  # UTF-16 by its byte order mark: text, though full of zeros
+        text, encoding = data.decode("utf-16", "replace"), "utf-16"
+    elif b"\0" in data[:BINARY_SNIFF]:
+        return {**result, "binary": True, "text": "", "encoding": "", "eol": ""}
+    elif data.startswith(b"\xef\xbb\xbf"):  # the mark itself is not text: nobody should copy it into an edit
+        text, encoding = data[3:].decode("utf-8", "replace"), "utf-8 BOM"
     else:
-        text, encoding = data.decode("utf-8", "replace"), "utf-8"
-    return {**result, "binary": False, "text": text, "encoding": encoding}
+        for encoding in ("utf-8", "cp1251"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text, encoding = data.decode("utf-8", "replace"), "utf-8"
+    return {**result, "binary": False, "text": text, "encoding": encoding, "eol": line_ends(text)}
+
+
+def line_ends(text: str) -> str:
+    """CRLF, LF, both («CRLF+LF») or "" (one line): the viewer and a model are told (D46)."""
+    crlf = text.count("\r\n")
+    lf = text.count("\n") - crlf
+    return "CRLF+LF" if crlf and lf else "CRLF" if crlf else "LF" if lf else ""
 
 
 # --- git ---

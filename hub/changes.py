@@ -4,14 +4,19 @@ A model proposes a write; the chat asks the user with a diff (hub/approvals.py) 
 covers it, then the hub checks that the file is still what the user saw, writes it, and records the change: the file
 before and after, by hash, the contents kept once each in data/snapshots. Any change can be undone while the file is
 still as the change left it (or forced). Only inside the chat's projects, never a secret file or git's own folder,
-UTF-8 text only. Events: file.changed, file.reverted - both in the feed.
+UTF-8 text only. A write is whole or not at all (beside the file, then in its place), and an existing file keeps
+its byte order mark and its line ends (D46). Events: file.changed, file.reverted - both in the feed.
 """
 
 from __future__ import annotations
 
 import difflib
 import hashlib
+import os
+import shutil
 import sqlite3
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,8 +49,9 @@ WRITE_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "write_file",
-        "description": "Create a file in a project, or replace all of its content. The user is asked first and sees "
-        "the diff. To change part of an existing file use edit_file.",
+        "description": "Create a file in a project, or replace all of its content - an existing file only after you "
+        "read it in this chat (read_file), else it is refused. The user is asked first and sees the diff. To change "
+        "part of an existing file use edit_file.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -129,6 +135,50 @@ def _text_of(name: str, data: bytes) -> str:
         raise WriteError(f"{name} is not UTF-8 text: the hub does not change it") from exc
 
 
+def line_end(text: str) -> str:
+    """The file's own line end: CRLF when most of its lines have it, else LF."""
+    crlf = text.count("\r\n")
+    return "\r\n" if crlf > text.count("\n") - crlf else "\n"
+
+
+def _crlf(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
+def as_the_file_has_it(before: bytes, old_text: str, content: str) -> bytes:
+    """A whole new text written the way the file was (D46): its byte order mark and its line ends - a model writes
+    \\n and no mark, and a Windows file should not change on every line for that."""
+    content = content.removeprefix("﻿")
+    content = _crlf(content) if line_end(old_text) == "\r\n" else content.replace("\r\n", "\n")
+    return (b"\xef\xbb\xbf" if before.startswith(b"\xef\xbb\xbf") else b"") + content.encode("utf-8")
+
+
+def write_atomic(target: Path, data: bytes) -> None:
+    """The whole file or nothing (D46): written beside it, then put in its place - a hub stopped in the middle leaves
+    the old file, not half of the new one. Windows lets another program (an antivirus, an editor) hold a file for a
+    moment: the swap is tried again a few times."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".localchat", dir=target.parent)
+    try:
+        with os.fdopen(handle, "wb") as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        if target.exists():
+            shutil.copymode(target, temp)
+        for wait in (0.05, 0.2, 0.5, None):
+            try:
+                os.replace(temp, target)
+                return
+            except PermissionError:
+                if wait is None:
+                    raise
+                time.sleep(wait)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
 def plan(tool: str, project: Project, args: dict[str, Any]) -> Planned:
     """What a write would do, checked: the model's mistakes come back as WriteError for it to read."""
     rel, target = _target(project, args)
@@ -137,17 +187,19 @@ def plan(tool: str, project: Project, args: dict[str, Any]) -> Planned:
         content = args.get("content")
         if not isinstance(content, str):
             raise WriteError("`content` must be the file's text")
-        if before is not None:
-            _text_of(rel, before)
-        return Planned(rel, target, before, content.encode("utf-8"))
+        if before is None:
+            return Planned(rel, target, None, content.encode("utf-8"))
+        return Planned(rel, target, before, as_the_file_has_it(before, _text_of(rel, before), content))
     old, new = args.get("old_text"), args.get("new_text")
     if not isinstance(old, str) or not old or not isinstance(new, str):
         raise WriteError("`old_text` (not empty) and `new_text` must be text")
     if before is None:
         raise WriteError(f"{rel} does not exist: create it with write_file")
     text = _text_of(rel, before)
-    if old not in text and "\r\n" in text:  # the model writes \n; the file may have Windows line ends
-        old, new = old.replace("\r\n", "\n").replace("\n", "\r\n"), new.replace("\r\n", "\n").replace("\n", "\r\n")
+    if line_end(text) == "\r\n":  # the model writes \n; a file with Windows line ends gets them in what it adds too
+        new = _crlf(new)
+        if old not in text:
+            old = _crlf(old)
     count = text.count(old)
     if count == 0:
         raise WriteError(f"old_text is not in {rel}: read the file again (without the line numbers) and copy it"
@@ -175,8 +227,7 @@ def apply(planned: Planned, folder: Path) -> tuple[str | None, str]:
         raise WriteError(f"{planned.path} changed while the user was deciding: read it again and propose anew")
     before = keep(folder, planned.before) if planned.before is not None else None
     after = keep(folder, planned.after)
-    planned.target.parent.mkdir(parents=True, exist_ok=True)
-    planned.target.write_bytes(planned.after)
+    write_atomic(planned.target, planned.after)
     return before, after
 
 
@@ -258,8 +309,7 @@ def revert(change: dict[str, Any], project: Project, folder: Path, *, force: boo
     if change["before_hash"] is None:
         target.unlink(missing_ok=True)
     else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(load(folder, change["before_hash"]))
+        write_atomic(target, load(folder, change["before_hash"]))
 
 
 def mark_reverted(conn: sqlite3.Connection, change_id: int) -> dict[str, Any]:

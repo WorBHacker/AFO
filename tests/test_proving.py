@@ -115,7 +115,11 @@ FIZZ_PROJECT = "полигон · Почини FizzBuzz"
 
 
 def write(project, path, content):
-    return [("write_file", {"project": project, "path": path, "content": content})]
+    """A whole file written, read first in the same turn - as the hub asks of a model (D46)."""
+    return [
+        ("read_file", {"project": project, "path": path}),
+        ("write_file", {"project": project, "path": path, "content": content}),
+    ]
 
 
 def ran(hub, run_id, *statuses):  # noqa: F811 - the fixture's name

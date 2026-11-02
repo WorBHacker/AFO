@@ -5343,3 +5343,15 @@ def test_the_sandbox_says_what_of_its_diff_is_not_shown():
     long = "+x\n" * (PREVIEW_LINES + 50)
     assert row(long)["more"].startswith(f"Показаны первые {PREVIEW_LINES} строк из {PREVIEW_LINES + 50} — «Применить»")
     assert "с лишним" in row(long, chars=len(long) * 3)["more"]  # the hub cut it too
+
+
+def test_the_viewer_tells_the_line_ends_and_invisible_characters():
+    """The audit (D46): the file's header says CRLF / LF and warns of bidi or zero-width characters."""
+    from app.ui.project_rows import file_view
+
+    plain = file_view({"path": "a.txt", "size": 4, "text": "a\r\nb\r\n", "encoding": "utf-8", "eol": "CRLF"})
+    assert plain["eol"] == "CRLF" and plain["hidden"] == ""
+    trojan = file_view({"path": "auth.py", "size": 40, "encoding": "utf-8", "eol": "LF",
+                        "text": "ok = 1\nif role == 'user\u202e':\n    x = '\u200b'\n"})  # fmt: skip
+    assert trojan["hidden"] == "⚠ невидимые символы: 2 (строки 2, 3)"
+    assert file_view({"path": "b.txt", "size": 3, "text": "\ufeffok", "encoding": "utf-8"})["hidden"] == ""

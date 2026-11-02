@@ -1001,11 +1001,21 @@ Item {
                 Text {
                     width: parent.width
                     text: view.file.missing ? "удалён с диска"
-                          : [view.file.sizeText, view.file.encoding, view.file.lang,
+                          : [view.file.sizeText, view.file.encoding, view.file.eol, view.file.lang,
                              view.file.truncated ? "показаны первые 2 МБ" : "",
                              view.file.linesText].filter(s => !!s).join(" · ")
                     elide: Text.ElideRight
                     color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
+                Text {  // bidi or zero-width characters: the code may read differently from what it does (D46)
+                    objectName: "fileHidden"
+                    width: parent.width
+                    visible: !!view.file.hidden && !view.file.missing
+                    text: view.file.hidden || ""
+                    elide: Text.ElideRight
+                    color: Theme.p.error
                     font.family: Theme.uiFont
                     font.pixelSize: 11
                 }

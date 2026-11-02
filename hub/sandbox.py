@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from . import projects
+from .changes import write_atomic
 from .projects import Project
 
 GIT_TIMEOUT = 60
@@ -142,8 +143,7 @@ def apply(folder: Path, conversation_id: str, project: Project) -> dict[str, Any
         if data is None:
             target.unlink(missing_ok=True)
         else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            write_atomic(target, data)  # the whole file or nothing (D46)
     discard(folder, conversation_id, project)
     return {"applied": [name for name, _data, _clean in planned],
             "conflicts": [name for name, _data, clean in planned if not clean]}  # fmt: skip

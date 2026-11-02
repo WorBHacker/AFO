@@ -13,6 +13,8 @@ from typing import Any
 from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
 
+from common import invisible
+
 from .. import palette, presenter
 from ..render import highlight_lines
 
@@ -174,6 +176,8 @@ def file_view(data: dict[str, Any]) -> dict[str, Any]:
         "folder": path.rsplit("/", 1)[0] if "/" in path else "",
         "sizeText": size_text(data["size"]),
         "encoding": data.get("encoding", ""),
+        "eol": data.get("eol", ""),  # CRLF, LF or both (D46)
+        "hidden": invisible.summary(data.get("text", "")),  # invisible characters in it (D46)
         "binary": bool(data.get("binary")),
         "truncated": bool(data.get("truncated")),
         "lang": language_of(path),

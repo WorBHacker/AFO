@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from common import invisible
+
 from .db import Database, utc_now
 from .events import EventBus
 
@@ -156,7 +158,16 @@ def grant_key(tool: str, data: dict[str, Any]) -> str | None:
 
 
 def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str]:
-    """What the user should see to decide: a command, a diff of the file as it would become, a URL, or the input."""
+    """What the user should see to decide: a command, a diff of the file as it would become, a URL, or the input.
+    Characters a person cannot see (bidi, zero-width - «Trojan Source», D46) are shown as ⟦U+202E⟧, with a warning
+    in `hidden`."""
+    shown = _preview(tool, data, root)
+    if hidden := invisible.warning(shown.get("text", "")):
+        shown = {**shown, "text": invisible.reveal(shown["text"]), "hidden": hidden}
+    return shown
+
+
+def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str]:
     if tool in HUB_WRITES:
         data = {
             "file_path": data.get("path", ""),

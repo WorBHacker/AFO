@@ -196,7 +196,9 @@ async def delete_conversation(
         raise HTTPException(status_code=404, detail="no such conversation")
     if chat.sandboxes is not None:  # its «Песочница» goes with it: worktree, branch, ref (D46)
         await asyncio.to_thread(_drop_sandboxes, chat.sandboxes, conversation_id, attached)
-    chat.sandbox_broken.pop(conversation_id, None)
+    for kept in (chat.sandbox_broken, chat.seen_files):  # what the hub held for it in memory
+        kept.pop(conversation_id, None)
+    chat.outside.discard(conversation_id)
 
 
 def _drop_sandboxes(folder, conversation_id: str, attached: list) -> None:

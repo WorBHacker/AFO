@@ -151,6 +151,8 @@ class ChatService:
         self.outside: set[str] = set()
         # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
         self.sandbox_broken: dict[str, dict[str, str]] = {}
+        # what each chat's model read: "<project id>:<path>" -> sha256 (D46; tools.ToolContext.seen)
+        self.seen_files: dict[str, dict[str, str]] = {}
 
     @property
     def busy(self) -> list[str]:
@@ -431,8 +433,8 @@ class ChatService:
             if mode == "sandbox" and self.sandboxes is not None:  # its tools see each git project's worktree
                 broken = self.sandbox_broken.setdefault(conversation_id, {})
                 visible = await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, visible, broken)
-            ctx = ToolContext(visible, terminals=self.terminals, processes=self.processes,
-                              symbols=self.symbols)  # fmt: skip
+            ctx = ToolContext(visible, terminals=self.terminals, processes=self.processes, symbols=self.symbols,
+                              seen=self.seen_files.setdefault(conversation_id, {}))  # fmt: skip
             accepts = self._gateway.accepts(model["id"])
             model_id = model["id"]
             system, params, version = await self._db.acall(
@@ -844,8 +846,17 @@ class ChatService:
             planned = await asyncio.to_thread(changes.plan, call["name"], project, args)
         except (ToolError, changes.WriteError) as exc:
             return str(exc), True
+        seen = ctx.seen if ctx.seen is not None else {}
+        key = f"{project.id}:{planned.path}"
+        if call["name"] == "write_file" and planned.before is not None and seen.get(key) != changes.digest(
+                planned.before):  # fmt: skip
+            return (f"not done: {planned.path} has changed since you read it, or you have not read it in this chat - "
+                    "read it again first; a whole new content would lose what is there now"), True  # fmt: skip
         if settings["mode"] == "sandbox":  # into the worktree, unasked: the user reviews the diff (D17)
-            return await self._sandbox_write(conversation_id, project, planned)
+            done = await self._sandbox_write(conversation_id, project, planned)
+            if not done[1]:
+                seen[key] = changes.digest(planned.after)  # it knows its own write
+            return done
         approval_id = None
         tainted = await self.read_the_web(conversation_id)
         if settings["mode"] != "trusted" or tainted:  # after reading the web, trust does not count (D19)
@@ -861,6 +872,7 @@ class ChatService:
             return str(exc), True
         except OSError as exc:
             return f"could not write {planned.path}: {exc.strerror or exc}", True
+        seen[key] = hashes[1]  # it knows its own write
         change = await self._db.acall(lambda conn: changes.record(conn, project.id, planned, hashes, call["name"],
                                                                    conversation_id, approval_id))  # fmt: skip
         await self._bus.publish("file.changed", {"change": change, "project_id": project.id}, project_id=project.id)

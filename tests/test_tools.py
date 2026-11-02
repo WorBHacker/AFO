@@ -437,3 +437,20 @@ def test_git_diff_staged_a_branch_and_the_log(ctx, repo):
     assert error and "no branch or commit 'nope'" in nope
     log, error = tool("git_log", {"project": "proj", "count": 1}, ctx)
     assert not error and "feature work" in log and "first" not in log
+
+
+def test_encodings_line_ends_and_invisible_characters(ctx, repo):
+    """The audit (D46): a byte order mark is not text, UTF-16 is not binary, a model is told of CRLF - and of bidi
+    or zero-width characters that can make code read differently from what it does."""
+    (repo / "bom.txt").write_bytes(b"\xef\xbb\xbfone\r\ntwo\r\n")
+    (repo / "wide.txt").write_bytes("привет\n".encode("utf-16"))
+    data = projects.read_file(repo, "bom.txt")
+    assert data["text"] == "one\r\ntwo\r\n" and data["encoding"] == "utf-8 BOM" and data["eol"] == "CRLF"
+    wide = projects.read_file(repo, "wide.txt")
+    assert not wide["binary"] and wide["text"] == "привет\n" and wide["encoding"] == "utf-16" and wide["eol"] == "LF"
+    shown, error = tool("read_file", {"project": "proj", "path": "bom.txt"}, ctx)
+    assert not error and "CRLF line ends, utf-8 BOM)" in shown.splitlines()[0] and "1| one" in shown
+    (repo / "trojan.py").write_text("ok = True\nif user == 'admin\u202e \u2066':  # admin\n    grant()\n",
+                                    encoding="utf-8")  # fmt: skip
+    shown, error = tool("read_file", {"project": "proj", "path": "trojan.py"}, ctx)
+    assert not error and "invisible characters (bidi or zero-width) on lines 2:" in shown

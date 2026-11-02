@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import winjob
+from . import changes, winjob
 from .db import utc_now
 from .secret_filter import clean, is_secret_file
 
@@ -207,6 +207,18 @@ def folder_read(conn: sqlite3.Connection, raw: str, *, cloud: bool = False) -> s
     return text + (f"\n[cut at {READ_MAX} bytes of {path.stat().st_size}]" if path.stat().st_size > READ_MAX else "")
 
 
+def _write_folder_file(path: Path, content: str) -> None:
+    """A whole file in an allowed folder: all of it or nothing, and an existing UTF-8 file keeps its byte order mark
+    and line ends (D46); a new one is as given."""
+    before = path.read_bytes() if path.is_file() else None
+    try:
+        data = content.encode("utf-8") if before is None else changes.as_the_file_has_it(before, before.decode(
+            "utf-8"), content)  # fmt: skip
+    except UnicodeDecodeError:
+        data = content.encode("utf-8")  # not UTF-8 before: the agent replaces it as it said
+    changes.write_atomic(path, data)
+
+
 def sandbox_dir(root: Path, run_id: str) -> Path:
     folder = root / re.sub(r"[^\w-]", "_", run_id)
     folder.mkdir(parents=True, exist_ok=True)
@@ -306,8 +318,7 @@ class AgentToolbox:
                 refused = await ask("Write", {"file_path": str(path), "content": content}, True)
                 if refused:
                     return refused, True
-                await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
-                await asyncio.to_thread(path.write_bytes, content.encode("utf-8"))  # as given: no \r\n added
+                await asyncio.to_thread(_write_folder_file, path, content)
                 return f"Written: {path} ({len(content)} characters).", False
             if name == "run_python":
                 code = str(args.get("code") or "")

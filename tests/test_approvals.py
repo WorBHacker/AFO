@@ -220,3 +220,21 @@ def test_an_answer_for_the_project_needs_a_project_and_no_destruction(queue):
     assert asyncio.run(scenario({"command": "pytest"}))["scope"] == "once"  # no project: nothing to make a rule for
     assert asyncio.run(scenario({"command": "git push"}))["scope"] == "once"  # destructive: never a rule (D17)
     assert db.call(lambda conn: conn.execute("SELECT COUNT(*) FROM permission_rules").fetchone()[0]) == 0
+
+
+def test_what_a_person_cannot_see_is_shown_and_warned_of(tmp_path):
+    """The audit (D46, «Trojan Source»): an edit or a command with bidi or zero-width characters shows each as
+    ⟦U+…⟧ on the card, with a warning above it; the window's card carries it."""
+    from app.ui.approvals import approval_rows
+
+    (tmp_path / "auth.py").write_text("if role == 'user':\n    deny()\n", encoding="utf-8")
+    edit = {"file_path": "auth.py", "old_string": "'user'", "new_string": "'user\u202e\u2066'  # admin"}
+    shown = preview("Edit", edit, tmp_path)
+    assert "⟦U+202E⟧⟦U+2066⟧" in shown["text"] and "\u202e" not in shown["text"]
+    assert shown["hidden"].startswith("Невидимые символы: U+202E, U+2066")
+    command = preview("Bash", {"command": "echo ok\u200b && git status"}, None)
+    assert "⟦U+200B⟧" in command["text"] and "U+200B" in command["hidden"]
+    assert "hidden" not in preview("Bash", {"command": "git status"}, None)
+    rows = approval_rows([{"id": "a1", "tool": "Edit", "kind": "write", "input": edit, "preview": shown}], projects={},
+                         chats={})  # fmt: skip
+    assert rows[0]["hidden"] == shown["hidden"]

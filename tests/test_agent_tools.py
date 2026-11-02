@@ -216,3 +216,14 @@ def test_keys_through_the_hub(hub):  # noqa: F811
     assert hub.get("/v1/agent/keys").json()["keys"][0]["host"] == "api2.weather.example"  # the key kept
     assert hub.delete("/v1/agent/keys/weather", headers=headers).json() == {"keys": []}
     assert hub.app.state.secrets.get(at.KEY_SECRET + "weather") is None
+
+
+def test_a_folder_file_is_written_whole_and_keeps_its_line_ends(tmp_path):
+    """The audit (D46): folder_write keeps a Windows file's byte order mark and CRLF, leaves no temporary file."""
+    target = tmp_path / "notes.txt"
+    target.write_bytes(b"\xef\xbb\xbfone\r\n")
+    at._write_folder_file(target, "uno\ndos\n")
+    assert target.read_bytes() == b"\xef\xbb\xbfuno\r\ndos\r\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["notes.txt"]
+    at._write_folder_file(tmp_path / "new.txt", "a\n")
+    assert (tmp_path / "new.txt").read_bytes() == b"a\n"

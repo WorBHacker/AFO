@@ -233,7 +233,10 @@ def test_lost_tests_are_regressed_without_the_judge_and_twice_stop_the_goal(hub,
     (repo / "tests").mkdir()
     (repo / "tests" / "test_app.py").write_text("def test_one():\n    assert False\n", encoding="utf-8", newline="\n")
     referee = use(hub, Scripted("judge", [verdict("ACHIEVED")]))
-    gone = [("write_file", {"project": "proj", "path": "tests/test_app.py", "content": "# пусто\n"})]
+    gone = [
+        ("read_file", {"project": "proj", "path": "tests/test_app.py"}),  # read first: no blind overwrite (D46)
+        ("write_file", {"project": "proj", "path": "tests/test_app.py", "content": "# пусто\n"}),
+    ]
     worker = use(hub, Gated("agent", [gone, "Убрал падающий тест.", "Ничего не менял."]))
     _pid, conv = chat_with_project(hub, repo, worker)
     set_goal(hub, conv, judge_model_id="judge/m", criteria=[{"command": "exit 0"}])
@@ -247,7 +250,10 @@ def test_lost_tests_are_regressed_without_the_judge_and_twice_stop_the_goal(hub,
 
 def test_a_file_that_does_not_parse_goes_back_before_the_judge(hub, repo):  # noqa: F811
     referee = use(hub, Scripted("judge", [verdict("ACHIEVED")]))
-    broken = [("write_file", {"project": "proj", "path": "src/app.py", "content": "def f(:\n    pass\n"})]
+    broken = [
+        ("read_file", {"project": "proj", "path": "src/app.py"}),  # read first: no blind overwrite (D46)
+        ("write_file", {"project": "proj", "path": "src/app.py", "content": "def f(:\n    pass\n"}),
+    ]
     fixed = [("write_file", {"project": "proj", "path": "src/app.py", "content": "def f():\n    pass\n"})]
     worker = use(hub, Gated("agent", [broken, "Написал f.", fixed, "Поправил."]))
     _pid, conv = chat_with_project(hub, repo, worker)
