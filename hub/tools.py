@@ -92,12 +92,27 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "git_diff",
         "description": f"The uncommitted changes of a project (or of one file in it) as a unified diff, up to "
-        f"{DIFF_LINES} lines.",
+        f"{DIFF_LINES} lines. `staged`: what is staged for the next commit instead; `base`: what the current branch "
+        "changed since it left that branch (e.g. main) - for a review.",
         "parameters": {
             "type": "object",
             "properties": {
                 "project": PROJECT,
                 "path": {"type": "string", "description": "One file (optional; all changes without it)."},
+                "staged": {"type": "boolean", "description": "The staged changes (git diff --cached)."},
+                "base": {"type": "string", "description": "A branch: the changes since the branch left it."},
+            },
+            "required": ["project"],
+        },
+    },
+    {
+        "name": "git_log",
+        "description": "A project's recent commits: short sha, date, author, subject.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project": PROJECT,
+                "count": {"type": "integer", "description": "Up to 100; 20 if left out."},
             },
             "required": ["project"],
         },
@@ -378,17 +393,32 @@ def _git_status(args: dict[str, Any], ctx: ToolContext) -> str:
 def _git_diff(args: dict[str, Any], ctx: ToolContext) -> str:
     project = ctx.project(args.get("project"))
     path = _text(args.get("path"), "path")
+    staged = args.get("staged", False)
+    if not isinstance(staged, bool):
+        raise ToolError("`staged` must be true or false")
+    base = _text(args.get("base"), "base").strip()
+    if base and not re.fullmatch(r"[\w][\w./-]*", base):
+        raise ToolError("`base` must be a branch name, such as main")
     if path and projects.secret_file(project.root, path):
         raise ToolError(f"{path} holds secrets; its changes are not shown")
-    diff = projects.git_diff(project.root, path)["diff"]
+    diff = projects.git_diff(project.root, path, staged=staged, base=base)["diff"]
     if not diff:
-        return "no uncommitted changes" + (f" in {path}" if path else "")
-    # a diff of a secret file is left out whole
+        what = f"no changes since {base}" if base else "nothing staged" if staged else "no uncommitted changes"
+        return what + (f" in {path}" if path else "")
+    # a diff of a secret file is left out whole (its name may hold spaces: up to " b/")
     sections = re.split(r"(?=^diff --git )", diff, flags=re.M)
-    kept = [s for s in sections if not (m := re.match(r"diff --git a/(\S+)", s)) or not is_secret_file(m.group(1))]
+    kept = [s for s in sections if not (m := re.match(r"diff --git a/(.+?) b/", s)) or not is_secret_file(m.group(1))]
     lines = "".join(kept).splitlines()
     more = f"\n[{len(lines) - DIFF_LINES} more lines: ask for one file at a time]" if len(lines) > DIFF_LINES else ""
     return "\n".join(lines[:DIFF_LINES]) + more
+
+
+def _git_log(args: dict[str, Any], ctx: ToolContext) -> str:
+    project = ctx.project(args.get("project"))
+    count = _int(args.get("count"), "count", 20, 1, 100)
+    log = projects.git_log(project.root, count)
+    lines = [f"{c['sha']} {c['when'][:10]} {c['author']}: {c['subject']}" for c in log]
+    return "\n".join(lines) if lines else f"{project.name}: no commits (or not a git repository)"
 
 
 async def _terminal_output(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -444,6 +474,7 @@ _BLOCKING = {
     "search_code": _search,
     "git_status": _git_status,
     "git_diff": _git_diff,
+    "git_log": _git_log,
     "find_symbol": _find_symbol,
     "file_outline": _file_outline,
 }

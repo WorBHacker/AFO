@@ -5328,3 +5328,18 @@ def test_a_finished_install_is_not_undone_by_a_stale_list(app):
     app.on_event({"type": "install.forgotten", "payload": {"id": "j2"}})
     wait_until(lambda: not app.bg.busy and not view._jobs_loading)
     assert [(j["id"], j["status"]) for j in view._jobs] == [("j1", "done")] and view.activeCount == 0
+
+
+def test_the_sandbox_says_what_of_its_diff_is_not_shown():
+    """The audit (D46): the sheet shows the diff's first lines - and now says so; «Применить» takes every file."""
+    from app.ui.approvals import PREVIEW_LINES
+    from app.ui.sandbox_view import sandbox_rows
+
+    def row(diff, chars=0):
+        return sandbox_rows([{"project_id": "p", "name": "proj", "files": [{"path": "a.py", "status": "changed"}],
+                              "diff": diff, "diff_chars": chars or len(diff)}])[0]  # fmt: skip
+
+    assert row("+x\n" * 10)["more"] == "" and len(row("+x\n" * 10)["lines"]) == 10
+    long = "+x\n" * (PREVIEW_LINES + 50)
+    assert row(long)["more"].startswith(f"Показаны первые {PREVIEW_LINES} строк из {PREVIEW_LINES + 50} — «Применить»")
+    assert "с лишним" in row(long, chars=len(long) * 3)["more"]  # the hub cut it too

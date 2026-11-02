@@ -37,7 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import commands, store
+from . import commands, projects, store
 from .db import Database, utc_now
 from .events import EventBus
 from .goals import ASK_PERSON, GoalError, Goals
@@ -111,12 +111,21 @@ def copy_task(spec: dict[str, Any], folder: Path) -> None:
     """The task's files in a fresh folder, as a git repository with one commit (blocking)."""
     shutil.copytree(TASKS_DIR / spec["id"] / "files", folder)
     (folder / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")  # Python's caches are not changes
-    git = ["git", "-C", str(folder), "-c", "user.name=LocalChat", "-c", "user.email=proving@localchat"]
-    flags = {"capture_output": True, "timeout": 60, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-    with contextlib.suppress(OSError, subprocess.SubprocessError):  # without git the judge reads the hub's writes
-        subprocess.run(["git", "-C", str(folder), "init", "-q", "-b", "main"], check=True, **flags)
-        subprocess.run([*git, "add", "-A"], check=True, **flags)
-        subprocess.run([*git, "commit", "-q", "-m", "the task as given"], check=True, **flags)
+    # the user's own git settings stay out of it (D46): their hooks, their signing - a copy is not their project
+    own = ["-c", "user.name=LocalChat", "-c", "user.email=proving@localchat", "-c", "commit.gpgsign=false",
+           "-c", f"core.hooksPath={folder / '.git' / 'no-hooks'}"]  # fmt: skip
+    steps = (("init", "-q", "-b", "main"), (*own, "add", "-A"), (*own, "commit", "-q", "-m", "the task as given"))
+    for args in steps:
+        step = next(a for a in args if a in ("init", "add", "commit"))
+        try:
+            done = projects.git(folder, *args, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:  # without git the judge reads the hub's writes
+            log.warning("proving copy %s: git %s did not run: %s", folder.name, step, exc)
+            return
+        if done.returncode != 0:
+            log.warning("proving copy %s: git %s failed: %s", folder.name, step,
+                        done.stderr.decode("utf-8", "replace").strip()[:300])  # fmt: skip
+            return
 
 
 def _remove_tree(folder: Path) -> None:

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shutil
 import sqlite3
@@ -30,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import budgets, changes, model_settings, store, syntax
+from . import budgets, changes, model_settings, projects, store, syntax
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -84,8 +83,7 @@ class JudgeError(Exception):
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> str:
     try:
-        done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=GIT_TIMEOUT, env=env,
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+        done = projects.git(root, *args, timeout=GIT_TIMEOUT, env=env)  # paths as they are, no locks, no prompts
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise JudgeError(f"git did not run: {exc}") from exc
     if done.returncode != 0:
@@ -105,7 +103,7 @@ def snapshot(root: Path) -> str:
         temp = Path(folder) / "index"
         if index.is_file():  # its file times spare git re-reading files that did not change
             shutil.copyfile(index, temp)
-        env = {**os.environ, "GIT_INDEX_FILE": str(temp)}
+        env = {"GIT_INDEX_FILE": str(temp)}
         _git(root, "add", "-A", env=env)
         return _git(root, "write-tree", env=env).strip()
 
@@ -116,9 +114,9 @@ STATUS = {"A": "added", "D": "deleted", "M": "changed"}
 def tree_changes(root: Path, base: str, head: str) -> list[dict[str, str]]:
     """What differs between the two trees, secret files left out: [{path, status}]."""
     out = []
-    for line in _git(root, "diff", "--name-status", "--no-renames", base, head).splitlines():
-        status, _, path = line.partition("\t")
-        if path and not is_secret_file(path):
+    found = _git(root, "diff", "--name-status", "--no-renames", "-z", base, head).split("\0")
+    for status, path in zip(found[0::2], found[1::2], strict=False):  # -z: a path with Cyrillic comes as it is
+        if status and path and not is_secret_file(path):
             out.append({"path": path, "status": STATUS.get(status[:1], "changed")})
     return out
 

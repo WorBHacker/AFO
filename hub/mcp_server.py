@@ -216,11 +216,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         count: Annotated[int, Field(description="How many commits, up to 100.")] = 20,
     ) -> str:
         """A project's recent commits: short sha, date, author, subject."""
-        _client, tools = await tool_context(ctx)
-        p = pick(tools, project)
-        log = await asyncio.to_thread(projects.git_log, p.root, max(1, min(count, 100)))
-        lines = [f"{c['sha']} {c['when'][:10]} {c['author']}: {c['subject']}" for c in log]
-        return clean("\n".join(lines)) if lines else f"{p.name}: no commits (or not a git repository)"
+        return await run("git_log", {"project": project, "count": max(1, min(count, 100))}, ctx)  # the chat's own
 
     # --- what is happening (D4) ---
 

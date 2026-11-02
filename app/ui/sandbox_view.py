@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from .approvals import preview_lines
+from .approvals import PREVIEW_LINES, preview_lines
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -20,8 +20,20 @@ STATUS = {"added": "новый", "deleted": "удалён", "changed": "изме
 def sandbox_rows(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": p["project_id"], "name": p["name"], "error": p.get("error", ""),
              "files": [f"{f['path']} — {STATUS.get(f['status'], f['status'])}" for f in p.get("files", [])],
-             "lines": preview_lines({"kind": "diff", "text": p.get("diff", "")})}
+             "lines": preview_lines({"kind": "diff", "text": p.get("diff", "")}), "more": more_text(p)}
             for p in projects if p.get("files") or p.get("error")]  # fmt: skip
+
+
+def more_text(project: dict[str, Any]) -> str:
+    """What of the diff is not shown (D46): the window shows its first lines; the hub sends at most 400 000 characters
+    - «Применить» takes every file all the same."""
+    diff = str(project.get("diff") or "")
+    total = len(diff.splitlines())
+    cut = int(project.get("diff_chars") or 0) > len(diff)
+    if total <= PREVIEW_LINES and not cut:
+        return ""
+    said = f"Показаны первые {min(total, PREVIEW_LINES)} строк из {total}{' с лишним' if cut else ''}"
+    return said + " — «Применить» переносит все файлы целиком."
 
 
 class SandboxView(QObject):

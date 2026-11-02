@@ -204,3 +204,20 @@ def test_a_restart_stops_what_was_going(hub):  # noqa: F811
     stopped = hub.get("/v1/proving/runs").json()["runs"][0]
     assert stopped["id"] == run["id"] and stopped["status"] == "stopped" and stopped["detail"] == "хаб перезапустился"
     assert hub.get(f"/v1/conversations/{run['conversation_id']}/goal").json()["goal"]["status"] == "cleared"
+
+
+def test_a_copy_commits_whatever_the_users_own_git_says(tmp_path, monkeypatch):
+    """The audit (D46): the user's global git signs every commit and runs a hook that fails - a task's copy is not
+    their project: it gets its commit all the same (before, the failure was swallowed and the copy had none)."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text("#!/bin/sh\necho 'the user hook says no' >&2\nexit 1\n", encoding="utf-8",
+                                      newline="\n")  # fmt: skip
+    config = tmp_path / "gitconfig"
+    config.write_text(f"[commit]\n\tgpgsign = true\n[core]\n\thooksPath = {hooks.as_posix()}\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+    spec = next(s for s in proving.tasks() if s["id"] == "fizzbuzz")
+    copy = tmp_path / "copy"
+    proving.copy_task(spec, copy)
+    log = subprocess.run(["git", "-C", str(copy), "log", "--format=%s"], capture_output=True, text=True)
+    assert log.stdout.strip() == "the task as given"

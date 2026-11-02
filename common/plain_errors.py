@@ -83,6 +83,12 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
         "контекстом; у локальной модели контекст можно поднять: «Настройка моделей → Запуск в llama-swap → Контекст» "
         "(агенту нужно не меньше 32768).",
     ),
+    (  # git's lock files: another program works with the repository right now (D46)
+        re.compile(r"(?i)index\.lock|\.lock'?: File exists|cannot lock ref|Unable to create '[^']*\.lock'"),
+        "Git занят другой программой",
+        "С этим репозиторием сейчас работает другая программа — терминал, VS Code или git в фоне. Подождите минуту и "
+        "повторите. Если это повторяется, а git нигде не запущен, удалите файл .git/index.lock.",
+    ),
     (
         re.compile(
             r"(?i)name resolution|getaddrinfo|Network is unreachable|no route to host|SSL|certificate|"

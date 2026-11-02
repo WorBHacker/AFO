@@ -138,3 +138,11 @@ def test_a_cloud_judge_sees_no_local_only_project(hub, repo):  # noqa: F811
     roles(hub, judge="sky/m")  # the role says the same when the goal names none
     body.pop("judge_model_id")
     assert "cloud model" in hub.put(f"/v1/conversations/{conv}/goal", json=body).json()["detail"]
+
+
+def test_a_file_with_cyrillic_in_its_name_is_seen_as_it_is(repo):
+    """The audit (D46): git wrote such a path as "\320\276..." - the judge then could not read or check the file."""
+    before = judge.snapshot(repo)
+    (repo / "отчёт за год.md").write_text("# Итог\n", encoding="utf-8")
+    after = judge.snapshot(repo)
+    assert {"path": "отчёт за год.md", "status": "added"} in judge.tree_changes(repo, before, after)

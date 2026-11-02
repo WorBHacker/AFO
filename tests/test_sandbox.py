@@ -8,7 +8,7 @@ import pytest
 from hub import sandbox as sb
 from hub.projects import Project
 from tests.conftest import run_git
-from tests.test_changes import edit, finished, say, setup_chat
+from tests.test_changes import edit, finished, new_chat, say, setup_chat
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 
@@ -90,3 +90,114 @@ def test_a_sandbox_without_git(hub, tmp_path):  # noqa: F811
     say(hub, conv)
     result = next(m for m in finished(hub, conv) if m["role"] == "tool")["content"][0]
     assert result["error"] is True and "not a git repository" in result["output"] and not (plain / "b.txt").exists()
+
+
+def test_a_chat_takes_its_sandbox_with_it_and_a_failed_one_does_nothing(hub, repo, monkeypatch):  # noqa: F811
+    """The audit (D46): deleting a chat removes its sandbox (worktree, branch, ref); a sandbox git could not make
+    does not hand the model the project itself - its write and command are refused with why."""
+    write = {"id": "w1", "name": "edit_file", "input": edit()}
+    pid, conv, provider = setup_chat(hub, repo, [[write]], mode="sandbox")
+    say(hub, conv)
+    finished(hub, conv)
+    folder = hub.app.state.chat.sandboxes
+    kept = sb.place(folder, conv, project_of(repo, pid))
+    assert kept.exists()
+    assert hub.delete(f"/v1/conversations/{conv}").status_code == 204
+    branches = subprocess.run(["git", "-C", str(repo), "branch", "--list"], capture_output=True, text=True).stdout
+    assert not kept.exists() and "sandbox" not in branches
+
+    def cannot(*_args, **_kwargs):
+        raise sb.SandboxError("fatal: Unable to create '.git/index.lock': File exists.")
+
+    monkeypatch.setattr(sb, "ensure", cannot)
+    run = {"id": "c1", "name": "run_command", "input": {"project": "proj", "command": "echo x > made.txt"}}
+    provider.steps += [[write], [run]]
+    other = new_chat(hub, pid, "sandbox")
+    say(hub, other)
+    results = [m["content"][0] for m in finished(hub, other) if m["role"] == "tool"]
+    assert all(r["error"] and "sandbox copy of «proj» could not be made" in r["output"] for r in results)
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")  # untouched
+    assert not (repo / "made.txt").exists() and hub.get("/v1/approvals").json()["approvals"] == []
+
+
+def test_what_the_audit_found_names_renames_and_windows_line_ends(repo, tmp_path):
+    """The audit (D46): a file with Cyrillic or a space in its name, a renamed file, a project that checks files out
+    with CRLF (core.autocrlf=true, as Git for Windows sets it) - applied without a false conflict; what the model
+    committed in the sandbox is still its change."""
+    run_git(repo, "config", "core.autocrlf", "true")
+    (repo / "отчёт за год.txt").write_text("первая\nвторая\n", encoding="utf-8", newline="\n")
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", "report")
+    (repo / "отчёт за год.txt").write_text("первая\r\nвторая\r\n", encoding="utf-8", newline="")  # as checkout has it
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-5", project)
+    report = inside.root / "отчёт за год.txt"
+    report.write_bytes(report.read_bytes().replace("вторая".encode(), "вторая, правка модели".encode()))
+    (inside.root / "README.md").rename(inside.root / "ПРОЧТИ.md")
+    run_git(inside.root, "add", "-A")
+    run_git(inside.root, "commit", "-q", "-m", "the model committed")  # its change all the same
+    found = sb.changes(folder, "conv-5", project)
+    assert sorted((f["path"], f["status"]) for f in found["files"]) == [
+        ("README.md", "deleted"), ("ПРОЧТИ.md", "added"), ("отчёт за год.txt", "changed")]  # fmt: skip
+    done = sb.apply(folder, "conv-5", project)
+    assert done["conflicts"] == [] and sorted(done["applied"]) == ["README.md", "ПРОЧТИ.md", "отчёт за год.txt"]
+    assert (repo / "отчёт за год.txt").read_text(encoding="utf-8").splitlines() == ["первая", "вторая, правка модели"]
+    assert not (repo / "README.md").exists() and (repo / "ПРОЧТИ.md").read_text(encoding="utf-8").startswith("# ")
+    refs = subprocess.run(["git", "-C", str(repo), "for-each-ref", "refs/localchat"], capture_output=True, text=True)
+    assert refs.stdout == ""  # the sandbox's base went with it
+
+
+def test_nothing_is_written_until_every_file_is_worked_out(repo, tmp_path, monkeypatch):
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-6", project)
+    (inside.root / "README.md").write_text("# Новое\n", encoding="utf-8", newline="\n")
+    (inside.root / "src" / "app.py").write_text("print('x')\n", encoding="utf-8", newline="\n")
+    merge = sb._merge_one
+
+    def second_fails(root, sandbox, base, name, status):
+        if name == "src/app.py":
+            raise sb.SandboxError("git could not read it")
+        return merge(root, sandbox, base, name, status)
+
+    monkeypatch.setattr(sb, "_merge_one", second_fails)
+    with pytest.raises(sb.SandboxError, match="could not read"):
+        sb.apply(folder, "conv-6", project)
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"  # the first file was not written either
+    assert inside.root.exists()  # the sandbox stays: the user may try again
+
+
+def test_sandboxes_of_chats_that_are_gone_are_swept(repo, tmp_path):
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    kept, gone = sb.ensure(folder, "keep1", project), sb.ensure(folder, "gone1", project)
+    assert sb.orphans(folder, {"keep1"}, {project.id: project}) == ["gone1/p1"]
+    assert kept.root.exists() and not gone.root.exists()
+    branches = subprocess.run(["git", "-C", str(repo), "branch", "--list"], capture_output=True, text=True).stdout
+    assert "sandbox-keep1" in branches and "sandbox-gone1" not in branches
+
+
+def test_a_lock_of_the_users_git_is_waited_out(repo, monkeypatch):
+    """The user's git (a terminal, VS Code) holds .git/index.lock: the hub's own write tries again a little, then
+    says it in plain words (common/plain_errors.py)."""
+    from common.plain_errors import explain
+    from hub import projects
+
+    real, calls = projects.git, []
+    locked = b"fatal: Unable to create '.git/index.lock': File exists."
+
+    def busy_twice(root, *args, **kwargs):
+        calls.append(args)
+        if len(calls) <= 2:
+            return subprocess.CompletedProcess(args, 128, b"", locked)
+        return real(root, *args, **kwargs)
+
+    monkeypatch.setattr(sb, "LOCK_WAITS", (0, 0, 0))
+    monkeypatch.setattr(projects, "git", busy_twice)
+    assert "main" in sb._git(repo, "branch", "--list", retry=True) and len(calls) == 3  # the third try went through
+    calls.clear()
+    monkeypatch.setattr(projects, "git", lambda *a, **k: subprocess.CompletedProcess(a, 128, b"", b"cannot lock ref"))
+    with pytest.raises(sb.SandboxError) as caught:
+        sb._git(repo, "branch", "-D", "x", retry=True)
+    assert explain(str(caught.value))[0] == "Git занят другой программой"

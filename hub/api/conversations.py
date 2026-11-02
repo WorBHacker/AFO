@@ -6,18 +6,21 @@ POST .../messages returns at once with the stored user message, and the answer f
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import store
+from .. import sandbox, store
 from ..auth import APP_CLIENT, Client
-from ..chat import DEFAULT_EFFORT, BudgetReached
+from ..chat import DEFAULT_EFFORT, BudgetReached, _attached
 from ..gateway import GatewayError
 from .deps import own_conversation, require_client
 
 router = APIRouter(prefix="/v1")
+log = logging.getLogger("hub.conversations")
 
 EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
@@ -185,10 +188,24 @@ async def delete_conversation(
     conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> None:
     await own_conversation(request, client, conversation_id)
-    request.app.state.chat.cancel(conversation_id)
+    chat = request.app.state.chat
+    chat.cancel(conversation_id)
+    attached = await request.app.state.db.acall(lambda conn: _attached(conn, conversation_id))
     deleted = await request.app.state.db.acall(lambda conn: store.delete_conversation(conn, conversation_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="no such conversation")
+    if chat.sandboxes is not None:  # its «Песочница» goes with it: worktree, branch, ref (D46)
+        await asyncio.to_thread(_drop_sandboxes, chat.sandboxes, conversation_id, attached)
+    chat.sandbox_broken.pop(conversation_id, None)
+
+
+def _drop_sandboxes(folder, conversation_id: str, attached: list) -> None:
+    for project in attached:
+        if sandbox.is_git(project):
+            try:
+                sandbox.discard(folder, conversation_id, project)
+            except sandbox.SandboxError as exc:  # the user's git busy: the next start of the hub tries again
+                log.warning("the sandbox of %s in %s stays for now: %s", project.name, conversation_id, exc)
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=202)

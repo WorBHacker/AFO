@@ -191,11 +191,17 @@ def _rel(root: Path, path: Path) -> str:
 
 
 def git(
-    root: Path, *args: str, timeout: float = GIT_TIMEOUT_S, input: bytes | None = None
+    root: Path,
+    *args: str,
+    timeout: float = GIT_TIMEOUT_S,
+    input: bytes | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C.UTF-8"}
+    """The one way the hub runs git (D46): reads never take the index lock, git never asks for a password, its
+    messages are in English, and a path with Cyrillic in it comes back as it is, not as "\\320\\276..."."""
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C.UTF-8", **(env or {})}
     return subprocess.run(
-        ["git", "-C", str(root), *args],
+        ["git", "-C", str(root), "-c", "core.quotepath=false", *args],
         input=input,
         capture_output=True,
         timeout=timeout,
@@ -343,17 +349,18 @@ def git_log(root: Path, limit: int = 20) -> list[dict[str, str]]:
     return commits
 
 
-def git_diff(root: Path, rel: str = "", *, staged: bool = False) -> dict[str, Any]:
-    """The unified diff of the working tree (or the index) against git, for one file or the whole project.
-    An untracked file is shown as all new."""
+def git_diff(root: Path, rel: str = "", *, staged: bool = False, base: str = "") -> dict[str, Any]:
+    """The unified diff of the working tree (or the index) against git, for one file or the whole project; with
+    `base` (a branch), what the current branch changed since it left it. An untracked file is shown as all new."""
     if not is_repo(root):
         raise ProjectError("not a git repository")
     target = _rel(root, resolve_inside(root, rel)) if rel else ""
-    args = (
-        ["diff", "--no-color", "--no-ext-diff"] + (["--cached"] if staged else []) + (["--", target] if target else [])
-    )
+    if base and (base.startswith("-") or git(root, "rev-parse", "--verify", "-q", f"{base}^{{commit}}").returncode):
+        raise ProjectError(f"no branch or commit {base!r} here")
+    args = (["diff", "--no-color", "--no-ext-diff"] + (["--cached"] if staged and not base else [])
+            + ([f"{base}...HEAD"] if base else []) + (["--", target] if target else []))  # fmt: skip
     text = git(root, *args).stdout.decode("utf-8", "replace")
-    if not text and target and not staged:
+    if not text and target and not staged and not base:
         untracked = git(root, "ls-files", "--others", "--exclude-standard", "--", target).stdout.strip()
         if untracked:
             text = git(root, "diff", "--no-color", "--no-index", "--", os.devnull, target).stdout.decode(

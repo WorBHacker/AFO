@@ -21,6 +21,7 @@ from hub.server import create_app
 from hub.settings import HubSettings
 from hub.store import MessageRow
 from hub.tools import TOOLS, ToolContext, plain_terminal_text, run_tool
+from tests.conftest import run_git
 
 BASE = "http://127.0.0.1:8765"
 WS_HOST = {"Host": "127.0.0.1:8765"}
@@ -418,3 +419,21 @@ def test_a_projects_session_is_made_as_such(hub, repo):
     assert [p["id"] if isinstance(p, dict) else p for p in hub.get(f"/v1/conversations/{cid}").json()["projects"]] == [
         pid
     ]
+
+
+def test_git_diff_staged_a_branch_and_the_log(ctx, repo):
+    """The audit (D46): a model sees what is staged and what its branch changed since main (a review), reads the log
+    in a chat as through MCP; a secret file is left out of a diff even with a space in its name."""
+    (repo / "my secrets.env").write_text(f"ANTHROPIC_API_KEY={SECRET}\n", encoding="utf-8")
+    run_git(repo, "add", "src/app.py", "my secrets.env")
+    staged, error = tool("git_diff", {"project": "proj", "staged": True}, ctx)
+    assert not error and "+print('new line')" in staged and "my secrets.env" not in staged and SECRET not in staged
+    run_git(repo, "checkout", "-q", "-b", "feature")
+    run_git(repo, "commit", "-q", "-m", "feature work")
+    since, error = tool("git_diff", {"project": "proj", "base": "main"}, ctx)
+    assert not error and "+print('new line')" in since and "my secrets.env" not in since
+    assert tool("git_diff", {"project": "proj", "base": "--output=x"}, ctx)[1] is True
+    nope, error = tool("git_diff", {"project": "proj", "base": "nope"}, ctx)
+    assert error and "no branch or commit 'nope'" in nope
+    log, error = tool("git_log", {"project": "proj", "count": 1}, ctx)
+    assert not error and "feature work" in log and "first" not in log

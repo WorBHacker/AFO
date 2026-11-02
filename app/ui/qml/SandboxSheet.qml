@@ -101,6 +101,16 @@ Sheet {
                     }
                 }
             }
+            Text {
+                objectName: "sandboxMore"
+                visible: entry.modelData.more !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: entry.modelData.more
+                color: Theme.p.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
         }
     }
 }

@@ -80,6 +80,7 @@ from .projects import keep_private, list_projects, set_path
 from .proving import ProvingGround
 from .retention import Keeper
 from .ripgrep import Fetcher
+from .sandbox import orphans as sandbox_orphans
 from .schedule import Scheduler
 from .secrets import SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
@@ -209,6 +210,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if await app.state.proving.start():  # before the goals go on: the proving ground's do not
             log.info("runs of the proving ground left going by the last hub are stopped")
         goals_on = asyncio.create_task(_resume_goals(app))  # once the catalog is read: their models must be known
+        sweep = asyncio.create_task(_sweep_sandboxes(app))  # sandboxes of chats gone while the hub was off (D46)
         log.info("hub ready, app token in %s", token_file)
         try:
             # the MCP app is mounted, not run: its session manager lives in the hub's lifespan
@@ -218,10 +220,13 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             catalog.cancel()
             servers.cancel()
             goals_on.cancel()
+            sweep.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await servers
             with contextlib.suppress(asyncio.CancelledError):
                 await goals_on
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweep
             await app.state.mcp.stop()
             await app.state.keeper.stop()
             app.state.computer.close()
@@ -291,6 +296,23 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     mcp, mcp_app = mcp_server.build(app)
     app.router.routes.append(Route("/mcp", endpoint=mcp_app))
     return app
+
+
+async def _sweep_sandboxes(app: FastAPI) -> None:
+    """«Песочница» worktrees whose chat is gone - deleted while the hub was off, or before a sandbox went with its
+    chat - removed with their branches and refs (D46). Git in a thread: the hub answers meanwhile."""
+
+    def read(conn):
+        return {r["id"] for r in conn.execute("SELECT id FROM conversations")}, {p.id: p for p in list_projects(conn)}
+
+    try:
+        live, by_id = await app.state.db.acall(read)
+        gone = await asyncio.to_thread(sandbox_orphans, app.state.chat.sandboxes, live, by_id)
+    except Exception:
+        log.exception("left sandboxes were not swept")
+        return
+    if gone:
+        log.info("sandboxes of chats that are gone, removed: %s", ", ".join(gone))
 
 
 async def _resume_goals(app: FastAPI) -> None:

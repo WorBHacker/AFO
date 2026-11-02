@@ -149,6 +149,8 @@ class ChatService:
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
         # chats whose Claude Code went to read the web (D19): known at once, before its results are stored
         self.outside: set[str] = set()
+        # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
+        self.sandbox_broken: dict[str, dict[str, str]] = {}
 
     @property
     def busy(self) -> list[str]:
@@ -336,7 +338,8 @@ class ChatService:
             lambda conn: (_attached(conn, conversation_id), store.context_settings(conn, conversation_id))
         )
         if settings["mode"] == "sandbox" and self.sandboxes is not None:
-            return await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, attached)
+            broken = self.sandbox_broken.setdefault(conversation_id, {})
+            return await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, attached, broken)
         return attached
 
     async def _run(
@@ -426,7 +429,8 @@ class ChatService:
             visible = [p for p in attached if p.cloud_ok or not cloud]
             mode = (await self._db.acall(lambda conn: store.context_settings(conn, conversation_id)))["mode"]
             if mode == "sandbox" and self.sandboxes is not None:  # its tools see each git project's worktree
-                visible = await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, visible)
+                broken = self.sandbox_broken.setdefault(conversation_id, {})
+                visible = await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, visible, broken)
             ctx = ToolContext(visible, terminals=self.terminals, processes=self.processes,
                               symbols=self.symbols)  # fmt: skip
             accepts = self._gateway.accepts(model["id"])
@@ -863,6 +867,8 @@ class ChatService:
         return f"{changes.summary(planned)} (change {change['id']}; the user can undo it)", False
 
     async def _sandbox_write(self, conversation_id: str, project, planned) -> tuple[str, bool]:
+        if why := self.sandbox_broken.get(conversation_id, {}).get(project.id):
+            return _no_sandbox(project, why), True
         if self.sandboxes is None or not project.root.is_relative_to(self.sandboxes):
             return (f"not done: «{project.name}» is not a git repository, and the sandbox needs one - the user may "
                     "switch the chat to «Спрашивать»"), True  # fmt: skip
@@ -891,6 +897,8 @@ class ChatService:
             commands.command_of(args)
         except ToolError as exc:
             return str(exc), True
+        if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
+            return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
         tainted = await self.read_the_web(conversation_id)
         if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args):
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
@@ -1299,17 +1307,25 @@ def _instructions(conn, conversation_id: str) -> str:
     return text
 
 
-def _sandboxed(folder: Path, conversation_id: str, projects: list) -> list:
+def _sandboxed(folder: Path, conversation_id: str, projects: list, broken: dict[str, str]) -> list:
     """The chat's projects in «Песочница» (D17): a git project as its worktree; another as it is - its writes are
-    refused (blocking: git, in a thread)."""
+    refused. A git project whose worktree could not be made stays as it is too, and `broken` says why: its writes and
+    commands are refused with that, never done in the project itself (D46). Blocking: git, in a thread."""
     out = []
     for project in projects:
         try:
             out.append(sandbox.ensure(folder, conversation_id, project) if sandbox.is_git(project) else project)
+            broken.pop(project.id, None)
         except sandbox.SandboxError as exc:
             log.warning("no sandbox for %s: %s", project.name, exc)
+            broken[project.id] = str(exc)
             out.append(project)
     return out
+
+
+def _no_sandbox(project, why: str) -> str:
+    return (f"not done: the sandbox copy of «{project.name}» could not be made ({why}); nothing is written or run in "
+            "the project itself - tell the user")  # fmt: skip
 
 
 def _attached(conn, conversation_id: str) -> list:
