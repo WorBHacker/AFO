@@ -8,6 +8,10 @@ Protocol (JSON text frames):
   misses nothing;
 - `{"op": "ping"}` gets `{"type": "pong"}`.
 If the client reads too slowly its queue overflows and the hub closes with code 1013: reconnect with `since`.
+
+The window gets every event. Another client (D31, D46) gets the hub's and the projects' state (OUTSIDE_EVENTS) - a
+cloud one only of the projects that allow the cloud - and the events of the conversations it began; never another
+conversation's text, an approval or a terminal's output.
 """
 
 from __future__ import annotations
@@ -21,9 +25,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from common import __version__
 
-from ..auth import APP_CLIENT
+from .. import store
+from ..auth import APP_CLIENT, Client
 from ..db import utc_now
-from ..events import EventBus, Subscription
+from ..events import Event, EventBus, Subscription, matches
 from .deps import client_from_headers
 
 log = logging.getLogger("hub.ws")
@@ -31,6 +36,44 @@ router = APIRouter(prefix="/v1")
 
 CLOSE_POLICY = 1008
 CLOSE_TRY_AGAIN = 1013
+# what a client other than the window follows besides its own conversations: state, never text
+OUTSIDE_EVENTS = ("hub.*", "project.*", "git.head", "processes.changed", "process.stopped", "port.*", "models.*",
+                  "llama_swap.started", "claude_code.limit")  # fmt: skip
+
+
+class _Gate:
+    """Whether this client gets an event; what it asks the database for is kept for the connection's life (a
+    project's cloud flag until the project changes)."""
+
+    def __init__(self, websocket: WebSocket, client: Client):
+        self._db = websocket.app.state.db
+        self._client = client
+        self._owners: dict[str, str | None] = {}
+        self._cloud: dict[str, bool] = {}
+
+    async def allows(self, event: Event) -> bool:
+        if self._client.name == APP_CLIENT:
+            return True
+        conversation = event.payload.get("conversation_id") or event.payload.get("run_id")
+        if isinstance(conversation, str) and conversation:  # a conversation's event: its own client's only
+            if conversation not in self._owners:
+                self._owners[conversation] = await self._db.acall(
+                    lambda conn: store.conversation_owner(conn, conversation)
+                )
+            return self._owners[conversation] == self._client.id
+        if not matches(event.type, OUTSIDE_EVENTS):
+            return False
+        if event.type in ("project.changed", "project.added", "project.removed"):
+            self._cloud.pop(event.project_id or event.payload.get("id") or "", None)
+        project = event.project_id or event.payload.get("id") if event.type.startswith("project.") else event.project_id
+        if not self._client.cloud or not project:
+            return True
+        if project not in self._cloud:
+            row = await self._db.acall(
+                lambda conn: conn.execute("SELECT cloud_ok FROM projects WHERE id = ?", (project,)).fetchone()
+            )
+            self._cloud[project] = bool(row and row["cloud_ok"])
+        return self._cloud[project]
 
 
 @dataclass
@@ -38,6 +81,7 @@ class _Stream:
     """One connection's state. `lock` keeps a replay and live sends from interleaving."""
 
     subscription: Subscription
+    gate: _Gate
     skip_until: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -51,7 +95,7 @@ async def events(websocket: WebSocket) -> None:
         return
     await websocket.accept()
     bus: EventBus = websocket.app.state.bus
-    stream = _Stream(bus.subscribe(("*",)))
+    stream = _Stream(bus.subscribe(("*",)), _Gate(websocket, client))
     await websocket.send_json(
         {
             "type": "hub.hello",
@@ -105,7 +149,8 @@ async def _resubscribe(websocket: WebSocket, bus: EventBus, stream: _Stream, mes
         sent_up_to = 0
         if isinstance(since, int) and since >= 0:
             for event in await bus.stored_after(since, topics):
-                await websocket.send_json(event.to_json())
+                if await stream.gate.allows(event):
+                    await websocket.send_json(event.to_json())
                 sent_up_to = event.id or sent_up_to
         stream.skip_until = sent_up_to
         await websocket.send_json(
@@ -128,4 +173,5 @@ async def _send_live(websocket: WebSocket, stream: _Stream) -> None:
                 continue  # left over from a subscription that was just replaced
             if event.id is not None and event.id <= stream.skip_until:
                 continue  # already sent by the replay
-            await websocket.send_json(event.to_json())
+            if await stream.gate.allows(event):
+                await websocket.send_json(event.to_json())

@@ -15,7 +15,7 @@ from .. import store
 from ..auth import APP_CLIENT, Client
 from ..chat import DEFAULT_EFFORT, BudgetReached
 from ..gateway import GatewayError
-from .deps import require_client
+from .deps import own_conversation, require_client
 
 router = APIRouter(prefix="/v1")
 
@@ -47,7 +47,11 @@ class SendMessage(BaseModel):
 @router.get("/conversations")
 async def list_conversations(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     rows = await request.app.state.db.acall(store.list_conversations)
-    return {"conversations": rows, "busy": request.app.state.chat.busy}
+    busy = request.app.state.chat.busy
+    if client.name != APP_CLIENT:  # another client: only what it began (D46)
+        mine = await request.app.state.db.acall(lambda conn: store.owned_conversations(conn, client.id))
+        rows, busy = [r for r in rows if r["id"] in mine], [c for c in busy if c in mine]
+    return {"conversations": rows, "busy": busy}
 
 
 @router.post("/conversations", status_code=201)
@@ -58,7 +62,8 @@ async def create_conversation(
         if body.home_project and conn.execute("SELECT 1 FROM projects WHERE id = ?", (body.home_project,)).fetchone() \
                 is None:  # fmt: skip
             return None
-        return store.create_conversation(conn, title=body.title, home_project=body.home_project)
+        return store.create_conversation(conn, title=body.title, home_project=body.home_project,
+                                         client_id=None if client.name == APP_CLIENT else client.id)  # fmt: skip
 
     cid = await request.app.state.db.acall(make)
     if cid is None:
@@ -70,6 +75,8 @@ async def create_conversation(
 async def get_conversation(
     conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
+    await own_conversation(request, client, conversation_id)
+
     def read(conn):
         title = store.get_title(conn, conversation_id)
         if title is None:
@@ -164,6 +171,7 @@ async def attach_projects(
 async def rename_conversation(
     conversation_id: str, body: ConversationPatch, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
+    await own_conversation(request, client, conversation_id)
     title = body.title.strip()
     renamed = await request.app.state.db.acall(lambda conn: store.set_title(conn, conversation_id, title))
     if not renamed:
@@ -176,6 +184,7 @@ async def rename_conversation(
 async def delete_conversation(
     conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> None:
+    await own_conversation(request, client, conversation_id)
     request.app.state.chat.cancel(conversation_id)
     deleted = await request.app.state.db.acall(lambda conn: store.delete_conversation(conn, conversation_id))
     if not deleted:
@@ -186,6 +195,7 @@ async def delete_conversation(
 async def send_message(
     conversation_id: str, body: SendMessage, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
+    await own_conversation(request, client, conversation_id)
     if body.effort not in EFFORTS:
         raise HTTPException(status_code=422, detail=f"effort must be one of {sorted(EFFORTS)}")
     if not body.content.strip() and not body.files:
@@ -220,4 +230,5 @@ async def send_message(
 async def cancel_run(
     conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
 ) -> dict:
+    await own_conversation(request, client, conversation_id)
     return {"cancelled": request.app.state.chat.cancel(conversation_id)}

@@ -19,6 +19,8 @@ from typing import Any
 
 from fastapi.routing import APIRoute, APIWebSocketRoute
 
+from .api.deps import OUTSIDE_ROUTES
+
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = ROOT / "docs" / "API.md"
 EVENT_TYPE = re.compile(r"^[a-z][a-z_]*(\.[a-z_*{}]+)+$")
@@ -37,7 +39,10 @@ INTRO = """\
 - Токен: заголовок `Authorization: Bearer <токен>`. У окна LocalChat свой токен (`data/tokens/app.token`), у
   внешних клиентов (Cline, Claude Code, расширение VS Code) — свои, их выдаёт окно в «Подключениях». Без токена
   открыт только `GET /v1/health`.
-- «Только окно» — запрос, который хаб принимает лишь от окна LocalChat; другим клиентам он отвечает 403.
+- «Только окно» — запрос, который хаб принимает лишь от окна LocalChat; другим клиентам он отвечает 403. Другой
+  клиент читает проекты так же, как через MCP (облачный — только проекты, где можно облако; без секретных файлов, текст
+  через фильтр секретов), а разговоры видит и продолжает только свои; по WebSocket он получает состояние хаба и
+  проектов и события своих разговоров (D31, D46).
 - Ошибки — JSON `{"detail": ...}`: 401 — нет токена или он неверный, 403 — не тот клиент, 404 — нет такого, 409 —
   конфликт состояния, 422 — неверные данные (у ошибок проверки `detail` — список полей).
 - Ответ модели в чате идёт не в ответе на `POST .../messages`, а событиями `chat.*` по WebSocket `/v1/events`.
@@ -88,7 +93,10 @@ def _who(route: APIRoute, guards: set[str]) -> str:
     if "require_client" not in calls and not route.dependant.dependencies:
         return "без токена"
     source = inspect.getsource(route.endpoint)
-    if "require_app" in calls or any(re.search(rf"\b{g}\(", source) for g in guards - {"require_app"}):
+    helpers = guards - {"require_app", route.endpoint.__name__}  # a route that compares the client itself is no guard
+    if "require_app" in calls or any(re.search(rf"\b{g}\(", source) for g in helpers):
+        return "только окно"
+    if not any((method, route.path) in OUTSIDE_ROUTES for method in route.methods):  # require_client's own list (D46)
         return "только окно"
     return "токен"
 

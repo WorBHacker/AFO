@@ -57,7 +57,9 @@ def test_notes_api_and_context(hub, repo):
     first = hub.post(f"/v1/projects/{pid}/notes", json={"text": "Деплой  только\nиз main"}).json()
     assert first["text"] == "Деплой только из main"  # one line, single spaces
     hub.post(f"/v1/projects/{pid}/notes", json={"text": "ключ в хранилище: API_KEY=sk-ant-api03-" + "n" * 40})
-    listed = hub.get(f"/v1/projects/{pid}/notes", headers=other).json()["notes"]  # reading is open
+    # the notes reach another client through MCP, as its rules say (D32); over REST they are the window's (D46)
+    assert hub.get(f"/v1/projects/{pid}/notes", headers=other).status_code == 403
+    listed = hub.get(f"/v1/projects/{pid}/notes").json()["notes"]
     assert [n["text"][:6] for n in listed] == ["Деплой", "ключ в"]
     assert (
         hub.put(f"/v1/notes/{first['id']}", json={"text": "Деплой из main и release"})

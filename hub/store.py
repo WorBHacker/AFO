@@ -107,11 +107,12 @@ class MessageRow:
 
 
 def create_conversation(conn: sqlite3.Connection, *, kind: str = "chat", title: str = "",
-                        home_project: str | None = None) -> str:  # fmt: skip
-    """`home_project`: a session of that project (begun in «Проекты», 2026-10-28) - it lives there, not in «Чаты»."""
+                        home_project: str | None = None, client_id: str | None = None) -> str:  # fmt: skip
+    """`home_project`: a session of that project (begun in «Проекты», 2026-10-28) - it lives there, not in «Чаты».
+    `client_id`: a client other than the window that began it - it sees and continues only its own (D46)."""
     cid = uuid.uuid4().hex
-    conn.execute("INSERT INTO conversations (id, kind, title, home_project) VALUES (?, ?, ?, ?)",
-                 (cid, kind, title, home_project or None))  # fmt: skip
+    conn.execute("INSERT INTO conversations (id, kind, title, home_project, client_id) VALUES (?, ?, ?, ?, ?)",
+                 (cid, kind, title, home_project or None, client_id))  # fmt: skip
     if home_project:  # its project is attached from the start
         conn.execute("INSERT OR IGNORE INTO conversation_projects (conversation_id, project_id) VALUES (?, ?)",
                      (cid, home_project))  # fmt: skip
@@ -120,6 +121,16 @@ def create_conversation(conn: sqlite3.Connection, *, kind: str = "chat", title: 
 
 def conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> bool:
     return conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone() is not None
+
+
+def conversation_owner(conn: sqlite3.Connection, conversation_id: str) -> str | None:
+    """The client that began it, other than the window; None for the window's (and the hub's) own."""
+    row = conn.execute("SELECT client_id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    return row["client_id"] if row else None
+
+
+def owned_conversations(conn: sqlite3.Connection, client_id: str) -> set[str]:
+    return {r["id"] for r in conn.execute("SELECT id FROM conversations WHERE client_id = ?", (client_id,))}
 
 
 def get_title(conn: sqlite3.Connection, conversation_id: str) -> str | None:

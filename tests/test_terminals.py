@@ -132,13 +132,15 @@ def test_terminals_api_and_the_end_with_the_hub(repo):
             == 403
         )
         assert client.post(f"/v1/terminals/{tid}/input", json={"data": "echo from-api\r\n"}).status_code == 204
+        # a terminal's output may hold anything typed in it: over REST it is the window's (D46); MCP gives it filtered
+        assert client.get(f"/v1/terminals/{tid}/output", headers=other).status_code == 403
         for _ in range(300):
-            if client.get(f"/v1/terminals/{tid}/output", headers=other).json()["data"].count("from-api") >= 2:
+            if client.get(f"/v1/terminals/{tid}/output").json()["data"].count("from-api") >= 2:
                 break
             client.portal.call(asyncio.sleep, 0.05)
         else:
             pytest.fail("no output")
-        listed = client.get("/v1/terminals", params={"project_id": pid}, headers=other).json()["terminals"]
+        listed = client.get("/v1/terminals", params={"project_id": pid}).json()["terminals"]
         assert [t["id"] for t in listed] == [tid] and listed[0]["status"] == "running"
         assert client.delete(f"/v1/terminals/{tid}").status_code == 409  # still running
         shell_pid = terminal["pid"]

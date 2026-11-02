@@ -9,7 +9,10 @@
 - Токен: заголовок `Authorization: Bearer <токен>`. У окна LocalChat свой токен (`data/tokens/app.token`), у
   внешних клиентов (Cline, Claude Code, расширение VS Code) — свои, их выдаёт окно в «Подключениях». Без токена
   открыт только `GET /v1/health`.
-- «Только окно» — запрос, который хаб принимает лишь от окна LocalChat; другим клиентам он отвечает 403.
+- «Только окно» — запрос, который хаб принимает лишь от окна LocalChat; другим клиентам он отвечает 403. Другой
+  клиент читает проекты так же, как через MCP (облачный — только проекты, где можно облако; без секретных файлов, текст
+  через фильтр секретов), а разговоры видит и продолжает только свои; по WebSocket он получает состояние хаба и
+  проектов и события своих разговоров (D31, D46).
 - Ошибки — JSON `{"detail": ...}`: 401 — нет токена или он неверный, 403 — не тот клиент, 404 — нет такого, 409 —
   конфликт состояния, 422 — неверные данные (у ошибок проверки `detail` — список полей).
 - Ответ модели в чате идёт не в ответе на `POST .../messages`, а событиями `chat.*` по WebSocket `/v1/events`.
@@ -26,8 +29,8 @@
 |---|---|---|---|---|
 | GET | `/v1/health` | без токена | `health()` |  |
 | GET | `/v1/info` | токен | `info()` |  |
-| GET | `/v1/usage` | токен | `usage()` |  |
-| GET | `/v1/feed` | токен | The event log, newest first (D29): what happened, for the window's feed. `types` - a comma list of types or prefixes ("terminal.*"); `before` - an event id, for the next page. | `?limit: int = 100`<br>`?before: int \| None = None`<br>`?project_id: str \| None = None`<br>`?types: str = ''` |
+| GET | `/v1/usage` | только окно | `usage()` |  |
+| GET | `/v1/feed` | только окно | The event log, newest first (D29): what happened, for the window's feed. `types` - a comma list of types or prefixes ("terminal.*"); `before` - an event id, for the next page. | `?limit: int = 100`<br>`?before: int \| None = None`<br>`?project_id: str \| None = None`<br>`?types: str = ''` |
 | GET | `/v1/status` | токен | GPU, memory and the loaded local model (the latest sample, or a fresh one), plus busy chats. The same picture arrives as `system.status` events whenever it changes. |  |
 | POST | `/v1/shutdown` | только окно | Graceful stop: the hub finishes requests, publishes hub.stopping and removes hub.json. |  |
 
@@ -38,8 +41,8 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/models` | токен | `models()` |  |
-| POST | `/v1/models/sync` | токен | `sync_models()` |  |
-| POST | `/v1/models/unload` | токен | Frees the GPU: llama-swap stops whatever local model it runs (it loads one again on the next message). |  |
+| POST | `/v1/models/sync` | только окно | `sync_models()` |  |
+| POST | `/v1/models/unload` | только окно | Frees the GPU: llama-swap stops whatever local model it runs (it loads one again on the next message). |  |
 
 ### model_settings
 
@@ -47,7 +50,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/model_settings` | токен | `read()` | `?model_id: str = ''` |
+| GET | `/v1/model_settings` | только окно | `read()` | `?model_id: str = ''` |
 | PUT | `/v1/model_settings` | только окно | `write()` | тело `{model_id: str = '', settings: dict[str, Any]}` |
 | POST | `/v1/model_settings/revert` | только окно | An earlier version back - as a new version, so the one replaced stays too. | тело `{model_id: str = '', version: int}` |
 | POST | `/v1/models/check` | только окно | One short answer with the model's settings and system prompts: its words, how soon the first one came, how fast the rest, what it cost (recorded as usage of the app, so budgets count it). | тело `{model_id: str}` |
@@ -112,12 +115,12 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/memory/facts` | только окно | `facts()` | `?q: str = ''` |
+| GET | `/v1/memory/facts` | токен | `facts()` | `?q: str = ''` |
 | POST | `/v1/memory/facts` | только окно | A fact the user writes in themselves. | тело `{text: str, about: str = '', personal: bool = False, cloud_ok: bool = False}` |
 | PUT | `/v1/memory/facts/{fact_id}` | только окно | `change_fact()` | тело `{text: str \| None = None, about: str \| None = None, personal: bool \| None = None, cloud_ok: bool \| None = None}` |
 | DELETE | `/v1/memory/facts/{fact_id}` | только окно | `delete_fact()` |  |
-| GET | `/v1/runs/{run_id}/notes` | токен | `run_notes()` |  |
-| GET | `/v1/skills` | токен | `skills()` | `?q: str = ''` |
+| GET | `/v1/runs/{run_id}/notes` | только окно | `run_notes()` |  |
+| GET | `/v1/skills` | только окно | `skills()` | `?q: str = ''` |
 | POST | `/v1/skills` | только окно | A finished task's plan kept as a skill - the user chose to. | тело `{run_id: str, name: str = ''}` |
 | DELETE | `/v1/skills/{skill_id}` | только окно | `delete_skill()` |  |
 
@@ -127,13 +130,13 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/schedules` | токен | `list_schedules()` |  |
-| POST | `/v1/schedules` | токен | `add_schedule()` | тело `{title: str = '', goal: dict[str, Any], trigger: dict[str, Any], computer: bool = False, enabled: bool = True}` |
-| PUT | `/v1/schedules/{sid}` | токен | `change_schedule()` | тело `{title: str \| None = None, goal: dict[str, Any] \| None = None, trigger: dict[str, Any] \| None = None, computer: bool \| None = None, enabled: bool \| None = None}` |
-| DELETE | `/v1/schedules/{sid}` | токен | `delete_schedule()` |  |
-| POST | `/v1/schedules/{sid}/run` | токен | Now, not waiting for its time or the morning. |  |
-| GET | `/v1/agent/quiet` | токен | `get_quiet()` |  |
-| PUT | `/v1/agent/quiet` | токен | `set_quiet()` | тело `{enabled: bool \| None = None, start: str \| None = None, end: str \| None = None}` |
+| GET | `/v1/schedules` | только окно | `list_schedules()` |  |
+| POST | `/v1/schedules` | только окно | `add_schedule()` | тело `{title: str = '', goal: dict[str, Any], trigger: dict[str, Any], computer: bool = False, enabled: bool = True}` |
+| PUT | `/v1/schedules/{sid}` | только окно | `change_schedule()` | тело `{title: str \| None = None, goal: dict[str, Any] \| None = None, trigger: dict[str, Any] \| None = None, computer: bool \| None = None, enabled: bool \| None = None}` |
+| DELETE | `/v1/schedules/{sid}` | только окно | `delete_schedule()` |  |
+| POST | `/v1/schedules/{sid}/run` | только окно | Now, not waiting for its time or the morning. |  |
+| GET | `/v1/agent/quiet` | только окно | `get_quiet()` |  |
+| PUT | `/v1/agent/quiet` | только окно | `set_quiet()` | тело `{enabled: bool \| None = None, start: str \| None = None, end: str \| None = None}` |
 
 ### mcp_servers
 
@@ -141,12 +144,12 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/mcp/servers` | токен | `list_servers()` |  |
-| POST | `/v1/mcp/servers` | токен | Added, started, and its tools listed - or why not (it stays added: the user may fix its environment). | тело `{name: str, target: str, env: str = ''}` |
-| PUT | `/v1/mcp/servers/{name}` | токен | `change_server()` | тело `{enabled: bool \| None = None, env: str \| None = None}` |
-| POST | `/v1/mcp/servers/{name}/restart` | токен | `restart_server()` |  |
-| PUT | `/v1/mcp/servers/{name}/tools/{tool}` | токен | `set_tool_class()` | тело `{cls: str}` |
-| DELETE | `/v1/mcp/servers/{name}` | токен | `remove_server()` |  |
+| GET | `/v1/mcp/servers` | только окно | `list_servers()` |  |
+| POST | `/v1/mcp/servers` | только окно | Added, started, and its tools listed - or why not (it stays added: the user may fix its environment). | тело `{name: str, target: str, env: str = ''}` |
+| PUT | `/v1/mcp/servers/{name}` | только окно | `change_server()` | тело `{enabled: bool \| None = None, env: str \| None = None}` |
+| POST | `/v1/mcp/servers/{name}/restart` | только окно | `restart_server()` |  |
+| PUT | `/v1/mcp/servers/{name}/tools/{tool}` | только окно | `set_tool_class()` | тело `{cls: str}` |
+| DELETE | `/v1/mcp/servers/{name}` | только окно | `remove_server()` |  |
 
 ### mail
 
@@ -154,10 +157,10 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/mail` | токен | `get_mail()` |  |
-| PUT | `/v1/mail` | токен | `set_mail()` | тело `{address: str, password: str = '', login: str = '', imap_host: str = '', imap_port: int \| None = None, imap_security: str = '', smtp_host: str = '', smtp_port: int \| None = None, smtp_security: str = ''}` |
-| DELETE | `/v1/mail` | токен | `delete_mail()` |  |
-| POST | `/v1/mail/check` | токен | `check_mail()` |  |
+| GET | `/v1/mail` | только окно | `get_mail()` |  |
+| PUT | `/v1/mail` | только окно | `set_mail()` | тело `{address: str, password: str = '', login: str = '', imap_host: str = '', imap_port: int \| None = None, imap_security: str = '', smtp_host: str = '', smtp_port: int \| None = None, smtp_security: str = ''}` |
+| DELETE | `/v1/mail` | только окно | `delete_mail()` |  |
+| POST | `/v1/mail/check` | только окно | `check_mail()` |  |
 
 ### sandbox
 
@@ -165,9 +168,9 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/conversations/{conversation_id}/sandbox` | токен | `sandbox_changes()` |  |
-| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | токен | `apply_sandbox()` |  |
-| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/discard` | токен | `discard_sandbox()` |  |
+| GET | `/v1/conversations/{conversation_id}/sandbox` | только окно | `sandbox_changes()` |  |
+| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | `apply_sandbox()` |  |
+| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/discard` | только окно | `discard_sandbox()` |  |
 
 ### conversations
 
@@ -205,13 +208,13 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/proving/tasks` | токен | The proving ground's tasks, the easy ones first. |  |
+| GET | `/v1/proving/tasks` | только окно | The proving ground's tasks, the easy ones first. |  |
 | POST | `/v1/proving/try` | только окно | One task for one model on a fresh copy: its chat (with the goal) is ready to watch. | тело `{task_id: str, model_id: str}` |
-| GET | `/v1/proving/runs` | токен | The tries («Попробовать»), the newest first. |  |
+| GET | `/v1/proving/runs` | только окно | The tries («Попробовать»), the newest first. |  |
 | DELETE | `/v1/proving/runs/{run_id}` | только окно | A try gone, with its copy, chat and project. |  |
-| GET | `/v1/proving/exams` | токен | The exams, the newest first, each with its runs and its table per model. |  |
+| GET | `/v1/proving/exams` | только окно | The exams, the newest first, each with its runs and its table per model. |  |
 | POST | `/v1/proving/exams` | только окно | Chosen tasks on chosen models, one run after another, each on its own copy. | тело `{model_ids: list[str], task_ids: list[str], judge: bool = False}` |
-| GET | `/v1/proving/exams/{exam_id}` | токен | An exam with its runs and its table per model. |  |
+| GET | `/v1/proving/exams/{exam_id}` | только окно | An exam with its runs and its table per model. |  |
 | POST | `/v1/proving/exams/{exam_id}/stop` | только окно | The run going now ends; those waiting are skipped. |  |
 | DELETE | `/v1/proving/exams/{exam_id}` | только окно | An exam gone, with its runs' copies, chats and projects. |  |
 
@@ -225,13 +228,13 @@
 | POST | `/v1/connections/password` | только окно | The first password, or a new one (with the old). Every open window is locked again. | тело `{password: str, old: str = ''}` |
 | POST | `/v1/connections/unlock` | только окно | `unlock()` | тело `{password: str}` |
 | POST | `/v1/connections/lock` | только окно | `lock()` |  |
-| POST | `/v1/connections/telegram/link` | токен | A one-time code for "/link <code>" to the user's bot: the chat that sends it gets the approvals (D21). |  |
-| DELETE | `/v1/connections/telegram/link` | токен | `telegram_unlink()` |  |
-| PUT | `/v1/connections/{name}` | токен | `set_connection()` | тело `{value: str}` |
-| DELETE | `/v1/connections/{name}` | токен | `delete_connection()` |  |
+| POST | `/v1/connections/telegram/link` | только окно | A one-time code for "/link <code>" to the user's bot: the chat that sends it gets the approvals (D21). |  |
+| DELETE | `/v1/connections/telegram/link` | только окно | `telegram_unlink()` |  |
+| PUT | `/v1/connections/{name}` | только окно | `set_connection()` | тело `{value: str}` |
+| DELETE | `/v1/connections/{name}` | только окно | `delete_connection()` |  |
 | GET | `/v1/connections/{name}/models` | только окно | Everything a provider with too many models (OpenRouter) has, and which ones the user chose to offer. |  |
-| PUT | `/v1/connections/{name}/models` | токен | The models to offer; the catalog follows at once. | тело `{ids: list[str]}` |
-| POST | `/v1/connections/{name}/check` | токен | Tries the connection the way the hub uses it: lists the provider's models, searches, asks the bot its name. |  |
+| PUT | `/v1/connections/{name}/models` | только окно | The models to offer; the catalog follows at once. | тело `{ids: list[str]}` |
+| POST | `/v1/connections/{name}/check` | только окно | Tries the connection the way the hub uses it: lists the provider's models, searches, asks the bot its name. |  |
 
 ### autostart
 
@@ -258,7 +261,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/budgets` | токен | `list_budgets()` |  |
+| GET | `/v1/budgets` | только окно | `list_budgets()` |  |
 | PUT | `/v1/budgets` | только окно | Creates the budget for (scope, provider, period) or replaces its limits. | тело `{scope: str = 'total', provider: str = '', period: str = 'month', soft_usd: float \| None = None, hard_usd: float \| None = None, hard_action: str = 'ask'}` |
 | DELETE | `/v1/budgets/{budget_id}` | только окно | `delete_budget()` |  |
 
@@ -299,7 +302,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/processes` | токен | project id -> its processes (the latest scan, or a fresh one). The same arrives as `processes.changed`. |  |
+| GET | `/v1/processes` | только окно | project id -> its processes (the latest scan, or a fresh one). The same arrives as `processes.changed`. |  |
 | POST | `/v1/processes/{pid}/stop` | только окно | Ends a process of a project and its children. Never the hub, never a process outside the projects. |  |
 
 ### terminals
@@ -308,10 +311,10 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/terminals` | токен | `list_terminals()` | `?project_id: str \| None = None`<br>`?limit: int = 50` |
+| GET | `/v1/terminals` | только окно | `list_terminals()` | `?project_id: str \| None = None`<br>`?limit: int = 50` |
 | POST | `/v1/terminals` | только окно | `start_terminal()` | тело `{project_id: str \| None = None, path: str = '', cwd: str \| None = None, command: str \| None = None, shell: str = '', cols: int = 120, rows: int = 30, title: str = ''}` |
-| GET | `/v1/terminals/{terminal_id}` | токен | `get_terminal()` |  |
-| GET | `/v1/terminals/{terminal_id}/output` | токен | The last output. While the terminal runs, `end` is the offset right after it: `terminal.output` events with a smaller offset are already in `data`. | `?max_chars: int = 65536` |
+| GET | `/v1/terminals/{terminal_id}` | только окно | `get_terminal()` |  |
+| GET | `/v1/terminals/{terminal_id}/output` | только окно | The last output. While the terminal runs, `end` is the offset right after it: `terminal.output` events with a smaller offset are already in `data`. | `?max_chars: int = 65536` |
 | POST | `/v1/terminals/{terminal_id}/input` | только окно | `terminal_input()` | тело `{data: str}` |
 | POST | `/v1/terminals/{terminal_id}/resize` | только окно | `terminal_resize()` | тело `{cols: int, rows: int}` |
 | POST | `/v1/terminals/{terminal_id}/stop` | только окно | `stop_terminal()` |  |
@@ -323,7 +326,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/projects/{project_id}/card` | токен | `get_card()` |  |
+| GET | `/v1/projects/{project_id}/card` | только окно | `get_card()` |  |
 | GET | `/v1/projects/{project_id}/card/export` | только окно | What writing the card into each file would do: create it, add the block at its end, replace the block. |  |
 | POST | `/v1/projects/{project_id}/card/export` | только окно | `export_card()` | тело `{targets: list[str]}` |
 | POST | `/v1/projects/{project_id}/card/draft` | только окно | `draft_card()` | тело `{model_id: str, update: bool = False}` |
@@ -337,7 +340,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/projects/{project_id}/notes` | токен | `list_notes()` |  |
+| GET | `/v1/projects/{project_id}/notes` | только окно | `list_notes()` |  |
 | POST | `/v1/projects/{project_id}/notes` | только окно | `add_note()` | тело `{text: str}` |
 | PUT | `/v1/notes/{note_id}` | только окно | `update_note()` | тело `{text: str}` |
 | DELETE | `/v1/notes/{note_id}` | только окно | `delete_note()` |  |
@@ -348,7 +351,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/links` | токен | `list_links()` |  |
+| GET | `/v1/links` | только окно | `list_links()` |  |
 | POST | `/v1/links/scan` | только окно | Looks for evidence between every pair of projects; new proposals join the list. |  |
 | POST | `/v1/links` | только окно | `add_link()` | тело `{a_id: str, b_id: str, kind: str = 'uses', description: str = ''}` |
 | PUT | `/v1/links/{link_id}` | только окно | `change_link()` | тело `{status: str \| None = None, kind: str \| None = None, description: str \| None = None}` |
@@ -370,7 +373,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/claude-code` | токен | `status()` |  |
+| GET | `/v1/claude-code` | только окно | `status()` |  |
 | POST | `/v1/projects/{project_id}/claude-code/terminal` | только окно | `open_terminal()` | тело `{cols: int = 120, rows: int = 30}` |
 
 ### changes
@@ -379,10 +382,10 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/projects/{project_id}/changes` | токен | `list_changes()` | `?limit: int = 50` |
-| GET | `/v1/changes/{change_id}` | токен | The change with its diff, from the versions the hub kept. |  |
+| GET | `/v1/projects/{project_id}/changes` | только окно | `list_changes()` | `?limit: int = 50` |
+| GET | `/v1/changes/{change_id}` | только окно | The change with its diff, from the versions the hub kept. |  |
 | POST | `/v1/changes/{change_id}/revert` | только окно | `revert()` | тело `{force: bool = False}` |
-| GET | `/v1/projects/{project_id}/rules` | токен | `list_rules()` |  |
+| GET | `/v1/projects/{project_id}/rules` | только окно | `list_rules()` |  |
 | DELETE | `/v1/rules/{rule_id}` | только окно | `delete_rule()` |  |
 
 ### agents
@@ -391,19 +394,19 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/agents` | токен | `list_profiles()` |  |
+| GET | `/v1/agents` | только окно | `list_profiles()` |  |
 | POST | `/v1/agents` | только окно | `create_profile()` | тело `{name: str, instructions: str = '', model_id: str, tools: list[str], mode: str = 'ask', project_ids: list[str], max_steps: int = 30, max_minutes: int = 30, budget_usd: float \| None = None}` |
-| GET | `/v1/agents/{agent_id}` | токен | `get_profile()` |  |
+| GET | `/v1/agents/{agent_id}` | только окно | `get_profile()` |  |
 | PUT | `/v1/agents/{agent_id}` | только окно | `update_profile()` | тело `{name: str, instructions: str = '', model_id: str, tools: list[str], mode: str = 'ask', project_ids: list[str], max_steps: int = 30, max_minutes: int = 30, budget_usd: float \| None = None}` |
 | DELETE | `/v1/agents/{agent_id}` | только окно | `delete_profile()` |  |
-| GET | `/v1/agents/{agent_id}/versions` | токен | `versions()` |  |
+| GET | `/v1/agents/{agent_id}/versions` | только окно | `versions()` |  |
 | POST | `/v1/agents/{agent_id}/runs` | только окно | `start_run()` | тело `{task: str, project_ids: list[str] \| None = None}` |
-| GET | `/v1/runs` | токен | `list_runs()` | `?limit: int = 50` |
-| GET | `/v1/runs/{run_id}` | токен | `get_run()` |  |
+| GET | `/v1/runs` | только окно | `list_runs()` | `?limit: int = 50` |
+| GET | `/v1/runs/{run_id}` | только окно | `get_run()` |  |
 | POST | `/v1/runs/{run_id}/cancel` | только окно | `cancel_run()` |  |
 | POST | `/v1/runs/autonomous` | только окно | `start_autonomous()` | тело `{goal: str, done_when: str = '', profile_id: str \| None = None, model_id: str \| None = None, planner_model_id: str \| None = None, project_ids: list[str] \| None = None, autonomy: str = 'plan', max_steps: int = 100, max_minutes: int = 60, max_replans: int = 3, budget_usd: float \| None = 1.0, network: bool = False, refusal_vector: bool \| None = None}` |
-| GET | `/v1/runs/{run_id}/plan` | токен | An autonomous run's goal, every version of its plan with the steps, its questions, its report. |  |
-| GET | `/v1/conversations/{conversation_id}/questions` | токен | A chat's questions still waiting for the user (its model's ask_user, Claude Code's own), with their options; answered through /runs/{id}/questions/{question_id} like an agent's. |  |
+| GET | `/v1/runs/{run_id}/plan` | только окно | An autonomous run's goal, every version of its plan with the steps, its questions, its report. |  |
+| GET | `/v1/conversations/{conversation_id}/questions` | только окно | A chat's questions still waiting for the user (its model's ask_user, Claude Code's own), with their options; answered through /runs/{id}/questions/{question_id} like an agent's. |  |
 | POST | `/v1/runs/{run_id}/questions/{question_id}` | только окно | `answer_question()` | тело `{answer: str}` |
 | POST | `/v1/runs/{run_id}/pause` | только окно | The run stops before its next model call; what it runs now finishes. |  |
 | POST | `/v1/runs/{run_id}/resume` | только окно | `resume_run()` |  |
@@ -412,8 +415,8 @@
 | PUT | `/v1/runs/{run_id}/plan` | только окно | The user's own plan for the run: a new version; the agent hears it before its next step. | тело `{steps: list[Any], reason: str = ''}` |
 | GET | `/v1/agent/access` | только окно | `agent_access()` |  |
 | GET | `/v1/agent/keys` | только окно | The user's API keys for http_request: name, host, header - and whether set; never a key. |  |
-| PUT | `/v1/agent/keys/{name}` | токен | A key behind the connections' password (D13): the hub adds it to the requests to its host only. | тело `{host: str, header: str = 'Authorization', prefix: str = 'Bearer ', value: str = ''}` |
-| DELETE | `/v1/agent/keys/{name}` | токен | `delete_agent_key()` |  |
+| PUT | `/v1/agent/keys/{name}` | только окно | A key behind the connections' password (D13): the hub adds it to the requests to its host only. | тело `{host: str, header: str = 'Authorization', prefix: str = 'Bearer ', value: str = ''}` |
+| DELETE | `/v1/agent/keys/{name}` | только окно | `delete_agent_key()` |  |
 | PUT | `/v1/agent/access` | только окно | `set_agent_access()` | тело `{folders: list[dict[str, Any]] \| None = None, domains: list[str] \| None = None, screen_cloud: bool \| None = None}` |
 
 ### stats
@@ -422,7 +425,7 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/stats` | токен | `get_stats()` | `?days: int = 30` |
+| GET | `/v1/stats` | только окно | `get_stats()` | `?days: int = 30` |
 
 ### advice
 
@@ -430,8 +433,8 @@
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
-| GET | `/v1/advice` | токен | `advice()` | `?conversation_id: str \| None = None`<br>`?project_ids: str = ''`<br>`?priority: str = 'balanced'` |
-| GET | `/v1/agents/{agent_id}/estimate` | токен | `estimate()` |  |
+| GET | `/v1/advice` | только окно | `advice()` | `?conversation_id: str \| None = None`<br>`?project_ids: str = ''`<br>`?priority: str = 'balanced'` |
+| GET | `/v1/agents/{agent_id}/estimate` | только окно | `estimate()` |  |
 
 ### openai
 
@@ -455,6 +458,10 @@ Protocol (JSON text frames):
   misses nothing;
 - `{"op": "ping"}` gets `{"type": "pong"}`.
 If the client reads too slowly its queue overflows and the hub closes with code 1013: reconnect with `since`.
+
+The window gets every event. Another client (D31, D46) gets the hub's and the projects' state (OUTSIDE_EVENTS) - a
+cloud one only of the projects that allow the cloud - and the events of the conversations it began; never another
+conversation's text, an approval or a terminal's output.
 ```
 
 Каждое событие — JSON-объект `{"id", "ts", "type", "payload", "project_id"}`. `id` есть только у событий, которые хаб хранит в журнале (их можно дочитать после переподключения: `since`, а также `GET /v1/feed`); у живых событий `id` — `null`.

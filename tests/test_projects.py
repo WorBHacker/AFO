@@ -154,7 +154,10 @@ def test_only_the_app_changes_the_list(api, repo):
     other = {"Authorization": f"Bearer {cline}"}
     assert api.post("/v1/projects", json={"path": str(repo)}, headers=other).status_code == 403
     pid = api.post("/v1/projects", json={"path": str(repo)}).json()["id"]
-    assert api.get(f"/v1/projects/{pid}/tree", headers=other).status_code == 200  # reading is open
+    # reading is open as MCP has it (D32, D46): a cloud client does not see a local-only project, a local one does
+    assert api.get(f"/v1/projects/{pid}/tree", headers=other).status_code == 404
+    local = api.app.state.db.call(lambda c: create_client(c, "local-agent", cloud=False))
+    assert api.get(f"/v1/projects/{pid}/tree", headers={"Authorization": f"Bearer {local}"}).status_code == 200
     assert api.delete(f"/v1/projects/{pid}", headers=other).status_code == 403
     assert api.delete(f"/v1/projects/{pid}").status_code == 204
     assert api.delete(f"/v1/projects/{pid}").status_code == 404

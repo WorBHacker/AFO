@@ -337,7 +337,7 @@ def test_what_a_goal_refuses(hub, repo):  # noqa: F811
     assert hub.put("/v1/conversations/nope/goal", json=base).status_code == 404
     token = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     assert hub.put(url, json=base, headers={"Authorization": f"Bearer {token}"}).status_code == 403
-    assert hub.get(url, headers={"Authorization": f"Bearer {token}"}).json()["goal"] is None  # reading is open
+    assert hub.get(url, headers={"Authorization": f"Bearer {token}"}).status_code == 404  # not its chat (D46)
     assert hub.post(f"{url}/pause").status_code == 404  # no goal yet
     set_goal(hub, conv, **base)
     wait(worker.waiting.is_set)

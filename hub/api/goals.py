@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import APP_CLIENT, Client
 from ..goals import GoalError
-from .deps import require_client
+from .deps import own_conversation, require_client
 
 router = APIRouter(prefix="/v1")
 
@@ -78,6 +78,7 @@ def _given(limits: Limits | None) -> dict[str, Any]:
 @router.get("/conversations/{conversation_id}/goal")
 async def get_goal(conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     """The chat's goal - the open one, else its last - with its recent checks and what the user wrote to it."""
+    await own_conversation(request, client, conversation_id)
     return await _call(request.app.state.goals.get(conversation_id))
 
 

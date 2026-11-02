@@ -228,7 +228,8 @@ def test_the_api_is_the_apps_to_change(hub):
 
     other = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     headers = {"Authorization": f"Bearer {other}"}
-    assert hub.get("/v1/model_settings", params={"model_id": "tune/m"}, headers=headers).status_code == 200
+    # the settings and their prompts are the window's (D46): another client gets none of it
+    assert hub.get("/v1/model_settings", params={"model_id": "tune/m"}, headers=headers).status_code == 403
     assert hub.put("/v1/model_settings", json={"model_id": "tune/m", "settings": {}}, headers=headers).status_code \
         == 403  # fmt: skip
     assert hub.post("/v1/models/check", json={"model_id": "tune/m"}, headers=headers).status_code == 403
