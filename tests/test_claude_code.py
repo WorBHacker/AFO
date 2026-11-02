@@ -395,3 +395,13 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     assert asked["tool"] == "PowerShell" and asked["destructive"] is True
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не сейчас"})
     assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Не стал: не сейчас"
+
+    # D19 holds for Claude Code too (the audit, D46): a trusted chat lets it read a page without a card, but the edit
+    # after it is asked - the page may have told it what to do
+    later = chat_with_project(hub)
+    hub.http.put(f"/v1/conversations/{later}/context", json={"mode": "trusted"})
+    send(hub, later, "fetch the docs, then edit notes.txt")
+    asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "Edit" and asked["conversation_id"] == later
+    hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "сначала проверю"})
+    assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == "Не стал править: сначала проверю"

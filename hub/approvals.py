@@ -49,19 +49,46 @@ SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
 PREVIEW_CHARS = 40_000
 READ_MAX_BYTES = 2 * 1024 * 1024
+REST = r"[^;&|\n]*"  # the rest of the same command, up to the next one
+# git and the options it takes before its command (`git -C ../x push` is a push all the same); flags whose letter's
+# case matters (-D, -f, -d) are matched with it, the rest of a command without
+GIT = (r"\bgit(?:\.exe)?\"?(?:\s+(?:-C\s+(?:\"[^\"]*\"|'[^']*'|\S+)|-c\s+\S+|--(?:git-dir|work-tree|namespace|"
+       r"exec-path|config-env)(?:=\S+|\s+\S+)|-p|-P|--no-pager|--paginate|--bare|--no-replace-objects|"
+       r"--(?:literal|glob|noglob|icase)-pathspecs|--no-optional-locks|--no-lazy-fetch))*\s+")  # fmt: skip
 DESTRUCTIVE = re.compile(
-    r"\bgit\s+(push|reset\s+--hard|clean\s+-\w*f|branch\s+-D|checkout\s+--\s|restore\b|stash\s+(drop|clear))"
-    r"|\brm\s+-\w*[rf]|\b(rmdir|rd)\s+/s|\bdel\s+/[sq]|\bRemove-Item\b.*-Recurse|\bformat\s+[a-z]:"
-    r"|\bdrop\s+(table|database)\b|\bshutdown\b|\bmkfs\b",
+    rf"{GIT}(?:push\b|reset(?={REST}\s--hard\b)|clean(?={REST}\s(?:-[a-z]*f|--force\b))"
+    rf"|branch(?:(?={REST}\s(?-i:-[a-zA-Z]*D))|(?={REST}\s(?:(?-i:-d)|--delete)\b)(?={REST}\s(?:(?-i:-f)|--force)\b))"
+    rf"|checkout(?={REST}\s(?:--(?:\s|$)|(?-i:-f)\b|--force\b|\.(?:\s|$|[;&|])))"
+    rf"|switch(?={REST}\s(?:(?-i:-f)\b|--force\b|--discard-changes\b))|restore\b|stash\s+(?:drop|clear)\b"
+    rf"|worktree\s+remove(?={REST}\s(?:(?-i:-f)\b|--force\b))|update-ref(?={REST}\s(?:(?-i:-d)\b|--delete\b))"
+    rf"|reflog\s+(?:expire|delete)\b|gc(?={REST}\s--prune\b)|filter-(?:branch|repo)\b)"
+    # deleting folders and many files: sh, cmd and PowerShell (its parameters may be cut short: -r, -rec...)
+    r"|\brm\s+-\w*[rf]|\b(?:rmdir|rd)\s+/s|\bdel\s+/[sq]"
+    rf"|\b(?:Remove-Item|ri|rm|del|erase|rd|rmdir)\b(?={REST}\s-r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?(?:\s|$|:))"
+    rf"|\b(?:Remove-Item|ri|rm|del|erase)\b(?={REST}\*)|\bClear-Content\b|\bclc\b"
+    r"|\bshutil\.rmtree\b|\brimraf\b|\brmSync\b(?=[^\n]*recursive)"
+    # disks, the registry, backups, the computer itself, databases
+    r"|\bformat\s+[a-z]:|\b(?:Format-Volume|Clear-Disk|Initialize-Disk|Remove-Partition|diskpart)\b"
+    rf"|\breg(?:\.exe)?\s+delete\b|\bRemove-ItemProperty\b|\bRemove-Item\b(?={REST}\bHK(?:LM|CU|CR|U|CC):)"
+    rf"|\b(?:vssadmin|wbadmin)\b(?={REST}\bdelete\b)|\bbcdedit\b|\bcipher\b(?={REST}\s/w)"
+    r"|\bdrop\s+(?:table|database)\b|\btruncate\s+table\b|\b(?:shutdown|Stop-Computer|Restart-Computer|mkfs)\b"
+    # what the person cannot read before it runs: an encoded PowerShell command, a string run as code
+    r"|\b(?:powershell|pwsh)(?:\.exe)?\b(?=[^\n]*\s-(?:e|ec|en\w*)\s+[A-Za-z0-9+/=]{8,})"
+    r"|\b(?:iex|Invoke-Expression)\b",
     re.IGNORECASE,
 )
-# commands that reach the network - installs, downloads, git's remote work: asked every time (D19)
+# commands that reach the network - installs, downloads, git's remote work, tools run from a registry: asked every
+# time (D19)
 NETWORK = re.compile(
-    r"\b(pip3?|uv|poetry|pipx)\s+(install|add|sync)\b|\b(npm|pnpm)\s+(i|install|add|ci)\b|\byarn\s+add\b"
-    r"|\bcurl\b|\bwget\b|\bInvoke-(WebRequest|RestMethod)\b|\biwr\b|\birm\b|\bgit\s+(clone|pull|fetch)\b"
-    r"|\bwinget\b|\bchoco\b|\bscoop\b|\bcargo\s+(install|add)\b|\bgo\s+(get|install)\b|\bssh\b|\bscp\b",
+    r"\b(?:pip3?|uv|poetry|pipx)\s+(?:install|add|sync|download)\b|\b(?:npm|pnpm)\s+(?:i|install|add|ci|exec|dlx)\b"
+    r"|\byarn\s+(?:add|dlx)\b|\b(?:npx|uvx|bunx)\b|\bcurl\b|\bwget\b|\bInvoke-(?:WebRequest|RestMethod)\b|\biwr\b"
+    r"|\birm\b|\bNet\.(?:WebClient|Sockets)\b|\bDownload(?:String|File|Data)\b|\bStart-BitsTransfer\b|\bbitsadmin\b"
+    rf"|\bcertutil\b(?={REST}-urlcache)|{GIT}(?:clone|pull|fetch|ls-remote|submodule\s+update)\b"
+    r"|\bdocker\s+(?:pull|push)\b|\bwinget\b|\bchoco\b|\bscoop\b|\bcargo\s+(?:install|add)\b"
+    r"|\bgo\s+(?:get|install)\b|\bssh\b|\bscp\b",
     re.IGNORECASE,
 )
+SEARCHES = {"web_search", "WebSearch"}  # a query leaves this computer: asked every time, never covered (D19)
 SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
 DENIED = "the user denied this"
 EXPIRED = "nobody answered: the run ended before the user did"
@@ -107,7 +134,7 @@ def trusted_skips(tool: str, data: dict[str, Any]) -> bool:
 
 
 def network(tool: str, data: dict[str, Any]) -> bool:
-    if CLASSED.get(tool) in ("network", "send") or tool == "mail_send":
+    if CLASSED.get(tool) in ("network", "send") or tool == "mail_send" or tool in SEARCHES:
         return True
     return tool in COMMAND_TOOLS and bool(NETWORK.search(str(data.get("command", ""))))
 

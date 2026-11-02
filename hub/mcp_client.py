@@ -75,6 +75,13 @@ def default_class(annotations: Any) -> str:
     return "write"
 
 
+def closed_world(annotations: Any) -> bool:
+    """The server says the tool touches nothing beyond its own data (openWorldHint false; unsaid means open, as MCP
+    has it): what such a reading tool brings did not come from out there."""
+    hints = annotations.model_dump() if hasattr(annotations, "model_dump") else dict(annotations or {})
+    return next((hints[k] for k in ("openWorldHint", "open_world_hint") if hints.get(k) is not None), True) is False
+
+
 def target_text(server: dict[str, Any]) -> str:
     if server["transport"] == "http":
         return server["command"]
@@ -247,7 +254,7 @@ class McpServers:
                 self._tools[name] = [
                     {"tool": t.name, "name": tool_name(name, t.name), "description": t.description or "",
                      "schema": t.input_schema or {"type": "object", "properties": {}},
-                     "default": default_class(t.annotations)}
+                     "default": default_class(t.annotations), "closed": closed_world(t.annotations)}
                     for t in getattr(listed, "tools", listed)
                 ]  # fmt: skip
                 self._classes[name] = await self._db.acall(lambda conn: tool_classes(conn, name))
@@ -321,9 +328,12 @@ class McpServers:
         found = self._find(name)
         return self._class_of(*found) if found else "write"
 
-    def network_names(self) -> list[str]:
-        """The tools that bring in what is out there: a chat that used one asks its writes every time (D19)."""
-        return [t["name"] for s in self._tools for t in self._tools[s] if self._class_of(s, t) in ("network", "send")]
+    def outside_names(self) -> list[str]:
+        """The tools that bring in what is out there - the network's and sending ones, and a reading one unless its
+        server says it stays within its own data: a chat that used one asks its writes every time (D19)."""
+        return [t["name"] for s in self._tools for t in self._tools[s]
+                if self._class_of(s, t) in ("network", "send")
+                or (self._class_of(s, t) == "read" and not t.get("closed"))]  # fmt: skip
 
     async def set_class(self, server: str, tool: str, cls: str) -> None:
         await self._db.acall(lambda conn: set_tool_class(conn, server, tool, cls))

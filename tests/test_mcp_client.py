@@ -44,6 +44,9 @@ def test_servers_names_and_classes(db):
     assert mc.default_class(ToolAnnotations(destructiveHint=True)) == "destructive"
     assert mc.default_class(ToolAnnotations(openWorldHint=True)) == "network"
     assert mc.default_class(None) == "write"
+    # a reading tool brings in what is out there unless its server says otherwise (MCP: unsaid is open, D19)
+    assert mc.closed_world(ToolAnnotations(readOnlyHint=True, openWorldHint=False))
+    assert not mc.closed_world(ToolAnnotations(readOnlyHint=True)) and not mc.closed_world(None)
     assert mc.tool_name("notes", "get.file") == "mcp__notes__get_file"
     assert len(mc.tool_name("notes", "x" * 100)) == 64 and mc.split_name("mcp__notes__add") == ("notes", "add")
     assert mc.split_name("read_file") is None
@@ -121,6 +124,8 @@ def test_an_outside_server_in_chats_and_runs(hub):  # noqa: F811
     changed = hub.put("/v1/mcp/servers/notes/tools/wipe_notes", json={"class": "read"}, headers=headers).json()
     assert next(t for t in changed["tools"] if t["tool"] == "wipe_notes")["class"] == "read"
     assert approvals.CLASSED["mcp__notes__wipe_notes"] == "read"
+    # a reading tool its server does not call closed brings in what is out there: it taints the chat (D19)
+    assert hub.app.state.mcp.outside_names() == ["mcp__notes__wipe_notes"]
     assert hub.put("/v1/mcp/servers/notes/tools/wipe_notes", json={"class": "read"}).status_code == 401
     off = hub.put("/v1/mcp/servers/notes", json={"enabled": False}, headers=headers).json()
     assert off["state"] == "off" and off["tools"] == []

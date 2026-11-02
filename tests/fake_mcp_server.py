@@ -1,5 +1,6 @@
-"""An outside MCP server for the tests of the hub's MCP client (stage 9.5): stdio, three tools with their hints; the
-NOTES_OWNER from its environment (as a server's API key would come) is in what add_note answers."""
+"""An outside MCP server for the tests of the hub's MCP client (stage 9.5): stdio, three tools with their hints
+(list_notes says its notes stay within the server: it brings in no one else's text, D19); the NOTES_OWNER from its
+environment (as a server's API key would come) is in what add_note answers."""
 
 import os
 
@@ -10,7 +11,7 @@ server = MCPServer("fake-notes")
 NOTES: list[str] = []
 
 
-@server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+@server.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False))
 def list_notes() -> str:
     """The notes kept so far."""
     return "\n".join(NOTES) or "no notes"

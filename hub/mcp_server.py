@@ -298,7 +298,13 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         if mode == "read_only" and tool_name in CHANGES:  # the chat's rights (D17) hold for Claude Code too
             return json.dumps({"behavior": "deny", "message": "This chat is read-only: say the change in words, the "
                                                               "user makes it."})  # fmt: skip
-        if mode == "trusted" and trusted_skips(tool_name, input):  # all but a destructive one (2026-10-28)
+        reads = tool_name in ("WebFetch", "WebSearch")
+        tainted = False  # it has read the web: its writes and commands are asked every time, trusted or not (D19)
+        if turn is not None:
+            tainted = not reads and await app.state.chat.read_the_web(turn.conversation_id)
+            if reads:
+                app.state.chat.outside.add(turn.conversation_id)
+        if mode == "trusted" and not tainted and trusted_skips(tool_name, input):  # all but a destructive one
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,
@@ -307,6 +313,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             project_id=turn.project.id if turn and turn.project else None,
             client_id=client.id or None,
             root=turn.root if turn else None,
+            cover=not tainted,
         )
         if decision.allow:
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)

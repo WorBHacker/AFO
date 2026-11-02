@@ -117,6 +117,10 @@ PROVING_NO = ("not done: on the proving ground nobody approves this (it is destr
               "comes after reading the web) - do the task another way")  # fmt: skip
 PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the task and the files, and go on; "
                  "say in your answer what you assumed")  # fmt: skip
+# what brings in text someone else wrote - pages, searches, letters, an API's answers, other programs' screens -
+# the hub's tools and Claude Code's: a chat that used one asks its writes and commands every time (D19)
+OUTSIDE = (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], *sorted(mail.READING), "http_request", "screen_look",
+           "WebFetch", "WebSearch")  # fmt: skip
 
 
 class ChatService:
@@ -143,6 +147,8 @@ class ChatService:
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
+        # chats whose Claude Code went to read the web (D19): known at once, before its results are stored
+        self.outside: set[str] = set()
 
     @property
     def busy(self) -> list[str]:
@@ -834,7 +840,7 @@ class ChatService:
         if settings["mode"] == "sandbox":  # into the worktree, unasked: the user reviews the diff (D17)
             return await self._sandbox_write(conversation_id, project, planned)
         approval_id = None
-        tainted = await self._read_the_web(conversation_id)
+        tainted = await self.read_the_web(conversation_id)
         if settings["mode"] != "trusted" or tainted:  # after reading the web, trust does not count (D19)
             allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                         cover=not tainted)  # fmt: skip
@@ -882,7 +888,7 @@ class ChatService:
             commands.command_of(args)
         except ToolError as exc:
             return str(exc), True
-        tainted = await self._read_the_web(conversation_id)
+        tainted = await self.read_the_web(conversation_id)
         if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args):
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                 cover=not tainted)  # fmt: skip
@@ -952,7 +958,7 @@ class ChatService:
             settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
             if settings["mode"] == "read_only":
                 return READ_ONLY, True
-            tainted = await self._read_the_web(conversation_id)
+            tainted = await self.read_the_web(conversation_id)
             if settings["mode"] != "trusted" or tainted or cls == "destructive":
                 project = ctx.projects[0] if ctx.projects else None
                 allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
@@ -965,10 +971,13 @@ class ChatService:
         settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
         return settings["mode"] == "trusted"
 
-    async def _read_the_web(self, conversation_id: str) -> bool:
-        """Has the model in this chat read a web page, searched, or used an outside MCP tool that goes out there?
-        Then its writes and commands are asked every time (D19)."""
-        names = ["web_fetch", "web_search", *(self.mcp.network_names() if self.mcp is not None else [])]
+    async def read_the_web(self, conversation_id: str) -> bool:
+        """Has the model in this chat brought in what someone else wrote - a web page, a search, a letter, an API's
+        answer, another program's screen, an outside MCP tool that reaches out there? Then its writes and commands
+        are asked every time (D19): that text may tell it what to do."""
+        if conversation_id in self.outside:
+            return True
+        names = [*OUTSIDE, *(self.mcp.outside_names() if self.mcp is not None else [])]
 
         def read(conn) -> bool:
             found = " OR ".join("content LIKE ?" for _ in names)

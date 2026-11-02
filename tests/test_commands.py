@@ -18,10 +18,13 @@ def answer_next(hub, **body):  # noqa: F811 - the fixture's name
 
 def test_network_commands_are_never_covered():
     for command in ("pip install requests", "npm ci", "git pull", "curl https://example.com", "Invoke-WebRequest x",
-                    "winget install x"):  # fmt: skip
+                    "winget install x", "git -C x pull", "git ls-remote origin", "npx create-vite", "uvx ruff",
+                    "npm exec x", "(New-Object Net.WebClient).DownloadString('u')", "Start-BitsTransfer -Source u",
+                    "bitsadmin /transfer j u f", "certutil -urlcache -f http://x a", "docker pull nginx"):  # fmt: skip
         assert network("run_command", {"command": command}) and grant_key("run_command", {"command": command}) is None
     assert grant_key("run_command", {"command": "pytest  -q"}) == "run_command:pytest -q"
-    assert not network("run_command", {"command": "git status"})
+    for command in ("git status", "npm run build", "uv run pytest", "python x.py"):
+        assert not network("run_command", {"command": command}), command
 
 
 def test_a_command_is_asked_run_in_a_terminal_and_whitelisted(hub, repo):  # noqa: F811
