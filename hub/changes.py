@@ -106,7 +106,7 @@ def _target(project: Project, args: dict[str, Any]) -> tuple[str, Path]:
     shown = target.relative_to(project.root).as_posix()
     if not shown or target.is_dir():
         raise WriteError(f"{rel} is a folder, not a file")
-    if is_secret_file(shown):
+    if is_secret_file(shown) or is_secret_file(rel):  # the file it is, and the name it was asked by
         raise WriteError(f"{shown} holds secrets (keys, passwords): models may not write it")
     if shown == ".git" or shown.startswith(".git/"):
         raise WriteError("git's own folder is not for writing; use files of the project")

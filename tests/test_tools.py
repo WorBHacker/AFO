@@ -2,12 +2,14 @@
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
+from hub import changes, projects
 from hub import chat as chat_module
 from hub.chat import CHAT_TOOLS, NOT_RUN, _to_prompt
 from hub.gateway.anthropic_provider import replay_blocks, to_wire
@@ -59,6 +61,46 @@ def test_list_and_read(ctx):
     assert not error and SECRET not in masked and "[REDACTED]" in masked and "TIMEOUT = 5" in masked
     escape, error = tool("read_file", {"project": "proj", "path": "../../etc/hosts"}, ctx)
     assert error and "leaves the project" in escape
+
+
+def test_the_hubs_own_data_and_the_names_windows_opens_as_secret(ctx, repo, monkeypatch):
+    """The audit (D46): a checkout of LocalChat holds the hub's data - its tokens, database, logs - and no path through
+    a project reaches it (a sandbox's copy there is a project of its own); a secret file is known by the names Windows
+    opens as it (.env., .env::$DATA)."""
+    data = repo / "data"
+    (data / "tokens").mkdir(parents=True)
+    (data / "tokens" / "app.token").write_text("token-of-the-window\n", encoding="utf-8")
+    monkeypatch.setattr(projects, "HUB_DATA", data.resolve())
+    said, error = tool("read_file", {"project": "proj", "path": "data/tokens/app.token"}, ctx)
+    assert error and "hub's own data" in said
+    listing, _ = tool("list_files", {"project": "proj", "depth": 3}, ctx)
+    assert "data/" not in listing and "app.token" not in listing
+    found, _ = tool("search_code", {"project": "proj", "query": "token-of-the-window"}, ctx)
+    assert "app.token" not in found
+    with pytest.raises(changes.WriteError, match="hub's own data"):
+        changes.plan("write_file", ctx.projects[0], {"path": "data/tokens/app.token", "content": "x"})
+    copy = data / "worktrees" / "chat" / "p1"
+    copy.mkdir(parents=True)
+    (copy / "a.txt").write_text("копия\n", encoding="utf-8")
+    text, error = tool("read_file", {"project": "copy", "path": "a.txt"}, ToolContext([project(copy, "copy", "p2")]))
+    assert not error and "копия" in text
+
+    for name in (".env.", ".env ", ".env::$DATA"):
+        said, error = tool("read_file", {"project": "proj", "path": name}, ctx)
+        assert error and "holds secrets" in said, name
+
+
+def test_a_link_to_a_secret_file_is_one(ctx, repo, monkeypatch):
+    """A link named notes.txt that leads to .env is .env (D46). Where Windows lets no test make a symbolic link
+    (Developer Mode off), the path resolves as the link would."""
+    try:
+        os.symlink(repo / ".env", repo / "notes.txt")
+    except OSError:
+        resolve = projects.resolve_inside
+        monkeypatch.setattr(projects, "resolve_inside",
+                            lambda root, rel: resolve(root, ".env" if rel == "notes.txt" else rel))  # fmt: skip
+    said, error = tool("read_file", {"project": "proj", "path": "notes.txt"}, ctx)
+    assert error and "holds secrets" in said
 
 
 def test_search_git_and_bad_input(ctx):

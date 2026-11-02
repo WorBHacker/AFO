@@ -146,3 +146,12 @@ def test_a_name_that_turns_local_after_the_check_is_refused(site, monkeypatch):
     monkeypatch.setattr(web, "_is_local", public_first_then_local)
     with pytest.raises(ToolError, match=r"led to this computer or its local network \(127\.0\.0\.1\)"):
         asyncio.run(web.fetch({"url": f"{site}/doc"}))
+
+
+def test_the_shared_address_space_is_not_the_web(monkeypatch):
+    """The audit (D46): 100.64.0.0/10 - a carrier's or a VPN's (Tailscale's) machines - is not "private" to Python,
+    yet it is never the open web."""
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("100.101.102.103", 0))])
+    assert web._is_local("box.tailnet.example")
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("93.184.215.14", 0))])
+    assert not web._is_local("example.com")

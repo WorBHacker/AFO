@@ -6,6 +6,7 @@ import pytest
 
 from common.logging_setup import setup_logging
 from common.paths import data_paths
+from hub.secret_filter import clean
 
 pytestmark = pytest.mark.usefixtures("restore_logging")
 
@@ -62,3 +63,18 @@ def test_uncaught_exception_in_thread_is_logged():
     text = (data_paths().logs / "hub.log").read_text(encoding="utf-8")
     assert "uncaught exception in thread worker-1" in text
     assert "ValueError: thread boom" in text
+
+
+def test_secrets_never_reach_the_log():
+    """The audit (D46): a key in a message or in an error's traceback is masked before the line is written."""
+    key = "sk-ant-api03-" + "z" * 40
+    log = setup_logging("hub", console=False, redact=clean)
+    log.warning("the provider said: invalid key %s", key)
+    try:
+        raise RuntimeError(f"Authorization: Bearer {key[::-1]}")
+    except RuntimeError:
+        log.exception("a request failed")
+    _flush()
+    text = (data_paths().logs / "hub.log").read_text(encoding="utf-8")
+    assert "invalid key [REDACTED]" in text and "Authorization: Bearer [REDACTED]" in text
+    assert key not in text and key[::-1] not in text

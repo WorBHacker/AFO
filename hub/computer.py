@@ -46,6 +46,7 @@ import psutil
 from . import model_settings, programs, store
 from .db import Database
 from .events import EventBus
+from .secret_filter import clean
 
 log = logging.getLogger("hub.computer")
 
@@ -900,10 +901,10 @@ class Computer:
         args = call["input"] if isinstance(call["input"], dict) else {}
         try:
             match call["name"]:
-                case "screen_windows":
-                    return self._list(await self.windows()), False
+                case "screen_windows":  # what another program shows may hold a key or a password (D10, D46)
+                    return clean(self._list(await self.windows())), False
                 case "screen_look":
-                    return await self._look(run_id, args), False
+                    return clean(await self._look(run_id, args)), False
                 case "screen_act":
                     return await self._act(run_id, args, cancel, ask), False
                 case "open_program":

@@ -26,6 +26,8 @@ CACHES = {
 # folders that are never shown in a tree that is not a git repository (in a repository, .gitignore decides)
 NOISE = CACHES | {"dist", "build", "target"}
 MAX_READ_BYTES = 2 * 1024 * 1024
+# the hub's data folder, resolved, set as the hub starts: never served through a project
+HUB_DATA: Path | None = None
 BINARY_SNIFF = 8192
 GIT_TIMEOUT_S = 15
 MAX_DIFF_BYTES = 400_000
@@ -142,11 +144,46 @@ def remove_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 def resolve_inside(root: Path, rel: str) -> Path:
-    """`rel` (a path relative to the project) as an absolute path, refused if it would leave the project."""
+    """`rel` (a path relative to the project) as an absolute path, refused if it would leave the project or reach
+    into the hub's own data."""
     target = (root / rel.replace("\\", "/").lstrip("/")).resolve()
     if not target.is_relative_to(root):
         raise ProjectError("the path leaves the project")
+    if private(root, target):
+        raise ProjectError("the hub's own data (its database, tokens, logs) is not read or written through a project")
     return target
+
+
+def keep_private(folder: Path) -> None:
+    """The hub's data folder: from now on no path through a project reaches into it."""
+    global HUB_DATA
+    HUB_DATA = folder.resolve()
+
+
+def secret_file(root: Path, rel: str) -> bool:
+    """A secret file (D10) by the name asked for, or by the file it really is: a link named notes.txt that leads to
+    .env is .env. A path that leads nowhere is not one here - reading it says why."""
+    if is_secret_file(rel):
+        return True
+    try:
+        return is_secret_file(resolve_inside(root, rel).name)
+    except ProjectError, OSError:
+        return False
+
+
+def private(root: Path, target: Path) -> bool:
+    """`target` lies in the hub's data folder while the project does not (a checkout of LocalChat keeps it inside:
+    tokens, the database, logs, snapshots - D46). A sandbox's or the proving ground's copy lives in that folder and
+    is a project of its own: inside it, everything is its."""
+    return HUB_DATA is not None and target.is_relative_to(HUB_DATA) and not root.resolve().is_relative_to(HUB_DATA)
+
+
+def private_part(root: Path) -> str:
+    """The hub's data folder as a path inside this project ("data/"), when the project holds it; else ""."""
+    if HUB_DATA is None:
+        return ""
+    real = root.resolve()
+    return HUB_DATA.relative_to(real).as_posix() + "/" if real != HUB_DATA and HUB_DATA.is_relative_to(real) else ""
 
 
 def _rel(root: Path, path: Path) -> str:
@@ -222,11 +259,13 @@ def tree(root: Path, rel: str = "") -> list[dict[str, Any]]:
                     continue
             elif entry.name in NOISE:
                 continue
+            if is_dir and private(root, Path(entry.path)):  # the hub's data folder in a checkout of LocalChat
+                continue
             try:
                 size = 0 if is_dir else entry.stat(follow_symlinks=False).st_size
             except OSError:
                 size = 0
-            secret = not is_dir and is_secret_file(entry.name)  # models never get its content (D10)
+            secret = not is_dir and is_secret_file(path)  # models never get its content (D10)
             entries.append({"name": entry.name, "path": path, "dir": is_dir, "size": size, "secret": secret})
     entries.sort(key=lambda e: (not e["dir"], e["name"].casefold()))
     return entries

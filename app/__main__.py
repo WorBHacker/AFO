@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 from common import __version__
 from common.logging_setup import setup_logging
 from common.paths import data_paths
+from hub.secret_filter import clean
 
 from .ui.main import QuickApp, install_russian, use_software_rendering
 
@@ -28,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--smoke", action="store_true", help="build the window, do not connect, exit")
     args = parser.parse_args(argv)
 
-    log = setup_logging("app")
+    log = setup_logging("app", redact=clean)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per hub call is noise
     log.info("LocalChat app %s (PySide6 %s)", __version__, pyside_version)
     watch_for_crashes(log)

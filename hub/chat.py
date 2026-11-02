@@ -602,7 +602,8 @@ class ChatService:
     ) -> dict:
         """Tells the window that the spare answers now - and what the declined request still cost (`spent`); the
         answer keeps it too (its usage's `fallback`)."""
-        log.info("chat %s: %s failed (%s), the spare %s answers", conversation_id, model["id"], reason, spare["id"])
+        log.info("chat %s: %s failed (%s), the spare %s answers", conversation_id, model["id"], str(reason)[:200],
+                 spare["id"])  # fmt: skip
         note = {"from": model["id"], "from_name": model["name"], "reason": str(reason)[:300]}
         extra = {"usage": spent[0], "cost_usd": spent[1]} if spent else {}
         await self._bus.publish("chat.fallback", {"conversation_id": conversation_id, "model_id": spare["id"],

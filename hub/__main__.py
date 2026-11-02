@@ -35,6 +35,7 @@ from common.paths import DataPaths
 
 from .auth import APP_CLIENT, create_client, list_clients, revoke_client
 from .db import Database, migrate, utc_now
+from .secret_filter import clean
 from .settings import HubSettings
 from .singleton import AlreadyRunning, InstanceLock
 
@@ -44,7 +45,7 @@ STOP_TIMEOUT_S = 20
 
 
 def serve(settings: HubSettings) -> int:
-    log = setup_logging("hub")
+    log = setup_logging("hub", redact=clean)
     paths = settings.paths.ensure()
     lock = InstanceLock(paths.hub_lock)
     try:
@@ -195,7 +196,7 @@ def save_token(paths: DataPaths, name: str, token: str) -> Path:
 def mcp_command(settings: HubSettings, args: argparse.Namespace) -> int:
     from .mcp_stdio import main as adapter
 
-    setup_logging("hub-mcp", console=False)  # stdout is the protocol's; nothing else may go there
+    setup_logging("hub-mcp", console=False, redact=clean)  # stdout is the protocol's; nothing else may go there
     return adapter(settings.paths.ensure(), args.client)
 
 

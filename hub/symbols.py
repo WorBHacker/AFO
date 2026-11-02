@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import search
-from .projects import Project
+from .projects import Project, private, private_part
 from .secret_filter import is_secret_file
 
 MAX_FILE_BYTES = 1024 * 1024
@@ -210,9 +210,10 @@ class SymbolIndex:
             deadline = time.monotonic() + self._budget_s
             present: set[str] = set()
             complete = True
+            own = private_part(root)  # the hub's data folder, when this project holds it
             for rel in search.project_files(root)[:MAX_FILES]:
                 language = language_of(rel)
-                if language is None or is_secret_file(rel):
+                if language is None or is_secret_file(rel) or (own and rel.startswith(own)):
                     continue
                 try:
                     st = (root / rel).stat()
@@ -280,7 +281,9 @@ class SymbolIndex:
             # not among the project's files (ignored by git, say): read it directly, without keeping it
             path = project.root / rel
             try:
-                if not path.resolve().is_relative_to(project.root.resolve()) or path.stat().st_size > MAX_FILE_BYTES:
+                real = path.resolve()
+                inside = real.is_relative_to(project.root.resolve()) and not private(project.root, real)
+                if not inside or path.stat().st_size > MAX_FILE_BYTES:
                     return None
                 return [s._asdict() for s in parse(path.read_bytes(), language_of(rel) or "")]
             except OSError:

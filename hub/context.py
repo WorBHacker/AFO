@@ -282,7 +282,7 @@ PINNED_LINES = 200
 
 def pinned_file(project: Project, path: str) -> str:
     """A file the user pinned to the chat (D22): its first lines, numbered, secret-filtered."""
-    if is_secret_file(path):
+    if projects.secret_file(project.root, path):
         return f'<file project="{project.name}" path="{path}">\nholds secrets: not shown\n</file>'
     try:
         data = projects.read_file(project.root, path)

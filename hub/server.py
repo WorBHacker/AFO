@@ -76,7 +76,7 @@ from .mcp_client import McpServers
 from .model_install import Installer
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
-from .projects import list_projects, set_path
+from .projects import keep_private, list_projects, set_path
 from .proving import ProvingGround
 from .retention import Keeper
 from .ripgrep import Fetcher
@@ -99,6 +99,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         paths = settings.paths.ensure()
+        keep_private(paths.root)  # the data folder is never served through a project, even LocalChat's own (D46)
         db = Database(paths.db)
         applied = db.call(migrate)
         if applied:

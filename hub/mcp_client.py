@@ -267,7 +267,7 @@ class McpServers:
             raise
         except Exception as exc:  # a server that does not start, or breaks: said, never a crash of the hub
             exc = _first_error(exc)
-            log.warning("MCP server %s: %s: %s", name, type(exc).__name__, exc)
+            log.warning("MCP server %s: %s: %s", name, type(exc).__name__, str(exc)[:300])
             self._clients.pop(name, None)
             for t in self._tools.pop(name, []):
                 approvals.CLASSED.pop(t["name"], None)

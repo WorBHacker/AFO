@@ -383,3 +383,19 @@ def test_a_program_opens_a_link_of_its_own_kind(tmp_path, monkeypatch):
     assert len(opened) == 1  # nothing else was opened
     assert pc.link_handler("tg") == telegram.lower()  # the stand-in; the real one reads the registry
     assert any(t["name"] == "open_program" and "link" in t["parameters"]["properties"] for t in pc.TOOLS)
+
+
+def test_what_the_screen_shows_is_secret_filtered(tmp_path, monkeypatch):
+    """The audit (D46): another program's window may show a key or a password - it goes to the model masked, as a
+    file's text does (D10); a cloud model gets the look too."""
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    computer = pc.Computer(db, EventBus(db), tmp_path / "computer", watch_person=False)
+    key = "sk-ant-api03-" + "s" * 40
+
+    async def look(run_id, args):
+        return f"Window 7 «Настройки» - Notes; [3] edit «API key» value «{key}»"
+
+    monkeypatch.setattr(computer, "_look", look)
+    output, error = asyncio.run(computer.handle("r1", {"name": "screen_look", "input": {"window": 7}}, None, None))
+    assert not error and key not in output and "[REDACTED]" in output

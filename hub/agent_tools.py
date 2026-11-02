@@ -335,6 +335,9 @@ class AgentToolbox:
         secret = ""
         named = await self._db.acall(keys)
         key = next((k for k in named if host == k["host"] or host.endswith("." + k["host"])), None)
+        if key is not None and not url.lower().startswith("https://"):
+            return (f"not sent: the user's key for {key['host']} goes only over https - its address was "
+                    f"{url.split(':', 1)[0]}://"), True  # fmt: skip
         if key is not None and self._secrets is not None:  # its host only; no redirect takes it elsewhere
             secret = self._secrets.get(KEY_SECRET + key["name"]) or ""
             if secret:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 
 from .paths import DataPaths, data_paths
@@ -15,11 +16,24 @@ BACKUP_COUNT = 5
 _MARK = "_localchat_handler"
 
 
+class _Redacting(logging.Formatter):
+    """Every line, a traceback included, through `redact` before it is written: a key or a token that came in an
+    error's text does not stay in the log (D46)."""
+
+    def __init__(self, fmt: str, redact: Callable[[str], str]):
+        super().__init__(fmt)
+        self._redact = redact
+
+    def format(self, record: logging.LogRecord) -> str:
+        return self._redact(super().format(record))
+
+
 def setup_logging(
     component: str,
     level: int = logging.INFO,
     paths: DataPaths | None = None,
     console: bool = True,
+    redact: Callable[[str], str] | None = None,
 ) -> logging.Logger:
     """Configures the root logger for this process and returns the component's logger.
 
@@ -27,6 +41,7 @@ def setup_logging(
     Calling it again replaces the handlers it added before instead of duplicating them, and
     leaves other handlers (pytest's capture, for one) alone. Uncaught exceptions, in the main
     thread and in other threads, are written to the log, so a crash leaves a trace in the file.
+    `redact` (the hub's secret filter) masks secrets in every line.
     """
     paths = (paths or data_paths()).ensure()
     root = logging.getLogger()
@@ -35,7 +50,7 @@ def setup_logging(
         root.removeHandler(handler)
         handler.close()
 
-    formatter = logging.Formatter(LOG_FORMAT)
+    formatter = _Redacting(LOG_FORMAT, redact) if redact else logging.Formatter(LOG_FORMAT)
     file_handler = RotatingFileHandler(
         paths.logs / f"{component}.log", maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8"
     )

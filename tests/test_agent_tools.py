@@ -163,6 +163,8 @@ def test_the_users_api_keys_reach_their_host_only(db):
     assert seen == [("api.weather.example", "w-secret-123"), ("eu.api.weather.example", "w-secret-123"),
                     ("other.example", "")]  # fmt: skip
     assert "- weather: api.weather.example" in db.call(at.context_note)
+    out, error = call("http://api.weather.example/today")  # the audit (D46): a key is never sent in the open
+    assert error and "only over https" in out and len(seen) == 3
 
 
 def test_keys_through_the_hub(hub):  # noqa: F811

@@ -2,12 +2,15 @@
 any other text - files, search results, terminal output, process command lines - are masked.
 
 Two layers, because each misses what the other catches:
-- by file: `.env` (but not `.env.example`), private keys, credential stores; their content never reaches a model;
+- by file: `.env` (but not `.env.example`), private keys, credential stores, what lies in `.ssh` and `.gnupg`, the
+  logins of Docker and kubectl; their content never reaches a model;
 - by content: private key blocks, well-known token formats (Anthropic, OpenAI, GitHub, AWS, Google, Slack,
-  Telegram, JWT), passwords in connection strings, and `NAME=value` where the name says it is a secret. The name
-  stays, so the model still knows the setting exists; the value becomes [REDACTED].
+  Telegram, JWT, Hugging Face, npm, GitLab, Stripe, Tavily), `Authorization:` headers, passwords in connection
+  strings, and `NAME=value` where the name says it is a secret. The name stays, so the model still knows the setting
+  exists; the value becomes [REDACTED].
 
-The window shows a person their own files as they are; this filter is for the model-facing paths (context, tools).
+The window shows a person their own files as they are; this filter is for the model-facing paths (context, tools)
+and for the logs.
 """
 
 from __future__ import annotations
@@ -19,10 +22,13 @@ MASK = "[REDACTED]"
 
 SECRET_FILES = (
     ".env", ".env.*", "*.env", ".envrc", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx",
-    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "*.ppk", "credentials", "credentials.json", "credentials.yml",
+    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.ppk", "credentials", "credentials.json", "credentials.yml",
     "credentials.yaml", "secrets.json", "secrets.yml", "secrets.yaml", "secret.json", "token.json", ".netrc",
-    "_netrc", ".pypirc", ".git-credentials", "service-account*.json", "*.tfstate", "*.tfstate.backup",
+    "_netrc", ".pypirc", ".git-credentials", "service-account*.json", "*.tfstate", "*.tfstate.backup", ".npmrc",
+    ".yarnrc.yml", ".pgpass", ".htpasswd", "*.keytab",
 )  # fmt: skip
+SECRET_FOLDERS = {".ssh", ".gnupg"}  # every file in them but a public key
+SECRET_PATHS = (".docker/config.json", ".kube/config")  # the folder makes these names secret
 NOT_SECRET = (".env.example", ".env.sample", ".env.template", ".env.dist", "*.pub")
 
 _TOKENS = [
@@ -37,8 +43,18 @@ _TOKENS = [
     r"\b\d{8,10}:AA[A-Za-z0-9_\-]{33}\b",  # a Telegram bot token
     r"\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",  # a JWT
     r"\bhf_[A-Za-z0-9]{30,}",
+    r"\bnpm_[A-Za-z0-9]{36}\b",
+    r"\bglpat-[A-Za-z0-9_\-]{20,}",  # GitLab
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe
+    r"\btvly-[A-Za-z0-9\-]{20,}",  # Tavily
 ]
 TOKEN = re.compile("|".join(f"(?:{t})" for t in _TOKENS))
+# Authorization: Bearer <token> (a header in a log, a curl command, a request written down) - the scheme stays
+AUTHORIZATION = re.compile(
+    r"(?P<head>\b(?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?(?:bearer|basic|token|bot)\s+)"
+    r"(?P<value>[A-Za-z0-9._~+/=\-]{8,})",
+    re.I,
+)
 # NAME=value, NAME: value, "name": "value" where the name says it is a secret
 ASSIGNMENT = re.compile(
     r"""(?ix)
@@ -56,11 +72,16 @@ NOT_A_VALUE = {"true", "false", "null", "none", "required", "optional", "string"
 
 
 def is_secret_file(path: str) -> bool:
-    """Whether a file (a path inside a project, any separator) is one whose content a model never gets."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if any(fnmatch.fnmatch(name, pattern) for pattern in NOT_SECRET):
+    """Whether a file (a path inside a project, any separator) is one whose content a model never gets. Windows
+    opens `.env.`, `.env ` and `.env::$DATA` as `.env`: so are they taken."""
+    parts = path.replace("\\", "/").lower().split("/")
+    names = {parts[-1], parts[-1].rstrip(". "), parts[-1].split(":", 1)[0].rstrip(". ")} - {""}
+    if any(fnmatch.fnmatch(name, pattern) for name in names for pattern in NOT_SECRET):
         return False
-    return any(fnmatch.fnmatch(name, pattern) for pattern in SECRET_FILES)
+    folder = parts[-2] if len(parts) > 1 else ""
+    if SECRET_FOLDERS & set(parts[:-1]) or any(f"{folder}/{name}" in SECRET_PATHS for name in names):
+        return True
+    return any(fnmatch.fnmatch(name, pattern) for name in names for pattern in SECRET_FILES)
 
 
 def redact(text: str) -> tuple[str, int]:
@@ -95,7 +116,13 @@ def redact(text: str) -> tuple[str, int]:
         count += 1
         return f"{match.group('head')}{MASK}{match.group('tail')}"
 
+    def header(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return f"{match.group('head')}{MASK}"
+
     text = TOKEN.sub(token, text)
+    text = AUTHORIZATION.sub(header, text)
     text = URL_PASSWORD.sub(url, text)
     text = ASSIGNMENT.sub(assignment, text)
     return text, count

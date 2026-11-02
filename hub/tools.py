@@ -260,7 +260,7 @@ def _list_files(args: dict[str, Any], ctx: ToolContext) -> str:
 def _read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     project = ctx.project(args.get("project"))
     path = _text(args.get("path"), "path", required=True)
-    if is_secret_file(path):
+    if projects.secret_file(project.root, path):
         raise ToolError(f"{path} holds secrets (keys, passwords); its content is not shown")
     start = _int(args.get("start_line"), "start_line", 1, 1, 10_000_000)
     count = _int(args.get("line_count"), "line_count", limit("file_lines"), 1, max(FILE_LINES_MAX,
@@ -293,7 +293,10 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
     matches = limit("search_matches")
     result = search.search(project.root, query, regex=regex, glob=glob, limit=matches * 2)
     lines, hidden = [], 0
+    own = projects.private_part(project.root)  # the hub's data folder, when this project holds it
     for item in result["files"]:
+        if own and item["path"].startswith(own):
+            continue
         if is_secret_file(item["path"]):
             hidden += len(item["matches"])
             continue
@@ -337,7 +340,7 @@ def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
 def _file_outline(args: dict[str, Any], ctx: ToolContext) -> str:
     project = ctx.project(args.get("project"))
     path = _text(args.get("path"), "path", required=True).replace("\\", "/").strip("/")
-    if is_secret_file(path):
+    if projects.secret_file(project.root, path):
         raise ToolError(f"{path} holds secrets (keys, passwords); its content is not shown")
     target = projects.resolve_inside(project.root, path)
     if not target.is_file():
@@ -375,7 +378,7 @@ def _git_status(args: dict[str, Any], ctx: ToolContext) -> str:
 def _git_diff(args: dict[str, Any], ctx: ToolContext) -> str:
     project = ctx.project(args.get("project"))
     path = _text(args.get("path"), "path")
-    if path and is_secret_file(path):
+    if path and projects.secret_file(project.root, path):
         raise ToolError(f"{path} holds secrets; its changes are not shown")
     diff = projects.git_diff(project.root, path)["diff"]
     if not diff:

@@ -455,7 +455,9 @@ class ClaudeCodeRunner:
                 try:
                     event = json.loads(line)
                 except ValueError:
-                    log.warning("claude code printed a line that is not JSON: %r", line[:200])
+                    log.warning(
+                        "claude code printed a line that is not JSON (%d characters, starting %r)", len(line), line[:80]
+                    )  # it may be the conversation's text: its start is enough for the log
                     continue
                 for step in translator.feed(event):
                     last_id = await self._apply(turn, model, step) or last_id

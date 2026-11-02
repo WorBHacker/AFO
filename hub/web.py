@@ -29,6 +29,9 @@ MAX_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 PART_CHARS = 12_000
 USER_AGENT = "LocalChat-hub/0.1 (a local assistant reading one page for its user)"
+# the carriers' and VPNs' shared space (Tailscale gives its machines addresses there): not "private" to Python, yet
+# never the open web
+SHARED = ipaddress.ip_network("100.64.0.0/10")
 # documentation sites a request to which needs no question (D19: a short list for quick answers)
 ALLOWED_SITES = frozenset({
     "pypi.org", "docs.python.org", "npmjs.com", "www.npmjs.com", "developer.mozilla.org", "learn.microsoft.com",
@@ -85,7 +88,7 @@ def _is_local(host: str) -> bool:
     for info in infos:
         address = ipaddress.ip_address(info[4][0].split("%")[0])
         if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved \
-                or address.is_unspecified or address.is_multicast:  # fmt: skip
+                or address.is_unspecified or address.is_multicast or address in SHARED:  # fmt: skip
             return True
     return False
 
