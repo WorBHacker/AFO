@@ -7,6 +7,7 @@ events (EventThread). Streamed deltas are kept for every chat, so switching chat
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import time
@@ -58,6 +59,9 @@ RENDER_INTERVAL_MAX_MS = 1000
 THINK_TICK_MS = 100
 FLASH_MS = 6000
 MODES = ("chats", "projects", "agent")
+DRAFTS_KEY = "chat/drafts"  # app.ini: what was typed in each chat and not sent - kept across switches and crashes
+NEW_CHAT = "new"  # the drafts' key of a chat not made yet
+DRAFT_SAVE_MS = 700  # typing is saved this long after the last key
 NOT_CONNECTED = "Хаб ещё не подключён"
 GOAL_COMMAND = re.compile(r"^/(?:цель|goal)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)  # opens the goal's card
 HUB_STATES = {
@@ -109,6 +113,14 @@ def read_files(files: list[dict[str, Any]]) -> list[dict[str, str]] | None:
         return None
     return [{"name": f["name"], "data": base64.b64encode(Path(f["path"]).read_bytes()).decode("ascii")}
             for f in files]  # fmt: skip
+
+
+def _read_drafts(settings: QSettings) -> dict[str, str]:
+    try:
+        found = json.loads(str(settings.value(DRAFTS_KEY) or "{}"))
+    except ValueError:
+        return {}
+    return {str(k): v for k, v in found.items() if isinstance(v, str) and v} if isinstance(found, dict) else {}
 
 
 class Controller(QObject):
@@ -188,6 +200,8 @@ class Controller(QObject):
         self._render_timer = self._timer(RENDER_INTERVAL_MS, self._render_live, single=True)
         self._think_timer = self._timer(THINK_TICK_MS, self._render_live)
         self._flash_timer = self._timer(FLASH_MS, lambda: self._set_flash(""), single=True)
+        self._drafts = _read_drafts(settings)  # chat id (NEW_CHAT for one not made yet) -> its unsent text
+        self._drafts_timer = self._timer(DRAFT_SAVE_MS, self._save_drafts, single=True)
         theme.changed.connect(self._restyle)
         self.projects = Projects(self)
         self.terminals = Terminals(self)
@@ -196,6 +210,8 @@ class Controller(QObject):
         self._chat_projects: list[str] = []  # the open chat's projects (a new chat's, until its first message)
         self._context_messages: list[dict[str, Any]] = []  # the open chat's stored context (system messages)
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
+        self._context_sent = 0  # changes of a chat's settings sent so far, and the last one to send each setting
+        self._context_latest: dict[str, int] = {}
         self._context_rows: list[dict[str, Any]] = []
         self._chat_ask: dict[str, Any] = {}  # the open chat's question waiting for the user: {id, question, options}
         self._files: list[dict[str, Any]] = []  # files for the next message: {path, name, size, picture}
@@ -613,6 +629,7 @@ class Controller(QObject):
             # and is not running now (the hub restarted) ended without an event: the status will say so.
             self._stale_runs = set(self.live)
             self.reload_all()
+            self.terminals.resync()  # the terminals' output of the break: read by offset (D46)
         self._link = connected
 
     def _set_hub(self, state: str) -> None:
@@ -745,6 +762,8 @@ class Controller(QObject):
             on_error(HubError(NOT_CONNECTED))
 
     def shutdown(self) -> None:
+        if self._drafts_timer.isActive():
+            self._save_drafts()
         if self.events is not None:
             self.events.stop()
         self.terminals.shutdown()
@@ -1051,10 +1070,16 @@ class Controller(QObject):
         cid = self.current
         self._context_settings = {**self._context_settings, **changes}
         self.contextChanged.emit()
+        self._context_sent += 1
+        sent = self._context_sent
+        self._context_latest.update(dict.fromkeys(changes, sent))
 
         def done(settings: dict[str, Any]) -> None:
-            if cid == self.current:
-                self._context_settings = settings
+            # answers come back in any order: each takes from the hub only what it changed, and only where no later
+            # change of the same setting went out after it - an older answer never undoes a newer choice
+            mine = {k: settings[k] for k in changes if k in settings and self._context_latest.get(k) == sent}
+            if cid == self.current and mine:
+                self._context_settings = {**self._context_settings, **mine}
                 self.contextChanged.emit()
 
         self._call(lambda: self.client.set_context(cid, **changes), done)
@@ -1152,6 +1177,7 @@ class Controller(QObject):
             def done(_r) -> None:
                 if self.current == cid:
                     self.newChat()
+                self._set_draft(cid, "")
                 self.load_conversations()
 
             self._call(lambda: self.client.delete_conversation(cid), done)
@@ -1162,6 +1188,31 @@ class Controller(QObject):
     def chatTitle(self, conversation_id: str) -> str:
         cid = conversation_id or self.current or ""
         return next((c["title"] for c in self.conversations if c["id"] == cid), "")
+
+    # ---------- drafts: each chat its own, through switches and crashes (D46) ----------
+
+    @Slot(str)
+    def keepDraft(self, text: str) -> None:
+        """The composer's text, on every change: the open chat's draft, in app.ini a moment after the last key."""
+        self._set_draft(self.current or NEW_CHAT, text)
+
+    @Slot(str, result=str)
+    def draftFor(self, conversation_id: str) -> str:
+        return self._drafts.get(conversation_id or NEW_CHAT, "")
+
+    def _set_draft(self, key: str, text: str) -> None:
+        if self._drafts.get(key, "") == text:
+            return
+        if text:
+            self._drafts[key] = text
+        else:
+            self._drafts.pop(key, None)
+        self._drafts_timer.start()
+
+    def _save_drafts(self) -> None:
+        self._drafts_timer.stop()
+        self.settings.setValue(DRAFTS_KEY, json.dumps(self._drafts, ensure_ascii=False))
+        self.settings.sync()
 
     # ================= the command palette =================
 
@@ -1444,6 +1495,8 @@ class Controller(QObject):
     def _adopt(self, conversation_id: str) -> None:
         if self.current is None:  # a new chat was made for this message (or goal)
             self.current = conversation_id
+            # what was typed while it was being made (the sent text left the composer before): this chat's now
+            self._set_draft(conversation_id, self._drafts.pop(NEW_CHAT, ""))
             if self._new_home and self._project_chat:  # a project's session: known as such before the list comes
                 self.conversations = [{"id": conversation_id, "kind": "chat", "title": "", "home_project":
                                        self._new_home}, *self.conversations]  # fmt: skip

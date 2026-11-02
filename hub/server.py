@@ -59,12 +59,12 @@ from .api.model_settings import run_check
 from .approvals import ApprovalQueue
 from .auth import ensure_app_token
 from .autonomous import Autonomy
-from .backup import DailyBackup
+from .backup import DailyBackup, migrate_keeping_a_copy
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
 from .computer import Computer, vision_eyes
 from .connections import ConnectionLock
-from .db import Database, migrate
+from .db import Database
 from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
@@ -102,7 +102,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         paths = settings.paths.ensure()
         keep_private(paths.root)  # the data folder is never served through a project, even LocalChat's own (D46)
         db = Database(paths.db)
-        applied = db.call(migrate)
+        applied = migrate_keeping_a_copy(db, paths.backups)  # a copy of the database first (D46)
         if applied:
             log.info("database %s: applied migrations %s", paths.db, applied)
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))

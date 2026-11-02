@@ -314,7 +314,7 @@
 | GET | `/v1/terminals` | только окно | `list_terminals()` | `?project_id: str \| None = None`<br>`?limit: int = 50` |
 | POST | `/v1/terminals` | только окно | `start_terminal()` | тело `{project_id: str \| None = None, path: str = '', cwd: str \| None = None, command: str \| None = None, shell: str = '', cols: int = 120, rows: int = 30, title: str = ''}` |
 | GET | `/v1/terminals/{terminal_id}` | только окно | `get_terminal()` |  |
-| GET | `/v1/terminals/{terminal_id}/output` | только окно | The last output. While the terminal runs, `end` is the offset right after it: `terminal.output` events with a smaller offset are already in `data`. | `?max_chars: int = 65536` |
+| GET | `/v1/terminals/{terminal_id}/output` | только окно | The last output. While the terminal runs, `start` and `end` are the offsets of its first character and right after it: `terminal.output` events with a smaller offset are already in `data`. `since`: the output from that offset on, when the hub still has it (then `start` equals it) - what a client missed after a break. | `?max_chars: int = 65536`<br>`?since: int \| None = None` |
 | POST | `/v1/terminals/{terminal_id}/input` | только окно | `terminal_input()` | тело `{data: str}` |
 | POST | `/v1/terminals/{terminal_id}/resize` | только окно | `terminal_resize()` | тело `{cols: int, rows: int}` |
 | POST | `/v1/terminals/{terminal_id}/stop` | только окно | `stop_terminal()` |  |

@@ -97,12 +97,18 @@ async def get_terminal(terminal_id: str, request: Request, client: Annotated[Cli
 
 @router.get("/terminals/{terminal_id}/output")
 async def terminal_output(
-    terminal_id: str, request: Request, client: Annotated[Client, Depends(require_client)], max_chars: int = 65536
+    terminal_id: str,
+    request: Request,
+    client: Annotated[Client, Depends(require_client)],
+    max_chars: int = 65536,
+    since: int | None = None,
 ) -> dict:
-    """The last output. While the terminal runs, `end` is the offset right after it: `terminal.output` events with
-    a smaller offset are already in `data`."""
+    """The last output. While the terminal runs, `start` and `end` are the offsets of its first character and right
+    after it: `terminal.output` events with a smaller offset are already in `data`. `since`: the output from that
+    offset on, when the hub still has it (then `start` equals it) - what a client missed after a break."""
     try:
-        return await request.app.state.terminals.output(terminal_id, max(1, min(max_chars, 1024 * 1024)))
+        limit = max(1, min(max_chars, 1024 * 1024))
+        return await request.app.state.terminals.output(terminal_id, limit, since)
     except TerminalError as exc:
         raise _error(exc) from exc
 

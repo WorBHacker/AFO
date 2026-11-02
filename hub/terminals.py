@@ -169,14 +169,20 @@ class TerminalManager:
     def log_path(self, terminal_id: str) -> Path:
         return self._folder / f"{terminal_id}.log"
 
-    async def output(self, terminal_id: str, max_chars: int = 64 * 1024) -> dict[str, Any]:
-        """The last output: from memory while it runs (with `end`, the offset after it), else from its log."""
+    async def output(self, terminal_id: str, max_chars: int = 64 * 1024, since: int | None = None) -> dict[str, Any]:
+        """The last output: from memory while it runs (with `start` and `end`, the offsets of its first character and
+        right after it), else from its log. `since`: from that offset on, when memory still has it all - a window
+        that missed events fills the gap (D46); otherwise the last output as usual, and `start` says so."""
         live = self._live.get(terminal_id)
         if live is not None:
             with live.lock:
                 text = "".join(live.tail)
                 end = live.offset
-            return {"data": text[-max_chars:], "end": end, "running": True}
+            first = end - len(text)
+            if since is not None and first <= since <= end and end - since <= max_chars:
+                return {"data": text[since - first :], "start": since, "end": end, "running": True}
+            data = text[-max_chars:]
+            return {"data": data, "start": end - len(data), "end": end, "running": True}
         info = await self.get(terminal_id)
         if info["log_deleted"]:
             return {"data": "", "end": None, "running": False, "log_deleted": True}

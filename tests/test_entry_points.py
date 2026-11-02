@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import date
 
 import httpx
 import pytest
@@ -101,6 +102,30 @@ def test_token_cli(env):
     assert run(env, "hub", "token", "revoke", "cline").returncode == 1
 
 
+def test_db_restore_lists_the_copies_and_waits_for_the_hub_to_stop(env, isolated_data_dir):
+    from hub import backup
+    from hub.singleton import InstanceLock
+
+    assert run(env, "hub", "token", "create", "first").returncode == 0  # makes the database
+    folder = isolated_data_dir / "backups"
+    assert "Копий базы нет" in run(env, "hub", "db", "restore").stdout
+    copy = backup.back_up(isolated_data_dir / "hub.db", folder, date(2026, 11, 2))
+    assert run(env, "hub", "token", "create", "second").returncode == 0  # after the copy
+    listed = run(env, "hub", "db", "restore")
+    assert listed.returncode == 0 and copy.name in listed.stdout and "схема" in listed.stdout
+
+    with InstanceLock(isolated_data_dir / "hub.lock"):  # as if a hub ran
+        busy = run(env, "hub", "db", "restore", copy.name)
+    assert busy.returncode == 3 and "Остановите" in busy.stderr
+    assert run(env, "hub", "db", "restore", "nothing.db").returncode == 1
+
+    restored = run(env, "hub", "db", "restore", copy.name)
+    assert restored.returncode == 0, restored.stderr
+    assert "восстановлена" in restored.stdout and "replaced-" in restored.stdout
+    names = run(env, "hub", "token", "list").stdout
+    assert "first" in names and "second" not in names
+
+
 def test_app_entry_point_builds_the_window(env, isolated_data_dir):
     result = run({**env, "QT_QPA_PLATFORM": "offscreen"}, "app", "--smoke")
     assert result.returncode == 0, result.stderr
@@ -125,3 +150,17 @@ def test_a_native_crash_of_the_window_leaves_a_trace(env, isolated_data_dir):
     logs = isolated_data_dir / "logs"
     assert "Segmentation fault" in (logs / "app-crash.log").read_text(encoding="utf-8")
     assert "app.qt: QObject: a warning from Qt" in (logs / "app.log").read_text(encoding="utf-8")
+
+
+def test_a_native_crash_of_the_hub_leaves_a_trace(env, isolated_data_dir):
+    """A crash in tree-sitter or winpty has no Python traceback either: the stacks go to hub-crash.log (D46)."""
+    code = (
+        "import faulthandler\n"
+        "from common.paths import data_paths\n"
+        "from hub.__main__ import watch_for_crashes\n"
+        "watch_for_crashes(data_paths().ensure())\n"
+        "faulthandler._sigsegv()\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], cwd=PROJECT_ROOT, env=env, capture_output=True, timeout=60)
+    assert result.returncode != 0
+    assert "Segmentation fault" in (isolated_data_dir / "logs" / "hub-crash.log").read_text(encoding="utf-8")

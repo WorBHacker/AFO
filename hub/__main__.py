@@ -15,11 +15,14 @@ python -m hub key set NAME            store one in the Windows Credential Manage
                                       password first, once there is one)
 python -m hub key delete NAME         remove it
 python -m hub connections reset       a forgotten password: remove it together with every saved connection
+python -m hub db restore              the copies of the database (daily, before migrations); NAME restores one while
+                                      the hub is stopped, the database it replaces kept as a copy too
 """
 
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import logging
 import os
@@ -33,8 +36,9 @@ from common import __version__
 from common.logging_setup import setup_logging
 from common.paths import DataPaths
 
+from . import backup
 from .auth import APP_CLIENT, create_client, list_clients, revoke_client
-from .db import Database, migrate, utc_now
+from .db import Database, utc_now
 from .secret_filter import clean
 from .settings import HubSettings
 from .singleton import AlreadyRunning, InstanceLock
@@ -53,6 +57,7 @@ def serve(settings: HubSettings) -> int:
     except AlreadyRunning:
         log.error("a hub is already running (lock %s); this copy exits", paths.hub_lock)
         return EXIT_ALREADY_RUNNING
+    watch_for_crashes(paths)
     try:
         if not _port_free(settings.host, settings.port):
             log.error("port %s:%s is taken by another program", settings.host, settings.port)
@@ -77,6 +82,13 @@ def serve(settings: HubSettings) -> int:
     finally:
         paths.hub_info.unlink(missing_ok=True)
         lock.release()
+
+
+def watch_for_crashes(paths: DataPaths) -> None:
+    """A native crash (in tree-sitter, winpty, SQLite: not in Python) leaves the Python stacks in
+    data/logs/hub-crash.log; without it the hub just disappears, and hub.log says nothing (D46)."""
+    crash_file = open(paths.logs / "hub-crash.log", "a", encoding="utf-8")  # noqa: SIM115 - open until exit
+    faulthandler.enable(crash_file, all_threads=True)
 
 
 def _run_uvicorn(settings: HubSettings) -> None:
@@ -154,7 +166,7 @@ def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
     paths = settings.paths.ensure()
     db = Database(paths.db)
     try:
-        db.call(migrate)
+        backup.migrate_keeping_a_copy(db, paths.backups)
         if args.action == "create":
             try:
                 token = db.call(lambda conn: create_client(conn, args.name, cloud=not args.local))
@@ -207,7 +219,7 @@ def telegram_command(settings: HubSettings, args: argparse.Namespace) -> int:
     paths = settings.paths.ensure()
     db = Database(paths.db)
     try:
-        db.call(migrate)
+        backup.migrate_keeping_a_copy(db, paths.backups)
         store = default_secret_store()
         has_token = bool(store.get(TOKEN))
         if args.action in ("link", "unlink") and not _password_given(store):
@@ -296,12 +308,50 @@ def connections_command(settings: HubSettings, args: argparse.Namespace) -> int:
     paths = settings.paths.ensure()
     db = Database(paths.db)
     try:
-        db.call(migrate)
+        backup.migrate_keeping_a_copy(db, paths.backups)
         removed = db.call(lambda conn: reset(store, conn))
     finally:
         db.close()
     print(f"Пароль сброшен; удалены: {', '.join(removed) or 'ничего не было задано'}. Новый пароль задаётся в окне")
     _refresh_catalog(settings)
+    return 0
+
+
+def db_command(settings: HubSettings, args: argparse.Namespace) -> int:
+    """The copies of the database; with a name, that copy back in its place. Only while no hub runs: its lock is
+    held here for the time of the restore, so none starts meanwhile (the window would start one)."""
+    paths = settings.paths.ensure()
+    found = backup.restorable(paths.backups)
+    if not args.name:
+        if not found:
+            print(f"Копий базы нет ({paths.backups})")
+            return 0
+        print(f"Копии базы в {paths.backups}, старые выше:")
+        for copy in found:
+            print(backup.describe(copy))
+        print("Восстановить: python -m hub db restore ИМЯ — при остановленном хабе")
+        return 0
+    chosen = next((p for p in found if p.name == args.name), None)
+    if chosen is None:
+        print(f"Копии {args.name!r} нет в {paths.backups}", file=sys.stderr)
+        return 1
+    lock = InstanceLock(paths.hub_lock)
+    try:
+        lock.acquire()
+    except AlreadyRunning:
+        print("Хаб работает. Остановите его (python -m hub stop) и закройте окно LocalChat: оно запускает хаб само",
+              file=sys.stderr)  # fmt: skip
+        return EXIT_ALREADY_RUNNING
+    try:
+        kept = backup.restore(chosen, paths.db, paths.backups)
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        print(f"База не восстановлена: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        lock.release()
+    print(f"База восстановлена из {chosen.name}")
+    if kept is not None:
+        print(f"Прежняя база сохранена как {kept.name}: вернуть её — python -m hub db restore {kept.name}")
     return 0
 
 
@@ -371,6 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     key_delete.add_argument("name")
     connections = commands.add_parser("connections", help="the connections' password (D13)")
     connections.add_argument("action", choices=("reset",))
+    database = commands.add_parser("db", help="the database's copies (D29, D46)")
+    database.add_argument("action", choices=("restore",))
+    database.add_argument("name", nargs="?", help="the copy to restore; without it, the list of copies")
     args = parser.parse_args(argv)
 
     settings = HubSettings.from_env()
@@ -380,6 +433,8 @@ def main(argv: list[str] | None = None) -> int:
         return key_command(settings, args)
     if args.command == "connections":
         return connections_command(settings, args)
+    if args.command == "db":
+        return db_command(settings, args)
     if args.command == "stop":
         return stop(settings)
     if args.command == "mcp":

@@ -518,6 +518,8 @@ def search_summary(result: dict[str, Any] | None) -> str:
             if total
             else "определений не найдено"
         )
+        if result.get("left_out"):
+            return text + f" · в индексе не все файлы: {result['left_out']} не прочитаны, проект слишком большой"
         return text + ("" if result.get("complete", True) else " · индекс ещё строится")
     count, files = result.get("matches", 0), len(result.get("files", []))
     if not count:

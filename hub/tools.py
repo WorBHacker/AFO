@@ -356,7 +356,13 @@ def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
     if kind and kind not in SYMBOL_KINDS:
         raise ToolError(f"`kind` must be one of {', '.join(SYMBOL_KINDS)}")
     found = ctx.symbols.find(project, name, kind=kind, limit=SYMBOL_MATCHES)
-    partial = "" if found["complete"] else "\n[the index of this project is not complete yet: ask again for the rest]"
+    if found.get("left_out"):
+        partial = (f"\n[the project has more files than the index reads: {found['left_out']} are left out of it; "
+                   "`search` finds text in all of them]")  # fmt: skip
+    elif not found["complete"]:
+        partial = "\n[the index of this project is not complete yet: ask again for the rest]"
+    else:
+        partial = ""
     if not found["symbols"]:
         return f"no definitions named like {name!r} in {project.name}{partial}"
     head = f"{found['total']} definitions match {name!r} in {project.name}"

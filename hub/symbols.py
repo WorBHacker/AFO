@@ -92,7 +92,8 @@ class _File:
 class _Project:
     files: dict[str, _File] = field(default_factory=dict)
     checked: float = 0.0  # when the files were last compared with the disk (monotonic)
-    complete: bool = False
+    complete: bool = False  # every file the index reads is read (the time budget did not run out)
+    left_out: int = 0  # the project's files past MAX_FILES: never read, so the index is never complete (D46)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -211,7 +212,9 @@ class SymbolIndex:
             present: set[str] = set()
             complete = True
             own = private_part(root)  # the hub's data folder, when this project holds it
-            for rel in search.project_files(root)[:MAX_FILES]:
+            files = search.project_files(root)
+            state.left_out = max(0, len(files) - MAX_FILES)
+            for rel in files[:MAX_FILES]:
                 language = language_of(rel)
                 if language is None or is_secret_file(rel) or (own and rel.startswith(own)):
                     continue
@@ -241,7 +244,8 @@ class SymbolIndex:
 
     def find(self, project: Project, query: str, kind: str = "", limit: int = FIND_LIMIT) -> dict[str, Any]:
         """Definitions whose name matches: exact first, then by prefix, then containing it. `Class.method` matches
-        a method of that class. {symbols: [... with path], total, complete}."""
+        a method of that class. {symbols: [... with path], total, complete, left_out}: `left_out` files of a project
+        bigger than MAX_FILES are never read."""
         state = self.refresh(project)
         query = query.strip()
         container_part, _, name_part = query.rpartition(".")
@@ -268,7 +272,8 @@ class SymbolIndex:
                 ranked.append((rank, len(name), path, symbol.line, symbol))
         ranked.sort(key=lambda item: item[:4])
         found = [{**symbol._asdict(), "path": path} for _r, _n, path, _l, symbol in ranked[:limit]]
-        return {"symbols": found, "total": len(ranked), "complete": state.complete}
+        return {"symbols": found, "total": len(ranked), "complete": state.complete and not state.left_out,
+                "left_out": state.left_out}  # fmt: skip
 
     def outline(self, project: Project, rel: str) -> list[dict[str, Any]] | None:
         """The definitions of one file in order; None when it is not code the index reads."""

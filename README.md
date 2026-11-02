@@ -11,7 +11,7 @@
 | `common/` | общий код: пути к данным, логирование |
 | `vscode/` | расширение VS Code: открытый файл и команды терминалов — в хаб |
 | `tests/` | тесты (pytest) |
-| `data/` | база, её копии за последние 7 дней (`data/backups`), логи, снимки — создаётся сама, в git не попадает |
+| `data/` | база, её копии (`data/backups`: за последние 7 дней и перед обновлением схемы), логи, снимки — создаётся сама, в git не попадает |
 
 ## Разработка
 
@@ -48,6 +48,13 @@ py -3.14 -m venv .venv
 ```bash
 .venv/Scripts/python.exe -m hub
 .venv/Scripts/python.exe -m hub stop
+```
+
+Вернуть базу из копии — при остановленном хабе и закрытом окне (прежняя база тоже сохранится копией):
+
+```bash
+.venv/Scripts/python.exe -m hub db restore             # список копий
+.venv/Scripts/python.exe -m hub db restore ИМЯ_КОПИИ
 ```
 
 Ключи API (Anthropic, OpenAI, Google Gemini, DeepSeek, OpenRouter, Tavily, Brave Search), адрес своего SearXNG и токен

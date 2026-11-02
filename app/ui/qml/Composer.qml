@@ -46,7 +46,13 @@ Item {
     Connections {
         target: App
         function onDraftRestored(text) { if (area.text === "") area.text = text }
+        // each chat has its own draft: another chat opened, its text in the input
+        function onCurrentChanged() {
+            const kept = App.draftFor(App.currentId)
+            if (area.text !== kept) area.text = kept
+        }
     }
+    Component.onCompleted: area.text = App.draftFor(App.currentId)  // typed before the window closed or crashed
 
     // the model asks (its ask_user, Claude Code's question): the answers it offers, or one's own in the input
     Rectangle {
@@ -387,7 +393,10 @@ Item {
                 bottomPadding: 8
                 background: null
                 // a keystroke changes the text and the cursor: one look at the draft after both, not one per change
-                onTextChanged: mentionsLook.restart()
+                onTextChanged: {
+                    mentionsLook.restart()
+                    App.keepDraft(area.text)
+                }
                 onCursorPositionChanged: mentionsLook.restart()
                 Timer { id: mentionsLook; interval: 0; onTriggered: Mentions.typed(area.text, area.cursorPosition) }
                 onActiveFocusChanged: if (!activeFocus) Mentions.close()

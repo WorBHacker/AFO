@@ -517,8 +517,10 @@ class HubClient:
         body = {"project_id": project_id, "path": path, "command": command, "cols": cols, "rows": rows}
         return self._call("POST", "/v1/terminals", body)
 
-    def terminal_output(self, terminal_id: str) -> dict:
-        return self._call("GET", f"/v1/terminals/{terminal_id}/output")
+    def terminal_output(self, terminal_id: str, since: int | None = None) -> dict:
+        """The last output; `since`: from that offset on, when the hub still has it (`start` then equals it)."""
+        params = {"since": since} if since is not None else None
+        return self._call("GET", f"/v1/terminals/{terminal_id}/output", params=params)
 
     def terminal_input(self, terminal_id: str, data: str) -> None:
         self._call("POST", f"/v1/terminals/{terminal_id}/input", {"data": data})

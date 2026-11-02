@@ -140,6 +140,14 @@ def test_terminals_api_and_the_end_with_the_hub(repo):
             client.portal.call(asyncio.sleep, 0.05)
         else:
             pytest.fail("no output")
+        whole = client.get(f"/v1/terminals/{tid}/output").json()
+        assert whole["start"] + len(whole["data"]) == whole["end"]
+        # a window that missed events reads from where it stopped (D46): the same characters, from that offset on
+        since = whole["end"] - 5
+        part = client.get(f"/v1/terminals/{tid}/output", params={"since": since}).json()
+        assert part["start"] == since and part["data"][:5] == whole["data"][-5:]
+        later = client.get(f"/v1/terminals/{tid}/output", params={"since": whole["end"] + 10**6}).json()
+        assert later["start"] != whole["end"] + 10**6  # not there: the last output, and `start` says from where
         listed = client.get("/v1/terminals", params={"project_id": pid}).json()["terminals"]
         assert [t["id"] for t in listed] == [tid] and listed[0]["status"] == "running"
         assert client.delete(f"/v1/terminals/{tid}").status_code == 409  # still running

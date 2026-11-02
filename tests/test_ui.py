@@ -300,6 +300,9 @@ class FakeClient:
         self.tree_calls = []
         self.stopped = []
         self.term_list = [dict(TERMINAL)]
+        self.term_text = TAIL  # all a terminal printed; the hub's memory keeps the last `term_kept` characters of it
+        self.term_kept = 1_000_000
+        self.output_asked = []  # `since` of each read of a terminal's output
         self.inputs = []
         self.resized = []
         self.term_stopped = []
@@ -1259,8 +1262,12 @@ class FakeClient:
         self.term_list.append(info)
         return dict(info)
 
-    def terminal_output(self, terminal_id):
-        return {"data": TAIL, "end": len(TAIL), "running": True}
+    def terminal_output(self, terminal_id, since=None):
+        self.output_asked.append(since)
+        text, end = self.term_text, len(self.term_text)
+        first = max(0, end - self.term_kept)
+        start = since if since is not None and first <= since <= end else first
+        return {"data": text[start:], "start": start, "end": end, "running": True}
 
     def terminal_input(self, terminal_id, data):
         self.inputs.append((terminal_id, data))
@@ -1603,6 +1610,54 @@ def test_declining_the_budget_restores_the_draft_and_removes_the_new_chat(app):
     app.answer(False)
     wait_until(lambda: app.client.deleted == ["c2"])
     assert drafts == ["дорогой вопрос"] and app.client.sent == []
+
+
+def test_each_chat_keeps_its_draft_through_switches_and_a_restart(app, tmp_path):
+    """The composer's text is the open chat's draft (D46): another chat has its own, a new chat too, and app.ini keeps
+    them all - a crash or a restart loses at most the last moment of typing."""
+    app.keepDraft("для нового чата")
+    opened(app)
+    assert app.draftFor("c1") == "" and app.draftFor("") == "для нового чата"
+    app.keepDraft("про первый")
+    app.newChat()
+    assert app.draftFor(app.currentId) == "для нового чата" and app.draftFor("c1") == "про первый"
+    wait_until(lambda: not app._drafts_timer.isActive())  # saved a moment after the last key
+    again = Controller(data_paths().ensure(), QSettings(str(tmp_path / "app.ini"), QSettings.Format.IniFormat),
+                       app.theme)  # fmt: skip
+    assert again.draftFor("c1") == "про первый" and again.draftFor("") == "для нового чата"
+
+    app.askDeleteChat("c1")  # a deleted chat's draft goes with it
+    app.answer(True)
+    wait_until(lambda: app.client.deleted == ["c1"])
+    assert app.draftFor("c1") == ""
+
+    app.keepDraft("")  # sent from a new chat: the composer let its text go, and the next words are typed at once
+    app.send("вопрос")
+    app.keepDraft("следующий")
+    wait_until(lambda: app.current == "c2")
+    assert app.draftFor("c2") == "следующий" and app.draftFor("") == ""  # they belong to the chat made for it
+
+
+def test_the_composer_shows_each_chats_draft(qapp):
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        area = item_named(quick.window.contentItem(), "composerInput")
+        area.setProperty("text", "начал писать")
+        opened(app)
+        assert area.property("text") == ""
+        area.setProperty("text", "в первом чате")
+        app.newChat()
+        assert area.property("text") == "начал писать"
+        app.openChat("c1")
+        assert area.property("text") == "в первом чате"
+        assert quick.warnings == []
+    finally:
+        quick.close()
 
 
 def test_theme_switch_rerenders_the_html(app):
@@ -3084,6 +3139,67 @@ def test_terminal_panel(app):
     assert client.term_removed == ["t1"]
 
 
+def test_terminal_output_the_window_missed_is_read_by_offset(app, monkeypatch):
+    """Events lost in a break (the event queue overflowed, the link dropped) show as a gap in the offsets: the window
+    reads the gap from the hub. A terminal off screen keeps its output raw and plays it when it shows (D46)."""
+    from app.ui import terminals
+
+    terms, client = app.terminals, app.client
+    app.setMode("projects")
+    app.projects.openProject("p1")
+    wait_until(lambda: terms.tabs)
+    terms.setViewSize(40, 5)
+    terms.setPanelOpen(True)
+    terms.openTerminal("t1")
+    emu = terms._emus["t1"]
+    wait_until(lambda: emu.loaded and not emu.loading)
+
+    def screen():
+        return emu.screen.plain_text()
+
+    # "one" never came as an event: the next event starts past it, and the window asks for what it missed
+    client.term_text = TAIL + "one\r\ntwo\r\n"
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) + 5, "data": "two\r\n"})
+    wait_until(lambda: not emu.loading)
+    assert client.output_asked[-1] == len(TAIL) and emu.end == len(client.term_text)
+    assert "one" in screen() and "two" in screen() and "one" in "".join(r["html"] for r in terms.lines.rows)
+
+    # the hub no longer has all of the gap: the terminal is played again from what it has
+    client.term_kept = 8
+    client.term_text += "x" * 40 + "\r\nlast\r\n"
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": len(client.term_text) - 6, "data": "last\r\n"})
+    wait_until(lambda: not emu.loading)
+    assert "last" in screen() and "two" not in screen() and emu.end == len(client.term_text)
+
+    # off screen: kept raw, not parsed; played when it shows
+    app.setMode("chats")
+    client.term_text += "hidden\r\n"
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": emu.end, "data": "hidden\r\n"})
+    assert emu.waiting and "hidden" not in screen()
+    app.setMode("projects")
+    assert not emu.waiting and "hidden" in screen()
+
+    # too much off screen: let go, and read from the hub when it shows
+    monkeypatch.setattr(terminals, "WAITING_MAX", 20)
+    app.setMode("chats")
+    before = emu.end
+    client.term_kept = 1_000_000
+    for n in range(3):
+        piece = f"flood {n} .....\r\n"
+        send(app, "terminal.output", {"terminal_id": "t1", "offset": len(client.term_text), "data": piece})
+        client.term_text += piece
+    assert not emu.waiting and emu.missed
+    app.setMode("projects")
+    wait_until(lambda: not emu.loading)
+    assert client.output_asked[-1] == before and "flood 2" in screen() and not emu.missed
+
+    # back after a break in the link: what the terminal printed meanwhile is read at once
+    client.term_text += "after the break\r\n"
+    app._link = False
+    app._on_connected(True)
+    wait_until(lambda: "after the break" in screen())
+
+
 def test_without_a_hub_nothing_stays_going_on(app):
     """A call the window cannot make (no hub connected) undoes the "searching…" / "saving…" it set up front: it
     used to stay forever, since only the call's answer cleared it."""
@@ -3892,6 +4008,21 @@ def test_a_chats_own_instructions_and_preset(app):
     # the two go out in the background: in either order
     assert {"instructions": "Пиши тесты на pytest."} in sent[-2:] and {"preset": "precise"} in sent[-2:]
     assert app.contextSettings["preset"] == "precise"
+
+
+def test_an_older_answer_never_undoes_a_newer_choice(app, monkeypatch):
+    """The chat's settings go out in the background and their answers come back in any order: the answer to an
+    earlier change, arriving last, used to replace all of them - a later choice was lost (the full run of 13.6)."""
+    opened(app)
+    sent = []
+    monkeypatch.setattr(app, "_call", lambda fn, on_done=None, on_error=None: sent.append((fn, on_done)) or True)
+    app.setChatInstructions("Пиши тесты")
+    app.setChatPreset("precise")
+    app.setChatPreset("creative")
+    answers = [(fn(), on_done) for fn, on_done in sent]  # the hub answered each with what it saved
+    for settings, on_done in reversed(answers):  # the earliest answer comes back last
+        on_done(settings)
+    assert app.contextSettings["preset"] == "creative" and app.contextSettings["instructions"] == "Пиши тесты"
 
 
 def test_roles_in_the_window(app):

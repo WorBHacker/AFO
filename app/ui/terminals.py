@@ -1,9 +1,12 @@
 """The terminal panel (stage 2): the open project's terminals as tabs, the chosen one on screen, typing into it.
 
 Terminals live in the hub (hub/terminals.py); the window only shows them. Each one the window knows gets its own
-emulator (term_screen.TermScreen), fed with every `terminal.output` event, so switching tabs is instant. A terminal
-opened for the first time reads its last output first and then takes the events after it (`offset` tells which it
-already has). Keys become the sequences a console expects and go to the hub through one worker thread, in order.
+emulator (term_screen.TermScreen). The one on screen plays every `terminal.output` event as it comes; the others keep
+the raw output and play it when they show (D46: parsing costs the window's thread on every output, up to 33 a second
+per terminal) - up to WAITING_MAX, past that the hub's memory has it. A terminal opened for the first time reads its
+last output first and then takes the events after it (`offset` tells which it already has); output the window missed
+(events lost in a break of its link to the hub) shows as a gap in the offsets and is read from the hub by offset.
+Keys become the sequences a console expects and go to the hub through one worker thread, in order.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
 LINE_ROLES = ["key", "html"]
 RESIZE_DELAY_MS = 150
 RECENT_ENDED = 5  # ended terminals shown as tabs besides the running ones
+WAITING_MAX = 256 * 1024  # raw output kept for a terminal off screen; past that it is read from the hub when it shows
 
 K = Qt.Key
 CTRL = Qt.KeyboardModifier.ControlModifier.value
@@ -82,8 +86,10 @@ class _Emu:
     stream: pyte.Stream
     end: int | None = None  # the offset the next output starts at; None until the tail is read
     loaded: bool = False
-    loading: bool = False
-    early: list[tuple[int, str]] = field(default_factory=list)  # events that came while the tail was read
+    loading: bool = False  # its output is being read from the hub: events wait meanwhile
+    waiting: list[tuple[int, str]] = field(default_factory=list)  # events not played yet: off screen, or loading
+    waiting_chars: int = 0
+    missed: bool = False  # output after `end` never reached the window: read from the hub when it shows
 
 
 class Terminals(QObject):
@@ -103,7 +109,6 @@ class Terminals(QObject):
         self._cols, self._rows = 120, 30
         self._shown = (0, 0)  # scrollback lines and screen lines in the line model now
         self._shown_base = 0  # the scrollback lines let go before the first one in the line model
-        self._behind = False  # the open terminal had output while the panel was hidden: shown when it shows
         app.modeChanged.connect(self._catch_up)
         self._open = str(app.settings.value("terminals/open", "false")) == "true"
         self._height = int(app.settings.value("terminals/height", 300))
@@ -189,11 +194,22 @@ class Terminals(QObject):
         """The panel shows (QML: projects mode, a project open, the panel open)."""
         return self._open and self.app.mode == "projects"
 
+    def _on_screen(self, terminal_id: str) -> bool:
+        return terminal_id == self._current and self._visible()
+
     def _catch_up(self) -> None:
+        """The panel shows again: what its terminal printed meanwhile is played and laid out now."""
         emu = self._emus.get(self._current)
-        if self._behind and emu is not None and self._visible():
-            self._behind = False
-            self._show(emu)
+        if emu is not None and emu.loaded and (emu.waiting or emu.missed) and self._visible():
+            self._bring_up(self._current, emu)
+
+    def resync(self) -> None:
+        """Back after a break in the link to the hub: the break's output events are gone. Every terminal the window
+        played reads what it missed when it shows - the one on screen at once."""
+        for emu in self._emus.values():
+            if emu.loaded and not emu.loading and emu.end is not None:
+                emu.missed = True
+        self._catch_up()
 
     @Slot(int)
     def setPanelHeight(self, height: int) -> None:
@@ -315,24 +331,46 @@ class Terminals(QObject):
         self.tabsChanged.emit()
         self.currentChanged.emit()
         if not emu.loaded and not emu.loading:
-            emu.loading = self.app._call(  # no hub: not loading, the next opening asks again
-                lambda: self.app.client.terminal_output(terminal_id),
-                lambda tail: self._tail_arrived(terminal_id, emu, tail),
-                lambda _e: self._tail_arrived(terminal_id, emu, {"data": "", "end": None}),
-            )
+            self._read(terminal_id, emu)
         self._fit(emu)
-        self._show(emu)
+        if emu.loaded and self._visible():
+            self._bring_up(terminal_id, emu)
+        else:
+            self._show(emu)
         self._resize_timer.start()
+
+    def _read(self, terminal_id: str, emu: _Emu) -> None:
+        """The terminal's output from the hub: its last output the first time, what came after `end` when the window
+        missed some. No hub: not loading, the next showing asks again."""
+        since = emu.end if emu.loaded else None
+
+        def failed(_error: Exception) -> None:
+            if self._emus.get(terminal_id) is emu:
+                emu.loading = False
+                if not emu.loaded:  # shown empty; its events play as they come
+                    self._tail_arrived(terminal_id, emu, {"data": "", "end": None})
+
+        emu.loading = self.app._call(
+            lambda: self.app.client.terminal_output(terminal_id, since),
+            lambda tail: self._tail_arrived(terminal_id, emu, tail),
+            failed,
+        )
 
     def _tail_arrived(self, terminal_id: str, emu: _Emu, tail: dict[str, Any]) -> None:
         if self._emus.get(terminal_id) is not emu:
             return
+        if emu.loaded and tail.get("start") != emu.end:
+            # the hub no longer has all the window missed: the terminal is played again from what it has
+            emu.screen = TermScreen(self._cols, self._rows)
+            emu.stream = pyte.Stream(emu.screen)
         emu.stream.feed(tail.get("data") or "")
         emu.end = tail.get("end")
-        emu.loaded = True
-        early, emu.early = emu.early, []
-        for offset, data in early:
-            self._feed(emu, offset, data)
+        emu.loaded, emu.loading, emu.missed = True, False, False
+        waiting, emu.waiting, emu.waiting_chars = emu.waiting, [], 0
+        for offset, data in waiting:
+            self._play(emu, offset, data)
+        if emu.missed:  # events lost while it was read: the rest, now
+            self._read(terminal_id, emu)
         if terminal_id == self._current:
             self._show(emu)
 
@@ -375,18 +413,18 @@ class Terminals(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "terminal.output":
-            emu = self._emus.get(payload.get("terminal_id", ""))
-            if emu is None:
-                return
-            if not emu.loaded:
-                emu.early.append((payload["offset"], payload["data"]))
-                return
-            news = self._feed(emu, payload["offset"], payload["data"])
-            if news and payload["terminal_id"] == self._current:
-                if self._visible():
-                    self._update(emu)
-                else:
-                    self._behind = True  # up to 33 outputs a second: a hidden panel does not lay them out
+            terminal_id = payload.get("terminal_id", "")
+            emu = self._emus.get(terminal_id)
+            if emu is None or not (emu.loaded or emu.loading):
+                return  # never opened: its tail, read when it opens, has this
+            offset, data = payload["offset"], payload["data"]
+            if emu.loading or not self._on_screen(terminal_id):
+                self._wait(emu, offset, data)
+            elif self._play(emu, offset, data):
+                self._update(emu)
+            elif emu.missed:
+                self._read(terminal_id, emu)
+                self._wait(emu, offset, data)
         elif kind == "terminal.started":
             info = payload.get("terminal") or {}
             if info.get("project_id") == self._project and info.get("id") not in self._infos:
@@ -405,16 +443,44 @@ class Terminals(QObject):
             if payload.get("terminal_id") in self._infos:
                 self._forget(payload["terminal_id"])
 
-    def _feed(self, emu: _Emu, offset: int, data: str) -> bool:
-        """Plays new output into the emulator, skipping what it already has. False when nothing was new."""
+    def _wait(self, emu: _Emu, offset: int, data: str) -> None:
+        """Output kept raw until the terminal shows (or its read ends). Too much of it is let go: the hub has it, and
+        what comes after a gap too - the read when it shows brings all of it."""
+        if emu.missed and not emu.loading:
+            return
+        emu.waiting.append((offset, data))
+        emu.waiting_chars += len(data)
+        if emu.waiting_chars > WAITING_MAX and not emu.loading:
+            emu.waiting, emu.waiting_chars = [], 0
+            emu.missed = emu.end is not None
+
+    def _play(self, emu: _Emu, offset: int, data: str) -> bool:
+        """Plays new output into the emulator, skipping what it already has. False when nothing was new - or when
+        output before it never reached the window (then `missed`: it is read from the hub)."""
         if emu.end is not None:
+            if offset > emu.end:
+                emu.missed = True
+                return False
             if offset + len(data) <= emu.end:
                 return False
-            if offset < emu.end:
-                data = data[emu.end - offset :]
-            emu.end = max(emu.end, offset) + len(data)
+            data = data[emu.end - offset :]
+            emu.end += len(data)
         emu.stream.feed(data)
         return True
+
+    def _bring_up(self, terminal_id: str, emu: _Emu) -> None:
+        """The terminal shows: what came while it did not is played now - after what the window missed, read first."""
+        if not emu.missed and emu.waiting:
+            waiting, emu.waiting, emu.waiting_chars = emu.waiting, [], 0
+            for n, (offset, data) in enumerate(waiting):
+                self._play(emu, offset, data)
+                if emu.missed:
+                    emu.waiting = waiting[n:]
+                    emu.waiting_chars = sum(len(d) for _o, d in emu.waiting)
+                    break
+        if emu.missed and not emu.loading:
+            self._read(terminal_id, emu)
+        self._show(emu)
 
     def _show(self, emu: _Emu) -> None:
         """The whole terminal into the line model (on opening it, or after a resize)."""
@@ -425,7 +491,6 @@ class Terminals(QObject):
         rows += [{"key": f"s{y}", "html": screen.html(y)} for y in range(screen.lines)]
         self.lines.sync(rows)
         self._shown, self._shown_base = (len(screen.scrolled), screen.lines), base
-        self._behind = False
         self.cursorChanged.emit()
 
     def _update(self, emu: _Emu) -> None:

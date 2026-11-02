@@ -138,6 +138,27 @@ def test_a_big_project_is_indexed_in_parts(code):
     assert index.find(code, "send")["total"] == 3
 
 
+def test_a_project_bigger_than_the_index_says_so(code, monkeypatch):
+    """Files past MAX_FILES are never read: the index says it is not complete, and how much it left out (D46) - but
+    it does not read the project again on every query, as an unfinished one would."""
+    from app.ui import project_rows
+    from hub import search
+
+    files = search.project_files(code.root)
+    monkeypatch.setattr(symbols, "MAX_FILES", 2)
+    index = SymbolIndex(fresh_s=60)
+    found = index.find(code, "send")
+    assert not found["complete"] and found["left_out"] == len(files) - 2
+    looked = []
+    monkeypatch.setattr(search, "project_files", lambda root: looked.append(root) or files)
+    index.find(code, "send")
+    assert looked == []  # fresh: not read again
+    ctx = ToolContext([code], symbols=index)
+    text, error = tool("find_symbol", {"project": "proj", "name": "send"}, ctx)
+    assert not error and f"{len(files) - 2} are left out" in text
+    assert "не прочитаны" in project_rows.search_summary(found)
+
+
 # --- the tools ---
 
 
