@@ -316,6 +316,7 @@ class FakeClient:
         self.term_removed = []
         self.file_calls = []
         self.saves = []  # the editor's saves: (pid, path, text, encoding, base)
+        self.unsaved = []  # what the editor told the hub it holds unsaved, each time (14.2c)
         self.updates = []
         self.searches = []
         self.symbol_calls = []
@@ -1163,6 +1164,10 @@ class FakeClient:
         self.files[path] = text
         return {"path": path, "sha256": sha(text), "size": len(text.encode()), "encoding": encoding, "eol": "LF",
                 "created": now is None, "change": None}  # fmt: skip
+
+    def editor_unsaved(self, files):
+        self.unsaved.append(files)
+        return {"files": files}
 
     def terminals(self, project_id=None):
         return [dict(t) for t in self.term_list if project_id in (None, t["project_id"])]

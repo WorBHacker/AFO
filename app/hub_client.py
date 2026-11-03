@@ -456,6 +456,10 @@ class HubClient:
         return self._call("PUT", f"/v1/projects/{project_id}/file",
                           {"path": path, "text": text, "encoding": encoding, "base": base})  # fmt: skip
 
+    def editor_unsaved(self, files: list[dict[str, str]]) -> dict:
+        """The files the editor holds with edits not saved ({project_id, path}), the whole list (D47, 14.2c)."""
+        return self._call("PUT", "/v1/editor/dirty", {"files": files})
+
     def git(self, project_id: str, log: int = 20) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
 

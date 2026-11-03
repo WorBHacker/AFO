@@ -634,6 +634,8 @@ class Controller(QObject):
             self._stale_runs = set(self.live)
             self.reload_all()
             self.terminals.resync()  # the terminals' output of the break: read by offset (D46)
+        if connected:  # the hub forgets the editor's unsaved files of a window gone away, a restarted one knows none
+            self.editor.tell(again=True)
         self._link = connected
 
     def _set_hub(self, state: str) -> None:

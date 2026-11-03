@@ -859,7 +859,9 @@ class ChatService:
             return done
         approval_id = None
         tainted = await self.read_the_web(conversation_id)
-        if settings["mode"] != "trusted" or tainted:  # after reading the web, trust does not count (D19)
+        unsaved = self.approvals is not None and self.approvals.unsaved.holds(call["name"], args, project.root)
+        if settings["mode"] != "trusted" or tainted or unsaved:  # trust does not count after reading the web (D19),
+            # nor over the user's edits not saved yet in the window's editor (D47)
             allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                         cover=not tainted)  # fmt: skip
             if not allowed:

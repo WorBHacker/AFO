@@ -252,6 +252,45 @@ def test_an_answer_for_the_chat_covers_the_same_kind_later(queue):
     ]
 
 
+def test_a_write_into_a_file_with_unsaved_edits_is_never_covered(queue, tmp_path):
+    """D47, step 14.2c: the window's editor holds a file with edits not saved. A write into it - the hub's own (its
+    path counts from the project), Claude Code's (absolute, or from the project), an agent's into an allowed folder -
+    is asked with the card saying so, and an earlier answer "for the chat" does not cover it. The window's word is
+    the whole list each time."""
+    approvals, seen, db = queue
+    root = tmp_path / "proj"
+    target = root / "src" / "app.py"
+    approvals.unsaved.say([target])
+    holds = approvals.unsaved.holds
+    assert holds("edit_file", {"path": "src/app.py"}, root) and holds("write_file", {"path": "src\\APP.py"}, root)
+    assert holds("Edit", {"file_path": str(target)}, None) and holds("Write", {"file_path": "src/../src/app.py"}, root)
+    assert holds("NotebookEdit", {"notebook_path": str(target)}, None)
+    assert not holds("Edit", {"file_path": "src/app.py"}, None)  # no project to count from: not this file
+    assert not holds("Read", {"file_path": str(target)}, None) and not holds("edit_file", {"path": "src/b.py"}, root)
+
+    async def scenario():
+        other = {"file_path": str(root / "b.py"), "old_string": "x", "new_string": "y"}
+        first = asyncio.create_task(approvals.ask("Edit", other, conversation_id="c1"))
+        while not (waiting := await approvals.pending()):
+            await asyncio.sleep(0.01)
+        await approvals.decide(waiting[0]["id"], allow=True, scope="chat", by="app")
+        await first
+        unsaved = asyncio.create_task(approvals.ask("Edit", {**other, "file_path": str(target)}, conversation_id="c1"))
+        while not (waiting := await approvals.pending()):
+            await asyncio.sleep(0.01)
+        await approvals.decide(waiting[0]["id"], allow=True, scope="chat", by="app")
+        return waiting[0], await unsaved
+
+    shown, decision = asyncio.run(scenario())
+    assert decision.allow and shown["unsaved"] is True and shown["grant_key"] is None
+    requested = [e.payload["approval"] for e in drain(seen) if e.type == "approval.requested"]
+    assert [a["unsaved"] for a in requested] == [False, True]
+    rows = db.call(lambda conn: conn.execute("SELECT status, scope FROM approvals ORDER BY rowid").fetchall())
+    assert [tuple(r) for r in rows] == [("allowed", "chat"), ("allowed", "once")]  # "for the chat" taken as once
+    approvals.unsaved.say([])  # saved: nothing held
+    assert not holds("edit_file", {"path": "src/app.py"}, root)
+
+
 def test_requests_of_an_ended_run_expire(queue):
     approvals, _seen, db = queue
 

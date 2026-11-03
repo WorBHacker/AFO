@@ -36,6 +36,9 @@ router = APIRouter(prefix="/v1")
 
 CLOSE_POLICY = 1008
 CLOSE_TRY_AGAIN = 1013
+# the window's unsaved files (D47) outlive its last events connection this long: a window that reconnects (after
+# 1013, or a hub that stopped for a moment) says them again; one gone for good took its edits along
+UNSAVED_KEPT_S = 30.0
 # what a client other than the window follows besides its own conversations: state, never text
 OUTSIDE_EVENTS = ("hub.*", "project.*", "git.head", "processes.changed", "process.stopped", "port.*", "models.*",
                   "llama_swap.started", "claude_code.limit")  # fmt: skip
@@ -109,8 +112,11 @@ async def events(websocket: WebSocket) -> None:
     )
     log.info("events: client %s connected", client.name)
     window = client.name == APP_CLIENT  # the desktop app: it draws the agent's frame and «stop» (D41)
+    state = websocket.app.state
     if window:
-        websocket.app.state.app_windows = getattr(websocket.app.state, "app_windows", 0) + 1
+        state.app_windows = getattr(state, "app_windows", 0) + 1
+        if (forgetting := getattr(state, "forget_unsaved", None)) is not None:
+            forgetting.cancel()  # a window is back: its list stays (it says it again)
     sender = asyncio.create_task(_send_live(websocket, stream))
     try:
         while True:
@@ -134,7 +140,10 @@ async def events(websocket: WebSocket) -> None:
             await sender
         bus.unsubscribe(stream.subscription)
         if window:
-            websocket.app.state.app_windows -= 1
+            state.app_windows -= 1
+            if not state.app_windows:
+                forget = state.approvals.unsaved.forget
+                state.forget_unsaved = asyncio.get_running_loop().call_later(UNSAVED_KEPT_S, forget)
         log.info("events: client %s disconnected", client.name)
 
 

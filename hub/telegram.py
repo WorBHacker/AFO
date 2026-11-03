@@ -101,6 +101,8 @@ def request_text(approval: dict[str, Any], project: dict[str, Any] | None) -> st
     head = f"<b>{who} ждёт ответа</b>{where}: {what} ({html.escape(approval['tool'])})"
     if approval.get("destructive"):
         head += "\n⚠️ Разрушительное действие — ответить можно только в приложении."
+    if approval.get("unsaved"):  # D47
+        head += "\n⚠️ Файл открыт в редакторе LocalChat с несохранёнными правками."
     if not project or not project.get("cloud_ok"):  # D21: a local-only project's code does not go to the cloud
         return head + "\nПодробности — в приложении LocalChat."
     preview = approval.get("preview") or {}

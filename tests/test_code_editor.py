@@ -143,6 +143,44 @@ def test_editing_saving_and_the_disk(app):  # noqa: F811
     assert "1 МБ" in projects.file["editBlock"]
 
 
+def test_the_hub_knows_the_unsaved_edits(app):  # noqa: F811
+    """D47, step 14.2c: the window tells the hub which file its editor holds with edits not saved - when that
+    changes, and again whenever its events connect (the hub forgets a window gone away); a model's write into it is
+    asked then, a trusted chat's too, and the card says why."""
+    from app.ui.approvals import approval_rows
+    from tests.test_ui import APPROVAL
+
+    client, view = app.client, app.editor
+    document = QTextDocument()
+    view.attach(Quick(document))
+    view.loaded.connect(document.setPlainText)
+    view.open("p1", "src/app.py")
+    wait_until(lambda: view.editing and not view.busy)
+    assert client.unsaved == []  # opened, not edited: nothing to say
+    typed(document, "x = 1\n")
+    view.check()
+    wait_until(lambda: client.unsaved)
+    assert client.unsaved == [[{"project_id": "p1", "path": "src/app.py"}]]
+    typed(document, "y = 2\n")
+    view.check()
+    view.save()
+    wait_until(lambda: len(client.unsaved) == 2 and not app.bg.busy)
+    assert client.unsaved[-1] == []  # saved
+    app._on_connected(True)  # the events connected (again): said again
+    wait_until(lambda: len(client.unsaved) == 3)
+    typed(document, "z = 3\n")
+    view.check()
+    wait_until(lambda: len(client.unsaved) == 4)
+    view.stop()
+    app.answer(True)  # «Не сохранять»
+    wait_until(lambda: len(client.unsaved) == 5)
+    assert client.unsaved[2:] == [[], [{"project_id": "p1", "path": "src/app.py"}], []]
+
+    asked = {**APPROVAL, "tool": "edit_file", "kind": "write", "unsaved": True}
+    (row,) = approval_rows([asked], projects={"p1": {"id": "p1", "name": "LocalChat"}}, chats={})
+    assert row["alwaysAsk"] == "unsaved" and row["projectScope"] == ""
+
+
 def test_the_editor_in_the_window(qapp):  # noqa: F811
     from PySide6.QtQuick import QQuickItem
 

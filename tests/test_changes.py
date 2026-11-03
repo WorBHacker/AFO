@@ -6,9 +6,11 @@ import time
 import pytest
 
 from hub import changes
+from hub.api import events_ws
+from hub.auth import create_client
 from hub.changes import WriteError
 from hub.projects import Project
-from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
+from tests.test_tools import WS_HOST, ToolProvider, hub  # noqa: F401 - the hub fixture
 
 SECRET = "sk-ant-api03-" + "w" * 40
 
@@ -214,6 +216,75 @@ def test_stopping_while_asking(hub, repo):  # noqa: F811
     assert result["error"] is True and result["output"].startswith("not run")
     assert hub.get("/v1/approvals").json()["approvals"] == []  # the request closed with the run
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")
+
+
+# --- the window's editor (D47): the user's unsaved edits ---
+
+
+def last_result(messages):
+    return [m for m in messages if m["role"] == "tool"][-1]["content"][0]
+
+
+def test_a_file_with_unsaved_edits_is_asked_in_a_trusted_chat_too(hub, repo):  # noqa: F811
+    """D47, step 14.2c: the window says which files its editor holds with edits not saved; a model's write into one
+    is asked in every mode - a trusted chat's too -, the card says why, and an answer "for the chat" covers nothing.
+    Another file, and the same one once saved, are written without asking, as a trusted chat does. The list is the
+    window's alone."""
+    first = {"id": "w1", "name": "edit_file", "input": edit()}
+    again = {"id": "w2", "name": "edit_file", "input": edit(old="print('привет')", new="print('ещё')")}
+    other = {"id": "w3", "name": "write_file", "input": {"project": "proj", "path": "out.txt", "content": "x\n"}}
+    saved = {"id": "w4", "name": "edit_file", "input": edit(old="print('привет')", new="print('всё')")}
+    pid, conv, provider = setup_chat(hub, repo, [[first]], mode="trusted")
+    unsaved = [{"project_id": pid, "path": "src/app.py"}]
+    told = hub.put("/v1/editor/dirty", json={"files": unsaved})
+    assert told.status_code == 200 and told.json() == {"files": unsaved}
+
+    say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "edit_file" and asked["unsaved"] is True and asked["grant_key"] is None
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True, "scope": "chat"})
+    assert last_result(finished(hub, conv))["error"] is False
+    provider.steps.append([again])
+    say(hub, conv)  # the same file again: the answer "for the chat" covered nothing
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["unsaved"] is True
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "у меня там правки"})
+    assert last_result(finished(hub, conv))["output"] == "not done: the user said no - у меня там правки"
+    provider.steps.append([other])
+    say(hub, conv)  # another file: as a trusted chat does, without a card
+    assert last_result(finished(hub, conv))["error"] is False and (repo / "out.txt").exists()
+
+    assert hub.put("/v1/editor/dirty", json={"files": []}).json() == {"files": []}  # saved
+    provider.steps.append([saved])
+    say(hub, conv)
+    assert last_result(finished(hub, conv))["error"] is False
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('всё')")
+    count = hub.app.state.db.call(lambda conn: conn.execute("SELECT COUNT(*) FROM approvals WHERE conversation_id = ?",
+                                                            (conv,)).fetchone()[0])  # fmt: skip
+    assert count == 2
+
+    assert hub.put("/v1/editor/dirty", json={"files": [{"project_id": "nope", "path": "a"}]}).status_code == 404
+    assert hub.put("/v1/editor/dirty", json={"files": [{"project_id": pid, "path": "../x"}]}).status_code == 422
+    token = hub.app.state.db.call(lambda conn: create_client(conn, "vscode", cloud=False))
+    assert hub.put("/v1/editor/dirty", json={"files": []},
+                   headers={"Authorization": f"Bearer {token}"}).status_code == 403  # fmt: skip
+
+
+def test_the_hub_forgets_unsaved_edits_when_the_window_is_gone(hub, repo, monkeypatch):  # noqa: F811
+    """The list lives while a window is connected to the events: a reconnect (the window comes back within moments,
+    and says its list again) keeps it; a window gone for good takes it along."""
+    monkeypatch.setattr(events_ws, "UNSAVED_KEPT_S", 0.3)
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    unsaved = hub.app.state.approvals.unsaved
+    headers = {**dict(hub.headers), **WS_HOST}
+    with hub.websocket_connect("/v1/events", headers=headers) as ws:
+        ws.receive_json()
+        hub.put("/v1/editor/dirty", json={"files": [{"project_id": pid, "path": "src/app.py"}]})
+    with hub.websocket_connect("/v1/events", headers=headers) as ws:  # back at once
+        ws.receive_json()
+        time.sleep(0.5)
+        assert unsaved.holds("edit_file", {"path": "src/app.py"}, repo)
+    wait(lambda: not unsaved.holds("edit_file", {"path": "src/app.py"}, repo))
 
 
 # --- the audit (D46): nothing lost on a write ---

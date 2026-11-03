@@ -6,7 +6,8 @@ allow once, allow for this chat, allow always for this project (a rule, stage 5)
 agent reads. An answer "for this chat" or "for this project" covers later requests of the same kind there - the same
 tool, or for a command the same command - except destructive commands (git push, reset --hard, rm -r...), which are
 asked every time (D17). Each request is a row in `approvals` with who asked, what, and who answered how; nothing is
-forgotten. The hub's own models ask here too, before they write a file (write_file, edit_file).
+forgotten. The hub's own models ask here too, before they write a file (write_file, edit_file). A write into a file
+the window's editor holds with unsaved edits (`Unsaved`, D47) is asked in every mode, and no answer covers it.
 
 Events: approval.requested {approval}, approval.decided {approval} - both in the feed. A request still open when
 its run ends (or the hub stops) is closed as expired: nobody waits for that answer any more.
@@ -18,6 +19,7 @@ import asyncio
 import contextlib
 import difflib
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -231,6 +233,50 @@ def trusted_skips(tool: str, data: dict[str, Any], root: Path | None = None) -> 
     return not destructive(tool, data) and not hub_data(tool, data, root)
 
 
+def written(tool: str, data: dict[str, Any], root: Path | None) -> Path | None:
+    """The file a write names: the hub's tools count their path from the project, Claude Code's is absolute or counts
+    from it too; None for what is not a write, or a relative path with no project to count from."""
+    if tool not in WRITE_TOOLS:
+        return None
+    name = data.get("path" if tool in HUB_WRITES else "notebook_path" if tool == "NotebookEdit" else "file_path")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    path = Path(name.strip())
+    if not path.is_absolute():
+        if root is None:
+            return None
+        path = root / path
+    return path
+
+
+class Unsaved:
+    """The files the window's editor holds with edits not saved yet (D47, step 14.2c) - one Ctrl+S from being
+    written over: a model's write into one is asked in every mode, a trusted chat's too, and no answer covers it. The
+    window says the whole list each time it changes and whenever its events connect; the hub forgets it a while after
+    the last window went (api/events_ws.py)."""
+
+    def __init__(self) -> None:
+        self._paths: set[str] = set()
+
+    def say(self, paths: list[Path]) -> None:
+        self._paths = {found for p in paths if (found := _same(p))}
+
+    def forget(self) -> None:
+        self._paths = set()
+
+    def holds(self, tool: str, data: dict[str, Any], root: Path | None) -> bool:
+        path = written(tool, data, root)
+        return path is not None and _same(path) in self._paths
+
+
+def _same(path: Path) -> str:
+    """One spelling for one file: resolved, in Windows' case ('' for a path that does not resolve)."""
+    try:
+        return os.path.normcase(path.resolve())
+    except OSError, ValueError:
+        return ""
+
+
 def network(tool: str, data: dict[str, Any]) -> bool:
     if CLASSED.get(tool) in ("network", "send") or tool == "mail_send" or tool in SEARCHES:
         return True
@@ -424,6 +470,7 @@ class ApprovalQueue:
         self._db = db
         self._bus = bus
         self._waiting: dict[str, asyncio.Future[Decision]] = {}
+        self.unsaved = Unsaved()  # the window's editor's (PUT /v1/editor/dirty)
 
     async def start(self) -> int:
         """Requests left open by a hub that stopped: nobody waits for them now."""
@@ -449,8 +496,10 @@ class ApprovalQueue:
         cover: bool = True,
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
-        chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19)."""
-        key = grant_key(tool, data, root) if cover else None
+        chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19; nor over
+        the user's unsaved edits, D47)."""
+        unsaved = self.unsaved.holds(tool, data, root)
+        key = grant_key(tool, data, root) if cover and not unsaved else None
         approval_id = uuid.uuid4().hex[:12]
         shown = await asyncio.to_thread(preview, tool, data, root)
 
@@ -466,7 +515,8 @@ class ApprovalQueue:
             )  # fmt: skip
             return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
-        row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root)}
+        row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root),
+                                                   "unsaved": unsaved}  # fmt: skip
         if row["status"] == "allowed":
             await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
             return Decision(True, approval_id=approval_id)
@@ -520,7 +570,8 @@ class ApprovalQueue:
             )
             root = Path(found["path"]) if found else None
         return row | {"preview": await asyncio.to_thread(preview, row["tool"], row["input"], root),
-                      "hub_data": hub_data(row["tool"], row["input"], root)}  # fmt: skip
+                      "hub_data": hub_data(row["tool"], row["input"], root),
+                      "unsaved": self.unsaved.holds(row["tool"], row["input"], root)}  # fmt: skip
 
     async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str) -> dict:
         def write(conn: sqlite3.Connection) -> sqlite3.Row | None:

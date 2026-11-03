@@ -155,7 +155,11 @@ class EditorView(QObject):
         self._document: QTextDocument | None = None
         self.highlighter = Highlighter(app)  # colours, the lines on screen first (14.2b)
         app.theme.changed.connect(self.highlighter.again)
+        self._told: list[dict[str, str]] | None = []  # what the hub last heard of the unsaved edits (None: unknown)
+        self._telling = False
+        self._connections = 0  # the window's events connections so far: a word sent before the last one is stale
         self._clear()
+        self.changed.connect(self.tell)
 
     def _clear(self) -> None:
         self._project_id = self._path = self._base = self._saved = ""
@@ -284,6 +288,33 @@ class EditorView(QObject):
         self.highlighter.stop()
         self._clear()
         self.changed.emit()
+
+    # ---------------------------------------------------------------- what the hub knows
+
+    def tell(self, again: bool = False) -> None:
+        """The hub hears which file the editor holds with edits not saved (D47, step 14.2c): a model's write into it
+        is asked then, a trusted chat's too. Said when that changes, and `again` whenever the window's events
+        connect - the hub forgets a window that went away, and a hub that restarted knows nothing. One word at a
+        time, so the last one said is the one the hub keeps; one the hub did not hear is said at the next change or
+        connection."""
+        if again:
+            self._connections += 1
+            self._told = None
+        files = [{"project_id": self._project_id, "path": self._path}] if self._path and self._dirty else []
+        if self._telling or files == self._told or self.app.client is None:
+            return
+        self._telling, connection = True, self._connections
+
+        def done(_result: dict[str, Any]) -> None:
+            self._telling = False
+            if connection == self._connections:
+                self._told = files
+            self.tell()  # changed meanwhile: said again
+
+        def failed(_error: Exception) -> None:
+            self._telling = False
+
+        self.app._call(lambda: self.app.client.editor_unsaved(files), done, failed)
 
     # ---------------------------------------------------------------- the text
 

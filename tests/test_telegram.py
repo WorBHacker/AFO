@@ -107,6 +107,8 @@ def test_what_goes_to_the_phone(bot):
     assert "в «secret-work»" in local["text"] and "pytest" not in local["text"]  # D21: no code of a local project
     assert "Подробности — в приложении" in local["text"]
     assert "только в приложении" in push["text"] and "reply_markup" not in push  # destructive: not from the phone
+    held = telegram.request_text({"kind": "write", "tool": "edit_file", "unsaved": True}, None)  # D47, 14.2c
+    assert "несохранёнными правками" in held
 
 
 def test_answering_from_the_phone(bot):

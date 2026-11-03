@@ -413,3 +413,12 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     assert asked["tool"] == "Edit" and asked["conversation_id"] == later
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "сначала проверю"})
     assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == "Не стал править: сначала проверю"
+
+    # a file the window's editor holds with unsaved edits (D47, step 14.2c): Claude Code's edit of it - its path
+    # counts from the project - is asked in a trusted chat too
+    hub.http.put("/v1/editor/dirty", json={"files": [{"project_id": hub.pid, "path": "notes.txt"}]})
+    send(hub, trusted, "edit notes.txt")
+    asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "Edit" and asked["unsaved"] is True and asked["conversation_id"] == trusted
+    hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "там мои правки"})
+    assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Не стал править: там мои правки"
