@@ -72,13 +72,14 @@ ListView {
         autoScroll = false
     }
     // Only the reader scrolling up stops the following; being at the end again starts it. The list also moves
-    // contentY itself (a new row, a corrected estimate): that never stops it.
+    // contentY itself (a new row, a corrected estimate): that never stops it. Nor does a move of the empty list -
+    // nobody scrolls that: the approval card's room moved it while a chat loaded, and the chat opened at its top.
     property real lastY: 0
     onContentYChanged: {
         if (!autoScroll) {
             if (endGap() <= 40)
                 follow = true
-            else if (contentY < lastY - 0.5)
+            else if (contentY < lastY - 0.5 && count > 0)
                 follow = false
         }
         lastY = contentY

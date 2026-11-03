@@ -34,6 +34,7 @@ py -3.14 -m venv .venv
 .venv/Scripts/ruff.exe check .
 .venv/Scripts/ruff.exe format --check .
 .venv/Scripts/python.exe -m pytest
+.venv/Scripts/python.exe -m pytest -m stress       # стресс-стенд (~3 мин): цифры старта, длинного чата, большого проекта, терминала
 .venv/Scripts/pip-audit.exe -r requirements.lock   # известные уязвимости зависимостей (спрашивает базу PyPI)
 ```
 

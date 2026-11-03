@@ -2,7 +2,9 @@
 
 One watchdog observer (ReadDirectoryChangesW on Windows) watches every project folder recursively. Raw events come
 on the observer's thread in bursts - an editor's save is several, a `git checkout` thousands - so they are sorted
-there, collected per project and handled on the event loop FLUSH_S after the first one:
+there, collected per project and handled on the event loop FLUSH_S after the last one, and in a storm that never
+pauses at least every FLUSH_MAX_S (D46, step 13.7: counted from the first event, 2 s of a checkout came as ten
+batches, each reading git again):
 
 - noise is dropped first: .git internals other than what moves git's state (HEAD, index, refs), cache folders
   (node_modules, .venv, ...), the hub's own data folder, and then whatever git ignores;
@@ -63,6 +65,7 @@ def _observer() -> Any:
 
 
 FLUSH_S = 0.4
+FLUSH_MAX_S = 2.0
 MAX_LISTED = 200
 GIT_STATE_FILES = {"HEAD", "index", "packed-refs", "MERGE_HEAD", "ORIG_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"}
 CHANGES = {"created", "deleted", "moved", "modified"}
@@ -154,8 +157,8 @@ class _Handler(FileSystemEventHandler):
 class ProjectWatcher:
     """Watches projects' folders and publishes `project.files` and `project.git` on the bus."""
 
-    def __init__(self, bus, *, ignore: Iterable[Path] = (), flush_s: float = FLUSH_S, listed=None, relocate=None,
-                 check_s: float = 0.0):  # fmt: skip
+    def __init__(self, bus, *, ignore: Iterable[Path] = (), flush_s: float = FLUSH_S, flush_max_s: float = FLUSH_MAX_S,
+                 listed=None, relocate=None, check_s: float = 0.0):  # fmt: skip
         """`listed`: async, every listed project now; `relocate`: async (project_id, new folder) -> the project as it
         is then - both from the hub's database, for the folders' check (none given: no check)."""
         self._bus = bus
@@ -163,7 +166,8 @@ class ProjectWatcher:
         self._ids: dict[str, tuple[int, int]] = {}  # project -> its folder's (device, file id), to find it moved
         self._missing: set[str] = set()
         self.ignore = tuple(_norm(str(p)) for p in ignore)  # folders never reported, e.g. the hub's own data
-        self._flush_s = flush_s
+        self._flush_s, self._flush_max_s = flush_s, flush_max_s
+        self._last: dict[str, float] = {}  # project -> when its latest event came (the loop's clock)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._observer: Any = None
         self._watches: dict[str, tuple[Project, ObservedWatch]] = {}
@@ -212,6 +216,7 @@ class ProjectWatcher:
     def unwatch(self, project_id: str) -> None:
         entry = self._watches.pop(project_id, None)
         self._pending.pop(project_id, None)
+        self._last.pop(project_id, None)
         self._git_last.pop(project_id, None)
         if entry is not None and self._observer is not None:
             with contextlib.suppress(KeyError, OSError):
@@ -278,6 +283,7 @@ class ProjectWatcher:
     def _note(self, project_id: str, batch: Batch) -> None:
         if project_id not in self._watches:
             return
+        self._last[project_id] = asyncio.get_running_loop().time()
         pending = self._pending.get(project_id)
         if pending is None:
             self._pending[project_id] = batch
@@ -291,7 +297,14 @@ class ProjectWatcher:
         task.add_done_callback(self._tasks.discard)
 
     async def _flush_later(self, project_id: str) -> None:
-        await asyncio.sleep(self._flush_s)
+        loop = asyncio.get_running_loop()
+        first = loop.time()
+        while True:  # FLUSH_S of quiet, or FLUSH_MAX_S since the first event
+            last = self._last.get(project_id, first)
+            wait = min(last + self._flush_s, first + self._flush_max_s) - loop.time()
+            if wait <= 0:
+                break
+            await asyncio.sleep(wait)
         batch = self._pending.pop(project_id, None)
         entry = self._watches.get(project_id)
         if batch is None or entry is None:

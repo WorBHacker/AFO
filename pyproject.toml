@@ -46,4 +46,5 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not stress'"  # the stress stand runs on its own: pytest -m stress (tests/stress, D46)
+markers = ["stress: the stress stand - big synthetic data, numbers at the end (tests/stress)"]

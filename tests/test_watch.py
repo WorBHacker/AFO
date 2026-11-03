@@ -7,10 +7,11 @@ from conftest import run_git
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
+from hub import projects
 from hub.projects import Project
 from hub.server import create_app
 from hub.settings import HubSettings
-from hub.watch import ProjectWatcher, head_change, relative, sort_event
+from hub.watch import Batch, ProjectWatcher, head_change, relative, sort_event
 
 ROOT = os.path.normcase("C:\\proj")
 
@@ -150,6 +151,58 @@ def test_watching_a_repository(repo, tmp_path):
         await watcher.stop()
 
     asyncio.run(scenario())
+
+
+def test_a_burst_is_one_batch_and_a_storm_is_reported_as_it_goes(tmp_path):
+    """A batch went FLUSH_S after the first event of a burst: a checkout or a formatter of 2 s came as ten batches,
+    each reading git again - 60 git processes on 20 000 files (D46, step 13.7). Now it goes FLUSH_S after the last
+    event, and a storm that never pauses is still reported at least every FLUSH_MAX_S."""
+    (tmp_path / "p").mkdir()
+
+    async def scenario():
+        bus = Bus()
+        watcher = ProjectWatcher(bus, flush_s=0.2, flush_max_s=1.0)
+        watcher.start([project(tmp_path / "p")])
+
+        def files():
+            return [p for t, p in bus.events if t == "project.files"]
+
+        for n in range(6):  # 0.6 s, never quiet for 0.2 s
+            watcher._note("p1", Batch(changed={f"a{n}.txt"}))
+            await asyncio.sleep(0.1)
+        await until(lambda: files())
+        await asyncio.sleep(0.4)
+        assert [len(p["changed"]) for p in files()] == [6]
+        bus.events.clear()
+        for n in range(25):  # 2.5 s
+            watcher._note("p1", Batch(changed={f"b{n}.txt"}))
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
+        assert 2 <= len(files()) <= 4 and sum(len(p["changed"]) for p in files()) == 25
+        await watcher.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_batch_asks_git_once_whether_it_is_a_repository(repo, monkeypatch):
+    """A batch read git with six processes, three of them asking whether the folder is a repository (D46, 13.7)."""
+    asked = []
+    git = projects.git
+    monkeypatch.setattr(projects, "git", lambda root, *args, **kw: (asked.append(args[0]), git(root, *args, **kw))[1])
+
+    async def scenario():
+        bus = Bus()
+        watcher = ProjectWatcher(bus, flush_s=0.1)
+        watcher.start([project(repo.resolve())])
+        await until(lambda: any(t == "project.git" for t, _ in bus.events))
+        asked.clear()
+        watcher._note("p1", Batch(changed={"notes.txt"}))
+        await until(lambda: any(t == "project.files" for t, _ in bus.events))
+        await asyncio.sleep(0.5)
+        await watcher.stop()
+
+    asyncio.run(scenario())
+    assert sorted(asked) == ["check-ignore", "log", "rev-parse", "status"]
 
 
 def test_a_missing_folder_is_not_watched(tmp_path):

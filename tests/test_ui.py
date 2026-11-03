@@ -1660,6 +1660,35 @@ def test_the_composer_shows_each_chats_draft(qapp):
         quick.close()
 
 
+def test_a_chat_is_laid_out_off_the_windows_thread(app, monkeypatch):
+    """Opening a chat made every message's Markdown and code into rich text on the window's thread: frozen for 0.7 s
+    on 1000 messages (D46, step 13.7). The rows are made on the worker thread with the history; a theme switched
+    meanwhile has them made again in its colours."""
+    import threading
+
+    where = []
+    rows_for = rows.rows_for
+
+    def made(*args):
+        where.append(threading.current_thread() is threading.main_thread())
+        return rows_for(*args)
+
+    monkeypatch.setattr(rows, "rows_for", made)
+    opened(app)
+    assert where == [False]
+
+    def made_then_switched(*args):
+        built = made(*args)
+        monkeypatch.setattr(palette, "_current", palette.LIGHT)  # the user switched the theme meanwhile
+        return built
+
+    monkeypatch.setattr(rows, "rows_for", made_then_switched)
+    app.newChat()
+    app.openChat("c1")
+    wait_until(lambda: len(app.messages.rows) == 2)
+    assert palette.LIGHT.text_soft in app.messages.rows[1]["segments"][0]["html"]
+
+
 def test_theme_switch_rerenders_the_html(app):
     opened(app)
     app.setTheme("light")
@@ -3108,7 +3137,7 @@ def test_terminal_panel(app):
                                   "data": "".join(f"\x1b[32mline {n}\x1b[0m\r\n" for n in range(8))})  # fmt: skip
     keys = [r["key"] for r in terms.lines.rows]
     assert len(keys) == 5 + 5 and keys[:5] == [f"h{n}" for n in range(5)]  # 5 lines scrolled into history
-    assert any("color:#0dbc79" in r["html"] for r in terms.lines.rows)  # green, from the dark palette
+    assert any("color:#0dbc79" in html for html in shown_lines(terms))  # green, from the dark palette
 
     # keys go out in order; Ctrl+C is the interrupt
     assert terms.key(Qt.Key.Key_A.value, 0, "a")
@@ -3162,7 +3191,7 @@ def test_terminal_output_the_window_missed_is_read_by_offset(app, monkeypatch):
     send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL) + 5, "data": "two\r\n"})
     wait_until(lambda: not emu.loading)
     assert client.output_asked[-1] == len(TAIL) and emu.end == len(client.term_text)
-    assert "one" in screen() and "two" in screen() and "one" in "".join(r["html"] for r in terms.lines.rows)
+    assert "one" in screen() and "two" in screen() and "one" in "".join(shown_lines(terms))
 
     # the hub no longer has all of the gap: the terminal is played again from what it has
     client.term_kept = 8
@@ -3224,6 +3253,77 @@ def test_without_a_hub_nothing_stays_going_on(app):
         app.client = client
     terms.openTerminal("t1")  # the hub is back: the next opening loads the terminal
     wait_until(lambda: terms._emus["t1"].loaded)
+
+
+def shown_lines(terms, rows=None) -> list[str]:
+    """The terminal's lines (all, or those `rows`) as the view reads them: a scrollback line becomes rich text when
+    it is asked for."""
+    from app.ui.terminals import LINE_ROLES
+
+    role = Qt.ItemDataRole.UserRole + LINE_ROLES.index("html")
+    rows = range(terms.lines.rowCount()) if rows is None else rows
+    return [terms.lines.data(terms.lines.index(i, 0), role) for i in rows]
+
+
+def test_a_flood_of_output_is_made_into_rich_text_only_where_it_shows(app, monkeypatch):
+    """Every line that went up into the scrollback was made into rich text at once: 200 000 lines of output, most
+    let go unseen, kept the window's thread busy for seconds (D46, step 13.7). A line becomes rich text when the
+    view first asks for it - and a theme switch no longer loses the scrollback's colours."""
+    from app.ui import term_screen
+
+    rendered = []
+    line_html = term_screen.line_html
+    monkeypatch.setattr(term_screen, "line_html", lambda *args: (rendered.append(1), line_html(*args))[1])
+    terms = app.terminals
+    app.setMode("projects")
+    app.projects.openProject("p1")
+    wait_until(lambda: terms.tabs)
+    terms.setViewSize(40, 5)
+    terms.setPanelOpen(True)
+    terms.openTerminal("t1")
+    wait_until(lambda: terms._emus["t1"].loaded)
+    rendered.clear()
+    flood = "".join(f"\x1b[32mline {n}\x1b[0m\r\n" for n in range(5000))
+    send(app, "terminal.output", {"terminal_id": "t1", "offset": len(TAIL), "data": flood})
+    assert len(rendered) <= 10  # the screen's own lines, not the 5000 that scrolled up
+    assert len(terms.lines.rows) == term_screen.HISTORY_LINES + 5
+    (first,) = shown_lines(terms, [0])  # what the view asks for is made then
+    assert "line&nbsp;1996" in first and "color:#0dbc79" in first and len(rendered) <= 11
+    app.setTheme("light")
+    assert "color:#00bc00" in shown_lines(terms, [0])[0]  # the light palette's green: the colours stayed
+    assert "line 4999" in terms._emus["t1"].screen.plain_text()
+
+
+def test_the_emulators_quick_drawing_draws_what_pyte_draws():
+    """pyte made a new Char for every character drawn: 70% of the window's time in a flood of output (D46, step
+    13.7). TermScreen draws ordinary text faster - and must leave the screen, the cursor, the scrollback and what is
+    marked changed exactly as pyte's own drawing does, whatever comes."""
+    import random
+
+    import pyte
+
+    from app.ui.term_screen import TermScreen
+
+    class Reference(TermScreen):
+        draw = pyte.Screen.draw
+
+    pieces = ["abc", "строка ", "x" * 37, "日本", "é", " ", "\r\n", "\n", "\r", "\x1b[31m", "\x1b[1;42m",
+              "\x1b[0m", "\x1b[4h", "\x1b[4l", "\x1b[?7l", "\x1b[?7h", "\x1b[5;3H", "\x1b[2K", "\x1b(0", "\x1b(B",
+              "lqqk", "\x0e", "\x0f", "\x1b[2;4r", "\x1b[r", "\t"]  # fmt: skip
+    rng = random.Random(13)
+    for case in range(300):
+        quick, reference = TermScreen(12, 4), Reference(12, 4)
+        streams = pyte.Stream(quick), pyte.Stream(reference)
+        for _ in range(rng.randint(1, 60)):
+            piece = rng.choice(pieces)
+            for stream in streams:
+                stream.feed(piece)
+
+        def state(screen):
+            cells = [[screen.buffer[y][x] for x in range(screen.columns)] for y in range(screen.lines)]
+            return cells, screen.cursor.x, screen.cursor.y, screen.dirty, [s.text for s in screen.scrolled]
+
+        assert state(quick) == state(reference), case
 
 
 def test_terminal_lines_follow_output_change_by_change(app, monkeypatch):

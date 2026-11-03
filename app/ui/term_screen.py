@@ -1,10 +1,12 @@
 """A terminal's screen in the window: a VT emulator (pyte) whose lines become rich text for QML. No Qt here.
 
 The hub sends a terminal's raw output (escape sequences and all, hub/terminals.py); the window plays it into a
-pyte screen of its own size. Lines that scroll off the top of the screen are kept, already rendered, as
-scrollback. Colours: the 16 console colours from a palette per theme (the VS Code terminal's), 256-colour and
-true colour as sent. The window does not answer the console's queries (cursor position, device attributes): ConPTY
-does not wait for them, and an answer replayed from old output would land in the shell as typed text.
+pyte screen of its own size. Lines that scroll off the top of the screen are kept as scrollback the way pyte left
+them, and become rich text only when the view first shows them (D46, step 13.7: a flood of output made every line
+into HTML at once, most of them let go unseen). Colours: the 16 console colours from a palette per theme (the VS
+Code terminal's), 256-colour and true colour as sent. The window does not answer the console's queries (cursor
+position, device attributes): ConPTY does not wait for them, and an answer replayed from old output would land in
+the shell as typed text.
 """
 
 from __future__ import annotations
@@ -12,11 +14,13 @@ from __future__ import annotations
 import html
 
 import pyte
-from pyte.screens import Margins
+from pyte import modes
+from pyte.screens import Margins, wcwidth
 
 from .. import palette
 
 HISTORY_LINES = 3000
+STYLES_KEPT = 64  # styles whose characters' cells the screen keeps for drawing (see TermScreen.draw)
 
 # names as pyte gives them ("brown" is yellow; "bfightmagenta" is pyte's own typo for a background colour)
 DARK = {
@@ -101,28 +105,85 @@ def line_text(line, columns: int) -> str:
     return "".join(line[x].data for x in range(columns)).rstrip()
 
 
+class Scrolled:
+    """A line gone up into the scrollback, as pyte left it (it never changes it again): rich text when first asked."""
+
+    __slots__ = ("_html", "columns", "line")
+
+    def __init__(self, line, columns: int):
+        self.line, self.columns, self._html = line, columns, None
+
+    @property
+    def html(self) -> str:
+        if self._html is None:
+            self._html = line_html(self.line, self.columns)
+        return self._html
+
+    @property
+    def text(self) -> str:
+        return line_text(self.line, self.columns)
+
+
 class TermScreen(pyte.Screen):
-    """A pyte screen that keeps what scrolls off its top: `scrolled` (rendered lines, oldest first, at most
-    HISTORY_LINES), `scrolled_text` (the same as plain text), `new_scrolled` (lines added since the last look) and
-    `dropped` (old lines let go)."""
+    """A pyte screen that keeps what scrolls off its top: `scrolled` (Scrolled lines, oldest first, at most
+    HISTORY_LINES), `new_scrolled` (lines added since the last look) and `dropped` (old lines let go)."""
 
     def __init__(self, columns: int, lines: int):
         super().__init__(columns, lines)
-        self.scrolled: list[str] = []
-        self.scrolled_text: list[str] = []
+        self.scrolled: list[Scrolled] = []
         self.new_scrolled = 0
         self.dropped = 0
+        self._cells: dict = {}  # a style -> {character: its cell}
+
+    def draw(self, data: str) -> None:
+        """pyte's drawing, quicker for ordinary text - every character one cell wide, no insert mode: pyte made a new
+        cell (Char) for each character, 70% of the window's time in a flood of output (D46, step 13.7). Cells never
+        change (pyte replaces them), so the same character in the same style shares one; a line is filled up to the
+        screen's edge at a time. Anything else goes to pyte as it came."""
+        if modes.IRM in self.mode:
+            super().draw(data)
+            return
+        text = data.translate(self.g1_charset if self.charset else self.g0_charset)
+        if any(wcwidth(char) != 1 for char in set(text)):
+            super().draw(data)
+            return
+        attrs = self.cursor.attrs
+        cells = self._cells.get(attrs)
+        if cells is None:
+            if len(self._cells) >= STYLES_KEPT:
+                self._cells.clear()
+            cells = self._cells[attrs] = {}
+        columns = self.columns
+        while text:
+            cursor = self.cursor
+            if cursor.x == columns:  # past the last column, as pyte leaves it
+                if modes.DECAWM in self.mode:
+                    self.dirty.add(cursor.y)
+                    self.carriage_return()
+                    self.linefeed()
+                else:  # no wrapping: each character takes the last cell in turn, the last one stays
+                    text = text[-1]
+                    cursor.x -= 1
+            room = columns - cursor.x
+            part, text = text[:room], text[room:]
+            line, x = self.buffer[cursor.y], cursor.x
+            for char in part:
+                cell = cells.get(char)
+                if cell is None:
+                    cell = cells[char] = attrs._replace(data=char)
+                line[x] = cell
+                x += 1
+            cursor.x = x
+        self.dirty.add(self.cursor.y)
 
     def index(self) -> None:
         top, bottom = self.margins or Margins(0, self.lines - 1)
         if self.cursor.y == bottom and top == 0:  # the whole screen scrolls: its top line goes to the scrollback
-            self.scrolled.append(line_html(self.buffer[0], self.columns))
-            self.scrolled_text.append(line_text(self.buffer[0], self.columns))
+            self.scrolled.append(Scrolled(self.buffer[0], self.columns))
             self.new_scrolled += 1
             if len(self.scrolled) > HISTORY_LINES:
                 extra = len(self.scrolled) - HISTORY_LINES
                 del self.scrolled[:extra]
-                del self.scrolled_text[:extra]
                 self.dropped += extra
         super().index()
 
@@ -137,8 +198,9 @@ class TermScreen(pyte.Screen):
         return line_html(self.buffer[y], self.columns)
 
     def restyle(self) -> None:
-        """The theme changed: the scrollback is rendered again from its plain text (its colours are gone)."""
-        self.scrolled = [html.escape(t, quote=False).replace(" ", "&nbsp;") for t in self.scrolled_text]
+        """The theme changed: the scrollback is made into rich text again, in the new palette, when it shows (new
+        objects, so a view holding the old ones sees each line change)."""
+        self.scrolled = [Scrolled(s.line, s.columns) for s in self.scrolled]
 
     @property
     def cursor_visible(self) -> bool:
@@ -153,7 +215,7 @@ class TermScreen(pyte.Screen):
         return BRACKETED_PASTE in self.mode
 
     def plain_text(self) -> str:
-        lines = self.scrolled_text + [line_text(self.buffer[y], self.columns) for y in range(self.lines)]
+        lines = [s.text for s in self.scrolled] + [line_text(self.buffer[y], self.columns) for y in range(self.lines)]
         while lines and not lines[-1]:
             lines.pop()
         return "\n".join(lines)

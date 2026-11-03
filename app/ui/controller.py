@@ -20,7 +20,7 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from common.paths import DataPaths
 
-from .. import presenter
+from .. import palette, presenter
 from ..events import EventThread
 from ..hub_client import HubClient, HubError, connect
 from ..tasks import Background
@@ -1112,19 +1112,29 @@ class Controller(QObject):
             self.currentChanged.emit()
             self.headerChanged.emit()
             self.busyChanged.emit()
-        self._call(
-            lambda: self.client.conversation(conversation_id),
-            lambda data: self._show_conversation(conversation_id, data),
-        )
+        models = self.models
 
-    def _show_conversation(self, conversation_id: str, data: dict[str, Any]) -> None:
+        def fetch() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+            # the rows are made here, off the window's thread: a long chat's Markdown and code take a while (D46)
+            theme = palette.current().name
+            data = self.client.conversation(conversation_id)
+            return data, theme, rows.rows_for(data["messages"], models)
+
+        self._call(fetch, lambda found: self._show_conversation(conversation_id, *found))
+
+    def _show_conversation(
+        self, conversation_id: str, data: dict[str, Any], theme: str = "", made: list[dict[str, Any]] | None = None
+    ) -> None:
+        """`made`: the rows, made with the history in `theme`; none, or another theme now - they are made here."""
         if conversation_id != self.current:
             return  # the user moved on while this was loading
         if data.get("busy"):
             self._load_chat_question(conversation_id)  # it may be waiting on a question to the user
         else:
             self._set_chat_question(None)
-        self.messages.reset(rows.rows_for(data["messages"], self.models))
+        if made is None or theme != palette.current().name:  # a theme switched meanwhile: made in its colours
+            made = rows.rows_for(data["messages"], self.models)
+        self.messages.reset(made)
         if conversation_id in self._stale_runs and not data.get("busy"):
             self._end_dead_run(conversation_id)  # read before the hub's status came: this says the same
         elif conversation_id in self._interrupted and not data.get("busy"):

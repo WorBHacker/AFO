@@ -2,6 +2,7 @@
 terminals with the hub, and keeping logs within their limits (D30)."""
 
 import asyncio
+import sys
 from datetime import UTC, datetime, timedelta
 
 import psutil
@@ -102,6 +103,31 @@ def test_an_interactive_terminal(db, tmp_path):
         await terminals.stop()
 
     asyncio.run(scenario())
+
+
+def test_a_flood_of_output_wakes_the_hub_rarely(db, tmp_path, monkeypatch):
+    """ConPTY hands output over a line or two at a time: each piece flushed the log and woke the event loop - 55 000
+    times for 200 000 lines, most of the hub's CPU (D46, step 13.7). Pieces read back to back go on as one."""
+    lines = 20_000
+    (tmp_path / "chatty.py").write_text(f"for i in range({lines}):\n    print('строка', i)\n", encoding="utf-8")
+    woken = []
+    queue = TerminalManager._queue_output
+    monkeypatch.setattr(TerminalManager, "_queue_output",
+                        lambda self, *args: (woken.append(1), queue(self, *args)))  # fmt: skip
+
+    async def scenario():
+        bus = Bus()
+        terminals = TerminalManager(bus, db, data_paths().terminals)
+        await terminals.start(prune=False)
+        command = f"& '{sys.executable}' chatty.py"
+        tid = (await terminals.create(cwd=tmp_path, by="app", command=command, shell="powershell"))["id"]
+        await until(lambda: bus.of("terminal.exited"), timeout=60)
+        assert f"строка {lines - 1}" in bus.output(tid)
+        assert f"строка {lines - 1}" in terminals.log_path(tid).read_text(encoding="utf-8")
+        await terminals.stop()
+
+    asyncio.run(scenario())
+    assert len(woken) < lines / 50, len(woken)
 
 
 def hub_app():

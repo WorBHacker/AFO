@@ -15,11 +15,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import pyte
-from PySide6.QtCore import Property, QObject, Qt, Signal, Slot
+from PySide6.QtCore import Property, QModelIndex, QObject, QPersistentModelIndex, Qt, Signal, Slot
 
 from ..tasks import Background
 from .models import RowModel
-from .term_screen import TermScreen
+from .term_screen import Scrolled, TermScreen
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -92,6 +92,15 @@ class _Emu:
     missed: bool = False  # output after `end` never reached the window: read from the hub when it shows
 
 
+class Lines(RowModel):
+    """The terminal's lines for the view: a scrollback line (term_screen.Scrolled) becomes rich text when the view
+    first asks for it - a flood of output that scrolls by unseen costs no rendering (D46, step 13.7)."""
+
+    def data(self, index: QModelIndex | QPersistentModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        value = super().data(index, role)
+        return value.html if isinstance(value, Scrolled) else value
+
+
 class Terminals(QObject):
     tabsChanged = Signal()
     currentChanged = Signal()
@@ -101,7 +110,7 @@ class Terminals(QObject):
     def __init__(self, app: Controller):
         super().__init__(app)
         self.app = app
-        self.lines = RowModel(self, roles=LINE_ROLES)
+        self.lines = Lines(self, roles=LINE_ROLES)
         self._infos: dict[str, dict[str, Any]] = {}  # the open project's terminals, as the hub describes them
         self._emus: dict[str, _Emu] = {}
         self._current = ""
@@ -487,7 +496,7 @@ class Terminals(QObject):
         screen = emu.screen
         screen.take_news()
         base = screen.dropped
-        rows = [{"key": f"h{base + i}", "html": text} for i, text in enumerate(screen.scrolled)]
+        rows = [{"key": f"h{base + i}", "html": line} for i, line in enumerate(screen.scrolled)]
         rows += [{"key": f"s{y}", "html": screen.html(y)} for y in range(screen.lines)]
         self.lines.sync(rows)
         self._shown, self._shown_base = (len(screen.scrolled), screen.lines), base

@@ -41,6 +41,7 @@ log = logging.getLogger("hub.terminals")
 
 OUTPUT_FLUSH_S = 0.03
 POLL_S = 0.02
+GATHER_CHARS = 64 * 1024  # output read back to back goes on as one piece, up to this much
 TAIL_CHARS = 256 * 1024  # recent output kept in memory for a window that opens the terminal later
 LOG_MAX_BYTES = 50 * 1024 * 1024
 LOG_KEEP_DAYS = 90
@@ -288,14 +289,24 @@ class TerminalManager:
     # --- the reader thread ---
 
     def _read_loop(self, live: _Live) -> None:
+        """ConPTY hands output over a line or two at a time: pieces read back to back are recorded as one (up to
+        GATHER_CHARS), so a flood of output flushes the log and wakes the event loop rarely (D46, step 13.7)."""
         pty = live.pty
+        gathered: list[str] = []
+        size = 0
         while True:
             try:
                 data = pty.read(blocking=False)
             except winpty.WinptyError:
                 break
             if data:
-                self._record(live, data)
+                gathered.append(data)
+                size += len(data)
+                if size < GATHER_CHARS:
+                    continue
+            if gathered:
+                self._record(live, "".join(gathered))
+                gathered, size = [], 0
                 continue
             if not pty.isalive():
                 with contextlib.suppress(winpty.WinptyError):
@@ -304,6 +315,8 @@ class TerminalManager:
                         self._record(live, rest)
                 break
             time.sleep(POLL_S)
+        if gathered:  # the console broke off after them
+            self._record(live, "".join(gathered))
         code = None
         for _ in range(50):  # the exit code may lag the end of the process a little
             with contextlib.suppress(winpty.WinptyError):

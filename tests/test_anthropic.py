@@ -287,3 +287,22 @@ def test_replay_drops_only_what_cannot_be_sent():
         SIGNED,
         {"type": "text", "text": "ответ"},
     ]
+
+
+def test_the_sdk_comes_with_the_first_call_not_with_the_hub():
+    """Importing the SDK took ~1.8 s - two thirds of the hub's start (D46, step 13.7): the hub and its gateway are
+    built without it, and a hub with no Anthropic key never loads it."""
+    import subprocess
+    import sys
+
+    from common.paths import PROJECT_ROOT
+
+    code = (
+        "import asyncio, sys\n"
+        "import hub.server\n"
+        "from hub.gateway.anthropic_provider import AnthropicProvider\n"
+        "print(asyncio.run(AnthropicProvider(lambda: None).list_models()), 'anthropic' in sys.modules)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], cwd=PROJECT_ROOT, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["[]", "False"]

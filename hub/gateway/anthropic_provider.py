@@ -28,8 +28,6 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-import anthropic
-
 from .base import Model, ProviderError, StreamEvent
 
 log = logging.getLogger("hub.gateway.anthropic")
@@ -58,6 +56,9 @@ CHARS_PER_TOKEN_ESTIMATE = 3  # only for a cancelled run, whose output count Ant
 
 
 def _default_client_factory(api_key: str) -> Any:
+    # imported here: the SDK takes ~1.8 s to import, two thirds of the hub's start, and is only needed with a key
+    import anthropic
+
     # a long read timeout for slow thinking, but an unreachable API is reported in seconds, not minutes
     return anthropic.AsyncAnthropic(api_key=api_key, timeout=anthropic.Timeout(600.0, connect=10.0))
 
@@ -336,6 +337,8 @@ def _refusal_text(details: Any) -> str:
 
 def _describe(exc: Exception) -> str:
     """A short, safe description of an SDK error: never the request body, never the key."""
+    import anthropic  # loaded by now: the error came from its client
+
     if isinstance(exc, anthropic.AuthenticationError):
         return "the API key was rejected (401)"
     if isinstance(exc, anthropic.PermissionDeniedError):

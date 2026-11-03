@@ -221,9 +221,10 @@ def is_repo(root: Path) -> bool:
 
 
 def git_ignored(root: Path, paths: set[str]) -> set[str]:
-    """Which of `paths` (relative, posix) git ignores; nothing outside a repository. A tracked file is never
-    ignored, whatever .gitignore says."""
-    if not paths or not is_repo(root):
+    """Which of `paths` (relative, posix) git ignores; nothing outside a repository (git says so with its exit
+    code - no separate question first: the watcher asks on every batch, D46). A tracked file is never ignored,
+    whatever .gitignore says."""
+    if not paths:
         return set()
     result = git(root, "check-ignore", "--stdin", "-z", input="\0".join(sorted(paths)).encode("utf-8"))
     if result.returncode not in (0, 1):  # 1: none of them is ignored
@@ -351,11 +352,10 @@ def git_status(root: Path) -> dict[str, Any]:
 
 
 def git_log(root: Path, limit: int = 20) -> list[dict[str, str]]:
-    """Recent commits: sha, author, when (ISO 8601 - absolute, so the same history always reads the same), subject."""
-    if not is_repo(root):
-        return []
+    """Recent commits: sha, author, when (ISO 8601 - absolute, so the same history always reads the same), subject.
+    Nothing outside a repository or before the first commit: git's exit code says so."""
     result = git(root, "log", f"-n{limit}", "--pretty=format:%h%x1f%an%x1f%aI%x1f%s")
-    if result.returncode != 0:  # no commits yet
+    if result.returncode != 0:  # not a repository, or no commits yet
         return []
     commits = []
     for line in result.stdout.decode("utf-8", "replace").splitlines():
