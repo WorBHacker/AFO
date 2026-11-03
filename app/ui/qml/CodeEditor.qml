@@ -11,7 +11,9 @@ import QtQuick.Controls.Basic
 // at Ctrl+Space, the list of names to complete it (Completer, app/ui/completions.py, 14.5): arrows choose, Tab or Enter
 // puts it in, Esc closes; F12 and Ctrl+click go to the definition of the name under the cursor. Once typing
 // pauses at a line's end, the model's grey text (Ghost, app/ui/ghost.py, 14.6): Tab takes it, Ctrl+→ a word, Esc puts
-// it away. Tab: the list's name first, else the grey text, else an indent.
+// it away. Tab: the list's name first, else the grey text, else an indent. Ctrl+I (Rewriter, app/ui/rewrite.py,
+// 14.7): what to do with the selected lines - the model's edit shows as a diff in their place, Ctrl+Enter takes it,
+// Esc does not; «Объяснить», «Спросить в чате» take them to a chat of the project.
 Item {
     id: editor
     objectName: "codeEditor"
@@ -194,6 +196,11 @@ Item {
                 if ([Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp,
                      Qt.Key_PageDown].includes(event.key))
                     Ghost.dismiss()  // the cursor goes elsewhere: the grey text, and its request, go
+                if (ctrl && event.key === Qt.Key_I) {
+                    Rewriter.begin(editor.tabKey, body.selectionStart, body.selectionEnd)
+                    event.accepted = true
+                    return
+                }
                 if (ctrl && event.key === Qt.Key_Space) {
                     Completer.update(editor.tabKey, body.cursorPosition, true)
                     event.accepted = true
@@ -229,6 +236,144 @@ Item {
                 } else if (event.key === Qt.Key_Escape && Finder.active) {
                     findBar.close()
                     event.accepted = true
+                }
+            }
+        }
+    }
+
+    // Ctrl+I (14.7): what to do with the lines, then the model's edit as a diff over them
+    Rectangle {
+        id: rewrite
+        objectName: "rewritePanel"
+        readonly property bool shown: editor.visible && Rewriter.open && Rewriter.key === editor.tabKey
+        readonly property rect at: body.positionToRectangle(Rewriter.start)
+        visible: shown
+        x: gutter.width + 4
+        y: Math.max(4, Math.min(at.y - flick.contentY, editor.height - height - 4))
+        width: editor.width - x - 16
+        height: rewriteColumn.implicitHeight + 16
+        radius: 8
+        color: Theme.p.popup
+        border.color: Theme.p.accent
+        onShownChanged: {
+            if (shown) {
+                instruction.text = ""
+                instruction.forceActiveFocus()
+            } else if (editor.visible) {
+                body.forceActiveFocus()
+            }
+        }
+
+        function keys(event) {
+            const ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+            const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+            if (event.key === Qt.Key_Escape) Rewriter.close()
+            else if (enter && ctrl && Rewriter.ready) body.cursorPosition = Rewriter.accept()
+            else if (enter && !ctrl) Rewriter.ask(instruction.text)
+            else return
+            event.accepted = true
+        }
+
+        Column {
+            id: rewriteColumn
+            x: 8
+            y: 8
+            width: parent.width - 16
+            spacing: 6
+            Row {
+                spacing: 6
+                Field {
+                    id: instruction
+                    objectName: "rewriteAsk"
+                    width: rewriteColumn.width - explainButton.width - askButton.width - 12
+                    implicitHeight: 30
+                    enabled: !Rewriter.busy
+                    placeholderText: "Что сделать с этими строками? (Enter)"
+                    Keys.onPressed: (event) => rewrite.keys(event)
+                }
+                PlainButton {
+                    id: explainButton
+                    objectName: "explainCode"
+                    implicitHeight: 30
+                    focusPolicy: Qt.NoFocus
+                    text: "Объяснить"
+                    onClicked: Rewriter.explain(editor.tabKey, Rewriter.start, Rewriter.end)
+                }
+                PlainButton {
+                    id: askButton
+                    objectName: "askInChat"
+                    implicitHeight: 30
+                    focusPolicy: Qt.NoFocus
+                    text: "Спросить в чате"
+                    onClicked: Rewriter.askInChat(editor.tabKey, Rewriter.start, Rewriter.end)
+                }
+            }
+            Text {
+                visible: Rewriter.busy
+                text: "Модель правит…"
+                color: Theme.p.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+            Text {
+                width: parent.width
+                visible: Rewriter.error !== ""
+                text: Rewriter.error
+                wrapMode: Text.Wrap
+                color: Theme.p.error
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+            Flickable {  // the diff: the lines taken out, those put in
+                width: parent.width
+                height: Math.min(diffRows.implicitHeight, 360)
+                visible: Rewriter.ready
+                clip: true
+                contentHeight: diffRows.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ThinScrollBar {}
+                Column {
+                    id: diffRows
+                    width: parent.width
+                    Repeater {
+                        model: Rewriter.rows
+                        delegate: Item {
+                            required property var modelData
+                            objectName: "rewriteRow"
+                            width: diffRows.width
+                            height: rowText.implicitHeight + 2
+                            Rectangle {
+                                anchors.fill: parent
+                                visible: modelData.kind !== " "
+                                color: modelData.kind === "+" ? Theme.p.ok : Theme.p.error
+                                opacity: 0.16
+                            }
+                            Text {
+                                id: rowText
+                                x: 4
+                                text: modelData.kind + " " + modelData.text.replace(/\t/g, "    ")
+                                textFormat: Text.PlainText
+                                font: body.font
+                                color: modelData.kind === " " ? Theme.p.faint : Theme.p.text
+                            }
+                        }
+                    }
+                }
+            }
+            Row {
+                visible: Rewriter.ready
+                spacing: 6
+                PlainButton {
+                    objectName: "acceptEdit"
+                    kind: "primary"
+                    focusPolicy: Qt.NoFocus
+                    text: "Принять (Ctrl+Enter)"
+                    onClicked: body.cursorPosition = Rewriter.accept()
+                }
+                PlainButton {
+                    focusPolicy: Qt.NoFocus
+                    text: "Отказать (Esc)"
+                    onClicked: Rewriter.close()
                 }
             }
         }

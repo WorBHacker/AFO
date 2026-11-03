@@ -1214,6 +1214,10 @@ class Controller(QObject):
         """The composer's text, on every change: the open chat's draft, in app.ini a moment after the last key."""
         self._set_draft(self.current or NEW_CHAT, text)
 
+    def keep_new_draft(self, text: str) -> None:
+        """The input's text for the next new chat (the editor's «Спросить в чате», 14.7)."""
+        self._set_draft(NEW_CHAT, text)
+
     @Slot(str, result=str)
     def draftFor(self, conversation_id: str) -> str:
         return self._drafts.get(conversation_id or NEW_CHAT, "")

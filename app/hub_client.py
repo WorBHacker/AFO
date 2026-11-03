@@ -477,6 +477,13 @@ class HubClient:
         except httpx.HTTPError as exc:
             raise HubError(f"хаб не отвечает ({exc})") from exc
 
+    def editor_edit(self, project_id: str, path: str, selected: str, before: str, after: str,
+                    instruction: str) -> dict:  # fmt: skip
+        """The model's edit of the selection (D47, 14.7): {replacement, model}; a 409 HubError says why not."""
+        body = {"project_id": project_id, "path": path, "selected": selected, "before": before, "after": after,
+                "instruction": instruction}  # fmt: skip
+        return self._call("POST", "/v1/editor/edit", body, timeout=130)
+
     def editor_unsaved(self, files: list[dict[str, str]]) -> dict:
         """The files the editor holds with edits not saved ({project_id, path}), the whole list (D47, 14.2c)."""
         return self._call("PUT", "/v1/editor/dirty", {"files": files})

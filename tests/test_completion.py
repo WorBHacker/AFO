@@ -1,6 +1,7 @@
 """Code completion for the window's editor (D47, step 14.6): fill in the middle through llama-swap, the next request
 cancelling the one before all the way to llama.cpp, a model not loaded pausing it, the cloud and secrets (D10), the
-usage - against a stand-in llama-swap with one llama.cpp slot behind it, a real HTTP server."""
+usage - against a stand-in llama-swap with one llama.cpp slot behind it, a real HTTP server. The model's edit of
+the selection (14.7)."""
 
 import json
 import threading
@@ -11,6 +12,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
+from hub.gateway.base import Model, StreamEvent
 from hub.server import create_app
 from hub.settings import HubSettings
 from tests.test_tools import BASE, ToolProvider
@@ -204,3 +206,61 @@ def test_a_cloud_model_gets_code_only_of_a_project_that_allows_the_cloud(hub, ll
     assert lines[0] == {"model": "fake/echo", "how": "chat"} and "".join(p.get("text", "") for p in lines) == "Готово"
     sent = json.dumps(provider.calls[-1][0], ensure_ascii=False)
     assert SECRET not in sent and "<CURSOR>" in sent
+
+
+# --- the model edits the selection (14.7) ---
+
+
+class EditProvider:
+    """A model that answers an edit - in a Markdown fence, as models do though asked not to."""
+
+    name = "editor"
+
+    def __init__(self, answer: str, locality: str = "local"):
+        self.answer = answer
+        self.calls: list[list[dict]] = []
+        self.models = [Model("editor/fix", "editor", "fix", "Fix", locality, {}, {})]
+
+    async def list_models(self):
+        return self.models
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        self.calls.append(messages)
+        yield StreamEvent("content", self.answer)
+        yield StreamEvent("end", usage={"input_tokens": 30, "output_tokens": 7}, stop_reason="end_turn")
+
+
+def edit(hub, pid: str, **extra):
+    body = {"project_id": pid, "path": "src/app.py", "before": "def total(items):\n",
+            "selected": "    total = 0\n    for i in items:\n        total += i\n", "after": "    return total\n",
+            "instruction": "через sum", **extra}  # fmt: skip
+    return hub.post("/v1/editor/edit", json=body)
+
+
+def test_the_model_edits_the_selection(hub, repo):
+    """D47, step 14.7 (Ctrl+I): the role «Правка в редакторе» gets the selection between <SELECTION> marks, the code
+    around it, the path and the person's words; its answer, a fence taken off, is the replacement. No model chosen, a
+    secret file, a cloud model for a local-only project: 409 with why - and nothing sent. Recorded in the usage."""
+    provider = EditProvider("```python\n    return sum(items)\n```")
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    refused = edit(hub, pid)
+    assert refused.status_code == 409 and refused.json()["detail"]["reason"] == "no_model"
+    saved = hub.put("/v1/model_settings", json={"model_id": "", "settings": {"roles": {"edit": "editor/fix"}}})
+    assert saved.status_code == 200, saved.text
+    done = edit(hub, pid)
+    assert done.status_code == 200 and done.json() == {"replacement": "    return sum(items)", "model": "editor/fix"}
+    sent = provider.calls[-1][1]["content"]
+    assert "What to do: через sum" in sent and "<SELECTION>    total = 0" in sent and "File: src/app.py" in sent
+    assert edit(hub, pid, path=".env").json()["detail"]["reason"] == "secret"
+    meta = json.loads(hub.app.state.db.call(lambda c: c.execute("SELECT meta FROM usage").fetchone()[0]))
+    assert meta["kind"] == "edit"
+
+    provider.models[0] = Model("editor/fix", "editor", "fix", "Fix", "cloud", {}, {})
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    calls = len(provider.calls)
+    assert edit(hub, pid).json()["detail"]["reason"] == "local_only" and len(provider.calls) == calls
+    assert hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True}).status_code == 200
+    assert edit(hub, pid, selected=f"KEY = '{SECRET}'\n").status_code == 200
+    assert SECRET not in json.dumps(provider.calls[-1], ensure_ascii=False)

@@ -42,6 +42,7 @@ from .finder import Finder
 from .ghost import Ghost
 from .highlighter import Highlighter
 from .models import RowModel
+from .rewrite import Rewriter
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -241,6 +242,7 @@ class EditorView(QObject):
         self.finder = Finder(app, self._text)  # find and replace (14.3), in the tab shown
         self.completer = Completer(app, self)  # the list under the cursor, F12 (14.5)
         self.ghost = Ghost(app, self)  # the model's grey text after the cursor (14.6)
+        self.rewriter = Rewriter(app, self)  # Ctrl+I: the model edits the selection, or explains it (14.7)
         app.theme.changed.connect(self._restyle)
         self._told: list[dict[str, str]] | None = []  # what the hub last heard of the unsaved edits (None: unknown)
         self._telling = False
@@ -484,6 +486,8 @@ class EditorView(QObject):
         self.completer.forget(b.key)
         if self.ghost.key == b.key:
             self.ghost.dismiss()
+        if self.rewriter.key == b.key:
+            self.rewriter.close()
         del self._buffers[b.key]
         self._tabs.remove(at)  # its CodeEditor goes, its document with it
         self.changed.emit()

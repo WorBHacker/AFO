@@ -62,9 +62,9 @@ class Paused(Exception):
         self.reason = reason
 
 
-def chosen(conn) -> str | None:
+def chosen(conn, role: str = ROLE) -> str | None:
     roles = model_settings.current(conn, model_settings.ALL)[1].get("roles") or {}
-    return roles.get(ROLE) or None
+    return roles.get(role) or None
 
 
 class Completions:

@@ -3,7 +3,8 @@ by Enter, Tab and Shift+Tab (each one undo step), Ctrl+S through the hub's save 
 changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window. Its
 colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first. Find
 and replace (14.3). Tabs, the question before unsaved edits go, drafts and tabs restored after a crash, VS Code
-(14.4). Completions and the way to a definition (14.5). The model's grey text (14.6)."""
+(14.4). Completions and the way to a definition (14.5). The model's grey text (14.6). Its edit of the selection,
+Ctrl+I (14.7)."""
 
 import json
 import re
@@ -506,6 +507,18 @@ def test_find_and_replace_in_the_window(qapp):  # noqa: F811
         assert not bar.property("visible") and body.hasActiveFocus()
         key(Qt.Key.Key_Z, "", ctrl)  # one undo step for all of them
         assert body.property("text") == FILES["src/app.py"]
+
+        # Ctrl+I (14.7): the cursor's line, what to do, the model's edit as a diff, Ctrl+Enter takes it
+        app.client.edit_answer = "print('привет')"
+        body.setProperty("cursorPosition", 0)
+        key(Qt.Key.Key_I, "", ctrl)
+        assert pane.findChild(QQuickItem, "rewriteAsk").hasActiveFocus()
+        typing("hello")
+        key(Qt.Key.Key_Return)
+        wait_until(lambda: app.editor.rewriter.ready)
+        key(Qt.Key.Key_Return, "", ctrl)
+        assert body.property("text") == "print('привет')\nprint('new')\n" and body.hasActiveFocus()
+        assert app.client.edits[-1]["instruction"] == "hello"
         assert quick.warnings == []
     finally:
         quick.close()
@@ -833,3 +846,60 @@ def test_the_models_grey_text(app, monkeypatch):  # noqa: F811
     quiet()
     assert len(client.completions) == count
     grey.setEverywhere(True)
+
+
+# --- the model edits the selection, or explains it (14.7) ---
+
+
+def test_the_model_edits_the_selection_and_explains_it(app):  # noqa: F811
+    """D47, step 14.7: Ctrl+I over a selection takes the whole lines it touches; the model's replacement (with code
+    around the lines sent too) shows as a diff, taken in one undo step. Lines changed meanwhile: not taken. The hub's
+    refusal is said. «Объяснить» - a new chat of the project, asked at once; «Спросить в чате» - the input holds it;
+    both with the path, the lines and the code."""
+    client, view, projects = app.client, app.editor, app.projects
+    tabs = Tabs(view)
+    rewriter = view.rewriter
+    projects.openProject("p1")
+    source = "def total(items):\n    total = 0\n    for i in items:\n        total += i\n    return total\n"
+    client.files["src/total.py"] = source
+    key = "p1:src/total.py"
+    view.open("p1", "src/total.py")
+    wait_until(lambda: view.active == key and not view.busy)
+    start, end = source.index("total = 0") + 2, source.index("total += i") + 3
+    rewriter.begin(key, start, end)  # inside lines 2 and 4: the lines 2-4 whole
+    assert rewriter.open and (rewriter.start, rewriter.end) == (source.index("    total"), source.index("\n    return"))
+    rewriter.ask("через sum")
+    wait_until(lambda: rewriter.ready)
+    asked = client.edits[-1]
+    assert asked["selected"] == "    total = 0\n    for i in items:\n        total += i"
+    assert asked["instruction"] == "через sum"
+    assert asked["before"] == "def total(items):\n" and asked["after"] == "\n    return total\n"
+    assert sorted(r["kind"] for r in rewriter.rows) == ["+", "-", "-", "-"]
+    rewriter.accept()
+    assert tabs[key].toPlainText() == "def total(items):\n    return sum(items)\n    return total\n"
+    assert not rewriter.open
+    tabs[key].undo()  # one step
+    assert tabs[key].toPlainText() == source
+
+    rewriter.begin(key, 0, 0)  # the cursor's line
+    rewriter.ask("переименуй")
+    wait_until(lambda: rewriter.ready)
+    typed(tabs[key], "#", 0)  # changed meanwhile: not taken
+    rewriter.accept()
+    assert "изменился" in rewriter.error and tabs[key].toPlainText().startswith("#def total")
+    rewriter.close()
+    client.edit_refused = ("no_model", "Правка: модель не выбрана — роль «Правка в редакторе» в настройках моделей")
+    rewriter.begin(key, 0, 0)
+    rewriter.ask("что-нибудь")
+    wait_until(lambda: rewriter.error)
+    assert rewriter.error.startswith("Правка: модель не выбрана") and not rewriter.ready
+    rewriter.close()
+    client.edit_refused = None
+
+    rewriter.explain(key, start, end)  # a new chat of the project, asked at once
+    wait_until(lambda: client.sent)
+    said = client.sent[-1][1]
+    assert said.startswith("Объясни этот код из `src/total.py`, строки 2–4:\n```python\n    total = 0")
+    assert ("create", "p1") in client.log
+    rewriter.askInChat(key, 0, 0)  # the input holds it, for the person's question
+    assert app.draftFor("").startswith("Про код из `src/total.py`, строка 1:\n```python\n#def total")

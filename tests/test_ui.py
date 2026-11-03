@@ -1169,6 +1169,16 @@ class FakeClient:
         self.unsaved.append(files)
         return {"files": files}
 
+    edit_answer = "    return sum(items)"  # the model's edit of a selection (14.7)
+    edit_refused = None  # (reason, message): the hub's 409 instead
+
+    def editor_edit(self, project_id, path, selected, before, after, instruction):
+        self.edits = [*getattr(self, "edits", []), {"path": path, "selected": selected, "before": before,
+                                                    "after": after, "instruction": instruction}]  # fmt: skip
+        if self.edit_refused:
+            raise HubError(self.edit_refused[1], data={"reason": self.edit_refused[0], "message": self.edit_refused[1]})
+        return {"replacement": self.edit_answer, "model": "editor/fix"}
+
     complete_pieces = ("('ok')",)  # the model's grey text, as the hub streams it (14.6)
     complete_paused = None  # (reason, message): the hub's pause instead
     complete_delay = 0.0

@@ -16,6 +16,7 @@ from .. import projects
 from ..auth import Client
 from ..completion import AFTER, BEFORE, Paused
 from ..projects import ProjectError
+from ..rewrite import Refused, rewrite
 from .deps import require_client
 
 router = APIRouter(prefix="/v1/editor")
@@ -50,6 +51,15 @@ class Around(BaseModel):
     before: str = Field(default="", max_length=BEFORE * 4)  # the code before the cursor (the hub keeps BEFORE of it)
     after: str = Field(default="", max_length=AFTER * 4)
     load: bool = False  # the person asked: a local model not loaded may be loaded now
+
+
+class Edit(BaseModel):
+    project_id: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=1000)
+    selected: str = Field(max_length=200_000)
+    before: str = Field(default="", max_length=20_000)
+    after: str = Field(default="", max_length=20_000)
+    instruction: str = Field(min_length=1, max_length=4000)
 
 
 @router.post("/focus")
@@ -104,6 +114,25 @@ async def complete(body: Around, request: Request, client: Annotated[Client, Dep
             yield json.dumps({"done": True}) + "\n"
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+@router.post("/edit")
+async def edit(body: Edit, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """The model edits the selection (D47, step 14.7, Ctrl+I), the window's alone: {replacement, model} - the window
+    shows it as a diff, the person takes it or not. 409 {reason, message} when it may not be done (no model chosen,
+    a cloud one for a local-only project, a secret file)."""
+    state = request.app.state
+    try:
+        project = await state.db.acall(lambda conn: projects.get_project(conn, body.project_id))
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return await rewrite(state.db, state.gateway, project, body.path, body.selected, body.before, body.after,
+                             body.instruction)  # fmt: skip
+    except Refused as exc:
+        raise HTTPException(status_code=409, detail={"reason": exc.reason, "message": str(exc)}) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="модель не ответила за 2 минуты") from exc
 
 
 @router.get("")
