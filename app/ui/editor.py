@@ -37,6 +37,7 @@ from common import invisible
 from ..hub_client import HubError
 from ..presenter import plural
 from . import project_rows
+from .completions import Completer
 from .finder import Finder
 from .highlighter import Highlighter
 from .models import RowModel
@@ -237,6 +238,7 @@ class EditorView(QObject):
         self._opening = False  # a file being read for a new tab
         self._closing = False  # the window's edits are decided: it closes
         self.finder = Finder(app, self._text)  # find and replace (14.3), in the tab shown
+        self.completer = Completer(app, self)  # the list under the cursor, F12 (14.5)
         app.theme.changed.connect(self._restyle)
         self._told: list[dict[str, str]] | None = []  # what the hub last heard of the unsaved edits (None: unknown)
         self._telling = False
@@ -254,6 +256,9 @@ class EditorView(QObject):
 
     def current(self) -> Buffer | None:
         return self._buffers.get(self._active)
+
+    def buffer(self, key: str) -> Buffer | None:
+        return self._buffers.get(key)
 
     def buffers(self) -> list[Buffer]:
         return list(self._buffers.values())
@@ -425,6 +430,14 @@ class EditorView(QObject):
     def has(self, project_id: str, path: str) -> bool:
         return f"{project_id}:{path}" in self._buffers
 
+    def goto(self, project_id: str, path: str, line: int) -> None:
+        """A definition, a search result: the file's tab, if it has one, puts its cursor at the line's start."""
+        b = self._buffers.get(f"{project_id}:{path}")
+        if b is not None and b.document is not None:
+            block = b.document.findBlockByNumber(max(0, line - 1))
+            if block.isValid():
+                self.placed.emit(b.key, block.position())
+
     def close(self, key: str, then=None) -> None:
         """A tab closed: with unsaved edits, after asking - «Сохранить» (it closes once saved), «Не сохранять»,
         «Отмена». `then(neighbour)`: once it is closed, with the path of the tab beside it in the same project
@@ -466,6 +479,7 @@ class EditorView(QObject):
                 b.document.contentsChange.disconnect(self._edited)
         b.document = b.quick = None  # its CodeEditor's: it goes with it
         self._forget_draft(b)
+        self.completer.forget(b.key)
         del self._buffers[b.key]
         self._tabs.remove(at)  # its CodeEditor goes, its document with it
         self.changed.emit()
@@ -660,6 +674,7 @@ class EditorView(QObject):
     def files_changed(self, project_id: str, paths: list[str], everything: bool) -> None:
         """The hub's watcher: files of a project changed. Each open one is read again: our own save (the same
         sha256) is nothing; without edits the tab takes it in place; with edits the bar asks."""
+        self.completer.files_changed(project_id)
         for b in self.buffers():
             if b.project_id == project_id and (everything or b.path in paths):
                 self._reread(b)
@@ -781,6 +796,7 @@ class EditorView(QObject):
     def _edited(self, *_change) -> None:
         if not self._drafts_timer.isActive():
             self._drafts_timer.start()
+        self.completer.edited()
 
     def _forget_draft(self, b: Buffer) -> None:
         b.drafted = -1

@@ -123,6 +123,7 @@ class QuickApp:
         context.setContextProperty("Transfer", self.controller.transfer_view)
         context.setContextProperty("Editor", self.controller.editor)
         context.setContextProperty("Finder", self.controller.editor.finder)
+        context.setContextProperty("Completer", self.controller.editor.completer)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))

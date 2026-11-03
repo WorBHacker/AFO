@@ -7,11 +7,15 @@ import QtQuick.Controls.Basic
 // indent the selected lines - done there, one undo step each; Ctrl+Z / Ctrl+Y are the TextEdit's own; Ctrl+S saves
 // through the hub. A pause in typing tells the editor to compare with the saved text («не сохранено»). The colours
 // (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first. Ctrl+F and Ctrl+H:
-// the find bar (FindBar.qml, 14.3), its matches on screen drawn behind the text.
+// the find bar (FindBar.qml, 14.3), its matches on screen drawn behind the text. After two letters of a name, or
+// at Ctrl+Space, the list of names to complete it (Completer, app/ui/completions.py, 14.5): arrows choose, Tab or Enter
+// puts it in, Esc closes; F12 and Ctrl+click go to the definition of the name under the cursor.
 Item {
     id: editor
     objectName: "codeEditor"
     property string tabKey  // the tab's: its project and path
+    property string typing  // the key just pressed, for the list under the cursor once its text is in
+    readonly property bool completing: Completer.open && Completer.key === tabKey && visible
     readonly property alias body: body
     readonly property real lineHeight: body.lineCount > 0 ? body.contentHeight / body.lineCount : metrics.height
     readonly property real gutterWidth: Math.ceil(metrics.advanceWidth("0") * Math.max(3, String(body.lineCount).length)) + 24
@@ -116,11 +120,58 @@ Item {
             readonly property string unit: Editor.unitOf(editor.tabKey)
             tabStopDistance: metrics.advanceWidth(" ") * (unit === "\t" ? 4 : Math.max(1, unit.length))
             Component.onCompleted: Editor.attach(editor.tabKey, textDocument)
-            onTextChanged: idle.restart()
+            onTextChanged: {
+                idle.restart()
+                if (editor.typing === "") return
+                const typed = editor.typing
+                editor.typing = ""
+                // a name's letter: the list (from two letters); Backspace: the list follows; anything else closes it
+                if (/^[\w\u00c0-\uffff]$/.test(typed) || (typed === "\b" && editor.completing))
+                    Qt.callLater(() => Completer.update(editor.tabKey, body.cursorPosition, false))
+                else
+                    Completer.close()
+            }
             onCursorRectangleChanged: editor.keepInView()
             onCursorPositionChanged: Editor.locate(editor.tabKey, cursorPosition)
+            TapHandler {  // Ctrl+click: to the definition
+                acceptedModifiers: Qt.ControlModifier
+                onTapped: (point) => Completer.define(editor.tabKey, body.positionAt(point.position.x,
+                                                                                     point.position.y))
+            }
             Keys.onPressed: (event) => {
                 const ctrl = (event.modifiers & Qt.ControlModifier) !== 0
+                editor.typing = ""
+                if (editor.completing) {  // the list under the cursor has the keys first (Tab: its name, not an indent)
+                    if (event.key === Qt.Key_Down || event.key === Qt.Key_Up) {
+                        Completer.move(event.key === Qt.Key_Down ? 1 : -1)
+                        event.accepted = true
+                        return
+                    }
+                    if (!ctrl && (event.key === Qt.Key_Tab || event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                        body.cursorPosition = Completer.accept()
+                        event.accepted = true
+                        return
+                    }
+                    if (event.key === Qt.Key_Escape) {
+                        Completer.close()
+                        event.accepted = true
+                        return
+                    }
+                    if ([Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown]
+                            .includes(event.key))
+                        Completer.close()
+                }
+                if (ctrl && event.key === Qt.Key_Space) {
+                    Completer.update(editor.tabKey, body.cursorPosition, true)
+                    event.accepted = true
+                    return
+                }
+                if (event.key === Qt.Key_F12) {
+                    Completer.define(editor.tabKey, body.cursorPosition)
+                    event.accepted = true
+                    return
+                }
+                if (!ctrl) editor.typing = event.key === Qt.Key_Backspace ? "\b" : event.text
                 if (ctrl && event.key === Qt.Key_S) {
                     idle.stop()
                     Editor.check(editor.tabKey)
@@ -146,6 +197,134 @@ Item {
                     findBar.close()
                     event.accepted = true
                 }
+            }
+        }
+    }
+
+    // the names to complete the one being typed (14.5): under its first letter, above it near the bottom
+    Rectangle {
+        id: completions
+        objectName: "completions"
+        readonly property rect at: body.positionToRectangle(Completer.start)
+        visible: editor.completing
+        width: 360
+        height: Math.min(completionList.contentHeight, 8 * 24) + 8
+        x: Math.max(0, Math.min(flick.x + at.x - flick.contentX, editor.width - width - 8))
+        y: at.y + at.height - flick.contentY + height + 4 > editor.height ? at.y - flick.contentY - height - 2
+           : at.y + at.height - flick.contentY + 2
+        radius: 6
+        color: Theme.p.popup
+        border.color: Theme.p.hairline_strong
+        ListView {
+            id: completionList
+            x: 4
+            y: 4
+            width: parent.width - 8
+            height: parent.height - 8
+            clip: true
+            model: completions.visible ? Completer.items : []
+            currentIndex: Completer.index
+            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+                objectName: "completion"
+                width: completionList.width
+                height: 24
+                radius: 4
+                color: index === Completer.index ? Theme.p.item_selected : "transparent"
+                Text {
+                    x: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - kindText.width - 24
+                    text: modelData.name
+                    elide: Text.ElideRight
+                    color: Theme.p.text
+                    font.family: Theme.monoFont
+                    font.pixelSize: 13
+                }
+                Text {
+                    id: kindText
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: [modelData.kind, modelData.detail].filter(s => !!s).join(" · ")
+                    width: Math.min(implicitWidth, 160)
+                    elide: Text.ElideLeft
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: {
+                        Completer.move(index - Completer.index)
+                        body.cursorPosition = Completer.accept()
+                        body.forceActiveFocus()
+                    }
+                }
+            }
+        }
+    }
+
+    // several definitions of one name (F12): the one to go to (14.5)
+    Popup {
+        id: places
+        objectName: "definitionPlaces"
+        readonly property rect at: body.cursorRectangle
+        x: Math.max(0, Math.min(flick.x + at.x - flick.contentX, editor.width - width - 8))
+        y: Math.min(at.y + at.height - flick.contentY + 2, editor.height - height - 8)
+        width: 460
+        height: Math.min(placeList.contentHeight, 10 * 40) + 12
+        padding: 6
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        onClosed: { Completer.closePlaces(); body.forceActiveFocus() }
+        background: Rectangle { radius: 8; color: Theme.p.popup; border.color: Theme.p.hairline_strong }
+        Connections {
+            target: Completer
+            enabled: editor.visible
+            function onPlacesChanged() {
+                if (Completer.places.length > 1) { places.open(); placeList.forceActiveFocus() }
+                else if (places.opened) places.close()
+            }
+        }
+        contentItem: ListView {
+            id: placeList
+            clip: true
+            model: Completer.places
+            keyNavigationEnabled: true
+            Keys.onReturnPressed: Completer.goTo(currentIndex)
+            Keys.onEnterPressed: Completer.goTo(currentIndex)
+            delegate: Rectangle {
+                required property var modelData
+                required property int index
+                width: placeList.width
+                height: 40
+                radius: 4
+                color: placeList.currentIndex === index ? Theme.p.item_selected : "transparent"
+                Column {
+                    x: 8
+                    width: parent.width - 16
+                    anchors.verticalCenter: parent.verticalCenter
+                    Text {
+                        width: parent.width
+                        text: modelData.path + ":" + modelData.line + (modelData.kind ? "  · " + modelData.kind : "")
+                        elide: Text.ElideMiddle
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        width: parent.width
+                        text: modelData.signature || ""
+                        elide: Text.ElideRight
+                        color: Theme.p.faint
+                        font.family: Theme.monoFont
+                        font.pixelSize: 11
+                    }
+                }
+                MouseArea { anchors.fill: parent; onClicked: Completer.goTo(index) }
             }
         }
     }

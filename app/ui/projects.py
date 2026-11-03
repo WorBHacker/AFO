@@ -700,8 +700,9 @@ class Projects(QObject):
 
     @Slot(str, int)
     def openFileAt(self, path: str, line: int) -> None:
-        """Opens the file (or keeps it open) and shows the line."""
+        """Opens the file (or keeps it open) and shows the line - in its editor's tab too, when it has one."""
         self.app.editor.show(self.currentId, path)
+        self.app.editor.goto(self.currentId, path, line)
         self.app.show_project_view()
         self._goto_seq += 1
         self._goto = (path, line)

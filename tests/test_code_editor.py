@@ -3,7 +3,7 @@ by Enter, Tab and Shift+Tab (each one undo step), Ctrl+S through the hub's save 
 changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window. Its
 colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first. Find
 and replace (14.3). Tabs, the question before unsaved edits go, drafts and tabs restored after a crash, VS Code
-(14.4)."""
+(14.4). Completions and the way to a definition (14.5)."""
 
 import json
 import re
@@ -14,7 +14,7 @@ from PySide6.QtGui import QGuiApplication as QApplication
 from PySide6.QtGui import QKeyEvent, QTextCursor, QTextDocument
 
 from app import palette
-from app.ui import editor, finder, highlighter
+from app.ui import completions, editor, finder, highlighter
 from common.paths import data_paths
 from tests.test_ui import FILES, FakeClient, app, qapp, sha, wait_until  # noqa: F401 - the app and qapp fixtures
 
@@ -285,6 +285,14 @@ def test_the_editor_in_the_window(qapp):  # noqa: F811
             if found:
                 break
         assert found, f"no pixel of #{wanted} where `print` is drawn"
+
+        # the list under the cursor (14.5): the last line is `    p`; `ri` - the list, Tab puts `print` in
+        body.setProperty("cursorPosition", len(body.property("text")))
+        key(Qt.Key.Key_R, "r")
+        key(Qt.Key.Key_I, "i")
+        wait_until(lambda: shown(quick, "completions") is not None)
+        key(Qt.Key.Key_Tab)
+        assert body.property("text").endswith("\n    print") and shown(quick, "completions") is None
 
         # a second tab (14.4): its own editor shown, the first one's kept; the window closing asks about edits
         app.projects.openFile("README.md", False)
@@ -596,6 +604,7 @@ def test_drafts_and_tabs_restored_after_a_crash(app):  # noqa: F811
                        {"project_id": "p1", "path": "src/deep/x.txt", "text": "x", "base": sha("x")})  # fmt: skip
     client.files["README.md"] = "# Чужое\n"  # changed on the disk meanwhile
 
+    view.settle()  # its drafts on the disk: the window that crashed wrote them before it went
     again = editor.EditorView(app)  # the window after the crash: the same data folder
     restored = Tabs(again)
     again.restore("p1")
@@ -653,3 +662,91 @@ def test_open_in_vs_code(app, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(vscode, "open_at", lambda path, line: False)
     app.projects.openInCode(1)
     assert "VS Code не найден" in app.flashText
+
+
+# --- completions and the way to a definition (14.5) ---
+
+
+def test_what_is_offered_and_in_what_order():
+    """D47, step 14.5: those beginning with what was typed (the same case first), then those holding its letters in
+    order, shorter first; the typed name itself is not offered. The language's own names: Python's keywords and
+    built-ins, lists for the other languages the symbol index reads."""
+    names = {n: {"name": n} for n in ("print", "Print", "property", "sprint", "p_r_i", "pri")}
+    assert [i["name"] for i in completions.ranked("pri", names)] == ["print", "Print", "p_r_i", "sprint"]
+    assert completions.fuzzy("prt", "print") and not completions.fuzzy("pti", "print")
+    assert completions.name_before("    x = sel") == "sel" and completions.name_before("call(") == ""
+    assert completions.name_at("a = helper(x)", 6) == (4, "helper") and completions.name_at("a = (", 5) == (5, "")
+    assert completions.words("ab abc имя_файла 3dx abc") == {"abc", "имя_файла"}
+    python = completions.KEYWORDS["python"]
+    assert {"print", "def", "match", "len", "ValueError"} <= set(python) and "_" not in python
+    assert "func" in completions.KEYWORDS["go"] and "fn" in completions.KEYWORDS["rust"]
+
+
+def test_completing_and_going_to_a_definition(app, monkeypatch):  # noqa: F811
+    """The list after two letters (one is not enough, but Ctrl+Space asks anyway): `pri` -> `print`, put in as one
+    undo step; the words of the other tabs, the project's definitions from the hub's index (asked by two letters,
+    they join the list when the answer comes). F12: the tab's own definition first - unsaved too, the window parses
+    its text itself - else the index's; several - a list to pick from; none - said so."""
+    client, view, projects = app.client, app.editor, app.projects
+    tabs = Tabs(view)
+    completer = view.completer
+    util = "p1:src/util.py"
+    client.files["src/util.py"] = "def helper_total(x):\n    return run(x)\n\nTELEMETRY_URL = 1\n"
+    projects.openProject("p1")
+    view.open("p1", "src/util.py")
+    wait_until(lambda: view.active == util and not view.busy)
+    view.open("p1", "src/app.py")
+    wait_until(lambda: view.active == APP and not view.busy)
+    typed(tabs[APP], "def helper():\n    pass\n\n", 0)  # unsaved: the index does not know it
+    completer.read_tabs()
+    wait_until(lambda: APP in completer._read and util in completer._read)
+
+    def at_end(text: str) -> int:
+        typed(tabs[APP], text)
+        return tabs[APP].characterCount() - 1
+
+    position = at_end("p")
+    completer.update(APP, position, False)
+    assert not completer.open  # one letter: not yet
+    completer.update(APP, position, True)  # Ctrl+Space
+    assert completer.open
+    position = at_end("ri")
+    completer.update(APP, position, False)
+    assert completer.items[0]["name"] == "print" and completer.items[0]["kind"] == "язык"
+    assert completer.accept() == position + 2 and tabs[APP].toPlainText().endswith("\nprint")
+    tabs[APP].undo()  # the name put in: one step
+    assert tabs[APP].toPlainText().endswith("\npri")
+
+    completer.update(APP, at_end("\nhel"), False)
+    found = {i["name"]: i for i in completer.items}
+    assert found["helper"]["detail"] == "в этом файле" and found["helper_total"]["detail"] == "util.py"
+    completer.update(APP, at_end("\nTEL"), False)
+    assert completer.items[0]["name"] == "TELEMETRY_URL"
+    completer.update(APP, at_end("\nAp"), False)  # the project's definitions: asked, then in the list
+    wait_until(lambda: any(i["name"] == "App" for i in completer.items))
+    assert next(i for i in completer.items if i["name"] == "App")["detail"] == "src/app.py"
+    assert ("Ap", "") in client.symbol_calls
+    completer.close()
+
+    placed = []
+    view.placed.connect(lambda key, at: placed.append((key, at)))
+    call = tabs[APP].toPlainText().index("helper():")
+    completer.define(APP, call + 2)  # its own, unsaved definition: line 1 of this tab
+    wait_until(lambda: placed)
+    assert placed[-1] == (APP, 0)
+    view.show("p1", "src/util.py")
+    completer.define(util, client.files["src/util.py"].index("run(") + 1)  # not its own: the index's
+    wait_until(lambda: projects.file.get("path") == "src/app.py" and projects.file.get("gotoLine") == 2)
+    assert placed[-1] == (APP, tabs[APP].findBlockByNumber(1).position())
+
+    two = [{"path": "src/a.py", "name": "run", "kind": "function", "line": 3, "signature": "def run():"},
+           {"path": "src/b.py", "name": "run", "kind": "method", "line": 9, "signature": "def run(self):"}]  # fmt: skip
+    monkeypatch.setattr(client, "symbols", lambda pid, **_k: {"symbols": two, "total": 2, "complete": True})
+    view.show("p1", "src/util.py")
+    completer.define(util, client.files["src/util.py"].index("run(") + 1)  # several: a list
+    wait_until(lambda: len(completer.places) == 2)
+    completer.goTo(1)
+    wait_until(lambda: projects.file.get("path") == "src/b.py" or "src/b.py" in client.file_calls)
+    assert completer.places == []
+    completer.define(util, client.files["src/util.py"].index("run(x)") + 4)  # `x`: in none - said so
+    wait_until(lambda: "не найдено" in app.flashText)

@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pygments.token import Keyword
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtQuick import QQuickItem
 from test_ui import FakeClient, QApplication, wait_until
 
@@ -142,6 +142,28 @@ def test_a_megabyte_in_the_editor(qapp):
             document.undo()
         assert app.editor._text().count("total") == replaced
         note("редактор: 1 МБ — отмена «Заменить все»", undoing.s * 1000, "мс", 1000)
+
+        # the list under the cursor (14.5): its names for each letter typed, the 1 MB file's words and definitions
+        # among them - measured once the lexing in the background is done (it holds the GIL: everything in the window
+        # is slower meanwhile, the list as much as a key)
+        completer = app.editor.completer
+        completer.read_tabs()
+        read = completer._read  # tab key -> what its text held when last read
+        wait_until(lambda: getattr(read.get(app.editor.active), "revision", -1) == document.revision(), timeout=30)
+        end = document.characterCount() - 1
+        spent = []
+        for typed in ("to", "tot", "tota", "total_1", "x"):
+            cursor = QTextCursor(document)
+            cursor.setPosition(end)
+            cursor.insertText("\n" + typed)
+            end = document.characterCount() - 1
+            wait_until(lambda: not app.bg.busy, timeout=30)
+            with Clock() as listing:
+                completer.update(app.editor.active, end, True)
+            spent.append(listing.s * 1000)
+        assert completer.items
+        note("редактор: 1 МБ — список подсказок на букву, худший из 5", max(spent), "мс", 16)
+        completer.close()
 
         # the draft (14.4): written in the window's thread, at most every DRAFT_MS while typing
         with Clock() as drafting:
