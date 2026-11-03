@@ -3874,6 +3874,10 @@ def test_commands_in_the_window():
     assert row["title"] == "Выполнить команду" and row["alwaysAsk"] == "network" and row["projectScope"] == ""
     plain = approval_rows([{**install, "network": False}], projects=projects, chats={})[0]
     assert plain["alwaysAsk"] == "" and plain["projectScope"] == "всегда в «LocalChat»"
+    # a command whose line does not name what it runs (D46, 13.11): its own reason, a destructive one's buttons
+    hidden = {**install, "network": False, "destructive": True, "opaque": True, "input": {"command": "& $t push"}}
+    row = approval_rows([hidden], projects=projects, chats={})[0]
+    assert row["alwaysAsk"] == "opaque" and row["destructive"] and row["projectScope"] == ""
 
 
 # --- stage 5.3: the hub's own agents ---

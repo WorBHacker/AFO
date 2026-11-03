@@ -90,6 +90,32 @@ NETWORK = re.compile(
     r"|\bgo\s+(?:get|install)\b|\bssh\b|\bscp\b",
     re.IGNORECASE,
 )
+# what runs something the line does not name (D46, step 13.11): a string made into code, a new alias or function,
+# git's aliases, a command named by a variable, decoded text run - nobody reads what it does before it runs, so it is
+# asked as a destructive command is. A computed name after `&` or `.` is CALL's
+OPAQUE = re.compile(
+    r"\[scriptblock\]::Create|\bNewScriptBlock\b|\.Invoke(?:Script|ReturnAsIs)?\s*\("
+    r"|\b(?:Set-Alias|New-Alias)\b|\b(?:sal|nal)\s+(?:-\w+\s+)?[\w-]+\s+[\w.\\/:-]+|\balias\s+[\w-]+="
+    r"|\b(?:function|filter)\s+[\w-]+\s*(?:\([^)]*\)\s*)?\{|\bfunction:|\b[\w-]+\s*\(\)\s*\{|\beval\s+[\"'$]"
+    r"|(?:^|[;&|]\s*)[\"']?\$\{?\w+\}?[\"']?\s+\w"  # sh: `$g push` (not PowerShell's `foreach ($f in ...)`)
+    r"|\bgit\b[^;&|\n]*\balias\.|\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)\b"
+    r"|(?=[^\n]*\b(?:exec|eval|system|popen|subprocess|spawn\w*|execSync|child_process|Start-Process)\b)[^\n]*"
+    r"(?:b64decode|base64|fromhex|unhexlify|decompress|\batob\b|\bchr\s*\(|fromCharCode|\[char\])",
+    re.IGNORECASE,
+)
+# PowerShell's call operator and dot-sourcing, and what they call: `& "C:\...\git.exe"` names its program, `& $x`
+# and `& ('g'+'it')` do not
+CALL = re.compile(r"""(?:(?<![&\w])&(?!&)|(?:^|(?<=[;|({&"']))\s*\.(?=\s))\s*(?P<target>"[^"]*"|'[^']*'|[^\s;|&]+)""")
+NAME = re.compile(r"[\w.\-]+")
+# a variable the line gives a literal and goes on to use: PowerShell's, sh's, cmd's
+SET = (
+    re.compile(r"\$(\w+)\s*=\s*(?:'([^']*)'|\"([^\"$]*)\")"),
+    re.compile(r"(?:^|[;&|]\s*)(\w+)=(?:'([^']*)'|\"([^\"$]*)\"|([^\s'\"$;&|]*))(?=\s*(?:[;&|]|$))"),
+    re.compile(r"\bset\s+\"?(\w+)=([^\"&|\n]*)", re.IGNORECASE),
+)
+USED = re.compile(r"\$\{?(\w+)\b\}?(?!\s*=)|%(\w+)%")
+JOINED = re.compile(r"['\"]\s*\+\s*['\"]")  # 'g'+'it'
+HANDED = re.compile(r"\s-(?:FileP\w*|PSPath|Ar\w*)\b", re.IGNORECASE)  # Start-Process -FilePath git -ArgumentList
 SEARCHES = {"web_search", "WebSearch"}  # a query leaves this computer: asked every time, never covered (D19)
 SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
 DENIED = "the user denied this"
@@ -123,10 +149,51 @@ def sends(tool: str) -> bool:
     return tool in ("screen_send", "mail_send") or CLASSED.get(tool) == "send"
 
 
+def spellings(command: str) -> tuple[str, str, str]:
+    """A command line as written, and as the shell would read it (D46, step 13.11): without PowerShell's backticks and
+    cmd's carets, joined strings joined, the variables the line set put in; and that without quotes and brackets, an
+    argument list as arguments - `g`i`t p`u`s`h`, `$g='git'; & $g push` and `Start-Process git -ArgumentList push` are
+    pushes. Only for classing: the command runs as written. A reading of text, not a parser."""
+    plain = JOINED.sub("", command.replace("`", "").replace("^", ""))
+    known: dict[str, str] = {}
+    for pattern in SET:
+        for match in pattern.finditer(plain):
+            known[match.group(1).lower()] = next(g for g in match.groups()[1:] if g is not None)
+    plain = USED.sub(lambda m: known.get((m.group(1) or m.group(2)).lower(), m.group(0)), plain)
+    bare = HANDED.sub(" ", re.sub(r"@\(|[(),]", " ", re.sub(r"[\"']", "", plain)))
+    return command, plain, bare
+
+
+def _unnamed(target: str) -> bool:
+    """What `&` or `.` calls is computed, not named: `$x`, `(...)`, `"$x"`. `& "C:\\...\\git.exe"` and
+    `& $env:ProgramFiles\\Git\\bin\\git.exe` name their program; a script block shows what it runs."""
+    if target[0] in "([":
+        return True
+    if target[0] in "\"'":
+        if len(target) < 2 or target[-1] != target[0]:
+            return False  # a quote mark in text, not a quoted name
+        target = target[1:-1]
+    elif target[0] != "$":
+        return False
+    return not NAME.fullmatch(re.split(r"[\\/]", target)[-1])
+
+
+def opaque(tool: str, data: dict[str, Any]) -> bool:
+    """A command that runs something its line does not name (D46, step 13.11): asked as a destructive one, every
+    time; the card says why."""
+    if tool not in COMMAND_TOOLS:
+        return False
+    plain = spellings(str(data.get("command", "")))[1]
+    return bool(OPAQUE.search(plain)) or any(_unnamed(m.group("target")) for m in CALL.finditer(plain))
+
+
 def destructive(tool: str, data: dict[str, Any]) -> bool:
     if CLASSED.get(tool) == "destructive":
         return True
-    return tool in COMMAND_TOOLS and bool(DESTRUCTIVE.search(str(data.get("command", ""))))
+    if tool not in COMMAND_TOOLS:
+        return False
+    found = any(DESTRUCTIVE.search(s) for s in spellings(str(data.get("command", ""))))
+    return found or opaque(tool, data)
 
 
 def trusted_skips(tool: str, data: dict[str, Any]) -> bool:
@@ -138,7 +205,7 @@ def trusted_skips(tool: str, data: dict[str, Any]) -> bool:
 def network(tool: str, data: dict[str, Any]) -> bool:
     if CLASSED.get(tool) in ("network", "send") or tool == "mail_send" or tool in SEARCHES:
         return True
-    return tool in COMMAND_TOOLS and bool(NETWORK.search(str(data.get("command", ""))))
+    return tool in COMMAND_TOOLS and any(NETWORK.search(s) for s in spellings(str(data.get("command", ""))))
 
 
 def grant_key(tool: str, data: dict[str, Any]) -> str | None:
@@ -297,7 +364,8 @@ def _cut(text: str) -> str:
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = json.loads(row["input"])
     return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
-                        "network": network(row["tool"], data), "class": CLASSED.get(row["tool"], "")}  # fmt: skip
+                        "opaque": opaque(row["tool"], data), "network": network(row["tool"], data),
+                        "class": CLASSED.get(row["tool"], "")}  # fmt: skip
 
 
 def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:

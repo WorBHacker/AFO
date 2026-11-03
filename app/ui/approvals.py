@@ -117,7 +117,7 @@ def approval_rows(
         chat = chats.get(a.get("conversation_id") or "", "")
         cls = a.get("class") or ""  # an outside MCP server's tool: its class of action (9.5)
         sends = cls == "send" or a.get("tool") in ("mail_send", "screen_send")
-        always = ("destructive" if a.get("destructive") else "send" if sends
+        always = ("opaque" if a.get("opaque") else "destructive" if a.get("destructive") else "send" if sends
                   else "outside" if cls == "network" else "network" if a.get("network")
                   or a.get("tool") == "http_request" else "personal" if a.get("tool") == "remember"
                   else "script" if a.get("tool") == "run_python" else "")  # fmt: skip

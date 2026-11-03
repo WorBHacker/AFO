@@ -7,7 +7,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
-from hub.approvals import EXPIRED, ApprovalQueue, destructive, grant_key, network, preview
+from hub.approvals import EXPIRED, ApprovalQueue, destructive, grant_key, network, opaque, preview
 from hub.auth import create_client
 from hub.db import Database, migrate
 from hub.events import EventBus
@@ -75,6 +75,56 @@ def test_destructive_commands_are_never_covered_for_the_chat():
         assert not destructive("Bash", {"command": command}), command
     assert grant_key("Bash", {"command": "pytest   -q"}) == "Bash:pytest -q"  # the same command, spaced differently
     assert grant_key("Edit", {"file_path": "a.py"}) == "Edit"  # a write tool: the tool, whatever the file
+
+
+# the same, written so that the first list does not see it (D46, step 13.11): PowerShell's and cmd's escapes, quotes,
+# a name or an argument kept in a variable, joined strings, Start-Process and .NET handing the command over
+SPELLED_COMMANDS = (
+    "g`i`t p`u`s`h", "Remove-`I`tem -r C:/x", 'cmd /c "g^it pu^sh"', "& 'git' push", 'git pu"sh"',
+    "$g='git'; & $g push", "g=git; $g push", "$c = 'pu' + 'sh'; git $c", 'cmd /c "set x=push&& git %x%"',
+    "Start-Process git -ArgumentList push", "Start-Process -FilePath git -ArgumentList 'push','origin'",
+    "[System.Diagnostics.Process]::Start('git', 'push')",
+    "python -c \"import subprocess; subprocess.run(['gi'+'t', 'pu'+'sh'])\"",
+)  # fmt: skip
+# what runs something the line does not name: a computed name after & or ., a string made into code, a new alias or
+# function, git's aliases, decoded text run - nobody can read what it does before it runs
+OPAQUE_COMMANDS = (
+    "& ('g'+'it') push", "& $tool push", '& "$tool" push', "& (Get-Command git) push", "(gcm git).Invoke('push')",
+    "& ([scriptblock]::Create($s))", "$ExecutionContext.InvokeCommand.InvokeScript($s)", ". $script",
+    "Set-Alias g git; g push", "sal g git; g push", "function g { git @args }; g push", "alias g=git; g push",
+    'g() { git "$@"; }; g push', "$cmd push", 'eval "$s"', "git -c alias.p=push p", "git config alias.p push",
+    "$env:GIT_CONFIG_PARAMETERS=\"'alias.p=push'\"; git p",
+    "python -c \"import os,base64; os.system(base64.b64decode('Z2l0IHB1c2g=').decode())\"",
+    "node -e \"require('child_process').execSync(Buffer.from('Z2l0','base64').toString())\"",
+)  # fmt: skip
+# and what looks like them but names what it runs
+NAMED_COMMANDS = (
+    '& "C:/Program Files/Git/bin/git.exe" status', "& $env:ProgramFiles/Git/bin/git.exe status",
+    '$p = "C:/Python/python.exe"; & $p -m pytest', ". ./scripts/env.ps1", "& .\\build.ps1 -Release",
+    "git commit -m \"don't push yet\"", "Start-Process notepad -ArgumentList a.txt", "npm test 2>&1",
+    'cmd /c "dir ^| findstr x"', "echo $HOME", "$env:PYTHONPATH = 'src'; pytest -q", 'git log --grep="^fix"',
+    "Get-Content a.txt | ForEach-Object { $_ }", "git config --get-regexp alias", "npm run build && npm test",
+    "python -c \"import base64; print(base64.b64encode(b'x'))\"", "echo 'a & b'", "$x = 5; $x -gt 3",
+    "foreach ($f in ls) { echo $f }", "Get-Process | Where-Object { $_.CPU -gt 10 }", "& python -m venv .venv",
+    'Write-Host "Done: $($x.Count) files"', '"$PYTHON" -m pytest', "git log --pretty=format:'%h %s'",
+)  # fmt: skip
+
+
+def test_a_command_is_read_as_powershell_reads_it():
+    """The audit's ways round the first list (D46, step 13.11): the classifier reads the line as written and as the
+    shell would - without escapes, quotes and joins, with the variables it set - and asks every time about what
+    runs something the line does not name. Still a reading of text, not a parser: the card says so."""
+    for command in SPELLED_COMMANDS:
+        assert destructive("run_command", {"command": command}), command
+        assert not opaque("run_command", {"command": command}), command
+    for command in OPAQUE_COMMANDS:
+        assert destructive("run_command", {"command": command}), command
+        assert opaque("run_command", {"command": command}), command
+        assert grant_key("run_command", {"command": command}) is None
+    for command in NAMED_COMMANDS:
+        assert not destructive("run_command", {"command": command}), command
+    for command in ("i`wr https://x", "& 'curl.exe' https://x", "$u='https://x'; c`url $u", "cmd /c c^url x"):
+        assert network("run_command", {"command": command}), command
 
 
 def test_a_search_is_asked_every_time_a_page_by_its_site():
