@@ -6,7 +6,9 @@ process and keeps running when the window closes (D2).
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -455,6 +457,25 @@ class HubClient:
         """The editor's save (D47, 14.1): a 409 HubError carries `reason` and the disk's `file` in its data."""
         return self._call("PUT", f"/v1/projects/{project_id}/file",
                           {"path": path, "text": text, "encoding": encoding, "base": base})  # fmt: skip
+
+    def complete(self, project_id: str, path: str, before: str, after: str, *, load: bool = False,
+                 stop=lambda: False) -> Iterator[dict]:  # fmt: skip
+        """Code completion at the cursor (D47, 14.6): the hub's lines - {model, how}, {text} pieces, {done}; or one
+        {paused, message}. Once `stop()` says so (the next keystroke) the stream is closed: the hub cancels its
+        request, and llama.cpp its."""
+        body = {"project_id": project_id, "path": path, "before": before, "after": after, "load": load}
+        try:
+            with self._http.stream("POST", "/v1/editor/complete", json=body, headers=self._headers,
+                                   timeout=httpx.Timeout(10.0, connect=3.0)) as response:  # fmt: skip
+                if response.status_code >= 400:
+                    raise HubError(f"HTTP {response.status_code}")
+                for line in response.iter_lines():
+                    if stop():
+                        return
+                    if line:
+                        yield json.loads(line)
+        except httpx.HTTPError as exc:
+            raise HubError(f"хаб не отвечает ({exc})") from exc
 
     def editor_unsaved(self, files: list[dict[str, str]]) -> dict:
         """The files the editor holds with edits not saved ({project_id, path}), the whole list (D47, 14.2c)."""

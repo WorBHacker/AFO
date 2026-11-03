@@ -124,6 +124,7 @@ class QuickApp:
         context.setContextProperty("Editor", self.controller.editor)
         context.setContextProperty("Finder", self.controller.editor.finder)
         context.setContextProperty("Completer", self.controller.editor.completer)
+        context.setContextProperty("Ghost", self.controller.editor.ghost)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
         self.engine.load(str(QML_DIR / "Main.qml"))

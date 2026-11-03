@@ -1375,11 +1375,40 @@ Item {
             visible: view.editing
             color: Theme.p.code_head
             Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
+            Text {  // the model's grey text (14.6): on or off, a pause - and its menu
+                id: ghostStatus
+                objectName: "ghostStatus"
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, parent.width / 2)
+                elide: Text.ElideRight
+                text: Ghost.state !== "" ? Ghost.state
+                      : Ghost.everywhere && Ghost.inProject(Projects.currentId) ? "Дописывание: вкл ▾" : "Дописывание: выкл ▾"
+                color: Ghost.paused !== "" ? Theme.p.warn : Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 11
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: ghostMenu.openAt(ghostStatus) }
+            }
+            MenuPopup {
+                id: ghostMenu
+                menuWidth: 340
+                wrapNotes: true
+                items: [
+                    { id: "project", name: "Дописывание в этом проекте", icon: "sparkle",
+                      selected: Ghost.inProject(Projects.currentId) },
+                    { id: "everywhere", name: "Дописывание везде", icon: "sparkle", selected: Ghost.everywhere }
+                ].concat(Ghost.paused === "not_loaded" ? [{ id: "load", name: "Загрузить модель дописывания", icon: "cpu",
+                         note: "Может выгрузить модель чата из видеокарты, если обе не помещаются рядом" }] : [])
+                onChosen: (id) => id === "project" ? Ghost.setInProject(Projects.currentId, !Ghost.inProject(Projects.currentId))
+                                 : id === "everywhere" ? Ghost.setEverywhere(!Ghost.everywhere) : Ghost.load()
+                function openAt(item) { anchor = item; open() }
+            }
             Text {
                 objectName: "editorStatusText"
                 x: 12
                 anchors.verticalCenter: parent.verticalCenter
-                width: parent.width - 24
+                width: ghostStatus.x - 24
                 text: [Editor.position, Editor.status].filter(s => !!s).join("  ·  ")
                       + (Editor.hidden ? "  ·  ⚠ " + Editor.hidden : "")
                 elide: Text.ElideRight

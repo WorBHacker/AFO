@@ -1169,6 +1169,26 @@ class FakeClient:
         self.unsaved.append(files)
         return {"files": files}
 
+    complete_pieces = ("('ok')",)  # the model's grey text, as the hub streams it (14.6)
+    complete_paused = None  # (reason, message): the hub's pause instead
+    complete_delay = 0.0
+
+    def complete(self, project_id, path, before, after, *, load=False, stop=lambda: False):
+        asked = {"project_id": project_id, "path": path, "before": before, "after": after, "load": load,
+                 "stopped": False}  # fmt: skip
+        self.completions = [*getattr(self, "completions", []), asked]
+        if self.complete_paused:
+            yield {"paused": self.complete_paused[0], "message": self.complete_paused[1]}
+            return
+        yield {"model": "llama-swap/coder", "how": "infill"}
+        for piece in self.complete_pieces:
+            time.sleep(self.complete_delay)
+            if stop():
+                asked["stopped"] = True  # the window closed the stream: the hub would cancel its request
+                return
+            yield {"text": piece}
+        yield {"done": True}
+
     def terminals(self, project_id=None):
         return [dict(t) for t in self.term_list if project_id in (None, t["project_id"])]
 

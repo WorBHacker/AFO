@@ -1,6 +1,7 @@
 """/v1/editor - what the LocalChat extension for VS Code reports (stage 6.6): the open file, finished terminal commands.
 Any client with a token may report (the extension has its own, `python -m hub token create vscode`); everyone reads.
-And the window's own editor (D47): which files it holds with edits not saved yet - the window's alone."""
+And the window's own editor (D47): which files it holds with edits not saved yet, and its code completion - the
+window's alone."""
 
 from __future__ import annotations
 
@@ -8,10 +9,12 @@ import json
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import projects
 from ..auth import Client
+from ..completion import AFTER, BEFORE, Paused
 from ..projects import ProjectError
 from .deps import require_client
 
@@ -41,6 +44,14 @@ class Dirty(BaseModel):
     files: list[Unsaved] = Field(default_factory=list, max_length=100)
 
 
+class Around(BaseModel):
+    project_id: str = Field(min_length=1, max_length=100)
+    path: str = Field(min_length=1, max_length=1000)
+    before: str = Field(default="", max_length=BEFORE * 4)  # the code before the cursor (the hub keeps BEFORE of it)
+    after: str = Field(default="", max_length=AFTER * 4)
+    load: bool = False  # the person asked: a local model not loaded may be loaded now
+
+
 @router.post("/focus")
 async def focus(body: Focus, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     return await request.app.state.editor.focus(client.name, body.path, body.line)
@@ -68,6 +79,31 @@ async def dirty(body: Dirty, request: Request, client: Annotated[Client, Depends
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     request.app.state.approvals.unsaved.say(found)
     return {"files": [f.model_dump() for f in body.files]}
+
+
+@router.post("/complete")
+async def complete(body: Around, request: Request, client: Annotated[Client, Depends(require_client)]):
+    """Code completion at the cursor (D47, step 14.6), the window's alone: lines of JSON - {model, how}, then
+    {text} pieces, then {done}; or one {paused, message} when it does not run now (no model chosen, a local one not
+    loaded, a cloud one for a local-only project, a secret file). The next request cancels this one."""
+    try:
+        project = await request.app.state.db.acall(lambda conn: projects.get_project(conn, body.project_id))
+    except ProjectError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        head, pieces = await request.app.state.completions.start(project, body.path, body.before, body.after,
+                                                                 load=body.load)  # fmt: skip
+    except Paused as exc:
+        head, pieces = {"paused": exc.reason, "message": str(exc)}, None
+
+    async def lines():
+        yield json.dumps(head, ensure_ascii=False) + "\n"
+        if pieces is not None:
+            async for piece in pieces:
+                yield json.dumps({"text": piece}, ensure_ascii=False) + "\n"
+            yield json.dumps({"done": True}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
 @router.get("")

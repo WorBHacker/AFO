@@ -42,9 +42,9 @@ PRESETS: dict[str, dict[str, float]] = {
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CAPABILITIES = {"context": int, "tools": bool, "vision": bool}
 # which model does what (D39, the general row): a new chat, project cards (local, D24), agents and the coordinator,
-# the autonomous agent's planner / executor / eyes (stage 9), the judge of goals (D44, 11.2), and the spare one when a
-# model fails, refuses or its budget is spent
-ROLES = ("chat", "cards", "agents", "coordinator", "planner", "executor", "vision", "judge", "fallback")
+# the autonomous agent's planner / executor / eyes (stage 9), the judge of goals (D44, 11.2), the spare one when a
+# model fails, refuses or its budget is spent, and the editor's code completion (D47, 14.6)
+ROLES = ("chat", "cards", "agents", "coordinator", "planner", "executor", "vision", "judge", "fallback", "complete")
 PRICES = ("input", "output", "cache_read", "cache_write")  # USD per 1M tokens
 SYSTEM_PROMPT_MAX = 20_000
 

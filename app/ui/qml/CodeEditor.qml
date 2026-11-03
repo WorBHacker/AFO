@@ -9,13 +9,17 @@ import QtQuick.Controls.Basic
 // (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first. Ctrl+F and Ctrl+H:
 // the find bar (FindBar.qml, 14.3), its matches on screen drawn behind the text. After two letters of a name, or
 // at Ctrl+Space, the list of names to complete it (Completer, app/ui/completions.py, 14.5): arrows choose, Tab or Enter
-// puts it in, Esc closes; F12 and Ctrl+click go to the definition of the name under the cursor.
+// puts it in, Esc closes; F12 and Ctrl+click go to the definition of the name under the cursor. Once typing
+// pauses at a line's end, the model's grey text (Ghost, app/ui/ghost.py, 14.6): Tab takes it, Ctrl+→ a word, Esc puts
+// it away. Tab: the list's name first, else the grey text, else an indent.
 Item {
     id: editor
     objectName: "codeEditor"
     property string tabKey  // the tab's: its project and path
     property string typing  // the key just pressed, for the list under the cursor once its text is in
     readonly property bool completing: Completer.open && Completer.key === tabKey && visible
+    readonly property bool ghostShown: visible && Ghost.key === tabKey && Ghost.text !== ""
+                                       && body.cursorPosition === Ghost.position
     readonly property alias body: body
     readonly property real lineHeight: body.lineCount > 0 ? body.contentHeight / body.lineCount : metrics.height
     readonly property real gutterWidth: Math.ceil(metrics.advanceWidth("0") * Math.max(3, String(body.lineCount).length)) + 24
@@ -122,9 +126,16 @@ Item {
             Component.onCompleted: Editor.attach(editor.tabKey, textDocument)
             onTextChanged: {
                 idle.restart()
-                if (editor.typing === "") return
                 const typed = editor.typing
                 editor.typing = ""
+                if (typed === "\u0001") return  // the grey text taken (14.6): nothing more
+                if (typed === "") {  // not typed: loaded, replaced - the grey text goes
+                    if (editor.visible) Ghost.dismiss()
+                    return
+                }
+                // what was typed: the grey text that begins with it stays; asked again once typing pauses
+                Qt.callLater(() => Ghost.typed(editor.tabKey, body.cursorPosition,
+                                               typed.length === 1 && typed !== "\b" && typed !== "\r" ? typed : ""))
                 // a name's letter: the list (from two letters); Backspace: the list follows; anything else closes it
                 if (/^[\w\u00c0-\uffff]$/.test(typed) || (typed === "\b" && editor.completing))
                     Qt.callLater(() => Completer.update(editor.tabKey, body.cursorPosition, false))
@@ -161,6 +172,28 @@ Item {
                             .includes(event.key))
                         Completer.close()
                 }
+                if (editor.ghostShown) {  // the model's grey text (14.6): after the list, before an indent
+                    if (!ctrl && event.key === Qt.Key_Tab) {
+                        editor.typing = "\u0001"
+                        body.cursorPosition = Ghost.accept(false)
+                        event.accepted = true
+                        return
+                    }
+                    if (ctrl && event.key === Qt.Key_Right) {
+                        editor.typing = "\u0001"
+                        body.cursorPosition = Ghost.accept(true)
+                        event.accepted = true
+                        return
+                    }
+                    if (event.key === Qt.Key_Escape) {
+                        Ghost.dismiss()
+                        event.accepted = true
+                        return
+                    }
+                }
+                if ([Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp,
+                     Qt.Key_PageDown].includes(event.key))
+                    Ghost.dismiss()  // the cursor goes elsewhere: the grey text, and its request, go
                 if (ctrl && event.key === Qt.Key_Space) {
                     Completer.update(editor.tabKey, body.cursorPosition, true)
                     event.accepted = true
@@ -197,6 +230,42 @@ Item {
                     findBar.close()
                     event.accepted = true
                 }
+            }
+        }
+    }
+
+    // the model's grey text (14.6): its first line after the cursor, the others on a panel over the lines below
+    Item {
+        id: ghost
+        objectName: "ghostText"
+        visible: editor.ghostShown
+        readonly property rect at: body.cursorRectangle
+        readonly property var lines: Ghost.text.split("\n")
+        x: flick.x - flick.contentX
+        y: -flick.contentY
+        Text {
+            x: ghost.at.x + body.x
+            y: ghost.at.y
+            height: ghost.at.height
+            verticalAlignment: Text.AlignVCenter
+            text: ghost.lines[0].replace(/\t/g, "    ")
+            textFormat: Text.PlainText
+            color: Theme.p.faint
+            font: body.font
+        }
+        Rectangle {
+            visible: ghost.lines.length > 1
+            x: body.leftPadding
+            y: ghost.at.y + ghost.at.height
+            width: rest.implicitWidth + 12
+            height: rest.implicitHeight
+            color: Theme.p.code_bg
+            Text {
+                id: rest
+                text: ghost.lines.slice(1).join("\n").replace(/\t/g, "    ")  // a Text has no tab stops
+                textFormat: Text.PlainText
+                color: Theme.p.faint
+                font: body.font
             }
         }
     }

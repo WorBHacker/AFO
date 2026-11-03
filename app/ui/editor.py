@@ -39,6 +39,7 @@ from ..presenter import plural
 from . import project_rows
 from .completions import Completer
 from .finder import Finder
+from .ghost import Ghost
 from .highlighter import Highlighter
 from .models import RowModel
 
@@ -239,6 +240,7 @@ class EditorView(QObject):
         self._closing = False  # the window's edits are decided: it closes
         self.finder = Finder(app, self._text)  # find and replace (14.3), in the tab shown
         self.completer = Completer(app, self)  # the list under the cursor, F12 (14.5)
+        self.ghost = Ghost(app, self)  # the model's grey text after the cursor (14.6)
         app.theme.changed.connect(self._restyle)
         self._told: list[dict[str, str]] | None = []  # what the hub last heard of the unsaved edits (None: unknown)
         self._telling = False
@@ -480,6 +482,8 @@ class EditorView(QObject):
         b.document = b.quick = None  # its CodeEditor's: it goes with it
         self._forget_draft(b)
         self.completer.forget(b.key)
+        if self.ghost.key == b.key:
+            self.ghost.dismiss()
         del self._buffers[b.key]
         self._tabs.remove(at)  # its CodeEditor goes, its document with it
         self.changed.emit()

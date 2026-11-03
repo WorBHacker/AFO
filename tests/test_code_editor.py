@@ -3,10 +3,11 @@ by Enter, Tab and Shift+Tab (each one undo step), Ctrl+S through the hub's save 
 changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window. Its
 colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first. Find
 and replace (14.3). Tabs, the question before unsaved edits go, drafts and tabs restored after a crash, VS Code
-(14.4). Completions and the way to a definition (14.5)."""
+(14.4). Completions and the way to a definition (14.5). The model's grey text (14.6)."""
 
 import json
 import re
+import time
 
 import pytest
 from PySide6.QtCore import QEvent, QObject, Qt
@@ -14,7 +15,7 @@ from PySide6.QtGui import QGuiApplication as QApplication
 from PySide6.QtGui import QKeyEvent, QTextCursor, QTextDocument
 
 from app import palette
-from app.ui import completions, editor, finder, highlighter
+from app.ui import completions, editor, finder, ghost, highlighter
 from common.paths import data_paths
 from tests.test_ui import FILES, FakeClient, app, qapp, sha, wait_until  # noqa: F401 - the app and qapp fixtures
 
@@ -293,6 +294,13 @@ def test_the_editor_in_the_window(qapp):  # noqa: F811
         wait_until(lambda: shown(quick, "completions") is not None)
         key(Qt.Key.Key_Tab)
         assert body.property("text").endswith("\n    print") and shown(quick, "completions") is None
+
+        # the model's grey text (14.6): `(` after `print` - asked once typing pauses; Tab takes it
+        client.complete_pieces = ("'ok')",)
+        key(Qt.Key.Key_ParenLeft, "(")
+        wait_until(lambda: shown(quick, "ghostText") is not None)
+        key(Qt.Key.Key_Tab)
+        assert body.property("text").endswith("\n    print('ok')") and shown(quick, "ghostText") is None
 
         # a second tab (14.4): its own editor shown, the first one's kept; the window closing asks about edits
         app.projects.openFile("README.md", False)
@@ -750,3 +758,78 @@ def test_completing_and_going_to_a_definition(app, monkeypatch):  # noqa: F811
     assert completer.places == []
     completer.define(util, client.files["src/util.py"].index("run(x)") + 4)  # `x`: in none - said so
     wait_until(lambda: "не найдено" in app.flashText)
+
+
+# --- the model's grey text (14.6) ---
+
+
+def test_the_models_grey_text(app, monkeypatch):  # noqa: F811
+    """D47, step 14.6: once typing pauses at a line's end, the hub's completion is asked with the code around the
+    cursor; its pieces come in as grey text. Typing what it begins with keeps the rest; Ctrl+→ takes a word, Tab all
+    of it - one undo step; in the middle of a line nothing is asked. The next key closes a stream still coming (the hub
+    cancels its request). A pause the hub reports is said, «Загрузить модель» asks with `load`; off for the project or
+    everywhere - nothing is asked."""
+    client, view = app.client, app.editor
+    tabs = Tabs(view)
+    grey = view.ghost
+    view.open("p1", "src/app.py")
+    wait_until(lambda: view.editing and not view.busy)
+    client.complete_pieces = ("print(", "'done')\nreturn 1")
+
+    def typing(text: str, at: int | None = None) -> int:
+        typed(tabs[APP], text, at)
+        position = (tabs[APP].characterCount() - 1) if at is None else at + len(text)
+        view.locate(APP, position)
+        grey.typed(APP, position, text if len(text) == 1 else "")
+        return position
+
+    end = typing("def f():\n    ")
+    wait_until(lambda: grey.text == "print('done')\nreturn 1" and not app.bg.busy)
+    asked = client.completions[-1]
+    assert asked["before"].endswith("def f():\n    ") and asked["after"] == "" and asked["load"] is False
+    assert (grey.key, grey.position) == (APP, end)
+    typing("p")  # what it begins with: the rest stays
+    assert grey.text == "rint('done')\nreturn 1" and grey.position == end + 1
+    assert grey.accept(True) == end + 5 and grey.text == "('done')\nreturn 1"  # Ctrl+→: a word
+    taken = grey.accept(False)  # Tab: all of it
+    assert tabs[APP].toPlainText().endswith("    print('done')\nreturn 1") and grey.text == ""
+    assert taken == tabs[APP].characterCount() - 1
+    tabs[APP].undo()  # one step for it
+    assert tabs[APP].toPlainText().endswith("    print")
+
+    def quiet() -> None:  # the pause, and whatever it set going
+        time.sleep(ghost.IDLE_MS / 1000 + 0.2)
+        QApplication.processEvents()
+        wait_until(lambda: not app.bg.busy)
+
+    count = len(client.completions)
+    typing("x", 0)  # the start of a line with text after it: nothing is asked
+    quiet()
+    assert len(client.completions) == count and grey.text == ""
+
+    client.complete_delay = 0.2  # a stream still coming when the next key comes: closed
+    typing("\n# end")
+    wait_until(lambda: len(client.completions) == count + 1)
+    grey.typed(APP, tabs[APP].characterCount() - 1, "")
+    wait_until(lambda: client.completions[count]["stopped"] and not app.bg.busy)
+    client.complete_delay = 0.0
+
+    client.complete_paused = ("not_loaded", "Дописывание на паузе: модель не загружена рядом с моделью чата")
+    typing(" ")
+    wait_until(lambda: grey.paused == "not_loaded" and "не загружена" in grey.state)
+    client.complete_paused = None
+    grey.load()  # the person's word: it may be loaded now
+    wait_until(lambda: client.completions[-1]["load"] is True and grey.state == "" and not app.bg.busy)
+
+    count = len(client.completions)
+    grey.setInProject("p1", False)
+    assert not grey.inProject("p1") and grey.everywhere
+    typing(" ")
+    quiet()
+    assert len(client.completions) == count
+    grey.setInProject("p1", True)
+    grey.setEverywhere(False)
+    typing(" ")
+    quiet()
+    assert len(client.completions) == count
+    grey.setEverywhere(True)

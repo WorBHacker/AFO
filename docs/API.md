@@ -257,13 +257,14 @@
 
 ### editor
 
-/v1/editor - what the LocalChat extension for VS Code reports (stage 6.6): the open file, finished terminal commands. Any client with a token may report (the extension has its own, `python -m hub token create vscode`); everyone reads. And the window's own editor (D47): which files it holds with edits not saved yet - the window's alone.
+/v1/editor - what the LocalChat extension for VS Code reports (stage 6.6): the open file, finished terminal commands. Any client with a token may report (the extension has its own, `python -m hub token create vscode`); everyone reads. And the window's own editor (D47): which files it holds with edits not saved yet, and its code completion - the window's alone.
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | POST | `/v1/editor/focus` | токен | `focus()` | тело `{path: str, line: int = 1}` |
 | POST | `/v1/editor/command` | токен | `command()` | тело `{terminal: str = '', cwd: str = '', command: str, exit_code: int \| None = None, output: str = '', duration_s: float \| None = None}` |
 | PUT | `/v1/editor/dirty` | только окно | The files the window's editor holds with edits not saved yet (D47, step 14.2c): the whole list, each time it changes and whenever the window's events connect; the hub forgets it a while after the last window went. A model's write into one of them is asked in every mode, a trusted chat's too, and no answer covers it. | тело `{files: list[Unsaved]}` |
+| POST | `/v1/editor/complete` | только окно | Code completion at the cursor (D47, step 14.6), the window's alone: lines of JSON - {model, how}, then {text} pieces, then {done}; or one {paused, message} when it does not run now (no model chosen, a local one not loaded, a cloud one for a local-only project, a secret file). The next request cancels this one. | тело `{project_id: str, path: str, before: str = '', after: str = '', load: bool = False}` |
 | GET | `/v1/editor` | токен | The open file and the latest commands, newest first. | `?limit: int = 20` |
 
 ### budgets

@@ -63,6 +63,7 @@ from .autonomous import Autonomy
 from .backup import DailyBackup, migrate_keeping_a_copy
 from .chat import ChatService
 from .claude_code import ClaudeCodeRunner
+from .completion import Completions
 from .computer import Computer, vision_eyes
 from .connections import ConnectionLock
 from .db import Database
@@ -123,6 +124,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.secrets = secrets_store
         app.state.editor = app.state.chat.editor = Editor(db, bus)  # VS Code's open file and commands (stage 6.6)
         app.state.approvals = ApprovalQueue(db, bus)
+        app.state.completions = Completions(db, gateway, settings.llama_swap_url)  # the editor's grey text (D47)
         # Claude Code (D8, D18): the user's CLI in a chat's project, with the hub's MCP and its approval queue
         hub_url = f"http://{settings.host}:{settings.port}"
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
