@@ -76,7 +76,11 @@ class Job:
         self._handle = handle
 
     def add(self, process: subprocess.Popen) -> None:
-        if self._handle is not None and not self._kernel32.AssignProcessToJobObject(self._handle, process._handle):  # type: ignore[attr-defined]
+        self.add_handle(process._handle)  # type: ignore[attr-defined]
+
+    def add_handle(self, handle: int) -> None:
+        """A process by its handle - one started suspended, so that nothing it starts escapes (appcontainer.run)."""
+        if self._handle is not None and not self._kernel32.AssignProcessToJobObject(self._handle, handle):
             raise ctypes.WinError(ctypes.get_last_error())
 
     def kill(self) -> None:

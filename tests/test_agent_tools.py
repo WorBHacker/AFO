@@ -104,6 +104,48 @@ def test_python_in_its_sandbox(tmp_path):
     assert out.startswith("[]")  # the hub's environment (its keys) does not reach the script
 
 
+@pytest.mark.skipif(os.name != "nt", reason="an AppContainer")
+def test_a_script_is_walled_in_by_windows(tmp_path):
+    """The socket guard was a guard (D46, step 13.14): _socket, ctypes or curl.exe got round it, and a script read
+    whatever the user can. In its AppContainer Windows closes the network - the hub's own address too, even when
+    the task allows the network - and every folder but the script's own; its Python is the standard library, a copy
+    the user's installation is not touched for."""
+    import socket
+
+    secret = tmp_path / "secret.txt"
+    secret.write_text("тайна", "utf-8")
+    listener = socket.create_server(("127.0.0.1", 0))  # the hub's own address: a connection would wait in its queue
+    listener.setblocking(False)
+    port = listener.getsockname()[1]
+    folder = at.sandbox_dir(tmp_path / "sandbox", "walled")
+    probe = (f"import _socket\ns = _socket.socket()\ns.settimeout(5)\n"
+             f"try:\n    s.connect(('127.0.0.1', {port}))\n    print('reached the hub')\n"
+             f"except OSError as exc:\n    print('closed', type(exc).__name__)\n"
+             f"try:\n    print(open(r'{secret}', encoding='utf-8').read())\nexcept OSError as exc:\n"
+             f"    print('not read', type(exc).__name__)\n"
+             "import importlib.util, sys\nprint('numpy' if importlib.util.find_spec('numpy') else 'stdlib only')\n"
+             "print('in', sys.prefix)")  # fmt: skip
+    for network in (False, True):
+        out, failed = at.run_python(folder, probe, 60, network=network)
+        assert not failed, out
+        assert "closed" in out and "reached the hub" not in out, out
+        assert "not read PermissionError" in out and "тайна" not in out, out
+        assert "stdlib only" in out and "scripts-python" in out and "Failed to find" not in out, out
+    with pytest.raises(BlockingIOError):  # nobody came
+        listener.accept()
+    listener.close()
+
+    def refused(*args, **kwargs):
+        raise at.appcontainer.ContainerError("the script did not start in its container (5)")
+
+    at.appcontainer.run, run = refused, at.appcontainer.run
+    try:  # Windows refusing the start is the model's answer, not a crash of the run - and nothing runs outside
+        assert at.run_python(folder, "print(1)", 30, network=False) == (
+            "not run: the script did not start in its container (5)", True)  # fmt: skip
+    finally:
+        at.appcontainer.run = run
+
+
 @pytest.mark.skipif(os.name != "nt", reason="a Windows job")
 def test_the_time_limit_stops_what_a_script_started_and_memory_is_bounded(tmp_path, monkeypatch):
     """The audit (D46): a script's own child lived on after the time limit; now the Windows job stops it too. A

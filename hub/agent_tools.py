@@ -5,10 +5,10 @@ a sandbox, HTTP requests to allowed addresses with the user's keys, and a word t
         each read or written only where it says so, and read by a cloud model only where the user let the cloud see
         it (D10, D46); paths resolved, so a link cannot lead out; secret files are never read, and what is read goes
         through the secret filter. Writing asks, with the diff (D17).
-    run_python - a script in the run's own folder (data/sandbox/<run>), the hub's Python, a time limit and a memory
-        limit for it and every process it starts (a Windows job: the limit stops them all, D46), no network unless
-        allowed (best effort: the socket module refuses to connect; it is not a container - the script runs as the
-        user, so it is always asked, with its code).
+    run_python - a script in the run's own folder (data/sandbox/<run>), a time limit and a memory limit for it and
+        every process it starts (a Windows job: the limit stops them all, D46), in a Windows AppContainer (D46, step
+        13.14; hub/appcontainer.py): the standard library of a copy of the hub's Python, its own folder only, no
+        network unless allowed and never this computer's addresses. Still always asked, with its code.
     http_request - GET or POST to an address: asked each time (D19) unless its host is on the allowed list (settings
         «agent.domains», a few documentation sites at first); `key` names one of the user's own API keys from
         Connections - the hub adds it to the request, the model never sees it, and only for that key's own host.
@@ -18,18 +18,24 @@ a sandbox, HTTP requests to allowed addresses with the user's keys, and a word t
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import changes, projects, winjob
+from common.paths import app_home
+
+from . import appcontainer, changes, projects, winjob
 from .db import utc_now
 from .secret_filter import clean, is_secret_file
+
+log = logging.getLogger("hub.agent_tools")
 
 FOLDERS = "agent.folders"  # settings: [{"path": ..., "write": bool, "cloud": bool}]
 DOMAINS = "agent.domains"  # settings: hosts the agent may reach without asking
@@ -42,6 +48,7 @@ READ_MAX = 512 * 1024
 LIST_MAX = 300
 PYTHON_TIMEOUT = (60, 600)  # default, most
 OUTPUT_LINES = 200
+OUTPUT_BYTES = 1024 * 1024  # of a script's output, the end is read
 HTTP_MAX = 200_000
 SCRIPT_MEMORY = 2 * 1024**3  # a script and what it starts, together
 NO_NETWORK = (
@@ -66,9 +73,11 @@ TOOLS: list[dict[str, Any]] = [
      "parameters": {"type": "object", "properties": {"path": PATH, "content": {"type": "string"}},
                     "required": ["path", "content"]}},
     {"name": "run_python", "description": "Run a Python script in your own sandbox folder (its working directory; "
-     "files you make there stay for this task). No network unless the task allows it (a guard, not a wall: do not try "
-     "to get round it); a time limit and 2 GB of memory for it and what it starts. The user approves each script, "
-     "seeing its code. Print what you need: the output comes back (its last lines).",
+     "files you make there stay for this task). It runs in a Windows container: the standard library only, no files "
+     "outside that folder (read others with folder_read and put what you need into the script), no network unless "
+     "the task allows it, and never this computer's own addresses; a time limit and 2 GB of memory for it and what "
+     "it starts. The user approves each script, seeing its code. Print what you need: the output comes back (its "
+     "last lines).",
      "parameters": {"type": "object", "properties": {
          "code": {"type": "string"}, "timeout_s": {"type": "integer", "description": "At most 600; 60 if left out."}},
          "required": ["code"]}},
@@ -231,10 +240,11 @@ def sandbox_dir(root: Path, run_id: str) -> Path:
 
 
 def run_python(folder: Path, code: str, timeout_s: int, *, network: bool) -> tuple[str, bool]:
-    """The script in its folder with the hub's Python, isolated from the user's site packages and environment
-    secrets; its output's last lines, and whether it failed."""
+    """The script in its folder, in the scripts' AppContainer (hub/appcontainer.py, D46, step 13.14): the standard
+    library, its own folder only, no network unless the task allows it - Windows keeps it closed - and no environment
+    secrets. Where the container cannot be made, the hub's Python with the socket guard alone, and the output says
+    so. Its output's last lines, and whether it failed."""
     script = folder / "_script.py"
-    script.write_text(("" if network else NO_NETWORK) + code, encoding="utf-8")
     env = {
         k: v
         for k, v in os.environ.items()
@@ -242,24 +252,47 @@ def run_python(folder: Path, code: str, timeout_s: int, *, network: bool) -> tup
         in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR", "COMSPEC", "PATHEXT", "LOCALAPPDATA")
     }
     env["PYTHONIOENCODING"] = "utf-8"
+    note = ""
     try:
-        with winjob.Job(SCRIPT_MEMORY) as job:  # the time limit stops what it started too; its memory is bounded
-            process = subprocess.Popen([sys.executable, "-I", "-X", "utf8", str(script)], cwd=folder, env=env,
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
-            job.add(process)
-            try:
-                stdout, stderr = process.communicate(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
+        python: Path | None = appcontainer.runtime(app_home())
+        appcontainer.grant(folder, "M")
+    except appcontainer.ContainerError as exc:
+        log.warning("run_python outside its container: %s", exc)
+        python, note = None, f"\n[not in its container ({exc}): the network is closed by a guard only]"
+    script.write_text(("" if network else NO_NETWORK) + code, encoding="utf-8")  # the guard says why, in words
+    try:
+        # the time limit stops what it started too, and its memory is bounded (a Windows job)
+        with winjob.Job(SCRIPT_MEMORY) as job, tempfile.TemporaryFile() as output:
+            argv = ["-I", "-X", "utf8", str(script)]
+            if python is not None:
+                try:
+                    code_ = appcontainer.run([str(python), *argv], folder, env, network=network, job=job,
+                                             timeout_s=timeout_s, output=output)  # fmt: skip
+                except appcontainer.ContainerError as exc:  # never run outside it once the container was there
+                    log.warning("run_python: %s", exc)
+                    return f"not run: {exc}", True
+            else:
+                process = subprocess.Popen([sys.executable, *argv], cwd=folder, env=env, stdin=subprocess.DEVNULL,
+                                           stdout=output, stderr=subprocess.STDOUT,
+                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+                job.add(process)
+                try:
+                    code_ = process.wait(timeout_s)
+                except subprocess.TimeoutExpired:
+                    code_ = None
+            if code_ is None:
                 job.kill()
-                process.kill()
-                stdout, stderr = process.communicate()
-                out = stdout.decode("utf-8", "replace") + stderr.decode("utf-8", "replace")
-                return _tail(out) + f"\n[stopped: longer than {timeout_s} s]", True
+            output.seek(0, os.SEEK_END)
+            output.seek(max(0, output.tell() - OUTPUT_BYTES))
+            out = output.read().decode("utf-8", "replace")
+        if python is not None:  # Python in a container cannot ask Windows where its exe really is: a harmless word
+            out = out.removeprefix(f"Failed to find real location of {python}\n").removeprefix(
+                f"Failed to find real location of {python}\r\n")  # fmt: skip
     finally:
         script.unlink(missing_ok=True)
-    out = stdout.decode("utf-8", "replace") + stderr.decode("utf-8", "replace")
-    return _tail(out) + f"\n[exit code {process.returncode}]", process.returncode != 0
+    if code_ is None:
+        return _tail(out) + f"\n[stopped: longer than {timeout_s} s]" + note, True
+    return _tail(out) + f"\n[exit code {code_}]" + note, code_ != 0
 
 
 def _tail(text: str) -> str:
