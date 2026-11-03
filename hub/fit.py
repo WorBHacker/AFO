@@ -15,7 +15,10 @@ English and code alike) against the window less room for the answer and the tool
    not enough, the request goes as it is and the provider says so (in plain words: «Разговор не помещается в
    модель»).
 Before that, always: a look at a window (screen_look - a long tree of its elements) is stale once the agent has
-looked again; only the last LOOKS_KEPT looks go whole, the older ones as a note - the request stays small and fast.
+looked again; the older looks go as a note, LOOKS_BATCH at a time, so the last LOOKS_KEPT to LOOKS_KEPT +
+LOOKS_BATCH - 1 go whole - the request stays small and fast, and most requests only add to the one before: a note
+in place of a look changes the request from there on, and the prompt cache (the provider's, llama.cpp's own) writes
+everything after it again (D46, step 13.9: one at a time, that was every step of an agent looking at a window).
 
 The measure is a guess; the model's own count of the last request (its usage) corrects it for the next one, and a
 request the provider still refuses as too long ("exceeds the context window: prompt (N tokens)") is shortened by
@@ -39,6 +42,7 @@ STUB = ("[{name}: прежний результат ({chars} знаков) уб�
         "вызовите снова, если он нужен]")  # fmt: skip
 LOOKS = frozenset({"screen_look"})  # stale once the agent looked again
 LOOKS_KEPT = 2
+LOOKS_BATCH = 3
 STALE = "[{name}: прежний осмотр окна ({chars} знаков) убран — окно с тех пор менялось; смотрите последний осмотр]"
 OVERFLOW = re.compile(r"(?i)exceed\w*\s+(?:the\s+)?(?:available\s+)?context|context\s+(?:window|length)|"
                       r"maximum\s+context|prompt\s+is\s+too\s+long|too\s+many\s+tokens")  # fmt: skip
@@ -82,12 +86,13 @@ def overflow(detail: str) -> int | None:
 
 
 def stale_looks(out: list[dict[str, Any]]) -> int:
-    """All but the last LOOKS_KEPT looks at a window as a note (in place); how many."""
+    """The stale looks at a window as a note (in place), whole batches of LOOKS_BATCH of them; how many."""
     looks = [i for i, entry in enumerate(out) if entry["role"] == "tool" and entry.get("name") in LOOKS
              and isinstance(entry.get("content"), str) and len(entry["content"]) > TOOL_MIN]  # fmt: skip
-    for i in looks[:-LOOKS_KEPT]:
+    gone = max(len(looks) - LOOKS_KEPT, 0) // LOOKS_BATCH * LOOKS_BATCH
+    for i in looks[:gone]:
         out[i] = {**out[i], "content": STALE.format(name=out[i]["name"], chars=len(out[i]["content"]))}
-    return max(len(looks) - LOOKS_KEPT, 0)
+    return gone
 
 
 def room(window: int) -> int:

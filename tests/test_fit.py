@@ -4,6 +4,8 @@ prompt and the stored conversation stay whole; the model's own count corrects th
 refuses as too long goes again, shorter. An agent's runs looking at Telegram outgrew Flash-Next's 64K twice
 (2026-10-28: 66 855 and 69 627 tokens)."""
 
+import itertools
+
 from hub import fit, store
 from hub.gateway.base import Model, ProviderError, StreamEvent
 from tests.test_chat import WS_HOST, auth, drain_until, hub, register_fake  # noqa: F401 - the hub fixture
@@ -22,10 +24,23 @@ def test_stale_looks_at_a_window_always_give_way():
     prompt = long_run(6, 20000, "screen_look")  # six looks at Telegram, 20 000 characters each
     out, shortened = fit.fit(prompt, window=None)
     looks = [e["content"] for e in out if e["role"] == "tool"]
-    assert shortened == 4
-    assert all(c.startswith("[screen_look: прежний осмотр окна (20000 знаков) убран") for c in looks[:4])
-    assert looks[4:] == ["x" * 20000] * 2  # the last two looks go whole
-    assert fit.estimate(out) < fit.estimate(prompt) / 2 and prompt[3]["content"] == "x" * 20000  # the caller's: as is
+    assert shortened == 3  # a batch of LOOKS_BATCH at a time (test below)
+    assert all(c.startswith("[screen_look: прежний осмотр окна (20000 знаков) убран") for c in looks[:3])
+    assert looks[3:] == ["x" * 20000] * 3
+    assert fit.estimate(out) < fit.estimate(prompt) * 0.6 and prompt[3]["content"] == "x" * 20000  # the caller's: as is
+
+
+def test_stale_looks_give_way_in_batches_so_the_request_keeps_its_beginning():
+    """Each new look made the one two looks back a note: every request of an agent looking at a window changed
+    two looks back, and the prompt cache (Anthropic's, OpenAI's, llama.cpp's own) rewrote it all from there on each
+    step (D46, step 13.9). Stale looks now give way LOOKS_BATCH at a time: most requests only add to the one
+    before, and whole looks stay between LOOKS_KEPT and LOOKS_KEPT + LOOKS_BATCH - 1."""
+    requests = [fit.fit(long_run(n, 5000, "screen_look"), window=None)[0] for n in range(1, 13)]
+    changed = sum(1 for before, after in itertools.pairwise(requests) if after[: len(before)] != before)
+    assert changed <= 4  # was 10 of 11: every step from the third look on
+    for out in requests[2:]:
+        whole = sum(1 for e in out if e["role"] == "tool" and e["content"] == "x" * 5000)
+        assert fit.LOOKS_KEPT <= whole <= fit.LOOKS_KEPT + fit.LOOKS_BATCH - 1
 
 
 def test_the_oldest_tool_results_give_way_first():

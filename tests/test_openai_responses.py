@@ -97,6 +97,26 @@ def test_a_streamed_answer_with_a_call():
     assert end.refusal is None and end.stop_reason == "completed"
 
 
+def test_a_conversation_keeps_one_cache_key():
+    """`prompt_cache_key` (D46, step 13.9): every request of a conversation carries the same key - its history only
+    grows - so OpenAI routes them to its cached prefix; another conversation has its own. Made from the
+    instructions and the first message: the adapter does not know the conversation's id, and conversations that
+    start the same share a prefix anyway."""
+    done = events({"type": "response.completed", "response": {"status": "completed", "usage": {}}})
+
+    def key_of(messages):
+        api = Api(done)
+        collect(provider(api).stream_chat("gpt-6.1-sol", messages, "medium", asyncio.Event()))
+        return api.sent[0]["prompt_cache_key"]
+
+    first = [{"role": "system", "content": "Роль."}, {"role": "user", "content": "что в a.py?"}]
+    later = [*first, {"role": "assistant", "content": "print(1)"}, {"role": "user", "content": "а в b.py?"}]
+    key = key_of(first)
+    assert key == key_of(later) and len(key) <= 64
+    assert key != key_of([{"role": "system", "content": "Роль."}, {"role": "user", "content": "другое"}])
+    assert key != key_of([{"role": "system", "content": "Другая роль."}, {"role": "user", "content": "что в a.py?"}])
+
+
 def test_history_on_the_wire():
     own = {"output": [REASONING, CALL]}
     messages = [

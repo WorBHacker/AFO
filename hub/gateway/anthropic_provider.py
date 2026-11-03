@@ -7,7 +7,9 @@ What it takes care of (claude-api reference, cache of 2026-10-06; re-check price
   their signatures unchanged: a thinking block is bound to the conversation before it, so the history is only
   ever appended to (D7, D14)
 - the conversation is cached automatically (top-level cache_control): everything before the new turn is the
-  stable prefix, so a long chat pays the cache-read price for it
+  stable prefix, so a long chat pays the cache-read price for it. The stable parts have points of their own (D46,
+  step 13.9; the claude-api reference's advice for agent loops): the last tool - the list is the same in every chat,
+  so a new chat reads it from the cache - and the system prompt; three of the four points a request may have
 - a refusal arrives as HTTP 200 with stop_reason "refusal"; it is reported as a refusal and its tokens still
   count. Server-side fallbacks to another model are not requested: the model never changes silently (D11)
 - the catalog is the priced models below that the key can actually use (Models API)
@@ -51,6 +53,7 @@ _CATALOG: dict[str, tuple[str, dict[str, float]]] = {
         {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5},
     ),
 }
+CACHE_POINT = {"type": "ephemeral"}  # 5 minutes, as the automatic point: a longer one would have to come first
 DEFAULT_MAX_TOKENS = 64000  # streamed, so a large cap costs nothing until it is used
 CHARS_PER_TOKEN_ESTIMATE = 3  # only for a cancelled run, whose output count Anthropic never reports
 
@@ -155,10 +158,10 @@ class AnthropicProvider:
             "messages": turns,
             "thinking": {"type": "adaptive", "display": "summarized"},
             "output_config": {"effort": effort},
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": CACHE_POINT,
         }
         if system:
-            request["system"] = system
+            request["system"] = [{"type": "text", "text": system, "cache_control": CACHE_POINT}]
         if params.get("stop"):
             request["stop_sequences"] = params["stop"]
         if tools:
@@ -171,6 +174,7 @@ class AnthropicProvider:
                 }
                 for t in tools
             ]
+            request["tools"][-1]["cache_control"] = CACHE_POINT
 
         started = time.monotonic()
         first_at: float | None = None

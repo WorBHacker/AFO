@@ -104,6 +104,33 @@ def test_a_link_to_a_secret_file_is_one(ctx, repo, monkeypatch):
     assert error and "holds secrets" in said
 
 
+def test_search_and_find_symbol_go_through_all_the_projects_without_one_named(repo, tmp_path):
+    """A chat with several projects searched them one call per project, and a model that did not know where a name
+    lived guessed (D46, step 13.9). Without `project`, search_code and find_symbol look through every project the
+    chat's model may read; with it, as before."""
+    other = tmp_path / "web"
+    (other / "src").mkdir(parents=True)
+    (other / "src" / "client.py").write_text("def fetch_hi():\n    print('hi from web')\n", encoding="utf-8")
+    (repo / "src" / "hub.py").write_text("def fetch_hi():\n    return 1\n", encoding="utf-8")
+    both = ToolContext([project(repo.resolve()), project(other.resolve(), "web", "p2")])
+
+    found, error = tool("search_code", {"query": "hi"}, both)
+    assert not error and "matches in 2 projects (proj, web):" in found.splitlines()[0]
+    assert "[proj] src/app.py:1: print('hi')" in found and "[web] src/client.py:2: print('hi from web')" in found
+    only, _ = tool("search_code", {"project": "web", "query": "hi"}, both)
+    assert "proj" not in only and "src/client.py:2:" in only
+
+    defined, error = tool("find_symbol", {"name": "fetch_hi"}, both)
+    assert not error and "[proj] src/hub.py:1-2 function fetch_hi" in defined and "[web] src/client.py:1-2" in defined
+    nowhere, error = tool("find_symbol", {"name": "no_such_thing"}, both)
+    assert not error and "no definitions named like 'no_such_thing' in proj, web" in nowhere
+    assert tool("search_code", {"query": "hi"}, ToolContext([]))[1] is True  # no project: nothing to search
+
+    names = {t["name"]: t for t in TOOLS}
+    for name in ("search_code", "find_symbol"):
+        assert "project" not in names[name]["parameters"]["required"]
+
+
 def test_search_git_and_bad_input(ctx):
     found, error = tool("search_code", {"project": "proj", "query": "print"}, ctx)
     assert not error and "src/app.py:1: print('hi')" in found

@@ -14,11 +14,15 @@ What it takes care of:
 - usage: input (with cached and cache-written parts) and output (thinking included); a prompt over 272K tokens costs
   2x input / cache and 1.5x output for the whole request - priced here, the catalog shows the normal price
 - the catalog: the models of the price table (PRICES_ASOF) the key can use
+- `prompt_cache_key` (D46, step 13.9): one per conversation, so its requests go where its prefix is cached - made
+  from the instructions and the first message, the same for every request of it (the history only grows); OpenAI
+  asks for about 15 requests a minute at most per key, which one chat keeps to
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -123,6 +127,7 @@ class OpenAIProvider:
         }
         if instructions:
             body["instructions"] = instructions
+        body["prompt_cache_key"] = cache_key(instructions, items)
         if "max_tokens" in params:
             body["max_output_tokens"] = params["max_tokens"]
         if tools:
@@ -205,6 +210,12 @@ class OpenAIProvider:
             refusal=refused,
             tool_calls=calls,
         )
+
+
+def cache_key(instructions: str, items: list[dict[str, Any]]) -> str:
+    """The conversation's key for OpenAI's prompt cache: its instructions and first item, hashed."""
+    start = json.dumps([instructions, items[:1]], ensure_ascii=False, sort_keys=True)
+    return "localchat-" + hashlib.sha256(start.encode("utf-8")).hexdigest()[:32]
 
 
 def to_input(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, list[dict[str, Any]]]:

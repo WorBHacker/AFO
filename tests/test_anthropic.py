@@ -168,7 +168,7 @@ def test_request_shape_events_usage_and_raw():
 
     request = client.requests[0]
     assert request["model"] == "claude-opus-5-5"
-    assert request["system"] == "будь краток"
+    assert request["system"] == [{"type": "text", "text": "будь краток", "cache_control": {"type": "ephemeral"}}]
     assert request["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert request["output_config"] == {"effort": "high"}
     assert request["cache_control"] == {"type": "ephemeral"}
@@ -193,6 +193,34 @@ def test_request_shape_events_usage_and_raw():
     assert end.refusal is None
     assert end.raw["content"][0] == SIGNED  # stored as received, signature included
     assert client._stream.closed
+
+
+def test_the_stable_parts_of_a_request_have_their_own_cache_points():
+    """Only the automatic cache point (on the conversation's last block) was set: a chat's first request, or one
+    after its history changed, read nothing - not even the tool list, the same in every chat (D46, step 13.9). Now
+    the last tool and the system prompt carry a point of their own, as the claude-api reference advises for agent
+    loops; with the automatic one, three of the four a request may have."""
+    snapshot = message([{"type": "text", "text": "ok"}])
+    client = FakeClient(stream=FakeStream(default_events(), snapshot))
+    tools = [{"name": n, "description": f"tool {n}", "parameters": {"type": "object", "properties": {}}}
+             for n in ("read_file", "search_code")]  # fmt: skip
+    messages = [{"role": "system", "content": "будь краток"}, {"role": "user", "content": "hi"}]
+    asyncio.run(_drain(provider(client).stream_chat("claude-opus-5-5", messages, "high", asyncio.Event(), tools=tools)))
+    request = client.requests[0]
+    point = {"type": "ephemeral"}
+    assert request["cache_control"] == point  # the conversation's own, moving with it
+    assert [t.get("cache_control") for t in request["tools"]] == [None, point]
+    assert request["system"] == [{"type": "text", "text": "будь краток", "cache_control": point}]
+    assert str(request).count("cache_control") <= 4
+
+    client.requests.clear()  # no system prompt, no tools: only the automatic point
+    client._stream = FakeStream(default_events(), snapshot)
+    asyncio.run(collect(provider(client), [{"role": "user", "content": "hi"}]))
+    assert "system" not in client.requests[0] and "tools" not in client.requests[0]
+
+
+async def _drain(stream):
+    return [e async for e in stream]
 
 
 def test_cost_of_a_cached_claude_request():

@@ -37,6 +37,8 @@ SYMBOL_KINDS = ("function", "method", "class", "interface", "type", "module", "c
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHM]")
 
 PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt."}
+ANY_PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt; leave it out to "
+               "look through all of this chat's projects."}  # fmt: skip
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -73,17 +75,18 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "search_code",
-        "description": f"Search a project's files for text (or a regular expression); up to {SEARCH_MATCHES} "
-        "matching lines with their file and line number. Case is ignored unless the query has capitals.",
+        "description": f"Search a project's files - or all of this chat's projects' - for text (or a regular "
+        f"expression); up to {SEARCH_MATCHES} matching lines with their file and line number. Case is ignored unless "
+        "the query has capitals.",
         "parameters": {
             "type": "object",
             "properties": {
-                "project": PROJECT,
+                "project": ANY_PROJECT,
                 "query": {"type": "string", "description": "What to look for."},
                 "regex": {"type": "boolean", "description": "Treat the query as a regular expression."},
                 "glob": {"type": "string", "description": "Only files matching this, e.g. *.py (optional)."},
             },
-            "required": ["project", "query"],
+            "required": ["query"],
         },
     },
     {
@@ -140,7 +143,8 @@ TOOLS: list[dict[str, Any]] = [
     # the symbol index (D26); conversations from before it keep the seven above (migration 010)
     {
         "name": "find_symbol",
-        "description": "Find where a function, class, method, interface or type is defined in a project, by name: "
+        "description": "Find where a function, class, method, interface or type is defined in a project (or in all "
+        "of this chat's projects), by name: "
         "exact matches first, then names that start with it or contain it; Class.method finds a method of that "
         f"class. Up to {SYMBOL_MATCHES} definitions with file, lines, kind and first line. Quicker and more exact "
         "than search_code for finding a definition. Knows Python, JavaScript, TypeScript, Go, Rust, Java, C#, C, "
@@ -148,14 +152,14 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project": PROJECT,
+                "project": ANY_PROJECT,
                 "name": {"type": "string", "description": "The name, or a part of it."},
                 "kind": {
                     "type": "string",
                     "description": f"Only definitions of this kind (optional): {', '.join(SYMBOL_KINDS)}.",
                 },
             },
-            "required": ["project", "name"],
+            "required": ["name"],
         },
     },
     {
@@ -311,33 +315,63 @@ def _read_file(args: dict[str, Any], ctx: ToolContext) -> str:
     return f"{head}\n{body}{more}{warn}"
 
 
+def _targets(args: dict[str, Any], ctx: ToolContext) -> list[Project]:
+    """The project named, or - none named - every project the chat's model may read (D46, step 13.9)."""
+    value = args.get("project")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        if not ctx.projects:
+            raise ToolError("this chat has no projects to look through")
+        return list(ctx.projects)
+    return [ctx.project(value)]
+
+
+def _shared(groups: list[list[str]], most: int) -> list[list[str]]:
+    """At most `most` lines from several projects' lists: an even share for each first, then what is left over in
+    order - one big project does not hide the others."""
+    share = max(1, most // max(len(groups), 1))
+    taken = [rows[:share] for rows in groups]
+    room = most - sum(len(rows) for rows in taken)
+    for rows, mine in zip(groups, taken, strict=True):
+        extra = rows[len(mine) : len(mine) + max(room, 0)]
+        mine += extra
+        room -= len(extra)
+    return taken
+
+
 def _search(args: dict[str, Any], ctx: ToolContext) -> str:
-    project = ctx.project(args.get("project"))
+    targets = _targets(args, ctx)
     query = _text(args.get("query"), "query", required=True)
     regex = args.get("regex", False)
     if not isinstance(regex, bool):
         raise ToolError("`regex` must be true or false")
     glob = _text(args.get("glob"), "glob")
     matches = limit("search_matches")
-    result = search.search(project.root, query, regex=regex, glob=glob, limit=matches * 2)
-    lines, hidden = [], 0
-    own = projects.private_part(project.root)  # the hub's data folder, when this project holds it
-    for item in result["files"]:
-        if own and item["path"].startswith(own):
-            continue
-        if is_secret_file(item["path"]):
-            hidden += len(item["matches"])
-            continue
-        for match in item["matches"]:
-            if len(lines) < matches:
-                lines.append(f"{item['path']}:{match['line']}: {match['text'].strip()}")
+    many = len(targets) > 1
+    groups, hidden, truncated = [], 0, False
+    for project in targets:
+        result = search.search(project.root, query, regex=regex, glob=glob, limit=matches * 2)
+        truncated = truncated or result["truncated"]
+        rows: list[str] = []
+        own = projects.private_part(project.root)  # the hub's data folder, when this project holds it
+        mark = f"[{project.name}] " if many else ""
+        for item in result["files"]:
+            if own and item["path"].startswith(own):
+                continue
+            if is_secret_file(item["path"]):
+                hidden += len(item["matches"])
+                continue
+            rows += [f"{mark}{item['path']}:{m['line']}: {m['text'].strip()}" for m in item["matches"]]
+        groups.append(rows[:matches])
+    taken = _shared(groups, matches)
+    lines = [line for rows in taken for line in rows]
+    where = ", ".join(p.name for p in targets)
     if not lines:
-        return f"no matches for {query!r} in {project.name}"
+        return f"no matches for {query!r} in {where}"
     note = f"\n[{hidden} matches in secret files not shown]" if hidden else ""
-    more = (
-        "\n[more matches exist: narrow the query or use glob]" if result["truncated"] or len(lines) == matches else ""
-    )
-    return f"{len(lines)} matches in {project.name}:\n" + "\n".join(lines) + note + more
+    left = sum(len(rows) for rows in groups) > len(lines)
+    more = "\n[more matches exist: narrow the query or use glob]" if truncated or left or len(lines) == matches else ""
+    head = f"{len(lines)} matches in {len(targets)} projects ({where})" if many else f"{len(lines)} matches in {where}"
+    return f"{head}:\n" + "\n".join(lines) + note + more
 
 
 def _symbol_line(symbol: dict[str, Any], *, path: str = "", indent: str = "") -> str:
@@ -348,27 +382,33 @@ def _symbol_line(symbol: dict[str, Any], *, path: str = "", indent: str = "") ->
 
 
 def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
-    project = ctx.project(args.get("project"))
+    targets = _targets(args, ctx)
     name = _text(args.get("name"), "name", required=True).strip()
     if not name:
         raise ToolError("`name` must not be empty")
     kind = _text(args.get("kind"), "kind").strip().lower()
     if kind and kind not in SYMBOL_KINDS:
         raise ToolError(f"`kind` must be one of {', '.join(SYMBOL_KINDS)}")
-    found = ctx.symbols.find(project, name, kind=kind, limit=SYMBOL_MATCHES)
-    if found.get("left_out"):
-        partial = (f"\n[the project has more files than the index reads: {found['left_out']} are left out of it; "
-                   "`search` finds text in all of them]")  # fmt: skip
-    elif not found["complete"]:
-        partial = "\n[the index of this project is not complete yet: ask again for the rest]"
-    else:
-        partial = ""
-    if not found["symbols"]:
-        return f"no definitions named like {name!r} in {project.name}{partial}"
-    head = f"{found['total']} definitions match {name!r} in {project.name}"
-    head += f", the first {SYMBOL_MATCHES}:" if found["total"] > SYMBOL_MATCHES else ":"
-    body = "\n".join(_symbol_line(s, path=s["path"]) for s in found["symbols"])
-    return f"{head}\n{body}{partial}"
+    many = len(targets) > 1
+    groups, total, partial = [], 0, ""
+    for project in targets:
+        found = ctx.symbols.find(project, name, kind=kind, limit=SYMBOL_MATCHES)
+        total += found["total"]
+        which = f" ({project.name})" if many else ""
+        if found.get("left_out"):
+            partial += (f"\n[the project{which} has more files than the index reads: {found['left_out']} are left "
+                        "out of it; `search` finds text in all of them]")  # fmt: skip
+        elif not found["complete"]:
+            partial += f"\n[the index of this project{which} is not complete yet: ask again for the rest]"
+        mark = f"[{project.name}] " if many else ""
+        groups.append([mark + _symbol_line(s, path=s["path"]) for s in found["symbols"]])
+    lines = [line for rows in _shared(groups, SYMBOL_MATCHES) for line in rows]
+    where = ", ".join(p.name for p in targets)
+    if not lines:
+        return f"no definitions named like {name!r} in {where}{partial}"
+    head = f"{total} definitions match {name!r} in " + (f"{len(targets)} projects ({where})" if many else where)
+    head += f", the first {SYMBOL_MATCHES}:" if total > SYMBOL_MATCHES else ":"
+    return f"{head}\n" + "\n".join(lines) + partial
 
 
 def _file_outline(args: dict[str, Any], ctx: ToolContext) -> str:
