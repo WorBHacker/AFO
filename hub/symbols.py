@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import search
-from .projects import Project, private, private_part
+from .projects import Project, linked_secret, private, private_part
 from .secret_filter import is_secret_file
 
 MAX_FILE_BYTES = 1024 * 1024
@@ -222,7 +222,7 @@ class SymbolIndex:
                     st = (root / rel).stat()
                 except OSError:
                     continue
-                if st.st_size > MAX_FILE_BYTES:
+                if st.st_size > MAX_FILE_BYTES or (st.st_nlink > 1 and linked_secret(root / rel, st.st_nlink)):
                     continue
                 present.add(rel)
                 known = state.files.get(rel)

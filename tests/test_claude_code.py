@@ -242,6 +242,10 @@ def test_a_turn_asks_the_user_and_edits_when_allowed(hub):
     (first,) = runs(hub)
     assert first["cwd"] == str(hub.repo) and "--resume" not in first["argv"]
     assert first["argv"][first["argv"].index("--permission-prompt-tool") + 1] == PERMISSION_TOOL
+    # its own file tools stay out of the hub's data folder (D46, step 13.12): the last flag, the rules after it
+    data = "//" + data_paths().root.resolve().as_posix().replace(":", "", 1)
+    data = data[:2] + data[2].lower() + data[3:]
+    assert first["argv"][-3:] == ["--disallowedTools", f"Read({data}/**)", f"Edit({data}/**)"]
     assert first["env"]["ANTHROPIC_API_KEY"] is None  # the subscription, never an API key (D8)
     assert int(first["env"]["MCP_TOOL_TIMEOUT"]) > 60_000
     assert not list((data_paths().root / "claude-code").glob(f"{cid}*"))  # its MCP config (with a token) is gone

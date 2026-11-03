@@ -912,7 +912,7 @@ class ChatService:
         if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
             return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
         tainted = await self.read_the_web(conversation_id)
-        if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args):
+        if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args, project.root):
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                 cover=not tainted)  # fmt: skip
             if not allowed:

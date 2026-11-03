@@ -1,4 +1,6 @@
-"""Client tokens (D31): every client has its own token; the hub stores only its SHA-256 hash."""
+"""Client tokens (D31): every client has its own token; the hub stores only its SHA-256 hash. A token starts with
+`lct_` (D46, step 13.12): wherever one shows up - a command printing a token file, a config in a project - the secret
+filter knows it; the tokens made before that are masked by their value (`load_token_files`)."""
 
 from __future__ import annotations
 
@@ -11,8 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .db import utc_now
+from .secret_filter import mask_exactly
 
 APP_CLIENT = "app"
+TOKEN_PREFIX = "lct_"
 
 
 @dataclass(frozen=True)
@@ -35,7 +39,20 @@ def hash_token(token: str) -> str:
 
 
 def new_token() -> str:
-    return secrets.token_urlsafe(32)
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def load_token_files(tokens_dir: Path) -> int:
+    """The tokens kept in data/tokens are masked by their value in all a model sees, an older one without the prefix
+    too: a command in a trusted chat that prints one shows the mask (D46, step 13.12). How many there are."""
+    found = 0
+    for file in tokens_dir.glob("*.token"):
+        try:
+            mask_exactly(file.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        found += 1
+    return found
 
 
 def create_client(conn: sqlite3.Connection, name: str, *, cloud: bool = True) -> str:

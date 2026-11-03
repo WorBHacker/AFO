@@ -5,9 +5,10 @@ Two layers, because each misses what the other catches:
 - by file: `.env` (but not `.env.example`), private keys, credential stores, what lies in `.ssh` and `.gnupg`, the
   logins of Docker and kubectl; their content never reaches a model;
 - by content: private key blocks, well-known token formats (Anthropic, OpenAI, GitHub, AWS, Google, Slack,
-  Telegram, JWT, Hugging Face, npm, GitLab, Stripe, Tavily), `Authorization:` headers, passwords in connection
-  strings, and `NAME=value` where the name says it is a secret. The name stays, so the model still knows the setting
-  exists; the value becomes [REDACTED].
+  Telegram, JWT, Hugging Face, npm, GitLab, Stripe, Tavily, the hub's own `lct_`), `Authorization:` headers,
+  passwords in connection strings, and `NAME=value` where the name says it is a secret. The name stays, so the model
+  still knows the setting exists; the value becomes [REDACTED]. And by value: the hub's client tokens made before
+  they had their prefix (`mask_exactly`, D46) - a command that prints a token file shows the mask, not the token.
 
 The window shows a person their own files as they are; this filter is for the model-facing paths (context, tools)
 and for the logs.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import threading
 
 MASK = "[REDACTED]"
 
@@ -47,6 +49,7 @@ _TOKENS = [
     r"\bglpat-[A-Za-z0-9_\-]{20,}",  # GitLab
     r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",  # Stripe
     r"\btvly-[A-Za-z0-9\-]{20,}",  # Tavily
+    r"\blct_[A-Za-z0-9_\-]{40,}",  # the hub's own client tokens (D31, D46)
 ]
 TOKEN = re.compile("|".join(f"(?:{t})" for t in _TOKENS))
 # Authorization: Bearer <token> (a header in a log, a curl command, a request written down) - the scheme stays
@@ -69,6 +72,10 @@ URL_PASSWORD = re.compile(r"(?P<head>\b[a-z][a-z0-9+.\-]*://[^:/\s@]+:)(?P<value
 CODE_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 WORD = re.compile(r"[A-Za-z_]+")
 NOT_A_VALUE = {"true", "false", "null", "none", "required", "optional", "string", "example", "changeme", "xxxxxx"}
+EXACT_MIN = 16  # a shorter value would mask ordinary words
+_exact: re.Pattern[str] | None = None  # the values `mask_exactly` was given, longest first
+_exact_values: set[str] = set()
+_exact_lock = threading.Lock()
 
 
 def is_secret_file(path: str) -> bool:
@@ -82,6 +89,20 @@ def is_secret_file(path: str) -> bool:
     if SECRET_FOLDERS & set(parts[:-1]) or any(f"{folder}/{name}" in SECRET_PATHS for name in names):
         return True
     return any(fnmatch.fnmatch(name, pattern) for name in names for pattern in SECRET_FILES)
+
+
+def mask_exactly(value: str) -> None:
+    """A secret the hub holds whose look no pattern above knows - a client token of the hub made before tokens had
+    their prefix (D46, step 13.12): from now on it is masked wherever it shows up. A value the patterns catch, or a
+    short one, is left to them."""
+    global _exact
+    value = value.strip()
+    if len(value) < EXACT_MIN or TOKEN.fullmatch(value):
+        return
+    with _exact_lock:
+        if value not in _exact_values:
+            _exact_values.add(value)
+            _exact = re.compile("|".join(re.escape(v) for v in sorted(_exact_values, key=len, reverse=True)))
 
 
 def redact(text: str) -> tuple[str, int]:
@@ -121,6 +142,8 @@ def redact(text: str) -> tuple[str, int]:
         count += 1
         return f"{match.group('head')}{MASK}"
 
+    if _exact is not None:
+        text = _exact.sub(token, text)
     text = TOKEN.sub(token, text)
     text = AUTHORIZATION.sub(header, text)
     text = URL_PASSWORD.sub(url, text)

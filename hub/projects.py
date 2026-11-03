@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from common import hardlinks
+
 from .db import utc_now
 from .secret_filter import is_secret_file
 
@@ -163,13 +165,26 @@ def keep_private(folder: Path) -> None:
 
 def secret_file(root: Path, rel: str) -> bool:
     """A secret file (D10) by the name asked for, or by the file it really is: a link named notes.txt that leads to
-    .env is .env. A path that leads nowhere is not one here - reading it says why."""
+    .env is .env, and so is a hard link of it (`linked_secret`). A path that leads nowhere is not one here - reading
+    it says why."""
     if is_secret_file(rel):
         return True
     try:
-        return is_secret_file(resolve_inside(root, rel).name)
+        target = resolve_inside(root, rel)
+        return is_secret_file(target.name) or linked_secret(target)
     except ProjectError, OSError:
         return False
+
+
+def linked_secret(path: Path, nlink: int | None = None) -> bool:
+    """Another name of this file - a hard link (D46, step 13.12) - is a secret file or lies in the hub's data folder:
+    then its content is theirs. A file with several names that cannot be listed is taken as one. `nlink` - its link
+    count, when the caller has stat'ed it already."""
+    others = hardlinks.other_names(path, nlink)
+    if others is None:
+        return True
+    data = os.path.normcase(HUB_DATA) if HUB_DATA is not None else None
+    return any(is_secret_file(str(o)) or (data and Path(os.path.normcase(o)).is_relative_to(data)) for o in others)
 
 
 def private(root: Path, target: Path) -> bool:

@@ -151,10 +151,11 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
             command = commands.command_of(item)
         except ToolError as exc:
             raise GoalError(f"criterion {n}: {exc}") from None
-        if approvals.destructive("run_command", {"command": command}) or approvals.network(
-            "run_command", {"command": command}
-        ):
-            raise GoalError(f"criterion {n}: «{command}» changes things or goes to the network - a check only looks")
+        if (approvals.destructive("run_command", {"command": command})
+                or approvals.network("run_command", {"command": command})
+                or approvals.hub_data("run_command", {"command": command})):  # fmt: skip
+            raise GoalError(f"criterion {n}: «{command}» changes things, goes to the network or reads the hub's own "
+                            "data - a check only looks at the project")  # fmt: skip
         expected = item.get("expected_exit_code", 0)
         timeout = item.get("timeout_s", CHECK_TIMEOUT_S)
         for name, value in (("expected_exit_code", expected), ("timeout_s", timeout)):
@@ -438,9 +439,9 @@ def read_draft(text: str, project_names: list[str]) -> dict[str, Any] | None:
             continue
         command = " ".join(str(item.get("command") or "").split())
         if command:
-            if approvals.destructive("run_command", {"command": command}) or approvals.network(
-                "run_command", {"command": command}
-            ):
+            if (approvals.destructive("run_command", {"command": command})
+                    or approvals.network("run_command", {"command": command})
+                    or approvals.hub_data("run_command", {"command": command})):  # fmt: skip
                 notes.append(f"команда «{command}» убрана: проверка только смотрит")
                 continue
             project = str(item.get("project") or "")

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import changes, winjob
+from . import changes, projects, winjob
 from .db import utc_now
 from .secret_filter import clean, is_secret_file
 
@@ -166,13 +166,18 @@ def check_keys(value: Any) -> list[dict[str, Any]]:
 
 def allowed_path(conn: sqlite3.Connection, raw: str, *, write: bool = False, cloud: bool = False) -> Path:
     """The path, if it lies inside an allowed folder (for writing: one allowed for writing; for a cloud model's
-    reading: one the user let the cloud see - by default none is, as a project is local-only, D10, D46)."""
+    reading: one the user let the cloud see - by default none is, as a project is local-only, D10, D46). Never in the
+    hub's data folder, even inside an allowed one, and never a hard link of a secret file (D46, step 13.12)."""
     if not raw:
         raise AgentToolError("give a path")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise AgentToolError("give a full path inside an allowed folder")
     resolved = path.resolve()
+    if projects.HUB_DATA is not None and resolved.is_relative_to(projects.HUB_DATA):
+        raise AgentToolError("not done: the hub's own data (its database, tokens, logs) is not for agents")
+    if projects.linked_secret(resolved):  # a hard link (D46, step 13.12)
+        raise AgentToolError("not done: this file has another name that is a file of secrets or the hub's own data")
     inside = [f for f in folders(conn) if resolved.is_relative_to(Path(f["path"]))]
     for folder in inside:
         if (folder["write"] or not write) and (folder.get("cloud") or not cloud):

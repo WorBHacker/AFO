@@ -72,6 +72,8 @@ class CardError(Exception):
 
 
 def _file_head(root, rel: str, limit: int) -> str:
+    if projects.secret_file(root, rel):  # a link or a hard link of a secret file (D46)
+        return ""
     try:
         data = projects.read_file(root, rel, max_bytes=limit)
     except ProjectError:

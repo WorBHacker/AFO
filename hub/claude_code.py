@@ -41,7 +41,7 @@ from typing import Any
 
 from common.paths import DataPaths
 
-from . import store
+from . import projects, store
 from .auth import create_client, find_client, rotate_token
 from .db import Database
 from .events import EventBus
@@ -280,6 +280,20 @@ def child_env(environ: dict[str, str] | None = None) -> dict[str, str]:
                   "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"}  # fmt: skip
 
 
+def private_rules() -> list[str]:
+    """Claude Code's own file tools stay out of the hub's data folder - its tokens, database, logs (D46, step 13.12):
+    they read the project's files without asking anyone, and a checkout of LocalChat holds that folder. Deny rules on
+    the folder's absolute path, in Claude Code's POSIX form (D:\\x -> //d/x); a Read rule keeps out Grep and Glob as
+    well, an Edit rule the writing tools. Its shell commands come to the hub's approval_prompt, which asks about them
+    (approvals.hub_data). Not checked with the real CLI - its documentation's syntax."""
+    if projects.HUB_DATA is None:
+        return []
+    path = projects.HUB_DATA.as_posix()
+    drive, colon, rest = path.partition(":")
+    where = f"//{drive.lower()}{rest}" if colon and len(drive) == 1 else f"/{path}"
+    return [f"Read({where}/**)", f"Edit({where}/**)"]
+
+
 def error_text(result: dict[str, Any]) -> str:
     """What went wrong, from a result with is_error: its text, or its list of errors, or its kind."""
     errors = result.get("errors")
@@ -380,6 +394,8 @@ class ClaudeCodeRunner:
             argv += ["--resume", resume]
         for folder in extra_dirs:
             argv += ["--add-dir", str(folder)]
+        if rules := private_rules():
+            argv += ["--disallowedTools", *rules]  # last: the flag takes the rules that follow it
         return argv
 
     def terminal_command(self, project: Project) -> list[str]:

@@ -3878,6 +3878,10 @@ def test_commands_in_the_window():
     hidden = {**install, "network": False, "destructive": True, "opaque": True, "input": {"command": "& $t push"}}
     row = approval_rows([hidden], projects=projects, chats={})[0]
     assert row["alwaysAsk"] == "opaque" and row["destructive"] and row["projectScope"] == ""
+    # a command into the hub's own data (D46, 13.12): its own reason, allowed once, never for the chat or project
+    token = {**install, "network": False, "hub_data": True, "input": {"command": "type data\\tokens\\app.token"}}
+    row = approval_rows([token], projects=projects, chats={})[0]
+    assert row["alwaysAsk"] == "hub" and not row["destructive"] and row["projectScope"] == ""
 
 
 # --- stage 5.3: the hub's own agents ---

@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 
 from common import invisible
 
+from . import projects
 from .db import Database, utc_now
 from .events import EventBus
 
@@ -116,6 +117,13 @@ SET = (
 USED = re.compile(r"\$\{?(\w+)\b\}?(?!\s*=)|%(\w+)%")
 JOINED = re.compile(r"['\"]\s*\+\s*['\"]")  # 'g'+'it'
 HANDED = re.compile(r"\s-(?:FileP\w*|PSPath|Ar\w*)\b", re.IGNORECASE)  # Start-Process -FilePath git -ArgumentList
+# the hub's own data named in a command (D46, step 13.12): a token file, the database, the names that lead to the data
+# folder; the folder's own path is projects.HUB_DATA
+HUB_DATA_NAMES = re.compile(
+    r"(?<![\w.$])(?:app|hub-[\w-]+)\.token\b(?!\s*\()|\*\.token\b|\btokens/+[^\s\"']*\.token\b|\bhub\.db\b"
+    r"|\bLOCALCHAT_(?:DATA_DIR|HOME)\b|\bLocalChat/+data\b",
+    re.IGNORECASE,
+)
 SEARCHES = {"web_search", "WebSearch"}  # a query leaves this computer: asked every time, never covered (D19)
 SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
 DENIED = "the user denied this"
@@ -196,10 +204,31 @@ def destructive(tool: str, data: dict[str, Any]) -> bool:
     return found or opaque(tool, data)
 
 
-def trusted_skips(tool: str, data: dict[str, Any]) -> bool:
+def hub_data(tool: str, data: dict[str, Any], root: Path | None = None) -> bool:
+    """A command that names the hub's own data - its folder, a token file, the database (D46, step 13.12): what it
+    prints goes to a model, so it is asked every time, in a trusted chat too, and an answer covers nothing. In a
+    project that holds the data folder (a checkout of LocalChat keeps it as `data`), the folder's path inside the
+    project names it as well; `root` - the project the command runs in."""
+    if tool not in COMMAND_TOOLS:
+        return False
+    folder = projects.HUB_DATA
+    inside = projects.private_part(root) if root is not None else ""
+    for text in spellings(str(data.get("command", ""))):
+        flat = text.replace("\\", "/")
+        if HUB_DATA_NAMES.search(flat):
+            return True
+        if folder is not None and folder.as_posix().casefold() in flat.casefold():
+            return True
+        if inside and re.search(rf"(?<![\w.-]){re.escape(inside)}", flat, re.IGNORECASE):
+            return True
+    return False
+
+
+def trusted_skips(tool: str, data: dict[str, Any], root: Path | None = None) -> bool:
     """What a trusted chat (D17) does without asking: writes, commands, the network, sending - the user's word
-    2026-10-28 - all but a destructive action, which is asked every time and allowed by its button only (D38)."""
-    return not destructive(tool, data)
+    2026-10-28 - all but a destructive action, which is asked every time and allowed by its button only (D38), and a
+    command that reaches into the hub's own data (D46)."""
+    return not destructive(tool, data) and not hub_data(tool, data, root)
 
 
 def network(tool: str, data: dict[str, Any]) -> bool:
@@ -208,10 +237,10 @@ def network(tool: str, data: dict[str, Any]) -> bool:
     return tool in COMMAND_TOOLS and any(NETWORK.search(s) for s in spellings(str(data.get("command", ""))))
 
 
-def grant_key(tool: str, data: dict[str, Any]) -> str | None:
-    """What an answer "for this chat" covers; None when nothing may be covered so (a destructive command, or one
-    that reaches the network)."""
-    if destructive(tool, data) or network(tool, data) or sends(tool):
+def grant_key(tool: str, data: dict[str, Any], root: Path | None = None) -> str | None:
+    """What an answer "for this chat" covers; None when nothing may be covered so (a destructive command, one that
+    reaches the network or the hub's own data)."""
+    if destructive(tool, data) or network(tool, data) or sends(tool) or hub_data(tool, data, root):
         return None
     if tool == "screen_act":  # "for this task" covers this program, not the desktop
         return f"screen_act:{data.get('program', '')}"
@@ -421,7 +450,7 @@ class ApprovalQueue:
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
         chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19)."""
-        key = grant_key(tool, data) if cover else None
+        key = grant_key(tool, data, root) if cover else None
         approval_id = uuid.uuid4().hex[:12]
         shown = await asyncio.to_thread(preview, tool, data, root)
 
@@ -437,7 +466,7 @@ class ApprovalQueue:
             )  # fmt: skip
             return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
-        row = _row(await self._db.acall(write)) | {"preview": shown}
+        row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root)}
         if row["status"] == "allowed":
             await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
             return Decision(True, approval_id=approval_id)
@@ -490,7 +519,8 @@ class ApprovalQueue:
                 lambda conn: conn.execute("SELECT path FROM projects WHERE id = ?", (row["project_id"],)).fetchone()
             )
             root = Path(found["path"]) if found else None
-        return row | {"preview": await asyncio.to_thread(preview, row["tool"], row["input"], root)}
+        return row | {"preview": await asyncio.to_thread(preview, row["tool"], row["input"], root),
+                      "hub_data": hub_data(row["tool"], row["input"], root)}  # fmt: skip
 
     async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str) -> dict:
         def write(conn: sqlite3.Connection) -> sqlite3.Row | None:

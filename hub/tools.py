@@ -22,7 +22,7 @@ from common import invisible
 from . import projects, search
 from .limits import DEFAULTS, limit
 from .projects import Project, ProjectError
-from .secret_filter import clean, is_secret_file
+from .secret_filter import clean
 from .symbols import SymbolIndex, language_of
 
 MAX_OUTPUT_CHARS = 16_000
@@ -357,7 +357,7 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
         for item in result["files"]:
             if own and item["path"].startswith(own):
                 continue
-            if is_secret_file(item["path"]):
+            if projects.secret_file(project.root, item["path"]):  # by any of its names (D46)
                 hidden += len(item["matches"])
                 continue
             rows += [f"{mark}{item['path']}:{m['line']}: {m['text'].strip()}" for m in item["matches"]]
@@ -466,7 +466,8 @@ def _git_diff(args: dict[str, Any], ctx: ToolContext) -> str:
         return what + (f" in {path}" if path else "")
     # a diff of a secret file is left out whole (its name may hold spaces: up to " b/")
     sections = re.split(r"(?=^diff --git )", diff, flags=re.M)
-    kept = [s for s in sections if not (m := re.match(r"diff --git a/(.+?) b/", s)) or not is_secret_file(m.group(1))]
+    named = [(s, re.match(r"diff --git a/(.+?) b/", s)) for s in sections]
+    kept = [s for s, m in named if not m or not projects.secret_file(project.root, m.group(1))]
     lines = "".join(kept).splitlines()
     more = f"\n[{len(lines) - DIFF_LINES} more lines: ask for one file at a time]" if len(lines) > DIFF_LINES else ""
     return "\n".join(lines[:DIFF_LINES]) + more

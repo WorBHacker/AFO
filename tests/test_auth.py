@@ -9,10 +9,12 @@ from hub.auth import (
     find_client,
     hash_token,
     list_clients,
+    load_token_files,
     revoke_client,
     rotate_token,
 )
 from hub.db import Database, migrate
+from hub.secret_filter import clean
 
 
 @pytest.fixture
@@ -80,3 +82,20 @@ def test_missing_app_token_file_gets_a_new_token(conn):
 )
 def test_bearer_token(header, expected):
     assert bearer_token(header) == expected
+
+
+def test_a_token_is_known_wherever_it_shows_up(conn, tmp_path):
+    """A model in a trusted chat could print a token file with a command, and the window's token opens the whole API
+    (D46, step 13.12). A new token starts with lct_, which the secret filter knows; one made before that is masked by
+    its value once the hub has read data/tokens at start - a short value is not, it would mask ordinary words."""
+    token = create_client(conn, "cline")
+    assert token.startswith("lct_") and len(token) > 40 and find_client(conn, token) is not None
+    assert clean(f"Get-Content app.token\n{token}\n") == "Get-Content app.token\n[REDACTED]\n"
+    old = "Qx7" + "a" * 40  # the shape of a token before the prefix: the patterns do not know it
+    assert clean(f"type old.token -> {old}") == f"type old.token -> {old}"
+    tokens = tmp_path / "tokens"
+    tokens.mkdir()
+    (tokens / "old.token").write_text(old + "\n", encoding="utf-8")
+    (tokens / "short.token").write_text("abc123", encoding="utf-8")
+    assert load_token_files(tokens) == 2
+    assert clean(f"type old.token -> {old}; abc123") == "type old.token -> [REDACTED]; abc123"

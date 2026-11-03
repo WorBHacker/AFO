@@ -116,7 +116,7 @@ def tree_changes(root: Path, base: str, head: str) -> list[dict[str, str]]:
     out = []
     found = _git(root, "diff", "--name-status", "--no-renames", "-z", base, head).split("\0")
     for status, path in zip(found[0::2], found[1::2], strict=False):  # -z: a path with Cyrillic comes as it is
-        if status and path and not is_secret_file(path):
+        if status and path and not projects.secret_file(root, path):
             out.append({"path": path, "status": STATUS.get(status[:1], "changed")})
     return out
 

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from .. import projects, search, symbols
 from ..auth import APP_CLIENT, Client
 from ..projects import ProjectError
-from ..secret_filter import clean, is_secret_file
+from ..secret_filter import clean
 from .deps import require_client
 
 router = APIRouter(prefix="/v1")
@@ -155,7 +155,7 @@ async def project_search(
     found = await _off_loop(search.search, project.root, q, regex=regex, case=case, glob=glob, limit=limit)
     if client.name != APP_CLIENT:  # as a model's search: no secret file, no secret in a line
         found["files"] = [{**f, "matches": [{**m, "text": clean(m["text"])} for m in f["matches"]]}
-                          for f in found["files"] if not is_secret_file(f["path"])]  # fmt: skip
+                          for f in found["files"] if not projects.secret_file(project.root, f["path"])]  # fmt: skip
     return found
 
 
@@ -206,6 +206,7 @@ async def project_diff(
     if client.name != APP_CLIENT:  # a secret file's changes left out whole, the rest through the filter
         sections = re.split(r"(?=^diff --git )", found["diff"], flags=re.M)
         kept = [d for d in sections
-                if not (m := re.match(r"diff --git a/(.+?) b/", d)) or not is_secret_file(m.group(1))]  # fmt: skip
+                if not (m := re.match(r"diff --git a/(.+?) b/", d))
+                or not projects.secret_file(project.root, m.group(1))]  # fmt: skip
         found["diff"] = clean("".join(kept))
     return found

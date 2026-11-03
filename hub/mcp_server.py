@@ -302,7 +302,8 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
                 app.state.chat.outside.add(turn.conversation_id)
         if reads and turn is not None and not await app.state.chat.web_trusted(turn.conversation_id):
             mode = "ask"  # a local-only project in the chat: its code could leave in the address or query (D46)
-        if mode == "trusted" and not tainted and trusted_skips(tool_name, input):  # all but a destructive one
+        root = turn.root if turn else None
+        if mode == "trusted" and not tainted and trusted_skips(tool_name, input, root):  # all but destruction, hub data
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,
@@ -310,7 +311,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             conversation_id=turn.conversation_id if turn else None,
             project_id=turn.project.id if turn and turn.project else None,
             client_id=client.id or None,
-            root=turn.root if turn else None,
+            root=root,
             cover=not tainted,
         )
         if decision.allow:

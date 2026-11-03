@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import utc_now
-from .projects import Project, ProjectError, resolve_inside
+from .projects import Project, ProjectError, linked_secret, resolve_inside
 from .secret_filter import is_secret_file
 
 MAX_BYTES = 2 * 1024 * 1024
@@ -112,7 +112,7 @@ def _target(project: Project, args: dict[str, Any]) -> tuple[str, Path]:
     shown = target.relative_to(project.root).as_posix()
     if not shown or target.is_dir():
         raise WriteError(f"{rel} is a folder, not a file")
-    if is_secret_file(shown) or is_secret_file(rel):  # the file it is, and the name it was asked by
+    if is_secret_file(shown) or is_secret_file(rel) or linked_secret(target):  # what it is, as asked, its links
         raise WriteError(f"{shown} holds secrets (keys, passwords): models may not write it")
     if shown == ".git" or shown.startswith(".git/"):
         raise WriteError("git's own folder is not for writing; use files of the project")

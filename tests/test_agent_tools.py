@@ -68,6 +68,27 @@ def test_only_the_folders_the_user_allowed(db, tmp_path):
     assert not db.call(at.screen_cloud)  # other programs' windows: local models only, until turned on (Q20)
 
 
+def test_not_the_hubs_data_nor_a_hard_link_of_a_secret(db, tmp_path, monkeypatch):
+    """An allowed folder may hold the hub's data folder - a checkout of LocalChat, or the user's whole AppData - and
+    its tokens and database stay the hub's; a hard link of a secret file elsewhere is that file (D46, step 13.12)."""
+    allowed = tmp_path / "Работа"
+    data = allowed / "LocalChat" / "data"
+    (data / "tokens").mkdir(parents=True)
+    (data / "tokens" / "app.token").write_text("token-of-the-window-xyz", "utf-8")
+    (tmp_path / ".env").write_text("PASSWORD=hunter2-of-the-mail", "utf-8")
+    os.link(tmp_path / ".env", allowed / "заметки.txt")
+    monkeypatch.setattr(at.projects, "HUB_DATA", data.resolve())
+    db.call(lambda c: at.set_setting(c, at.FOLDERS, at.check_folders([{"path": str(allowed), "write": True}])))
+    for path, said in ((data / "tokens" / "app.token", "hub's own data"), (data / "hub.db", "hub's own data"),
+                       (allowed / "заметки.txt", "another name")):  # fmt: skip
+        with pytest.raises(at.AgentToolError, match=said):
+            db.call(lambda c, p=path: at.folder_read(c, str(p)))
+        with pytest.raises(at.AgentToolError, match=said):
+            db.call(lambda c, p=path: at.allowed_path(c, str(p), write=True))
+    (allowed / "план.md").write_text("# План", "utf-8")
+    assert db.call(lambda c: at.folder_read(c, str(allowed / "план.md"))) == "# План"
+
+
 def test_python_in_its_sandbox(tmp_path):
     folder = at.sandbox_dir(tmp_path / "sandbox", "run:1/x")
     out, failed = at.run_python(folder, "open('a.txt', 'w').write('42')\nprint(open('a.txt').read())", 30,

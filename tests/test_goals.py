@@ -348,8 +348,10 @@ def test_what_a_goal_refuses(hub, repo):  # noqa: F811
         return str(response.json()["detail"])
 
     refused({"criteria": []})  # at least one
-    assert "changes things or goes to the network" in refused({"criteria": [{"command": "git push origin main"}]})
-    assert "changes things or goes to the network" in refused({"criteria": [{"command": "pip install requests"}]})
+    for command in ("git push origin main", "pip install requests", "type data\\tokens\\app.token"):
+        assert "changes things, goes to the network or reads the hub's own data" in refused(
+            {"criteria": [{"command": command}]}
+        )
     assert "name the project" in refused({"criteria": [{"command": "exit 0", "project": "чужой"}]})
     assert "say the rule" in refused({"criteria": [{"kind": "semantic"}]})
     assert "max_turns" in refused({"limits": {"max_turns": 0}})

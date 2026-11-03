@@ -124,6 +124,8 @@ def link_lines(all_projects: list[Project], links: list[dict[str, Any]] | None, 
 
 
 def _head(root, rel: str, count: int) -> str:
+    if projects.secret_file(root, rel):  # a link or a hard link of a secret file (D46)
+        return ""
     try:
         data = projects.read_file(root, rel, max_bytes=64 * 1024)
     except ProjectError:

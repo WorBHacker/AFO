@@ -7,7 +7,18 @@ import pytest
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
-from hub.approvals import EXPIRED, ApprovalQueue, destructive, grant_key, network, opaque, preview
+from hub import projects
+from hub.approvals import (
+    EXPIRED,
+    ApprovalQueue,
+    destructive,
+    grant_key,
+    hub_data,
+    network,
+    opaque,
+    preview,
+    trusted_skips,
+)
 from hub.auth import create_client
 from hub.db import Database, migrate
 from hub.events import EventBus
@@ -125,6 +136,35 @@ def test_a_command_is_read_as_powershell_reads_it():
         assert not destructive("run_command", {"command": command}), command
     for command in ("i`wr https://x", "& 'curl.exe' https://x", "$u='https://x'; c`url $u", "cmd /c c^url x"):
         assert network("run_command", {"command": command}), command
+
+
+def test_a_command_into_the_hubs_own_data_is_asked_every_time(tmp_path, monkeypatch):
+    """What a command prints goes to a model: one that reaches into the hub's tokens, database or logs is asked every
+    time, in a trusted chat too, and an answer covers nothing (D46, step 13.12). In a checkout of LocalChat the data
+    folder lies in the project as `data`; elsewhere `data/` is the project's own."""
+    checkout = tmp_path / "LocalChat"
+    data = checkout / "data"
+    data.mkdir(parents=True)
+    other = tmp_path / "ml"
+    other.mkdir()
+    monkeypatch.setattr(projects, "HUB_DATA", data.resolve())
+    full = str(data.resolve())
+    for command in ("Get-Content data\\tokens\\app.token", "type hub-claude-code.token", "sqlite3 hub.db .dump",
+                    f'type "{full}\\logs\\hub.log"', f"Get-ChildItem {full.replace(chr(92), '/')}",
+                    "ls $env:LOCALAPPDATA\\LocalChat\\data", "echo $env:LOCALCHAT_DATA_DIR",
+                    "c`at app.t`oken"):  # fmt: skip
+        assert hub_data("run_command", {"command": command}), command
+        assert not trusted_skips("run_command", {"command": command}), command
+        assert grant_key("run_command", {"command": command}) is None, command
+    inside = "python -c \"print(open('data/logs/hub.log').read())\""
+    assert hub_data("run_command", {"command": inside}, checkout) and not trusted_skips("run_command", {
+        "command": inside}, checkout)  # fmt: skip
+    assert grant_key("run_command", {"command": inside}, checkout) is None
+    for command in (inside, "python load.py data/train.csv", "pytest -q", "cat README.md",
+                    "python -c \"print(cfg.token)\""):  # fmt: skip
+        assert not hub_data("run_command", {"command": command}, other), command
+        assert trusted_skips("run_command", {"command": command}, other), command
+    assert not hub_data("read_file", {"path": "data/tokens/app.token"})  # the file tools keep it out themselves
 
 
 def test_a_search_is_asked_every_time_a_page_by_its_site():

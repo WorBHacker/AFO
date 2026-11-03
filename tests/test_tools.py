@@ -8,6 +8,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from common import hardlinks
 from common.paths import data_paths
 from hub import changes, projects
 from hub import chat as chat_module
@@ -102,6 +103,42 @@ def test_a_link_to_a_secret_file_is_one(ctx, repo, monkeypatch):
                             lambda root, rel: resolve(root, ".env" if rel == "notes.txt" else rel))  # fmt: skip
     said, error = tool("read_file", {"project": "proj", "path": "notes.txt"}, ctx)
     assert error and "holds secrets" in said
+
+
+def test_a_hard_link_is_every_file_it_is(ctx, repo, tmp_path, monkeypatch):
+    """A hard link has no target to resolve (D46, step 13.12): memo.txt made a hard link of a .env elsewhere is that
+    .env, and copy.txt made one of the hub's token file is the token - by any of their names: for reading, searching,
+    the symbol index, writing. A file with one name costs one stat."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / ".env").write_text("def leaked_name():\n    return 'hunter2-of-the-mail'\n", encoding="utf-8")
+    data = tmp_path / "hubdata"
+    (data / "tokens").mkdir(parents=True)
+    (data / "tokens" / "app.token").write_text("token-of-the-window-xyz\n", encoding="utf-8")
+    monkeypatch.setattr(projects, "HUB_DATA", data.resolve())
+    os.link(elsewhere / ".env", repo / "memo.txt")
+    os.link(elsewhere / ".env", repo / "helpers.py")
+    os.link(data / "tokens" / "app.token", repo / "copy.txt")
+    names = hardlinks.other_names(repo / "memo.txt")
+    assert sorted(os.path.normcase(n) for n in names) == sorted(
+        os.path.normcase(os.path.realpath(p)) for p in (elsewhere / ".env", repo / "helpers.py")
+    )
+    assert hardlinks.other_names(repo / "README.md") == [] and hardlinks.other_names(repo / "src") == []
+
+    for path in ("memo.txt", "helpers.py", "copy.txt"):
+        said, error = tool("read_file", {"project": "proj", "path": path}, ctx)
+        assert error and "holds secrets" in said, path
+        with pytest.raises(changes.WriteError, match="holds secrets"):
+            changes.plan("write_file", ctx.projects[0], {"path": path, "content": "x"})
+    for query in ("hunter2-of-the-mail", "token-of-the-window"):
+        found, _ = tool("search_code", {"project": "proj", "query": query}, ctx)
+        assert found.startswith("no matches") and not {"memo.txt", "helpers.py", "copy.txt"} & set(found.split())
+    found, _ = tool("find_symbol", {"project": "proj", "name": "leaked_name"}, ctx)
+    assert "helpers.py" not in found
+    outline, error = tool("file_outline", {"project": "proj", "path": "helpers.py"}, ctx)
+    assert error and "holds secrets" in outline
+    plain, error = tool("read_file", {"project": "proj", "path": "README.md"}, ctx)
+    assert not error and "# Проект" in plain  # a file with one name reads as before
 
 
 def test_search_and_find_symbol_go_through_all_the_projects_without_one_named(repo, tmp_path):
