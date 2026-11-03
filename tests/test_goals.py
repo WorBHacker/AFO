@@ -130,6 +130,21 @@ def test_the_last_turn_comes_at_the_soft_limit_and_then_the_goal_is_parked(hub, 
     assert done["goal"]["turns_used"] == 4 and "The user resumed the goal (app)." in hub_note(worker.prompts[2])
 
 
+def test_a_check_that_asks_is_stopped_and_says_so(hub, repo, monkeypatch):  # noqa: F811
+    """A check command waiting for an answer is stopped like the model's commands (D46, step 13.8), and the worker
+    reads why it is not met - not «ended with exit code None»."""
+    from hub import commands
+
+    monkeypatch.setattr(commands, "QUIET_S", 1.0)
+    worker = use(hub, Gated("agent", ["Пробую.", "Сдаю дела."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    asking = "Read-Host 'Тесты прошли? [y/N]'"
+    set_goal(hub, conv, criteria=[{"command": asking, "timeout_s": 60}], limits={"max_turns": 1})
+    parked = settled(hub, conv, "budget")
+    result = parked["checks"][-1]["results"][0]
+    assert result["met"] is False and result["why"] == "stopped: it waited for an answer (Тесты прошли? [y/N]:)"
+
+
 def test_pause_steer_resume_and_clear(hub, repo):  # noqa: F811
     worker = use(hub, Gated("agent", ["Работаю.", "Учёл.", "Ещё."]))
     worker.gate.clear()

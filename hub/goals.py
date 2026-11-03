@@ -803,6 +803,10 @@ class Goals:
                 results.append({**result, "why": f"did not run: {exc}"})
                 continue
             tail = clean("\n".join(done["lines"][-TAIL_LINES:]))
+            if done["status"] == "asked":  # stopped already (hub/commands.py): nobody answers a check
+                results.append({**result, "why": f"stopped: it waited for an answer ({done['question']})",
+                                "tail": tail, "terminal": done["terminal"]})  # fmt: skip
+                continue
             if done["status"] == "running":  # a check that hangs is a failed check: it does not go on
                 with contextlib.suppress(Exception):
                     await self._chat.terminals.kill(done["terminal"])

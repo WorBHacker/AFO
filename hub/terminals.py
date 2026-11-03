@@ -204,8 +204,10 @@ class TerminalManager:
         rows: int = 30,
         title: str = "",
         argv: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """A shell (running `command`, or interactive), or with `argv` a program of the hub's choice run directly."""
+        """A shell (running `command`, or interactive), or with `argv` a program of the hub's choice run directly;
+        `env`: variables set for it on top of the hub's own."""
         if not cwd.is_dir():
             raise TerminalError(f"no such folder: {cwd}")
         cols, rows = max(20, min(cols, 500)), max(5, min(rows, 200))
@@ -216,9 +218,10 @@ class TerminalManager:
             args = shell_args(kind, command)
         terminal_id = uuid.uuid4().hex[:12]
         pty = winpty.PTY(cols, rows)
+        block = "".join(f"{k}={v}\0" for k, v in {**os.environ, **env}.items()) if env else None
         try:
             spawned = await asyncio.to_thread(
-                pty.spawn, program, cmdline=" " + subprocess.list2cmdline(args), cwd=str(cwd)
+                pty.spawn, program, cmdline=" " + subprocess.list2cmdline(args), cwd=str(cwd), env=block
             )
         except winpty.WinptyError as exc:
             raise TerminalError(f"the terminal did not start: {exc}") from exc
