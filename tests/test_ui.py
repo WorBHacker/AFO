@@ -402,6 +402,7 @@ class FakeClient:
         ]
         self.imported = []
         self.model_calls = []
+        self.settings_calls = []
 
     def models(self):
         return MODELS
@@ -802,6 +803,34 @@ class FakeClient:
     def import_model_settings(self, data):
         self.imported.append(data)
         return {"saved": list(data.get("models") or {}), "skipped": [], "errors": {}}
+
+    def export_settings(self):
+        return {
+            "kind": "localchat-settings",
+            "version": 1,
+            "exported_at": "2026-11-03T10:00:00Z",
+            "redacted": 1,
+            "projects": [{"path": r"C:\site", "name": "Сайт"}],
+            "mcp": [{"name": "files", "target": "npx f"}],
+        }
+
+    def _settings_parts(self, data, parts, ticket):
+        out = []
+        for pid, title, behind in (("projects", "Проекты и их правила", False), ("mcp", "MCP-серверы", True)):
+            if pid in data and (parts is None or pid in parts):
+                item = {"what": data[pid][0].get("path") or data[pid][0]["name"], "action": "add", "detail": "",
+                        "warn": "придёт выключенным" if behind else ""}  # fmt: skip
+                out.append({"id": pid, "title": title, "locked": behind and (not ticket or ticket != self.ticket),
+                            "items": [item]})  # fmt: skip
+        return {"exported_at": data.get("exported_at", ""), "parts": out}
+
+    def preview_settings(self, data, parts, ticket=""):
+        self.settings_calls.append(("preview", parts, ticket))
+        return self._settings_parts(data, parts, ticket)
+
+    def import_settings(self, data, parts, ticket=""):
+        self.settings_calls.append(("import", parts, ticket))
+        return self._settings_parts(data, parts, ticket)
 
     def check_model(self, model_id):
         self.model_calls.append(("check", model_id))
@@ -2088,6 +2117,10 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
         opened(app)
         wait_until(lambda: app.approvals.count == 1)
         assert quick.window.findChild(QObject, "approvalsButton").property("visible")  # the shield, with its count
+        sample = data_paths().root / "settings.json"  # a settings file being looked at: its parts and lines drawn
+        sample.write_text(json.dumps(app.client.export_settings()), encoding="utf-8")
+        assert app.transfer_view.openFile(sample.as_uri())
+        wait_until(lambda: app.transfer_view.parts)
         for name in (
             "palette",
             "budgetsSheet",
@@ -2096,6 +2129,7 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
             "approvalsList",
             "agentsSheet",
             "connectionsSheet",
+            "transferSheet",
         ):
             popup = quick.window.findChild(QObject, name)
             assert popup is not None, name
@@ -4222,6 +4256,55 @@ def test_budgets_and_settings_files_in_the_window(app, tmp_path):
     (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
     app.model_setup.importFrom((tmp_path / "broken.json").as_uri())
     assert "Файл не прочитан" in app.flashText
+
+
+def test_all_the_settings_into_a_file_and_back_after_a_look(app, tmp_path):
+    """D46, 13.10: the window adds its own part to the hub's file; a file back shows what it would do, part by part,
+    a part can be left out (and the rest looked at again), the password opens the parts behind it, and loading
+    reloads the window."""
+    transfer = app.transfer_view
+    app.settings.setValue("ui/theme", "dark")
+    target = tmp_path / "all.json"
+    transfer.exportTo(target.as_uri())
+    wait_until(lambda: not app.bg.busy and target.exists())
+    saved = json.loads(target.read_text(encoding="utf-8"))
+    assert saved["window"]["ui/theme"] == "dark" and "похожее на ключи вырезано: 1" in app.flashText
+    saved["window"] = {"ui/theme": "light", "chat/priority": "speed", "chat/model": "nope/x"}
+    target.write_text(json.dumps(saved), encoding="utf-8")
+
+    assert transfer.openFile(target.as_uri()) and transfer.fileName == "all.json"
+    wait_until(lambda: not transfer.busy and transfer.parts)
+    parts = {p["id"]: p for p in transfer.parts}
+    assert list(parts) == ["projects", "mcp", "window"] and app.client.settings_calls[-1] == ("preview", None, "")
+    assert parts["mcp"]["locked"] and transfer.needsPassword
+    assert "придёт выключенным" in parts["mcp"]["items"][0]["warn"]
+    window = {i["what"]: (i["actionText"], i["detail"]) for i in parts["window"]["items"]}
+    assert window == {"тема": ("изменится", "светлая"), "подбор модели: что важнее": ("изменится", "скорость"),
+                      "модель нового чата": ("пропущено", "такой модели нет в этом хабе")}  # fmt: skip
+    transfer.toggle("projects")
+    wait_until(lambda: not transfer.busy and app.client.settings_calls[-1] == ("preview", ["mcp"], ""))
+    assert {p["id"]: (p["chosen"], p["counts"]) for p in transfer.parts}["projects"] == (False, "не загружается")
+    transfer.toggle("projects")
+    wait_until(lambda: not transfer.busy and app.client.settings_calls[-1][1] == ["mcp", "projects"])
+    app.client.set_connections_password("пароль подключений")
+    transfer.unlock("не тот")
+    wait_until(lambda: not transfer.busy and transfer.error)
+    assert "неверный пароль" in transfer.error and transfer.needsPassword
+    transfer.unlock("пароль подключений")
+    wait_until(lambda: not transfer.busy and not transfer.needsPassword)
+    assert app.client.settings_calls[-1] == ("preview", ["mcp", "projects"], "ticket-1")
+
+    finished = []
+    transfer.finished.connect(lambda: finished.append(True))
+    transfer.apply()
+    wait_until(lambda: finished and not app.bg.busy)
+    assert app.client.settings_calls[-1] == ("import", ["mcp", "projects"], "ticket-1")
+    assert app.settings.value("ui/theme") == "light" and app.priority == "speed"
+    assert "Настройки загружены: добавлено 2, изменено 2, пропущено 1" in app.flashText
+    assert ("lock", "ticket-1") in app.client.secret_calls and transfer.fileName == "" and not transfer.parts
+
+    (tmp_path / "models.json").write_text(json.dumps({"kind": "localchat-model-settings"}), encoding="utf-8")
+    assert not transfer.openFile((tmp_path / "models.json").as_uri()) and "Настройке моделей" in app.flashText
 
 
 def test_the_agent_modes_rows():

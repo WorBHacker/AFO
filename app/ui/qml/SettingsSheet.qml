@@ -2,7 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 
-// Settings: the theme, the model advice's priority, the connections (D13), the hub's own actions, the version.
+// Settings: the theme, the model advice's priority, the connections (D13), the hub's own actions, all the settings
+// into a file and back (D46, 13.10), the version.
 Sheet {
     id: sheet
     objectName: "settingsSheet"
@@ -323,6 +324,49 @@ Sheet {
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 12
+    }
+
+    SectionTitle { text: "Перенос настроек" }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: "Все настройки одним файлом: модели, бюджеты, проекты и их правила, агенты, расписания, папки и сайты "
+              + "агента, тихие часы, подключения без ключей, MCP-серверы, тема окна. Ключей, паролей и разговоров в "
+              + "файле нет. Перед загрузкой видно, что изменится."
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+    Flow {
+        width: parent.width
+        spacing: 8
+        PlainButton {
+            objectName: "exportSettings"
+            iconName: "external"
+            text: "Сохранить все настройки в файл…"
+            onClicked: settingsOut.open()
+        }
+        PlainButton {
+            objectName: "importSettings"
+            iconName: "download"
+            text: "Загрузить из файла…"
+            onClicked: settingsIn.open()
+        }
+    }
+    FileDialog {
+        id: settingsOut
+        title: "Сохранить все настройки"
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: ["Настройки LocalChat (*.json)"]
+        onAccepted: Transfer.exportTo(selectedFile.toString())
+    }
+    FileDialog {
+        id: settingsIn
+        title: "Загрузить настройки"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Настройки LocalChat (*.json)"]
+        onAccepted: if (Transfer.openFile(selectedFile.toString())) { sheet.close(); App.openUi("transfer") }
     }
 
     SectionTitle { text: "О программе" }

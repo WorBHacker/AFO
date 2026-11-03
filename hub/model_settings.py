@@ -218,6 +218,14 @@ def all_current(conn: sqlite3.Connection) -> dict[str, tuple[int, dict[str, Any]
     return {r["model_id"]: (r["version"], json.loads(r["settings"])) for r in rows}
 
 
+def exported(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The general row and every model's settings as they are now - the file's part (hub/portable.py, the models'
+    sheet's own file)."""
+    current = all_current(conn)
+    return {"general": current.get(ALL, (0, {}))[1],
+            "models": {mid: settings for mid, (_n, settings) in sorted(current.items()) if mid}}  # fmt: skip
+
+
 def save(conn: sqlite3.Connection, model_id: str, settings: dict[str, Any], *, by: str) -> int:
     """A new version (checked first); the same settings again make none."""
     checked = check(settings)

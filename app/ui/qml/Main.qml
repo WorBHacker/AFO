@@ -233,6 +233,7 @@ Window {
     InstallSheet { id: installSheet }
     WizardSheet { id: wizardSheet }
     CheckSheet { id: checkSheet }
+    TransferSheet { id: transferSheet }
     NewProgramPopup { held: wizardSheet.opened }
     ComputerFrame {}  // the agent at the desktop: its frame and «Стоп» (D41)
     RenameDialog { id: renameDialog }
@@ -269,6 +270,7 @@ Window {
             else if (what === "setup") wizardSheet.open()
             else if (what === "setup-first-run") root.openWizardWhenFree()
             else if (what === "check-system") checkSheet.open()
+            else if (what === "transfer") transferSheet.open()
             else if (what === "memory") memorySheet.open()
             else if (what === "agent-access") accessSheet.open()
             else if (what === "connections") connectionsSheet.open()

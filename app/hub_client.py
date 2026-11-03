@@ -176,6 +176,19 @@ class HubClient:
     def import_model_settings(self, data: dict) -> dict:
         return self._call("POST", "/v1/model_settings/import", {"data": data})
 
+    # --- all the settings in one file (D46, 13.10) ---
+
+    def export_settings(self) -> dict:
+        return self._call("GET", "/v1/settings/export")
+
+    def preview_settings(self, data: dict, parts: list[str] | None, ticket: str = "") -> dict:
+        return self._call("POST", "/v1/settings/import/preview", {"data": data, "parts": parts},
+                          headers=_unlock(ticket))  # fmt: skip
+
+    def import_settings(self, data: dict, parts: list[str] | None, ticket: str = "") -> dict:
+        return self._call("POST", "/v1/settings/import", {"data": data, "parts": parts}, headers=_unlock(ticket),
+                          timeout=60)  # fmt: skip
+
     # --- the autonomous agent (stage 9) ---
 
     def start_autonomous(self, body: dict) -> dict:

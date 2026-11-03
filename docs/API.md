@@ -57,6 +57,16 @@
 | GET | `/v1/model_settings/export` | только окно | Every model's settings as they are now, and the general row - a file to keep or to take to another hub. |  |
 | POST | `/v1/model_settings/import` | только окно | An exported file back: each model of this hub gets its settings as a new version; a model this hub does not have is skipped, a role naming one is dropped; a wrong value is said, and the rest still saved. | тело `{data: dict[str, Any]}` |
 
+### portable
+
+/v1/settings - all of the hub's settings as one file, and the file back after a preview (D46, step 13.10; hub/portable.py). The desktop app's alone: the file holds what every model is told, the projects and what agents may do there. The parts behind the connections' password load with its ticket (X-LocalChat-Unlock), as their own changes do.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/settings/export` | только окно | Every setting as it is now, no secret among them: a file to keep or to take to another hub. |  |
+| POST | `/v1/settings/import/preview` | только окно | What loading the file would do, line by line - loaded and taken back, nothing written. | тело `{data: dict[str, Any], parts: list[str] \| None = None}` |
+| POST | `/v1/settings/import` | только окно | The file loaded: it adds and changes, never removes; an MCP server and a schedule come in turned off. | тело `{data: dict[str, Any], parts: list[str] \| None = None}` |
+
 ### llama
 
 /v1/llama - a local model's launch settings in llama-swap's config.yaml (stage 8.5, D39, Q25; hub/llama_config.py). The desktop app's alone: it decides how the user's models start.
@@ -532,7 +542,7 @@ conversation's text, an approval or a terminal's output.
 | `mcp.status` | нет | `server`, `state`, `detail`, `tools` | hub/mcp_client.py |
 | `memory.changed` | нет | `fact_id`, `deleted`, `skill_id` | hub/api/memory.py, hub/autonomous.py |
 | `model.settings` | да | `model_id`, `version`, `name`, `imported` | hub/api/model_settings.py |
-| `models.synced` | да | — | hub/api/connections.py, hub/api/models.py, hub/server.py |
+| `models.synced` | да | — | hub/api/connections.py, hub/api/models.py, hub/api/portable.py, hub/server.py |
 | `models.unloaded` | да | `by` | hub/api/models.py |
 | `note.changed` | нет | `project_id` | hub/api/notes.py |
 | `port.closed` | да | `project_id`, `port`, `pid`, `name` | hub/processes.py |
@@ -543,7 +553,7 @@ conversation's text, an approval or a terminal's output.
 | `programs.found` | да | `programs` | hub/programs.py |
 | `programs.scanned` | нет | `removed_manual`, `added`, `first`, `count`, `new`, `removed`, `failed`, `error` | hub/api/programs.py, hub/programs.py |
 | `programs.scanning` | нет | — | hub/programs.py |
-| `project.added` | да | `project` | hub/api/projects.py |
+| `project.added` | да | `project` | hub/api/portable.py, hub/api/projects.py |
 | `project.changed` | да | `project` | hub/api/projects.py |
 | `project.files` | нет | — | hub/watch.py |
 | `project.found` | да | `project_id`, `name`, `path` | hub/watch.py |
@@ -575,6 +585,7 @@ conversation's text, an approval or a terminal's output.
 | `schedule.started` | да | `schedule`, `run_id`, `why` | hub/schedule.py |
 | `schedule.waiting` | да | `schedule`, `until` | hub/schedule.py |
 | `secrets.changed` | да | `name`, `title`, `set` | hub/api/connections.py |
+| `settings.imported` | да | `parts` | hub/api/portable.py |
 | `setup.changed` | да | `job` | hub/setup.py |
 | `setup.progress` | да | — | hub/setup.py |
 | `system.status` | нет | — | hub/system_status.py |

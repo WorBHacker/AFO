@@ -181,10 +181,8 @@ EXPORT_KIND = "localchat-model-settings"
 @router.get("/model_settings/export")
 async def export(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     """Every model's settings as they are now, and the general row - a file to keep or to take to another hub."""
-    current = await request.app.state.db.acall(model_settings.all_current)
-    return {"kind": EXPORT_KIND, "version": 1, "exported_at": utc_now(),
-            "general": current.get(model_settings.ALL, (0, {}))[1],
-            "models": {mid: settings for mid, (_n, settings) in sorted(current.items()) if mid}}  # fmt: skip
+    current = await request.app.state.db.acall(model_settings.exported)
+    return {"kind": EXPORT_KIND, "version": 1, "exported_at": utc_now(), **current}
 
 
 class Imported(BaseModel):

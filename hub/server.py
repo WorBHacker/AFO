@@ -40,6 +40,7 @@ from .api import (
     models,
     notes,
     openai,
+    portable,
     processes,
     programs,
     projects,
@@ -262,6 +263,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(events_ws.router)
     app.include_router(models.router)
     app.include_router(model_settings.router)
+    app.include_router(portable.router)
     app.include_router(llama.router)
     app.include_router(install.router)
     app.include_router(setup.router)
