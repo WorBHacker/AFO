@@ -1,12 +1,14 @@
 """The window's code editor (stage 14.2a, D47): a file's text edited where it is shown - the indent of the file kept
 by Enter, Tab and Shift+Tab (each one undo step), Ctrl+S through the hub's save (14.1), «не сохранено», the file
-changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window."""
+changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window. Its
+colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first."""
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QGuiApplication as QApplication
 from PySide6.QtGui import QKeyEvent, QTextCursor, QTextDocument
 
-from app.ui import editor
+from app import palette
+from app.ui import editor, highlighter
 from common.paths import data_paths
 from tests.test_ui import FILES, FakeClient, app, qapp, sha, wait_until  # noqa: F401 - the app and qapp fixtures
 
@@ -192,6 +194,74 @@ def test_the_editor_in_the_window(qapp):  # noqa: F811
         assert body.property("text").startswith("print('hi')")
         status = quick.window.findChild(QObject, "editorStatusText").property("text")
         assert "UTF-8 · LF · пробелы: 4" in status and "Строка 1" in status
+
+        # the colours reach the screen: a pixel of `print`'s colour in the editor (14.2b)
+        from pygments.token import Name
+
+        wait_until(lambda: app.editor._document.firstBlock().userState() >= 0)
+        wanted = highlighter._style(palette.current().name).style_for_token(Name.Builtin)["color"]
+        red, green, blue = (int(wanted[i : i + 2], 16) for i in (0, 2, 4))
+        shot = quick.window.grabWindow()
+        corner = body.mapToScene(body.position())
+        found = False
+        for y in range(int(corner.y()), int(corner.y()) + 40):
+            for x in range(int(corner.x()), int(corner.x()) + 200):
+                pixel = shot.pixelColor(x, y)
+                if abs(pixel.red() - red) + abs(pixel.green() - green) + abs(pixel.blue() - blue) < 60:
+                    found = True
+                    break
+            if found:
+                break
+        assert found, f"no pixel of #{wanted} where `print` is drawn"
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_the_whole_text_lexed_once_the_screen_coloured(app):  # noqa: F811
+    """A comment over two lines is one token for the whole text (lexed a line at a time, it would not be); Qt counts
+    an emoji as two. The screen's reach (on it and AROUND it) gets its colours at once, then from the whole text's
+    lexing - the lines on screen first, in short slices; lines further off when the screen comes to them. A line
+    being typed in gets its own at once, the whole text after the pause."""
+    from pygments.token import Comment, Keyword, Number
+
+    lines, marks = highlighter.lex_lines(highlighter.lexer_for("a.c"), "/* one\n   two */ int x = 1;\n")
+    assert len(lines) == 3 and lines[2] == () and marks[0] == highlighter.mark(lines[0])
+    assert lines[1][0][:2] == (0, len("   two */")) and lines[1][0][2] in Comment
+    (row,), _ = highlighter.lex_lines(highlighter.lexer_for("a.py"), "s = '\U0001f600'; n = 1")
+    assert next(r for r in row if r[2] in Number)[0] == len("s = '\U0001f600'; n = ") + 1
+    assert highlighter.lexer_for("notes.unknownext") is None
+
+    document = QTextDocument()
+    document.documentLayout()  # a TextEdit's document has its layout; without one Qt sends no contentsChange
+    document.setPlainText("\n".join(f"def f{n}():\n    return {n}" for n in range(3000)))
+    colours = highlighter.Highlighter(app)
+    laid = []
+    set_ = colours._set
+    colours._set = lambda block, ranges, state: (laid.append(block.blockNumber()), set_(block, ranges, state))
+    colours.attach(document)
+    colours.screen(4000, 40)
+    colours.start("big.py")
+    reach = list(range(4000 - highlighter.AROUND, 4040 + highlighter.AROUND + 1))
+    assert laid == reach  # the screen's reach at once, before the whole text is lexed
+    wait_until(lambda: colours._revision == document.revision() and not colours._pending, timeout=20)
+    assert laid[len(reach) :] == []  # the whole text's lexing says the same of them: nothing laid again
+    block = document.findBlockByNumber(4000)  # `def f2000():`
+    assert (block.layout().formats()[0].start, block.layout().formats()[0].length) == (0, 3)
+    assert block.userState() == highlighter.mark(colours._lines[4000])
+    assert document.firstBlock().userState() == -1  # far from the screen: not yet
+
+    colours.screen(0, 40)  # the screen comes to the top: its lines from the lexing, in slices
+    wait_until(lambda: not colours._pending)
+    assert document.firstBlock().userState() == highlighter.mark(colours._lines[0])
+    assert colours.slices and max(colours.slices) < 50  # short slices (8 ms, a line over at most)
+
+    QTextCursor(document.firstBlock()).insertText("async ")  # typing: this line at once
+    first = document.firstBlock().layout().formats()
+    assert (first[0].start, first[0].length) == (0, 5)  # `async`, before the whole text is lexed again
+    del laid[:]
+    wait_until(lambda: colours._revision == document.revision() and not colours._pending)
+    assert len(laid) < 10  # after the pause, only what changed is laid on again
+    keyword = highlighter._style(palette.current().name).style_for_token(Keyword)["color"]
+    assert first[0].format.foreground().color().name() == "#" + keyword.lower()
+    colours.stop()

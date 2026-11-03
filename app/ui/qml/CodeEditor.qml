@@ -4,7 +4,8 @@ import QtQuick.Controls.Basic
 // The open file's text, edited (D47, step 14.2): a TextEdit in a Flickable, numbers for the lines on screen only,
 // the cursor's line marked. Its document is the editor's (Editor.attach): Enter keeps the indent, Tab and Shift+Tab
 // indent the selected lines - done there, one undo step each; Ctrl+Z / Ctrl+Y are the TextEdit's own; Ctrl+S saves
-// through the hub. A pause in typing tells the editor to compare with the saved text («не сохранено»).
+// through the hub. A pause in typing tells the editor to compare with the saved text («не сохранено»). The colours
+// (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first.
 Item {
     id: editor
     objectName: "codeEditor"
@@ -13,6 +14,8 @@ Item {
     readonly property real gutterWidth: Math.ceil(metrics.advanceWidth("0") * Math.max(3, String(body.lineCount).length)) + 24
     readonly property int firstLine: Math.max(0, Math.floor((flick.contentY - body.topPadding) / lineHeight))
     readonly property int cursorLine: Math.floor((body.cursorRectangle.y - body.topPadding) / lineHeight)
+    readonly property int screenLines: Math.ceil(flick.height / lineHeight) + 1
+    onFirstLineChanged: Editor.screen(firstLine, screenLines)  // the colours of what is on screen first (14.2b)
 
     function focusText() { body.forceActiveFocus() }
 

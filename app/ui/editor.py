@@ -25,6 +25,7 @@ from common import invisible
 
 from ..hub_client import HubError
 from . import project_rows
+from .highlighter import Highlighter
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -152,6 +153,8 @@ class EditorView(QObject):
         self.app = app
         self._quick: QObject | None = None
         self._document: QTextDocument | None = None
+        self.highlighter = Highlighter(app)  # colours, the lines on screen first (14.2b)
+        app.theme.changed.connect(self.highlighter.again)
         self._clear()
 
     def _clear(self) -> None:
@@ -220,6 +223,8 @@ class EditorView(QObject):
         kept too: PySide lets the QTextDocument's wrapper go with it."""
         self._quick = quick_document
         self._document = quick_document.textDocument() if hasattr(quick_document, "textDocument") else None
+        if self._document is not None:
+            self.highlighter.attach(self._document)
 
     @Slot(str, str)
     def open(self, project_id: str, path: str) -> None:
@@ -239,6 +244,7 @@ class EditorView(QObject):
             self._hidden = invisible.summary(text)
             self.changed.emit()
             self.loaded.emit(text)
+            self.highlighter.start(path)  # after the text is in: its colours, the top of the file first
 
         def failed(error: Exception) -> None:
             self._busy = False
@@ -275,6 +281,7 @@ class EditorView(QObject):
             self._stop()
 
     def _stop(self) -> None:
+        self.highlighter.stop()
         self._clear()
         self.changed.emit()
 
@@ -302,6 +309,11 @@ class EditorView(QObject):
         if self._document is not None and self._path:
             self._cursor, self._where = position, where(self._document, position)
             self.moved.emit()
+
+    @Slot(int, int)
+    def screen(self, first: int, count: int) -> None:
+        """The editor scrolled: the colours of the lines now on screen come first."""
+        self.highlighter.screen(first, count)
 
     @Slot(int, int, result=int)
     def newline(self, start: int, end: int) -> int:
