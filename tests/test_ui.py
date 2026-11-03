@@ -2,6 +2,7 @@
 history and a streamed answer (no QML warnings allowed). Offscreen, software scene graph."""
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -96,6 +97,12 @@ TREE = {
     ],
     "src/deep": [{"name": "x.txt", "path": "src/deep/x.txt", "dir": False, "size": 1}],
 }
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 FILES = {"src/app.py": "print('hi')\nprint('new')\n", "README.md": "# Проект\n", "src/deep/x.txt": "x"}
 FEED = [
     {"id": 9, "ts": "2026-10-27T01:05:00.000Z", "type": "port.opened", "project_id": "p1",
@@ -308,6 +315,7 @@ class FakeClient:
         self.term_stopped = []
         self.term_removed = []
         self.file_calls = []
+        self.saves = []  # the editor's saves: (pid, path, text, encoding, base)
         self.updates = []
         self.searches = []
         self.symbol_calls = []
@@ -1142,7 +1150,19 @@ class FakeClient:
             raise HubError(f"not a file: {path}")
         text = self.files[path]
         return {"path": path, "size": len(text.encode()), "truncated": False, "binary": False, "text": text,
-                "encoding": "utf-8"}  # fmt: skip
+                "encoding": "utf-8", "sha256": sha(text), "eol": "CRLF" if "\r\n" in text else "LF"}  # fmt: skip
+
+    def save_file(self, pid, path, text, encoding, base):
+        """As the hub does it (14.1): the version the editing began from, else 409 with what is on the disk."""
+        self.saves.append((pid, path, text, encoding, base))
+        now = self.files.get(path)
+        if (now is None and base) or (now is not None and sha(now) != base):
+            reason = "gone" if now is None else "changed" if base else "exists"
+            raise HubError("conflict", data={"reason": reason, "message": reason,
+                                             "file": None if now is None else self.file(pid, path)})  # fmt: skip
+        self.files[path] = text
+        return {"path": path, "sha256": sha(text), "size": len(text.encode()), "encoding": encoding, "eol": "LF",
+                "created": now is None, "change": None}  # fmt: skip
 
     def terminals(self, project_id=None):
         return [dict(t) for t in self.term_list if project_id in (None, t["project_id"])]
@@ -3480,7 +3500,7 @@ def test_the_projects_view_without_warnings(qapp):
             if item.metaObject().className() == "QQuickTextEdit" and "line_" in item.property("text"):
                 laid.append(item)
         assert code.property("count") == 40 and 0 < len(laid) <= 4
-        mark = quick.window.findChild(QObject, "gotoMark")
+        mark = code.findChild(QObject, "gotoMark")  # the viewer's (the compare sheet has one too)
         line_height = laid[0].property("height") / n
         piece = next(item.parentItem() for item in laid if re.search(rf"line_{30 * n}\D", item.property("text")))
         assert mark.property("visible") and mark.property("height") == line_height
@@ -3518,7 +3538,7 @@ def test_the_projects_view_without_warnings(qapp):
         wait_until(lambda: app.projects.file.get("gotoLine") == 2)
         for _ in range(20):
             QApplication.processEvents()
-        mark = quick.window.findChild(QObject, "gotoMark")
+        mark = code.findChild(QObject, "gotoMark")
         assert mark.property("visible") and mark.property("y") > 10  # the second line, below the first
         # definitions: symbol rows in the sidebar, the outline of the open file
         app.projects.setSymbolSearch(True)

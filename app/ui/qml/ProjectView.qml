@@ -15,6 +15,9 @@ Item {
     readonly property var git: Projects.git
     readonly property var links: Projects.links
     readonly property var outline: Projects.outline
+    // the open file is in the editor (D47, 14.2): the viewer steps aside for it
+    readonly property bool editing: Editor.editing && Editor.projectId === Projects.currentId
+                                    && Editor.path === (file.path || "")
 
     // ---------- no project ----------
 
@@ -991,7 +994,8 @@ Item {
                     width: parent.width
                     textFormat: Text.StyledText
                     text: (view.file.folder ? "<font color='" + Theme.p.faint + "'>" + view.file.folder + "/</font>" : "")
-                          + (view.file.name || "")
+                          + (view.file.name || "") + (view.editing && Editor.dirty ? "  <font color='" + Theme.p.accent
+                          + "'>● не сохранено</font>" : "")
                     elide: Text.ElideMiddle
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -1026,8 +1030,36 @@ Item {
                 anchors.rightMargin: 8
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 6
+                PlainButton {
+                    objectName: "editFile"
+                    visible: !view.editing && !view.file.diffMode && !view.file.binary && !view.file.missing
+                    enabled: !view.file.editBlock && !Editor.busy
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "edit"
+                    text: "Править"
+                    ToolTip.visible: hovered && !!view.file.editBlock
+                    ToolTip.text: view.file.editBlock || ""
+                    onClicked: Editor.open(Projects.currentId, view.file.path)
+                }
+                PlainButton {
+                    objectName: "saveFile"
+                    visible: view.editing
+                    enabled: Editor.dirty && !Editor.busy
+                    anchors.verticalCenter: parent.verticalCenter
+                    kind: "primary"
+                    iconName: "check"
+                    text: Editor.busy ? "Сохраняю…" : "Сохранить"
+                    onClicked: { Editor.check(); Editor.save() }
+                }
+                PlainButton {
+                    objectName: "doneEditing"
+                    visible: view.editing
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Готово"
+                    onClicked: Editor.stop()
+                }
                 Segmented {
-                    visible: !!view.file.hasDiff
+                    visible: !!view.file.hasDiff && !view.editing
                     anchors.verticalCenter: parent.verticalCenter
                     options: [{ id: "file", name: "Файл" }, { id: "diff", name: "Изменения" }]
                     value: view.file.diffMode ? "diff" : "file"
@@ -1164,13 +1196,137 @@ Item {
             }
         }
 
+        // the disk and the editor disagree (D47, 14.2): another program, a model or a command changed the file
+        Rectangle {
+            id: conflictBar
+            objectName: "conflictBar"
+            y: fileHead.height
+            width: parent.width
+            height: visible ? 40 : 0
+            visible: view.editing && !!Editor.conflict.reason
+            color: Theme.p.card
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.p.hairline }
+            Icon {
+                x: 14
+                anchors.verticalCenter: parent.verticalCenter
+                name: "refresh"
+                size: 14
+                tint: Theme.p.warn
+            }
+            Text {
+                x: 36
+                width: Math.max(0, conflictButtons.x - x - 12)
+                anchors.verticalCenter: parent.verticalCenter
+                text: (Editor.conflict.message || "") + (Editor.dirty ? " У вас есть несохранённые правки." : "")
+                elide: Text.ElideRight
+                color: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+            Row {
+                id: conflictButtons
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+                PlainButton {
+                    objectName: "takeDisk"
+                    visible: Editor.conflict.reason === "changed"
+                    text: "Взять с диска"
+                    onClicked: Editor.takeDisk()
+                }
+                PlainButton {
+                    objectName: "compareDisk"
+                    text: "Сравнить"
+                    onClicked: { Editor.compare(); compareSheet.open() }
+                }
+                PlainButton {
+                    objectName: "keepMine"
+                    kind: "primary"
+                    text: Editor.conflict.reason === "gone" ? "Создать заново" : "Оставить мой"
+                    onClicked: Editor.keepMine()
+                }
+            }
+        }
+
+        CodeEditor {
+            id: codeEditor
+            y: fileHead.height + conflictBar.height
+            width: parent.width
+            height: parent.height - y - editorStatus.height
+            visible: view.editing
+            onVisibleChanged: if (visible) focusText()
+        }
+
+        // the editor's bottom line: where the cursor is, encoding, line ends, indentation
+        Rectangle {
+            id: editorStatus
+            objectName: "editorStatus"
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: view.editing ? 24 : 0
+            visible: view.editing
+            color: Theme.p.code_head
+            Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
+            Text {
+                objectName: "editorStatusText"
+                x: 12
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 24
+                text: [Editor.position, Editor.status].filter(s => !!s).join("  ·  ")
+                      + (Editor.hidden ? "  ·  ⚠ " + Editor.hidden : "")
+                elide: Text.ElideRight
+                color: Editor.hidden ? Theme.p.error : Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 11
+            }
+        }
+
+        Popup {
+            id: compareSheet
+            objectName: "compareSheet"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(900, (parent ? parent.width : 900) - 48)
+            height: Math.min(640, (parent ? parent.height : 640) - 48)
+            modal: true
+            padding: 0
+            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+            background: Rectangle {
+                radius: 10
+                color: Theme.p.popup
+                border.color: Theme.p.hairline_strong
+                SoftShadow {}
+            }
+            contentItem: Item {
+                Text {
+                    x: 16
+                    height: 40
+                    verticalAlignment: Text.AlignVCenter
+                    text: Editor.compareView.empty ? "Различий нет: на диске то же, что у вас"
+                          : "Что изменит сохранение: на диске → у вас"
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                }
+                CodeView {
+                    y: 40
+                    width: parent.width
+                    height: parent.height - y
+                    source: Editor.compareView
+                    showNumbers: false
+                }
+            }
+        }
+
         CodeView {
             id: code
             objectName: "codeView"
             y: fileHead.height
             width: parent.width
             height: parent.height - fileHead.height
-            visible: !!view.file.diffMode || (!view.file.binary && !view.file.missing)
+            visible: !view.editing && (!!view.file.diffMode || (!view.file.binary && !view.file.missing))
             source: Projects.fileShown
             showNumbers: !view.file.diffMode
             gotoOffset: view.file.gotoOffset === undefined ? -1 : view.file.gotoOffset

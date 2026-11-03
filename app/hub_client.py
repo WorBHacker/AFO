@@ -451,6 +451,11 @@ class HubClient:
     def file(self, project_id: str, path: str) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/file", params={"path": path})
 
+    def save_file(self, project_id: str, path: str, text: str, encoding: str, base: str) -> dict:
+        """The editor's save (D47, 14.1): a 409 HubError carries `reason` and the disk's `file` in its data."""
+        return self._call("PUT", f"/v1/projects/{project_id}/file",
+                          {"path": path, "text": text, "encoding": encoding, "base": base})  # fmt: skip
+
     def git(self, project_id: str, log: int = 20) -> dict:
         return self._call("GET", f"/v1/projects/{project_id}/git", params={"log": log})
 

@@ -18,7 +18,7 @@ from PySide6.QtGui import QDesktopServices
 
 from .. import palette
 from ..hub_client import HubError
-from . import links_text, project_rows, rows
+from . import editor, links_text, project_rows, rows
 from .models import TREE_ROLES, RowModel
 
 if TYPE_CHECKING:
@@ -335,7 +335,7 @@ class Projects(QObject):
     @Slot(str)
     def openProject(self, project_id: str) -> None:
         project = next((p for p in self.items if p["id"] == project_id), None)
-        if project is None:
+        if project is None or not self.app.editor.leave(project_id, "", lambda: self.openProject(project_id)):
             return
         self.current = project
         self.app.settings.setValue("projects/current", project_id)
@@ -464,6 +464,8 @@ class Projects(QObject):
 
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
+        if not self.app.editor.leave(self.currentId, path, lambda: self.openFile(path, diff)):
+            return  # unsaved edits of another file: asked first (D47)
         self.app.show_project_view()  # over a session of the project, the file shows (2026-10-29)
         if self._goto is not None and self._goto[0] != path:
             self._goto = None  # a file opened from the tree starts at its top
@@ -512,6 +514,7 @@ class Projects(QObject):
         view, shown = ready or (project_rows.file_view(data), project_rows.diff_view(self._diff_text) if diff else None)
         mark = self._marks.get(data["path"], "")
         view["missing"] = bool(data.get("missing"))
+        view["editBlock"] = editor.why_not(data)  # "" - the editor may take it (D47)
         view["hasDiff"] = bool(mark) and mark != "•"
         view["mark"] = mark
         view["diffMode"] = diff
@@ -534,6 +537,8 @@ class Projects(QObject):
 
     @Slot()
     def closeFile(self) -> None:
+        if not self.app.editor.leave(self.currentId, "", self.closeFile):
+            return
         self._file_gen += 1
         self._file, self._file_data, self._diff_text, self._shown = {}, None, "", {}
         self.fileChanged.emit()
@@ -582,6 +587,7 @@ class Projects(QObject):
         opened = {""} | {row["path"] for row in self.tree.rows if row["dir"] and row["open"]}
         if more or opened & set(payload.get("folders", [])):
             self.reload_tree()
+        self.app.editor.files_changed(self.currentId, payload.get("changed", []), more)
         path = self._file.get("path")
         if path and (more or path in payload.get("changed", [])):
             self._load_file(path, bool(self._file.get("diffMode")), reloading=True)

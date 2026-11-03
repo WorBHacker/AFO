@@ -33,6 +33,7 @@ from .check_view import CheckView
 from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
+from .editor import EditorView
 from .feed import Feed
 from .goal_view import GoalView
 from .install_view import InstallView
@@ -246,6 +247,7 @@ class Controller(QObject):
         self.setup_view = SetupView(self)  # the first-run wizard (10.2)
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.transfer_view = TransferView(self)  # all the settings into a file and back (D46, 13.10)
+        self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
