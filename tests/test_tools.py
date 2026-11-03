@@ -1,6 +1,7 @@
 """Stage 3: the reading tools a chat's model gets, the tool loop through the hub, and tool turns on the wire."""
 
 import asyncio
+import itertools
 import json
 import os
 
@@ -17,6 +18,8 @@ from hub.gateway.anthropic_provider import replay_blocks, to_wire
 from hub.gateway.base import Model, StreamEvent
 from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.gateway.openai_compat import to_wire as openai_wire
+from hub.gateway.openai_responses import cache_key
+from hub.gateway.openai_responses import to_input as openai_input
 from hub.projects import Project
 from hub.server import create_app
 from hub.settings import HubSettings
@@ -385,6 +388,47 @@ def test_the_tool_loop(hub, repo):
     second_context = hub.get(f"/v1/conversations/{conv}").json()["messages"][6]
     keys = [b["key"] for b in second_context["content"]]
     assert second_context["role"] == "system" and keys == ["header", f"live:{pid}", "tools"]
+
+
+def test_a_chats_requests_only_grow(hub, repo):
+    """A provider's prompt cache reads the start a request shares with the one before, byte for byte: whatever changes
+    between them - the time, processes, a file the user saved - has to come after it, never inside the system prompt
+    (D46, step 13.15; the outside review asked). The hub's context is a message of its own after the user's (D22) and
+    the system prompt only the user's own text: request after request - the steps of one answer, the answers of one
+    chat, the project changing in between - each starts with the one before, as Claude's wire has it (with and
+    without mid-conversation system messages) and as OpenAI's does, and the tools stay the same."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    provider = ToolProvider([[{"id": "c1", "name": "read_file", "input": {"project": "proj", "path": "README.md"}}]])
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    hub.put(f"/v1/conversations/{conv}/projects", json={"project_ids": [pid]})
+    hub.put(f"/v1/conversations/{conv}/context", json={"instructions": "Отвечай кратко."})
+    asked = []
+    for n, text in enumerate(("что в README?", "а теперь?", "и ещё раз")):
+        if n:  # the project changes between the answers: the live state with it
+            (repo / f"заметка{n}.md").write_text(f"новое {n}\n", encoding="utf-8")
+        hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})
+        for _ in range(500):
+            if not hub.get(f"/v1/conversations/{conv}").json()["busy"] and len(provider.calls) > len(asked):
+                break
+            hub.portal.call(asyncio.sleep, 0.02)
+        asked.append(len(provider.calls))
+    assert asked == [2, 3, 4]  # the tool step and the answer, then one request per message
+
+    for (before, tools), (after, more_tools) in itertools.pairwise(provider.calls):
+        assert more_tools == tools and after[: len(before)] == before
+        for mid_system in (True, False):
+            system, turns = to_wire(before, "anthropic", mid_system=mid_system)
+            later_system, later_turns = to_wire(after, "anthropic", mid_system=mid_system)
+            assert later_system == system == "Отвечай кратко." and later_turns[: len(turns)] == turns
+        instructions, items = openai_input(before, "openai")
+        later_instructions, later_items = openai_input(after, "openai")
+        assert later_instructions == instructions and later_items[: len(items)] == items
+        assert cache_key(later_instructions, later_items) == cache_key(instructions, items)
+    for (before, _tools), (after, _more) in itertools.pairwise(provider.calls[1:]):  # the next message's context
+        added = [m for m in after[len(before) :] if m["role"] == "system"]
+        assert added and "<live_state" in added[0]["content"]  # comes after the start, in a message of its own
 
 
 def test_a_chat_without_projects_has_tools_and_cloud_models_see_only_cloud_projects(hub, repo):
