@@ -46,6 +46,8 @@ class Palette:
     accent_hover: str
     on_accent: str
     selection: str
+    find_match: str  # every match of the editor's find on screen (14.3), behind the text
+    find_current: str  # the selected one
     ok: str
     warn: str
     error: str
@@ -80,6 +82,8 @@ DARK = Palette(
     accent_hover="#6a9dff",
     on_accent="#ffffff",
     selection="#264f78",
+    find_match="rgba(234, 160, 60, 0.25)",
+    find_current="rgba(234, 160, 60, 0.55)",
     ok="#3fb950",
     warn="#d29922",
     error="#f0883e",
@@ -114,6 +118,8 @@ LIGHT = Palette(
     accent_hover="#255fd4",
     on_accent="#ffffff",
     selection="#cfe0ff",
+    find_match="rgba(255, 196, 0, 0.35)",
+    find_current="rgba(255, 150, 0, 0.55)",
     ok="#1a7f37",
     warn="#9a6700",
     error="#c4501a",

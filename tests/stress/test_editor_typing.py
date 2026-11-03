@@ -16,7 +16,7 @@ from PySide6.QtQuick import QQuickItem
 from test_ui import FakeClient, QApplication, wait_until
 
 from app import palette
-from app.ui import highlighter
+from app.ui import finder, highlighter
 from common.paths import data_paths
 
 from .stand import Clock, note
@@ -98,6 +98,32 @@ def test_a_megabyte_in_the_editor(qapp):
             QApplication.processEvents()
         note("редактор: 1 МБ — клавиша, медиана", statistics.median(spent), "мс", 16)
         note("редактор: 1 МБ — клавиша, худшая из 60", max(spent), "мс", 50)
+
+        # find and replace (14.3): `total` - 19 000 times, past the 10 000 counted
+        found = app.editor.finder
+        with Clock() as searching:
+            found.open(False, "")
+            found.setQuery("total")
+            wait_until(lambda: found.ready, timeout=30)
+        assert found.count == finder.LIMIT and found._more
+        note("редактор: 1 МБ — поиск `total` (19 000 совпадений)", searching.s * 1000, "мс", 1000)
+        spent = []
+        for _ in range(30):  # with the bar open: the 10 000 matches move with each key
+            began = time.perf_counter()
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(quick.window, QKeyEvent(kind, Qt.Key.Key_X, Qt.KeyboardModifier.NoModifier, "x"))
+            spent.append((time.perf_counter() - began) * 1000)
+            QApplication.processEvents()
+        note("редактор: 1 МБ — клавиша при открытом поиске, медиана", statistics.median(spent), "мс", 16)
+        wait_until(lambda: found.ready, timeout=30)
+        with Clock() as replacing:
+            replaced = found.replaceAll("sum")
+        assert replaced > finder.LIMIT and "total" not in app.editor._text()
+        note("редактор: 1 МБ — «Заменить все» (19 000 замен)", replacing.s * 1000, "мс", 2000)
+        with Clock() as undoing:
+            document.undo()
+        assert app.editor._text().count("total") == replaced
+        note("редактор: 1 МБ — отмена «Заменить все»", undoing.s * 1000, "мс", 1000)
         assert quick.warnings == []
     finally:
         quick.close()

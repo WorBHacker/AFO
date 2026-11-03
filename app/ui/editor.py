@@ -25,6 +25,7 @@ from common import invisible
 
 from ..hub_client import HubError
 from . import project_rows
+from .finder import Finder
 from .highlighter import Highlighter
 
 if TYPE_CHECKING:
@@ -48,7 +49,7 @@ def why_not(data: dict[str, Any]) -> str:
         return "больше 1 МБ: только просмотр (правьте в VS Code)"
     if data.get("encoding") not in ENCODINGS:
         return "незнакомая кодировка"
-    if " " in text or " " in text or "\r" in text.replace("\r\n", ""):
+    if "\u2028" in text or "\u2029" in text or "\r" in text.replace("\r\n", ""):
         return "в файле есть разделители строк, которые редактор поменял бы (U+2028, U+2029, одиночный CR)"
     return ""
 
@@ -155,6 +156,7 @@ class EditorView(QObject):
         self._document: QTextDocument | None = None
         self.highlighter = Highlighter(app)  # colours, the lines on screen first (14.2b)
         app.theme.changed.connect(self.highlighter.again)
+        self.finder = Finder(app, self._text)  # find and replace (14.3)
         self._told: list[dict[str, str]] | None = []  # what the hub last heard of the unsaved edits (None: unknown)
         self._telling = False
         self._connections = 0  # the window's events connections so far: a word sent before the last one is stale
@@ -229,6 +231,7 @@ class EditorView(QObject):
         self._document = quick_document.textDocument() if hasattr(quick_document, "textDocument") else None
         if self._document is not None:
             self.highlighter.attach(self._document)
+            self.finder.attach(self._document)
 
     @Slot(str, str)
     def open(self, project_id: str, path: str) -> None:
@@ -286,6 +289,7 @@ class EditorView(QObject):
 
     def _stop(self) -> None:
         self.highlighter.stop()
+        self.finder.close()
         self._clear()
         self.changed.emit()
 
@@ -321,7 +325,7 @@ class EditorView(QObject):
     def _text(self) -> str:
         if self._document is None:
             return self._saved
-        return self._document.toRawText().replace(" ", "\n").replace(" ", "\n")
+        return self._document.toRawText().replace("\u2029", "\n").replace("\u2028", "\n")
 
     @Slot()
     def check(self) -> None:

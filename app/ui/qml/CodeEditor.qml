@@ -5,7 +5,8 @@ import QtQuick.Controls.Basic
 // the cursor's line marked. Its document is the editor's (Editor.attach): Enter keeps the indent, Tab and Shift+Tab
 // indent the selected lines - done there, one undo step each; Ctrl+Z / Ctrl+Y are the TextEdit's own; Ctrl+S saves
 // through the hub. A pause in typing tells the editor to compare with the saved text («не сохранено»). The colours
-// (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first.
+// (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first. Ctrl+F and Ctrl+H:
+// the find bar (FindBar.qml, 14.3), its matches on screen drawn behind the text.
 Item {
     id: editor
     objectName: "codeEditor"
@@ -76,6 +77,23 @@ Item {
             visible: body.activeFocus && body.selectionStart === body.selectionEnd
         }
 
+        Repeater {  // the find bar's matches on screen (14.3), behind the text: a piece of a line each
+            model: Finder.active ? Finder.marks(editor.firstLine, editor.screenLines, body.selectionStart,
+                                                body.selectionEnd, Finder.revision) : []
+            delegate: Rectangle {
+                required property var modelData
+                readonly property rect from: body.positionToRectangle(modelData[0])
+                readonly property rect to: body.positionToRectangle(modelData[1])
+                objectName: "findMark"
+                x: from.x
+                y: from.y
+                width: Math.max(2, to.x - from.x)
+                height: from.height
+                radius: 2
+                color: modelData[2] ? Theme.p.find_current : Theme.p.find_match
+            }
+        }
+
         TextEdit {
             id: body
             objectName: "editorText"
@@ -113,9 +131,29 @@ Item {
                     if (range[0] === range[1]) body.cursorPosition = range[0]
                     else body.select(range[0], range[1])
                     event.accepted = true
+                } else if (ctrl && (event.key === Qt.Key_F || event.key === Qt.Key_H)) {
+                    findBar.open(event.key === Qt.Key_H)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_F3) {
+                    if (Finder.active) findBar.go((event.modifiers & Qt.ShiftModifier) !== 0)
+                    else findBar.open(false)
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Escape && Finder.active) {
+                    findBar.close()
+                    event.accepted = true
                 }
             }
         }
+    }
+
+    FindBar {
+        id: findBar
+        body: body
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 6
+        anchors.rightMargin: 16
+        onClosed: body.forceActiveFocus()
     }
 
     Timer { id: idle; interval: 300; onTriggered: Editor.check() }

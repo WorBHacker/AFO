@@ -1,14 +1,18 @@
 """The window's code editor (stage 14.2a, D47): a file's text edited where it is shown - the indent of the file kept
 by Enter, Tab and Shift+Tab (each one undo step), Ctrl+S through the hub's save (14.1), «не сохранено», the file
 changing on the disk while it is open, the question before unsaved edits are left - and in the real QML window. Its
-colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first."""
+colours (14.2b): the whole text lexed once off the window's thread, laid on line by line, the screen's first. Find
+and replace (14.3)."""
 
+import re
+
+import pytest
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QGuiApplication as QApplication
 from PySide6.QtGui import QKeyEvent, QTextCursor, QTextDocument
 
 from app import palette
-from app.ui import editor, highlighter
+from app.ui import editor, finder, highlighter
 from common.paths import data_paths
 from tests.test_ui import FILES, FakeClient, app, qapp, sha, wait_until  # noqa: F401 - the app and qapp fixtures
 
@@ -303,3 +307,144 @@ def test_the_whole_text_lexed_once_the_screen_coloured(app):  # noqa: F811
     keyword = highlighter._style(palette.current().name).style_for_token(Keyword)["color"]
     assert first[0].format.foreground().color().name() == "#" + keyword.lower()
     colours.stop()
+
+
+# --- find and replace (14.3) ---
+
+
+def test_what_is_found_and_what_replaces_it():
+    """D47, step 14.3: the query as typed (a dot is a dot) or a regular expression (^ at each line), case or not; the
+    positions are Qt's - an emoji counts two; a replacement with groups as $1 or \\1, $& the whole match; a broken
+    expression says why."""
+    text = "Total = total + 1\n# \U0001f600 total\n"
+    assert finder.find_all(text, finder.pattern("total", False, False)) == ([(0, 5), (8, 13), (23, 28)], False)
+    assert finder.find_all(text, finder.pattern("total", True, False))[0] == [(8, 13), (23, 28)]
+    assert finder.find_all("a.b axb", finder.pattern("a.b", False, False))[0] == [(0, 3)]
+    assert finder.find_all("a.b axb", finder.pattern("a.b", False, True))[0] == [(0, 3), (4, 7)]
+    assert finder.find_all("x\ny\n", finder.pattern("^", False, True))[0] == [(0, 0), (2, 2), (4, 4)]
+    assert finder.find_all("aaaa", finder.pattern("a", False, False), 3) == ([(0, 1), (1, 2), (2, 3)], True)
+    with pytest.raises(re.error):
+        finder.pattern("(", False, True)
+    match = re.search(r"(\w+)@(\w+)", "me@host")
+    assert finder.replacement(match, "$2 at $1 ($&) $$", True) == "host at me (me@host) $"
+    assert finder.replacement(match, r"\2-\1", True) == "host-me"
+    assert finder.replacement(match, "$1", False) == "$1"  # as typed
+
+
+def test_finding_going_and_replacing(app, monkeypatch):  # noqa: F811
+    """The matches found off the window's thread, «2 из 3»; F3 round the file; the ones on screen marked, a piece per
+    line; typing moves the matches after it and drops the touched one at once, the text is searched again after the
+    pause; «Заменить» - the selected match, one undo step, the next one selected; «Заменить все» - every match, one
+    Ctrl+Z; past the limit «2+»."""
+    document = QTextDocument()
+    document.documentLayout()
+    document.setPlainText("one two one\nthree one\n")
+    found = finder.Finder(app, lambda: document.toRawText().replace("\u2029", "\n"))
+    found.attach(document)
+    found.open(False, "")
+    found.setQuery("one")
+    wait_until(lambda: found.ready)
+    assert found._spans == [(0, 3), (8, 11), (18, 21)]
+    assert found.label(8, 11) == "2 из 3" and found.label(4, 4) == "3 совпадения"
+    assert found.step(8, 11, False) == [18, 21] and found.step(18, 21, False) == [0, 3]  # round to the top
+    assert found.step(0, 3, True) == [18, 21] and found.seek(4) == [8, 11]
+    assert found.marks(1, 1, 18, 21) == [[18, 21, 1]]  # the second line on screen: its match, the selected one
+
+    typed(document, "X", 1)  # into the first match: dropped; the ones after it move
+    assert found._spans == [(9, 12), (19, 22)] and not found.ready
+    wait_until(lambda: found.ready)
+    assert found._spans == [(9, 12), (19, 22)]
+
+    assert found.replace(4, 4, "1") == [9, 12]  # no match selected: only the next one
+    assert found.replace(9, 12, "один") == [20, 23]
+    assert document.toPlainText() == "oXne two один\nthree one\n"
+    document.undo()  # one step
+    assert document.toPlainText() == "oXne two one\nthree one\n"
+
+    found.setRegex(True)
+    found.setQuery("(o)ne")
+    wait_until(lambda: found.ready)
+    assert found.replaceAll("$1NE") == 2 and app.flashText == "Заменено: 2"
+    assert document.toPlainText() == "oXne two oNE\nthree oNE\n"
+    document.undo()  # every one with one Ctrl+Z
+    assert document.toPlainText() == "oXne two one\nthree one\n"
+
+    found.setQuery("(")
+    assert found.error.startswith("Ошибка в выражении") and found.count == 0 and found.label(0, 0) == ""
+    found.setQuery("zzz")
+    wait_until(lambda: found.ready)
+    assert found.label(0, 0) == "Нет совпадений"
+    monkeypatch.setattr(finder, "LIMIT", 2)
+    found.open(True, "t.o")  # a selection on one line: the query, its dot escaped while regex is on
+    assert found.query == r"t\.o" and found.replacing
+    found.setRegex(False)
+    found.setQuery("e")
+    wait_until(lambda: found.ready)
+    assert found.label(*found._spans[0]) == "1 из 2+"
+    found.close()
+    assert not found.active and found.marks(0, 10, 0, 0) == []
+
+
+def test_find_and_replace_in_the_window(qapp):  # noqa: F811
+    from PySide6.QtCore import QMetaObject
+    from PySide6.QtQuick import QQuickItem
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    ctrl = Qt.KeyboardModifier.ControlModifier
+
+    def key(code, text="", modifiers=Qt.KeyboardModifier.NoModifier) -> None:
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(quick.window, QKeyEvent(kind, code, modifiers, text))
+
+    def typing(text: str) -> None:
+        for char in text:
+            key(getattr(Qt.Key, f"Key_{char.upper()}", Qt.Key.Key_unknown), char)
+
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("projects")
+        app.projects.openProject("p1")
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
+        app.editor.open("p1", "src/app.py")
+        wait_until(lambda: app.editor.editing)
+        body = quick.window.findChild(QQuickItem, "editorText")
+        bar = quick.window.findChild(QQuickItem, "findBar")
+        quick.window.requestActivate()
+        body.forceActiveFocus()
+        assert not bar.property("visible")
+
+        key(Qt.Key.Key_F, "", ctrl)  # the bar, its field focused
+        assert bar.property("visible") and quick.window.findChild(QQuickItem, "findQuery").hasActiveFocus()
+        typing("print")
+        found = app.editor.finder
+        wait_until(lambda: found.ready and body.property("selectionEnd") == 5)  # the nearest match selected
+        count = quick.window.findChild(QObject, "findCount")
+        assert count.property("text") == "1 из 2"
+        marks = [m for m in body.parentItem().childItems() if m.objectName() == "findMark"]  # a Repeater's: items only
+        left = body.property("leftPadding")  # both `print`s begin their lines
+        assert [m.x() for m in marks] == [left, left] and all(m.width() > 20 for m in marks)
+        key(Qt.Key.Key_Return)
+        assert (body.property("selectionStart"), body.property("selectionEnd")) == (12, 17)
+        assert count.property("text") == "2 из 2"
+        key(Qt.Key.Key_F3, "", Qt.KeyboardModifier.ShiftModifier)
+        assert body.property("selectionStart") == 0
+
+        key(Qt.Key.Key_H, "", ctrl)  # replacing too
+        replacement = quick.window.findChild(QQuickItem, "findReplacement")
+        assert replacement.property("visible")
+        QMetaObject.invokeMethod(replacement, "forceActiveFocus")
+        typing("show")
+        QMetaObject.invokeMethod(quick.window.findChild(QQuickItem, "replaceAll"), "click")
+        assert body.property("text") == "show('hi')\nshow('new')\n" and app.flashText == "Заменено: 2"
+        key(Qt.Key.Key_Escape)  # closed: the text has the focus
+        assert not bar.property("visible") and body.hasActiveFocus()
+        key(Qt.Key.Key_Z, "", ctrl)  # one undo step for all of them
+        assert body.property("text") == FILES["src/app.py"]
+        assert quick.warnings == []
+    finally:
+        quick.close()
