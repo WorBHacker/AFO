@@ -162,6 +162,10 @@ class LiveHub:
         while not self.server.started:
             assert time.monotonic() < deadline, "the hub did not start"
             time.sleep(0.05)
+        # the catalog read at start: a test's own sync comes after it, or a late one disables the stand-in's models
+        while not self.app.state.initial_sync.done():
+            assert time.monotonic() < deadline, "the hub's first catalog read did not end"
+            time.sleep(0.05)
         token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
         self.http = httpx.Client(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": f"Bearer {token}"},
                                  timeout=30)  # fmt: skip

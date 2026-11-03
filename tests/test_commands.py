@@ -1,10 +1,11 @@
 """Commands the hub's models run (stage 5.2, D17, D19): asked, whitelisted per project, network and destructive
 ones every time, run in a real hub terminal and waited for."""
 
+import os
 import time
 
 from hub.approvals import grant_key, network
-from hub.commands import asks
+from hub.commands import asks, tree_work, working
 from tests.test_changes import finished, new_chat, result_of, say, setup_chat, wait
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -94,11 +95,19 @@ def test_a_question_on_the_last_line():
                  "Password for 'https://me@github.com': ", "Enter passphrase for key 'C:/Users/me/.ssh/id_ed25519': ",
                  "Username for 'https://github.com': ", "Press any key to continue . . . ", "Are you sure?",
                  '[Y] Yes  [A] Yes to All  [N] No  [L] No to All  [S] Suspend  [?] Help (default is "Y"):',
-                 "Continue? ", "Пароль:", "(END)", "-- More  --", ":"):  # fmt: skip
+                 "Continue? ", "Пароль:", "(END)", "-- More  --", ":",
+                 # what the list did not know (D46, step 13.13)
+                 "Введите имя пользователя:", "Введите логин:", "Нажмите любую клавишу для продолжения . . .",
+                 "Перезаписать файл a.txt?", "Вы уверены?", "Password (again):", "[sudo] password for alice:",
+                 "Enter PIN for token:", "New password:", "Enter a value:",
+                 "Пароль для ключа 'id_ed25519':"):  # fmt: skip
         assert asks(line), line
     for line in ("", "Building...", "passed: 12, failed: 0", "Password changed for user x.", "y/n", "What is 2+2?",
                  "error: password: too short (see docs)", "result = f(y)", "Replace 3 occurrences", "test_password_ok",
-                 "Collecting requests"):  # fmt: skip
+                 "Collecting requests",
+                 # log lines that only mention the word (D46, step 13.13)
+                 "Running password reset tests:", "Checking username validation:", "Fetching PIN codes:",
+                 "Login succeeded:", "Entering directory 'src':", "Сборка пароля завершена:"):  # fmt: skip
         assert not asks(line), line
 
 
@@ -133,6 +142,47 @@ def test_a_command_waiting_for_an_answer_is_stopped_early(hub, repo, monkeypatch
     say(hub, quiet)
     output = result_of(finished(hub, quiet))["output"]
     assert "exit code 0" in output and "готово" in output
+
+
+def test_work_is_told_from_waiting():
+    """The second sign (D46, step 13.13): a command's processes that used a processor, or started or ended one, through
+    the quiet were working; an unknown look leaves the text alone to decide."""
+    me = tree_work(os.getpid())
+    assert me is not None and os.getpid() in me[1] and me[0] > 0
+    assert tree_work(None) is None and tree_work(2**30) is None
+    shell = (1.0, frozenset({10}))
+    assert not working(shell, (1.05, frozenset({10})), 5.0)  # 1% of a processor: waiting
+    assert working(shell, (1.5, frozenset({10})), 5.0)
+    assert working(shell, (1.0, frozenset({10, 11})), 5.0) and working(shell, (0.2, frozenset()), 5.0)
+    assert not working(None, shell, 5.0) and not working(shell, None, 5.0)
+
+
+def test_a_command_at_work_is_left_alone_and_an_unknown_question_heard_early(hub, repo, monkeypatch):  # noqa: F811
+    """The text alone misread both ways (D46, step 13.13): a build that printed "password for tests:" and then worked a
+    few seconds without a word was stopped; a question the list did not know held the model the whole timeout. Now a
+    command that works through its quiet is left alone, and one idle on a line that may be a question goes on while
+    the model hears of it."""
+    from hub import commands
+
+    monkeypatch.setattr(commands, "QUIET_S", 1.0)
+    monkeypatch.setattr(commands, "SILENT_S", 3.0)
+    busy = (
+        "Write-Output 'password for tests:'; $end = (Get-Date).AddSeconds(4); while ((Get-Date) -lt $end) {}; "
+        "Write-Output 'готово'"
+    )
+    pid, conv, provider = setup_chat(hub, repo, [[run(busy, timeout_s=60)]], mode="trusted")
+    say(hub, conv)
+    output = result_of(finished(hub, conv))["output"]
+    assert "exit code 0" in output and "готово" in output
+
+    provider.steps.append([run("Read-Host 'Номер заказа'", timeout_s=60)])
+    unknown = new_chat(hub, pid, "trusted")
+    started = time.monotonic()
+    say(hub, unknown)
+    output = result_of(finished(hub, unknown))["output"]
+    assert time.monotonic() - started < 30
+    assert "silent and idle" in output and "Номер заказа:" in output and "terminal_output" in output
+    assert [t for t in hub.get("/v1/terminals").json()["terminals"] if t["status"] == "running"]  # it goes on
 
 
 def test_what_is_refused_and_a_command_that_goes_on(hub, repo):  # noqa: F811
