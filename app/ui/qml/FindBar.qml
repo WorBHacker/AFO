@@ -53,8 +53,11 @@ Rectangle {
         event.accepted = true
     }
 
+    onVisibleChanged: if (visible) query.text = Finder.query  // another tab shown: the bar its own, the query one
+
     Connections {
         target: Finder
+        enabled: bar.visible  // the shown tab's bar only
         function onFresh() { bar.select(Finder.seek(bar.body.selectionStart)) }  // a new query: the nearest match
     }
 

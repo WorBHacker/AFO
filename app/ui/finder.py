@@ -15,6 +15,7 @@ sends one contentsChange for the block, and one Ctrl+Z undoes it (19 000 replace
 
 from __future__ import annotations
 
+import contextlib
 import re
 from bisect import bisect_left
 from typing import TYPE_CHECKING
@@ -102,13 +103,27 @@ class Finder(QObject):
         self._timer.timeout.connect(self._find)
 
     def attach(self, document: QTextDocument) -> None:
+        """The document searched: the shown tab's (14.4). Another tab shown with the bar open: searched at once."""
+        if document is self._document:
+            return
+        self.detach()
         self._document = document
         document.contentsChange.connect(self._edited)
         document.destroyed.connect(self._gone)
+        if self._active:
+            self._search()
 
     def _gone(self) -> None:
         self._document = None
         self._timer.stop()
+
+    def detach(self) -> None:
+        """The tab searched closed, or another shown: its document let go, its signals too."""
+        if self._document is not None:
+            with contextlib.suppress(RuntimeError, TypeError):  # gone already
+                self._document.contentsChange.disconnect(self._edited)
+                self._document.destroyed.disconnect(self._gone)
+        self._gone()
 
     # ---------------------------------------------------------------- what the window shows
 

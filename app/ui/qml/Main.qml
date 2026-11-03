@@ -18,6 +18,13 @@ Window {
 
     readonly property bool maximized: visibility === Window.Maximized
 
+    // unsaved edits in the editor's tabs (D47, 14.4): asked before the window goes; it goes once they are decided
+    onClosing: (close) => { if (!Editor.mayClose()) close.accepted = false }
+    Connections {
+        target: Editor
+        function onCloseWindow() { root.close() }
+    }
+
     Sidebar {
         id: sidebar
         objectName: "sidebar"

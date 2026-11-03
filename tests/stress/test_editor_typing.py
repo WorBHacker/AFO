@@ -22,6 +22,17 @@ from common.paths import data_paths
 from .stand import Clock, note
 
 
+def shown(quick, name: str) -> QQuickItem:
+    """The visible item of this objectName - a tab's CodeEditor is a Repeater's, not a QObject child of the window."""
+    found = [quick.window.contentItem()]
+    while found:
+        item = found.pop()
+        if item.objectName() == name and item.isVisible():
+            return item
+        found.extend(item.childItems())
+    raise LookupError(name)
+
+
 def big_file() -> str:
     """Just under the editor's limit (1 MB in bytes: the Cyrillic of the docstrings is two each)."""
     parts, size, n = [], 0, 0
@@ -52,19 +63,26 @@ def test_a_megabyte_in_the_editor(qapp):
         app.projects.openProject("p1")
         app.projects.openFile("big.py", False)
         wait_until(lambda: app.projects.file.get("path") == "big.py", timeout=30)
-        colours = app.editor.highlighter
-        with Clock() as opening:
-            app.editor.open("p1", "big.py")
-            wait_until(lambda: app.editor.editing, timeout=30)
-        document = app.editor._document
+        on_screen = []  # when the first frame with the file's text went out
+
+        def frame() -> None:
+            b = app.editor.current()
+            if not on_screen and b is not None and b.document is not None and b.document.characterCount() > 1000:
+                on_screen.append(time.perf_counter())
+
+        quick.window.frameSwapped.connect(frame)
+        began = time.perf_counter()
+        app.editor.open("p1", "big.py")
+        wait_until(lambda: on_screen, timeout=30)
+        colours, document = app.editor.current().highlighter, app.editor.current().document
         assert document.firstBlock().userState() >= 0  # the screen coloured at once, on opening
-        note("редактор: открыть 1 МБ (текст в TextEdit, экран в цвете)", opening.s * 1000, "мс", 3000)
+        note("редактор: открыть 1 МБ — до первого кадра с текстом в цвете", (on_screen[0] - began) * 1000, "мс", 3000)
         with Clock() as whole:
             wait_until(lambda: colours._revision == document.revision() and not colours._pending, timeout=60)
         note("редактор: 1 МБ — разбор всего текста в фоне", whole.s * 1000, "мс", 10000)
 
         # the middle of the file: its colours when the screen gets there, from the lexing already made
-        body = quick.window.findChild(QQuickItem, "editorText")
+        body = shown(quick, "editorText")
         middle = text.index(f"def total_{text.count('def total_') // 2}(")
         line = text.count("\n", 0, middle)
         with Clock() as scrolled:
@@ -76,7 +94,7 @@ def test_a_megabyte_in_the_editor(qapp):
         wanted = highlighter._style(palette.current().name).style_for_token(Keyword)["color"]
         red, green, blue = (int(wanted[i : i + 2], 16) for i in (0, 2, 4))
         shot = quick.window.grabWindow()
-        corner = quick.window.findChild(QQuickItem, "codeEditor").mapToScene(QPointF(0, 0))  # the screen, not the text
+        corner = shown(quick, "codeEditor").mapToScene(QPointF(0, 0))  # the screen, not the text
 
         def like(x: int, y: int) -> bool:
             pixel = shot.pixelColor(x, y)
@@ -124,6 +142,13 @@ def test_a_megabyte_in_the_editor(qapp):
             document.undo()
         assert app.editor._text().count("total") == replaced
         note("редактор: 1 МБ — отмена «Заменить все»", undoing.s * 1000, "мс", 1000)
+
+        # the draft (14.4): written in the window's thread, at most every DRAFT_MS while typing
+        with Clock() as drafting:
+            app.editor.write_drafts()  # the text taken; the disk's part is the drafts' worker's
+        app.editor.settle()
+        assert list(app.editor.drafts.glob("*.json"))
+        note("редактор: 1 МБ — черновик, доля потока окна (раз в 2 с при печати)", drafting.s * 1000, "мс", 16)
         assert quick.warnings == []
     finally:
         quick.close()

@@ -1,8 +1,9 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// The open file's text, edited (D47, step 14.2): a TextEdit in a Flickable, numbers for the lines on screen only,
-// the cursor's line marked. Its document is the editor's (Editor.attach): Enter keeps the indent, Tab and Shift+Tab
+// A tab's text, edited (D47, steps 14.2, 14.4): a TextEdit in a Flickable, numbers for the lines on screen only,
+// the cursor's line marked; one of these per tab (ProjectView.qml), the shown one visible - each keeps its document
+// and its undo history. Its document is its tab's (Editor.attach): Enter keeps the indent, Tab and Shift+Tab
 // indent the selected lines - done there, one undo step each; Ctrl+Z / Ctrl+Y are the TextEdit's own; Ctrl+S saves
 // through the hub. A pause in typing tells the editor to compare with the saved text («не сохранено»). The colours
 // (app/ui/highlighter.py) are laid on the document's lines from Python: the ones on screen first. Ctrl+F and Ctrl+H:
@@ -10,13 +11,14 @@ import QtQuick.Controls.Basic
 Item {
     id: editor
     objectName: "codeEditor"
+    property string tabKey  // the tab's: its project and path
     readonly property alias body: body
     readonly property real lineHeight: body.lineCount > 0 ? body.contentHeight / body.lineCount : metrics.height
     readonly property real gutterWidth: Math.ceil(metrics.advanceWidth("0") * Math.max(3, String(body.lineCount).length)) + 24
     readonly property int firstLine: Math.max(0, Math.floor((flick.contentY - body.topPadding) / lineHeight))
     readonly property int cursorLine: Math.floor((body.cursorRectangle.y - body.topPadding) / lineHeight)
     readonly property int screenLines: Math.ceil(flick.height / lineHeight) + 1
-    onFirstLineChanged: Editor.screen(firstLine, screenLines)  // the colours of what is on screen first (14.2b)
+    onFirstLineChanged: Editor.screen(tabKey, firstLine, screenLines)  // the colours on screen first (14.2b)
 
     function focusText() { body.forceActiveFocus() }
 
@@ -78,8 +80,9 @@ Item {
         }
 
         Repeater {  // the find bar's matches on screen (14.3), behind the text: a piece of a line each
-            model: Finder.active ? Finder.marks(editor.firstLine, editor.screenLines, body.selectionStart,
-                                                body.selectionEnd, Finder.revision) : []
+            model: editor.visible && Finder.active ? Finder.marks(editor.firstLine, editor.screenLines,
+                                                                  body.selectionStart, body.selectionEnd,
+                                                                  Finder.revision) : []
             delegate: Rectangle {
                 required property var modelData
                 readonly property rect from: body.positionToRectangle(modelData[0])
@@ -110,16 +113,17 @@ Item {
             selectedTextColor: Theme.p.text
             font.family: Theme.monoFont
             font.pixelSize: 13
-            tabStopDistance: metrics.advanceWidth(" ") * (Editor.unit === "\t" ? 4 : Math.max(1, Editor.unit.length))
-            Component.onCompleted: Editor.attach(textDocument)
+            readonly property string unit: Editor.unitOf(editor.tabKey)
+            tabStopDistance: metrics.advanceWidth(" ") * (unit === "\t" ? 4 : Math.max(1, unit.length))
+            Component.onCompleted: Editor.attach(editor.tabKey, textDocument)
             onTextChanged: idle.restart()
             onCursorRectangleChanged: editor.keepInView()
-            onCursorPositionChanged: Editor.locate(cursorPosition)
+            onCursorPositionChanged: Editor.locate(editor.tabKey, cursorPosition)
             Keys.onPressed: (event) => {
                 const ctrl = (event.modifiers & Qt.ControlModifier) !== 0
                 if (ctrl && event.key === Qt.Key_S) {
                     idle.stop()
-                    Editor.check()
+                    Editor.check(editor.tabKey)
                     Editor.save()
                     event.accepted = true
                 } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && !ctrl) {
@@ -156,18 +160,19 @@ Item {
         onClosed: body.forceActiveFocus()
     }
 
-    Timer { id: idle; interval: 300; onTriggered: Editor.check() }
+    Timer { id: idle; interval: 300; onTriggered: Editor.check(editor.tabKey) }
 
     Connections {
         target: Editor
-        function onLoaded(text) {
+        function onLoaded(key, text) {
+            if (key !== editor.tabKey) return
             body.text = text
             body.cursorPosition = 0
             flick.contentX = 0
             flick.contentY = 0
-            Editor.check()
-            body.forceActiveFocus()
+            Editor.check(editor.tabKey)
+            if (editor.visible) body.forceActiveFocus()
         }
-        function onPlaced(at) { body.cursorPosition = Math.min(at, body.length) }
+        function onPlaced(key, at) { if (key === editor.tabKey) body.cursorPosition = Math.min(at, body.length) }
     }
 }

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
-from .. import palette
+from .. import palette, vscode
 from ..hub_client import HubError
 from . import editor, links_text, project_rows, rows
 from .models import TREE_ROLES, RowModel
@@ -326,7 +326,7 @@ class Projects(QObject):
         self.searchChanged.emit()
         self.tree.reset([])
         self._git, self._marks = {}, {}
-        self.closeFile()
+        self.closeView()
         self.projectChanged.emit()
         self.listChanged.emit()
         self.gitChanged.emit()
@@ -335,12 +335,15 @@ class Projects(QObject):
     @Slot(str)
     def openProject(self, project_id: str) -> None:
         project = next((p for p in self.items if p["id"] == project_id), None)
-        if project is None or not self.app.editor.leave(project_id, "", lambda: self.openProject(project_id)):
+        if project is None:
             return
+        if project_id != self.currentId and not self.app.editor.leave(lambda: self.openProject(project_id)):
+            return  # the tabs of the project shown before: unsaved edits asked about first (D47)
         self.current = project
         self.app.settings.setValue("projects/current", project_id)
         self._reset_view()
         self.refresh()
+        self.app.editor.restore(project_id)  # tabs a window that went without closing them left as drafts (14.4)
 
     # ================= the tree =================
 
@@ -464,8 +467,7 @@ class Projects(QObject):
 
     @Slot(str, bool)
     def openFile(self, path: str, diff: bool = False) -> None:
-        if not self.app.editor.leave(self.currentId, path, lambda: self.openFile(path, diff)):
-            return  # unsaved edits of another file: asked first (D47)
+        self.app.editor.show(self.currentId, path)  # its tab, when it has one (14.4): the others keep their edits
         self.app.show_project_view()  # over a session of the project, the file shows (2026-10-29)
         if self._goto is not None and self._goto[0] != path:
             self._goto = None  # a file opened from the tree starts at its top
@@ -530,6 +532,15 @@ class Projects(QObject):
         self.fileChanged.emit()
         self.fileShownChanged.emit()
 
+    @Slot(int)
+    def openInCode(self, line: int) -> None:
+        """«Открыть в VS Code»: the shown file at `line` (the editor's cursor, or the top)."""
+        path = self._file.get("path", "")
+        if not path or not self.current:
+            return
+        if not vscode.open_at(Path(self.current["path"]) / path, line):
+            self.app.show_error("VS Code не найден: нет ни `code` в PATH, ни VS Code в обычных папках установки")
+
     @Slot(bool)
     def showDiff(self, diff: bool) -> None:
         if self._file:
@@ -537,8 +548,31 @@ class Projects(QObject):
 
     @Slot()
     def closeFile(self) -> None:
-        if not self.app.editor.leave(self.currentId, "", self.closeFile):
-            return
+        """«Закрыть файл»: its tab too (with unsaved edits, asked first); the tab beside it shows then, if any."""
+        path = self._file.get("path", "")
+        if path and self.app.editor.has(self.currentId, path):
+            self.closeTab(f"{self.currentId}:{path}")
+        else:
+            self.closeView()
+
+    @Slot(str)
+    def closeTab(self, key: str) -> None:
+        """A tab's ×. When it is the file shown, the tab beside it shows then (or the project's overview)."""
+        path = key.split(":", 1)[1] if ":" in key else ""
+
+        def closed(beside: str) -> None:
+            if self._file.get("path") != path:
+                return
+            if beside:
+                self.openFile(beside, False)
+            else:
+                self.closeView()
+
+        self.app.editor.close(key, closed)
+
+    @Slot()
+    def closeView(self) -> None:
+        """Back to the project's overview; the tabs stay."""
         self._file_gen += 1
         self._file, self._file_data, self._diff_text, self._shown = {}, None, "", {}
         self.fileChanged.emit()
@@ -667,6 +701,7 @@ class Projects(QObject):
     @Slot(str, int)
     def openFileAt(self, path: str, line: int) -> None:
         """Opens the file (or keeps it open) and shows the line."""
+        self.app.editor.show(self.currentId, path)
         self.app.show_project_view()
         self._goto_seq += 1
         self._goto = (path, line)

@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// A question the controller asks (App.question): a title, the text, cancel / confirm. Answers go to App.answer().
+// A question the controller asks (App.question): a title, the text, cancel / confirm - and a third answer between
+// them when it has one («Не сохранять»: App.answerOther()). Answers go to App.answer().
 Popup {
     id: dialog
     objectName: "confirmDialog"
@@ -66,6 +67,29 @@ Popup {
                 contentItem: Text {
                     id: cancelText
                     text: "Отмена"
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+            AbstractButton {
+                id: other
+                objectName: "questionOther"
+                visible: !!App.question.other
+                width: otherText.implicitWidth + 28
+                height: 32
+                hoverEnabled: true
+                onClicked: App.answerOther()
+                background: Rectangle {
+                    radius: 6
+                    color: other.hovered ? Theme.p.item_hover : "transparent"
+                    border.color: Theme.p.hairline_strong
+                }
+                contentItem: Text {
+                    id: otherText
+                    text: App.question.other || ""
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13

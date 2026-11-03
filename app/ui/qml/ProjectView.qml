@@ -971,8 +971,101 @@ Item {
         visible: Projects.currentId !== "" && !!view.file.path
         anchors.fill: parent
 
+        // the editor's tabs (D47, 14.4): the files open for editing, a dot on those with unsaved edits
+        Rectangle {
+            id: tabBar
+            objectName: "editorTabs"
+            width: parent.width
+            height: tabList.count > 0 ? 32 : 0
+            visible: tabList.count > 0
+            color: Theme.p.panel
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.p.hairline }
+            ListView {
+                id: tabList
+                anchors.fill: parent
+                orientation: ListView.Horizontal
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                model: Editor.tabs
+                delegate: Rectangle {
+                    id: tabItem
+                    required property string key
+                    required property string path
+                    required property string name
+                    required property string folder
+                    required property bool dirty
+                    required property bool restored
+                    readonly property bool shown: view.editing && Editor.active === key
+                    objectName: "editorTab"
+                    width: tabRow.implicitWidth + 20
+                    height: tabList.height
+                    color: shown ? Theme.p.code_bg : tabMouse.containsMouse ? Theme.p.item_hover : "transparent"
+                    Rectangle { visible: tabItem.shown; width: parent.width; height: 2; color: Theme.p.accent }
+                    Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.p.hairline }
+                    MouseArea {
+                        id: tabMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        onClicked: (mouse) => {
+                            if (mouse.button === Qt.MiddleButton) Projects.closeTab(tabItem.key)
+                            else Projects.openFile(tabItem.path, false)
+                        }
+                        ToolTip.visible: containsMouse && tabItem.folder !== ""
+                        ToolTip.delay: 800
+                        ToolTip.text: tabItem.folder + "/" + tabItem.name
+                    }
+                    Row {
+                        id: tabRow
+                        x: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 6
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: tabItem.name
+                            color: tabItem.shown ? Theme.p.text : Theme.p.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                            font.italic: tabItem.restored
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: tabItem.restored
+                            text: "восстановлено"
+                            color: Theme.p.warn
+                            font.family: Theme.uiFont
+                            font.pixelSize: 11
+                        }
+                        Item {  // the dot while there are unsaved edits; its × under the mouse
+                            width: 16
+                            height: 16
+                            anchors.verticalCenter: parent.verticalCenter
+                            Rectangle {
+                                anchors.centerIn: parent
+                                visible: tabItem.dirty && !tabMouse.containsMouse && !tabClose.hovered
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: Theme.p.accent
+                            }
+                            IconButton {
+                                id: tabClose
+                                objectName: "closeTab"
+                                anchors.fill: parent
+                                visible: !tabItem.dirty || tabMouse.containsMouse || hovered
+                                iconName: "close"
+                                tip: "Закрыть вкладку"
+                                onClicked: Projects.closeTab(tabItem.key)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Rectangle {
             id: fileHead
+            y: tabBar.height
             width: parent.width
             height: 44
             color: Theme.p.code_head
@@ -982,8 +1075,8 @@ Item {
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "back"
-                tip: "К обзору проекта"
-                onClicked: Projects.closeFile()
+                tip: "К обзору проекта (вкладки остаются)"
+                onClicked: Projects.closeView()
             }
             Column {
                 x: back.x + back.width + 6
@@ -996,6 +1089,8 @@ Item {
                     text: (view.file.folder ? "<font color='" + Theme.p.faint + "'>" + view.file.folder + "/</font>" : "")
                           + (view.file.name || "") + (view.editing && Editor.dirty ? "  <font color='" + Theme.p.accent
                           + "'>● не сохранено</font>" : "")
+                          + (view.editing && Editor.restored ? "  <font color='" + Theme.p.warn
+                          + "'>восстановлено после сбоя</font>" : "")
                     elide: Text.ElideMiddle
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -1088,6 +1183,14 @@ Item {
                     iconName: "copy"
                     tip: "Копировать содержимое"
                     onClicked: Projects.copyFile()
+                }
+                IconButton {
+                    objectName: "openInCode"
+                    visible: !view.file.missing
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "code"
+                    tip: "Открыть в VS Code" + (view.editing ? " на строке курсора" : "")
+                    onClicked: Projects.openInCode(view.editing ? Editor.line : (view.file.gotoLine || 1))
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
@@ -1200,7 +1303,7 @@ Item {
         Rectangle {
             id: conflictBar
             objectName: "conflictBar"
-            y: fileHead.height
+            y: fileHead.y + fileHead.height
             width: parent.width
             height: visible ? 40 : 0
             visible: view.editing && !!Editor.conflict.reason
@@ -1249,13 +1352,17 @@ Item {
             }
         }
 
-        CodeEditor {
-            id: codeEditor
-            y: fileHead.height + conflictBar.height
-            width: parent.width
-            height: parent.height - y - editorStatus.height
-            visible: view.editing
-            onVisibleChanged: if (visible) focusText()
+        Repeater {  // a CodeEditor per tab (14.4): each keeps its document and its undo history while another shows
+            model: Editor.tabs
+            delegate: CodeEditor {
+                required property string key
+                tabKey: key
+                y: fileHead.y + fileHead.height + conflictBar.height
+                width: fileView.width
+                height: fileView.height - y - editorStatus.height
+                visible: view.editing && Editor.active === key
+                onVisibleChanged: if (visible) focusText()
+            }
         }
 
         // the editor's bottom line: where the cursor is, encoding, line ends, indentation
@@ -1323,9 +1430,9 @@ Item {
         CodeView {
             id: code
             objectName: "codeView"
-            y: fileHead.height
+            y: fileHead.y + fileHead.height
             width: parent.width
-            height: parent.height - fileHead.height
+            height: parent.height - fileHead.y - fileHead.height
             visible: !view.editing && (!!view.file.diffMode || (!view.file.binary && !view.file.missing))
             source: Projects.fileShown
             showNumbers: !view.file.diffMode

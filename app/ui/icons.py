@@ -45,6 +45,7 @@ PATHS = {
     "min": '<path d="M7 12h10"/>',
     "max": '<rect x="7" y="7" width="10" height="10" rx="1.5"/>',
     "download": '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+    "code": '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',  # «Открыть в VS Code» (14.4)
 }
 
 NAMES = frozenset(LUCIDE) | frozenset(PATHS)

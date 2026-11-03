@@ -770,6 +770,8 @@ class Controller(QObject):
     def shutdown(self) -> None:
         if self._drafts_timer.isActive():
             self._save_drafts()
+        self.editor.write_drafts()  # an edit of the last moments: on the disk, for the next start (14.4)
+        self.editor.settle()
         if self.events is not None:
             self.events.stop()
         self.terminals.shutdown()
@@ -1553,18 +1555,27 @@ class Controller(QObject):
         if conversation_id:
             self._call(lambda: self.client.cancel(conversation_id))
 
-    def _ask(self, title: str, text: str, confirm: str, decide) -> None:
-        self._question = {"title": title, "text": text, "confirm": confirm}
+    def _ask(self, title: str, text: str, confirm: str, decide, *, other: str = "") -> None:
+        """`decide(True)` on `confirm`, `decide(False)` on «Отмена»; `other`: a third answer between them
+        («Не сохранять»), `decide(None)`."""
+        self._question = {"title": title, "text": text, "confirm": confirm, "other": other}
         self._pending = decide
         self.questionChanged.emit()
 
     @Slot(bool)
     def answer(self, yes: bool) -> None:
+        self._answered(yes)
+
+    @Slot()
+    def answerOther(self) -> None:
+        self._answered(None)
+
+    def _answered(self, choice: bool | None) -> None:
         decide, self._pending = self._pending, None
         self._question = {}
         self.questionChanged.emit()
         if decide is not None:
-            decide(yes)
+            decide(choice)
 
     # ================= events from the hub =================
 

@@ -16,6 +16,7 @@ own order and pace instead of its pass over the whole document at once.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
 from typing import TYPE_CHECKING, Any
@@ -114,10 +115,21 @@ class Highlighter(QObject):
         self.stop()
         self._document = None
 
+    def detach(self) -> None:
+        """Its tab closed (14.4): the document let go, its signals too - before either of them goes."""
+        if self._document is not None:
+            with contextlib.suppress(RuntimeError, TypeError):  # gone already
+                self._document.contentsChange.disconnect(self._edited)
+                self._document.destroyed.disconnect(self._gone)
+        self._gone()
+
     def start(self, path: str) -> None:
-        """A file opened in the editor: its lexer, and its colours anew."""
+        """A file opened in the editor: its lexer, the screen's reach coloured at once, the whole text lexed after
+        RELEX_MS - once the first frame is out: the lexing holds the GIL that QML's bindings into Python wait for, and
+        begun at once it held a 1 MB file's first frame back 0.6 s (14.4)."""
         self._lexer = lexer_for(path)
-        self.again()
+        self.again(lex=False)
+        self._lex_timer.start()
 
     def stop(self) -> None:
         self._lexer = None
@@ -126,7 +138,7 @@ class Highlighter(QObject):
         self._lex_timer.stop()
         self._lay_timer.stop()
 
-    def again(self) -> None:
+    def again(self, lex: bool = True) -> None:
         """Every line coloured anew (a file opened, the theme changed)."""
         if self._document is None:
             return
@@ -136,7 +148,8 @@ class Highlighter(QObject):
             block = block.next()
         self._formats, self._theme, self._lines, self._marks = {}, "", [], []
         self._at_once()
-        self.relex()
+        if lex:
+            self.relex()
 
     def _reach(self) -> tuple[int, int]:
         """The lines that get their colours: those on screen and AROUND them."""
