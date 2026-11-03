@@ -242,7 +242,7 @@ def ago(iso: str, now: datetime | None = None) -> str:
     return when.astimezone().strftime("%d.%m.%Y")
 
 
-TOOL_WORDS = {"edit_file": "правка", "write_file": "запись"}
+TOOL_WORDS = {"edit_file": "правка", "write_file": "запись", "save": "сохранено"}  # save: the user's own (D47)
 RULE_TOOLS = {
     "edit_file": "править файлы",
     "write_file": "записывать файлы",
@@ -253,13 +253,14 @@ RULE_TOOLS = {
 
 
 def write_rows(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A project's model writes for the overview: path, what, which chat, when, undone or not."""
+    """A project's writes for the overview - the models' and the user's own saves: path, what, which chat or «вы»,
+    when, undone or not."""
     return [{
         "id": c["id"],
         "path": c["path"],
         "note": " · ".join(s for s in (
             "создан" if c.get("before_hash") is None else TOOL_WORDS.get(c.get("tool", ""), c.get("tool", "")),
-            f"чат «{c['chat']}»" if c.get("chat") else "",
+            f"чат «{c['chat']}»" if c.get("chat") else "вы" if c.get("tool") == "save" else "",
             local_time(c.get("created_at", "")),
         ) if s),
         "reverted": bool(c.get("reverted_at")),

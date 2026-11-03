@@ -6,6 +6,10 @@ before and after, by hash, the contents kept once each in data/snapshots. Any ch
 still as the change left it (or forced). Only inside the chat's projects, never a secret file or git's own folder,
 UTF-8 text only. A write is whole or not at all (beside the file, then in its place), and an existing file keeps
 its byte order mark and its line ends (D46). Events: file.changed, file.reverted - both in the feed.
+
+The user's own saves from the window's editor take the same way (D47, step 14.1; D29: one way of writing): checked
+against the version the editing began from, written in the file's encoding (cp1251 and UTF-16 too), kept as a
+change of the tool `save` - «вы» in «Изменения» - and undone like a model's; a secret file's content is not kept.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ from .secret_filter import is_secret_file
 
 MAX_BYTES = 2 * 1024 * 1024
 DIFF_LINES = 400
+SAVE_ENCODINGS = ("utf-8", "utf-8 BOM", "cp1251", "utf-16")  # as projects.read_file names them
+SAVE_TOOL = "save"  # a change the user made in the window's editor (D47): «вы» in «Изменения»
 
 WRITE_TOOLS: list[dict[str, Any]] = [
     {
@@ -177,6 +183,87 @@ def write_atomic(target: Path, data: bytes) -> None:
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
+
+
+# --- the user's own save, from the window's editor (D47, step 14.1) ---
+
+
+class Conflict(WriteError):
+    """The file on disk is not the one the editing began from: `reason` - changed, gone or exists."""
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def _decoded(data: bytes, encoding: str) -> str:
+    """A file's bytes as the editor showed them (projects.read_file's names for its encodings)."""
+    if encoding == "utf-16":
+        return data.decode("utf-16", "replace")
+    return data.removeprefix(b"\xef\xbb\xbf").decode("cp1251" if encoding == "cp1251" else "utf-8", "replace")
+
+
+def encoded(text: str, encoding: str, before: bytes | None) -> bytes:
+    """The editor's text as the file has it (D47, step 14.1): the line end most of its lines had (a new file \\n), its
+    byte order mark, its encoding - cp1251 stays cp1251, UTF-16 keeps its byte order. A character the encoding has no
+    place for is said, not lost."""
+    if encoding not in SAVE_ENCODINGS:
+        raise WriteError(f"unknown encoding {encoding!r}: {', '.join(SAVE_ENCODINGS)}")
+    text = text.replace("\r\n", "\n").removeprefix("﻿")
+    if before is not None and line_end(_decoded(before, encoding)) == "\r\n":
+        text = _crlf(text)
+    if encoding == "utf-16":
+        big = before is not None and before.startswith(b"\xfe\xff")
+        return (b"\xfe\xff" + text.encode("utf-16-be")) if big else (b"\xff\xfe" + text.encode("utf-16-le"))
+    if encoding == "cp1251":
+        try:
+            return text.encode("cp1251")
+        except UnicodeEncodeError as exc:
+            line = text.count("\n", 0, exc.start) + 1
+            raise WriteError(f"«{text[exc.start]}» (line {line}) has no place in cp1251: save the file as UTF-8, "
+                             "or leave the character out") from exc  # fmt: skip
+    return (b"\xef\xbb\xbf" if encoding == "utf-8 BOM" else b"") + text.encode("utf-8")
+
+
+def plan_save(project: Project, rel: str, text: str, encoding: str, base: str) -> Planned:
+    """The user's save worked out: refused when the file on disk is not the version `base` (its sha256; "" - a new
+    file) - another program, a model or a command changed it meanwhile, and the user decides (Conflict). The user may
+    save any file of the project, a secret one too; never the hub's own data or git's own folder."""
+    if encoding not in SAVE_ENCODINGS:  # the request itself, before the disk is looked at
+        raise WriteError(f"unknown encoding {encoding!r}: {', '.join(SAVE_ENCODINGS)}")
+    try:
+        target = resolve_inside(project.root, rel)
+    except ProjectError as exc:
+        raise WriteError(str(exc)) from exc
+    shown = target.relative_to(project.root).as_posix()
+    if not shown or target.is_dir():
+        raise WriteError(f"{rel} is a folder, not a file")
+    if shown == ".git" or shown.startswith(".git/"):
+        raise WriteError("git's own folder is not edited here")
+    before = _current(target)
+    if before is None and base:
+        raise Conflict(f"{shown} is gone from the disk since it was opened", "gone")
+    if before is not None and digest(before) != base:
+        raise Conflict(f"{shown} has changed on the disk since it was opened" if base else f"{shown} exists already",
+                       "changed" if base else "exists")  # fmt: skip
+    after = encoded(text, encoding, before)
+    if len(after) > MAX_BYTES:
+        raise WriteError(f"{shown} would be larger than 2 MB: the hub does not write it")
+    return Planned(shown, target, before, after)
+
+
+def save(planned: Planned, folder: Path) -> tuple[str | None, str] | None:
+    """Writes the user's save (whole or not at all) and keeps both versions for «Изменения»; None for a secret file:
+    its content is never kept (D10) - another client may read a change's diff - so there is no change to undo."""
+    if is_secret_file(planned.path) or linked_secret(planned.target):
+        if _current(planned.target) != planned.before:
+            raise Conflict(f"{planned.path} has changed on the disk since it was opened", "changed")
+        write_atomic(planned.target, planned.after)
+        return None
+    try:
+        return apply(planned, folder)
+    except WriteError as exc:
+        raise Conflict(str(exc), "changed") from exc
 
 
 def plan(tool: str, project: Project, args: dict[str, Any]) -> Planned:

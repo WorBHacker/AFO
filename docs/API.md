@@ -287,6 +287,7 @@
 | DELETE | `/v1/projects/{project_id}` | только окно | Forgets the project; its folder is not touched. |  |
 | GET | `/v1/projects/{project_id}/tree` | токен | `project_tree()` | `?path: str = ''` |
 | GET | `/v1/projects/{project_id}/file` | токен | `project_file()` | `?path: str` |
+| PUT | `/v1/projects/{project_id}/file` | только окно | The user's save from the window's editor (D47, step 14.1): the window's alone. Written whole, in the file's own encoding, BOM and line ends, when the file is still the version the editing began from; else 409 with what is there now (`reason`: changed, gone, exists). Kept in «Изменения» as the user's (`save`), to undo like a model's change; a secret file's content is not kept. `file.saved` goes out. | тело `{path: str, text: str, encoding: str = 'utf-8', base: str = ''}` |
 | GET | `/v1/projects/{project_id}/git` | токен | `project_git()` | `?log: int = 20` |
 | GET | `/v1/projects/{project_id}/search` | токен | Lines that match `q` (text, or a regular expression with `regex`), grouped by file (hub/search.py). | `?q: str`<br>`?regex: bool = False`<br>`?case: str = 'smart'`<br>`?glob: str = ''`<br>`?limit: int = 500` |
 | GET | `/v1/projects/{project_id}/files` | токен | Files whose path matches `q`, best first - for picking a file by a few letters (hub/search.py). | `?q: str = ''`<br>`?limit: int = 20` |
@@ -517,6 +518,7 @@ conversation's text, an approval or a terminal's output.
 | `editor.focus` | нет | — | hub/editor.py |
 | `file.changed` | да | `change`, `project_id` | hub/chat.py |
 | `file.reverted` | да | `change`, `project_id` | hub/api/changes.py |
+| `file.saved` | да | `project_id` | hub/api/projects.py |
 | `git.head` | да | `project_id` | hub/watch.py |
 | `goal.check` | да | `conversation_id`, `goal_id`, `check` | hub/goals.py |
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |

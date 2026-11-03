@@ -2,7 +2,8 @@
 
 Reading (tree, file, git) is open to every client with a token - to one other than the window as MCP has it (D32,
 D46): a cloud client sees only the projects that allow the cloud, a secret file is not given, text goes through the
-secret filter. Adding, changing and removing projects is the app's. File and git work runs on worker threads, so a
+secret filter. Adding, changing and removing projects is the app's, and so is saving a file - the user's editor
+(D47, step 14.1). File and git work runs on worker threads, so a
 slow `git` never holds up the hub. A project is watched from the moment it is added (hub/watch.py) until it is
 removed.
 """
@@ -14,9 +15,9 @@ import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .. import projects, search, symbols
+from .. import changes, projects, search, symbols
 from ..auth import APP_CLIENT, Client
 from ..projects import ProjectError
 from ..secret_filter import clean
@@ -127,6 +128,50 @@ async def project_file(
         raise HTTPException(status_code=403, detail=f"{path} holds secrets: only the window shows it")
     found = await _off_loop(projects.read_file, project.root, path)
     return found if client.name == APP_CLIENT else {**found, "text": clean(found["text"])}
+
+
+class Saved(BaseModel):
+    path: str
+    text: str = Field(max_length=changes.MAX_BYTES)
+    encoding: str = "utf-8"  # as GET .../file named it: utf-8, utf-8 BOM, cp1251, utf-16
+    base: str = ""  # sha256 of the version the editing began from (GET .../file); "" - a new file
+
+
+@router.put("/projects/{project_id}/file")
+async def save_file(
+    project_id: str, body: Saved, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    """The user's save from the window's editor (D47, step 14.1): the window's alone. Written whole, in the file's
+    own encoding, BOM and line ends, when the file is still the version the editing began from; else 409 with what
+    is there now (`reason`: changed, gone, exists). Kept in «Изменения» as the user's (`save`), to undo like a
+    model's change; a secret file's content is not kept. `file.saved` goes out."""
+    state = request.app.state
+    project = await _project(request, project_id, client)
+    folder = state.settings.paths.snapshots
+
+    def write() -> tuple[changes.Planned, tuple[str | None, str] | None]:
+        planned = changes.plan_save(project, body.path, body.text, body.encoding, body.base)
+        return planned, changes.save(planned, folder)
+
+    try:
+        planned, hashes = await asyncio.to_thread(write)
+    except changes.Conflict as exc:
+        try:
+            now = await asyncio.to_thread(projects.read_file, project.root, body.path)
+        except ProjectError:
+            now = None
+        raise HTTPException(status_code=409, detail={"reason": exc.reason, "message": str(exc), "file": now}) from exc
+    except changes.WriteError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    change = None
+    if hashes is not None:
+        change = await state.db.acall(lambda conn: changes.record(conn, project.id, planned, hashes, changes.SAVE_TOOL,
+                                                                  None, None))  # fmt: skip
+    saved = await _off_loop(projects.read_file, project.root, planned.path)
+    result = {"path": planned.path, "sha256": saved["sha256"], "size": saved["size"], "encoding": saved["encoding"],
+              "eol": saved["eol"], "created": planned.before is None, "change": change}  # fmt: skip
+    await state.bus.publish("file.saved", {"project_id": project.id, **result}, project_id=project.id)
+    return result
 
 
 @router.get("/projects/{project_id}/git")

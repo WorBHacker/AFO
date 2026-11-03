@@ -3803,6 +3803,8 @@ def test_write_rows_rules_and_feed():
     assert row["path"] == "src/app.py" and row["note"].startswith("правка · чат «Первый» · ") and not row["reverted"]
     created = project_rows.write_rows([{**CHANGE, "before_hash": None, "chat": None, "reverted_at": "x"}])[0]
     assert created["note"].startswith("создан · ") and created["reverted"]
+    mine = project_rows.write_rows([{**CHANGE, "tool": "save", "chat": None, "conversation_id": None}])[0]
+    assert mine["note"].startswith("сохранено · вы · ")  # the user's own save in the editor (D47, 14.1)
     assert project_rows.rule_text("edit_file") == "править файлы"
     assert project_rows.rule_text("Bash:pytest -q") == "команда «pytest -q»"
     assert rows.tool_label("edit_file", {"project": "p", "path": "a.py"}) == "Правлю a.py"
