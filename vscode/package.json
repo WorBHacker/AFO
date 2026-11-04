@@ -4,7 +4,7 @@
   "description": "Tells the AFO hub on this computer what you do in VS Code: the open file and the commands run in your terminals.",
   "version": "0.1.0",
   "publisher": "localchat",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-or-later",
   "private": true,
   "engines": {
     "vscode": "^1.93.0"

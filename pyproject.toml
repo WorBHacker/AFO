@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]  # 77: the license as an SPDX expression
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "localchat"
 version = "0.0.1"
 description = "Local AI ecosystem: a hub for projects, terminals, models and agents, plus a light Qt app"
 readme = "README.md"
+license = "GPL-3.0-or-later"  # the user's word 2026-11-04
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 dependencies = []
 

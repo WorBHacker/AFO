@@ -34,6 +34,7 @@ EMBED = f"https://www.python.org/ftp/python/{PYTHON}/python-{PYTHON}-embed-amd64
 EMBED_SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15"  # python.org's list of the files
 EXTRAS = ("hub", "app")  # the program's libraries; `dev` (ruff, pytest, pip-audit) stays out
 CODE = ("hub", "app", "common")
+FILES = ("LICENSE",)  # beside the code in the program's folder
 
 
 class BuildError(Exception):
@@ -123,6 +124,8 @@ def folder(out: Path = BUILD) -> Path:
     print("AFO's code", flush=True)
     for part in CODE:
         shutil.copytree(ROOT / part, program / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for file in FILES:
+        shutil.copy2(ROOT / file, program / file)
     (program / "afo.ico").write_bytes(_icon())
     # compiled here, so the first start need not do it
     _run([str(python / "python.exe"), "-m", "compileall", "-q", "-j", "0", *(str(program / part) for part in CODE),
