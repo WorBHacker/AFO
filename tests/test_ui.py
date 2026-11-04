@@ -300,6 +300,21 @@ class FakeClient:
         self.password = None  # the connections' (D13)
         self.started = {"login": False, "llama_swap": True, "llama_swap_found": True, "llama_swap_script": "x.cmd"}
         self.languages = []  # what the window told the hub (10.5)
+        self.release_state = {
+            "current": "0.1.0",
+            "latest": "",
+            "newer": False,
+            "size": 0,
+            "url": "",
+            "notes": "",
+            "published": "",
+            "auto": True,
+            "installed": True,
+            "checked": "",
+            "error": "",
+            "job": {"status": "idle"},
+        }  # AFO's own updates (10.4d)
+        self.release_calls = []
         self.ticket = ""
         self.chosen = []
         self.project_list = [dict(PROJECT)]
@@ -1331,6 +1346,32 @@ class FakeClient:
         self.started.update(change)
         return dict(self.started)
 
+    def release(self):
+        return json.loads(json.dumps(self.release_state))
+
+    def release_check(self):
+        self.release_calls.append("check")
+        return self.release()
+
+    def release_download(self):
+        self.release_calls.append("download")
+        self.release_state["job"] = {"status": "downloading", "version": "0.2.0", "done": 0, "total": 88_000_000}
+        return self.release()
+
+    def release_cancel(self):
+        self.release_calls.append("cancel")
+        return self.release()
+
+    def release_install(self):
+        self.release_calls.append("install")
+        self.release_state["job"] = {**self.release_state["job"], "status": "installing"}
+        return self.release()
+
+    def set_release_auto(self, on):
+        self.release_calls.append(("auto", on))
+        self.release_state["auto"] = on
+        return self.release()
+
     def set_language(self, code):
         self.languages.append(code)
         return {"language": code}
@@ -1793,6 +1834,50 @@ def test_the_language_switch_keeps_the_choice_tells_the_hub_and_opens_the_window
     assert again == [] and app.client.languages == ["ru"]  # the same language, or none AFO speaks: nothing
     app.setLanguage("en")
     assert app.settings.value(LANGUAGE_KEY) == "en" and app.client.languages == ["ru", "en"] and again == [True]
+
+
+def test_afos_own_update_from_the_settings(app):
+    """Settings → «О программе» (10.4d): a newer AFO said once in the status line, downloaded on a click, installed
+    after a question - the window closes and opens again on the new version; a checkout is updated with git."""
+    view = app.release_view
+    assert view.text == "AFO 0.1.0" and not view.canDownload and not view.canInstall and view.auto
+    newer = {
+        "latest": "0.2.0",
+        "newer": True,
+        "size": 88_253_434,
+        "checked": "2026-11-05T10:00:00Z",
+        "url": "https://github.com/WorBHacker/AFO/releases/tag/v0.2.0",
+    }
+    app.client.release_state.update(newer)
+    view.check()
+    wait_until(lambda: view.canDownload)
+    assert app.client.release_calls == ["check"] and view.text == "Есть AFO 0.2.0 (84,2 МБ) — у вас 0.1.0"
+    assert view.notesUrl.endswith("/v0.2.0") and "0.2.0" in app._flash  # said once, in the status line
+    app._set_flash("")
+    view.load()
+    wait_until(lambda: not app.bg.busy)
+    assert app._flash == ""  # the same version is not said again
+    view.download()
+    wait_until(lambda: view.busy)
+    assert view.text.startswith("Скачивается AFO 0.2.0") and not view.canDownload
+    send(app, "release.changed", {"job": {"status": "downloading", "version": "0.2.0", "done": 44_000_000,
+                                          "total": 88_000_000}})  # fmt: skip
+    assert view.progress == 0.5
+    ready = {"status": "ready", "version": "0.2.0", "done": 88_000_000, "total": 88_000_000, "file": "x.exe"}
+    app.client.release_state["job"] = ready
+    send(app, "release.changed", {"job": ready})
+    wait_until(lambda: view.canInstall)
+    view.install()
+    assert app.question["confirm"] == "Установить" and "0.2.0" in app.question["title"]
+    app.answer(True)
+    wait_until(lambda: "install" in app.client.release_calls)
+    view.setAuto(False)
+    wait_until(lambda: ("auto", False) in app.client.release_calls)
+    # a checkout: the newer version is said, the installer is not offered
+    app.client.release_state.update(installed=False, job={"status": "idle"})
+    view.load()
+    wait_until(lambda: not view.canInstall and "git pull" in view.note)
+    assert not view.canDownload
 
 
 def test_theme_switch_rerenders_the_html(app):

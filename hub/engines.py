@@ -58,12 +58,16 @@ class EngineError(Exception):
     """A build cannot be found, fetched or unpacked; the message is for the window."""
 
 
-async def _releases(http: httpx.AsyncClient, repo: str, path: str = "releases?per_page=30") -> Any:
+async def github(http: httpx.AsyncClient, repo: str, path: str = "releases?per_page=30", *,
+                 missing_ok: bool = False) -> Any:  # fmt: skip
+    """GitHub's answer about a repository (its releases); `missing_ok` - None when there is none (404)."""
     try:
         wanted = {"Accept": "application/vnd.github+json", **hf.headers()}
         response = await http.get(f"{github_api()}/repos/{repo}/{path}", headers=wanted)
     except httpx.HTTPError as exc:
         raise EngineError(tr("нет связи с GitHub ({error})", error=exc.__class__.__name__)) from exc
+    if response.status_code == 404 and missing_ok:
+        return None
     if response.status_code != 200:
         if response.status_code == 403:
             raise EngineError(tr("GitHub ответил {status} — слишком много запросов, попробуйте через час",
@@ -116,14 +120,14 @@ def pick_llama_swap(release: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def llama_cpp_release(http: httpx.AsyncClient, build: str) -> dict[str, Any]:
-    found = pick_llama_cpp(await _releases(http, LLAMA_CPP), build)
+    found = pick_llama_cpp(await github(http, LLAMA_CPP), build)
     if found is None:
         raise EngineError(tr("в последних выпусках llama.cpp нет сборки {build} для Windows", build=build))
     return found
 
 
 async def llama_swap_release(http: httpx.AsyncClient) -> dict[str, Any]:
-    found = pick_llama_swap(await _releases(http, LLAMA_SWAP, "releases/latest"))
+    found = pick_llama_swap(await github(http, LLAMA_SWAP, "releases/latest"))
     if found is None:
         raise EngineError(tr("в последнем выпуске llama-swap нет архива для Windows"))
     return found

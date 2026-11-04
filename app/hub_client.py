@@ -592,6 +592,28 @@ class HubClient:
     def autostart(self) -> dict:
         return self._call("GET", "/v1/autostart")
 
+    # --- AFO's own updates (10.4d) ---
+
+    def release(self) -> dict:
+        """Which AFO this is, the newest on GitHub, and the installer's download: {current, latest, newer, job…}."""
+        return self._call("GET", "/v1/release")
+
+    def release_check(self) -> dict:
+        return self._call("POST", "/v1/release/check")
+
+    def release_download(self) -> dict:
+        return self._call("POST", "/v1/release/download")
+
+    def release_cancel(self) -> dict:
+        return self._call("POST", "/v1/release/cancel")
+
+    def release_install(self) -> dict:
+        """The installer runs on its own: it closes the hub and this window and opens the window again."""
+        return self._call("POST", "/v1/release/install")
+
+    def set_release_auto(self, on: bool) -> dict:
+        return self._call("PUT", "/v1/release", {"auto": on})
+
     def set_language(self, code: str) -> dict:
         """The language of what the hub writes for people: the window's (10.5)."""
         return self._call("PUT", "/v1/language", {"language": code})

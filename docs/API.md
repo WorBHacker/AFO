@@ -116,6 +116,19 @@
 | POST | `/v1/setup/update` | только окно | `update()` |  |
 | POST | `/v1/setup/engine/cancel` | только окно | `cancel()` |  |
 
+### release
+
+/v1/release - AFO's own updates (step 10.4d): the newest release on GitHub, its installer's download and its run over the installed program. The desktop app only.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/release` | только окно | `get_release()` |  |
+| PUT | `/v1/release` | только окно | `set_release()` | тело `{auto: bool}` |
+| POST | `/v1/release/check` | только окно | `check()` |  |
+| POST | `/v1/release/download` | только окно | `download()` |  |
+| POST | `/v1/release/cancel` | только окно | `cancel()` |  |
+| POST | `/v1/release/install` | только окно | The installer runs on its own: it stops this hub and the window, and opens the window again when done. |  |
+
 ### support
 
 /v1/support - «Проверить систему» and the logs for support (stage 10.6, D37; hub/diagnostics.py), and what the hub keeps on disk with its limits (D30, hub/retention.py). The desktop app only: the check reads the computer, the report gathers its logs.
@@ -578,6 +591,8 @@ conversation's text, an approval or a terminal's output.
 | `proving.deleted` | да | `exam_id`, `run_id` | hub/proving.py |
 | `proving.exam` | да | `exam` | hub/proving.py |
 | `proving.run` | да | `run` | hub/proving.py |
+| `release.changed` | да | `job` | hub/release.py |
+| `release.updated` | да | `version`, `from` | hub/release.py |
 | `rules.changed` | нет | `project_id` | hub/api/changes.py |
 | `run.answered` | да | `run_id`, `id`, `by` | hub/autonomous.py |
 | `run.finished` | да | `run` | hub/agents.py |

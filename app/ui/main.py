@@ -111,6 +111,7 @@ class QuickApp:
         context.setContextProperty("Proving", self.controller.proving_view)
         context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Setup", self.controller.setup_view)
+        context.setContextProperty("Release", self.controller.release_view)
         context.setContextProperty("Check", self.controller.check_view)
         context.setContextProperty("Transfer", self.controller.transfer_view)
         context.setContextProperty("Editor", self.controller.editor)

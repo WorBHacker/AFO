@@ -47,6 +47,7 @@ from .models import RowModel
 from .programs import Programs
 from .projects import Projects
 from .proving_view import ProvingView
+from .release_view import ReleaseView
 from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
 from .setup_view import SetupView
@@ -250,6 +251,7 @@ class Controller(QObject):
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
         self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
         self.setup_view = SetupView(self)  # the first-run wizard (10.2)
+        self.release_view = ReleaseView(self)  # AFO's own updates (10.4d)
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.transfer_view = TransferView(self)  # all the settings into a file and back (D46, 13.10)
         self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
@@ -657,6 +659,7 @@ class Controller(QObject):
         # behind the other calls (4 threads), over whatever the user has started doing by then (2026-10-28)
         self.setup_view.load()
         self.load_models()
+        self.release_view.load()
         self.load_conversations()
         self.refresh_status()
         self.refresh_usage()
@@ -1728,6 +1731,8 @@ class Controller(QObject):
             self.install_view.on_event(kind, payload)
         elif kind.startswith("setup."):
             self.setup_view.on_event(kind, payload)
+        elif kind.startswith("release."):
+            self.release_view.on_event(kind, payload)
         elif kind.startswith("sandbox."):
             self.sandbox_view.on_event(kind, payload)
         elif kind.startswith("goal."):

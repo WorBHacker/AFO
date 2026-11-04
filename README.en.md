@@ -18,6 +18,10 @@ administrator rights needed. The installer is not signed yet, so Windows shows �
 “More info” → “Run anyway”. Windows 10 or 11, 64-bit. Uninstall in Settings → Apps → Installed apps; your data and
 downloaded models stay unless you ask to delete them.
 
+Updates: Settings → About. AFO looks on GitHub twice a day for a newer version (you can turn that off), downloads
+the installer on a click (checking its sha256) and, after asking, installs it over itself: the window closes and
+opens again on the new version, your data and models stay. A checkout of the code is updated with `git pull`.
+
 On a computer with no local models yet, the window opens the setup wizard by itself: it shows the graphics card and
 memory, downloads a suitable build of llama.cpp and llama-swap from GitHub (checking their sha256), starts them and
 offers a first model for chat, code and images. Open it again with Settings → Setup wizard….

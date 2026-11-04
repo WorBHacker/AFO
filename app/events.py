@@ -31,6 +31,7 @@ TOPICS = [
     "proving.*",  # the proving ground and the models' exam (D45)
     "install.*",
     "setup.*",
+    "release.*",  # AFO's own updates (10.4d)
     "system.*",
     "secrets.*",
     "connections.*",

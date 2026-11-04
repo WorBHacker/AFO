@@ -45,6 +45,7 @@ from .api import (
     programs,
     projects,
     proving,
+    release,
     sandbox,
     schedules,
     setup,
@@ -83,6 +84,7 @@ from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import keep_private, list_projects, set_path
 from .proving import ProvingGround
+from .release import Releases
 from .retention import Keeper
 from .ripgrep import Fetcher
 from .sandbox import orphans as sandbox_orphans
@@ -171,6 +173,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             status=lambda: app.state.status.latest,
         )  # local models (10.1, D37)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
+        app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
         )  # the first-run wizard (10.2)
@@ -207,6 +210,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        await app.state.releases.start()  # says how the last update went, then checks now and then
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
@@ -251,6 +255,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.scheduler.stop()
             await app.state.installer.stop()
             await app.state.setup.stop()
+            await app.state.releases.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -276,6 +281,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(llama.router)
     app.include_router(install.router)
     app.include_router(setup.router)
+    app.include_router(release.router)
     app.include_router(support.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)

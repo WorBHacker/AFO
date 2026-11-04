@@ -51,7 +51,7 @@ def pick(release: dict[str, Any]) -> dict[str, Any] | None:
 
 async def latest(http: httpx.AsyncClient) -> dict[str, Any]:
     """The latest release's Windows build, its sha256 known."""
-    found = pick(await engines._releases(http, REPO, "releases/latest"))
+    found = pick(await engines.github(http, REPO, "releases/latest"))
     if found is None:
         raise EngineError(tr("в последнем выпуске ripgrep нет сборки для Windows"))
     if found["asset"]["sha256"] is None and found["sums"]:

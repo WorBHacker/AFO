@@ -89,6 +89,8 @@ Root: HKCU; Subkey: "Software\AFO"; ValueType: string; ValueName: "Language"; Va
 
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: "-m app"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AFO}"; Flags: postinstall nowait skipifsilent
+; an update AFO itself started (hub/release.py, /UPDATE=1) is silent: the window opens again on the new version
+Filename: "{app}\python\pythonw.exe"; Parameters: "-m app"; WorkingDir: "{app}"; Flags: nowait; Check: IsUpdate
 
 [UninstallDelete]
 ; what the program's Python wrote beside its files (compiled modules, the libraries' caches)
@@ -108,6 +110,12 @@ begin
   Python := ExpandConstant('{app}\python\python.exe');
   if FileExists(Python) then
     Exec(Python, '-m hub stop --program', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code);
+end;
+
+// AFO's own update (hub/release.py) runs the installer with /VERYSILENT /UPDATE=1
+function IsUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
