@@ -158,8 +158,9 @@ def test_pause_steer_resume_and_clear(hub, repo):  # noqa: F811
     assert hub.post(f"{url}/steer", json={"text": "Только в папке src"}).json()["text"] == "Только в папке src"
     assert [s["text"] for s in goal(hub, conv)["steering"]] == ["Только в папке src"]
     worker.gate.set()
-    held = settled(hub, conv, "paused")
-    assert held["goal"]["turns_used"] == 1 and held["checks"] == []  # the turn counted; no check, no next turn
+    # the chat is free a moment before the goal counts the turn (hub/chat.py: the run ends, then turn_ended)
+    held = wait(lambda: (g := settled(hub, conv, "paused"))["goal"]["turns_used"] == 1 and g)
+    assert held["checks"] == []  # the turn counted; no check, no next turn
     assert len(worker.prompts) == 1
     worker.gate.clear()
     assert hub.post(f"{url}/resume").json()["goal"]["status"] == "active"
