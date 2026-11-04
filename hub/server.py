@@ -53,6 +53,7 @@ from .api import (
     support,
     system,
     terminals,
+    tuning,
 )
 from .api import (
     autostart as autostart_api,
@@ -97,6 +98,7 @@ from .setup import Setup
 from .system_status import StatusMonitor
 from .telegram import TelegramBot
 from .terminals import TerminalManager
+from .tuning import Tuner
 from .watch import ProjectWatcher
 
 log = logging.getLogger("hub")
@@ -177,10 +179,14 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         )  # local models (10.1, D37)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
+        # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
+        app.state.tuner = Tuner(db, bus, app.state.chat, url=settings.llama_swap_url, space=app.state.installer.space)
+        app.state.installer.on_done = lambda model_id: app.state.tuner.request(model_id, auto=True)
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
         )  # the first-run wizard (10.2)
+        app.state.setup.on_updated = lambda: app.state.tuner.request_all(auto=True)  # a newer llama.cpp: measured anew
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
@@ -215,6 +221,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
         await app.state.scanner.start()  # what the last search found
+        await app.state.tuner.start()
         await app.state.releases.start()  # says how the last update went, then checks now and then
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
@@ -262,6 +269,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.setup.stop()
             await app.state.releases.stop()
             await app.state.scanner.stop()
+            await app.state.tuner.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()
@@ -288,6 +296,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(install.router)
     app.include_router(setup.router)
     app.include_router(release.router)
+    app.include_router(tuning.router)
     app.include_router(support.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)

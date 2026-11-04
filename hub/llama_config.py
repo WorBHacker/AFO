@@ -43,9 +43,14 @@ FLAGS = {
     "cache_k": ("-ctk", "--cache-type-k"),
     "cache_v": ("-ctv", "--cache-type-v"),
     "parallel": ("-np", "--parallel"),
+    "batch": ("-b", "--batch-size"),  # these four: what the tuning by measurement sets (15.2)
+    "ubatch": ("-ub", "--ubatch-size"),
+    "threads": ("-t", "--threads"),
+    "n_cpu_moe": ("-ncmoe", "--n-cpu-moe"),
     "mmproj": ("--mmproj",),
     "model": ("-m", "--model"),
 }
+COUNTS = {"batch": (32, 65536), "ubatch": (32, 65536), "threads": (1, 512), "n_cpu_moe": (1, 999)}  # 0: llama.cpp's
 CACHE_TYPES = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0")
 _TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
 _MODEL_KEY = re.compile(r'^  (?:"([^"]+)"|\'([^\']+)\'|([^\s:#][^:]*)):\s*(?:#.*)?$')
@@ -210,6 +215,12 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
             "flash_attn": value("flash_attn") or "auto",
             "cache_type": value("cache_k") or "f16",
             "parallel": int(value("parallel") or 1),
+            # 0: not in the command - llama.cpp's own (batch 2048, ubatch 512, threads by the processor, no experts on
+            # the processor)
+            "batch": int(value("batch") or 0),
+            "ubatch": int(value("ubatch") or 0),
+            "threads": int(value("threads") or 0),
+            "n_cpu_moe": int(value("n_cpu_moe") or 0),
         })  # fmt: skip
     return view
 
@@ -217,7 +228,7 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
 def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, Any]:
     """The settings asked for, checked; a Strata model takes only its ttl."""
     allowed = {"ttl"} if not view["editable"] else {"ttl", "context", "gpu_layers", "flash_attn", "cache_type",
-                                                    "parallel"}  # fmt: skip
+                                                    "parallel", *COUNTS}  # fmt: skip
     out: dict[str, Any] = {}
     for key, value in changes.items():
         if value is None:
@@ -232,6 +243,11 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, An
             low, high = {"ttl": (0, 7 * 86400), "context": (512, 4_194_304), "parallel": (1, 64)}[key]
             if not low <= value <= high:
                 raise ConfigError(tr("{key}: от {low} до {high}", key=key, low=low, high=high))
+        elif key in COUNTS:
+            low, high = COUNTS[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not (value == 0 or low <= value <= high):
+                raise ConfigError(tr("{key}: 0 (как решит llama.cpp) или от {low} до {high}", key=key, low=low,
+                                     high=high))  # fmt: skip
         elif key == "gpu_layers":
             if value not in ("auto", "all") and (isinstance(value, bool) or not isinstance(value, int)
                                                  or not 0 <= value <= 999):  # fmt: skip
@@ -312,6 +328,9 @@ def edit(text: str, model_id: str, changes: dict[str, Any]) -> str:
         _set_flag(lines, first, last, FLAGS["cache_v"], changes["cache_type"])
     if "parallel" in changes:
         _set_flag(lines, first, last, FLAGS["parallel"], str(changes["parallel"]))
+    for key in COUNTS:
+        if key in changes:
+            _set_flag(lines, first, last, FLAGS[key], str(changes[key]) if changes[key] else None)
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     if set(model_blocks(out)) != set(model_blocks(text)):  # the edit must leave every model in place
         raise ConfigError(tr("правка задела другие модели — не записано"))

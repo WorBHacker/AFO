@@ -32,6 +32,7 @@ TOPICS = [
     "install.*",
     "setup.*",
     "release.*",  # AFO's own updates (10.4d)
+    "tune.*",  # launch settings by measurement (15.2)
     "system.*",
     "secrets.*",
     "connections.*",

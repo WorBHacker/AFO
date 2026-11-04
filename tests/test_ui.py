@@ -367,6 +367,8 @@ class FakeClient:
         self.install_calls = []
         self.install_jobs_list = []
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
+        self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
+        self.tune_calls = []
         self.setup = {
             "needed": False,
             "answering": True,
@@ -460,6 +462,28 @@ class FakeClient:
         self.model_calls.append(("revert", model_id, version))
         self.model_saved[model_id].append(self.model_saved[model_id][version - 1])
         return self._model_info(model_id)
+
+    def tune_state(self):
+        return json.loads(json.dumps(self.tune_status))
+
+    def tune(self, model_id):
+        self.tune_calls.append(("tune", model_id))
+        self.tune_status["job"] = {"status": "measuring", "model_id": model_id, "done": 0, "total": 12, "queue": []}
+        return self.tune_state()
+
+    def tune_all(self):
+        self.tune_calls.append(("all",))
+        return self.tune_state()
+
+    def tune_cancel(self):
+        self.tune_calls.append(("cancel",))
+        self.tune_status["job"] = {"status": "idle", "queue": []}
+        return self.tune_state()
+
+    def set_tune_auto(self, on):
+        self.tune_calls.append(("auto", on))
+        self.tune_status["auto"] = on
+        return self.tune_state()
 
     def llama_models(self):
         return {"models": [dict(m) for m in LLAMA], "vram_total_mib": 16384, "backups": []}
@@ -4383,6 +4407,47 @@ def test_roles_in_the_window(app):
     assert saved[1:] == ("", {"roles": {"chat": "llama-swap/coder", "agents": "llama-swap/coder",
                                         "fallback": "anthropic/claude-opus-5-5"}})  # fmt: skip
     assert ms.settings_of({**ms.BLANK, "roles": {"chat": ""}}, [], general=True) == {}
+
+
+def test_tuning_by_measurement_in_the_models_sheet(app):
+    """«Модели → Запуск → Подбор по замерам» (15.2, D49): the line says what goes on - measuring, checking, waiting
+    for the chats, queued - or what was found; the buttons ask the hub; a model tuned is said once."""
+    from app.ui import model_setup as ms
+
+    state = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}
+    assert "замерит на этом компьютере" in ms.tune_text(state, "big")
+    measuring = {"status": "measuring", "model_id": "big", "done": 3, "total": 12}
+    assert ms.tune_text({**state, "job": measuring}, "big") == ("Меряю: 3 из 12… На это время модели выгружены из "
+                                                                "видеопамяти.")  # fmt: skip
+    assert ms.tune_text({**state, "job": {"status": "waiting", "model_id": "big"}}, "big").startswith("Жду")
+    assert ms.tune_text({**state, "job": {"status": "idle", "queue": ["big"]}}, "big") == "В очереди на замер."
+    better = {"status": "better", "at": "2026-11-04T20:00:00Z", "before": {"tg": 40.2, "pp": 900.0},
+              "after": {"tg": 52.4, "pp": 1500.0},
+              "settings": {"flash_attn": "on", "cache_type": "q8_0", "ubatch": 2048, "threads": 16}}  # fmt: skip
+    assert ms.tune_text({**state, "results": {"big": better}}, "big").endswith(
+        "ответ 40 → 52 ток/с, чтение подсказки 900 → 1500 ток/с (flash attention вкл, KV-кэш q8_0, ubatch 2048, "
+        "16 потоков).")  # fmt: skip
+    same = {"status": "same", "at": "2026-11-04T20:00:00Z", "after": {"tg": 51.0}}
+    assert "и так самые быстрые — ответ 51 ток/с" in ms.tune_text({**state, "results": {"big": same}}, "big")
+
+    app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                               "provider": "llama-swap", "prices": {}}])  # fmt: skip
+    setup = app.model_setup
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("editable"))
+    assert setup.tuneAuto and not setup.tuneBusy and "замерит" in setup.tuneText
+    setup.tune()
+    wait_until(lambda: ("tune", "big") in app.client.tune_calls and setup.tuneBusy)
+    send(app, "tune.changed", {"job": {**measuring, "done": 5, "queue": []}})
+    assert setup.tuneText.startswith("Меряю: 5 из 12")
+    app.client.tune_status = {"job": {"status": "idle", "queue": []}, "results": {"big": better}, "auto": True}
+    send(app, "tune.changed", {"job": {"status": "idle", "queue": []}})
+    wait_until(lambda: setup.tuneTone == "ok")
+    assert not setup.tuneBusy and "«big» подобрана по замерам: ответ 40 → 52 ток/с" in app._flash
+    setup.setTuneAuto(False)
+    wait_until(lambda: ("auto", False) in app.client.tune_calls and not setup.tuneAuto)
+    setup.tuneAll()
+    wait_until(lambda: ("all",) in app.client.tune_calls)
 
 
 def test_a_local_models_launch_in_the_window(app):

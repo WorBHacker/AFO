@@ -302,6 +302,55 @@ def check_text(result: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def speed(measured: dict[str, Any] | None, key: str) -> str:
+    value = (measured or {}).get(key)
+    return f"{value:.0f}" if isinstance(value, int | float) else "?"
+
+
+def settings_words(settings: dict[str, Any]) -> str:
+    """What the tuning wrote, in words: flash attention, the KV cache, ubatch, threads."""
+    parts = []
+    if settings.get("flash_attn"):
+        parts.append(tr("flash attention вкл") if settings["flash_attn"] == "on" else tr("flash attention выкл"))
+    if settings.get("cache_type"):
+        parts.append(tr("KV-кэш {type}", type=settings["cache_type"]))
+    if settings.get("ubatch"):
+        parts.append(f"ubatch {settings['ubatch']}")
+    if settings.get("threads"):
+        parts.append(f"{settings['threads']} {presenter.plural(settings['threads'], 'поток', 'потока', 'потоков')}")
+    return ", ".join(parts)
+
+
+def tune_text(state: dict[str, Any], model_id: str) -> str:
+    """The models view's line about the tuning of this model: going on, waiting, or what it found."""
+    job = state.get("job") or {}
+    mine = job.get("model_id") == model_id
+    if mine and job.get("status") == "measuring":
+        return tr("Меряю: {done} из {total}… На это время модели выгружены из видеопамяти.", done=job.get("done", 0),
+                  total=job.get("total") or "?")  # fmt: skip
+    if mine and job.get("status") == "checking":
+        return tr("Проверяю, встаёт ли модель с новыми настройками и всем контекстом…")
+    if mine and job.get("status") == "waiting":
+        return tr("Жду, пока модели освободятся: идёт разговор.")
+    if model_id in (job.get("queue") or []):
+        return tr("В очереди на замер.")
+    result = (state.get("results") or {}).get(model_id)
+    if not result:
+        return tr("AFO замерит на этом компьютере несколько настроек (llama-bench той же сборки llama.cpp) и запишет "
+                  "самые быстрые. Модель на это время выгружается — несколько минут.")  # fmt: skip
+    when = local_time(result.get("at", ""))
+    if result.get("status") == "better":
+        return tr("Подобрано {when}: ответ {before} → {after} ток/с, чтение подсказки {pp_before} → {pp_after} ток/с "
+                  "({settings}).", when=when, before=speed(result.get("before"), "tg"),
+                  after=speed(result.get("after"), "tg"), pp_before=speed(result.get("before"), "pp"),
+                  pp_after=speed(result.get("after"), "pp"),
+                  settings=settings_words(result.get("settings") or {}))  # fmt: skip
+    if result.get("status") == "same":
+        return tr("Замерено {when}: эти настройки и так самые быстрые — ответ {speed} ток/с.", when=when,
+                  speed=speed(result.get("after"), "tg"))  # fmt: skip
+    return tr("Не подобрано ({when}): {error}", when=when, error=result.get("error") or "")
+
+
 class ModelSetup(QObject):
     changed = Signal()  # the open model, its draft, its versions, the check
     choicesChanged = Signal()
@@ -319,6 +368,8 @@ class ModelSetup(QObject):
         self._checking = False
         self._loading = False
         self._launch: dict[str, Any] = {}  # this model in llama-swap's config (local models), and the memory it has
+        self._tune: dict[str, Any] = {}  # launch settings by measurement (15.2): the job, each model's result, auto
+        self._told: set[str] = set()  # the results already said in the status line
         self._launch_draft: dict[str, str] = {}
         self._vram_mib: int | None = None
         self._launch_status = ""
@@ -612,6 +663,70 @@ class ModelSetup(QObject):
         self.app.call_or_fail(lambda: self.app.client.import_model_settings(data), done,
                               lambda e: self.app.show_error(tr("Не загружено: {error}", error=e)))  # fmt: skip
 
+    # --- launch settings by measurement (15.2) ---
+
+    def _tune_id(self) -> str:
+        return self._launch.get("id") or ""
+
+    @Property(str, notify=changed)
+    def tuneText(self) -> str:
+        return tune_text(self._tune, self._tune_id())
+
+    @Property(str, notify=changed)
+    def tuneTone(self) -> str:
+        result = (self._tune.get("results") or {}).get(self._tune_id()) or {}
+        return {"better": "ok", "failed": "error"}.get(result.get("status", ""), "")
+
+    @Property(bool, notify=changed)
+    def tuneBusy(self) -> bool:
+        job = self._tune.get("job") or {}
+        return job.get("status", "idle") != "idle" or bool(job.get("queue"))
+
+    @Property(bool, notify=changed)
+    def tuneAuto(self) -> bool:
+        return self._tune.get("auto", True) is not False
+
+    def _set_tune(self, state: dict[str, Any]) -> None:
+        first = not self._tune
+        self._tune = state
+        for model_id, result in (state.get("results") or {}).items():
+            key = f"{model_id} {result.get('at', '')}"
+            if key in self._told:
+                continue
+            self._told.add(key)
+            if not first and result.get("status") == "better":
+                before, after = speed(result.get("before"), "tg"), speed(result.get("after"), "tg")
+                self.app.flash(tr("«{model}» подобрана по замерам: ответ {before} → {after} ток/с", model=model_id,
+                                  before=before, after=after))  # fmt: skip
+        self.changed.emit()
+
+    def _load_tune(self) -> None:
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.tune_state(), self._set_tune, lambda _e: None)
+
+    def _ask_tune(self, call) -> None:
+        if self.app.client is not None:
+            self.app.call_or_fail(call, self._set_tune,
+                                  lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
+
+    @Slot()
+    def tune(self) -> None:
+        model_id = self._tune_id()
+        if model_id:
+            self._ask_tune(lambda: self.app.client.tune(model_id))
+
+    @Slot()
+    def tuneAll(self) -> None:
+        self._ask_tune(lambda: self.app.client.tune_all())
+
+    @Slot()
+    def tuneCancel(self) -> None:
+        self._ask_tune(lambda: self.app.client.tune_cancel())
+
+    @Slot(bool)
+    def setTuneAuto(self, on: bool) -> None:
+        self._ask_tune(lambda: self.app.client.set_tune_auto(on))
+
     @Property(list, constant=True)
     def presets(self) -> list:
         return [{"id": i, "name": tr(n)} for i, n in PRESETS]
@@ -679,6 +794,7 @@ class ModelSetup(QObject):
         self._model, self._check, self._check_failed, self._loading = wanted, "", False, True
         hub_id = self._hub_id()
         self._load_launch(wanted)
+        self._load_tune()
         self.changed.emit()
 
         def show(info: dict[str, Any]) -> None:
@@ -783,6 +899,14 @@ class ModelSetup(QObject):
         self.app.call_or_fail(lambda: self.app.client.check_model(model_id), done, failed)
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "tune.changed":
+            job = payload.get("job") or {}
+            if job.get("status") == "measuring" and self._tune:  # how far the measuring got: no call for it
+                self._tune = {**self._tune, "job": job}
+                self.changed.emit()
+            else:
+                self._load_tune()
+            return
         if kind == "llama.config" and not self._launch_busy and not self.launchDirty:
             self._load_launch(self._model)  # changed or restored elsewhere: show the file as it is now
         if kind == "model.settings":

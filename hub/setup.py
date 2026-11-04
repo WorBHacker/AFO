@@ -18,6 +18,7 @@ import contextlib
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ class Setup:
         self._task: asyncio.Task | None = None
         self._cancel = threading.Event()
         self.job: dict[str, Any] = {"status": "idle"}  # idle | downloading | starting | done | failed | cancelled
+        self.on_updated: Callable[[], Any] | None = None  # a newer llama.cpp in place: the models' tuning (15.2)
         self._shown = 0.0
 
     def _engine(self) -> dict[str, Any]:
@@ -176,6 +178,8 @@ class Setup:
                 raise engines.EngineError(tr("llama-swap не принял новый конфиг ({problem}) — возвращён прежний",
                                              problem=problem))  # fmt: skip
             self.job.update(status="done", step="", backup=backup.name)
+            if self.on_updated is not None:
+                self.on_updated()
         except engines.EngineError as exc:
             self.job.update(status="failed", error=str(exc))
         except Exception as exc:

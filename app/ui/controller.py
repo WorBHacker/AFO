@@ -1751,7 +1751,7 @@ class Controller(QObject):
             self.mcp_view.on_event(kind, payload)
         elif kind.startswith("memory."):
             self.memory_view.on_event(kind, payload)
-        elif kind in ("model.settings", "llama.config"):
+        elif kind in ("model.settings", "llama.config", "tune.changed"):
             self.model_setup.on_event(kind, payload)
         elif kind == "claude_code.limit":
             self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)

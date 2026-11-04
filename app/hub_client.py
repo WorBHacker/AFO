@@ -182,6 +182,25 @@ class HubClient:
         """A model already on this computer into llama-swap's config, where it lies."""
         return self._call("POST", "/v1/install/local", {"path": path, "projector": projector})
 
+    # --- launch settings by measurement (15.2) ---
+
+    def tune_state(self) -> dict:
+        """{job: {status, model_id, done, total, queue}, results: {model id: {status, before, after, settings, at}},
+        auto}."""
+        return self._call("GET", "/v1/tune")
+
+    def tune(self, model_id: str) -> dict:
+        return self._call("POST", f"/v1/tune/{model_id}")
+
+    def tune_all(self) -> dict:
+        return self._call("POST", "/v1/tune/all")
+
+    def tune_cancel(self) -> dict:
+        return self._call("POST", "/v1/tune/cancel")
+
+    def set_tune_auto(self, on: bool) -> dict:
+        return self._call("PUT", "/v1/tune", {"auto": on})
+
     def install_remove(self, model_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
 

@@ -267,6 +267,7 @@ class Installer:
         self.drives = drives  # the disks a model may go to (common/disks.py; tests give their own)
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
+        self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
         self._task: asyncio.Task | None = None
         self._cancel: dict[str, threading.Event] = {}
         self._wanted: dict[str, str] = {}  # job -> "paused" | "cancelled", what a stopped download becomes
@@ -758,6 +759,7 @@ class Installer:
             why = tr("llama-swap не отвечает — модель проверится при первом разговоре") if not reachable else \
                 tr("проверка запуска не выполнялась")  # fmt: skip
             await self._set(job_id, status="done", trial={"skipped": why})
+            self._done(model_id)
             return
         await self._set(job_id, status="trial")
         plan = {k: v for k, v in found["plan"].items() if k != "info"}
@@ -784,12 +786,17 @@ class Installer:
             await self._set(job_id, status="done", plan={**found["plan"], **plan}, trial={
                 "seconds": result.get("seconds"), "tok_s": result.get("tok_s"), "ttft_s": result.get("ttft_s"),
                 "tries": tries, "where": plan["where"]})  # fmt: skip
+            self._done(model_id)
             return
         await self._withdraw(model_id)
         await self._set(job_id, status="failed", trial={"tries": tries},
                         error=tr("модель скачана, но не запустилась: {error}. Файлы остались — «Повторить» "
                                  "попробует снова; или удалите",
                                  error=result.get("error") or tr("нет ответа")))  # fmt: skip
+
+    def _done(self, model_id: str) -> None:
+        if self.on_done is not None:
+            self.on_done(model_id)
 
     async def _model(self, model_id: str) -> dict[str, Any] | None:
         for _ in range(5):

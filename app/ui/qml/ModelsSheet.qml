@@ -473,6 +473,59 @@ Sheet {
                 }
             }
             LaunchField { fieldId: "ttl_min"; label: qsTr("Выгружать без запросов, мин"); hint: qsTr("0 — никогда"); width: 210 }
+            // launch settings by measurement (15.2): llama-bench of the same build, the fastest written and checked
+            Column {
+                objectName: "tuneSection"
+                visible: ModelSetup.launch.editable === true
+                width: parent.width
+                spacing: 6
+                Label { text: qsTr("Подбор по замерам") }
+                Text {
+                    objectName: "tuneText"
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: ModelSetup.tuneText
+                    color: ModelSetup.tuneTone === "error" ? Theme.p.error : ModelSetup.tuneTone === "ok" ? Theme.p.ok : Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+                Row {
+                    spacing: 8
+                    PlainButton {
+                        objectName: "tuneModel"
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty
+                        iconName: "activity"
+                        text: qsTr("Подобрать по замерам")
+                        onClicked: ModelSetup.tune()
+                    }
+                    PlainButton {
+                        enabled: !ModelSetup.tuneBusy
+                        text: qsTr("Для всех моделей")
+                        onClicked: ModelSetup.tuneAll()
+                    }
+                    PlainButton {
+                        visible: ModelSetup.tuneBusy
+                        text: qsTr("Остановить")
+                        onClicked: ModelSetup.tuneCancel()
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Text {
+                        text: qsTr("Подбирать сами — после установки модели и обновления llama.cpp")
+                        color: Theme.p.text_soft
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Segmented {
+                        objectName: "tuneAuto"
+                        options: [{ id: "on", name: qsTr("вкл") }, { id: "off", name: qsTr("выкл") }]
+                        value: ModelSetup.tuneAuto ? "on" : "off"
+                        onPicked: (id) => ModelSetup.setTuneAuto(id === "on")
+                    }
+                }
+            }
             Text {
                 objectName: "launchEstimate"
                 visible: text !== ""

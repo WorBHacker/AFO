@@ -133,6 +133,18 @@
 | POST | `/v1/release/cancel` | только окно | `cancel()` |  |
 | POST | `/v1/release/install` | только окно | The installer runs on its own: it stops this hub and the window, and opens the window again when done. |  |
 
+### tuning
+
+/v1/tune - launch settings by measurement (step 15.2, D49): what was measured for each model, a model's tuning or every llama.cpp model's, and whether AFO tunes by itself. The desktop app only.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/tune` | только окно | `get_tune()` |  |
+| PUT | `/v1/tune` | только окно | `set_tune()` | тело `{auto: bool}` |
+| POST | `/v1/tune/all` | только окно | `tune_all()` |  |
+| POST | `/v1/tune/cancel` | только окно | `cancel()` |  |
+| POST | `/v1/tune/{model_id}` | только окно | `tune_one()` |  |
+
 ### support
 
 /v1/support - «Проверить систему» and the logs for support (stage 10.6, D37; hub/diagnostics.py), and what the hub keeps on disk with its limits (D30, hub/retention.py). The desktop app only: the check reads the computer, the report gathers its logs.
@@ -631,3 +643,4 @@ conversation's text, an approval or a terminal's output.
 | `terminal.removed` | нет | `terminal_id` | hub/api/terminals.py |
 | `terminal.started` | да | `terminal` | hub/terminals.py |
 | `tools.fetched` | да | `tool`, `version`, `path` | hub/ripgrep.py |
+| `tune.changed` | да | `job` | hub/tuning.py |
