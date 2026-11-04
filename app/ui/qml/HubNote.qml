@@ -49,7 +49,7 @@ Item {
         }
         ToolTip.visible: hovered && !note.open
         ToolTip.delay: 800
-        ToolTip.text: "Это пишет модели хаб, а не вы. Щелчок — показать текст целиком"
+        ToolTip.text: qsTr("Это пишет модели хаб, а не вы. Щелчок — показать текст целиком")
     }
     Rectangle {
         id: body

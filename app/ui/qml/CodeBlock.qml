@@ -52,7 +52,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
-                        text: copy.done ? "Скопировано" : "Копировать"
+                        text: copy.done ? qsTr("Скопировано") : qsTr("Копировать")
                         color: copy.done ? Theme.p.ok : (copy.hovered ? Theme.p.text : Theme.p.muted)
                         font.family: Theme.uiFont
                         font.pixelSize: 12

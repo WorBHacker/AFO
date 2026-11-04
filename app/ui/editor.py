@@ -33,6 +33,7 @@ from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor, QTextDocument
 
 from common import invisible
+from common.i18n import N_, tr
 
 from ..hub_client import HubError
 from ..presenter import plural
@@ -49,9 +50,9 @@ if TYPE_CHECKING:
 
 EDIT_LIMIT = 1024 * 1024  # bytes: a bigger file opens in the viewer only (D47; 1 MB is coloured in 1.1 s, 13.7)
 OPENERS = (":", "{", "[", "(")  # a line ending so opens a block: the next line goes one step further in
-ENCODINGS = {"utf-8": "UTF-8", "utf-8 BOM": "UTF-8 с BOM", "cp1251": "Windows-1251", "utf-16": "UTF-16"}
-REASONS = {"changed": "Файл изменился на диске, пока был открыт.", "gone": "Файл удалён с диска.",
-           "exists": "Такой файл на диске уже есть."}  # fmt: skip
+ENCODINGS = {"utf-8": "UTF-8", "utf-8 BOM": N_("UTF-8 с BOM"), "cp1251": "Windows-1251", "utf-16": "UTF-16"}
+REASONS = {"changed": N_("Файл изменился на диске, пока был открыт."), "gone": N_("Файл удалён с диска."),
+           "exists": N_("Такой файл на диске уже есть.")}  # fmt: skip
 DRAFT_MS = 2000  # an edit's draft is on the disk within this long (14.4)
 TAB_ROLES = ["key", "projectId", "path", "name", "folder", "dirty", "restored"]
 
@@ -62,15 +63,15 @@ def why_not(data: dict[str, Any]) -> str:
     """Why a file the hub gave (GET .../file) is not edited here; "" when it is."""
     text = data.get("text", "")
     if data.get("missing"):
-        return "файла нет на диске"
+        return tr("файла нет на диске")
     if data.get("binary"):
-        return "двоичный файл"
+        return tr("двоичный файл")
     if data.get("truncated") or data.get("size", 0) > EDIT_LIMIT:
-        return "больше 1 МБ: только просмотр (правьте в VS Code)"
+        return tr("больше 1 МБ: только просмотр (правьте в VS Code)")
     if data.get("encoding") not in ENCODINGS:
-        return "незнакомая кодировка"
+        return tr("незнакомая кодировка")
     if "\u2028" in text or "\u2029" in text or "\r" in text.replace("\r\n", ""):
-        return "в файле есть разделители строк, которые редактор поменял бы (U+2028, U+2029, одиночный CR)"
+        return tr("в файле есть разделители строк, которые редактор поменял бы (U+2028, U+2029, одиночный CR)")
     return ""
 
 
@@ -150,7 +151,7 @@ def tab(document: QTextDocument, start: int, end: int, unit: str, outdent: bool)
 
 def where(document: QTextDocument, position: int) -> str:
     block = document.findBlock(position)
-    return f"Строка {block.blockNumber() + 1}, столбец {position - block.position() + 1}"
+    return tr("Строка {line}, столбец {column}", line=block.blockNumber() + 1, column=position - block.position() + 1)
 
 
 def status(data: dict[str, Any], unit: str) -> str:
@@ -158,9 +159,12 @@ def status(data: dict[str, Any], unit: str) -> str:
     eol = data.get("eol", "")
     if eol == "CRLF+LF":
         crlf = data.get("text", "").count("\r\n")
-        eol = f"CRLF и LF — сохранится как {'CRLF' if crlf > data.get('text', '').count(chr(10)) - crlf else 'LF'}"
-    step = "табуляция" if unit == "\t" else f"пробелы: {len(unit)}"
-    return " · ".join(s for s in (ENCODINGS.get(data.get("encoding", ""), ""), eol, step) if s)
+        eol = tr(
+            "CRLF и LF — сохранится как {eol}",
+            eol="CRLF" if crlf > data.get("text", "").count(chr(10)) - crlf else "LF",
+        )
+    step = tr("табуляция") if unit == "\t" else tr("пробелы: {count}", count=len(unit))
+    return " · ".join(s for s in (tr(ENCODINGS.get(data.get("encoding", ""), "")), eol, step) if s)
 
 
 def draft_name(key: str) -> str:
@@ -386,14 +390,14 @@ class EditorView(QObject):
             self._opening = False
             if reason := why_not(data):
                 self.changed.emit()
-                self.app.show_error(f"Файл не правится здесь: {reason}")
+                self.app.show_error(tr("Файл не правится здесь: {reason}", reason=reason))
                 return
             self._add(project_id, path, data)
 
         def failed(error: Exception) -> None:
             self._opening = False
             self.changed.emit()
-            self.app.show_error(f"Файл не открылся для правки: {error}")
+            self.app.show_error(tr("Файл не открылся для правки: {error}", error=error))
 
         self._opening = True
         self.changed.emit()
@@ -409,7 +413,7 @@ class EditorView(QObject):
             b.waiting, b.base, b.cursor, b.restored = draft["text"], draft["base"], int(draft.get("cursor") or 0), True
             b.dirty = draft["text"] != text
             if data["sha256"] != draft["base"]:  # the disk changed since: the bar asks (14.2a)
-                b.conflict, b.disk = {"reason": "changed", "message": REASONS["changed"]}, data
+                b.conflict, b.disk = {"reason": "changed", "message": tr(REASONS["changed"])}, data
         b.hidden = invisible.summary(b.waiting)
         self._buffers[b.key] = b
         self._active = b.key
@@ -460,8 +464,9 @@ class EditorView(QObject):
             elif choice is None:
                 self._drop(b, then)
 
-        self.app._ask(f"Сохранить правки в {b.path.rsplit('/', 1)[-1]}?", "Если не сохранить, правки пропадут.",
-                      "Сохранить", decide, other="Не сохранять")  # fmt: skip
+        self.app._ask(tr("Сохранить правки в {name}?", name=b.path.rsplit("/", 1)[-1]),
+                      tr("Если не сохранить, правки пропадут."), tr("Сохранить"), decide,
+                      other=tr("Не сохранять"))  # fmt: skip
 
     @Slot()
     def stop(self) -> None:
@@ -517,8 +522,8 @@ class EditorView(QObject):
             elif choice is None:
                 closed()
 
-        self.app._ask(self._question(dirty), "Если не сохранить, правки пропадут.", "Сохранить", decide,
-                      other="Не сохранять")  # fmt: skip
+        self.app._ask(self._question(dirty), tr("Если не сохранить, правки пропадут."), tr("Сохранить"), decide,
+                      other=tr("Не сохранять"))  # fmt: skip
         return False
 
     @Slot(result=bool)
@@ -545,15 +550,16 @@ class EditorView(QObject):
             elif choice is None:
                 closing()
 
-        self.app._ask(self._question(dirty), "Окно закрывается. Если не сохранить, правки пропадут.", "Сохранить",
-                      decide, other="Не сохранять")  # fmt: skip
+        self.app._ask(self._question(dirty), tr("Окно закрывается. Если не сохранить, правки пропадут."),
+                      tr("Сохранить"), decide, other=tr("Не сохранять"))  # fmt: skip
         return False
 
     @staticmethod
     def _question(dirty: list[Buffer]) -> str:
         if len(dirty) == 1:
-            return f"Сохранить правки в {dirty[0].path.rsplit('/', 1)[-1]}?"
-        return f"Сохранить правки в {len(dirty)} {plural(len(dirty), 'файле', 'файлах', 'файлах')}?"
+            return tr("Сохранить правки в {name}?", name=dirty[0].path.rsplit("/", 1)[-1])
+        n = len(dirty)
+        return tr("Сохранить правки в {n} {files}?", n=n, files=plural(n, "файле", "файлах", "файлах"))
 
     def _restyle(self) -> None:
         for b in self.buffers():
@@ -636,7 +642,7 @@ class EditorView(QObject):
             if not b.dirty:
                 self._forget_draft(b)
             self.changed.emit()
-            self.app.flash(f"Сохранено: {b.path.rsplit('/', 1)[-1]}")
+            self.app.flash(tr("Сохранено: {name}", name=b.path.rsplit("/", 1)[-1]))
             if then is not None:
                 then(True)
 
@@ -647,7 +653,7 @@ class EditorView(QObject):
                 self._disagree(b, reason, error.data.get("file"))
             else:
                 self.changed.emit()
-                self.app.show_error(f"Не сохранено: {error}")
+                self.app.show_error(tr("Не сохранено: {error}", error=error))
             if then is not None:
                 then(False)
 
@@ -667,7 +673,9 @@ class EditorView(QObject):
         def next_one(ok: bool) -> None:
             if not ok:
                 self.app.projects.openFile(dirty[0].path, False)
-                self.app.show_error(f"Не сохранено: {dirty[0].path.rsplit('/', 1)[-1]} — см. полосу над ним")
+                self.app.show_error(
+                    tr("Не сохранено: {name} — см. полосу над ним", name=dirty[0].path.rsplit("/", 1)[-1])
+                )
                 return
             dirty.pop(0)
             if dirty:
@@ -710,7 +718,7 @@ class EditorView(QObject):
         self.app._call(fetch, show, lambda _e: None)
 
     def _disagree(self, b: Buffer, reason: str, disk: dict[str, Any] | None) -> None:
-        b.conflict = {"reason": reason, "message": REASONS.get(reason, reason)}
+        b.conflict = {"reason": reason, "message": tr(REASONS.get(reason, reason))}
         b.disk = disk if disk and not disk.get("missing") else None
         b.compare = {}
         self.changed.emit()
@@ -767,7 +775,8 @@ class EditorView(QObject):
         disk = (b.disk or {}).get("text", "").replace("\r\n", "\n")
         name = b.path.rsplit("/", 1)[-1]
         text = "".join(difflib.unified_diff(disk.splitlines(keepends=True), b.text().splitlines(keepends=True),
-                                            fromfile=f"{name} (на диске)", tofile=f"{name} (у вас)"))  # fmt: skip
+                                            fromfile=tr("{name} (на диске)", name=name),
+                                            tofile=tr("{name} (у вас)", name=name)))  # fmt: skip
         b.compare = {**project_rows.diff_view(text), "key": f"compare:{b.path}", "digits": 0, "empty": not text}
         self.changed.emit()
 
@@ -848,7 +857,7 @@ class EditorView(QObject):
             if data.get("missing"):
                 self._disagree(b, "gone", None)
             self.app.projects.openFile(path, False)
-            self.app.flash(f"Восстановлены несохранённые правки: {path.rsplit('/', 1)[-1]}")
+            self.app.flash(tr("Восстановлены несохранённые правки: {name}", name=path.rsplit("/", 1)[-1]))
             self.tell()
 
         self.app._call(fetch, done, lambda _e: None)

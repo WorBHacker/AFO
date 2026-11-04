@@ -19,10 +19,9 @@ Column {
     }
 
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
-    SectionTitle { text: "Почта для агента" }
+    SectionTitle { text: qsTr("Почта для агента") }
     Note {
-        text: "Любой ящик по IMAP и SMTP с паролем приложения (его делают в настройках почты: Яндекс, Gmail, Mail.ru, "
-              + "Outlook). Письма читает только локальная модель, а отправку агент каждый раз спрашивает у вас."
+        text: qsTr("Любой ящик по IMAP и SMTP с паролем приложения (его делают в настройках почты: Яндекс, Gmail, Mail.ru, Outlook). Письма читает только локальная модель, а отправку агент каждый раз спрашивает у вас.")
     }
     Row {
         spacing: 8
@@ -32,7 +31,7 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
-            text: Mail.connected ? Mail.address + " · " + Mail.servers : "не подключена"
+            text: Mail.connected ? Mail.address + " · " + Mail.servers : qsTr("не подключена")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -47,19 +46,19 @@ Column {
             id: address
             objectName: "mailAddress"
             width: parent.width
-            placeholderText: Mail.connected ? Mail.address : "Адрес: name@yandex.ru"
+            placeholderText: Mail.connected ? Mail.address : qsTr("Адрес: name@yandex.ru")
         }
         Field {
             id: password
             objectName: "mailPassword"
             width: parent.width
             echoMode: TextInput.Password
-            placeholderText: Mail.connected ? "Новый пароль приложения, чтобы заменить" : "Пароль приложения"
+            placeholderText: Mail.connected ? qsTr("Новый пароль приложения, чтобы заменить") : qsTr("Пароль приложения")
         }
         Text {
             visible: address.text.indexOf("@") > 0
-            text: Mail.knownProvider(address.text) && !section.custom ? "Серверы подставятся сами · указать вручную"
-                                                                      : "Серверы почты — из её настроек:"
+            text: Mail.knownProvider(address.text) && !section.custom ? qsTr("Серверы подставятся сами · указать вручную")
+                                                                      : qsTr("Серверы почты — из её настроек:")
             color: Theme.p.accent
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -84,7 +83,7 @@ Column {
             PlainButton {
                 objectName: "mailSave"
                 kind: "primary"
-                text: "Подключить"
+                text: qsTr("Подключить")
                 enabled: (address.text.trim() !== "" || Mail.connected) && !Mail.busy
                 onClicked: {
                     Mail.save(address.text || Mail.address, password.text, imapHost.text, imapPort.text,
@@ -95,7 +94,7 @@ Column {
             PlainButton {
                 visible: Mail.connected
                 iconName: "refresh"
-                text: "Проверить"
+                text: qsTr("Проверить")
                 enabled: !Mail.busy
                 onClicked: Mail.check()
             }
@@ -103,7 +102,7 @@ Column {
                 visible: Mail.connected
                 kind: "danger"
                 iconName: "trash"
-                text: "Отключить"
+                text: qsTr("Отключить")
                 onClicked: Mail.remove()
             }
         }

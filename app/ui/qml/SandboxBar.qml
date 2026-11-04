@@ -30,7 +30,7 @@ Rectangle {
             id: review
             objectName: "sandboxReview"
             visible: Sandbox.count > 0
-            text: "Посмотреть правки"
+            text: qsTr("Посмотреть правки")
             anchors.verticalCenter: parent.verticalCenter
             onClicked: bar.reviewRequested()
         }

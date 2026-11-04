@@ -13,6 +13,8 @@ from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from common.i18n import tr
+
 from .icons import svg
 
 SHOW_MS = 10_000
@@ -50,8 +52,8 @@ class Notifier(QObject):
             self.tray = QSystemTrayIcon(tray_icon(), self)
             self.tray.setToolTip("AFO")
             menu = QMenu()
-            menu.addAction("Открыть AFO", self.opened.emit)
-            self._stop = menu.addAction("Остановить агента (управляет компьютером)", self._stop_now)
+            menu.addAction(tr("Открыть AFO"), self.opened.emit)
+            self._stop = menu.addAction(tr("Остановить агента (управляет компьютером)"), self._stop_now)
             self._stop.setVisible(False)
             self.tray.setContextMenu(menu)
             self._menu = menu  # kept: the tray does not own it
@@ -83,7 +85,9 @@ class Notifier(QObject):
         if not self.held or (self.quiet is not None and self.quiet()):
             return
         held, self.held = self.held, []
-        title, text = held[-1] if len(held) == 1 else (f"Пока были тихие часы: {len(held)}", held[-1][1])
+        title, text = (
+            held[-1] if len(held) == 1 else (tr("Пока были тихие часы: {count}", count=len(held)), held[-1][1])
+        )
         self.notify(title, text)
 
     def _stop_now(self) -> None:

@@ -82,7 +82,7 @@ Item {
                     }
                     contentItem: Text {
                         id: label
-                        text: "Стоп · " + AgentScreen.stopKeys
+                        text: qsTr("Стоп · %1").arg(AgentScreen.stopKeys)
                         color: Theme.p.error
                         font.family: Theme.uiFont
                         font.pixelSize: 12

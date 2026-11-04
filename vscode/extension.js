@@ -7,6 +7,9 @@
 const vscode = require('vscode');
 const lib = require('./lib');
 
+// the texts in English; VS Code shows them in its own language from l10n/bundle.l10n.<language>.json (step 10.5)
+const t = vscode.l10n.t;
+
 const FOCUS_QUIET_MS = 1500;
 const OUTPUT_SETTLE_MS = 300; // the end event can come before the last output piece is read
 
@@ -24,8 +27,8 @@ async function askForToken(context, why) {
   }
   askedForToken = true;
   const choice = await vscode.window.showInformationMessage(
-    `AFO: ${why}. Создайте токен: python -m hub token create vscode — и вставьте его.`,
-    'Задать токен',
+    t('AFO: {0}. Create a token: python -m hub token create vscode — and paste it.', why),
+    t('Set token'),
   );
   if (choice) {
     await setToken(context);
@@ -34,8 +37,8 @@ async function askForToken(context, why) {
 
 async function setToken(context) {
   const token = await vscode.window.showInputBox({
-    title: 'Токен хаба AFO',
-    prompt: 'Его печатает python -m hub token create vscode (показывается один раз)',
+    title: t('AFO hub token'),
+    prompt: t('python -m hub token create vscode prints it (shown once)'),
     password: true,
     ignoreFocusOut: true,
   });
@@ -43,7 +46,7 @@ async function setToken(context) {
     await context.secrets.store(lib.TOKEN_KEY, token.trim());
     askedForToken = false;
     lastProblem = '';
-    vscode.window.showInformationMessage('AFO: токен сохранён в хранилище секретов VS Code');
+    vscode.window.showInformationMessage(t("AFO: the token is saved in VS Code's secret storage"));
   }
 }
 
@@ -53,14 +56,14 @@ async function report(context, path, body) {
   }
   const base = settings().get('hubUrl', lib.DEFAULT_HUB);
   if (!lib.isLocalHub(base)) {
-    lastProblem = `адрес хаба ${base} не на этом компьютере — ничего не отправляется`;
+    lastProblem = t('the hub address {0} is not on this computer — nothing is sent', base);
     return;
   }
   // the secret storage first; LOCALCHAT_TOKEN (as the hub's stdio adapter reads it) for a launched-with-env VS Code
   const token = (await context.secrets.get(lib.TOKEN_KEY)) || process.env.LOCALCHAT_TOKEN;
   if (!token) {
-    lastProblem = 'нет токена хаба';
-    askForToken(context, 'нужен токен хаба');
+    lastProblem = t('no hub token');
+    askForToken(context, t('a hub token is needed'));
     return;
   }
   try {
@@ -71,16 +74,16 @@ async function report(context, path, body) {
       signal: AbortSignal.timeout(5000),
     });
     if (response.status === 401) {
-      lastProblem = 'хаб не принял токен';
-      askForToken(context, 'хаб не принял токен');
+      lastProblem = t('the hub did not accept the token');
+      askForToken(context, lastProblem);
     } else if (!response.ok) {
-      lastProblem = `хаб ответил ${response.status}`;
+      lastProblem = t('the hub answered {0}', response.status);
     } else {
       lastProblem = '';
       reported += 1;
     }
   } catch {
-    lastProblem = 'хаб не отвечает (не запущен?)';
+    lastProblem = t('the hub is not answering (not running?)');
   }
 }
 
@@ -136,8 +139,8 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('localchat.setToken', () => setToken(context)),
     vscode.commands.registerCommand('localchat.status', () => {
-      const state = lastProblem ? `проблема: ${lastProblem}` : 'связь в порядке';
-      vscode.window.showInformationMessage(`AFO: ${state}; отправлено сообщений: ${reported}`);
+      const state = lastProblem ? t('problem: {0}', lastProblem) : t('the connection is fine');
+      vscode.window.showInformationMessage(t('AFO: {0}; messages sent: {1}', state, reported));
     }),
   );
   reportFocus();

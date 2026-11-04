@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.i18n import N_, tr
+
 from .models import RowModel
 from .project_rows import local_time
 
@@ -19,14 +21,14 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 FILTERS = [
-    ("all", "Все"),
-    ("allowed", "Разрешены"),
-    ("denied", "Запрещены"),
-    ("undecided", "Не решено"),
-    ("new", "Новые"),
+    ("all", N_("Все")),
+    ("allowed", N_("Разрешены")),
+    ("denied", N_("Запрещены")),
+    ("undecided", N_("Не решено")),
+    ("new", N_("Новые")),
 ]
 ROLES = ["key", "id", "name", "detail", "path", "decision", "fresh", "removed", "manual"]
-KIND_NOTES = {"store": "Microsoft Store", "manual": "добавлена вручную"}
+KIND_NOTES = {"store": "Microsoft Store", "manual": N_("добавлена вручную")}
 
 
 def matches(program: dict[str, Any], view: str) -> bool:
@@ -46,9 +48,9 @@ def visible(program: dict[str, Any]) -> bool:
 
 
 def detail_of(program: dict[str, Any]) -> str:
-    parts = [program.get("publisher", ""), program.get("version", ""), KIND_NOTES.get(program.get("kind", ""), "")]
+    parts = [program.get("publisher", ""), program.get("version", ""), tr(KIND_NOTES.get(program.get("kind", ""), ""))]
     if program.get("removed"):
-        parts.append("не найдена на компьютере")
+        parts.append(tr("не найдена на компьютере"))
     return " · ".join(p for p in parts if p)
 
 
@@ -116,7 +118,7 @@ class Programs(QObject):
     @Property(list, notify=changed)
     def filters(self) -> list:
         found = counts(self._programs)
-        return [{"id": key, "name": f"{name} {found[key]}" if found[key] else name} for key, name in FILTERS]
+        return [{"id": key, "name": f"{tr(name)} {found[key]}" if found[key] else tr(name)} for key, name in FILTERS]
 
     @Property(str, notify=changed)
     def view(self) -> str:
@@ -129,14 +131,14 @@ class Programs(QObject):
     @Property(str, notify=changed)
     def status(self) -> str:
         if self._scanning:
-            return "Ищу программы…"
+            return tr("Ищу программы…")
         if self._error:
-            return f"Поиск программ не удался: {self._error}"
+            return tr("Поиск программ не удался: {error}", error=self._error)
         if not self._scanned_at and not self._programs:
-            return "Хаб ещё не искал программы"
+            return tr("Хаб ещё не искал программы")
         allowed = sum(1 for p in self._programs if p.get("decision") == "allow" and visible(p))
-        when = f"Последний поиск — {local_time(self._scanned_at)[-5:]}. " if self._scanned_at else ""
-        return f"{when}Агенту разрешено программ: {allowed}. Не решённая — то же, что запрещённая."
+        when = tr("Последний поиск — {time}. ", time=local_time(self._scanned_at)[-5:]) if self._scanned_at else ""
+        return when + tr("Агенту разрешено программ: {count}. Не решённая — то же, что запрещённая.", count=allowed)
 
     @Property(bool, notify=changed)
     def empty(self) -> bool:
@@ -214,7 +216,7 @@ class Programs(QObject):
         self._ask()
 
         def failed(error: Exception) -> None:
-            self.app.show_error(f"Решение не сохранено: {error}")
+            self.app.show_error(tr("Решение не сохранено: {error}", error=error))
             self.load()
 
         self.app._call(lambda: self.app.client.decide_program(program_id, value), None, failed)
@@ -235,13 +237,13 @@ class Programs(QObject):
             return
 
         def done(program: dict[str, Any]) -> None:
-            self.app.flash(f"Программа «{program['name']}» в списке — решите, можно ли агенту")
+            self.app.flash(tr("Программа «{name}» в списке — решите, можно ли агенту", name=program["name"]))
             self.load()
 
         self.app._call(
             lambda: self.app.client.add_program(path),
             done,
-            lambda error: self.app.show_error(f"Программа не добавлена: {error}"),
+            lambda error: self.app.show_error(tr("Программа не добавлена: {error}", error=error)),
         )
 
     @Slot(str)
@@ -272,8 +274,8 @@ class Programs(QObject):
             found = payload.get("programs") or []
             if found:
                 names = ", ".join(p.get("name", "") for p in found[:3]) + ("…" if len(found) > 3 else "")
-                title = "Новая программа" if len(found) == 1 else f"Новые программы: {len(found)}"
-                self.requested.emit(title, f"{names} — разрешить автономному агенту?")
+                title = tr("Новая программа") if len(found) == 1 else tr("Новые программы: {count}", count=len(found))
+                self.requested.emit(title, tr("{names} — разрешить автономному агенту?", names=names))
             self.load()
         elif kind in ("programs.scanned", "program.decided"):
             self.load()

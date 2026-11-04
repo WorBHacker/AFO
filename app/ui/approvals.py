@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
+
 from .models import RowModel
 from .project_rows import local_time
 from .rows import model_name
@@ -24,7 +26,8 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code it starts
-SCOPE_WORDS = {"set_plan": "все новые планы этой задачи", "start_step": "все шаги этой задачи"}  # an agent's (D40)
+# an agent's (D40)
+SCOPE_WORDS = {"set_plan": N_("все новые планы этой задачи"), "start_step": N_("все шаги этой задачи")}
 PREVIEW_LINES = 400
 QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
                "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time"]  # fmt: skip
@@ -45,33 +48,37 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
     path = short_path(str(data.get("file_path") or data.get("notebook_path") or data.get("path") or ""), roots)
     match tool:
         case "Bash" | "PowerShell" | "run_command":
-            return "Выполнить команду"
+            return tr("Выполнить команду")
         case "Edit" | "MultiEdit" | "edit_file":
-            return f"Править {path}"
+            return tr("Править {path}", path=path)
         case "Write" | "write_file":
-            return f"Записать {path}"
+            return tr("Записать {path}", path=path)
         case "NotebookEdit":
-            return f"Править блокнот {path}"
+            return tr("Править блокнот {path}", path=path)
         case "WebFetch" | "web_fetch":
-            return f"Открыть {data.get('url', '')}"
+            return tr("Открыть {url}", url=data.get("url", ""))
         case "WebSearch" | "web_search":
-            return f"Искать в сети «{data.get('query', '')}»"
+            return tr("Искать в сети «{query}»", query=data.get("query", ""))
         case "set_plan":  # an autonomous agent's (D40)
-            return "Утвердить план" + (f" (версия {data['version']})" if data.get("version", 1) != 1 else "")
+            if data.get("version", 1) != 1:
+                return tr("Утвердить план (версия {version})", version=data["version"])
+            return tr("Утвердить план")
         case "start_step":
-            return f"Начать шаг {data.get('step')}: {data.get('title', '')}"
+            return tr("Начать шаг {step}: {title}", step=data.get("step"), title=data.get("title", ""))
         case "remember":
-            return "Запомнить личные данные" + (f" о «{data['about']}»" if data.get("about") else "")
+            if data.get("about"):
+                return tr("Запомнить личные данные о «{about}»", about=data["about"])
+            return tr("Запомнить личные данные")
         case "run_python":
-            return "Запустить скрипт Python"
+            return tr("Запустить скрипт Python")
         case "mail_send":  # a letter from the user's address (9.4b)
-            return f"Отправить письмо: {data.get('subject', '')}"
+            return tr("Отправить письмо: {subject}", subject=data.get("subject", ""))
         case "http_request":
-            return f"Запрос в сеть: {data.get('method', 'GET')} {data.get('url', '')}"
+            return tr("Запрос в сеть: {method} {url}", method=data.get("method", "GET"), url=data.get("url", ""))
     if tool.startswith("mcp__") and "__" in tool[5:]:  # an outside MCP server's tool (9.5)
         server, _, name = tool[5:].partition("__")
         return f"MCP «{server}»: {name}"
-    return f"Вызвать {tool}"
+    return tr("Вызвать {tool}", tool=tool)
 
 
 def preview_lines(preview: dict[str, Any]) -> list[dict[str, str]]:
@@ -96,7 +103,7 @@ def asker(approval: dict[str, Any], speakers: dict[str, str]) -> str:
     """Who asks: Claude Code, an outside client by its name, or the model of the chat (or agent run) it works in."""
     if approval.get("client") == HUB_CLAUDE_CODE:
         return "Claude Code"
-    return approval.get("client") or speakers.get(approval.get("conversation_id") or "") or "Агент"
+    return approval.get("client") or speakers.get(approval.get("conversation_id") or "") or tr("Агент")
 
 
 def approval_rows(
@@ -137,12 +144,14 @@ def approval_rows(
             "lines": preview_lines(preview),
             "destructive": bool(a.get("destructive")),
             "alwaysAsk": always,  # destructive / network: asked every time, never for chat or project (D17, D19)
-            "chatScope": f"«{data.get('program') or 'программа'}» до конца задачи" if a.get("tool") == "screen_act"
-                         else "этот же вызов в этом чате" if cls == "command"
-                         else "эта команда в этом чате" if a.get("kind") == "command"
-                         else f"«{a.get('tool', '')[5:].partition('__')[2]}» в этом чате" if cls
-                         else SCOPE_WORDS.get(a.get("tool", ""), f"все {a.get('tool')} в чате"),
-            "projectScope": f"всегда в «{project}»" if project and not always else "",
+            "chatScope": tr("«{program}» до конца задачи", program=data.get("program") or tr("программа"))
+                         if a.get("tool") == "screen_act"
+                         else tr("этот же вызов в этом чате") if cls == "command"
+                         else tr("эта команда в этом чате") if a.get("kind") == "command"
+                         else tr("«{tool}» в этом чате", tool=a.get("tool", "")[5:].partition("__")[2]) if cls
+                         else tr(SCOPE_WORDS[a.get("tool", "")]) if a.get("tool", "") in SCOPE_WORDS
+                         else tr("все {tool} в чате", tool=a.get("tool")),
+            "projectScope": tr("всегда в «{project}»", project=project) if project and not always else "",
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
         })  # fmt: skip
@@ -157,13 +166,13 @@ def age(created_at: str, now: datetime) -> str:
         return ""
     minutes = max(0, int((now - then).total_seconds() // 60))
     if minutes < 1:
-        return "только что"
+        return tr("только что")
     if minutes < 60:
-        return f"{minutes} мин"
+        return tr("{minutes} мин", minutes=minutes)
     if minutes < 24 * 60:
         hours, rest = divmod(minutes, 60)
-        return f"{hours} ч {rest} мин" if rest else f"{hours} ч"
-    return f"{minutes // (24 * 60)} дн"
+        return tr("{hours} ч {minutes} мин", hours=hours, minutes=rest) if rest else tr("{hours} ч", hours=hours)
+    return tr("{days} дн", days=minutes // (24 * 60))
 
 
 def waiting_rows(
@@ -187,9 +196,9 @@ def waiting_rows(
         (row,) = approval_rows([first], projects=projects, chats={}, speakers=speakers)
         out.append({
             "conversationId": chat_id,
-            "chat": chats.get(chat_id) or "Чат без названия",
+            "chat": chats.get(chat_id) or tr("Чат без названия"),
             "what": f"{row['who']}: {row['title']}",
-            "more": f"ещё {len(asked) - 1}" if len(asked) > 1 else "",
+            "more": tr("ещё {count}", count=len(asked) - 1) if len(asked) > 1 else "",
             "count": len(asked),
             "age": age(first.get("created_at", ""), now),
             "icon": row["icon"],
@@ -296,7 +305,7 @@ class Approvals(QObject):
         self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self.app.show_error(f"Ответ не принят: {error}")
+            self.app.show_error(tr("Ответ не принят: {error}", error=error))
             self.load()
 
         self.app._call(
@@ -344,6 +353,7 @@ class Approvals(QObject):
             here = self.app.mode in ("chats", "agent") or self.app.showProjectChat  # where the chat's card shows
             shown = bool(self._latest) and self._latest == self._open() and here
             if not shown:  # the open chat's card says it itself
-                self.app.flash(f"{who} ждёт подтверждения — значок щита в заголовке", ms=8000)
-            self.requested.emit(f"{who} ждёт подтверждения", " · ".join(s for s in (row["title"], row["where"]) if s))
+                self.app.flash(tr("{who} ждёт подтверждения — значок щита в заголовке", who=who), ms=8000)
+            self.requested.emit(tr("{who} ждёт подтверждения", who=who),
+                                " · ".join(s for s in (row["title"], row["where"]) if s))  # fmt: skip
         self.changed.emit()

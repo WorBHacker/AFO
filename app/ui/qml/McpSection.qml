@@ -18,16 +18,14 @@ Column {
     }
 
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
-    SectionTitle { text: "Серверы MCP" }
+    SectionTitle { text: qsTr("Серверы MCP") }
     Note {
-        text: "Внешние серверы MCP дают свои инструменты новым чатам и задачам агента. Сервер — программа, она "
-              + "работает от вашего имени: добавляйте только те, которым доверяете. Что только читает — без "
-              + "вопроса; остальное — через подтверждение, как велит класс действия инструмента."
+        text: qsTr("Внешние серверы MCP дают свои инструменты новым чатам и задачам агента. Сервер — программа, она работает от вашего имени: добавляйте только те, которым доверяете. Что только читает — без вопроса; остальное — через подтверждение, как велит класс действия инструмента.")
     }
     Note {
         visible: Mcp.servers.length === 0
         color: Theme.p.faint
-        text: "Серверов пока нет."
+        text: qsTr("Серверов пока нет.")
     }
 
     Repeater {
@@ -92,7 +90,7 @@ Column {
             }
             Note {
                 visible: server.modelData.env !== ""
-                text: "Ключи в окружении: " + server.modelData.env
+                text: qsTr("Ключи в окружении: %1").arg(server.modelData.env)
             }
 
             Column {
@@ -134,7 +132,7 @@ Column {
                             objectName: "mcpClass_" + server.modelData.name + "_" + tool.modelData.tool
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            text: tool.modelData.clsText + (tool.modelData.changed ? " · ваш выбор" : "")
+                            text: tool.modelData.clsText + (tool.modelData.changed ? qsTr(" · ваш выбор") : "")
                             enabled: section.unlocked && !Mcp.busy
                             onClicked: {
                                 classMenu.server = server.modelData.name
@@ -148,7 +146,7 @@ Column {
                 Note {
                     visible: !section.unlocked && server.modelData.tools.length > 0
                     color: Theme.p.faint
-                    text: "Класс инструмента меняется по паролю подключений."
+                    text: qsTr("Класс инструмента меняется по паролю подключений.")
                 }
             }
 
@@ -159,21 +157,21 @@ Column {
                 PlainButton {
                     objectName: "mcpEnable_" + server.modelData.name
                     iconName: "power"
-                    text: server.modelData.enabled ? "Выключить" : "Включить"
+                    text: server.modelData.enabled ? qsTr("Выключить") : qsTr("Включить")
                     enabled: !Mcp.busy
                     onClicked: Mcp.setEnabled(server.modelData.name, !server.modelData.enabled)
                 }
                 PlainButton {
                     visible: server.modelData.enabled
                     iconName: "refresh"
-                    text: "Перезапустить"
+                    text: qsTr("Перезапустить")
                     enabled: !Mcp.busy
                     onClicked: Mcp.restart(server.modelData.name)
                 }
                 PlainButton {
                     kind: "danger"
                     iconName: "trash"
-                    text: "Удалить"
+                    text: qsTr("Удалить")
                     onClicked: Mcp.remove(server.modelData.name)
                 }
             }
@@ -185,12 +183,12 @@ Column {
                     id: envField
                     width: parent.width - envSave.width - 8
                     echoMode: TextInput.Password
-                    placeholderText: "Ключи заново: KEY=значение; KEY2=значение"
+                    placeholderText: qsTr("Ключи заново: KEY=значение; KEY2=значение")
                     onAccepted: envSave.clicked()
                 }
                 PlainButton {
                     id: envSave
-                    text: "Сохранить ключи"
+                    text: qsTr("Сохранить ключи")
                     enabled: envField.text.trim() !== "" && !Mcp.busy
                     onClicked: { Mcp.setEnv(server.modelData.name, envField.text); envField.text = "" }
                 }
@@ -215,7 +213,7 @@ Column {
         width: parent.width
         spacing: 6
         Text {
-            text: "Добавить сервер"
+            text: qsTr("Добавить сервер")
             color: Theme.p.text
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -225,27 +223,27 @@ Column {
             id: newName
             objectName: "mcpNewName"
             width: parent.width
-            placeholderText: "Имя: латиница, например files или github"
+            placeholderText: qsTr("Имя: латиница, например files или github")
         }
         Field {
             id: newTarget
             objectName: "mcpNewTarget"
             width: parent.width
             font.family: Theme.monoFont
-            placeholderText: "Команда (npx -y @modelcontextprotocol/server-filesystem D:/Docs) или адрес https://…/mcp"
+            placeholderText: qsTr("Команда (npx -y @modelcontextprotocol/server-filesystem D:/Docs) или адрес https://…/mcp")
         }
         Field {
             id: newEnv
             objectName: "mcpNewEnv"
             width: parent.width
             echoMode: TextInput.Password
-            placeholderText: "Ключи, если нужны: KEY=значение; KEY2=значение"
+            placeholderText: qsTr("Ключи, если нужны: KEY=значение; KEY2=значение")
         }
         PlainButton {
             objectName: "mcpAdd"
             kind: "primary"
             iconName: "plus"
-            text: Mcp.busy ? "Запускаю…" : "Добавить и запустить"
+            text: Mcp.busy ? qsTr("Запускаю…") : qsTr("Добавить и запустить")
             enabled: newName.text.trim() !== "" && newTarget.text.trim() !== "" && !Mcp.busy
             onClicked: {
                 Mcp.add(newName.text, newTarget.text, newEnv.text)

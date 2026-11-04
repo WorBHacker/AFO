@@ -55,9 +55,9 @@ Rectangle {
             x: 3
             y: 3
             Repeater {
-                model: [{ id: "chats", name: "Чаты", icon: "chat", key: "Ctrl+1" },
-                        { id: "projects", name: "Проекты", icon: "folder", key: "Ctrl+2" },
-                        { id: "agent", name: "Агент", icon: "agent", key: "Ctrl+3" }]
+                model: [{ id: "chats", name: qsTr("Чаты"), icon: "chat", key: "Ctrl+1" },
+                        { id: "projects", name: qsTr("Проекты"), icon: "folder", key: "Ctrl+2" },
+                        { id: "agent", name: qsTr("Агент"), icon: "agent", key: "Ctrl+3" }]
                 delegate: AbstractButton {
                     id: tab
                     required property var modelData
@@ -177,12 +177,12 @@ Rectangle {
             onDoubleClicked: App.setProjectChatsHeight(0)
             ToolTip.visible: containsMouse && !pressed
             ToolTip.delay: 800
-            ToolTip.text: "Потяните вверх или вниз. Двойной щелчок — по размеру списка"
+            ToolTip.text: qsTr("Потяните вверх или вниз. Двойной щелчок — по размеру списка")
         }
         Text {
             x: 10
             y: 10
-            text: "Чаты проекта"
+            text: qsTr("Чаты проекта")
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -197,7 +197,7 @@ Rectangle {
                 objectName: "projectOverviewRow"
                 width: parent.width
                 iconName: "layers"
-                text: "Обзор проекта"
+                text: qsTr("Обзор проекта")
                 chosen: !App.showProjectChat
                 onClicked: App.showProjectOverview()
             }
@@ -205,7 +205,7 @@ Rectangle {
                 objectName: "projectNewSession"
                 width: parent.width
                 iconName: "plus"
-                text: "Новый сеанс"
+                text: qsTr("Новый сеанс")
                 chosen: App.showProjectChat && App.currentId === ""
                 onClicked: App.newProjectChat()
             }
@@ -257,7 +257,7 @@ Rectangle {
                 spacing: 8
                 Icon { name: "plus"; tint: Theme.p.text; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    text: "Новый чат"
+                    text: qsTr("Новый чат")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -291,7 +291,7 @@ Rectangle {
                 spacing: 8
                 Icon { name: "plus"; tint: Theme.p.text; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    text: "Новая задача"
+                    text: qsTr("Новая задача")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -505,11 +505,11 @@ Rectangle {
                 implicitHeight: 30
                 implicitWidth: 100  // a little tighter than other buttons: the model's name needs the room
                 iconName: "power"
-                text: "Выгрузить"
+                text: qsTr("Выгрузить")
                 onClicked: App.askUnloadLocal()
                 ToolTip.visible: hovered
                 ToolTip.delay: 600
-                ToolTip.text: "Выгрузить модель из видеопамяти и ОЗУ (с подтверждением)"
+                ToolTip.text: qsTr("Выгрузить модель из видеопамяти и ОЗУ (с подтверждением)")
             }
         }
 
@@ -526,7 +526,7 @@ Rectangle {
                 spacing: 8
                 Icon { name: "layers"; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    text: "Хаб · " + App.modelCountText
+                    text: qsTr("Хаб · %1").arg(App.modelCountText)
                     color: Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -539,7 +539,7 @@ Rectangle {
                 anchors.rightMargin: 6
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "sliders"
-                tip: "Настройки (Ctrl+,)"
+                tip: qsTr("Настройки (Ctrl+,)")
                 onClicked: sidebar.settingsRequested()
             }
             IconButton {
@@ -547,7 +547,7 @@ Rectangle {
                 anchors.right: settingsButton.left
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: Theme.dark ? "moon" : "sun"
-                tip: "Тема"
+                tip: qsTr("Тема")
                 onClicked: sidebar.themeMenuRequested(themeButton)
             }
         }

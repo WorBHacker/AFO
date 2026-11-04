@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "provingSheet"
-    title: "Полигон"
+    title: qsTr("Полигон")
     iconName: "flask"
     width: Math.min(820, (parent ? parent.width : 960) * 0.94)
 
@@ -52,12 +52,11 @@ Sheet {
     }
 
     Hint {
-        text: "Готовые задания на свежей копии учебного проекта: модель работает в режиме «Цель» и может там всё, "
-              + "а хаб проверяет результат — в том числе скрытыми проверками, которых модель не видит. Свои проекты не трогаются."
+        text: qsTr("Готовые задания на свежей копии учебного проекта: модель работает в режиме «Цель» и может там всё, а хаб проверяет результат — в том числе скрытыми проверками, которых модель не видит. Свои проекты не трогаются.")
     }
 
     // ---------- the tasks ----------
-    SectionTitle { text: "Задания — пробует «" + Proving.workerName + "» (модель чата)" }
+    SectionTitle { text: qsTr("Задания — пробует «%1» (модель чата)").arg(Proving.workerName) }
     Repeater {
         model: Proving.tasks
         delegate: Rectangle {
@@ -79,7 +78,7 @@ Sheet {
                     Line { text: modelData.title; font.weight: Font.DemiBold }
                     Text {
                         text: modelData.level
-                        color: modelData.level === "трудное" ? Theme.p.warn : Theme.p.faint
+                        color: modelData.level === "трудное" ? Theme.p.warn : Theme.p.faint  // i18n: keep
                         font.family: Theme.uiFont
                         font.pixelSize: 12
                         anchors.verticalCenter: parent.verticalCenter
@@ -95,7 +94,7 @@ Sheet {
                 anchors.rightMargin: 12
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "play"
-                text: "Попробовать"
+                text: qsTr("Попробовать")
                 enabled: !Proving.busy
                 onClicked: { sheet.close(); Proving.tryTask(modelData.id) }
             }
@@ -103,7 +102,7 @@ Sheet {
     }
 
     // ---------- the tries ----------
-    SectionTitle { visible: Proving.tries.length > 0; text: "Пробы" }
+    SectionTitle { visible: Proving.tries.length > 0; text: qsTr("Пробы") }
     Repeater {
         model: Proving.tries
         delegate: Item {
@@ -122,15 +121,15 @@ Sheet {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
-                PlainButton { implicitHeight: 26; text: "Ход работы"; onClicked: { sheet.close(); Proving.openRun(modelData.conversation) } }
-                IconButton { iconName: "trash"; tip: "Удалить пробу вместе с копией"; onClicked: Proving.deleteRun(modelData.id) }
+                PlainButton { implicitHeight: 26; text: qsTr("Ход работы"); onClicked: { sheet.close(); Proving.openRun(modelData.conversation) } }
+                IconButton { iconName: "trash"; tip: qsTr("Удалить пробу вместе с копией"); onClicked: Proving.deleteRun(modelData.id) }
             }
         }
     }
 
     // ---------- the exam ----------
-    SectionTitle { text: "Экзамен моделей" }
-    Hint { text: "Отмеченные задания на отмеченных моделях, по очереди, каждое на своей свежей копии. Сдано — цель достигнута и все скрытые проверки прошли." }
+    SectionTitle { text: qsTr("Экзамен моделей") }
+    Hint { text: qsTr("Отмеченные задания на отмеченных моделях, по очереди, каждое на своей свежей копии. Сдано — цель достигнута и все скрытые проверки прошли.") }
     Flow {
         width: parent.width
         spacing: 10
@@ -165,7 +164,7 @@ Sheet {
     Tick {
         objectName: "examJudge"
         on: Proving.judge
-        text: "Проверяющая модель тоже (роль «Проверка цели»)"
+        text: qsTr("Проверяющая модель тоже (роль «Проверка цели»)")
         onClicked: Proving.setJudge(!Proving.judge)
     }
     Row {
@@ -174,7 +173,7 @@ Sheet {
             objectName: "examStart"
             kind: "primary"
             iconName: "play"
-            text: "Начать экзамен"
+            text: qsTr("Начать экзамен")
             enabled: !Proving.busy && !Proving.examGoing
             onClicked: Proving.startExam()
         }
@@ -182,7 +181,7 @@ Sheet {
             objectName: "examStop"
             visible: Proving.examGoing
             kind: "danger"
-            text: "Остановить"
+            text: qsTr("Остановить")
             onClicked: Proving.stopExam()
         }
     }
@@ -196,7 +195,7 @@ Sheet {
         spacing: 8
         Row {
             spacing: 10
-            Line { text: "Экзамен " + (Proving.exam.when || ""); font.weight: Font.DemiBold }
+            Line { text: qsTr("Экзамен %1").arg(Proving.exam.when || ""); font.weight: Font.DemiBold }
             Text {
                 text: Proving.exam.state || ""
                 color: Proving.exam.status === "running" ? Theme.p.accent : Theme.p.faint
@@ -288,7 +287,7 @@ Sheet {
                                 }
                                 ToolTip.visible: hovered && box.modelData.why !== ""
                                 ToolTip.delay: 300
-                                ToolTip.text: box.modelData.why + "\nЩелчок — ход работы"
+                                ToolTip.text: qsTr("%1\nЩелчок — ход работы").arg(box.modelData.why)
                             }
                         }
                     }
@@ -334,7 +333,7 @@ Sheet {
             visible: Proving.exam.status !== "running"
             kind: "danger"
             iconName: "trash"
-            text: "Удалить этот экзамен"
+            text: qsTr("Удалить этот экзамен")
             onClicked: Proving.deleteExam()
         }
     }

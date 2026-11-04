@@ -9,11 +9,7 @@ from common import i18n, i18n_catalog
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 # translated so far (10.5a-10.5d); at the end of the step - everything people read in app/, hub/ and common/
-TRANSLATED = [
-    "common/i18n.py",
-    "app/presenter.py",
-    "app/ui/qml/SettingsSheet.qml",
-]
+TRANSLATED = ["app", "common/i18n.py", "common/i18n_catalog.py"]
 
 
 @pytest.fixture
@@ -33,6 +29,15 @@ def test_russian_is_the_text_itself_and_english_comes_from_the_catalog(english):
     i18n.set_language("ru")
     assert i18n.tr("Удалить «{name}»?", name="a.txt") == "Удалить «a.txt»?"
     assert i18n.tr("{n:.1f} с", n=2.25) == "2.2 с" and i18n.tr("{} {{x}}") == "{} {{x}}"  # fields only with values
+
+
+def test_a_text_with_two_meanings_and_a_number(english):
+    """qsTr("Свернуть", "window"): the window's button minimizes, a card's link collapses - one Russian word, two
+    English ones; the one with a context has gettext's key. A number's decimal point follows the language."""
+    assert i18n.in_context("window", "Свернуть") == "window\x04Свернуть"
+    assert i18n.decimal("1.5") == "1.5"
+    i18n.set_language("ru")
+    assert i18n.decimal("1.5") == "1,5"
 
 
 def test_plural_forms_per_language(english):
@@ -108,11 +113,13 @@ def test_marked_and_unmarked_texts_are_found(tmp_path):
         "    property string b: qsTr(\"Удалить «%1»?\").arg(name) + ' забыто'\n"
         '    property string url: "https://example.org/путь"  // i18n: keep\n'
         "    /* и «блок» */\n"
+        '    property string tip: qsTr("Свернуть", "window") + qsTr("«%1» — %2").arg(x)\n'
         "}\n",
         encoding="utf-8",
     )
     keys = i18n_catalog.keys([tmp_path])
-    assert sorted(keys) == ["Настройки", "Удалить «%1»?", "Удалить «{name}»?", "низкая", "файл|файла|файлов"]
+    assert sorted(keys) == ["window\x04Свернуть", "«%1» — %2", "Настройки", "Удалить «%1»?", "Удалить «{name}»?",
+                            "низкая", "файл|файла|файлов"]  # fmt: skip
     assert keys["Настройки"] == [f"{tmp_path / 'Sheet.qml'}:3"]
     left = i18n_catalog.unmarked([tmp_path / "view.py", tmp_path / "Sheet.qml"])
     assert [place.rsplit(":", 1)[1] for place in left] == ["8", "8", "4"]
@@ -137,7 +144,8 @@ def test_qml_texts_come_through_the_catalog():
         engine = QQmlEngine()
         component = QQmlComponent(engine)
         component.setData('import QtQuick\nItem { property string a: qsTr("Настройки"); '
-                          'property string b: qsTr("Сейчас: %1").arg("5 ГБ"); property string c: qsTr("Нет такого") }'
+                          'property string b: qsTr("Сейчас: %1").arg("5 ГБ"); property string c: qsTr("Нет такого"); '
+                          'property string d: qsTr("Свернуть", "window"); property string e: qsTr("Свернуть") }'
                           .encode(), QUrl("file:///Probe.qml"))  # fmt: skip
         item = component.create()
         assert (item.property("a"), item.property("b"), item.property("c")) == ("Настройки", "Сейчас: 5 ГБ",
@@ -145,6 +153,7 @@ def test_qml_texts_come_through_the_catalog():
         i18n.set_language("en")
         engine.retranslate()
         assert (item.property("a"), item.property("b"), item.property("c")) == ("Settings", "Now: 5 ГБ", "Нет такого")
+        assert (item.property("d"), item.property("e")) == ("Minimize", "Collapse")  # one Russian word, two meanings
     finally:
         qt.removeTranslator(catalog)
 
@@ -178,3 +187,24 @@ def test_the_hub_speaks_the_windows_language(hub, monkeypatch):  # noqa: F811
     monkeypatch.delenv(i18n.ENV)
     monkeypatch.setattr(i18n, "preferred_languages", lambda: ["ru-RU"])
     assert hub.app.state.db.call(language.load) == "en"  # the hub starting again: the choice, not Windows' language
+
+
+def test_the_vscode_extension_speaks_vs_codes_language():
+    """VS Code's own way (10.5d): the extension's texts are English in its code - vscode.l10n.t(), %keys% in
+    package.json - and Russian in l10n/bundle.l10n.ru.json and package.nls.ru.json; VS Code shows its own language."""
+    import json
+    import re
+
+    folder = i18n_catalog.ROOT / "vscode"
+    script = (folder / "extension.js").read_text(encoding="utf-8")
+    said = {m[1].replace("'", "'") for m in re.findall(r"\bt\((['\"])((?:\.|(?!\1).)*)\1", script)}
+    russian = json.loads((folder / "l10n" / "bundle.l10n.ru.json").read_text(encoding="utf-8"))
+    assert said and said == set(russian)
+    for english, words in russian.items():
+        assert set(re.findall(r"\{\d\}", english)) == set(re.findall(r"\{\d\}", words)), english
+        assert i18n_catalog.RUSSIAN.search(words) and not i18n_catalog.RUSSIAN.search(english)
+    manifest = (folder / "package.json").read_text(encoding="utf-8")
+    keys = set(re.findall(r'"%([\w.]+)%"', manifest))
+    for name in ("package.nls.json", "package.nls.ru.json"):
+        assert set(json.loads((folder / name).read_text(encoding="utf-8"))) == keys, name
+    assert keys and not i18n_catalog.RUSSIAN.search(manifest + script)

@@ -66,7 +66,7 @@ Popup {
                 }
                 contentItem: Text {
                     id: cancelText
-                    text: "Отмена"
+                    text: qsTr("Отмена")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -106,7 +106,7 @@ Popup {
                 background: Rectangle { radius: 6; color: confirm.hovered ? Theme.p.accent_hover : Theme.p.accent }
                 contentItem: Text {
                     id: confirmText
-                    text: App.question.confirm || "Да"
+                    text: App.question.confirm || qsTr("Да")
                     color: Theme.p.on_accent
                     font.family: Theme.uiFont
                     font.pixelSize: 13

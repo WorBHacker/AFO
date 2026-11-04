@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "transferSheet"
-    title: "Загрузка настроек"
+    title: qsTr("Загрузка настроек")
     iconName: "download"
     width: Math.min(640, (parent ? parent.width : 960) * 0.92)
     onClosed: Transfer.close()
@@ -23,9 +23,9 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Файл " + Transfer.fileName + (Transfer.exportedAt ? ", сохранён " + Transfer.exportedAt : "")
-              + ". Ниже — что изменится, если загрузить. Загрузка только добавляет и меняет, ничего не удаляет; "
-              + "MCP-серверы и расписания приходят выключенными. Ключей и паролей в файле нет — их вписывают заново."
+        text: (Transfer.exportedAt ? qsTr("Файл %1, сохранён %2.").arg(Transfer.fileName).arg(Transfer.exportedAt)
+                                   : qsTr("Файл %1.").arg(Transfer.fileName))
+              + " " + qsTr("Ниже — что изменится, если загрузить. Загрузка только добавляет и меняет, ничего не удаляет; MCP-серверы и расписания приходят выключенными. Ключей и паролей в файле нет — их вписывают заново.")
         color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -42,7 +42,7 @@ Sheet {
     }
     Text {
         visible: Transfer.busy
-        text: "Смотрю, что изменится…"
+        text: qsTr("Смотрю, что изменится…")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -93,7 +93,7 @@ Sheet {
                 x: 26
                 width: parent.width - 26
                 wrapMode: Text.Wrap
-                text: "Эта часть — за паролем подключений: без него она не загрузится."
+                text: qsTr("Эта часть — за паролем подключений: без него она не загрузится.")
                 color: Theme.p.warn
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -139,12 +139,12 @@ Sheet {
             objectName: "transferPassword"
             width: 240
             echoMode: TextInput.Password
-            placeholderText: "Пароль подключений"
+            placeholderText: qsTr("Пароль подключений")
             onAccepted: { Transfer.unlock(text); text = "" }
         }
         PlainButton {
             iconName: "key"
-            text: "Открыть"
+            text: qsTr("Открыть")
             enabled: !Transfer.busy
             onClicked: { Transfer.unlock(password.text); password.text = "" }
         }
@@ -155,12 +155,12 @@ Sheet {
             objectName: "transferApply"
             kind: "primary"
             iconName: "download"
-            text: "Загрузить выбранное"
+            text: qsTr("Загрузить выбранное")
             enabled: !Transfer.busy && Transfer.parts.some(p => p.chosen)
             onClicked: Transfer.apply()
         }
         PlainButton {
-            text: "Отмена"
+            text: qsTr("Отмена")
             onClicked: sheet.close()
         }
     }

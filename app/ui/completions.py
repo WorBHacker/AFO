@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor
 
+from common.i18n import tr
 from hub.symbols import language_of, parse
 
 if TYPE_CHECKING:
@@ -227,11 +228,12 @@ class Completer(QObject):
             letters = in_order(typed)
             for other in self.editor.buffers():
                 for word in self._read.get(other.key, Read()).having(letters):
-                    names.setdefault(word, {"name": word, "kind": "слово", "detail": other.path.rsplit("/", 1)[-1]})
+                    names.setdefault(word, {"name": word, "kind": tr("слово"),
+                                            "detail": other.path.rsplit("/", 1)[-1]})  # fmt: skip
         for symbol in self._read.get(b.key, Read()).definitions:
-            names[symbol.name] = {"name": symbol.name, "kind": symbol.kind, "detail": "в этом файле"}
+            names[symbol.name] = {"name": symbol.name, "kind": symbol.kind, "detail": tr("в этом файле")}
         for word in KEYWORDS.get(language_of(b.path) or "", []):
-            names[word] = {"name": word, "kind": "язык", "detail": ""}
+            names[word] = {"name": word, "kind": tr("язык"), "detail": ""}
         if b.key not in self._read:
             self.read_tabs()
         return names
@@ -353,10 +355,10 @@ class Completer(QObject):
             if places:
                 self._go_or_list(b, name, places)
             else:
-                self.app.flash(f"Определение «{name}» не найдено в индексе проекта")
+                self.app.flash(tr("Определение «{name}» не найдено в индексе проекта", name=name))
 
         self.app._call(lambda: self.app.client.symbols(b.project_id, q=name, limit=50), done,
-                       lambda e: self.app.show_error(f"Определение не найдено: {e}"))  # fmt: skip
+                       lambda e: self.app.show_error(tr("Определение не найдено: {error}", error=e)))  # fmt: skip
 
     def _go_or_list(self, b: Buffer, name: str, places: list[dict[str, Any]]) -> None:
         self._places = [{**p, "projectId": b.project_id, "name": name} for p in places]

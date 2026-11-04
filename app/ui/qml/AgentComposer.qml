@@ -17,9 +17,9 @@ Item {
     implicitHeight: card.y + card.height + hint.height + 18
 
     readonly property var whenNotes: ({
-        now: "Агент начнёт сразу, как вы нажмёте Enter",
-        time: "Каждый день, по дням недели или каждые N часов — настройка появится над полем",
-        event: "Новый файл в папке, сообщение боту, новое письмо — настройка появится над полем"
+        now: qsTr("Агент начнёт сразу, как вы нажмёте Enter"),
+        time: qsTr("Каждый день, по дням недели или каждые N часов — настройка появится над полем"),
+        event: qsTr("Новый файл в папке, сообщение боту, новое письмо — настройка появится над полем")
     })
 
     function focusInput() { area.forceActiveFocus() }
@@ -60,7 +60,7 @@ Item {
     MenuPopup {
         id: plannerMenu
         menuWidth: 430
-        items: [{ section: "Кто составляет план", id: "" }, { id: "*same", name: "та же модель", icon: "layers",
+        items: [{ section: qsTr("Кто составляет план"), id: "" }, { id: "*same", name: qsTr("та же модель"), icon: "layers",
                  selected: !Autonomy.draft.planner_model_id }]
                .concat(Autonomy.modelChoices.map(m => m.section ? m : Object.assign({}, m, { selected: m.id === Autonomy.draft.planner_model_id })))
         onChosen: (id) => Autonomy.setField("planner_model_id", id === "*same" ? "" : id)
@@ -83,7 +83,7 @@ Item {
         id: whenMenu
         menuWidth: 400
         wrapNotes: true
-        items: [{ section: "Когда начать", id: "" }].concat(Schedules.whenOptions.map(o => ({
+        items: [{ section: qsTr("Когда начать"), id: "" }].concat(Schedules.whenOptions.map(o => ({
             id: o.id, name: o.name, note: composer.whenNotes[o.id] || "", selected: o.id === Schedules.draft.when,
             icon: o.id === "now" ? "bolt" : o.id === "time" ? "clock" : "activity" })))
         onChosen: (id) => Schedules.setField("when", id)
@@ -121,13 +121,13 @@ Item {
         contentItem: Column {
             spacing: 12
             Text {
-                text: "Ограничения задачи"
+                text: qsTr("Ограничения задачи")
                 color: Theme.p.text
                 font.family: Theme.uiFont
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
             }
-            Hint { text: "Упрётся в любое — остановится и напишет, что успел. Можно оставить как есть." }
+            Hint { text: qsTr("Упрётся в любое — остановится и напишет, что успел. Можно оставить как есть.") }
             Column {
                 width: parent.width
                 spacing: 4
@@ -135,7 +135,7 @@ Item {
                 Field {
                     objectName: "agentLimit_done_when"
                     width: parent.width
-                    placeholderText: "например: все тесты проходят"
+                    placeholderText: qsTr("например: все тесты проходят")
                     text: Autonomy.draft.done_when || ""
                     onEditingFinished: Autonomy.setField("done_when", text)
                 }
@@ -167,7 +167,7 @@ Item {
             Column {
                 width: parent.width
                 spacing: 4
-                Name { text: "Кто планирует" }
+                Name { text: qsTr("Кто планирует") }
                 PlainButton {
                     id: plannerButton
                     objectName: "agentPlanner"
@@ -175,19 +175,19 @@ Item {
                     text: Autonomy.draft.plannerName || ""
                     onClicked: { plannerMenu.anchor = plannerButton; plannerMenu.open() }
                 }
-                Hint { text: "Модель, которая составляет и пересматривает план. Может быть сильнее той, что выполняет шаги." }
+                Hint { text: qsTr("Модель, которая составляет и пересматривает план. Может быть сильнее той, что выполняет шаги.") }
             }
             Column {
                 width: parent.width
                 spacing: 4
-                Name { text: "Скриптам Python — в сеть" }
+                Name { text: qsTr("Скриптам Python — в сеть") }
                 Segmented {
                     objectName: "agentNetwork"
-                    options: [{ id: "no", name: "нельзя" }, { id: "yes", name: "можно" }]
+                    options: [{ id: "no", name: qsTr("нельзя") }, { id: "yes", name: qsTr("можно") }]
                     value: Autonomy.draft.network ? "yes" : "no"
                     onPicked: (id) => Autonomy.setFlag("network", id === "yes")
                 }
-                Hint { text: "Скрипты, которые агент запускает в песочнице, получат доступ в интернет. Обычно не нужно: сайты агент читает и без этого." }
+                Hint { text: qsTr("Скрипты, которые агент запускает в песочнице, получат доступ в интернет. Обычно не нужно: сайты агент читает и без этого.") }
             }
         }
     }
@@ -253,7 +253,7 @@ Item {
                     onClicked: { modeMenu.anchor = modeChip; modeMenu.open() }
                     ToolTip.visible: hovered && !modeMenu.visible
                     ToolTip.delay: 500
-                    ToolTip.text: "Режим — кто что решает: " + Autonomy.modeHint
+                    ToolTip.text: qsTr("Режим — кто что решает: %1").arg(Autonomy.modeHint)
                 }
                 // ---------- a new task ----------
                 Chip {
@@ -265,7 +265,7 @@ Item {
                     onClicked: { modelMenu.anchor = modelChip; modelMenu.open() }
                     ToolTip.visible: hovered && !modelMenu.visible
                     ToolTip.delay: 500
-                    ToolTip.text: "Модель, которая выполняет шаги задачи"
+                    ToolTip.text: qsTr("Модель, которая выполняет шаги задачи")
                 }
                 Chip {
                     id: projectChip
@@ -277,7 +277,7 @@ Item {
                     onClicked: { projectMenu.anchor = projectChip; projectMenu.open() }
                     ToolTip.visible: hovered && !projectMenu.visible
                     ToolTip.delay: 500
-                    ToolTip.text: "Проекты, файлы которых агент видит и может менять. Без проектов — работает с сетью, расчётами и программами"
+                    ToolTip.text: qsTr("Проекты, файлы которых агент видит и может менять. Без проектов — работает с сетью, расчётами и программами")
                 }
                 Chip {
                     id: refusalChip
@@ -288,7 +288,7 @@ Item {
                     onClicked: { refusalMenu.anchor = refusalChip; refusalMenu.open() }
                     ToolTip.visible: hovered && !refusalMenu.visible
                     ToolTip.delay: 500
-                    ToolTip.text: "Вектор Strata, который убирает у модели отказы отвечать, — для этой задачи"
+                    ToolTip.text: qsTr("Вектор Strata, который убирает у модели отказы отвечать, — для этой задачи")
                 }
                 Chip {
                     id: whenChip
@@ -307,7 +307,7 @@ Item {
                     onClicked: limits.visible ? limits.close() : limits.open()
                     ToolTip.visible: hovered && !limits.visible
                     ToolTip.delay: 500
-                    ToolTip.text: "Ограничения: шаги, время, бюджет, «готово, когда», кто планирует"
+                    ToolTip.text: qsTr("Ограничения: шаги, время, бюджет, «готово, когда», кто планирует")
                 }
                 // ---------- a running task ----------
                 Chip {
@@ -315,19 +315,19 @@ Item {
                     visible: composer.running
                     menu: false
                     iconName: composer.task.paused ? "play" : "pause"
-                    text: composer.task.paused ? "Продолжить" : "Пауза"
+                    text: composer.task.paused ? qsTr("Продолжить") : qsTr("Пауза")
                     onClicked: composer.task.paused ? Autonomy.resume() : Autonomy.pause()
                     ToolTip.visible: hovered
                     ToolTip.delay: 500
-                    ToolTip.text: composer.task.paused ? "Агент продолжит с того места, где остановился"
-                                                       : "Агент доделает текущее действие и подождёт"
+                    ToolTip.text: composer.task.paused ? qsTr("Агент продолжит с того места, где остановился")
+                                                       : qsTr("Агент доделает текущее действие и подождёт")
                 }
                 Chip {
                     objectName: "agentEditPlan"
                     visible: composer.running && composer.task.planVersion > 0
                     menu: false
                     iconName: "edit"
-                    text: "Изменить план"
+                    text: qsTr("Изменить план")
                     onClicked: composer.editPlanRequested()
                 }
                 Chip {
@@ -335,11 +335,11 @@ Item {
                     visible: !!composer.task.id
                     menu: false
                     iconName: "chat"
-                    text: "Весь ход работы"
+                    text: qsTr("Весь ход работы")
                     onClicked: Autonomy.openLog()
                     ToolTip.visible: hovered
                     ToolTip.delay: 500
-                    ToolTip.text: "Каждый ход модели и каждый вызов инструмента — как чат"
+                    ToolTip.text: qsTr("Каждый ход модели и каждый вызов инструмента — как чат")
                 }
             }
             Row {
@@ -364,7 +364,7 @@ Item {
                     contentItem: Item { Icon { anchors.centerIn: parent; name: "stop"; tint: Theme.p.error } }
                     ToolTip.visible: hovered
                     ToolTip.delay: 500
-                    ToolTip.text: "Остановить задачу"
+                    ToolTip.text: qsTr("Остановить задачу")
                 }
                 AbstractButton {
                     id: send
@@ -383,8 +383,8 @@ Item {
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 500
-                    ToolTip.text: composer.running ? "Написать агенту (Enter)" : composer.now ? "Начать задачу (Enter)"
-                                                                                           : "Запланировать (Enter)"
+                    ToolTip.text: composer.running ? qsTr("Написать агенту (Enter)") : composer.now ? qsTr("Начать задачу (Enter)")
+                                                                                                 : qsTr("Запланировать (Enter)")
                 }
             }
         }
@@ -398,7 +398,7 @@ Item {
         y: card.y + card.height + 6
         width: card.width - 8
         wrapMode: Text.Wrap
-        text: "«" + Autonomy.modeName + "» — " + Autonomy.modeHint
+        text: qsTr("«%1» — %2").arg(Autonomy.modeName).arg(Autonomy.modeHint)
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 12

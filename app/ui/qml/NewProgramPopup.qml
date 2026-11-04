@@ -59,9 +59,9 @@ Popup {
             spacing: 8
             Icon { name: "shield"; size: 16; tint: Theme.p.accent; anchors.verticalCenter: parent.verticalCenter }
             Text {
-                text: popup.offering ? "Программы для автономного агента"
-                      : Programs.pending.length > 1 ? "Новая программа · 1 из " + Programs.pending.length
-                      : "Новая программа"
+                text: popup.offering ? qsTr("Программы для автономного агента")
+                      : Programs.pending.length > 1 ? qsTr("Новая программа · 1 из %1").arg(Programs.pending.length)
+                      : qsTr("Новая программа")
                 color: Theme.p.muted
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -108,9 +108,8 @@ Popup {
             width: parent.width
             wrapMode: Text.Wrap
             text: popup.offering
-                  ? "Найдено программ: " + Programs.offer + ". Выберите, какими может управлять автономный агент — "
-                    + "пока ни одной нельзя. О новых программах хаб будет спрашивать сам."
-                  : "Разрешить автономному агенту управлять этой программой? Пока не решено — нельзя."
+                  ? qsTr("Найдено программ: %1. Выберите, какими может управлять автономный агент — пока ни одной нельзя. О новых программах хаб будет спрашивать сам.").arg(Programs.offer)
+                  : qsTr("Разрешить автономному агенту управлять этой программой? Пока не решено — нельзя.")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -124,19 +123,19 @@ Popup {
                 objectName: "allowProgram"
                 kind: "primary"
                 iconName: "check"
-                text: "Разрешить"
+                text: qsTr("Разрешить")
                 onClicked: Programs.decide(popup.current.id, "allow")
             }
             PlainButton {
                 objectName: "denyProgram"
                 kind: "danger"
                 iconName: "close"
-                text: "Запретить"
+                text: qsTr("Запретить")
                 onClicked: Programs.decide(popup.current.id, "deny")
             }
             PlainButton {
                 objectName: "laterProgram"
-                text: "Решить позже"
+                text: qsTr("Решить позже")
                 onClicked: Programs.later(popup.current.id)
             }
         }
@@ -147,17 +146,17 @@ Popup {
                 objectName: "chooseProgramsOffer"
                 kind: "primary"
                 iconName: "shield"
-                text: "Выбрать программы…"
+                text: qsTr("Выбрать программы…")
                 onClicked: Programs.openList()
             }
             PlainButton {
-                text: "Позже"
+                text: qsTr("Позже")
                 onClicked: Programs.dismissOffer()
             }
         }
         Text {
             visible: popup.current !== null
-            text: "<a href=\"list\">Все программы…</a>"
+            text: qsTr("<a href=\"list\">Все программы…</a>")
             textFormat: Text.StyledText
             linkColor: Theme.p.link
             font.family: Theme.uiFont

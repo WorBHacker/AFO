@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from common.i18n import tr
+
 from .. import palette, vscode
 from ..hub_client import HubError
 from . import editor, links_text, project_rows, rows
@@ -137,7 +139,7 @@ class Projects(QObject):
 
     @Property(str, notify=searchChanged)
     def searchSummary(self) -> str:
-        return "поиск…" if self._searching else project_rows.search_summary(self._search)
+        return tr("поиск…") if self._searching else project_rows.search_summary(self._search)
 
     @Property(bool, notify=searchChanged)
     def searchActive(self) -> bool:
@@ -253,7 +255,7 @@ class Projects(QObject):
             return
 
         def done(project: dict[str, Any]) -> None:
-            self.app.flash(f"Проект «{project['name']}» добавлен")
+            self.app.flash(tr("Проект «{name}» добавлен", name=project["name"]))
             if all(p["id"] != project["id"] for p in self.items):  # the hub's event may have listed it already
                 self.items = sorted([*self.items, project], key=lambda p: p["name"].casefold())
                 self.listChanged.emit()
@@ -262,7 +264,7 @@ class Projects(QObject):
         self.app._call(
             lambda: self.app.client.add_project(path),
             done,
-            lambda error: self.app.show_error(f"Проект не добавлен: {error}"),
+            lambda error: self.app.show_error(tr("Проект не добавлен: {error}", error=error)),
         )
 
     @Slot(str, str, bool)
@@ -283,7 +285,7 @@ class Projects(QObject):
                 self.current = project
                 self.projectChanged.emit()
             self.listChanged.emit()
-            self.app.flash("Настройки проекта сохранены")
+            self.app.flash(tr("Настройки проекта сохранены"))
 
         self.app._call(lambda: self.app.client.update_project(pid, **changes), done)
 
@@ -299,7 +301,10 @@ class Projects(QObject):
                 self.app._call(lambda: self.app.client.remove_project(pid), lambda _r: self._forget(pid))
 
         self.app._ask(
-            f"Убрать проект «{project['name']}» из списка?", "Папка и файлы останутся на месте.", "Убрать", decide
+            tr("Убрать проект «{name}» из списка?", name=project["name"]),
+            tr("Папка и файлы останутся на месте."),
+            tr("Убрать"),
+            decide,
         )
 
     def _forget(self, project_id: str) -> None:
@@ -394,9 +399,9 @@ class Projects(QObject):
     def _tree_failed(self, error: Exception) -> None:
         self.tree.reset([])
         if self.currentMissing:
-            self.app.show_error(f"Папки проекта нет на месте: {self.currentPath}")
+            self.app.show_error(tr("Папки проекта нет на месте: {path}", path=self.currentPath))
         else:
-            self.app.show_error(f"Дерево проекта не загрузилось: {error}")
+            self.app.show_error(tr("Дерево проекта не загрузилось: {error}", error=error))
 
     @Slot(int)
     def toggleDir(self, index: int) -> None:
@@ -504,7 +509,7 @@ class Projects(QObject):
                 self._diff_text = ""
                 self._render_file(False)
             else:
-                self.app.show_error(f"Файл не открылся: {error}")
+                self.app.show_error(tr("Файл не открылся: {error}", error=error))
 
         self.app._call(fetch, show, failed)
 
@@ -539,7 +544,7 @@ class Projects(QObject):
         if not path or not self.current:
             return
         if not vscode.open_at(Path(self.current["path"]) / path, line):
-            self.app.show_error("VS Code не найден: нет ни `code` в PATH, ни VS Code в обычных папках установки")
+            self.app.show_error(tr("VS Code не найден: нет ни `code` в PATH, ни VS Code в обычных папках установки"))
 
     @Slot(bool)
     def showDiff(self, diff: bool) -> None:
@@ -607,7 +612,7 @@ class Projects(QObject):
             if payload.get("project_id") == self.currentId:
                 if kind == "card.failed":
                     self._card_error = payload.get("detail", "")
-                    self.app.show_error(f"Черновик карточки не составлен: {self._card_error}")
+                    self.app.show_error(tr("Черновик карточки не составлен: {error}", error=self._card_error))
                 self.load_card()
         elif payload.get("project_id") != self.currentId or not self.current:
             return
@@ -664,7 +669,7 @@ class Projects(QObject):
             if generation == self._search_gen:
                 self._search, self._searching = {"files": [], "matches": 0, "error": str(error)}, False
                 self.searchChanged.emit()
-                self.app.show_error(f"Поиск не удался: {error}")
+                self.app.show_error(tr("Поиск не удался: {error}", error=error))
 
         if symbols:
             self.app.call_or_fail(lambda: self.app.client.symbols(pid, q=text), show, failed)
@@ -724,7 +729,7 @@ class Projects(QObject):
     @Property(list, notify=exportChanged)
     def exportTargets(self) -> list:
         """The files the card can go to, each with what writing it would do - for the menu."""
-        return [{"id": t["target"], "name": t["path"], "note": project_rows.EXPORT_MODES.get(t["mode"], t["mode"]),
+        return [{"id": t["target"], "name": t["path"], "note": tr(project_rows.EXPORT_MODES.get(t["mode"], t["mode"])),
                  "icon": "file", "enabled": t["mode"] != "unchanged"} for t in self._export]  # fmt: skip
 
     @Slot()
@@ -756,12 +761,12 @@ class Projects(QObject):
                 return
 
             def done(_answer: dict[str, Any]) -> None:
-                self.app.flash(f"Карточка записана в {path}")
+                self.app.flash(tr("Карточка записана в {path}", path=path))
                 self.loadExport()
 
             self.app._call(lambda: self.app.client.export_card(pid, [target]), done)
 
-        self.app._ask(f"Записать карточку в {path}?", text, "Записать", decide)
+        self.app._ask(tr("Записать карточку в {path}?", path=path), text, tr("Записать"), decide)
 
     def load_card(self) -> None:
         if not self.current or self.app.client is None:
@@ -805,7 +810,7 @@ class Projects(QObject):
             self._card = {**self._card, "drafting": False}
             self._card_error = str(error)
             self.cardChanged.emit()
-            self.app.show_error(f"Черновик карточки не начат: {error}")
+            self.app.show_error(tr("Черновик карточки не начат: {error}", error=error))
 
         self.app.call_or_fail(lambda: self.app.client.draft_card(pid, model_id, update=update), None, failed)
 
@@ -819,7 +824,7 @@ class Projects(QObject):
             if pid == self.currentId:
                 self._card = card
                 self.cardChanged.emit()
-            self.app.flash(f"Карточка подтверждена, версия {card['confirmed']['version']}")
+            self.app.flash(tr("Карточка подтверждена, версия {version}", version=card["confirmed"]["version"]))
 
         self.app._call(lambda: self.app.client.confirm_card(pid, text), done)
 
@@ -857,12 +862,12 @@ class Projects(QObject):
             self._links = result["links"]
             self.linksChanged.emit()
             added = result["added"]
-            self.app.flash(f"Найдено новых связей: {added}" if added else "Новых связей не найдено")
+            self.app.flash(tr("Найдено новых связей: {count}", count=added) if added else tr("Новых связей не найдено"))
 
         def failed(error: Exception) -> None:
             self._scanning = False
             self.linksChanged.emit()
-            self.app.show_error(f"Поиск связей не удался: {error}")
+            self.app.show_error(tr("Поиск связей не удался: {error}", error=error))
 
         self.app.call_or_fail(lambda: self.app.client.scan_links(), done, failed)
 
@@ -905,23 +910,29 @@ class Projects(QObject):
             def failed(error: Exception) -> None:
                 if not force and "changed since" in str(error):
                     self.app._ask(
-                        f"{path} изменился после этой правки",
-                        "Откат вернёт файл к виду до правки модели, и всё, что менялось в нём потом, пропадёт. "
-                        "Откатить всё равно?",
-                        "Откатить",
+                        tr("{path} изменился после этой правки", path=path),
+                        tr(
+                            "Откат вернёт файл к виду до правки модели, и всё, что менялось в нём потом, пропадёт. "
+                            "Откатить всё равно?"
+                        ),
+                        tr("Откатить"),
                         lambda yes: undo(True) if yes else None,
                     )
                 else:
-                    self.app.show_error(f"Не откатилось: {error}")
+                    self.app.show_error(tr("Не откатилось: {error}", error=error))
 
             def done(_change: dict[str, Any]) -> None:
-                self.app.flash(f"Правка {path} откачена")
+                self.app.flash(tr("Правка {path} откачена", path=path))
                 self.load_changes()
 
             self.app._call(lambda: self.app.client.revert_change(change_id, force=force), done, failed)
 
-        made = "созданный моделью файл будет удалён" if found["before_hash"] is None else "файл вернётся к виду до неё"
-        self.app._ask(f"Откатить правку {path}?", f"Правка модели отменится: {made}.", "Откатить",
+        made = (
+            tr("Правка модели отменится: созданный моделью файл будет удалён.")
+            if found["before_hash"] is None
+            else tr("Правка модели отменится: файл вернётся к виду до неё.")
+        )
+        self.app._ask(tr("Откатить правку {path}?", path=path), made, tr("Откатить"),
                       lambda yes: undo(False) if yes else None)  # fmt: skip
 
     @Slot(int)
@@ -977,16 +988,16 @@ class Projects(QObject):
 
             def done(result: dict[str, Any]) -> None:
                 if result.get("stopped"):
-                    self.app.flash(f"Процесс {process['name']} завершён")
+                    self.app.flash(tr("Процесс {name} завершён", name=process["name"]))
                 else:
-                    self.app.show_error(f"Процесс {process['name']} не завершился")
+                    self.app.show_error(tr("Процесс {name} не завершился", name=process["name"]))
 
             self.app._call(lambda: self.app.client.stop_process(pid), done)
 
         self.app._ask(
-            f"Завершить {process['name']} (PID {pid})?",
-            "Вместе с его дочерними процессами. Что в нём не сохранено, пропадёт.",
-            "Завершить",
+            tr("Завершить {name} (PID {pid})?", name=process["name"], pid=pid),
+            tr("Вместе с его дочерними процессами. Что в нём не сохранено, пропадёт."),
+            tr("Завершить"),
             decide,
         )
 
@@ -1011,4 +1022,4 @@ class Projects(QObject):
         if self.current:
             full = Path(self.current["path"]) / path if path else Path(self.current["path"])
             self.app._clipboard().setText(str(full))
-            self.app.flash("Путь скопирован", ms=2000)
+            self.app.flash(tr("Путь скопирован"), ms=2000)

@@ -12,14 +12,16 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
+
 from .install_view import gb, verdict_of
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-PURPOSES = [("chat", "Разговоры", "отвечает на вопросы, пишет и переводит тексты"),
-            ("code", "Код", "пишет и объясняет программы"),
-            ("vision", "Картинки", "понимает картинки и снимки экрана")]  # fmt: skip
+PURPOSES = [("chat", N_("Разговоры"), N_("отвечает на вопросы, пишет и переводит тексты")),
+            ("code", N_("Код"), N_("пишет и объясняет программы")),
+            ("vision", N_("Картинки"), N_("понимает картинки и снимки экрана"))]  # fmt: skip
 VENDORS = {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "other": ""}
 DISMISSED = "setup/dismissed"
 
@@ -27,25 +29,30 @@ DISMISSED = "setup/dismissed"
 def card_rows(cards: list[dict[str, Any]]) -> list[str]:
     out = []
     for c in cards:
-        memory = f"{c['vram_gib']:g} ГБ видеопамяти".replace(".", ",") if c.get("vram_gib") else "память общая с ОЗУ"
+        if c.get("vram_gib"):
+            memory = tr("{gib} ГБ видеопамяти", gib=f"{c['vram_gib']:g}".replace(".", ","))
+        else:
+            memory = tr("память общая с ОЗУ")
         out.append(f"{c['name']} — {memory}")
-    return out or ["Видеокарта не найдена"]
+    return out or [tr("Видеокарта не найдена")]
 
 
 def job_text(job: dict[str, Any]) -> str:
     status = job.get("status")
     if status == "downloading":
         total, done = job.get("total") or 0, job.get("done") or 0
-        size = f" — {gb(done)} из {gb(total)}" if total else ""
-        return f"Скачиваю {job.get('step') or 'движок'}{size}"
+        what = job.get("step") or tr("движок")
+        if total:
+            return tr("Скачиваю {what} — {done} из {total}", what=what, done=gb(done), total=gb(total))
+        return tr("Скачиваю {what}", what=what)
     if status == "starting":
-        return "Запускаю llama-swap…"
+        return tr("Запускаю llama-swap…")
     if status == "done":
-        return "Движок обновлён" if job.get("update") else "Движок установлен и запущен"
+        return tr("Движок обновлён") if job.get("update") else tr("Движок установлен и запущен")
     if status == "failed":
-        return f"Не вышло: {job.get('error')}"
+        return tr("Не вышло: {error}", error=job.get("error"))
     if status == "cancelled":
-        return "Отменено"
+        return tr("Отменено")
     return ""
 
 
@@ -54,8 +61,8 @@ def model_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
     for purpose, title, what in PURPOSES:
         m = models.get(purpose)
         best = (m or {}).get("recommended") or {}
-        words, tone = verdict_of(best) if best else ("подходящей модели нет", "error")
-        out.append({"id": purpose, "title": title, "what": what, "name": (m or {}).get("name", ""),
+        words, tone = verdict_of(best) if best else (tr("подходящей модели нет"), "error")
+        out.append({"id": purpose, "title": tr(title), "what": tr(what), "name": (m or {}).get("name", ""),
                     "repo": (m or {}).get("repo", ""), "quant": best.get("quant", ""),
                     "offer": f"{best['quant']} · {gb(best['size'])}" if best else "", "words": words, "tone": tone,
                     "installed": bool((m or {}).get("installed")), "canInstall": bool(best)})  # fmt: skip
@@ -108,8 +115,10 @@ class SetupView(QObject):
         if not memory:
             return ""
         page = (self._state.get("page_file") or {}).get("gib")
-        text = f"ОЗУ {memory.get('ram_total_gib', 0):g} ГБ".replace(".", ",")
-        return text + (f" · файл подкачки ≈ {page:g} ГБ".replace(".", ",") if page is not None else "")
+        text = tr("ОЗУ {gib} ГБ", gib=f"{memory.get('ram_total_gib', 0):g}".replace(".", ","))
+        if page is None:
+            return text
+        return text + " · " + tr("файл подкачки ≈ {gib} ГБ", gib=f"{page:g}".replace(".", ","))
 
     @Property(str, notify=changed)
     def pageAdvice(self) -> str:
@@ -118,15 +127,16 @@ class SetupView(QObject):
     @Property(str, notify=changed)
     def engineText(self) -> str:
         if not self._state:
-            return "Смотрю, что есть на этом компьютере…"
+            return tr("Смотрю, что есть на этом компьютере…")
         engine = self._state.get("engine") or {}
         if self._state.get("answering"):
-            return "llama-swap уже работает — движок ставить не нужно"
+            return tr("llama-swap уже работает — движок ставить не нужно")
         if not self._state.get("needed"):
-            return f"Движок на месте: {engine.get('start', '')}"
+            return tr("Движок на месте: {start}", start=engine.get("start", ""))
         folder = self._state.get("folder", "")
-        return (f"Движка для локальных моделей ещё нет. AFO скачает llama.cpp и llama-swap с их страниц на "
-                f"GitHub (около 40–600 МБ, смотря по сборке) в {folder} и сам их запустит.")  # fmt: skip
+        return tr("Движка для локальных моделей ещё нет. AFO скачает llama.cpp и llama-swap с их страниц на "
+                  "GitHub (около 40–600 МБ, смотря по сборке) в {folder} и сам их запустит.",
+                  folder=folder)  # fmt: skip
 
     @Property(str, notify=changed)
     def jobStatus(self) -> str:
@@ -183,9 +193,10 @@ class SetupView(QObject):
         if not found.get("current"):
             return ""
         if found.get("newer"):
-            return (f"llama.cpp {found['current']} — есть новее: {found['latest']}. Обновление встанет рядом со "
-                    "старой сборкой, конфиг llama-swap получит путь к новой (копия прежнего — рядом).")  # fmt: skip
-        return f"llama.cpp {found['current']} — самая новая сборка"
+            return tr("llama.cpp {current} — есть новее: {latest}. Обновление встанет рядом со старой сборкой, "
+                      "конфиг llama-swap получит путь к новой (копия прежнего — рядом).", current=found["current"],
+                      latest=found["latest"])  # fmt: skip
+        return tr("llama.cpp {current} — самая новая сборка", current=found["current"])
 
     @Property(bool, notify=changed)
     def updateAvailable(self) -> bool:
@@ -198,7 +209,7 @@ class SetupView(QObject):
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.setup_update(), done,
-                              lambda e: self.app.show_error(f"Движок не обновить: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Движок не обновить: {error}", error=e)))  # fmt: skip
 
     def _load_models(self) -> None:
         self._models_loading = True
@@ -228,7 +239,7 @@ class SetupView(QObject):
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.setup_engine(build), done,
-                              lambda e: self.app.show_error(f"Движок не поставить: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Движок не поставить: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def cancelEngine(self) -> None:

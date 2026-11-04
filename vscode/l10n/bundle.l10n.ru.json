@@ -1,0 +1,16 @@
+{
+  "AFO: {0}. Create a token: python -m hub token create vscode — and paste it.": "AFO: {0}. Создайте токен: python -m hub token create vscode — и вставьте его.",
+  "Set token": "Задать токен",
+  "AFO hub token": "Токен хаба AFO",
+  "python -m hub token create vscode prints it (shown once)": "Его печатает python -m hub token create vscode (показывается один раз)",
+  "AFO: the token is saved in VS Code's secret storage": "AFO: токен сохранён в хранилище секретов VS Code",
+  "the hub address {0} is not on this computer — nothing is sent": "адрес хаба {0} не на этом компьютере — ничего не отправляется",
+  "no hub token": "нет токена хаба",
+  "a hub token is needed": "нужен токен хаба",
+  "the hub did not accept the token": "хаб не принял токен",
+  "the hub answered {0}": "хаб ответил {0}",
+  "the hub is not answering (not running?)": "хаб не отвечает (не запущен?)",
+  "problem: {0}": "проблема: {0}",
+  "the connection is fine": "связь в порядке",
+  "AFO: {0}; messages sent: {1}": "AFO: {0}; отправлено сообщений: {1}"
+}

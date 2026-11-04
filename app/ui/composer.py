@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import tr
+
 from . import mentions
 
 if TYPE_CHECKING:
@@ -113,7 +115,7 @@ class Mentions(QObject):
         ids = [*self.app._chat_projects, *(p["id"] for p in self._suggested)]
         self.app._set_chat_projects(list(dict.fromkeys(ids)), push=self.app.current is not None)
         names = ", ".join(p["name"] for p in self._suggested)
-        self.app.flash(f"Подключено к чату: {names}")
+        self.app.flash(tr("Подключено к чату: {names}", names=names))
 
     @Slot()
     def waveAway(self) -> None:

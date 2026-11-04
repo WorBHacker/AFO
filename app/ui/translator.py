@@ -16,7 +16,8 @@ class Catalog(QTranslator):
     def translate(self, context: str, source: str, disambiguation: str | None = None, n: int = -1) -> str | None:
         if i18n.language() == i18n.SOURCE:
             return None
-        return i18n.catalog(i18n.language()).get(source) or None
+        words = i18n.catalog(i18n.language())
+        return (disambiguation and words.get(i18n.in_context(disambiguation, source))) or words.get(source) or None
 
     def isEmpty(self) -> bool:
         return False

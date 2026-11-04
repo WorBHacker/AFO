@@ -20,6 +20,8 @@ from pygments.styles import get_all_styles
 from pygments.token import Token
 from pygments.util import ClassNotFound
 
+from common.i18n import tr
+
 from . import palette
 
 _MARK = "\x00"  # CommonMark turns NUL in the input into U+FFFD, so this never comes from the model
@@ -185,10 +187,12 @@ def page(body: str) -> str:
     return f"<html><head><style>{style_sheet()}</style></head><body>{body}</body></html>"
 
 
-@functools.lru_cache(maxsize=256)
 def language_label(lang: str) -> str:
-    if not lang:
-        return "текст"
+    return _lexer_name(lang) if lang else tr("текст")
+
+
+@functools.lru_cache(maxsize=256)
+def _lexer_name(lang: str) -> str:
     try:
         return get_lexer_by_name(lang).name.lower()
     except ClassNotFound:

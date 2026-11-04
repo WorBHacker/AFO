@@ -65,8 +65,8 @@ Column {
             }
             Icon { name: "sparkle"; size: 14; visible: !think.info.running; anchors.verticalCenter: parent.verticalCenter }
             Text {
-                text: (think.info.running ? "Думает… " : (think.info.seconds ? "Размышления · " : "Размышления"))
-                      + (think.info.seconds || "")
+                text: think.info.running ? qsTr("Думает… %1").arg(think.info.seconds || "")
+                      : think.info.seconds ? qsTr("Размышления · %1").arg(think.info.seconds) : qsTr("Размышления")
                 color: hover.hovered ? Theme.p.text_soft : Theme.p.muted
                 font.family: Theme.uiFont
                 font.pixelSize: 13

@@ -10,20 +10,26 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
+
 if TYPE_CHECKING:
     from .controller import Controller
 
-STATES = {"ready": "работает", "starting": "запускается…", "error": "ошибка", "off": "выключен",
-          "stopped": "остановлен"}  # fmt: skip
+STATES = {"ready": N_("работает"), "starting": N_("запускается…"), "error": N_("ошибка"), "off": N_("выключен"),
+          "stopped": N_("остановлен")}  # fmt: skip
 CLASSES = [  # as the class menu lists them: id, name, what the hub does
-    {"id": "read", "name": "только читает", "note": "без вопроса"},
-    {"id": "write", "name": "меняет данные", "note": "спросить; ответ «для этого чата» запоминается"},
-    {"id": "command", "name": "запускает команды", "note": "спросить каждый новый вызов"},
-    {"id": "network", "name": "ходит в сеть", "note": "спрашивать каждый раз"},
-    {"id": "send", "name": "отправляет от вашего имени", "note": "спрашивать каждый раз"},
-    {"id": "destructive", "name": "удаляет или необратимо меняет", "note": "спрашивать каждый раз"},
+    {"id": "read", "name": N_("только читает"), "note": N_("без вопроса")},
+    {"id": "write", "name": N_("меняет данные"), "note": N_("спросить; ответ «для этого чата» запоминается")},
+    {"id": "command", "name": N_("запускает команды"), "note": N_("спросить каждый новый вызов")},
+    {"id": "network", "name": N_("ходит в сеть"), "note": N_("спрашивать каждый раз")},
+    {"id": "send", "name": N_("отправляет от вашего имени"), "note": N_("спрашивать каждый раз")},
+    {"id": "destructive", "name": N_("удаляет или необратимо меняет"), "note": N_("спрашивать каждый раз")},
 ]
 CLASS_TEXT = {c["id"]: c["name"] for c in CLASSES}
+
+
+def class_text(cls: str) -> str:
+    return tr(CLASS_TEXT[cls]) if cls in CLASS_TEXT else cls
 
 
 def env_lines(text: str) -> str:
@@ -37,9 +43,9 @@ def server_rows(data: dict[str, Any], opened: set[str]) -> list[dict[str, Any]]:
     for s in data.get("servers", []):
         tools = s.get("tools") or []
         state = s.get("state", "")
-        status = STATES.get(state, state)
+        status = tr(STATES[state]) if state in STATES else state
         if state == "ready":
-            status += f" · инструментов: {len(tools)}"
+            status += " · " + tr("инструментов: {count}", count=len(tools))
         rows.append({
             "name": s["name"],
             "target": s.get("target", ""),
@@ -50,7 +56,7 @@ def server_rows(data: dict[str, Any], opened: set[str]) -> list[dict[str, Any]]:
             "env": ", ".join(s.get("env") or []),
             "opened": s["name"] in opened,
             "tools": [{"tool": t["tool"], "description": (t.get("description") or "").split("\n")[0][:160],
-                       "cls": t["class"], "clsText": CLASS_TEXT.get(t["class"], t["class"]),
+                       "cls": t["class"], "clsText": class_text(t["class"]),
                        "changed": t["class"] != t.get("default")}
                       for t in tools],
         })  # fmt: skip
@@ -74,7 +80,7 @@ class McpView(QObject):
 
     @Property(list, constant=True)
     def classes(self) -> list:
-        return CLASSES
+        return [{**c, "name": tr(c["name"]), "note": tr(c["note"])} for c in CLASSES]
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
@@ -126,9 +132,10 @@ class McpView(QObject):
         def added(server: dict[str, Any]) -> None:
             self._opened.add(server["name"])
             if server.get("state") == "error":
-                self.app.flash(f"Сервер «{server['name']}» добавлен, но не запустился", error=True)
+                self.app.flash(tr("Сервер «{name}» добавлен, но не запустился", name=server["name"]), error=True)
             else:
-                self.app.flash(f"Сервер «{server['name']}» добавлен: инструментов — {len(server.get('tools', []))}")
+                self.app.flash(tr("Сервер «{name}» добавлен: инструментов — {count}", name=server["name"],
+                                  count=len(server.get("tools", []))))  # fmt: skip
 
         if name and target:
             self._run(lambda: self.app.client.add_mcp_server(name, target, env, ticket), added)
@@ -142,7 +149,8 @@ class McpView(QObject):
     def setEnv(self, name: str, env: str) -> None:
         ticket, env = self.app.connections.ticket, env_lines(env)
         self._run(lambda: self.app.client.set_mcp_server(name, ticket, env=env),
-                  lambda _r: self.app.flash(f"Ключи сервера «{name}» сохранены, сервер перезапущен"))  # fmt: skip
+                  lambda _r: self.app.flash(tr("Ключи сервера «{name}» сохранены, сервер перезапущен",
+                                               name=name)))  # fmt: skip
 
     @Slot(str)
     def restart(self, name: str) -> None:
@@ -163,8 +171,9 @@ class McpView(QObject):
                 self._opened.discard(name)
                 self._run(lambda: self.app.client.delete_mcp_server(name, ticket))
 
-        self.app._ask(f"Удалить сервер MCP «{name}»?", "Его инструменты пропадут из новых чатов и задач агента; "
-                      "его ключи удалятся.", "Удалить", decide)  # fmt: skip
+        self.app._ask(tr("Удалить сервер MCP «{name}»?", name=name),
+                      tr("Его инструменты пропадут из новых чатов и задач агента; его ключи удалятся."), tr("Удалить"),
+                      decide)  # fmt: skip
 
     def on_event(self, _kind: str, _payload: dict[str, Any]) -> None:
         self.load()

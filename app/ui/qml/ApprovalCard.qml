@@ -98,22 +98,22 @@ FocusScope {
             width: parent.width
             visible: (card.request.alwaysAsk || "") !== ""
             text: card.request.alwaysAsk === "unsaved"
-                  ? "Этот файл открыт в редакторе с несохранёнными правками. Если разрешить, файл на диске изменится, а над вашими правками появится полоса «Файл изменился на диске». Спрашивается каждый раз, в «Доверенном» тоже."
+                  ? qsTr("Этот файл открыт в редакторе с несохранёнными правками. Если разрешить, файл на диске изменится, а над вашими правками появится полоса «Файл изменился на диске». Спрашивается каждый раз, в «Доверенном» тоже.")
                   : card.request.alwaysAsk === "network"
-                  ? "Команда обращается к сети: спрашивается каждый раз, разрешить можно только этот раз."
+                  ? qsTr("Команда обращается к сети: спрашивается каждый раз, разрешить можно только этот раз.")
                   : card.request.alwaysAsk === "script"
-                  ? "Скрипт Python в контейнере Windows: видит только свою папку, в сеть — только если задача это разрешает. Проверьте код. Спрашивается каждый раз."
+                  ? qsTr("Скрипт Python в контейнере Windows: видит только свою папку, в сеть — только если задача это разрешает. Проверьте код. Спрашивается каждый раз.")
                   : card.request.alwaysAsk === "outside"
-                  ? "Инструмент внешнего MCP-сервера обращается к сети: спрашивается каждый раз, разрешить можно только этот раз."
+                  ? qsTr("Инструмент внешнего MCP-сервера обращается к сети: спрашивается каждый раз, разрешить можно только этот раз.")
                   : card.request.alwaysAsk === "send"
-                  ? "Отправляет от вашего имени: спрашивается каждый раз, разрешить можно только этот раз."
+                  ? qsTr("Отправляет от вашего имени: спрашивается каждый раз, разрешить можно только этот раз.")
                   : card.request.alwaysAsk === "personal"
-                  ? "Личные данные: агент запомнит их только с вашего разрешения — спрашивается каждый раз."
+                  ? qsTr("Личные данные: агент запомнит их только с вашего разрешения — спрашивается каждый раз.")
                   : card.request.alwaysAsk === "hub"
-                  ? "Команда обращается к данным самого хаба — токенам, базе, журналам: то, что она выведет, увидит модель. Спрашивается каждый раз, разрешить можно только этот раз."
+                  ? qsTr("Команда обращается к данным самого хаба — токенам, базе, журналам: то, что она выведет, увидит модель. Спрашивается каждый раз, разрешить можно только этот раз.")
                   : card.request.alwaysAsk === "opaque"
-                  ? "Из текста команды не видно, что она запустит: имя в переменной, псевдоним или код из строки. Спрашивается каждый раз, разрешить можно только этот раз и только кнопкой."
-                  : "Разрушительное действие: спрашивается каждый раз, разрешить можно только этот раз и только кнопкой."
+                  ? qsTr("Из текста команды не видно, что она запустит: имя в переменной, псевдоним или код из строки. Спрашивается каждый раз, разрешить можно только этот раз и только кнопкой.")
+                  : qsTr("Разрушительное действие: спрашивается каждый раз, разрешить можно только этот раз и только кнопкой.")
             wrapMode: Text.Wrap
             color: Theme.p.error
             font.family: Theme.uiFont
@@ -189,7 +189,7 @@ FocusScope {
         Text {
             objectName: "approvalShowAll"
             visible: card.lines.length > card.shortLines
-            text: "<a href=\"x\">" + (card.expanded ? "Свернуть" : "Показать всё (" + card.lines.length + " строк)") + "</a>"
+            text: "<a href=\"x\">" + (card.expanded ? qsTr("Свернуть") : qsTr("Показать всё (%1 строк)").arg(card.lines.length)) + "</a>"
             textFormat: Text.StyledText
             linkColor: Theme.p.link
             font.family: Theme.uiFont
@@ -202,7 +202,7 @@ FocusScope {
             id: comment
             objectName: "approvalComment"
             width: parent.width
-            placeholderText: "Комментарий к отказу — его прочтёт агент (необязательно)"
+            placeholderText: qsTr("Комментарий к отказу — его прочтёт агент (необязательно)")
             Keys.onPressed: (event) => {
                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     event.accepted = true  // Ctrl+Enter here never allows: the user is writing why not
@@ -221,34 +221,34 @@ FocusScope {
                 objectName: "approveOnce"
                 kind: "primary"
                 iconName: "check"
-                text: "Разрешить"
+                text: qsTr("Разрешить")
                 onClicked: card.allowOnce()
             }
             PlainButton {
                 objectName: "approveChat"
                 visible: (card.request.alwaysAsk || "") === "" && (card.request.conversationId || "") !== ""
-                text: "Разрешить: " + (card.request.chatScope || "")
+                text: qsTr("Разрешить: %1").arg(card.request.chatScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "chat", "")
             }
             PlainButton {
                 objectName: "approveProject"
                 visible: (card.request.projectScope || "") !== ""
-                text: "Разрешить " + (card.request.projectScope || "")
+                text: qsTr("Разрешить %1").arg(card.request.projectScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "project", "")
             }
             PlainButton {
                 objectName: "deny"
                 kind: "danger"
                 iconName: "close"
-                text: "Отклонить"
+                text: qsTr("Отклонить")
                 onClicked: card.deny()
             }
         }
         Text {
             width: parent.width
-            text: comment.activeFocus ? "Enter — отклонить с комментарием · Esc — назад"
-                  : card.destructive ? "Esc — комментарий к отказу"
-                  : "Ctrl+Enter — разрешить один раз · Esc — комментарий к отказу"
+            text: comment.activeFocus ? qsTr("Enter — отклонить с комментарием · Esc — назад")
+                  : card.destructive ? qsTr("Esc — комментарий к отказу")
+                  : qsTr("Ctrl+Enter — разрешить один раз · Esc — комментарий к отказу")
             visible: card.activeFocus
             elide: Text.ElideRight
             color: Theme.p.faint

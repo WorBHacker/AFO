@@ -92,7 +92,7 @@ Rectangle {
                                 implicitWidth: 22
                                 implicitHeight: 22
                                 iconName: "close"
-                                tip: tab.modelData.running ? "Остановить терминал" : "Убрать (журнал удаляется)"
+                                tip: tab.modelData.running ? qsTr("Остановить терминал") : qsTr("Убрать (журнал удаляется)")
                                 onClicked: Terminals.closeTab(tab.modelData.id)
                             }
                         }
@@ -123,20 +123,20 @@ Rectangle {
                 objectName: "newTerminal"
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "plus"
-                tip: "Новый терминал в папке проекта"
+                tip: qsTr("Новый терминал в папке проекта")
                 onClicked: Terminals.newTerminal()
             }
             IconButton {
                 anchors.verticalCenter: parent.verticalCenter
                 visible: Terminals.currentId !== ""
                 iconName: "copy"
-                tip: "Копировать весь вывод"
+                tip: qsTr("Копировать весь вывод")
                 onClicked: Terminals.copyAll()
             }
             IconButton {
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "chevron-down"
-                tip: "Скрыть терминалы (Ctrl+J)"
+                tip: qsTr("Скрыть терминалы (Ctrl+J)")
                 onClicked: Terminals.setPanelOpen(false)
             }
         }
@@ -227,7 +227,7 @@ Rectangle {
             spacing: 10
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: "Терминалов в этом проекте нет"
+                text: qsTr("Терминалов в этом проекте нет")
                 color: Theme.p.muted
                 font.family: Theme.uiFont
                 font.pixelSize: 13
@@ -235,7 +235,7 @@ Rectangle {
             PlainButton {
                 anchors.horizontalCenter: parent.horizontalCenter
                 iconName: "terminal"
-                text: "Новый терминал"
+                text: qsTr("Новый терминал")
                 onClicked: Terminals.newTerminal()
             }
         }

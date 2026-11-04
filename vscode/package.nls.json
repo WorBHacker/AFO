@@ -1,0 +1,7 @@
+{
+  "command.setToken": "AFO: set the hub token",
+  "command.status": "AFO: connection to the hub",
+  "config.enabled": "Tell the AFO hub the open file and the terminals' commands.",
+  "config.hubUrl": "The hub's address. This computer only: the extension sends nothing to another address.",
+  "config.sendOutput": "Send the end of a command's output (the hub keeps the last 25 lines and hides keys and passwords in them)."
+}

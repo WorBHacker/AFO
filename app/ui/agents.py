@@ -11,35 +11,37 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
+
 from .project_rows import local_time
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-MODES = {"read_only": "только чтение", "ask": "спрашивать", "trusted": "доверенный"}
+MODES = {"read_only": N_("только чтение"), "ask": N_("спрашивать"), "trusted": N_("доверенный")}
 STATUSES = {
-    "queued": ("в очереди", "dots"),
-    "running": ("работает", "sparkle"),
-    "waiting": ("ждёт подтверждения", "shield"),
-    "done": ("готово", "check"),
-    "error": ("ошибка", "close"),
-    "cancelled": ("отменён", "stop"),
+    "queued": (N_("в очереди"), "dots"),
+    "running": (N_("работает"), "sparkle"),
+    "waiting": (N_("ждёт подтверждения"), "shield"),
+    "done": (N_("готово"), "check"),
+    "error": (N_("ошибка"), "close"),
+    "cancelled": (N_("отменён"), "stop"),
 }
 TOOL_LABELS = {
-    "list_files": "смотреть папки",
-    "read_file": "читать файлы",
-    "search_code": "искать в коде",
-    "git_status": "git: состояние",
-    "git_diff": "git: изменения",
-    "terminal_output": "читать терминалы",
-    "list_processes": "смотреть процессы",
-    "find_symbol": "искать определения",
-    "file_outline": "структура файлов",
-    "edit_file": "править файлы",
-    "write_file": "записывать файлы",
-    "run_command": "выполнять команды",
-    "web_fetch": "читать страницы в сети",
-    "delegate_task": "давать задачи другим агентам (координатор)",
+    "list_files": N_("смотреть папки"),
+    "read_file": N_("читать файлы"),
+    "search_code": N_("искать в коде"),
+    "git_status": N_("git: состояние"),
+    "git_diff": N_("git: изменения"),
+    "terminal_output": N_("читать терминалы"),
+    "list_processes": N_("смотреть процессы"),
+    "find_symbol": N_("искать определения"),
+    "file_outline": N_("структура файлов"),
+    "edit_file": N_("править файлы"),
+    "write_file": N_("записывать файлы"),
+    "run_command": N_("выполнять команды"),
+    "web_fetch": N_("читать страницы в сети"),
+    "delegate_task": N_("давать задачи другим агентам (координатор)"),
 }
 BLANK = {"id": "", "name": "", "instructions": "", "model_id": "", "tools": [], "mode": "ask", "project_ids": [],
          "max_steps": 30, "max_minutes": 30, "budget_usd": None}  # fmt: skip
@@ -51,9 +53,9 @@ def profile_rows(profiles: list[dict[str, Any]], models: dict[str, str], editing
         "name": p["name"],
         "note": " · ".join(s for s in (
             models.get(p["model_id"], p["model_id"]),
-            MODES.get(p["mode"], p["mode"]),
-            f"проектов: {len(p['project_ids'])}" if p["project_ids"] else "без проектов",
-            f"версия {p['version']}",
+            tr(MODES.get(p["mode"], p["mode"])),
+            tr("проектов: {count}", count=len(p["project_ids"])) if p["project_ids"] else tr("без проектов"),
+            tr("версия {version}", version=p["version"]),
         ) if s),
         "selected": p["id"] == editing,
     } for p in profiles]  # fmt: skip
@@ -63,13 +65,14 @@ def run_rows(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for r in runs:
         label, icon = STATUSES.get(r.get("shown_status") or r["status"], (r["status"], "dots"))
+        label = tr(label)
         if r["status"] == "error" and r.get("detail"):
             label += f": {r['detail']}"
         parts = [r["profile_name"], local_time(r.get("created_at", ""))]
         if r.get("parent_name"):
-            parts.insert(1, f"подзадача от «{r['parent_name']}»")
+            parts.insert(1, tr("подзадача от «{name}»", name=r["parent_name"]))
         if r.get("steps"):
-            parts.append(f"шагов {r['steps']}")
+            parts.append(tr("шагов {steps}", steps=r["steps"]))
         if r.get("cost_usd"):
             parts.append(f"${r['cost_usd']:.4f}")
         rows.append({
@@ -123,7 +126,7 @@ class Agents(QObject):
         models = {m["id"]: m["name"] for m in self.app.model_list}
         d = self._draft
         return {**d, "budget": "" if d["budget_usd"] is None else f"{d['budget_usd']:g}",
-                "modelName": models.get(d["model_id"], d["model_id"] or "выберите модель"),
+                "modelName": models.get(d["model_id"], d["model_id"] or tr("выберите модель")),
                 "saved": bool(d["id"])}  # fmt: skip
 
     @Property(str, notify=draftChanged)
@@ -139,7 +142,7 @@ class Agents(QObject):
         def show(found: dict[str, Any]) -> None:
             if agent_id == self._draft["id"] and found.get("estimate_usd") is not None:
                 cost = found["estimate_usd"]
-                self._estimate = ("бесплатно (локальная модель)" if not cost else f"≈ ${cost:.4f}") + \
+                self._estimate = (tr("бесплатно (локальная модель)") if not cost else f"≈ ${cost:.4f}") + \
                     f" — {found['basis']}"  # fmt: skip
                 self.draftChanged.emit()
 
@@ -148,7 +151,9 @@ class Agents(QObject):
     @Property(list, notify=draftChanged)
     def toolChoices(self) -> list:
         chosen = set(self._draft["tools"])
-        return [{"id": t, "name": TOOL_LABELS.get(t, t), "selected": not chosen or t in chosen} for t in self._tools]
+        return [
+            {"id": t, "name": tr(TOOL_LABELS.get(t, t)), "selected": not chosen or t in chosen} for t in self._tools
+        ]
 
     @Property(list, notify=draftChanged)
     def projectChoices(self) -> list:
@@ -192,8 +197,8 @@ class Agents(QObject):
             self.load_runs()
             if kind == "run.finished":
                 run = payload.get("run") or {}
-                label = STATUSES.get(run.get("status", ""), ("", ""))[0]
-                said = f"Агент «{run.get('profile_name', '')}»: {label}"
+                label = tr(STATUSES.get(run.get("status", ""), ("", ""))[0])
+                said = tr("Агент «{name}»: {status}", name=run.get("profile_name", ""), status=label)
                 self.app.flash(said, error=run.get("status") == "error")
                 self.finished.emit(said, " ".join(str(run.get("detail") or run.get("task", "")).split())[:200])
 
@@ -255,11 +260,12 @@ class Agents(QObject):
 
         def done(profile: dict[str, Any]) -> None:
             self._draft = dict(profile)
-            self.app.flash(f"Агент «{profile['name']}» сохранён, версия {profile['version']}")
+            self.app.flash(tr("Агент «{name}» сохранён, версия {version}", name=profile["name"],
+                              version=profile["version"]))  # fmt: skip
             self.load()
 
         def failed(error: Exception) -> None:
-            self.app.show_error(f"Агент не сохранён: {error}")
+            self.app.show_error(tr("Агент не сохранён: {error}", error=error))
 
         self.app._call(lambda: self.app.client.save_agent(body, profile_id or None), done, failed)
 
@@ -274,7 +280,8 @@ class Agents(QObject):
                 self._draft = dict(BLANK)
                 self.app._call(lambda: self.app.client.delete_agent(profile_id), lambda _r: self.load())
 
-        self.app._ask(f"Удалить агента «{name}»?", "Его прогоны останутся в списке чатов.", "Удалить", decide)
+        self.app._ask(tr("Удалить агента «{name}»?", name=name), tr("Его прогоны останутся в списке чатов."),
+                      tr("Удалить"), decide)  # fmt: skip
 
     # ================= runs =================
 
@@ -285,19 +292,19 @@ class Agents(QObject):
             return
 
         def done(run: dict[str, Any]) -> None:
-            self.app.flash(f"Задача отдана агенту «{run['profile_name']}»")
+            self.app.flash(tr("Задача отдана агенту «{name}»", name=run["profile_name"]))
             self.load_runs()
             self.app.load_conversations()
 
         def failed(error: Exception) -> None:
-            self.app.show_error(f"Прогон не начался: {error}")
+            self.app.show_error(tr("Прогон не начался: {error}", error=error))
 
         self.app._call(lambda: self.app.client.start_run(profile_id, task), done, failed)
 
     @Slot(str)
     def cancelRun(self, run_id: str) -> None:
         self.app._call(lambda: self.app.client.cancel_run(run_id), lambda _r: self.load_runs(),
-                       lambda error: self.app.show_error(f"Не остановлен: {error}"))  # fmt: skip
+                       lambda error: self.app.show_error(tr("Не остановлен: {error}", error=error)))  # fmt: skip
 
     @Slot(str)
     def openRun(self, run_id: str) -> None:

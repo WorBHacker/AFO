@@ -30,7 +30,7 @@ Column {
         }
         Text {
             visible: !!answer.row?.streaming
-            text: "· отвечает"
+            text: qsTr("· отвечает")
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -112,7 +112,7 @@ Column {
             tint: Theme.p.faint
             implicitWidth: 22
             implicitHeight: 22
-            tip: "Копировать ответ"
+            tip: qsTr("Копировать ответ")
             onClicked: App.copy(answer.row?.markdown || "")
         }
     }

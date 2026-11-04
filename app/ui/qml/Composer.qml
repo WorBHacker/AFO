@@ -76,7 +76,7 @@ Item {
                 spacing: 8
                 Icon { name: "chat"; size: 15; tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    text: "Модель спрашивает"
+                    text: qsTr("Модель спрашивает")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -113,8 +113,8 @@ Item {
             Text {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: (App.chatQuestion.options || []).length ? "Или напишите свой ответ в поле ниже — Enter отправит его"
-                                                              : "Ответьте в поле ниже — Enter отправит ответ"
+                text: (App.chatQuestion.options || []).length ? qsTr("Или напишите свой ответ в поле ниже — Enter отправит его")
+                                                              : qsTr("Ответьте в поле ниже — Enter отправит ответ")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -145,8 +145,10 @@ Item {
             x: suggestionIcon.x + suggestionIcon.width + 8
             width: suggestionButtons.x - x - 8
             anchors.verticalCenter: parent.verticalCenter
-            text: (Mentions.suggestions.length === 1 ? "В сообщении упомянут проект «" : "В сообщении упомянуты проекты «")
-                  + Mentions.suggestions.map(p => p.name).join("», «") + "» — подключить к чату?"
+            // the names in the language's quotes: «a», «b» - “a”, “b”
+            text: (Mentions.suggestions.length === 1 ? qsTr("В сообщении упомянут проект «%1» — подключить к чату?")
+                                                     : qsTr("В сообщении упомянуты проекты «%1» — подключить к чату?"))
+                  .arg(Mentions.suggestions.map(p => p.name).join(App.language === "ru" ? "», «" : "”, “"))
             elide: Text.ElideRight
             color: Theme.p.text_soft
             font.family: Theme.uiFont
@@ -161,14 +163,14 @@ Item {
             PlainButton {
                 objectName: "attachSuggested"
                 implicitHeight: 26
-                text: "Подключить"
+                text: qsTr("Подключить")
                 onClicked: Mentions.attachSuggested()
             }
             IconButton {
                 implicitWidth: 26
                 implicitHeight: 26
                 iconName: "close"
-                tip: "Не предлагать в этом чате"
+                tip: qsTr("Не предлагать в этом чате")
                 onClicked: Mentions.waveAway()
             }
         }
@@ -245,8 +247,8 @@ Item {
                 width: mentionMenu.availableWidth
                 topPadding: 4
                 leftPadding: 8
-                text: "Enter — выбрать" + (Mentions.items.length && Mentions.items[0].kind === "project" ? ", Tab — файл проекта" : "")
-                      + ", Esc — закрыть"
+                text: Mentions.items.length && Mentions.items[0].kind === "project" ? qsTr("Enter — выбрать, Tab — файл проекта, Esc — закрыть")
+                                                                                 : qsTr("Enter — выбрать, Esc — закрыть")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 11
@@ -256,7 +258,7 @@ Item {
 
     FileDialog {
         id: fileDialog
-        title: "Файлы и картинки для модели"
+        title: qsTr("Файлы и картинки для модели")
         fileMode: FileDialog.OpenFiles
         onAccepted: App.attachFiles(selectedFiles)
     }
@@ -348,7 +350,7 @@ Item {
                                 implicitWidth: 20
                                 implicitHeight: 20
                                 iconName: "close"
-                                tip: "Не отправлять этот файл"
+                                tip: qsTr("Не отправлять этот файл")
                                 anchors.verticalCenter: parent.verticalCenter
                                 onClicked: App.removeAttachment(index)
                             }
@@ -378,9 +380,9 @@ Item {
                 id: area
                 objectName: "composerInput"
                 wrapMode: TextArea.Wrap
-                placeholderText: Goal.steering ? "Цель в работе: напишите уточнение — модель прочтёт его в начале следующего хода, не прерывая этот"
-                                 : App.busyNow ? "Пока модель отвечает, можно набирать следующий вопрос…"
-                                 : "Спросите что-нибудь…  @ — проект или файл, /цель — работать до результата, Enter — отправить"
+                placeholderText: Goal.steering ? qsTr("Цель в работе: напишите уточнение — модель прочтёт его в начале следующего хода, не прерывая этот")
+                                 : App.busyNow ? qsTr("Пока модель отвечает, можно набирать следующий вопрос…")
+                                 : qsTr("Спросите что-нибудь…  @ — проект или файл, /цель — работать до результата, Enter — отправить")
                 placeholderTextColor: Theme.p.faint
                 color: Theme.p.text
                 selectionColor: Theme.p.selection
@@ -453,7 +455,7 @@ Item {
                 Chip {
                     id: effortChip
                     iconName: "sparkle"
-                    text: "Глубина: " + App.effortLabel
+                    text: qsTr("Глубина: %1").arg(App.effortLabel)
                     onClicked: composer.effortMenuRequested(effortChip)
                 }
                 Chip {
@@ -464,7 +466,7 @@ Item {
                     onClicked: { modeMenu.anchor = modeChip; modeMenu.open() }
                     ToolTip.visible: hovered && !modeMenu.visible
                     ToolTip.delay: 600
-                    ToolTip.text: "Права модели в этом чате: что она делает без вопроса"
+                    ToolTip.text: qsTr("Права модели в этом чате: что она делает без вопроса")
                 }
                 Chip {
                     id: goalChip
@@ -473,7 +475,7 @@ Item {
                     iconName: "target"
                     menu: false
                     active: Goal.shown
-                    text: Goal.shown ? "Цель: " + Goal.statusText : "Цель"
+                    text: Goal.shown ? qsTr("Цель: %1").arg(Goal.statusText) : qsTr("Цель")
                     onClicked: {
                         if (Goal.shown) {
                             Goal.toggle()
@@ -485,8 +487,8 @@ Item {
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: Goal.shown ? "Подробнее о цели: критерии, чего не хватает"
-                                             : "Режим «Цель»: модель работает ход за ходом, пока хаб не убедится, что цель достигнута. То же — «/цель …» в поле"
+                    ToolTip.text: Goal.shown ? qsTr("Подробнее о цели: критерии, чего не хватает")
+                                             : qsTr("Режим «Цель»: модель работает ход за ходом, пока хаб не убедится, что цель достигнута. То же — «/цель …» в поле")
                 }
                 Chip {
                     id: refusalChip
@@ -497,7 +499,7 @@ Item {
                     onClicked: { refusalMenu.anchor = refusalChip; refusalMenu.open() }
                     ToolTip.visible: hovered && !refusalMenu.visible
                     ToolTip.delay: 600
-                    ToolTip.text: "Вектор Strata, который убирает у модели отказы отвечать, — для этого чата"
+                    ToolTip.text: qsTr("Вектор Strata, который убирает у модели отказы отвечать, — для этого чата")
                 }
                 Chip {
                     id: projectChip
@@ -506,25 +508,25 @@ Item {
                     visible: App.chatProjectChoices.length > 0
                     iconName: App.chatProjects.length ? "folder" : "folder-plus"
                     active: App.chatProjects.length > 0
-                    text: App.chatProjects.length ? App.chatProjects.map(p => p.name).join(", ") : "Проект"
+                    text: App.chatProjects.length ? App.chatProjects.map(p => p.name).join(", ") : qsTr("Проект")
                     onClicked: composer.projectMenuRequested(projectChip)
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
                     ToolTip.text: hidden.length
-                                  ? "Облачная модель увидит только название: " + hidden.join(", ") + " (в настройках проекта облако не разрешено)"
-                                  : App.chatProjects.length ? "Модель читает эти проекты инструментами хаба"
-                                                            : "Прикрепить проект: модель сможет читать его файлы, git, терминалы"
+                                  ? qsTr("Облачная модель увидит только название: %1 (в настройках проекта облако не разрешено)").arg(hidden.join(", "))
+                                  : App.chatProjects.length ? qsTr("Модель читает эти проекты инструментами хаба")
+                                                            : qsTr("Прикрепить проект: модель сможет читать его файлы, git, терминалы")
                 }
                 Chip {
                     objectName: "contextChip"
                     visible: App.chatProjects.length > 0 && App.currentId !== ""
                     iconName: "layers"
                     menu: false
-                    text: App.contextTokens > 0 ? "Контекст ≈ " + App.contextTokens : "Контекст"
+                    text: App.contextTokens > 0 ? qsTr("Контекст ≈ %1").arg(App.contextTokens) : qsTr("Контекст")
                     onClicked: composer.contextRequested()
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: "Что хаб сообщает модели о проектах: слои, размер, закреплённые файлы"
+                    ToolTip.text: qsTr("Что хаб сообщает модели о проектах: слои, размер, закреплённые файлы")
                 }
             }
             Row {
@@ -538,7 +540,7 @@ Item {
                     implicitWidth: 32
                     implicitHeight: 32
                     iconName: "clip"
-                    tip: "Приложить файлы или картинки — их можно и перетащить в поле, и вставить Ctrl+V"
+                    tip: qsTr("Приложить файлы или картинки — их можно и перетащить в поле, и вставить Ctrl+V")
                     onClicked: fileDialog.open()
                 }
                 AbstractButton {
@@ -567,8 +569,8 @@ Item {
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: send.stops ? "Остановить ответ" : Goal.steering ? "Передать уточнение цели (Enter)"
-                                                                                  : "Отправить (Enter)"
+                    ToolTip.text: send.stops ? qsTr("Остановить ответ") : Goal.steering ? qsTr("Передать уточнение цели (Enter)")
+                                                                                  : qsTr("Отправить (Enter)")
                 }
             }
         }

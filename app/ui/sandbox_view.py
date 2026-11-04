@@ -9,17 +9,19 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, plural, tr
+
 from .approvals import PREVIEW_LINES, preview_lines
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-STATUS = {"added": "новый", "deleted": "удалён", "changed": "изменён"}
+STATUS = {"added": N_("новый"), "deleted": N_("удалён"), "changed": N_("изменён")}
 
 
 def sandbox_rows(projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": p["project_id"], "name": p["name"], "error": p.get("error", ""),
-             "files": [f"{f['path']} — {STATUS.get(f['status'], f['status'])}" for f in p.get("files", [])],
+             "files": [f"{f['path']} — {tr(STATUS.get(f['status'], f['status']))}" for f in p.get("files", [])],
              "lines": preview_lines({"kind": "diff", "text": p.get("diff", "")}), "more": more_text(p)}
             for p in projects if p.get("files") or p.get("error")]  # fmt: skip
 
@@ -32,8 +34,12 @@ def more_text(project: dict[str, Any]) -> str:
     cut = int(project.get("diff_chars") or 0) > len(diff)
     if total <= PREVIEW_LINES and not cut:
         return ""
-    said = f"Показаны первые {min(total, PREVIEW_LINES)} строк из {total}{' с лишним' if cut else ''}"
-    return said + " — «Применить» переносит все файлы целиком."
+    shown = min(total, PREVIEW_LINES)
+    if cut:
+        return tr("Показаны первые {shown} строк из {total} с лишним — «Применить» переносит все файлы целиком.",
+                  shown=shown, total=total)  # fmt: skip
+    return tr("Показаны первые {shown} строк из {total} — «Применить» переносит все файлы целиком.", shown=shown,
+              total=total)  # fmt: skip
 
 
 class SandboxView(QObject):
@@ -66,10 +72,9 @@ class SandboxView(QObject):
     def summary(self) -> str:
         n = self.count
         if not n:
-            return "Песочница: модель пишет в отдельную копию проекта — здесь появятся её правки"
-        word = "файл" if n % 10 == 1 and n % 100 != 11 else "файла" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 \
-            else "файлов"  # fmt: skip
-        return f"Песочница: изменено {n} {word} — посмотрите и примените или отбросьте"
+            return tr("Песочница: модель пишет в отдельную копию проекта — здесь появятся её правки")
+        return tr("Песочница: изменено {n} {files} — посмотрите и примените или отбросьте", n=n,
+                  files=plural(n, "файл", "файла", "файлов"))  # fmt: skip
 
     @Slot()
     def load(self) -> None:
@@ -98,7 +103,7 @@ class SandboxView(QObject):
 
         def failed(error: Exception) -> None:
             self._busy = False
-            self.app.show_error(f"Не вышло: {error}")
+            self.app.show_error(tr("Не вышло: {error}", error=error))
             self.changed.emit()
 
         self.app.call_or_fail(lambda: call(cid, project_id), ok, failed)
@@ -107,8 +112,9 @@ class SandboxView(QObject):
     def apply(self, project_id: str) -> None:
         def said(result: dict[str, Any]) -> str:
             if result.get("conflicts"):
-                return f"Применено, но с конфликтами: {', '.join(result['conflicts'])} — поправьте их в проекте"
-            return f"Применено к проекту: {len(result.get('applied', []))} файлов"
+                return tr("Применено, но с конфликтами: {files} — поправьте их в проекте",
+                          files=", ".join(result["conflicts"]))  # fmt: skip
+            return tr("Применено к проекту: {count} файлов", count=len(result.get("applied", [])))
 
         self._act(project_id, self.app.client.apply_sandbox, said)
 
@@ -118,10 +124,11 @@ class SandboxView(QObject):
 
         def decide(yes: bool) -> None:
             if yes:
-                self._act(project_id, self.app.client.discard_sandbox, lambda _r: "Правки песочницы отброшены")
+                self._act(project_id, self.app.client.discard_sandbox, lambda _r: tr("Правки песочницы отброшены"))
 
-        self.app._ask(f"Отбросить правки в «{name}»?", "Копия проекта и её ветка удалятся; сам проект не изменится.",
-                      "Отбросить", decide)  # fmt: skip
+        self.app._ask(tr("Отбросить правки в «{name}»?", name=name),
+                      tr("Копия проекта и её ветка удалятся; сам проект не изменится."), tr("Отбросить"),
+                      decide)  # fmt: skip
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if payload.get("conversation_id") in (None, self.app.current):

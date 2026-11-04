@@ -8,7 +8,7 @@ import QtQuick.Dialogs
 Sheet {
     id: sheet
     objectName: "modelsSheet"
-    title: "Модели"
+    title: qsTr("Модели")
     iconName: "sliders"
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
 
@@ -126,10 +126,10 @@ Sheet {
         visible: ModelSetup.general
         width: parent.width
         spacing: 8
-        Note { text: "Этот промпт получает каждая модель хаба — в чатах, у агентов, в прокси OpenAI. После него идут промпт модели, инструкции чата и роль агента." }
-        Prompt { width: parent.width; fieldId: "system_prompt"; hint: "Например: «Отвечай по-русски, коротко; код — с пояснением в одну строку»" }
+        Note { text: qsTr("Этот промпт получает каждая модель хаба — в чатах, у агентов, в прокси OpenAI. После него идут промпт модели, инструкции чата и роль агента.") }
+        Prompt { width: parent.width; fieldId: "system_prompt"; hint: qsTr("Например: «Отвечай по-русски, коротко; код — с пояснением в одну строку»") }
 
-        SectionTitle { text: "Роли — какая модель что делает" }
+        SectionTitle { text: qsTr("Роли — какая модель что делает") }
         Repeater {
             model: ModelSetup.roleRows
             delegate: Item {
@@ -174,29 +174,29 @@ Sheet {
         PlainButton {
             objectName: "exportModelSettings"
             iconName: "external"
-            text: "Сохранить настройки всех моделей в файл…"
+            text: qsTr("Сохранить настройки всех моделей в файл…")
             onClicked: exportDialog.open()
         }
         PlainButton {
             objectName: "importModelSettings"
             iconName: "folder"
-            text: "Загрузить из файла…"
+            text: qsTr("Загрузить из файла…")
             onClicked: importDialog.open()
         }
     }
     FileDialog {
         id: exportDialog
-        title: "Сохранить настройки моделей"
+        title: qsTr("Сохранить настройки моделей")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "json"
-        nameFilters: ["Настройки моделей (*.json)"]
+        nameFilters: [qsTr("Настройки моделей (*.json)")]
         onAccepted: ModelSetup.exportTo(selectedFile.toString())
     }
     FileDialog {
         id: importDialog
-        title: "Загрузить настройки моделей"
+        title: qsTr("Загрузить настройки моделей")
         fileMode: FileDialog.OpenFile
-        nameFilters: ["Настройки моделей (*.json)"]
+        nameFilters: [qsTr("Настройки моделей (*.json)")]
         onAccepted: ModelSetup.importFrom(selectedFile.toString())
     }
     MenuPopup {
@@ -213,50 +213,50 @@ Sheet {
         width: parent.width
         spacing: 12
 
-        SectionTitle { text: "В выборе модели" }
+        SectionTitle { text: qsTr("В выборе модели") }
         Row {
             spacing: 12
             Segmented {
                 objectName: "modelShown"
-                options: [{ id: "shown", name: "Показывать" }, { id: "hidden", name: "Скрыть" }]
+                options: [{ id: "shown", name: qsTr("Показывать") }, { id: "hidden", name: qsTr("Скрыть") }]
                 value: ModelSetup.draft.hidden ? "hidden" : "shown"
                 onPicked: (id) => ModelSetup.setFlag("hidden", id === "hidden")
             }
             Field {
                 objectName: "field_name"
                 width: 300
-                placeholderText: "Своё имя (иначе — как у поставщика)"
+                placeholderText: qsTr("Своё имя (иначе — как у поставщика)")
                 text: ModelSetup.draft.name || ""
                 onEditingFinished: ModelSetup.setField("name", text)
             }
         }
 
-        SectionTitle { text: "Возможности — если поставщик сообщает неверно" }
+        SectionTitle { text: qsTr("Возможности — если поставщик сообщает неверно") }
         Flow {
             width: parent.width
             spacing: 12
-            Labelled { fieldId: "context"; label: "Контекст, токенов"; hint: "как у поставщика" }
+            Labelled { fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("как у поставщика") }
             Column {
                 spacing: 4
-                Label { text: "Инструменты" }
+                Label { text: qsTr("Инструменты") }
                 Segmented {
-                    options: [{ id: "", name: "как есть" }, { id: "yes", name: "да" }, { id: "no", name: "нет" }]
+                    options: [{ id: "", name: qsTr("как есть") }, { id: "yes", name: qsTr("да") }, { id: "no", name: qsTr("нет") }]
                     value: ModelSetup.draft.tools || ""
                     onPicked: (id) => ModelSetup.setField("tools", id)
                 }
             }
             Column {
                 spacing: 4
-                Label { text: "Картинки (зрение)" }
+                Label { text: qsTr("Картинки (зрение)") }
                 Segmented {
-                    options: [{ id: "", name: "как есть" }, { id: "yes", name: "да" }, { id: "no", name: "нет" }]
+                    options: [{ id: "", name: qsTr("как есть") }, { id: "yes", name: qsTr("да") }, { id: "no", name: qsTr("нет") }]
                     value: ModelSetup.draft.vision || ""
                     onPicked: (id) => ModelSetup.setField("vision", id)
                 }
             }
         }
 
-        SectionTitle { visible: !ModelSetup.local; text: "Цены, $ за 1 млн токенов — свои вместо поставщика (с датой)" }
+        SectionTitle { visible: !ModelSetup.local; text: qsTr("Цены, $ за 1 млн токенов — свои вместо поставщика (с датой)") }
         Flow {
             visible: !ModelSetup.local
             width: parent.width
@@ -273,15 +273,15 @@ Sheet {
             }
         }
 
-        SectionTitle { text: "Параметры ответа" }
+        SectionTitle { text: qsTr("Параметры ответа") }
         Note {
             visible: ModelSetup.accepts.length === 0
-            text: "Поставщик этой модели не принимает параметров ответа — хаб их не отправит."
+            text: qsTr("Поставщик этой модели не принимает параметров ответа — хаб их не отправит.")
         }
         Row {
             visible: ModelSetup.accepts.indexOf("temperature") >= 0  // the presets are temperatures and samplers
             spacing: 10
-            Label { text: "Заготовка"; anchors.verticalCenter: parent.verticalCenter }
+            Label { text: qsTr("Заготовка"); anchors.verticalCenter: parent.verticalCenter }
             Segmented {
                 objectName: "modelPreset"
                 options: ModelSetup.presets
@@ -307,16 +307,16 @@ Sheet {
             visible: ModelSetup.accepts.indexOf("stop") >= 0
             width: parent.width
             spacing: 4
-            Label { text: "Стоп-последовательности — по одной на строку, до 4" }
-            Prompt { width: parent.width; height: 64; fieldId: "stop"; hint: "Модель останавливается, дойдя до любой из них" }
+            Label { text: qsTr("Стоп-последовательности — по одной на строку, до 4") }
+            Prompt { width: parent.width; height: 64; fieldId: "stop"; hint: qsTr("Модель останавливается, дойдя до любой из них") }
         }
         Row {
             visible: ModelSetup.accepts.indexOf("thinking") >= 0
             spacing: 10
-            Label { text: "Размышления"; anchors.verticalCenter: parent.verticalCenter }
+            Label { text: qsTr("Размышления"); anchors.verticalCenter: parent.verticalCenter }
             Segmented {
                 objectName: "modelThinking"
-                options: [{ id: "", name: "как у модели" }, { id: "on", name: "включены" }, { id: "off", name: "выключены" }]
+                options: [{ id: "", name: qsTr("как у модели") }, { id: "on", name: qsTr("включены") }, { id: "off", name: qsTr("выключены") }]
                 value: ModelSetup.draft.thinking || ""
                 onPicked: (id) => ModelSetup.setField("thinking", id)
             }
@@ -328,10 +328,10 @@ Sheet {
             spacing: 4
             Row {
                 spacing: 10
-                Label { text: "Снятие отказов (abliterated)"; anchors.verticalCenter: parent.verticalCenter }
+                Label { text: qsTr("Снятие отказов (abliterated)"); anchors.verticalCenter: parent.verticalCenter }
                 Segmented {
                     objectName: "modelRefusalVector"
-                    options: [{ id: "", name: "как у модели" }, { id: "on", name: "включено" }, { id: "off", name: "выключено" }]
+                    options: [{ id: "", name: qsTr("как у модели") }, { id: "on", name: qsTr("включено") }, { id: "off", name: qsTr("выключено") }]
                     value: ModelSetup.draft.refusal_vector || ""
                     onPicked: (id) => ModelSetup.setField("refusal_vector", id)
                 }
@@ -339,7 +339,7 @@ Sheet {
             Text {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: "Strata накладывает на модель вектор, который убирает отказы отвечать. Выключено — обычная модель, как её выпустили: на некоторые темы может отказаться. «Как у модели» — включено. Модель не перезагружается; у новой задачи агента можно выбрать своё."
+                text: qsTr("Strata накладывает на модель вектор, который убирает отказы отвечать. Выключено — обычная модель, как её выпустили: на некоторые темы может отказаться. «Как у модели» — включено. Модель не перезагружается; у новой задачи агента можно выбрать своё.")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -348,7 +348,7 @@ Sheet {
         Column {
             width: parent.width
             spacing: 4
-            Label { text: "Глубина размышлений, когда выбираете эту модель" }
+            Label { text: qsTr("Глубина размышлений, когда выбираете эту модель") }
             Segmented {
                 objectName: "modelEffort"
                 width: parent.width
@@ -358,13 +358,13 @@ Sheet {
             }
         }
 
-        SectionTitle { text: "Системный промпт модели" }
-        Prompt { width: parent.width; fieldId: "system_prompt"; hint: "Идёт после общего промпта и перед инструкциями чата" }
+        SectionTitle { text: qsTr("Системный промпт модели") }
+        Prompt { width: parent.width; fieldId: "system_prompt"; hint: qsTr("Идёт после общего промпта и перед инструкциями чата") }
 
         // ---------- for the experienced: how much context the model gets ----------
         Text {
             objectName: "budgetsToggle"
-            text: "<a href=\"x\">" + (budgets.visible ? "▾" : "▸") + " Для опытных: бюджеты контекста и порции инструментов</a>"
+            text: "<a href=\"x\">" + (budgets.visible ? "▾ " : "▸ ") + qsTr("Для опытных: бюджеты контекста и порции инструментов") + "</a>"
             textFormat: Text.StyledText
             linkColor: Theme.p.link
             font.family: Theme.uiFont
@@ -378,7 +378,7 @@ Sheet {
             visible: false
             width: parent.width
             spacing: 8
-            Note { text: "Сколько контекста модель получает с каждым сообщением (слои L0–L4) и сколько отдают за раз её инструменты. Пусто — как у всех моделей; облачным больше — дороже каждый шаг." }
+            Note { text: qsTr("Сколько контекста модель получает с каждым сообщением (слои L0–L4) и сколько отдают за раз её инструменты. Пусто — как у всех моделей; облачным больше — дороже каждый шаг.") }
             Flow {
                 width: parent.width
                 spacing: 12
@@ -401,14 +401,14 @@ Sheet {
             visible: ModelSetup.launch.engine !== undefined
             width: parent.width
             spacing: 10
-            SectionTitle { text: "Запуск в llama-swap — config.yaml" }
+            SectionTitle { text: qsTr("Запуск в llama-swap — config.yaml") }
             Note {
                 visible: ModelSetup.launch.engine === "strata"
-                text: "Запускается через Strata по профилю " + (ModelSetup.launch.profile || "") + " — его настройки меняет сама Strata. Здесь — только выгрузка по времени."
+                text: qsTr("Запускается через Strata по профилю %1 — его настройки меняет сама Strata. Здесь — только выгрузка по времени.").arg(ModelSetup.launch.profile || "")
             }
             Note {
                 visible: ModelSetup.launch.editable === true
-                text: "llama.cpp · " + (ModelSetup.launch.file || "") + (ModelSetup.launch.mmproj ? " · с проектором картинок" : "")
+                text: "llama.cpp · " + (ModelSetup.launch.file || "") + (ModelSetup.launch.mmproj ? qsTr(" · с проектором картинок") : "")
             }
             Note {  // a block the window does not edit: a one-line command, or one the hub cannot read
                 visible: !!ModelSetup.launch.problem
@@ -418,28 +418,26 @@ Sheet {
                 objectName: "launchPreset"
                 visible: ModelSetup.launch.editable === true
                 width: parent.width
-                options: [{ id: "fast", name: "Быстрее" }, { id: "balanced", name: "Баланс" },
-                          { id: "quality", name: "Качественнее" }]
+                options: [{ id: "fast", name: qsTr("Быстрее") }, { id: "balanced", name: qsTr("Баланс") },
+                          { id: "quality", name: qsTr("Качественнее") }]
                 value: ModelSetup.launchPreset
                 onPicked: (id) => ModelSetup.applyLaunchPreset(id)
             }
             Note {
                 visible: ModelSetup.launch.editable === true
-                text: "Быстрее — модель помнит последние ~8 тыс. токенов разговора и целиком на видеокарте; Баланс — ~32 тыс.; "
-                      + "Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. Ниже — точные настройки и "
-                      + "оценка, поместится ли."
+                text: qsTr("Быстрее — модель помнит последние ~8 тыс. токенов разговора и целиком на видеокарте; Баланс — ~32 тыс.; Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. Ниже — точные настройки и оценка, поместится ли.")
             }
             Flow {
                 visible: ModelSetup.launch.editable === true
                 width: parent.width
                 spacing: 12
-                LaunchField { fieldId: "context"; label: "Контекст, токенов"; hint: "например 32768" }
-                LaunchField { fieldId: "parallel"; label: "Параллельных запросов"; hint: "1" }
+                LaunchField { fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("например 32768") }
+                LaunchField { fieldId: "parallel"; label: qsTr("Параллельных запросов"); hint: "1" }
                 Column {
                     spacing: 4
                     Label { text: "Flash attention" }
                     Segmented {
-                        options: [{ id: "on", name: "вкл" }, { id: "off", name: "выкл" }, { id: "auto", name: "авто" }]
+                        options: [{ id: "on", name: qsTr("вкл") }, { id: "off", name: qsTr("выкл") }, { id: "auto", name: qsTr("авто") }]
                         value: ModelSetup.launchDraft.flash_attn || "auto"
                         onPicked: (id) => ModelSetup.setLaunch("flash_attn", id)
                     }
@@ -448,17 +446,17 @@ Sheet {
             Row {
                 visible: ModelSetup.launch.editable === true
                 spacing: 10
-                Label { text: "Слои на видеокарте"; anchors.verticalCenter: parent.verticalCenter }
+                Label { text: qsTr("Слои на видеокарте"); anchors.verticalCenter: parent.verticalCenter }
                 Segmented {
                     objectName: "launchLayers"
-                    options: [{ id: "all", name: "все" }, { id: "auto", name: "сколько поместится" }, { id: "n", name: "число" }]
+                    options: [{ id: "all", name: qsTr("все") }, { id: "auto", name: qsTr("сколько поместится") }, { id: "n", name: qsTr("число") }]
                     value: ModelSetup.launchDraft.gpu_mode || "all"
                     onPicked: (id) => ModelSetup.setLaunch("gpu_mode", id)
                 }
                 Field {
                     visible: ModelSetup.launchDraft.gpu_mode === "n"
                     width: 90
-                    placeholderText: "слоёв"
+                    placeholderText: qsTr("слоёв")
                     text: ModelSetup.launchDraft.gpu_n || ""
                     onEditingFinished: ModelSetup.setLaunch("gpu_n", text)
                 }
@@ -466,7 +464,7 @@ Sheet {
             Row {
                 visible: ModelSetup.launch.editable === true
                 spacing: 10
-                Label { text: "Сжатие KV-кэша"; anchors.verticalCenter: parent.verticalCenter }
+                Label { text: qsTr("Сжатие KV-кэша"); anchors.verticalCenter: parent.verticalCenter }
                 Segmented {
                     objectName: "launchCache"
                     options: ModelSetup.cacheChoices
@@ -474,14 +472,14 @@ Sheet {
                     onPicked: (id) => ModelSetup.setLaunch("cache_type", id)
                 }
             }
-            LaunchField { fieldId: "ttl_min"; label: "Выгружать без запросов, мин"; hint: "0 — никогда"; width: 210 }
+            LaunchField { fieldId: "ttl_min"; label: qsTr("Выгружать без запросов, мин"); hint: qsTr("0 — никогда"); width: 210 }
             Text {
                 objectName: "launchEstimate"
                 visible: text !== ""
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: ModelSetup.launchEstimate
-                color: text.indexOf("не поместится") >= 0 ? Theme.p.error : text.indexOf("медленнее") >= 0 ? Theme.p.warn : Theme.p.text_soft
+                color: ModelSetup.launchEstimateTone === "error" ? Theme.p.error : ModelSetup.launchEstimateTone === "warn" ? Theme.p.warn : Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 13
             }
@@ -492,14 +490,14 @@ Sheet {
                     kind: "primary"
                     iconName: "check"
                     enabled: ModelSetup.launchDirty && !ModelSetup.launchBusy
-                    text: "Записать в config.yaml"
+                    text: qsTr("Записать в config.yaml")
                     onClicked: ModelSetup.saveLaunch()
                 }
                 PlainButton {
                     objectName: "trialLaunch"
                     enabled: !ModelSetup.launchBusy
                     iconName: "bolt"
-                    text: "Проверить запуск"
+                    text: qsTr("Проверить запуск")
                     onClicked: ModelSetup.trialLaunch()
                 }
             }
@@ -509,7 +507,7 @@ Sheet {
                 width: parent.width
                 wrapMode: Text.Wrap
                 text: ModelSetup.launchStatus
-                color: text.indexOf("Не ") === 0 || text.indexOf("не запустилась") >= 0 ? Theme.p.error : Theme.p.text_soft
+                color: ModelSetup.launchFailed ? Theme.p.error : Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 12
             }
@@ -534,12 +532,12 @@ Sheet {
             kind: "primary"
             iconName: "check"
             enabled: ModelSetup.dirty && !ModelSetup.loading
-            text: "Сохранить"
+            text: qsTr("Сохранить")
             onClicked: ModelSetup.save()
         }
         PlainButton {
             visible: ModelSetup.dirty
-            text: "Отменить изменения"
+            text: qsTr("Отменить изменения")
             onClicked: ModelSetup.discard()
         }
         PlainButton {
@@ -547,7 +545,7 @@ Sheet {
             visible: !ModelSetup.general
             enabled: !ModelSetup.checking
             iconName: "bolt"
-            text: ModelSetup.dirty ? "Проверить (сохранённые)" : "Проверить"
+            text: ModelSetup.dirty ? qsTr("Проверить (сохранённые)") : qsTr("Проверить")
             onClicked: ModelSetup.check()
         }
     }
@@ -557,12 +555,12 @@ Sheet {
         width: parent.width
         wrapMode: Text.Wrap
         text: ModelSetup.checkText
-        color: ModelSetup.checkText.indexOf("Не ") === 0 ? Theme.p.error : Theme.p.text_soft
+        color: ModelSetup.checkFailed ? Theme.p.error : Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
     }
 
-    SectionTitle { visible: ModelSetup.history.length > 0; text: "Версии" }
+    SectionTitle { visible: ModelSetup.history.length > 0; text: qsTr("Версии") }
     Column {
         objectName: "modelVersions"
         width: parent.width
@@ -577,7 +575,7 @@ Sheet {
                     width: parent.width - back.width - 10
                     anchors.verticalCenter: parent.verticalCenter
                     text: "v" + modelData.version + " · " + modelData.when + " · " + modelData.what
-                          + (modelData.current ? " · сейчас" : "")
+                          + (modelData.current ? qsTr(" · сейчас") : "")
                     elide: Text.ElideRight
                     color: modelData.current ? Theme.p.text : Theme.p.muted
                     font.family: Theme.uiFont
@@ -589,7 +587,7 @@ Sheet {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     implicitHeight: 26
-                    text: "Вернуть"
+                    text: qsTr("Вернуть")
                     onClicked: ModelSetup.revert(modelData.version)
                 }
             }

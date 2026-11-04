@@ -34,7 +34,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
         }
         Small {
-            text: "Хаб " + App.hubPort
+            text: qsTr("Хаб %1").arg(App.hubPort)
             HoverHandler { id: hubHover }
             ToolTip.visible: hubHover.hovered
             ToolTip.text: App.hubTooltip
@@ -119,7 +119,7 @@ Rectangle {
         }
         Separator { anchors.verticalCenter: parent.verticalCenter }
         Meter {
-            label: "Память"
+            label: qsTr("Память")
             value: App.status.commit
             valueText: App.status.commitText
             warn: App.status.commitWarn

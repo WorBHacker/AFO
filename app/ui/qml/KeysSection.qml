@@ -18,10 +18,9 @@ Column {
     }
 
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
-    SectionTitle { text: "Ключи API для агента" }
+    SectionTitle { text: qsTr("Ключи API для агента") }
     Note {
-        text: "Для сервисов, к которым агент обращается сам (погода, задачи, CRM): ключ уходит только на свой сайт "
-              + "в указанном заголовке, модель его не видит, а сайт, который вернул бы ключ в ответе, его не покажет."
+        text: qsTr("Для сервисов, к которым агент обращается сам (погода, задачи, CRM): ключ уходит только на свой сайт в указанном заголовке, модель его не видит, а сайт, который вернул бы ключ в ответе, его не покажет.")
     }
     Repeater {
         model: AgentKeys.items
@@ -47,7 +46,7 @@ Column {
                 visible: section.unlocked
                 kind: "danger"
                 iconName: "trash"
-                text: "Удалить"
+                text: qsTr("Удалить")
                 onClicked: AgentKeys.remove(modelData.name)
             }
         }
@@ -56,15 +55,15 @@ Column {
         visible: section.unlocked
         width: parent.width
         spacing: 6
-        Field { id: name; objectName: "keyName"; width: 120; placeholderText: "Имя: weather" }
-        Field { id: host; objectName: "keyHost"; width: 200; placeholderText: "Сайт: api.weather.example" }
+        Field { id: name; objectName: "keyName"; width: 120; placeholderText: qsTr("Имя: weather") }
+        Field { id: host; objectName: "keyHost"; width: 200; placeholderText: qsTr("Сайт: api.weather.example") }
         Field { id: header; width: 130; placeholderText: "Authorization" }
         Field { id: prefix; width: 80; text: "Bearer " }
-        Field { id: value; objectName: "keyValue"; width: 220; echoMode: TextInput.Password; placeholderText: "Ключ" }
+        Field { id: value; objectName: "keyValue"; width: 220; echoMode: TextInput.Password; placeholderText: qsTr("Ключ") }
         PlainButton {
             objectName: "keySave"
             kind: "primary"
-            text: "Сохранить ключ"
+            text: qsTr("Сохранить ключ")
             enabled: name.text.trim() !== "" && host.text.trim() !== ""
             onClicked: { AgentKeys.save(name.text, host.text, header.text, prefix.text, value.text); value.text = "" }
         }

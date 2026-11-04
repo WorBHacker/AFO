@@ -8,7 +8,7 @@ import QtQuick.Dialogs
 Sheet {
     id: sheet
     objectName: "agentAccessSheet"
-    title: "Папки и сайты для агента"
+    title: qsTr("Папки и сайты для агента")
     iconName: "folder"
     width: Math.min(640, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: Autonomy.loadAccess()
@@ -16,17 +16,17 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Вне проектов агент видит только эти папки. Читает их без вопроса (файлы с секретами — никогда), пишет — если папке разрешена запись, и каждую запись показывает вам с diff. Облачная модель читает папку, только если у неё горит облако — как проект «можно в облако». Скрипты Python работают в своей папке задачи, без сети (если в задаче не включено), каждый — с вашего разрешения."
+        text: qsTr("Вне проектов агент видит только эти папки. Читает их без вопроса (файлы с секретами — никогда), пишет — если папке разрешена запись, и каждую запись показывает вам с diff. Облачная модель читает папку, только если у неё горит облако — как проект «можно в облако». Скрипты Python работают в своей папке задачи, без сети (если в задаче не включено), каждый — с вашего разрешения.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 13
         lineHeight: 1.25
     }
 
-    SectionTitle { text: "Папки" }
+    SectionTitle { text: qsTr("Папки") }
     Text {
         visible: Autonomy.accessFolders.length === 0
-        text: "Пока ни одной."
+        text: qsTr("Пока ни одной.")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -57,7 +57,7 @@ Sheet {
                     anchors.right: cloud.left
                     anchors.rightMargin: 8
                     anchors.verticalCenter: parent.verticalCenter
-                    options: [{ id: "read", name: "читать" }, { id: "write", name: "и писать" }]
+                    options: [{ id: "read", name: qsTr("читать") }, { id: "write", name: qsTr("и писать") }]
                     value: modelData.write ? "write" : "read"
                     onPicked: (id) => Autonomy.setFolderWrite(modelData.path, id === "write")
                 }
@@ -69,8 +69,8 @@ Sheet {
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "cloud"
                     tint: modelData.cloud ? Theme.p.accent : Theme.p.faint
-                    tip: modelData.cloud ? "Облачная модель тоже читает эту папку — нажмите, чтобы только локальные"
-                                         : "Эту папку читают только локальные модели — нажмите, чтобы и облачные"
+                    tip: modelData.cloud ? qsTr("Облачная модель тоже читает эту папку — нажмите, чтобы только локальные")
+                                         : qsTr("Эту папку читают только локальные модели — нажмите, чтобы и облачные")
                     onClicked: Autonomy.setFolderCloud(modelData.path, !modelData.cloud)
                 }
                 IconButton {
@@ -78,7 +78,7 @@ Sheet {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "trash"
-                    tip: "Убрать папку"
+                    tip: qsTr("Убрать папку")
                     onClicked: Autonomy.removeFolder(modelData.path)
                 }
             }
@@ -87,29 +87,29 @@ Sheet {
     PlainButton {
         objectName: "accessAddFolder"
         iconName: "folder-plus"
-        text: "Добавить папку…"
+        text: qsTr("Добавить папку…")
         onClicked: folderDialog.open()
     }
     FolderDialog {
         id: folderDialog
-        title: "Папка для агента"
+        title: qsTr("Папка для агента")
         onAccepted: Autonomy.addFolder(selectedFolder.toString())
     }
 
-    SectionTitle { text: "Окна программ" }
+    SectionTitle { text: qsTr("Окна программ") }
     Switch {
         objectName: "accessScreenCloud"
         width: parent.width
-        text: "Облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной)"
+        text: qsTr("Облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной)")
         checked: Autonomy.screenCloud
         onToggled: Autonomy.setScreenCloud(checked)
     }
 
-    SectionTitle { text: "Сайты без вопроса" }
+    SectionTitle { text: qsTr("Сайты без вопроса") }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "К этим адресам (и их поддоменам) агент обращается без вопроса; к остальным — каждый раз спрашивает. Ответы сайтов для него — данные, не указания."
+        text: qsTr("К этим адресам (и их поддоменам) агент обращается без вопроса; к остальным — каждый раз спрашивает. Ответы сайтов для него — данные, не указания.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -142,9 +142,9 @@ Sheet {
             objectName: "accessSaveDomains"
             kind: "primary"
             iconName: "check"
-            text: "Сохранить сайты"
+            text: qsTr("Сохранить сайты")
             onClicked: Autonomy.setDomains(domains.text)
         }
-        PlainButton { text: "Вернуть список по умолчанию"; onClicked: Autonomy.resetDomains() }
+        PlainButton { text: qsTr("Вернуть список по умолчанию"); onClicked: Autonomy.resetDomains() }
     }
 }

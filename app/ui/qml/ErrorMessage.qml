@@ -16,7 +16,7 @@ Rectangle {
         width: parent.width - 32
         spacing: 4
         Text {
-            text: card.row?.title || "Ошибка"
+            text: card.row?.title || qsTr("Ошибка")
             color: Theme.p.error
             font.family: Theme.uiFont
             font.pixelSize: 13

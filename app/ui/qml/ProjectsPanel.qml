@@ -32,7 +32,7 @@ Item {
                 x: 34
                 width: parent.width - 60
                 anchors.verticalCenter: parent.verticalCenter
-                text: Projects.currentName || (Projects.projectList.length ? "Выбрать проект" : "Добавить проект…")
+                text: Projects.currentName || (Projects.projectList.length ? qsTr("Выбрать проект") : qsTr("Добавить проект…"))
                 elide: Text.ElideRight
                 color: Theme.p.text
                 font.family: Theme.uiFont
@@ -66,7 +66,7 @@ Item {
             width: parent.width - toggles.width - 4
             height: parent.height
             rightPadding: clearSearch.visible ? 30 : 10
-            placeholderText: symbolToggle.checked ? "Поиск определений" : "Поиск по файлам"
+            placeholderText: symbolToggle.checked ? qsTr("Поиск определений") : qsTr("Поиск по файлам")
             onTextEdited: Projects.search(text, regexToggle.checked, caseToggle.checked)
             Keys.onEscapePressed: { text = ""; Projects.clearSearch() }
             IconButton {
@@ -78,7 +78,7 @@ Item {
                 implicitWidth: 24
                 implicitHeight: 24
                 iconName: "close"
-                tip: "Очистить (Esc)"
+                tip: qsTr("Очистить (Esc)")
                 onClicked: { searchField.text = ""; Projects.clearSearch() }
             }
         }
@@ -122,14 +122,14 @@ Item {
                 id: caseToggle
                 enabled: !symbolToggle.checked
                 text: "Aa"
-                tip: "Учитывать регистр (без этого — только если в запросе есть заглавные)"
+                tip: qsTr("Учитывать регистр (без этого — только если в запросе есть заглавные)")
             }
-            Toggle { id: regexToggle; enabled: !symbolToggle.checked; text: ".*"; tip: "Регулярное выражение" }
+            Toggle { id: regexToggle; enabled: !symbolToggle.checked; text: ".*"; tip: qsTr("Регулярное выражение") }
             Toggle {
                 id: symbolToggle
                 objectName: "symbolToggle"
                 text: "ƒ"
-                tip: "Только определения: функции, классы, методы — по индексу символов (Класс.метод тоже можно)"
+                tip: qsTr("Только определения: функции, классы, методы — по индексу символов (Класс.метод тоже можно)")
             }
         }
     }
@@ -144,7 +144,7 @@ Item {
         Text {
             width: parent.width - 30
             anchors.verticalCenter: parent.verticalCenter
-            text: Projects.searchActive ? Projects.searchSummary : "Файлы"
+            text: Projects.searchActive ? Projects.searchSummary : qsTr("Файлы")
             elide: Text.ElideRight
             color: Theme.p.faint
             font.family: Theme.uiFont
@@ -158,7 +158,7 @@ Item {
             implicitWidth: 26
             implicitHeight: 26
             iconName: "refresh"
-            tip: "Обновить дерево и git (F5)"
+            tip: qsTr("Обновить дерево и git (F5)")
             onClicked: Projects.refresh()
         }
     }
@@ -375,7 +375,7 @@ Item {
             }
             ToolTip.visible: hovered && (name.length > 28 || secret)
             ToolTip.delay: 700
-            ToolTip.text: secret ? path + " — секретный файл: моделям не показывается" : path
+            ToolTip.text: secret ? qsTr("%1 — секретный файл: моделям не показывается").arg(path) : path
         }
     }
 
@@ -385,7 +385,7 @@ Item {
         y: picker.height + 16
         width: parent.width - 36
         wrapMode: Text.Wrap
-        text: "Проект — папка с кодом: её файлы, поиск по ним, git, процессы и порты, терминалы."
+        text: qsTr("Проект — папка с кодом: её файлы, поиск по ним, git, процессы и порты, терминалы.")
         color: Theme.p.faint
         lineHeight: 1.3
         font.family: Theme.uiFont

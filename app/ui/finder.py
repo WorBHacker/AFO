@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor, QTextDocument
 
+from common.i18n import tr
+
 from ..presenter import plural
 
 if TYPE_CHECKING:
@@ -169,11 +171,11 @@ class Finder(QObject):
         if not self._query or self._error:
             return ""
         if not self._spans:
-            return "Нет совпадений" if self._ready else ""
+            return tr("Нет совпадений") if self._ready else ""
         total = f"{len(self._spans):,}".replace(",", " ") + ("+" if self._more else "")
         at = self._at(start, end)
         if at >= 0:
-            return f"{at + 1} из {total}"
+            return tr("{at} из {total}", at=at + 1, total=total)
         return f"{total} {plural(len(self._spans), 'совпадение', 'совпадения', 'совпадений')}"
 
     @Slot(int, int, int, int, int, result="QVariantList")
@@ -250,7 +252,7 @@ class Finder(QObject):
             try:
                 self._pattern = pattern(self._query, self._case, self._regex)
             except re.error as exc:
-                self._error = f"Ошибка в выражении: {exc.msg}"
+                self._error = tr("Ошибка в выражении: {error}", error=exc.msg)
         self._find(fresh=True)
 
     def _find(self, fresh: bool = False) -> None:
@@ -338,7 +340,7 @@ class Finder(QObject):
         try:
             new = replacement(match, template, self._regex)
         except re.error as exc:
-            self.app.show_error(f"Не заменено: {exc.msg}")
+            self.app.show_error(tr("Не заменено: {error}", error=exc.msg))
             return [start, end]
         del self._spans[at]  # replaced: not a match any more (an empty one, ^, would stay where the text went)
         cursor = QTextCursor(self._document)
@@ -358,7 +360,7 @@ class Finder(QObject):
             planned = [(units.units(m.start()), units.units(m.end()), replacement(m, template, self._regex))
                        for m in self._pattern.finditer(text)]  # fmt: skip
         except re.error as exc:
-            self.app.show_error(f"Не заменено: {exc.msg}")
+            self.app.show_error(tr("Не заменено: {error}", error=exc.msg))
             return 0
         if not planned:
             return 0
@@ -369,5 +371,5 @@ class Finder(QObject):
             cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
             cursor.insertText(new)
         cursor.endEditBlock()
-        self.app.flash(f"Заменено: {len(planned)}")
+        self.app.flash(tr("Заменено: {count}", count=len(planned)))
         return len(planned)

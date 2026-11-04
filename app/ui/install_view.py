@@ -12,55 +12,82 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.i18n import N_, decimal, language, tr
 from common.plain_errors import explain
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-PURPOSES = [("", "Все"), ("chat", "Разговоры"), ("code", "Код"), ("vision", "Картинки")]
+PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Картинки"))]
 TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
-STATUS = {"queued": "в очереди", "downloading": "загружается", "paused": "на паузе",
-          "configuring": "записываю в llama-swap", "trial": "пробный запуск", "done": "установлена",
-          "failed": "не вышло", "cancelled": "отменена", "removed": "удалена"}  # fmt: skip
+STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
+          "configuring": N_("записываю в llama-swap"), "trial": N_("пробный запуск"), "done": N_("установлена"),
+          "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
 ACTIONS = {
-    "queued": [("pause", "Пауза", "plain"), ("cancel", "Отменить", "danger")],
-    "downloading": [("pause", "Пауза", "plain"), ("cancel", "Отменить", "danger")],
-    "paused": [("resume", "Продолжить", "primary"), ("cancel", "Отменить", "danger")],
-    "failed": [("resume", "Повторить", "primary"), ("forget", "Убрать", "danger")],
-    "cancelled": [("forget", "Убрать", "plain")],
-    "done": [("remove", "Удалить", "danger")],
+    "queued": [("pause", N_("Пауза"), "plain"), ("cancel", N_("Отменить"), "danger")],
+    "downloading": [("pause", N_("Пауза"), "plain"), ("cancel", N_("Отменить"), "danger")],
+    "paused": [("resume", N_("Продолжить"), "primary"), ("cancel", N_("Отменить"), "danger")],
+    "failed": [("resume", N_("Повторить"), "primary"), ("forget", N_("Убрать"), "danger")],
+    "cancelled": [("forget", N_("Убрать"), "plain")],
+    "done": [("remove", N_("Удалить"), "danger")],
 }
 LIVE = ("queued", "downloading", "configuring", "trial")
-WHERE = {"gpu": "целиком в видеопамяти", "split": "частью в ОЗУ"}
-PICKS = {"fast": "быстрее", "quality": "качественнее"}  # «Быстрее ↔ Качественнее» beside the recommended one
+WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ")}
+PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
+
+
+def status_words(status: str) -> str:
+    return tr(STATUS[status]) if status in STATUS else status
 
 
 def gb(size: float, *, of_bytes: bool = True) -> str:
     """A size as people read it: «8,1 ГБ», a small one «52 МБ» (decimal units, as Hugging Face shows them)."""
     value = size / 1e9 if of_bytes else size
     if value < 0.1:
-        return f"{max(value * 1000, 1):.0f} МБ"
-    return f"{value:.1f}".replace(".", ",") + " ГБ"
+        return tr("{size:.0f} МБ", size=max(value * 1000, 1))
+    return tr("{size} ГБ", size=decimal(f"{value:.1f}"))
 
 
 def count(n: int) -> str:
     if n >= 1_000_000:
-        return f"{n / 1e6:.1f}".replace(".", ",") + " млн"
+        return tr("{count} млн", count=decimal(f"{n / 1e6:.1f}"))
     if n >= 1000:
-        return f"{n / 1e3:.0f} тыс."
+        return tr("{count:.0f} тыс.", count=n / 1e3)
     return str(n)
+
+
+def speed_text(speed: float) -> str:
+    """Bytes a second as «21,7 МБ/с»."""
+    return tr("{speed} МБ/с", speed=decimal(f"{speed / 1e6:.1f}"))
+
+
+def left_text(seconds: float) -> str:
+    """The time an install has left: «ещё ≈ 3 мин», «ещё ≈ 25 с»."""
+    if seconds >= 60:
+        return tr("ещё ≈ {minutes} мин", minutes=max(1, round(seconds / 60)))
+    return tr("ещё ≈ {seconds} с", seconds=max(1, round(seconds)))
+
+
+def free_text(gib: float) -> str:
+    return tr(" · свободно {size}", size=gb(gib, of_bytes=False))
+
+
+def about(words: dict[str, str]) -> str:
+    """A curated model's description in the window's language (the catalog has it in Russian and English)."""
+    return words.get(language()) or words.get("ru", "")
 
 
 def system_text(system: dict[str, Any]) -> str:
     space = system.get("space") or {}
     if space.get("vram_total_gib"):
-        parts = [f"{space.get('gpu') or 'Видеокарта'}: для новой модели ≈ {gb(space['vram_gib'], of_bytes=False)} "
-                 "видеопамяти"]  # fmt: skip
+        parts = [tr("{gpu}: для новой модели ≈ {size} видеопамяти", gpu=space.get("gpu") or tr("Видеокарта"),
+                    size=gb(space["vram_gib"], of_bytes=False))]  # fmt: skip
     else:
-        parts = ["Видеокарта NVIDIA не найдена — модели будут работать в ОЗУ, медленно"]
-    parts.append(f"ОЗУ свободно ≈ {gb(space.get('ram_gib') or 0, of_bytes=False)}")
+        parts = [tr("Видеокарта NVIDIA не найдена — модели будут работать в ОЗУ, медленно")]
+    parts.append(tr("ОЗУ свободно ≈ {size}", size=gb(space.get("ram_gib") or 0, of_bytes=False)))
     if space.get("loaded"):
-        parts.append(f"сейчас загружена «{', '.join(space['loaded'])}» — на время работы новой она выгрузится")
+        parts.append(tr("сейчас загружена «{models}» — на время работы новой она выгрузится",
+                        models=", ".join(space["loaded"])))  # fmt: skip
     return " · ".join(parts)
 
 
@@ -81,12 +108,13 @@ def catalog_rows(models: list[dict[str, Any]], purpose: str = "") -> list[dict[s
             words, tone = verdict_of(best)
             offer = f"{best['quant']} · {gb(best['size'])}"
         elif m.get("smallest"):
-            words, tone = f"не поместится: даже самый маленький вариант — {gb(m['smallest']['size'])}", "error"
+            words = tr("не поместится: даже самый маленький вариант — {size}", size=gb(m["smallest"]["size"]))
+            tone = "error"
             offer = ""
         else:
             words, tone, offer = m.get("error", ""), "error", ""
         out.append({"id": m["id"], "repo": m["repo"], "quant": best["quant"] if best else "", "name": m["name"],
-                    "about": (m.get("about") or {}).get("ru", ""),
+                    "about": about(m.get("about") or {}),
                     "purposes": " · ".join(m.get("purpose_words") or []), "license": m.get("license", ""),
                     "gated": bool(m.get("gated")), "words": words, "tone": tone, "offer": offer,
                     "installed": installed,
@@ -99,11 +127,11 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for m in models:
         note = [f"↓ {count(m.get('downloads') or 0)}", f"♥ {count(m.get('likes') or 0)}"]
         if m.get("license"):
-            note.append(f"лицензия {m['license']}")
+            note.append(tr("лицензия {license}", license=m["license"]))
         if m.get("updated"):
-            note.append(f"обновлена {m['updated']}")
-        badges = (["снятые ограничения"] if m.get("unrestricted") else []) + (
-            ["лицензия на сайте"] if m.get("gated") else [])  # fmt: skip
+            note.append(tr("обновлена {date}", date=m["updated"]))
+        badges = ([tr("снятые ограничения")] if m.get("unrestricted") else []) + (
+            [tr("лицензия на сайте")] if m.get("gated") else [])  # fmt: skip
         out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges})
     return out
 
@@ -112,10 +140,10 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for v in details.get("variants") or []:
         words, tone = verdict_of(v)
-        bits = f"≈ {v['bits']:.1f}".replace(".", ",") + " бита на вес" if v.get("bits") else ""
+        bits = tr("≈ {bits} бита на вес", bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""
         out.append({"quant": v["quant"], "size": gb(v["size"]), "bits": bits, "words": words, "tone": tone,
                     "recommended": bool(v.get("recommended")), "parts": len(v.get("files") or []),
-                    "pick": PICKS.get(v.get("pick") or "", "")})  # fmt: skip
+                    "pick": tr(PICKS[v["pick"]]) if v.get("pick") in PICKS else ""})  # fmt: skip
     return out
 
 
@@ -123,12 +151,12 @@ def drive_rows(drives: list[dict[str, Any]], chosen: str, home: dict[str, Any] |
     """Where a model may go: LocalChat's own `model` folder first (the default, 2026-10-28), then each drive."""
     out = []
     if home and home.get("folder"):
-        free = f" · свободно {gb(home['free_gib'], of_bytes=False)}" if home.get("free_gib") is not None else ""
+        free = free_text(home["free_gib"]) if home.get("free_gib") is not None else ""
         out.append({"id": "home", "selected": chosen in ("", "home"), "slow": home.get("kind") in ("hdd", "usb"),
-                    "name": "Папка AFO" + (f" ({home['letter']}: {home['words']})" if home.get("letter")
-                                                 else "") + free})  # fmt: skip
+                    "name": tr("Папка AFO") + (f" ({home['letter']}: {home['words']})" if home.get("letter")
+                                                     else "") + free})  # fmt: skip
     return out + [{"id": d["letter"], "selected": d["letter"] == chosen, "slow": d.get("kind") in ("hdd", "usb"),
-                   "name": f"{d['letter']}: {d.get('words', '')} · свободно {gb(d['free_gib'], of_bytes=False)}"}
+                   "name": f"{d['letter']}: {d.get('words', '')}" + free_text(d["free_gib"])}
                   for d in drives]  # fmt: skip
 
 
@@ -149,12 +177,11 @@ def progress_text(job: dict[str, Any]) -> str:
     total, done = job.get("total_bytes") or 0, job.get("done_bytes") or 0
     if job.get("status") not in ("downloading", "paused", "queued") or not total:
         return ""
-    parts = [f"{gb(done)} из {gb(total)}"]
+    parts = [tr("{done} из {total}", done=gb(done), total=gb(total))]
     speed = job.get("speed") or 0
     if job.get("status") == "downloading" and speed > 0:
-        parts.append(f"{speed / 1e6:.1f}".replace(".", ",") + " МБ/с")
-        left = (total - done) / speed
-        parts.append(f"ещё ≈ {max(1, round(left / 60))} мин" if left >= 60 else f"ещё ≈ {max(1, round(left))} с")
+        parts.append(speed_text(speed))
+        parts.append(left_text((total - done) / speed))
     return " · ".join(parts)
 
 
@@ -168,17 +195,17 @@ def job_state(job: dict[str, Any] | None) -> dict[str, Any]:
     to take a failed one away), and its progress in the line under the name."""
     if not job:
         return {}
-    actions = {a: label for a, label, _kind in ACTIONS.get(job["status"], [])}
+    actions = {a: tr(label) for a, label, _kind in ACTIONS.get(job["status"], [])}
     primary = next((a for a in ("pause", "resume") if a in actions), "")
     pct = percent_of(job)
     progress = progress_text(job)
-    words = STATUS.get(job["status"], job["status"])
+    words = status_words(job["status"])
     if job["status"] == "downloading" and progress:
         line = f"{pct:.0f} % · {progress}"
     elif job["status"] == "paused":
-        line = f"на паузе · {pct:.0f} %" + (f" · {progress}" if progress else "")
+        line = f"{words} · {pct:.0f} %" + (f" · {progress}" if progress else "")
     elif job["status"] == "failed":
-        line = f"не вышло: {job.get('error') or ''}".rstrip(": ")
+        line = tr("не вышло: {error}", error=job.get("error") or "").rstrip(": ")
     else:
         line = words
     return {"id": job["id"], "status": job["status"], "live": job["status"] in (*LIVE, "paused"), "percent": pct,
@@ -199,15 +226,13 @@ def status_line(jobs: list[dict[str, Any]]) -> dict[str, Any]:
         bits = [f"{pct:.0f} %"]
         if speed > 0:
             left = ((job.get("total_bytes") or 0) - (job.get("done_bytes") or 0)) / speed
-            bits += [
-                f"{speed / 1e6:.1f}".replace(".", ",") + " МБ/с",
-                f"ещё ≈ {max(1, round(left / 60))} мин" if left >= 60 else f"ещё ≈ {max(1, round(left))} с",
-            ]
+            bits += [speed_text(speed), left_text(left)]
         text = " · ".join(bits)
     else:
-        text = STATUS.get(job["status"], job["status"])
-    more = f" (и ещё {len(live) - 1})" if len(live) > 1 else ""
-    tip = f"Установка «{job['name']}»: {progress_text(job) or STATUS.get(job['status'], '')}. Нажмите — «Установки»"
+        text = status_words(job["status"])
+    more = tr(" (и ещё {count})", count=len(live) - 1) if len(live) > 1 else ""
+    tip = tr("Установка «{name}»: {state}. Нажмите — «Установки»", name=job["name"],
+             state=progress_text(job) or status_words(job["status"]))  # fmt: skip
     short = f"{pct:.0f} %" if job["status"] == "downloading" else text  # a narrow status bar
     return {"name": f"{job['name']}{more}", "text": text, "short": short, "percent": pct / 100, "tip": tip}
 
@@ -223,23 +248,24 @@ def trial_text(job: dict[str, Any]) -> str:
     if trial.get("skipped"):
         return trial["skipped"]
     if job.get("status") == "done" and trial.get("seconds") is not None:
-        parts = [f"загрузилась и ответила за {trial['seconds']} с".replace(".", ",")]
+        parts = [tr("загрузилась и ответила за {seconds} с", seconds=decimal(str(trial["seconds"])))]
         if trial.get("tok_s"):
-            parts.append(f"{round(trial['tok_s'])} ток/с")
+            parts.append(tr("{speed} ток/с", speed=round(trial["tok_s"])))
         if trial.get("where") in WHERE:
-            parts.append(WHERE[trial["where"]])
+            parts.append(tr(WHERE[trial["where"]]))
         if len(trial.get("tries") or []) > 1:
-            parts.append(f"с {len(trial['tries'])}-й попытки — настройки уменьшены")
+            parts.append(tr("с {count}-й попытки — настройки уменьшены", count=len(trial["tries"])))
         return " · ".join(parts)
     return ""
 
 
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
-             "statusWords": STATUS.get(j["status"], j["status"]), "percent": j.get("percent") or 0.0,
+             "statusWords": status_words(j["status"]), "percent": j.get("percent") or 0.0,
              "progress": progress_text(j), "error": with_hint(j.get("error") or ""), "trial": trial_text(j),
              "live": j["status"] in ("queued", "downloading", "configuring", "trial"),
-             "actions": [{"id": a, "label": label, "kind": kind} for a, label, kind in ACTIONS.get(j["status"], [])]}
+             "actions": [{"id": a, "label": tr(label), "kind": kind}
+                         for a, label, kind in ACTIONS.get(j["status"], [])]}
             for j in jobs if j["status"] != "removed"]  # fmt: skip
 
 
@@ -277,7 +303,7 @@ class InstallView(QObject):
 
     @Property(str, notify=changed)
     def systemText(self) -> str:
-        return system_text(self._system) if self._system else "Смотрю, что умеет этот компьютер…"
+        return system_text(self._system) if self._system else tr("Смотрю, что умеет этот компьютер…")
 
     @Property(str, notify=changed)
     def problem(self) -> str:
@@ -289,7 +315,7 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def purposes(self) -> list:
-        return [{"id": pid, "name": name} for pid, name in PURPOSES]
+        return [{"id": pid, "name": tr(name)} for pid, name in PURPOSES]
 
     @Property(str, notify=changed)
     def purpose(self) -> str:
@@ -341,18 +367,18 @@ class InstallView(QObject):
         r = self._repo
         if not r:
             return {}
-        notes = [f"лицензия {r['license']}" if r.get("license") else "лицензия не указана"]
+        notes = [tr("лицензия {license}", license=r["license"]) if r.get("license") else tr("лицензия не указана")]
         if r.get("params"):
-            notes.append(f"{r['params'] / 1e9:.1f}".replace(".", ",") + " млрд параметров")
+            notes.append(tr("{count} млрд параметров", count=decimal(f"{r['params'] / 1e9:.1f}")))
         if r.get("context_trained"):
-            notes.append(f"контекст до {r['context_trained'] // 1024}K")
+            notes.append(tr("контекст до {size}K", size=r["context_trained"] // 1024))
         if r.get("moe"):
-            notes.append("из «экспертов»")
+            notes.append(tr("из «экспертов»"))
         lens = r.get("projector")
         return {"repo": r.get("repo", ""), "page": r.get("page", ""), "notes": " · ".join(notes),
                 "unrestricted": bool(r.get("unrestricted")), "gated": bool(r.get("gated")),
                 "projector": bool(lens),
-                "projectorText": f"Понимать картинки (+{gb(lens['size'])})" if lens else ""}  # fmt: skip
+                "projectorText": tr("Понимать картинки (+{size})", size=gb(lens["size"])) if lens else ""}  # fmt: skip
 
     @Property(list, notify=changed)
     def variants(self) -> list:
@@ -450,7 +476,7 @@ class InstallView(QObject):
             self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self._catalog_loading, self._catalog_error = False, f"Каталог не загрузился: {error}"
+            self._catalog_loading, self._catalog_error = False, tr("Каталог не загрузился: {error}", error=error)
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.install_catalog(), show, failed)
@@ -482,7 +508,7 @@ class InstallView(QObject):
                 self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self._searching, self._search_error = False, f"Поиск не удался: {error}"
+            self._searching, self._search_error = False, tr("Поиск не удался: {error}", error=error)
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.install_search(asked), show, failed)
@@ -542,12 +568,13 @@ class InstallView(QObject):
             self._busy = False
             job = result.get("job") or {}
             self._upsert(job)  # its row now has «Пауза» and ✕; the status bar shows how it goes
-            self.app.flash(f"Устанавливаю «{job.get('name', '')}» — ход внизу окна и на вкладке «Установки»")
+            self.app.flash(tr("Устанавливаю «{name}» — ход внизу окна и на вкладке «Установки»",
+                              name=job.get("name", "")))  # fmt: skip
             self.changed.emit()
 
         def failed(error: Exception) -> None:
             self._busy = False
-            self.app.show_error(f"Не начать установку: {error}")
+            self.app.show_error(tr("Не начать установку: {error}", error=error))
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.install(spec), done, failed)
@@ -580,16 +607,17 @@ class InstallView(QObject):
             def decide(yes: bool) -> None:
                 if yes:
                     self._do(job, lambda: self.app.client.install_remove(job["model_id"]),
-                             f"«{job['name']}» удалена: файлы и запись в llama-swap")  # fmt: skip
+                             tr("«{name}» удалена: файлы и запись в llama-swap", name=job["name"]))  # fmt: skip
 
-            text = (
-                f"Её файлы ({gb(job['total_bytes'])}) удалятся с диска, запись в config.yaml llama-swap — тоже "
-                "(копия конфига останется рядом)."
+            text = tr(
+                "Её файлы ({size}) удалятся с диска, запись в config.yaml llama-swap — тоже "
+                "(копия конфига останется рядом).",
+                size=gb(job["total_bytes"]),
             )
-            self.app._ask(f"Удалить модель «{job['name']}»?", text, "Удалить", decide)
+            self.app._ask(tr("Удалить модель «{name}»?", name=job["name"]), text, tr("Удалить"), decide)
             return
         if action == "forget":
-            self._do(job, lambda: self.app.client.install_forget(job_id), "Убрано из списка вместе с файлами")
+            self._do(job, lambda: self.app.client.install_forget(job_id), tr("Убрано из списка вместе с файлами"))
             return
         self._do(job, lambda: self.app.client.install_act(job_id, action), "")
 
@@ -607,7 +635,7 @@ class InstallView(QObject):
                 self._catalog = []
                 self._load_catalog()  # «установлена» there too
 
-        self.app.call_or_fail(call, done, lambda e: self.app.show_error(f"Не вышло: {e}"))
+        self.app.call_or_fail(call, done, lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))
 
     def _upsert(self, job: dict[str, Any]) -> None:
         if not job.get("id"):
@@ -626,12 +654,13 @@ class InstallView(QObject):
             if self._jobs_loading and job.get("id"):
                 self._heard[job["id"]] = {**(self._heard.get(job["id"]) or {}), **job}
             if job.get("status") == "done" and before != "done":
-                self.app.flash(f"Модель «{job.get('name')}» установлена: {trial_text(job) or 'готова'}")
+                self.app.flash(tr("Модель «{name}» установлена: {trial}", name=job.get("name"),
+                                  trial=trial_text(job) or tr("готова")))  # fmt: skip
                 self.app.load_models()
                 self._catalog = []
                 self._load_catalog()
             elif job.get("status") == "failed" and before != "failed":
-                self.app.flash(f"«{job.get('name')}»: {job.get('error')}", error=True)
+                self.app.flash(tr("«{name}»: {error}", name=job.get("name"), error=job.get("error")), error=True)
             self.changed.emit()
         elif kind == "install.progress":
             if not any(j["id"] == payload.get("id") for j in self._jobs) and not self._jobs_loading:

@@ -29,8 +29,8 @@ Item {
         Text {
             width: parent.width
             text: App.showProjectChat ? App.currentTitle
-                  : App.mode === "projects" ? (Projects.currentName || "Проекты")
-                  : App.mode === "agent" ? (Autonomy.task.goal || "Автономный агент") : App.currentTitle
+                  : App.mode === "projects" ? (Projects.currentName || qsTr("Проекты"))
+                  : App.mode === "agent" ? (Autonomy.task.goal || qsTr("Автономный агент")) : App.currentTitle
             elide: Text.ElideRight
             color: Theme.p.text
             font.family: Theme.uiFont
@@ -40,7 +40,7 @@ Item {
         Text {
             width: parent.width
             visible: text !== ""
-            text: App.mode === "agent" ? (Autonomy.task.statusLabel ? Autonomy.task.statusLabel + (Autonomy.task.progress ? " · шаги " + Autonomy.task.progress : "") : "новая задача")
+            text: App.mode === "agent" ? (Autonomy.task.statusLabel ? Autonomy.task.statusLabel + (Autonomy.task.progress ? qsTr(" · шаги %1").arg(Autonomy.task.progress) : "") : qsTr("новая задача"))
                   : App.showProjectChat ? [Projects.currentName, App.currentMeta].filter(s => !!s).join(" · ")
                   : App.mode !== "projects" ? App.currentMeta
                   : Projects.currentId ? [Projects.git.summary, Projects.processesSummary].filter(s => !!s).join(" · ") : ""
@@ -70,7 +70,7 @@ Item {
                 spacing: 8
                 Icon { name: "search"; size: 15; anchors.verticalCenter: parent.verticalCenter }
                 Text {
-                    text: "Поиск и команды"
+                    text: qsTr("Поиск и команды")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -93,7 +93,7 @@ Item {
             iconName: "shield"
             implicitWidth: 38
             tint: Theme.p.warn
-            tip: "Ждут подтверждения: " + Approvals.count + " — кто ждёт (Ctrl+Shift+A)"
+            tip: qsTr("Ждут подтверждения: %1 — кто ждёт (Ctrl+Shift+A)").arg(Approvals.count)
             onClicked: bar.approvalsRequested()
             Rectangle {
                 x: parent.width - width - 4
@@ -113,21 +113,21 @@ Item {
                 }
             }
         }
-        IconButton { objectName: "provingButton"; iconName: "flask"; implicitWidth: 38; tip: "Полигон: задания и экзамен моделей"; onClicked: Proving.open() }
-        IconButton { objectName: "agentsButton"; iconName: "agent"; implicitWidth: 38; tip: "Агенты (Ctrl+Shift+G)"; onClicked: bar.agentsRequested() }
-        IconButton { iconName: "activity"; implicitWidth: 38; tip: "Лента событий (Ctrl+E)"; onClicked: bar.feedRequested() }
+        IconButton { objectName: "provingButton"; iconName: "flask"; implicitWidth: 38; tip: qsTr("Полигон: задания и экзамен моделей"); onClicked: Proving.open() }
+        IconButton { objectName: "agentsButton"; iconName: "agent"; implicitWidth: 38; tip: qsTr("Агенты (Ctrl+Shift+G)"); onClicked: bar.agentsRequested() }
+        IconButton { iconName: "activity"; implicitWidth: 38; tip: qsTr("Лента событий (Ctrl+E)"); onClicked: bar.feedRequested() }
         Rectangle { width: 1; height: 18; color: Theme.p.hairline; anchors.verticalCenter: parent.verticalCenter }
-        IconButton { iconName: "min"; implicitWidth: 42; tip: "Свернуть"; onClicked: Window.window.showMinimized() }
+        IconButton { iconName: "min"; implicitWidth: 42; tip: qsTr("Свернуть", "window"); onClicked: Window.window.showMinimized() }
         IconButton {
             iconName: "max"
             implicitWidth: 42
-            tip: Window.window && Window.window.visibility === Window.Maximized ? "Восстановить" : "Развернуть"
+            tip: Window.window && Window.window.visibility === Window.Maximized ? qsTr("Восстановить") : qsTr("Развернуть")
             onClicked: bar.toggleMaximized()
         }
         IconButton {
             iconName: "close"
             implicitWidth: 42
-            tip: "Закрыть (хаб продолжит работать)"
+            tip: qsTr("Закрыть (хаб продолжит работать)")
             hoverColour: "#c42b1c"
             hoverTint: "#ffffff"
             onClicked: Window.window.close()

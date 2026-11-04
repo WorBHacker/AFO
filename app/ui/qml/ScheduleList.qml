@@ -11,7 +11,7 @@ Column {
 
     Text {
         leftPadding: 8
-        text: "Расписание"
+        text: qsTr("Расписание")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 11
@@ -47,7 +47,7 @@ Column {
                     width: parent.width
                     elide: Text.ElideRight
                     text: row.modelData.trigger + " · " + row.modelData.when
-                          + (row.modelData.computer ? " · с компьютером" : "")
+                          + (row.modelData.computer ? qsTr(" · с компьютером") : "")
                     color: row.modelData.error !== "" ? Theme.p.error : Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 11
@@ -63,17 +63,17 @@ Column {
                 IconButton {
                     objectName: "scheduleRun_" + row.modelData.id
                     iconName: "bolt"
-                    tip: "Запустить сейчас"
+                    tip: qsTr("Запустить сейчас")
                     onClicked: Schedules.runNow(row.modelData.id)
                 }
                 IconButton {
                     iconName: "power"
-                    tip: row.modelData.enabled ? "Выключить" : "Включить"
+                    tip: row.modelData.enabled ? qsTr("Выключить") : qsTr("Включить")
                     onClicked: Schedules.setEnabled(row.modelData.id, !row.modelData.enabled)
                 }
                 IconButton {
                     iconName: "trash"
-                    tip: "Удалить"
+                    tip: qsTr("Удалить")
                     onClicked: Schedules.remove(row.modelData.id)
                 }
             }

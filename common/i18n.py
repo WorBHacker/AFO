@@ -54,6 +54,16 @@ def tr(text: str, /, **fields: object) -> str:
     return text.format(**fields) if fields else text
 
 
+def in_context(context: str, text: str) -> str:
+    """The catalog's key of a text that means two things - qsTr("Свернуть", "window") - as gettext keeps it."""
+    return f"{context}\x04{text}"
+
+
+def decimal(number: str) -> str:
+    """A number's decimal point as the language writes it: «1,5 ГБ», «$0,02» in Russian; 1.5 GB, $0.02 in English."""
+    return number.replace(".", ",") if _language == "ru" else number
+
+
 def N_(text: str) -> str:
     return text
 

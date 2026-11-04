@@ -96,7 +96,7 @@ ListView {
         spacing: 10
         Icon { name: "chat"; size: 28; tint: Theme.p.faint; anchors.horizontalCenter: parent.horizontalCenter }
         Text {
-            text: "Новый разговор"
+            text: qsTr("Новый разговор")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 18
@@ -104,7 +104,7 @@ ListView {
             anchors.horizontalCenter: parent.horizontalCenter
         }
         Text {
-            text: "Выберите модель внизу и спросите что-нибудь"
+            text: qsTr("Выберите модель внизу и спросите что-нибудь")
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 13

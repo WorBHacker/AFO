@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "wizardSheet"
-    title: "Первый запуск"
+    title: qsTr("Первый запуск")
     iconName: "sparkle"
     width: Math.min(700, (parent ? parent.width : 960) * 0.94)
     onAboutToShow: Setup.load()
@@ -24,11 +24,10 @@ Sheet {
     }
 
     Note {
-        text: "Локальные модели работают прямо на этом компьютере: без интернета, без оплаты, и ваши тексты никуда не "
-              + "уходят. AFO сам поставит всё нужное — нажимайте кнопки сверху вниз."
+        text: qsTr("Локальные модели работают прямо на этом компьютере: без интернета, без оплаты, и ваши тексты никуда не уходят. AFO сам поставит всё нужное — нажимайте кнопки сверху вниз.")
     }
 
-    SectionTitle { text: "Этот компьютер" }
+    SectionTitle { text: qsTr("Этот компьютер") }
     Repeater {
         model: Setup.cards
         delegate: Note {
@@ -41,7 +40,7 @@ Sheet {
     Note { visible: Setup.memoryText !== ""; text: Setup.memoryText; color: Theme.p.muted }
     Note { visible: Setup.pageAdvice !== ""; text: Setup.pageAdvice; color: Theme.p.warn; font.pixelSize: 12 }
 
-    SectionTitle { text: "Движок" }
+    SectionTitle { text: qsTr("Движок") }
     Note { objectName: "wizardEngine"; text: Setup.engineText }
     Segmented {
         visible: Setup.needed && Setup.jobStatus !== "downloading" && Setup.jobStatus !== "starting"
@@ -80,7 +79,7 @@ Sheet {
         objectName: "wizardUpdateEngine"
         visible: !Setup.needed && Setup.updateAvailable && Setup.jobStatus !== "downloading"
         iconName: "refresh"
-        text: "Обновить движок"
+        text: qsTr("Обновить движок")
         onClicked: Setup.updateEngine()
     }
     Row {
@@ -90,21 +89,21 @@ Sheet {
             visible: Setup.needed && Setup.jobStatus !== "downloading" && Setup.jobStatus !== "starting"
             kind: "primary"
             iconName: "download"
-            text: Setup.jobStatus === "failed" ? "Попробовать снова" : "Установить движок"
+            text: Setup.jobStatus === "failed" ? qsTr("Попробовать снова") : qsTr("Установить движок")
             onClicked: Setup.installEngine()
         }
         PlainButton {
             visible: Setup.jobStatus === "downloading"
             kind: "danger"
-            text: "Отменить"
+            text: qsTr("Отменить")
             onClicked: Setup.cancelEngine()
         }
     }
 
-    SectionTitle { text: "Первая модель"; visible: Setup.loaded && !Setup.needed }
+    SectionTitle { text: qsTr("Первая модель"); visible: Setup.loaded && !Setup.needed }
     Note {
         visible: Setup.loaded && !Setup.needed && Setup.modelsLoading
-        text: "Подбираю модели под этот компьютер…"
+        text: qsTr("Подбираю модели под этот компьютер…")
         color: Theme.p.faint
     }
     Repeater {
@@ -146,7 +145,7 @@ Sheet {
                     visible: card.modelData.canInstall
                     kind: card.modelData.installed ? "plain" : "primary"
                     iconName: "download"
-                    text: card.modelData.installed ? "Уже установлена" : "Установить"
+                    text: card.modelData.installed ? qsTr("Уже установлена") : qsTr("Установить")
                     enabled: !card.modelData.installed
                     onClicked: Setup.installModel(card.modelData.id)
                 }
@@ -158,7 +157,7 @@ Sheet {
         visible: Setup.loaded && !Setup.needed
         PlainButton {
             iconName: "layers"
-            text: "Все модели и ход установки…"
+            text: qsTr("Все модели и ход установки…")
             onClicked: { sheet.close(); App.openUi("install-models") }
         }
     }
@@ -168,12 +167,12 @@ Sheet {
         spacing: 8
         PlainButton {
             objectName: "wizardLater"
-            text: "Позже"
+            text: qsTr("Позже")
             onClicked: { Setup.dismiss(); sheet.close() }
         }
         PlainButton {
             kind: "primary"
-            text: "Готово"
+            text: qsTr("Готово")
             visible: Setup.loaded && !Setup.needed
             onClicked: { Setup.dismiss(); sheet.close() }
         }

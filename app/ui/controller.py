@@ -19,6 +19,7 @@ from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, S
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from common import i18n
+from common.i18n import N_, tr
 from common.paths import DataPaths
 
 from .. import palette, presenter
@@ -66,14 +67,15 @@ MODES = ("chats", "projects", "agent")
 DRAFTS_KEY = "chat/drafts"  # app.ini: what was typed in each chat and not sent - kept across switches and crashes
 NEW_CHAT = "new"  # the drafts' key of a chat not made yet
 DRAFT_SAVE_MS = 700  # typing is saved this long after the last key
-NOT_CONNECTED = "Хаб ещё не подключён"
-GOAL_COMMAND = re.compile(r"^/(?:цель|goal)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)  # opens the goal's card
+NOT_CONNECTED = N_("Хаб ещё не подключён")
+# opens the goal's card
+GOAL_COMMAND = re.compile(r"^/(?:цель|goal)(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)  # i18n: keep
 HUB_STATES = {
-    "connecting": "подключение…",
-    "up": "подключён",
-    "lost": "нет связи, переподключение…",
-    "down": "недоступен",
-    "stopped": "остановлен",
+    "connecting": N_("подключение…"),
+    "up": N_("подключён"),
+    "lost": N_("нет связи, переподключение…"),
+    "down": N_("недоступен"),
+    "stopped": N_("остановлен"),
 }
 
 
@@ -105,10 +107,10 @@ PICTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 def file_size(size: int) -> str:
     """«840 Б», «12 КБ», «1,4 МБ»."""
     if size < 1024:
-        return f"{size} Б"
+        return tr("{size} Б", size=size)
     if size < 1024 * 1024:
-        return f"{size / 1024:.0f} КБ"
-    return f"{size / (1024 * 1024):.1f} МБ".replace(".", ",")
+        return tr("{size:.0f} КБ", size=size / 1024)
+    return tr("{size} МБ", size=rows.decimal(f"{size / (1024 * 1024):.1f}"))
 
 
 def read_files(files: list[dict[str, Any]]) -> list[dict[str, str]] | None:
@@ -187,7 +189,7 @@ class Controller(QObject):
         self._retention: dict[str, Any] = {}
         self._status = rows.status_parts(None)
         self._hub_state = "connecting"
-        self._title = "Новый чат"
+        self._title = tr("Новый чат")
         self._meta = ""
         self._count = 0  # the open chat: messages, money spent, the model of its last answer
         self._spent = 0.0
@@ -371,7 +373,7 @@ class Controller(QObject):
 
     @Property(str, notify=modelChanged)
     def modelName(self) -> str:
-        return rows.model_name(self.models, self._model_id) if self._model_id in self.models else "Нет моделей"
+        return rows.model_name(self.models, self._model_id) if self._model_id in self.models else tr("Нет моделей")
 
     @Property(bool, notify=modelChanged)
     def modelCloud(self) -> bool:
@@ -433,8 +435,8 @@ class Controller(QObject):
 
     @Property(str, notify=hubChanged)
     def hubTooltip(self) -> str:
-        where = self.client.base_url if self.client else "адрес ещё не известен"
-        return f"Хаб: {HUB_STATES[self._hub_state]}\n{where}"
+        where = self.client.base_url if self.client else tr("адрес ещё не известен")
+        return tr("Хаб: {state}\n{where}", state=tr(HUB_STATES[self._hub_state]), where=where)
 
     @Property("QVariantMap", notify=statusChanged)
     def status(self) -> dict:
@@ -448,7 +450,7 @@ class Controller(QObject):
     def sessionTooltip(self) -> str:
         tooltip = self.session.tooltip(self.totals)
         if self.budgets:
-            tooltip += "\n\nБюджеты:\n" + "\n".join(presenter.budget_line(b) for b in self.budgets)
+            tooltip += tr("\n\nБюджеты:\n{lines}", lines="\n".join(presenter.budget_line(b) for b in self.budgets))
         return tooltip
 
     @Property(bool, notify=sessionChanged)
@@ -520,8 +522,9 @@ class Controller(QObject):
         if not (cid and qid and text):
             return
         self._set_chat_question(None)
-        self._call(lambda: self.client.answer_question(cid, qid, text), lambda _r: self.flash("Ответ передан модели"),
-                   lambda e: self.show_error(f"Ответ не принят: {e}"))  # fmt: skip
+        self._call(lambda: self.client.answer_question(cid, qid, text),
+                   lambda _r: self.flash(tr("Ответ передан модели")),
+                   lambda e: self.show_error(tr("Ответ не принят: {error}", error=e)))  # fmt: skip
 
     def _load_chat_question(self, cid: str) -> None:
         def show(data: dict[str, Any]) -> None:
@@ -533,7 +536,7 @@ class Controller(QObject):
 
     @Property(str, notify=contextChanged)
     def chatModeName(self) -> str:
-        return dict((m, n) for m, n, _h in rows.CHAT_MODES).get(self._context_settings.get("mode") or "ask", "")
+        return tr(dict((m, n) for m, n, _h in rows.CHAT_MODES).get(self._context_settings.get("mode") or "ask", ""))
 
     @Property(list, notify=contextChanged)
     def chatModeItems(self) -> list:
@@ -552,7 +555,7 @@ class Controller(QObject):
     @Property(list, notify=chatRefusalChanged)
     def chatRefusalItems(self) -> list:
         return rows.refusal_items(self.models, self._model_id, self._context_settings.get("refusal_vector") or "",
-                                  "этого чата")  # fmt: skip
+                                  tr("этого чата"))  # fmt: skip
 
     @Slot(str)
     def setChatRefusal(self, choice: str) -> None:
@@ -566,7 +569,8 @@ class Controller(QObject):
         else:
             self._context_settings = {**self._context_settings, "refusal_vector": value}
             self.contextChanged.emit()
-        self.flash(rows.refusal_name(self.models, self._model_id, value) + " — в этом чате со следующего ответа")
+        self.flash(tr("{choice} — в этом чате со следующего ответа",
+                      choice=rows.refusal_name(self.models, self._model_id, value)))  # fmt: skip
 
     @Property(list, notify=contextChanged)
     def contextBlocks(self) -> list:
@@ -608,12 +612,12 @@ class Controller(QObject):
     @Slot()
     def connectHub(self) -> None:
         self._set_hub("connecting")
-        self.flash("Подключение к хабу (если он не запущен, приложение запускает его)…")
+        self.flash(tr("Подключение к хабу (если он не запущен, приложение запускает его)…"))
         self.bg.run(lambda: connect(self.paths), self.attach, self._connect_failed)
 
     def _connect_failed(self, error: Exception) -> None:
         self._set_hub("down")
-        self.show_error(f"Нет связи с хабом: {error}")
+        self.show_error(tr("Нет связи с хабом: {error}", error=error))
 
     def attach(self, client: HubClient, *, start_events: bool = True) -> None:
         if self.events is not None:
@@ -677,7 +681,7 @@ class Controller(QObject):
         found = self._retention
         if not found:
             return {}
-        return {"days": str(found["days"]), "maxGb": f"{found['max_gb']:g}".replace(".", ","),
+        return {"days": str(found["days"]), "maxGb": rows.decimal(f"{found['max_gb']:g}"),
                 "usage": rows.kept_text(found.get("usage") or {})}  # fmt: skip
 
     @Slot()
@@ -694,22 +698,23 @@ class Controller(QObject):
         try:
             whole, size = int(days.strip()), float(max_gb.strip().replace(",", "."))
         except ValueError:
-            self.show_error("Хранение: дни — целое число, размер — число гигабайт")
+            self.show_error(tr("Хранение: дни — целое число, размер — число гигабайт"))
             return
         if self._retention and (whole, size) == (self._retention["days"], self._retention["max_gb"]):
             return
         self.call_or_fail(lambda: self.client.set_retention(whole, size),
-                          lambda found: (self._set_retention(found), self.flash("Сроки хранения сохранены")),
-                          lambda e: self.show_error(f"Не сохранено: {e}"))  # fmt: skip
+                          lambda found: (self._set_retention(found), self.flash(tr("Сроки хранения сохранены"))),
+                          lambda e: self.show_error(tr("Не сохранено: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def pruneKept(self) -> None:
         def done(found: dict[str, Any]) -> None:
             self._set_retention(found)
             gone = sum((found.get("removed") or {}).values())
-            self.flash(f"Удалено старых файлов: {gone}" if gone else "Старого нет — всё в пределах")
+            self.flash(tr("Удалено старых файлов: {count}", count=gone) if gone else tr("Старого нет — всё в пределах"))
 
-        self.call_or_fail(lambda: self.client.prune_kept(), done, lambda e: self.show_error(f"Не вышло: {e}"))
+        self.call_or_fail(lambda: self.client.prune_kept(), done,
+                          lambda e: self.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
 
     def _set_autostart(self, found: dict[str, Any]) -> None:
         self._autostart = found
@@ -729,8 +734,9 @@ class Controller(QObject):
             self._set_autostart(found)
             if what == "login":
                 self.flash(
-                    "Хаб будет запускаться при входе в Windows" if on else "Автозапуск при входе в Windows выключен"
-                )
+                    tr("Хаб будет запускаться при входе в Windows") if on
+                    else tr("Автозапуск при входе в Windows выключен")
+                )  # fmt: skip
 
         self._call(lambda: self.client.set_autostart(**{what: on}), done)
 
@@ -745,10 +751,11 @@ class Controller(QObject):
         def done(found: dict[str, Any]) -> None:
             self._set_autostart(found)
             shown = found["llama_swap_config"] if what == "llama_swap_config" else found["llama_swap_script"]
-            self.flash(f"{'Конфиг' if what == 'llama_swap_config' else 'Запуск'} llama-swap: {shown}")
+            self.flash(tr("Конфиг llama-swap: {path}", path=shown) if what == "llama_swap_config"
+                       else tr("Запуск llama-swap: {path}", path=shown))  # fmt: skip
 
         self.call_or_fail(lambda: self.client.set_autostart(**{what: path}), done,
-                          lambda e: self.show_error(f"Не выбрано: {e}"))  # fmt: skip
+                          lambda e: self.show_error(tr("Не выбрано: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def openFolder(self, path: str) -> None:
@@ -763,7 +770,7 @@ class Controller(QObject):
         """`fn` on a pool thread, its result to `on_done` on this one. False (and nothing runs) while no hub is
         connected: a caller that marked something as going on undoes it then (see `call_or_fail`)."""
         if self.client is None:
-            self.show_error(NOT_CONNECTED)
+            self.show_error(tr(NOT_CONNECTED))
             return False
         self.bg.run(fn, on_done, on_error)
         return True
@@ -771,7 +778,7 @@ class Controller(QObject):
     def call_or_fail(self, fn, on_done, on_error) -> None:
         """`_call`, and without a hub `on_error` at once: a "searching…" or "saving…" it would clear never stays."""
         if not self._call(fn, on_done, on_error):
-            on_error(HubError(NOT_CONNECTED))
+            on_error(HubError(tr(NOT_CONNECTED)))
 
     def shutdown(self) -> None:
         if self._drafts_timer.isActive():
@@ -856,15 +863,15 @@ class Controller(QObject):
         def done(result: dict) -> None:
             self.load_models()
             if result.get("errors"):
-                self.flash(f"Список моделей обновлён, ошибки: {result['errors']}", error=True)
+                self.flash(tr("Список моделей обновлён, ошибки: {errors}", errors=result["errors"]), error=True)
             else:
-                self.flash("Список моделей обновлён")
+                self.flash(tr("Список моделей обновлён"))
 
         self._call(lambda: self.client.sync_models(), done)
 
     @Slot()
     def unloadLocal(self) -> None:
-        self._call(lambda: self.client.unload_local(), lambda _r: self.flash("Локальная модель выгружена"))
+        self._call(lambda: self.client.unload_local(), lambda _r: self.flash(tr("Локальная модель выгружена")))
 
     @Slot()
     def askUnloadLocal(self) -> None:
@@ -875,9 +882,10 @@ class Controller(QObject):
             if yes:
                 self.unloadLocal()
 
-        self._ask(f"Выгрузить {names or 'локальную модель'}?", "Освободятся видеопамять и оперативная память, которые "
-                  "она занимает. Следующий запрос к ней загрузит её заново — это займёт от 20 секунд до минуты.",
-                  "Выгрузить", decide)  # fmt: skip
+        self._ask(tr("Выгрузить {name}?", name=names or tr("локальную модель")),
+                  tr("Освободятся видеопамять и оперативная память, которые она занимает. Следующий запрос к ней "
+                     "загрузит её заново — это займёт от 20 секунд до минуты."),
+                  tr("Выгрузить"), decide)  # fmt: skip
 
     # ================= the machine, money =================
 
@@ -917,7 +925,7 @@ class Controller(QObject):
             soft_usd = float(soft.replace(",", ".")) if soft.strip() else None
             hard_usd = float(hard.replace(",", ".")) if hard.strip() else None
         except ValueError:
-            self.budgetError.emit("Суммы — числа в долларах, например 5 или 2.50")
+            self.budgetError.emit(tr("Суммы — числа в долларах, например 5 или 2.50"))
             return
         scope, _, provider = scope_key.partition(":")
         body = {
@@ -930,7 +938,7 @@ class Controller(QObject):
         }
 
         def done(_saved) -> None:
-            self.flash("Бюджет сохранён")
+            self.flash(tr("Бюджет сохранён"))
             self._call(lambda: self.client.budgets(), self._set_budgets)
 
         self._call(lambda: self.client.set_budget(**body), done, lambda e: self.budgetError.emit(str(e)))
@@ -971,7 +979,7 @@ class Controller(QObject):
         if self.role_model("chat"):  # the model the user chose for new chats (D39)
             self.chooseModel(self.role_model("chat"))
         self.current = None
-        self._title, self._meta = "Новый чат", ""
+        self._title, self._meta = tr("Новый чат"), ""
         self._count, self._spent, self._last_author = 0, 0.0, ""
         self.messages.reset([])
         self._think_timer.stop()
@@ -1065,13 +1073,13 @@ class Controller(QObject):
     @Slot(str, str)
     def pinFile(self, project_id: str, path: str) -> None:
         if not self.current:
-            self.show_error("Закрепить файл можно в открытом чате: откройте чат, к которому он нужен")
+            self.show_error(tr("Закрепить файл можно в открытом чате: откройте чат, к которому он нужен"))
             return
         if project_id not in self._chat_projects:
             self._set_chat_projects([*self._chat_projects, project_id])
         pinned = [*self._context_settings["pinned"], {"project_id": project_id, "path": path}]
         self._save_context(pinned=pinned)
-        self.flash(f"Файл {path} будет в контексте чата со следующего сообщения")
+        self.flash(tr("Файл {path} будет в контексте чата со следующего сообщения", path=path))
 
     @Slot(int)
     def unpinFile(self, index: int) -> None:
@@ -1122,7 +1130,7 @@ class Controller(QObject):
             self.current = conversation_id
             self.messages.reset([])
             title = next((c["title"] for c in self.conversations if c["id"] == conversation_id), "")
-            self._title, self._meta = title or "Новый чат", ""
+            self._title, self._meta = title or tr("Новый чат"), ""
             self.currentChanged.emit()
             self.headerChanged.emit()
             self.busyChanged.emit()
@@ -1160,7 +1168,7 @@ class Controller(QObject):
         self._count = sum(1 for m in data["messages"] if m["role"] in ("user", "assistant"))
         self._spent = sum((m.get("usage") or {}).get("cost_usd", 0) for m in data["messages"])
         self._last_author = rows.model_name(self.models, last_model) if last_model else ""
-        self._title = data.get("title") or "Новый чат"
+        self._title = data.get("title") or tr("Новый чат")
         self._update_meta()
         if data.get("busy"):
             self.busy.add(conversation_id)
@@ -1192,7 +1200,7 @@ class Controller(QObject):
         cid = conversation_id or self.current
         if not cid:
             return
-        title = next((c["title"] for c in self.conversations if c["id"] == cid), "") or "Новый чат"
+        title = next((c["title"] for c in self.conversations if c["id"] == cid), "") or tr("Новый чат")
 
         def decide(yes: bool) -> None:
             if not yes:
@@ -1206,7 +1214,8 @@ class Controller(QObject):
 
             self._call(lambda: self.client.delete_conversation(cid), done)
 
-        self._ask(f"Удалить чат «{title}»?", "Расходы по нему останутся в учёте.", "Удалить", decide)
+        self._ask(tr("Удалить чат «{title}»?", title=title), tr("Расходы по нему останутся в учёте."), tr("Удалить"),
+                  decide)  # fmt: skip
 
     @Slot(str, result=str)
     def chatTitle(self, conversation_id: str) -> str:
@@ -1334,7 +1343,7 @@ class Controller(QObject):
 
             self.bg.run(stop, lambda _r: QGuiApplication.quit(), lambda _e: QGuiApplication.quit())
 
-        self._ask("Остановить хаб?", "Идущие ответы прервутся. Окно закроется.", "Остановить", decide)
+        self._ask(tr("Остановить хаб?"), tr("Идущие ответы прервутся. Окно закроется."), tr("Остановить"), decide)
 
     # ================= sending =================
 
@@ -1350,7 +1359,8 @@ class Controller(QObject):
         model = self.models.get(self._model_id) or {}
         sees = (model.get("capabilities") or {}).get("vision")
         if any(f["picture"] for f in self._files) and model.get("provider") != "claude-code" and sees is False:
-            return f"«{model.get('name') or self._model_id}» не видит картинки — выберите модель со зрением"
+            return tr("«{name}» не видит картинки — выберите модель со зрением",
+                      name=model.get("name") or self._model_id)  # fmt: skip
         return ""
 
     def _set_files(self, files: list[dict[str, Any]]) -> None:
@@ -1368,10 +1378,11 @@ class Controller(QObject):
                 continue
             size = path.stat().st_size
             if len(files) >= MAX_FILES:
-                self.show_error(f"Не больше {MAX_FILES} файлов в одном сообщении")
+                self.show_error(tr("Не больше {count} файлов в одном сообщении", count=MAX_FILES))
                 break
             if size > MAX_FILE_BYTES:
-                self.show_error(f"«{path.name}» больше {MAX_FILE_BYTES // (1024 * 1024)} МБ — такой не отправить")
+                self.show_error(tr("«{name}» больше {size} МБ — такой не отправить", name=path.name,
+                                   size=MAX_FILE_BYTES // (1024 * 1024)))  # fmt: skip
                 continue
             if any(f["path"] == str(path) for f in files):
                 continue
@@ -1403,9 +1414,9 @@ class Controller(QObject):
             return False
         folder = self.paths.root / "pasted"
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"картинка-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        path = folder / tr("картинка-{time}.png", time=time.strftime("%Y%m%d-%H%M%S"))
         if not image.save(str(path), "PNG"):
-            self.show_error("Картинка из буфера не сохранилась")
+            self.show_error(tr("Картинка из буфера не сохранилась"))
             return True
         self.attachFiles([str(path)])
         return True
@@ -1431,7 +1442,7 @@ class Controller(QObject):
                 self.draftRestored.emit(text)
             return
         if self._model_id not in self.models:
-            self.show_error("Нет доступной модели")
+            self.show_error(tr("Нет доступной модели"))
             self.draftRestored.emit(text)
             return
         self._send(text, self._model_id, self._effort, self.current)
@@ -1458,8 +1469,9 @@ class Controller(QObject):
             self.contextChanged.emit()
         if added or wanted:
             names = {p["id"]: p["name"] for p in self.projects.items}
-            said = [f"проект {names[pid]}" for pid in added] + [f"файл {path}" for _pid, path in files]
-            self.flash("В контексте чата: " + ", ".join(said))
+            said = [tr("проект {name}", name=names[pid]) for pid in added]
+            said += [tr("файл {path}", path=path) for _pid, path in files]
+            self.flash(tr("В контексте чата: {items}", items=", ".join(said)))
 
         refusal = (self._context_settings.get("refusal_vector") or "") if target is None else ""
         mode = (self._context_settings.get("mode") or "ask") if target is None else "ask"
@@ -1478,7 +1490,7 @@ class Controller(QObject):
                 client.send(conversation_id, text, model_id, effort, confirm_over_budget=confirmed,
                             files=read_files(sending))  # fmt: skip
             except OSError as exc:  # a file gone or locked since it was chosen
-                error = HubError(f"файл не прочитался: {exc}")
+                error = HubError(tr("файл не прочитался: {error}", error=exc))
                 error.conversation_id = conversation_id
                 raise error from exc
             except HubError as exc:
@@ -1505,9 +1517,10 @@ class Controller(QObject):
                         else:
                             give_up(made)
 
-                    self._ask("Бюджет исчерпан", presenter.budget_question(over), "Отправить", decide)
+                    self._ask(tr("Бюджет исчерпан"), presenter.budget_question(over), tr("Отправить"), decide)
                     return
-                self.show_error("Бюджет исчерпан, платные запросы запрещены: " + presenter.budget_line(over[0]))
+                self.show_error(tr("Бюджет исчерпан, платные запросы запрещены: {budget}",
+                                   budget=presenter.budget_line(over[0])))  # fmt: skip
             else:
                 self.show_error(str(error))
             give_up(made)
@@ -1654,18 +1667,17 @@ class Controller(QObject):
             if cid in self.live:
                 self.live[cid].model_id = payload.get("model_id", "")
             if payload.get("planned"):  # an autonomous run: the planner made the plan, the run's model goes on
-                self.flash(f"План готов — дальше работает «{payload.get('name', '')}»")
+                self.flash(tr("План готов — дальше работает «{name}»", name=payload.get("name", "")))
             else:
-                self.flash(rows.fallback_note({"from_name": payload.get("from_name"), "reason": payload.get("reason")})
-                           .replace("Ответила запасная модель", f"Отвечает запасная «{payload.get('name', '')}»"),
-                           ms=10000)  # fmt: skip
+                self.flash(rows.fallback_note({"from_name": payload.get("from_name"), "reason": payload.get("reason")},
+                                              answering=payload.get("name", "")), ms=10000)  # fmt: skip
         elif kind == "chat.error":
             self._run_ended(cid)
             if cid == self.current:
                 self._drop_live_row()
-                detail = payload.get("detail", "ошибка")
+                detail = payload.get("detail", tr("ошибка"))
                 if payload.get("refusal") and payload.get("cost_usd"):
-                    detail += f" Потрачено: {presenter.money(payload['cost_usd'])}."
+                    detail += tr(" Потрачено: {cost}.", cost=presenter.money(payload["cost_usd"]))
                 self._errors += 1
                 self.messages.append(rows.error_row(f"e{self._errors}", detail))
             if payload.get("usage"):
@@ -1680,7 +1692,7 @@ class Controller(QObject):
                 self._set_chat_projects(payload.get("projects") or [], push=False)
         elif kind == "chat.titled":
             if cid == self.current:
-                self._title = payload.get("title", "") or "Новый чат"
+                self._title = payload.get("title", "") or tr("Новый чат")
                 self.headerChanged.emit()
             self.load_conversations()
         elif kind in ("budget.warning", "budget.exceeded"):
@@ -1753,8 +1765,8 @@ class Controller(QObject):
             self._set_chat_question({"id": payload.get("id"), "question": payload.get("question", ""),
                                      "options": payload.get("options") or []})  # fmt: skip
         else:
-            title = next((c["title"] for c in self.conversations if c["id"] == cid), "чат")
-            self.flash(f"Модель спрашивает в «{title}»", ms=10000)
+            title = next((c["title"] for c in self.conversations if c["id"] == cid), tr("чат"))
+            self.flash(tr("Модель спрашивает в «{title}»", title=title), ms=10000)
 
     def _end_dead_run(self, conversation_id: str) -> None:
         """A run the hub no longer has (it stopped or restarted mid-answer): what was shown stays, marked cut. The
@@ -1768,7 +1780,7 @@ class Controller(QObject):
 
     def _mark_interrupted(self) -> None:
         self._errors += 1
-        self.messages.append(rows.error_row(f"e{self._errors}", "Ответ прервался: хаб остановился."))
+        self.messages.append(rows.error_row(f"e{self._errors}", tr("Ответ прервался: хаб остановился.")))
 
     def _run_ended(self, conversation_id: str | None) -> None:
         self.busy.discard(conversation_id)
@@ -1844,13 +1856,13 @@ class Controller(QObject):
             return
         run = self.live.get(self.current)
         if run is None:
-            self.messages.update(index, notice="ответ идёт…")
+            self.messages.update(index, notice=tr("ответ идёт…"))
             return
         before = self.messages.rows[index].get("thinking") or {}
         changes: dict[str, Any] = {
             "author": rows.model_name(self.models, run.model_id),
             "local": rows.is_local(self.models, run.model_id),
-            "notice": f"Загрузка модели: {run.loading}" if run.loading else "",
+            "notice": tr("Загрузка модели: {text}", text=run.loading) if run.loading else "",
         }
         if run.reasoning:
             changes["thinking"] = rows.thinking(
@@ -1877,7 +1889,7 @@ class Controller(QObject):
     @Slot(str)
     def copy(self, text: str) -> None:
         self._clipboard().setText(text)
-        self.flash("Скопировано", ms=2000)
+        self.flash(tr("Скопировано"), ms=2000)
 
     @Slot(str)
     def openLink(self, url: str) -> None:

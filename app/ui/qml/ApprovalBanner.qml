@@ -51,7 +51,7 @@ Item {
         width: parent.width
         height: implicitHeight
         request: banner.shown
-        position: Approvals.cardCount > 1 ? "1 из " + Approvals.cardCount : ""
+        position: Approvals.cardCount > 1 ? qsTr("1 из %1").arg(Approvals.cardCount) : ""
         // all of it: up to half the window, and the card ends above the composer (the rest of it is ~300px)
         previewMax: Math.min((banner.parent ? banner.parent.height : 800) * 0.5, banner.room - 300)
     }

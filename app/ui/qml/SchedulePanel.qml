@@ -25,7 +25,7 @@ Column {
         font.pixelSize: 12
     }
 
-    Label { visible: panel.chooser; text: "Когда" }
+    Label { visible: panel.chooser; text: qsTr("Когда") }
     Segmented {
         visible: panel.chooser
         objectName: "scheduleWhen"
@@ -62,7 +62,7 @@ Column {
         }
         Row {
             spacing: 8
-            Label { text: panel.d.every === "hours" ? "Каждые, ч" : "В"; anchors.verticalCenter: parent.verticalCenter }
+            Label { text: panel.d.every === "hours" ? qsTr("Каждые, ч") : qsTr("В"); anchors.verticalCenter: parent.verticalCenter }
             Field {
                 objectName: panel.d.every === "hours" ? "scheduleHours" : "scheduleAt"
                 width: 90
@@ -92,7 +92,7 @@ Column {
                 objectName: "scheduleFolder"
                 width: parent.width - pattern.width - choose.width - 16
                 text: panel.d.folder
-                placeholderText: "Папка, например D:\\Входящие"
+                placeholderText: qsTr("Папка, например D:\\Входящие")
                 onEditingFinished: Schedules.setField("folder", text)
             }
             Field {
@@ -103,14 +103,14 @@ Column {
                 placeholderText: "*.pdf"
                 onEditingFinished: Schedules.setField("pattern", text)
             }
-            PlainButton { id: choose; iconName: "folder"; text: "Выбрать…"; onClicked: folderDialog.open() }
+            PlainButton { id: choose; iconName: "folder"; text: qsTr("Выбрать…"); onClicked: folderDialog.open() }
         }
         Field {
             visible: panel.d.event === "mail"
             objectName: "scheduleWords"
             width: parent.width
             text: panel.d.words
-            placeholderText: "Слова в отправителе или теме (пусто — любое новое письмо)"
+            placeholderText: qsTr("Слова в отправителе или теме (пусто — любое новое письмо)")
             onEditingFinished: Schedules.setField("words", text)
         }
         Field {
@@ -118,33 +118,32 @@ Column {
             objectName: "scheduleContains"
             width: parent.width
             text: panel.d.contains
-            placeholderText: "Слова в сообщении (пусто — любое сообщение боту)"
+            placeholderText: qsTr("Слова в сообщении (пусто — любое сообщение боту)")
             onEditingFinished: Schedules.setField("contains", text)
         }
         Hint {
             text: panel.d.event === "file"
-                  ? "Путь нового файла агент получит как данные. Файлы, появившиеся в тихие часы, он разберёт утром."
+                  ? qsTr("Путь нового файла агент получит как данные. Файлы, появившиеся в тихие часы, он разберёт утром.")
                   : panel.d.event === "mail"
-                  ? "Хаб заглядывает во «Входящие» раз в пару минут; отправителя и тему письма агент получит как данные. "
-                    + "Почта подключается в «Подключениях»."
-                  : "Сообщение вашему Telegram-боту (из привязанного чата) запустит задачу; текст агент получит как данные."
+                  ? qsTr("Хаб заглядывает во «Входящие» раз в пару минут; отправителя и тему письма агент получит как данные. Почта подключается в «Подключениях».")
+                  : qsTr("Сообщение вашему Telegram-боту (из привязанного чата) запустит задачу; текст агент получит как данные.")
         }
     }
 
     Row {
         visible: panel.d.when !== "now"
         spacing: 10
-        Label { text: "Управлять компьютером"; anchors.verticalCenter: parent.verticalCenter }
+        Label { text: qsTr("Управлять компьютером"); anchors.verticalCenter: parent.verticalCenter }
         Segmented {
             objectName: "scheduleComputer"
-            options: [{ id: "no", name: "нельзя" }, { id: "yes", name: "можно" }]
+            options: [{ id: "no", name: qsTr("нельзя") }, { id: "yes", name: qsTr("можно") }]
             value: panel.d.computer ? "yes" : "no"
             onPicked: (id) => Schedules.setComputer(id === "yes")
         }
     }
     Hint {
         visible: panel.d.when !== "now"
-        text: Schedules.quietText + ". Подтверждения задача спросит как обычно — карточкой и в Telegram."
+        text: qsTr("%1. Подтверждения задача спросит как обычно — карточкой и в Telegram.").arg(Schedules.quietText)
     }
     Text {
         objectName: "scheduleError"
@@ -159,7 +158,7 @@ Column {
 
     FolderDialog {
         id: folderDialog
-        title: "Папка, в которой ждать новые файлы"
+        title: qsTr("Папка, в которой ждать новые файлы")
         onAccepted: Schedules.chooseFolder(selectedFolder.toString())
     }
 }

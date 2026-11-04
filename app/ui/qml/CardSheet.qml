@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "cardSheet"
-    title: "Карточка проекта «" + Projects.currentName + "»"
+    title: qsTr("Карточка проекта «%1»").arg(Projects.currentName)
     iconName: "edit"
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
     property bool fromDraft: false
@@ -23,9 +23,8 @@ Sheet {
         wrapMode: Text.Wrap
         lineHeight: 1.3
         text: sheet.fromDraft
-              ? "Черновик от модели «" + sheet.card.draftModel + "». Проверьте факты, поправьте и подтвердите — карточка "
-                + "станет тем, что модели узнают о проекте первым делом."
-              : "Сейчас — версия " + sheet.card.version + ". Подтверждённая правка станет новой версией; старые остаются."
+              ? qsTr("Черновик от модели «%1». Проверьте факты, поправьте и подтвердите — карточка станет тем, что модели узнают о проекте первым делом.").arg(sheet.card.draftModel)
+              : qsTr("Сейчас — версия %1. Подтверждённая правка станет новой версией; старые остаются.").arg(sheet.card.version)
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -35,7 +34,7 @@ Sheet {
         visible: sheet.fromDraft && sheet.card.confirmed && sheet.card.changedSections.length > 0
         width: parent.width
         wrapMode: Text.Wrap
-        text: "По сравнению с версией " + sheet.card.version + " изменены разделы: " + sheet.card.changedSections.join(", ")
+        text: qsTr("По сравнению с версией %1 изменены разделы: %2").arg(sheet.card.version).arg(sheet.card.changedSections.join(", "))
         color: Theme.p.accent
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -72,20 +71,20 @@ Sheet {
         PlainButton {
             kind: "primary"
             iconName: "check"
-            text: "Подтвердить"
+            text: qsTr("Подтвердить")
             enabled: editor.text.trim() !== ""
             onClicked: { Projects.confirmCard(editor.text); sheet.close() }
         }
-        PlainButton { text: "Отмена"; onClicked: sheet.close() }
+        PlainButton { text: qsTr("Отмена"); onClicked: sheet.close() }
         PlainButton {
             visible: sheet.fromDraft
             kind: "danger"
-            text: "Выбросить черновик"
+            text: qsTr("Выбросить черновик")
             onClicked: { Projects.dropCardDraft(); sheet.close() }
         }
     }
 
-    SectionTitle { visible: sheet.card.versions.length > 0; text: "Версии" }
+    SectionTitle { visible: sheet.card.versions.length > 0; text: qsTr("Версии") }
     Repeater {
         model: sheet.card.versions
         delegate: Item {
@@ -95,8 +94,9 @@ Sheet {
             height: 32
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "версия " + version.modelData.version + " · " + version.modelData.when
-                      + (version.modelData.model_id ? " · черновик " + version.modelData.model_id : " · вручную")
+                text: version.modelData.model_id
+                      ? qsTr("версия %1 · %2 · черновик %3").arg(version.modelData.version).arg(version.modelData.when).arg(version.modelData.model_id)
+                      : qsTr("версия %1 · %2 · вручную").arg(version.modelData.version).arg(version.modelData.when)
                 color: version.modelData.version === sheet.card.version ? Theme.p.text : Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 13
@@ -105,7 +105,7 @@ Sheet {
                 visible: version.modelData.version !== sheet.card.version
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Вернуть"
+                text: qsTr("Вернуть")
                 onClicked: { Projects.restoreCard(version.modelData.version); sheet.close() }
             }
         }

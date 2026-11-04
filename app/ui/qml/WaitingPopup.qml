@@ -42,7 +42,7 @@ Popup {
                 leftPadding: 10
                 bottomPadding: 5
                 verticalAlignment: Text.AlignBottom
-                text: Approvals.count > 0 ? "Ждут ответа: " + Approvals.count : "Подтверждения"
+                text: Approvals.count > 0 ? qsTr("Ждут ответа: %1").arg(Approvals.count) : qsTr("Подтверждения")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -53,8 +53,7 @@ Popup {
                 width: parent.width
                 padding: 10
                 wrapMode: Text.Wrap
-                text: "Никто ничего не ждёт. Когда модель или агент захотят выполнить команду или поправить файл, "
-                      + "карточка появится сверху их чата, а щит в заголовке покажет, сколько запросов ждёт."
+                text: qsTr("Никто ничего не ждёт. Когда модель или агент захотят выполнить команду или поправить файл, карточка появится сверху их чата, а щит в заголовке покажет, сколько запросов ждёт.")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 13
@@ -88,7 +87,7 @@ Popup {
                             spacing: 2
                             Text {
                                 width: parent.width
-                                text: entry.modelData.chat + (entry.modelData.here ? " · открыт" : "")
+                                text: entry.modelData.chat + (entry.modelData.here ? qsTr(" · открыт") : "")
                                 elide: Text.ElideRight
                                 color: Theme.p.text
                                 font.family: Theme.uiFont
@@ -124,7 +123,7 @@ Popup {
                 leftPadding: 10
                 bottomPadding: 5
                 verticalAlignment: Text.AlignBottom
-                text: "Без чата — внешние клиенты"
+                text: qsTr("Без чата — внешние клиенты")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 12

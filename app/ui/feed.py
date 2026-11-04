@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import tr
+
 from . import feed_rows
 
 if TYPE_CHECKING:
@@ -56,7 +58,7 @@ class Feed(QObject):
 
     @Property(list, constant=True)
     def groups(self) -> list:
-        return [{"id": key, "name": name} for key, name in feed_rows.GROUPS]
+        return [{"id": key, "name": tr(name)} for key, name in feed_rows.GROUPS]
 
     @Property(list, notify=recentChanged)
     def recent(self) -> list:

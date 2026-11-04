@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from common.i18n import N_, decimal, tr
 from common.plain_errors import explain
 
 from .. import palette, presenter
@@ -40,42 +41,48 @@ def thinking(text: str, elapsed: float | None, *, running: bool = False, open_: 
 
 def model_name(models: dict[str, dict], model_id: str | None) -> str:
     if not model_id:
-        return "Модель"
+        return tr("Модель")
     return models.get(model_id, {}).get("name") or model_id
 
 
 # a chat's rights (D17) as its input's chip shows them (2026-10-28, the user's word): how often the model asks
 CHAT_MODES = [
-    ("read_only", "Только чтение", "Модель только читает. Правки файлов предложит словами, команды не запускает."),
-    ("ask", "Спрашивать", "Каждую правку файла и команду модель показывает карточкой и ждёт вашего ответа."),
-    ("sandbox", "Песочница", "Правит без вопроса копию проекта (git worktree), потом вы смотрите изменения и "
-                            "применяете или отбрасываете. Нужен git-проект; Claude Code здесь спрашивает."),
-    ("trusted", "Доверенный", "Правит файлы, запускает команды, ходит в сеть без вопроса — правки можно откатить. "
-                              "Спрашивает только разрушительное (удаление, git push), всё после чтения сайтов, писем "
-                              "и чужих окон, а сеть — если в чате проект «только локально»."),
+    ("read_only", N_("Только чтение"), N_("Модель только читает. Правки файлов предложит словами, команды не "
+                                          "запускает.")),
+    ("ask", N_("Спрашивать"), N_("Каждую правку файла и команду модель показывает карточкой и ждёт вашего ответа.")),
+    ("sandbox", N_("Песочница"), N_("Правит без вопроса копию проекта (git worktree), потом вы смотрите изменения и "
+                                    "применяете или отбрасываете. Нужен git-проект; Claude Code здесь спрашивает.")),
+    ("trusted", N_("Доверенный"), N_("Правит файлы, запускает команды, ходит в сеть без вопроса — правки можно "
+                                     "откатить. Спрашивает только разрушительное (удаление, git push), всё после "
+                                     "чтения сайтов, писем и чужих окон, а сеть — если в чате проект «только "
+                                     "локально».")),
 ]  # fmt: skip
 
 
 def kept_text(usage: dict[str, dict[str, int]]) -> str:
     """What the hub keeps on disk now, by kind (D30): «снимки файлов 12 МБ · снимки экрана 40 МБ · …»."""
-    names = [("snapshots", "снимки файлов"), ("screens", "снимки экрана"), ("terminals", "журналы терминалов"),
-             ("files", "файлы из чатов")]  # fmt: skip
+    names = [("snapshots", tr("снимки файлов")), ("screens", tr("снимки экрана")),
+             ("terminals", tr("журналы терминалов")), ("files", tr("файлы из чатов"))]  # fmt: skip
     return " · ".join(f"{word} {mb((usage.get(kind) or {}).get('bytes', 0))}" for kind, word in names)
 
 
 def mb(size: int) -> str:
-    return f"{size / 1024**3:.1f} ГБ".replace(".", ",") if size >= 1024**3 else f"{round(size / 1024**2)} МБ"
+    if size >= 1024**3:
+        return tr("{size} ГБ", size=decimal(f"{size / 1024**3:.1f}"))
+    return tr("{size} МБ", size=round(size / 1024**2))
 
 
 def chat_mode_items(mode: str) -> list[dict[str, Any]]:
-    return [{"section": "Права модели в этом чате — что она делает без вопроса", "id": ""}] + [
-        {"id": m, "name": n, "note": h, "icon": "shield", "selected": m == (mode or "ask")} for m, n, h in CHAT_MODES
+    return [{"section": tr("Права модели в этом чате — что она делает без вопроса"), "id": ""}] + [
+        {"id": m, "name": tr(n), "note": tr(h), "icon": "shield", "selected": m == (mode or "ask")}
+        for m, n, h in CHAT_MODES
     ]
 
 
 # Strata's refusal vector (abliteration at runtime, 2026-10-28) for one chat or task: "" - as the model is set
-REFUSAL = [("on", "Включено", "Strata убирает у модели отказы отвечать (abliterated)."),
-           ("off", "Выключено", "Обычная модель, как её выпустили: на некоторые темы может отказаться.")]  # fmt: skip
+REFUSAL = [("on", N_("Включено"), N_("Strata убирает у модели отказы отвечать (abliterated).")),
+           ("off", N_("Выключено"), N_("Обычная модель, как её выпустили: на некоторые темы может "
+                                       "отказаться."))]  # fmt: skip
 
 
 def model_vector(models: dict[str, dict], model_id: str | None) -> bool | None:
@@ -87,16 +94,17 @@ def model_vector(models: dict[str, dict], model_id: str | None) -> bool | None:
 def refusal_name(models: dict[str, dict], model_id: str | None, chosen: str) -> str:
     """The chip: what this chat or task gets - its own choice, else the model's."""
     on = chosen == "on" if chosen else bool(model_vector(models, model_id))
-    return "Снятие отказов: " + ("вкл" if on else "выкл")
+    return tr("Снятие отказов: {state}", state=tr("вкл") if on else tr("выкл"))
 
 
 def refusal_items(models: dict[str, dict], model_id: str | None, chosen: str, whose: str) -> list[dict[str, Any]]:
     """The chip's menu: as the model is set (and how that is now), on, off - each explained."""
-    model = "включено" if model_vector(models, model_id) else "выключено"
-    return [{"section": f"Снятие отказов (abliterated) — для {whose}", "id": ""},
-            {"id": "model", "name": "Как в настройках модели", "note": f"Сейчас там: {model}.", "icon": "sliders",
-             "selected": not chosen}] + [
-        {"id": a, "name": n, "note": h, "icon": "key", "selected": a == chosen} for a, n, h in REFUSAL]  # fmt: skip
+    model = tr("включено") if model_vector(models, model_id) else tr("выключено")
+    return [{"section": tr("Снятие отказов (abliterated) — для {whose}", whose=whose), "id": ""},
+            {"id": "model", "name": tr("Как в настройках модели"), "note": tr("Сейчас там: {state}.", state=model),
+             "icon": "sliders", "selected": not chosen}] + [
+        {"id": a, "name": tr(n), "note": tr(h), "icon": "key", "selected": a == chosen}
+        for a, n, h in REFUSAL]  # fmt: skip
 
 
 def is_local(models: dict[str, dict], model_id: str | None) -> bool:
@@ -112,25 +120,26 @@ def user_row(message: dict[str, Any]) -> dict[str, Any]:
 
 
 # the hub's word to the model between its turns (D40, D44): a line in the chat, its text on a click
-HUB_NOTES = {"start": "договор цели", "continuation": "продолжение цели", "budget_limit": "последний ход цели"}
+HUB_NOTES = {"start": N_("договор цели"), "continuation": N_("продолжение цели"),
+             "budget_limit": N_("последний ход цели")}  # fmt: skip
 GOAL_LOOP = re.compile(r'<goal_loop type="(\w+)">')
 
 
 def hub_row(message: dict[str, Any]) -> dict[str, Any]:
     text, _ = presenter.split_blocks(message["content"])
     found = GOAL_LOOP.search(text)
-    what = HUB_NOTES.get(found.group(1), "цель") if found else "напоминание"
+    what = tr(HUB_NOTES.get(found.group(1), N_("цель"))) if found else tr("напоминание")
     notes = []
     if found:
         missing = sum(1 for line in text.splitlines() if line.startswith("- ") and "HARD CONSTRAINTS" not in line)
         if "CHECK OF YOUR LAST TURN" in text and missing:
-            notes.append(f"не выполнено: {missing}")
+            notes.append(tr("не выполнено: {count}", count=missing))
         if "THE JUDGE SAYS" in text:
-            notes.append("слово проверяющей модели")
+            notes.append(tr("слово проверяющей модели"))
         if "THE USER ADDED" in text:
-            notes.append("ваше уточнение")
-    return {"key": f"m{message['id']}", "role": "hub", "text": text, "html": "", "title": f"Хаб → модели: {what}",
-            "note": " · ".join(notes), "goal": bool(found)}  # fmt: skip
+            notes.append(tr("ваше уточнение"))
+    return {"key": f"m{message['id']}", "role": "hub", "text": text, "html": "",
+            "title": tr("Хаб → модели: {what}", what=what), "note": " · ".join(notes), "goal": bool(found)}  # fmt: skip
 
 
 def assistant_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, Any]:
@@ -152,14 +161,18 @@ def assistant_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str,
     }
 
 
-def fallback_note(fallback: dict[str, Any] | None) -> str:
-    """The line over an answer the spare model gave (D39): which model did not answer, and why."""
+def fallback_note(fallback: dict[str, Any] | None, answering: str | None = None) -> str:
+    """The line over an answer the spare model gave (D39): which model did not answer, and why. `answering`: the
+    spare model's name while it answers now (the notice as the run goes on)."""
     if not fallback:
         return ""
     reason = " ".join(str(fallback.get("reason") or "").split())
-    return f"Ответила запасная модель: «{fallback.get('from_name') or fallback.get('from')}» не ответила" + (
-        f" — {reason[:160]}" if reason else ""
-    )
+    failed = fallback.get("from_name") or fallback.get("from")
+    if answering is None:
+        note = tr("Ответила запасная модель: «{failed}» не ответила", failed=failed)
+    else:
+        note = tr("Отвечает запасная «{name}»: «{failed}» не ответила", name=answering, failed=failed)
+    return note + (f" — {reason[:160]}" if reason else "")
 
 
 TOOL_ICONS = {
@@ -219,18 +232,18 @@ def stats_rows(found: list[dict[str, Any]], names: dict[str, str]) -> list[dict[
     for m in found:
         speed = [f"{m['requests']} {presenter.plural(m['requests'], 'запрос', 'запроса', 'запросов')}"]
         if m.get("tok_s"):
-            speed.append(f"{m['tok_s']:g} т/с")
+            speed.append(tr("{speed:g} т/с", speed=m["tok_s"]))
         if m.get("ttft_s") is not None:
-            speed.append(f"первый токен {m['ttft_s']:g} с")
+            speed.append(tr("первый токен {seconds:g} с", seconds=m["ttft_s"]))
         if m.get("answer_s") is not None:
-            speed.append(f"ответ {m['answer_s']:g} с")
-        more = [f"ошибки {m['error_rate'] * 100:.0f}%" if m.get("errors") else "без ошибок"]
+            speed.append(tr("ответ {seconds:g} с", seconds=m["answer_s"]))
+        more = [tr("ошибки {percent:.0f}%", percent=m["error_rate"] * 100) if m.get("errors") else tr("без ошибок")]
         if m.get("cost_usd"):
             more.append(presenter.money(m["cost_usd"]))
         elif m.get("estimate_usd"):
-            more.append(f"подписка, оценка {presenter.money(m['estimate_usd'])}")
+            more.append(tr("подписка, оценка {cost}", cost=presenter.money(m["estimate_usd"])))
         if m.get("runs"):
-            more.append(f"задачи агентов {m['runs_done']}/{m['runs']}")
+            more.append(tr("задачи агентов {done}/{total}", done=m["runs_done"], total=m["runs"]))
         out.append({"id": m["model_id"], "name": names.get(m["model_id"], m["model_id"]), "speed": " · ".join(speed),
                     "more": " · ".join(more), "warn": (m.get("error_rate") or 0) >= 0.2})  # fmt: skip
     return out
@@ -240,12 +253,14 @@ def forecast_text(spending: dict[str, Any] | None) -> str:
     """The month's money in one line (D12): so far, the pace, where it ends."""
     if not spending:
         return ""
-    text = f"В этом месяце {presenter.money(spending['month_to_date_usd'])}"
+    text = tr("В этом месяце {spent}", spent=presenter.money(spending["month_to_date_usd"]))
     if spending.get("daily_avg_7d_usd"):
-        text += (f"; последние 7 дней — {presenter.money(spending['daily_avg_7d_usd'])} в день, к концу месяца "
-                 f"≈ {presenter.money(spending['forecast_month_usd'])}")  # fmt: skip
+        text += tr("; последние 7 дней — {daily} в день, к концу месяца ≈ {forecast}",
+                   daily=presenter.money(spending["daily_avg_7d_usd"]),
+                   forecast=presenter.money(spending["forecast_month_usd"]))  # fmt: skip
     if spending.get("subscription_estimate_usd"):
-        text += f". Claude Code по подписке — оценка {presenter.money(spending['subscription_estimate_usd'])}"
+        text += tr(". Claude Code по подписке — оценка {estimate}",
+                   estimate=presenter.money(spending["subscription_estimate_usd"]))  # fmt: skip
     return text + "."
 
 
@@ -257,67 +272,74 @@ def tool_label(name: str, args: Any) -> str:
     file = short_path(str(a.get("file_path") or a.get("notebook_path") or ""))
     match name:
         case "Read":
-            return f"Читаю {file}"
+            return tr("Читаю {path}", path=file)
         case "Edit" | "MultiEdit" | "NotebookEdit":
-            return f"Правлю {file}"
+            return tr("Правлю {path}", path=file)
         case "Write":
-            return f"Пишу {file}"
+            return tr("Пишу {path}", path=file)
         case "Bash" | "PowerShell" | "run_command":
             command = " ".join(str(a.get("command", "")).split())
-            return f"Выполняю {command[:80]}" + ("…" if len(command) > 80 else "")
+            return tr("Выполняю {command}", command=command[:80] + ("…" if len(command) > 80 else ""))
         case "Glob":
-            return f"Ищу файлы {a.get('pattern', '')}"
+            return tr("Ищу файлы {pattern}", pattern=a.get("pattern", ""))
         case "Grep":
-            return f"Ищу «{a.get('pattern', '')}»"
+            return tr("Ищу «{text}»", text=a.get("pattern", ""))
         case "LS":
-            return f"Смотрю папку {short_path(path)}"
+            return tr("Смотрю папку {path}", path=short_path(path))
         case "WebFetch" | "web_fetch":
-            return f"Открываю {a.get('url', '')}"
+            return tr("Открываю {url}", url=a.get("url", ""))
         case "WebSearch":
-            return f"Ищу в сети «{a.get('query', '')}»"
+            return tr("Ищу в сети «{query}»", query=a.get("query", ""))
         case "TodoWrite":
-            return "Обновляю список задач"
+            return tr("Обновляю список задач")
         case "delegate_task":
-            return f"Поручаю агенту «{a.get('agent', '')}»: {' '.join(str(a.get('task', '')).split())[:80]}"
+            return tr("Поручаю агенту «{agent}»: {task}", agent=a.get("agent", ""),
+                      task=" ".join(str(a.get("task", "")).split())[:80])  # fmt: skip
         case "Task" | "Agent":
-            return f"Поручаю подагенту: {a.get('description', '')}"
+            return tr("Поручаю подагенту: {task}", task=a.get("description", ""))
         case "edit_file":
-            return f"Правлю {path}"
+            return tr("Правлю {path}", path=path)
         case "write_file":
-            return f"Пишу {path}"
+            return tr("Пишу {path}", path=path)
         case "get_ecosystem_map":
-            return "Смотрю карту проектов"
+            return tr("Смотрю карту проектов")
         case "get_project_card":
-            return f"Читаю карточку «{a.get('project', '')}»"
+            return tr("Читаю карточку «{project}»", project=a.get("project", ""))
         case "list_relations":
-            return "Смотрю связи проектов"
+            return tr("Смотрю связи проектов")
         case "find_symbol":
-            return f"Ищу определение {a.get('name', '')}"
+            return tr("Ищу определение {name}", name=a.get("name", ""))
         case "file_outline":
-            return f"Смотрю структуру {path}"
+            return tr("Смотрю структуру {path}", path=path)
         case "git_log":
-            return "Смотрю историю git"
+            return tr("Смотрю историю git")
         case "list_terminals":
-            return "Смотрю терминалы"
+            return tr("Смотрю терминалы")
         case "read_terminal":
-            return f"Читаю терминал «{a.get('terminal', '')}»"
+            return tr("Читаю терминал «{terminal}»", terminal=a.get("terminal", ""))
         case "get_events":
-            return "Смотрю, что происходило"
+            return tr("Смотрю, что происходило")
         case "read_file":
             start = a.get("start_line")
-            return f"Читаю {path}" + (f" со строки {start}" if isinstance(start, int) and start > 1 else "")
+            if isinstance(start, int) and start > 1:
+                return tr("Читаю {path} со строки {line}", path=path, line=start)
+            return tr("Читаю {path}", path=path)
         case "list_files":
-            return f"Смотрю папку {path}" if path else "Смотрю файлы проекта"
+            return tr("Смотрю папку {path}", path=path) if path else tr("Смотрю файлы проекта")
         case "search_code":
-            return f"Ищу «{a.get('query', '')}»"
+            return tr("Ищу «{text}»", text=a.get("query", ""))
         case "git_status":
-            return "Смотрю состояние git"
+            return tr("Смотрю состояние git")
         case "git_diff":
-            return f"Смотрю изменения в {path}" if path else "Смотрю изменения"
+            return tr("Смотрю изменения в {path}", path=path) if path else tr("Смотрю изменения")
         case "terminal_output":
-            return f"Читаю терминал «{a['terminal']}»" if a.get("terminal") else "Смотрю терминалы"
+            return (
+                tr("Читаю терминал «{terminal}»", terminal=a["terminal"])
+                if a.get("terminal")
+                else tr("Смотрю терминалы")
+            )
         case "list_processes":
-            return "Смотрю процессы"
+            return tr("Смотрю процессы")
     return name
 
 
@@ -384,15 +406,15 @@ def context_label(key: str, block: dict[str, Any]) -> str:
     project = block.get("project", "")
     match kind:
         case "map":
-            return "Карта проектов"
+            return tr("Карта проектов")
         case "project":
-            return f"Проект «{project}»"
+            return tr("Проект «{project}»", project=project)
         case "file":
-            return f"Файл {project}/{rest.partition(':')[2]}"
+            return tr("Файл {project}/{path}", project=project, path=rest.partition(":")[2])
         case "live":
-            return f"Сейчас в «{project}»"
+            return tr("Сейчас в «{project}»", project=project)
         case "tools":
-            return "Инструменты и правила"
+            return tr("Инструменты и правила")
     return key
 
 
@@ -456,7 +478,7 @@ def error_row(key: str, text: str) -> dict[str, Any]:
     """An error card: the usual ones get a title and what to do in plain words (10.6), the technical text below."""
     plain = explain(text)
     return {"key": key, "role": "error", "text": text, "html": page(render_plain(text)),
-            "title": plain[0] if plain else "Ошибка", "hint": plain[1] if plain else ""}  # fmt: skip
+            "title": plain[0] if plain else tr("Ошибка"), "hint": plain[1] if plain else ""}  # fmt: skip
 
 
 def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[dict[str, Any]]:
@@ -498,15 +520,15 @@ def day_section(updated_at: str, now: datetime | None = None) -> str:
     try:
         when = datetime.fromisoformat(updated_at.replace("Z", "+00:00")).astimezone(now.tzinfo)
     except ValueError:
-        return "Ранее"
+        return tr("Ранее")
     days = (now.date() - when.date()).days
     if days <= 0:
-        return "Сегодня"
+        return tr("Сегодня")
     if days == 1:
-        return "Вчера"
+        return tr("Вчера")
     if days < 7:
-        return "Последние 7 дней"
-    return "Ранее"
+        return tr("Последние 7 дней")
+    return tr("Ранее")
 
 
 def chat_rows(
@@ -515,7 +537,7 @@ def chat_rows(
     return [
         {
             "id": c["id"],
-            "title": c.get("title") or "Новый чат",
+            "title": c.get("title") or tr("Новый чат"),
             "section": day_section(c.get("updated_at", ""), now),
             "busy": c["id"] in busy,
             "cloud": bool(c.get("last_model_id")) and not is_local(models, c.get("last_model_id")),
@@ -537,7 +559,7 @@ def picker_items(
     best = options.get((advice or {}).get("recommended") or "")
     named = {m["id"]: m for m in models}
     if best is not None and best["model_id"] in named:
-        items.append({"section": "Рекомендуется для этого чата", "id": ""})
+        items.append({"section": tr("Рекомендуется для этого чата"), "id": ""})
         model = named[best["model_id"]]
         items.append({"section": "", "id": model["id"], "name": model["name"], "icon": "sparkle",
                       "note": " · ".join(best["reasons"][:3]), "selected": model["id"] == chosen,
@@ -548,22 +570,24 @@ def picker_items(
                  if (m.get("locality") == "local") == local and (not m.get("hidden") or m["id"] == chosen)]  # fmt: skip
         if not group:
             continue
-        items.append({"section": "Локальные · на этой видеокарте" if local else "Облако", "id": ""})
+        items.append({"section": tr("Локальные · на этой видеокарте") if local else tr("Облако"), "id": ""})
         for m in group:
             ref = m.get("model_ref") or m["id"].partition("/")[2]
             caps = m.get("capabilities") or {}
             if local:
-                note = "загружена в видеопамять" if ref in loaded else "загрузится при отправке"
+                note = tr("загружена в видеопамять") if ref in loaded else tr("загрузится при отправке")
             elif caps.get("subscription"):
-                note = "подписка Claude Code · работает в папке проекта чата"
+                note = tr("подписка Claude Code · работает в папке проекта чата")
             else:
                 prices = m.get("prices") or {}
-                note = f"${prices.get('input', 0):g} / ${prices.get('output', 0):g} за 1M"
+                note = tr(
+                    "${input:g} / ${output:g} за 1M", input=prices.get("input", 0), output=prices.get("output", 0)
+                )
                 if caps.get("context"):
-                    note += f" · контекст {caps['context'] // 1000}K"
+                    note += tr(" · контекст {size}K", size=caps["context"] // 1000)
             blocked = (options.get(m["id"]) or {}).get("blocked")
             if blocked:
-                note = f"недоступна: {blocked}"
+                note = tr("недоступна: {reason}", reason=blocked)
             items.append(
                 {
                     "section": "",

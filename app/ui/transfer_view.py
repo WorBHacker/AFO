@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.i18n import N_, tr
+
 from .. import presenter
 from .autonomy import AUTONOMY, LEVEL_KEY
 
@@ -21,19 +23,21 @@ if TYPE_CHECKING:
 
 KIND = "localchat-settings"
 WINDOW = "window"
-THEMES = {"system": "как в системе", "light": "светлая", "dark": "тёмная"}
-PRIORITIES = {"balanced": "баланс", "quality": "качество", "speed": "скорость", "price": "цена"}
-WINDOW_KEYS = {"ui/theme": "тема", "chat/priority": "подбор модели: что важнее", "chat/model": "модель нового чата",
-               "chat/effort": "глубина размышлений", LEVEL_KEY: "режим новой задачи агента"}  # fmt: skip
-ACTIONS = {"add": ("добавится", "ok"), "change": ("изменится", "accent"), "same": ("без изменений", "faint"),
-           "skip": ("пропущено", "warn")}  # fmt: skip
+THEMES = {"system": N_("как в системе"), "light": N_("светлая"), "dark": N_("тёмная")}
+PRIORITIES = {"balanced": N_("баланс"), "quality": N_("качество"), "speed": N_("скорость"), "price": N_("цена")}
+WINDOW_KEYS = {"ui/theme": N_("тема"), "chat/priority": N_("подбор модели: что важнее"),
+               "chat/model": N_("модель нового чата"), "chat/effort": N_("глубина размышлений"),
+               LEVEL_KEY: N_("режим новой задачи агента")}  # fmt: skip
+ACTIONS = {"add": (N_("добавится"), "ok"), "change": (N_("изменится"), "accent"),
+           "same": (N_("без изменений"), "faint"), "skip": (N_("пропущено"), "warn")}  # fmt: skip
 
 
 def window_values(models: dict[str, Any]) -> dict[str, dict[str, str]]:
     """What each of the window's keys may be, as a person reads it."""
-    return {"ui/theme": THEMES, "chat/priority": PRIORITIES, "chat/effort": dict(presenter.efforts()),
+    return {"ui/theme": {k: tr(v) for k, v in THEMES.items()},
+            "chat/priority": {k: tr(v) for k, v in PRIORITIES.items()}, "chat/effort": dict(presenter.efforts()),
             "chat/model": {mid: m.get("name") or mid for mid, m in models.items()},
-            LEVEL_KEY: {a: name for a, name, _hint in AUTONOMY}}  # fmt: skip
+            LEVEL_KEY: {a: tr(name) for a, name, _hint in AUTONOMY}}  # fmt: skip
 
 
 def window_part(saved: dict[str, Any], now: dict[str, str], models: dict[str, Any]) -> dict[str, Any]:
@@ -45,35 +49,38 @@ def window_part(saved: dict[str, Any], now: dict[str, str], models: dict[str, An
             continue
         value = str(saved[key])
         if value not in known[key]:
-            reason = "такой модели нет в этом хабе" if key == "chat/model" else f"неизвестное значение «{value}»"
-            items.append({"what": what, "action": "skip", "detail": reason, "warn": ""})
+            if key == "chat/model":
+                reason = tr("такой модели нет в этом хабе")
+            else:
+                reason = tr("неизвестное значение «{value}»", value=value)
+            items.append({"key": key, "what": tr(what), "action": "skip", "detail": reason, "warn": ""})
             continue
         action = "same" if now.get(key) == value else "change"
-        items.append({"what": what, "action": action, "detail": known[key][value], "warn": ""})
-    return {"id": WINDOW, "title": "Окно: тема и что выбрано для новых чатов", "locked": False, "items": items}
+        items.append({"key": key, "what": tr(what), "action": action, "detail": known[key][value], "warn": ""})
+    return {"id": WINDOW, "title": tr("Окно: тема и что выбрано для новых чатов"), "locked": False, "items": items}
 
 
 def part_rows(parts: list[dict[str, Any]], chosen: set[str]) -> list[dict[str, Any]]:
     rows = []
     for part in parts:
         on = part["id"] in chosen
-        items = [{**i, "actionText": ACTIONS.get(i["action"], (i["action"], ""))[0],
+        items = [{**i, "actionText": tr(ACTIONS[i["action"]][0]) if i["action"] in ACTIONS else i["action"],
                   "tone": ACTIONS.get(i["action"], ("", "faint"))[1]} for i in part["items"]] if on else []  # fmt: skip
-        counts = [f"{word}: {n}" for action, (word, _t) in ACTIONS.items()
+        counts = [f"{tr(word)}: {n}" for action, (word, _t) in ACTIONS.items()
                   if (n := sum(1 for i in part["items"] if i["action"] == action))]  # fmt: skip
         rows.append({"id": part["id"], "title": part["title"], "chosen": on, "locked": bool(part["locked"]) and on,
-                     "items": items, "counts": ", ".join(counts) if on else "не загружается"})  # fmt: skip
+                     "items": items, "counts": ", ".join(counts) if on else tr("не загружается")})  # fmt: skip
     return rows
 
 
 def summary(parts: list[dict[str, Any]]) -> str:
     counts = {a: sum(1 for p in parts for i in p["items"] if i["action"] == a) for a in ACTIONS}
-    said = [f"добавлено {counts['add']}", f"изменено {counts['change']}"]
+    said = [tr("добавлено {count}", count=counts["add"]), tr("изменено {count}", count=counts["change"])]
     if counts["skip"]:
-        said.append(f"пропущено {counts['skip']}")
+        said.append(tr("пропущено {count}", count=counts["skip"]))
     locked = [p["title"] for p in parts if p["locked"]]
-    text = "Настройки загружены: " + ", ".join(said)
-    return text + (f". Не загружено без пароля подключений: {'; '.join(locked)}" if locked else "")
+    text = tr("Настройки загружены: {done}", done=", ".join(said))
+    return text + (tr(". Не загружено без пароля подключений: {parts}", parts="; ".join(locked)) if locked else "")
 
 
 class TransferView(QObject):
@@ -107,14 +114,17 @@ class TransferView(QObject):
             try:
                 path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             except OSError as exc:
-                self.app.show_error(f"Файл не записан: {exc}")
+                self.app.show_error(tr("Файл не записан: {error}", error=exc))
                 return
             cut = data.get("redacted") or 0
-            self.app.flash(f"Настройки записаны в {path.name}" + (
-                f"; похожее на ключи вырезано: {cut}" if cut else ""), ms=10000)  # fmt: skip
+            if cut:
+                said = tr("Настройки записаны в {file}; похожее на ключи вырезано: {count}", file=path.name, count=cut)
+            else:
+                said = tr("Настройки записаны в {file}", file=path.name)
+            self.app.flash(said, ms=10000)
 
         self.app.call_or_fail(lambda: self.app.client.export_settings(), write,
-                              lambda e: self.app.show_error(f"Не выгружено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не выгружено: {error}", error=e)))  # fmt: skip
 
     # ---------------------------------------------------------------- back
 
@@ -125,10 +135,10 @@ class TransferView(QObject):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            self.app.show_error(f"Файл не прочитан: {exc}")
+            self.app.show_error(tr("Файл не прочитан: {error}", error=exc))
             return False
         if not isinstance(data, dict) or data.get("kind") != KIND:
-            self.app.show_error("Это не файл настроек AFO (настройки моделей загружаются в «Настройке моделей»)")
+            self.app.show_error(tr("Это не файл настроек AFO (настройки моделей загружаются в «Настройке моделей»)"))
             return False
         self.close()
         self._data, self._file, self._parts = data, path.name, {}
@@ -154,7 +164,7 @@ class TransferView(QObject):
             self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self._busy, self._error = False, f"Хаб не показал, что загрузится: {error}"
+            self._busy, self._error = False, tr("Хаб не показал, что загрузится: {error}", error=error)
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.preview_settings(data, chosen, ticket), done, failed)
@@ -227,7 +237,7 @@ class TransferView(QObject):
             self.finished.emit()
 
         def failed(error: Exception) -> None:
-            self._busy, self._error = False, f"Не загружено: {error}"
+            self._busy, self._error = False, tr("Не загружено: {error}", error=error)
             self.changed.emit()
 
         if hub_parts:
@@ -236,9 +246,9 @@ class TransferView(QObject):
             done({})
 
     def _apply_window(self, saved: dict[str, Any], part: dict[str, Any]) -> None:
-        loaded = {i["what"] for i in part["items"] if i["action"] == "change"}
-        for key, what in WINDOW_KEYS.items():
-            if what not in loaded:
+        loaded = {i["key"] for i in part["items"] if i["action"] == "change"}
+        for key in WINDOW_KEYS:
+            if key not in loaded:
                 continue
             value = str(saved[key])
             if key == "ui/theme":

@@ -7,7 +7,7 @@ import QtQuick.Dialogs
 Sheet {
     id: sheet
     objectName: "programsSheet"
-    title: "Программы для агента"
+    title: qsTr("Программы для агента")
     iconName: "shield"
     width: Math.min(680, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: Programs.load()
@@ -15,8 +15,7 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Автономный агент сможет управлять только разрешёнными программами. Хаб сам находит программы "
-              + "из меню «Пуск» и Microsoft Store и спрашивает о каждой новой."
+        text: qsTr("Автономный агент сможет управлять только разрешёнными программами. Хаб сам находит программы из меню «Пуск» и Microsoft Store и спрашивает о каждой новой.")
         color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -31,21 +30,21 @@ Sheet {
             objectName: "programSearch"
             width: parent.width - scanButton.width - addButton.width - 16
             height: 32
-            placeholderText: "Поиск программы"
+            placeholderText: qsTr("Поиск программы")
             onTextEdited: Programs.setQuery(text)
         }
         PlainButton {
             id: scanButton
             objectName: "programsScan"
             iconName: "refresh"
-            text: Programs.scanning ? "Ищу…" : "Найти новые"
+            text: Programs.scanning ? qsTr("Ищу…") : qsTr("Найти новые")
             enabled: !Programs.scanning
             onClicked: Programs.scan()
         }
         PlainButton {
             id: addButton
             iconName: "plus"
-            text: "Добавить .exe…"
+            text: qsTr("Добавить .exe…")
             onClicked: exeDialog.open()
         }
     }
@@ -71,7 +70,7 @@ Sheet {
         width: parent.width
         topPadding: 16
         horizontalAlignment: Text.AlignHCenter
-        text: Programs.scanning ? "Ищу программы…" : "Здесь ничего нет"
+        text: Programs.scanning ? qsTr("Ищу программы…") : qsTr("Здесь ничего нет")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -128,7 +127,7 @@ Sheet {
                     Text {
                         id: newMark
                         visible: row.fresh
-                        text: "новая"
+                        text: qsTr("новая")
                         color: Theme.p.accent
                         font.family: Theme.uiFont
                         font.pixelSize: 11
@@ -159,7 +158,7 @@ Sheet {
                 anchors.rightMargin: remove.visible ? 6 : 8
                 anchors.verticalCenter: parent.verticalCenter
                 width: 220
-                options: [{ id: "allow", name: "Разрешена" }, { id: "deny", name: "Запрещена" }]
+                options: [{ id: "allow", name: qsTr("Разрешена") }, { id: "deny", name: qsTr("Запрещена") }]
                 value: row.decision
                 onPicked: (id) => Programs.decide(row.id, id === row.decision ? "" : id)
             }
@@ -170,7 +169,7 @@ Sheet {
                 anchors.rightMargin: 4
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "trash"
-                tip: "Убрать из списка (добавлена вручную)"
+                tip: qsTr("Убрать из списка (добавлена вручную)")
                 onClicked: Programs.removeProgram(row.id)
             }
         }
@@ -178,8 +177,8 @@ Sheet {
 
     FileDialog {
         id: exeDialog
-        title: "Программа для агента"
-        nameFilters: ["Программы (*.exe)"]
+        title: qsTr("Программа для агента")
+        nameFilters: [qsTr("Программы (*.exe)")]
         onAccepted: Programs.addProgram(selectedFile.toString())
     }
 }

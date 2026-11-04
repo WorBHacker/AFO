@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.i18n import N_, tr
 from common.llama_memory import estimate
 
 from .. import presenter
@@ -22,36 +23,38 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 GENERAL = "*"  # the general row in the window ('' at the hub)
-PROVIDERS = {"llama-swap": "Локальные · llama-swap", "anthropic": "Claude", "claude-code": "Claude Code",
+PROVIDERS = {"llama-swap": N_("Локальные · llama-swap"), "anthropic": "Claude", "claude-code": "Claude Code",
              "openai": "OpenAI", "gemini": "Gemini", "deepseek": "DeepSeek", "openrouter": "OpenRouter"}  # fmt: skip
 NUMBERS = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "max_tokens")
 INTEGERS = ("top_k", "max_tokens")
-LABELS = {"temperature": ("Температура", "0–2, выше — разнообразнее"), "top_p": ("top_p", "0–1"),
-          "top_k": ("top_k", "1–1000"), "min_p": ("min_p", "0–1"), "repeat_penalty": ("Штраф за повтор", "0,5–2"),
-          "max_tokens": ("Предел ответа", "токенов")}  # fmt: skip
-PRESETS = [("precise", "Точно"), ("balanced", "Баланс"), ("creative", "Творчески")]
-PRICES = [("input", "Вход"), ("output", "Выход"), ("cache_read", "Чтение кэша"), ("cache_write", "Запись кэша")]
+LABELS = {"temperature": (N_("Температура"), N_("0–2, выше — разнообразнее")), "top_p": ("top_p", "0–1"),
+          "top_k": ("top_k", "1–1000"), "min_p": ("min_p", "0–1"),
+          "repeat_penalty": (N_("Штраф за повтор"), N_("0,5–2")),
+          "max_tokens": (N_("Предел ответа"), N_("токенов"))}  # fmt: skip
+PRESETS = [("precise", N_("Точно")), ("balanced", N_("Баланс")), ("creative", N_("Творчески"))]
+PRICES = [("input", N_("Вход")), ("output", N_("Выход")), ("cache_read", N_("Чтение кэша")),
+          ("cache_write", N_("Запись кэша"))]  # fmt: skip
 TRISTATE = ("", "yes", "no")  # as the provider says / yes / no
 # «для опытных»: the context's budgets and the tools' portions (D22, hub/limits.py)
-BUDGETS = [("map", "Карта проектов (L0), токенов"), ("project", "Карточка проекта (L1), токенов"),
-           ("linked", "Связанный проект (L1), токенов"), ("live", "Что происходит (L2), токенов"),
-           ("notes", "Заметки (L4), токенов"), ("file_lines", "read_file, строк"),
-           ("search_matches", "Поиск, совпадений"), ("terminal_lines", "Терминал, строк")]  # fmt: skip
+BUDGETS = [("map", N_("Карта проектов (L0), токенов")), ("project", N_("Карточка проекта (L1), токенов")),
+           ("linked", N_("Связанный проект (L1), токенов")), ("live", N_("Что происходит (L2), токенов")),
+           ("notes", N_("Заметки (L4), токенов")), ("file_lines", N_("read_file, строк")),
+           ("search_matches", N_("Поиск, совпадений")), ("terminal_lines", N_("Терминал, строк"))]  # fmt: skip
 # which model does what (the general row): the role, its name, what it is for
-ROLES = [("chat", "Модель нового чата", "выбирается сама в каждом новом чате"),
-         ("cards", "Карточки проектов", "лучше локальная: карточка видит код проекта"),
-         ("agents", "Новые агенты", "модель нового профиля агента"),
-         ("coordinator", "Координатор", "раздаёт подзадачи другим агентам"),
-         ("planner", "Автономный агент: планировщик", "этап 9"),
-         ("executor", "Автономный агент: исполнитель", "этап 9"),
-         ("vision", "Зрение", "модель с картинками — смотрит на экран; этап 9"),
-         ("judge", "Проверка цели", "судья режима «Цель»: только читает и сверяет сделанное с договором; лучше не та "
-          "же модель, что работает"),
-         ("fallback", "Запасная", "отвечает, если модель упала с ошибкой или отказала"),
-         ("complete", "Дописывание кода", "серый текст в редакторе; лучше маленькая локальная, загруженная рядом с "
-          "моделью чата — иначе дописывание на паузе"),
-         ("edit", "Правка в редакторе", "Ctrl+I над выделенным: модель предлагает замену, вы её принимаете "
-          "или нет")]  # fmt: skip
+ROLES = [("chat", N_("Модель нового чата"), N_("выбирается сама в каждом новом чате")),
+         ("cards", N_("Карточки проектов"), N_("лучше локальная: карточка видит код проекта")),
+         ("agents", N_("Новые агенты"), N_("модель нового профиля агента")),
+         ("coordinator", N_("Координатор"), N_("раздаёт подзадачи другим агентам")),
+         ("planner", N_("Автономный агент: планировщик"), N_("этап 9")),
+         ("executor", N_("Автономный агент: исполнитель"), N_("этап 9")),
+         ("vision", N_("Зрение"), N_("модель с картинками — смотрит на экран; этап 9")),
+         ("judge", N_("Проверка цели"), N_("судья режима «Цель»: только читает и сверяет сделанное с договором; "
+                                           "лучше не та же модель, что работает")),
+         ("fallback", N_("Запасная"), N_("отвечает, если модель упала с ошибкой или отказала")),
+         ("complete", N_("Дописывание кода"), N_("серый текст в редакторе; лучше маленькая локальная, загруженная "
+                                                 "рядом с моделью чата — иначе дописывание на паузе")),
+         ("edit", N_("Правка в редакторе"), N_("Ctrl+I над выделенным: модель предлагает замену, вы её принимаете "
+                                               "или нет"))]  # fmt: skip
 BLANK: dict[str, Any] = {"name": "", "hidden": False, "context": "", "tools": "", "vision": "", "price_input": "",
                          "price_output": "", "price_cache_read": "", "price_cache_write": "", "temperature": "",
                          "top_p": "", "top_k": "", "min_p": "", "repeat_penalty": "", "max_tokens": "", "stop": "",
@@ -68,10 +71,10 @@ def number(text: str, label: str, *, whole: bool = False) -> float | int | None:
     try:
         value = float(text)
     except ValueError:
-        raise ValueError(f"{label}: «{text}» — не число") from None
+        raise ValueError(tr("{label}: «{text}» — не число", label=label, text=text)) from None
     if whole:
         if value != int(value):
-            raise ValueError(f"{label}: нужно целое число")
+            raise ValueError(tr("{label}: нужно целое число", label=label))
         return int(value)
     return value
 
@@ -126,7 +129,7 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
     if draft["name"].strip():
         out["name"] = draft["name"].strip()
     caps: dict[str, Any] = {}
-    context = number(draft["context"], "Контекст", whole=True)
+    context = number(draft["context"], tr("Контекст"), whole=True)
     if context is not None:
         caps["context"] = context
     for cap in ("tools", "vision"):
@@ -136,7 +139,7 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
         out["capabilities"] = caps
     prices = {}
     for part, label in PRICES:
-        value = number(draft[f"price_{part}"], f"Цена «{label}»")
+        value = number(draft[f"price_{part}"], tr("Цена «{label}»", label=tr(label)))
         if value is not None:
             prices[part] = value
     if prices:
@@ -144,7 +147,7 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
     params: dict[str, Any] = {}
     for name in NUMBERS:
         if name in accepts:
-            value = number(draft[name], LABELS[name][0], whole=name in INTEGERS)
+            value = number(draft[name], tr(LABELS[name][0]), whole=name in INTEGERS)
             if value is not None:
                 params[name] = value
     stops = [line for line in draft["stop"].splitlines() if line]
@@ -158,7 +161,7 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
         out["params"] = params
     budget = {}
     for name, label in BUDGETS:
-        value = number(draft[f"budget_{name}"], label, whole=True)
+        value = number(draft[f"budget_{name}"], tr(label), whole=True)
         if value is not None:
             budget[name] = value
     if budget:
@@ -171,21 +174,25 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
     return out
 
 
+def provider_name(ref: str) -> str:
+    return tr(PROVIDERS[ref]) if ref in PROVIDERS else ref
+
+
 def choices(models: list[dict[str, Any]], current: str) -> list[dict[str, Any]]:
     """The panel's model menu: the general row, then the models by provider (hidden ones say so)."""
-    items: list[dict[str, Any]] = [{"id": GENERAL, "name": "Все модели — общий системный промпт", "icon": "layers",
+    items: list[dict[str, Any]] = [{"id": GENERAL, "name": tr("Все модели — общий системный промпт"), "icon": "layers",
                                     "selected": current == GENERAL}]  # fmt: skip
     by_provider: dict[str, list[dict[str, Any]]] = {}
     for model in presenter.sorted_models(models):
         by_provider.setdefault(model.get("provider") or model["id"].partition("/")[0], []).append(model)
     for provider, group in by_provider.items():
-        items.append({"section": PROVIDERS.get(provider, provider), "id": ""})
+        items.append({"section": provider_name(provider), "id": ""})
         for model in group:
             note = " · ".join(s for s in (
-                "скрыта в выборе" if model.get("hidden") else "",
-                f"своё имя, у поставщика «{model.get('provider_name')}»" if model.get("provider_name")
+                tr("скрыта в выборе") if model.get("hidden") else "",
+                tr("своё имя, у поставщика «{name}»", name=model.get("provider_name")) if model.get("provider_name")
                 and model.get("provider_name") != model["name"] else "",
-                f"настройки v{model['settings_version']}" if model.get("settings_version") else "",
+                tr("настройки v{version}", version=model["settings_version"]) if model.get("settings_version") else "",
             ) if s)  # fmt: skip
             items.append({"id": model["id"], "name": model["name"], "note": note, "selected": model["id"] == current,
                           "icon": "cpu" if model.get("locality") == "local" else "cloud"})  # fmt: skip
@@ -194,7 +201,7 @@ def choices(models: list[dict[str, Any]], current: str) -> list[dict[str, Any]]:
 
 def history_rows(history: list[dict[str, Any]], current: int) -> list[dict[str, Any]]:
     return [{"version": h["version"], "when": local_time(h.get("created_at", "")), "current": h["version"] == current,
-             "what": ", ".join(k for k in h.get("settings") or {}) or "всё как у поставщика"}
+             "what": ", ".join(k for k in h.get("settings") or {}) or tr("всё как у поставщика")}
             for h in history]  # fmt: skip
 
 
@@ -230,59 +237,68 @@ def launch_draft(view: dict[str, Any]) -> dict[str, str]:
 def launch_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any]:
     """The fields back as the hub's changes - only what differs from the config now (ValueError when unreadable)."""
     out: dict[str, Any] = {}
-    ttl = number(draft["ttl_min"], "Выгружать через", whole=False)
+    ttl = number(draft["ttl_min"], tr("Выгружать через"), whole=False)
     ttl_s = round((ttl or 0) * 60)
     if ttl_s != view.get("ttl", 0):
         out["ttl"] = ttl_s
     if not view.get("editable"):
         return out
-    context = number(draft["context"], "Контекст", whole=True)
+    context = number(draft["context"], tr("Контекст"), whole=True)
     if context and context != view.get("context"):
         out["context"] = context
     layers: str | int = draft["gpu_mode"]
     if layers == "n":
-        layers = number(draft["gpu_n"], "Слои на видеокарте", whole=True) or 0
+        layers = number(draft["gpu_n"], tr("Слои на видеокарте"), whole=True) or 0
     if layers != view.get("gpu_layers"):
         out["gpu_layers"] = layers
     for key in ("flash_attn", "cache_type"):
         if draft[key] != view.get(key):
             out[key] = draft[key]
-    parallel = number(draft["parallel"], "Параллельных запросов", whole=True)
+    parallel = number(draft["parallel"], tr("Параллельных запросов"), whole=True)
     if parallel and parallel != view.get("parallel"):
         out["parallel"] = parallel
     return out
 
 
-def launch_estimate(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None) -> str:
-    """What the fields would take of the video memory and RAM, said before anything is written."""
+ESTIMATE_TONES = {"over": "error", "split": "warn", "auto": "warn"}  # the estimate's verdict: the text's colour
+
+
+def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None) -> tuple[str, str]:
+    """What the fields would take of the video memory and RAM, said before anything is written - and its tone
+    ('error': it does not fit, 'warn': slower, '': fine or unknown)."""
     info = view.get("info")
     if not view.get("editable"):
-        return ""
+        return "", ""
     if not info:
-        return f"Оценки памяти нет: {view.get('file_error') or 'файл модели не прочитан'}"
+        return tr("Оценки памяти нет: {reason}", reason=view.get("file_error") or tr("файл модели не прочитан")), ""
     try:
-        context = number(draft["context"], "Контекст", whole=True) or view.get("context") or 4096
+        context = number(draft["context"], tr("Контекст"), whole=True) or view.get("context") or 4096
         layers: str | int = draft["gpu_mode"]
         if layers == "n":
-            layers = number(draft["gpu_n"], "Слои", whole=True) or 0
+            layers = number(draft["gpu_n"], tr("Слои"), whole=True) or 0
     except ValueError as exc:
-        return str(exc)
-    return estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
-                    mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
-                    vram_total_mib=vram_total_mib)["text"]  # fmt: skip
+        return str(exc), ""
+    found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
+                     mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
+                     vram_total_mib=vram_total_mib)  # fmt: skip
+    return found["text"], ESTIMATE_TONES.get(found["verdict"], "")
+
+
+def launch_estimate(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None) -> str:
+    return launch_judged(draft, view, vram_total_mib)[0]
 
 
 def check_text(result: dict[str, Any]) -> str:
     if not result.get("ok"):
-        return f"Не ответила: {result.get('error') or result.get('text') or 'нет ответа'}"
-    parts = [f"«{result.get('text') or '…'}»"]
+        return tr("Не ответила: {error}", error=result.get("error") or result.get("text") or tr("нет ответа"))
+    parts = [tr("«{text}»", text=result.get("text") or "…")]
     if result.get("ttft_s") is not None:
-        parts.append(f"первое слово через {result['ttft_s']} с")
+        parts.append(tr("первое слово через {seconds} с", seconds=result["ttft_s"]))
     if result.get("tok_s"):
-        parts.append(f"{result['tok_s']} ток/с")
-    parts.append(f"всего {result.get('seconds', 0)} с")
+        parts.append(tr("{speed} ток/с", speed=result["tok_s"]))
+    parts.append(tr("всего {seconds} с", seconds=result.get("seconds", 0)))
     cost = result.get("cost_usd") or 0
-    parts.append("бесплатно" if not cost else presenter.money(cost))
+    parts.append(tr("бесплатно") if not cost else presenter.money(cost))
     return " · ".join(parts)
 
 
@@ -299,12 +315,14 @@ class ModelSetup(QObject):
         self._saved: dict[str, Any] = dict(BLANK)
         self._error = ""
         self._check = ""
+        self._check_failed = False  # the check said no: the sheet shows it red
         self._checking = False
         self._loading = False
         self._launch: dict[str, Any] = {}  # this model in llama-swap's config (local models), and the memory it has
         self._launch_draft: dict[str, str] = {}
         self._vram_mib: int | None = None
         self._launch_status = ""
+        self._launch_failed = False  # the launch's status says it went wrong: red
         self._launch_busy = False
         app.modelChanged.connect(self.choicesChanged)
 
@@ -325,21 +343,21 @@ class ModelSetup(QObject):
     @Property(str, notify=changed)
     def title(self) -> str:
         if self._model == GENERAL:
-            return "Все модели"
+            return tr("Все модели")
         model = self._info.get("model") or self.app.models.get(self._model) or {}
         return model.get("name") or self._model
 
     @Property(str, notify=changed)
     def subtitle(self) -> str:
         if self._model == GENERAL:
-            return "Общий системный промпт — перед промптом модели и чата"
+            return tr("Общий системный промпт — перед промптом модели и чата")
         model = self._info.get("model") or self.app.models.get(self._model) or {}
         caps = model.get("capabilities") or {}
-        parts = [PROVIDERS.get(model.get("provider", ""), model.get("provider", "")), self._model]
+        parts = [provider_name(model.get("provider", "")), self._model]
         if caps.get("context"):
-            parts.append(f"контекст {caps['context'] // 1000}K")
+            parts.append(tr("контекст {size}K", size=caps["context"] // 1000))
         if model.get("locality") == "cloud" and caps.get("prices_asof"):
-            parts.append(f"цены на {caps['prices_asof']}")
+            parts.append(tr("цены на {date}", date=caps["prices_asof"]))
         return " · ".join(p for p in parts if p)
 
     @Property(bool, notify=changed)
@@ -355,13 +373,14 @@ class ModelSetup(QObject):
     def numberFields(self) -> list:
         """The answer's numbers this model takes, with their labels and hints."""
         taken = set(self._info.get("accepts") or [])
-        return [{"id": n, "name": LABELS[n][0], "hint": LABELS[n][1]} for n in NUMBERS if n in taken]
+        return [{"id": n, "name": tr(LABELS[n][0]), "hint": tr(LABELS[n][1])} for n in NUMBERS if n in taken]
 
     @Property(list, notify=changed)
     def priceFields(self) -> list:
         model = self._info.get("model") or {}
         prices = model.get("prices") or {}
-        return [{"id": f"price_{part}", "name": label, "hint": f"у поставщика ${prices.get(part, 0):g}"}
+        return [{"id": f"price_{part}", "name": tr(label),
+                 "hint": tr("у поставщика ${price:g}", price=prices.get(part, 0))}
                 for part, label in PRICES]  # fmt: skip
 
     # ---------- a local model's launch in llama-swap (8.5) ----------
@@ -386,7 +405,7 @@ class ModelSetup(QObject):
         if self._launch_draft and preset in LAUNCH_PRESETS:
             trained = (self._launch.get("info") or {}).get("context_trained")
             self._launch_draft = preset_draft(preset, self._launch_draft, trained)
-            self._launch_status = ""
+            self._launch_status, self._launch_failed = "", False
             self.changed.emit()
 
     @Property(bool, notify=changed)
@@ -403,8 +422,17 @@ class ModelSetup(QObject):
         return launch_estimate(self._launch_draft, self._launch, self._vram_mib) if self._launch else ""
 
     @Property(str, notify=changed)
+    def launchEstimateTone(self) -> str:
+        """'error': it does not fit, 'warn': slower, '' - the sheet colours the estimate by it, not by its words."""
+        return launch_judged(self._launch_draft, self._launch, self._vram_mib)[1] if self._launch else ""
+
+    @Property(str, notify=changed)
     def launchStatus(self) -> str:
         return self._launch_status
+
+    @Property(bool, notify=changed)
+    def launchFailed(self) -> bool:
+        return self._launch_failed
 
     @Property(bool, notify=changed)
     def launchBusy(self) -> bool:
@@ -416,7 +444,7 @@ class ModelSetup(QObject):
 
     def _load_launch(self, model_id: str) -> None:
         model = self.app.models.get(model_id) or {}
-        self._launch, self._launch_draft, self._launch_status = {}, {}, ""
+        self._launch, self._launch_draft, self._launch_status, self._launch_failed = {}, {}, "", False
         if model.get("provider", model_id.partition("/")[0]) != "llama-swap":
             return
         ref = model_id.partition("/")[2]
@@ -435,7 +463,7 @@ class ModelSetup(QObject):
     def setLaunch(self, name: str, value: str) -> None:
         if self._launch_draft and name in self._launch_draft:
             self._launch_draft = {**self._launch_draft, name: value}
-            self._launch_status = ""
+            self._launch_status, self._launch_failed = "", False
             self.changed.emit()
 
     @Slot()
@@ -443,13 +471,14 @@ class ModelSetup(QObject):
         try:
             changes = launch_changes(self._launch_draft, self._launch)
         except ValueError as exc:
-            self._launch_status = str(exc)
+            self._launch_status, self._launch_failed = str(exc), False
             self.changed.emit()
             return
         if not changes:
             return
         model_id, ref = self._model, self._launch["id"]
-        self._launch_busy, self._launch_status = True, "Записываю в config.yaml и жду, что llama-swap его перечитает…"
+        self._launch_busy, self._launch_failed = True, False
+        self._launch_status = tr("Записываю в config.yaml и жду, что llama-swap его перечитает…")
         self.changed.emit()
 
         def done(result: dict[str, Any]) -> None:
@@ -457,17 +486,23 @@ class ModelSetup(QObject):
             if self._model == model_id:
                 self._launch = next((m for m in result.get("models") or [] if m["id"] == ref), self._launch)
                 self._launch_draft = launch_draft(self._launch)
-            self._launch_status = (
-                "Записано, llama-swap перечитал конфиг"
-                if result.get("verified")
-                else f"Записано, но не проверено: {result.get('problem')}"
-            ) + f". Копия прежнего — {result.get('backup')}. «Проверить запуск» загрузит модель с новыми настройками."
+            if result.get("verified"):
+                self._launch_status = tr(
+                    "Записано, llama-swap перечитал конфиг. Копия прежнего — {backup}. «Проверить "
+                    "запуск» загрузит модель с новыми настройками.",
+                    backup=result.get("backup"),
+                )
+            else:
+                self._launch_status = tr("Записано, но не проверено: {problem}. Копия прежнего — {backup}. «Проверить "
+                                         "запуск» загрузит модель с новыми настройками.", problem=result.get("problem"),
+                                         backup=result.get("backup"))  # fmt: skip
+            self._launch_failed = False
             self.changed.emit()
             self.app.load_models()
 
         def failed(error: Exception) -> None:
             self._launch_busy = False
-            self._launch_status = f"Не записано: {error}"
+            self._launch_status, self._launch_failed = tr("Не записано: {error}", error=error), True
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.change_llama_model(ref, changes), done, failed)
@@ -477,23 +512,24 @@ class ModelSetup(QObject):
         if not self._launch or self._launch_busy:
             return
         model_id, ref = self._model, self._launch["id"]
-        self._launch_busy = True
-        self._launch_status = "Загружаю модель с этими настройками и задаю короткий вопрос — может занять минуты…"
+        self._launch_busy, self._launch_failed = True, False
+        self._launch_status = tr("Загружаю модель с этими настройками и задаю короткий вопрос — может занять минуты…")
         self.changed.emit()
 
         def done(result: dict[str, Any]) -> None:
             self._launch_busy = False
             said = check_text(result)
             if result.get("restored"):
-                said += f". Модель не запустилась — конфиг возвращён из {result['restored']}"
+                said += tr(". Модель не запустилась — конфиг возвращён из {backup}", backup=result["restored"])
                 if self._model == model_id:
                     self._load_launch(model_id)
             self._launch_status = said
+            self._launch_failed = not result.get("ok") or bool(result.get("restored"))
             self.changed.emit()
 
         def failed(error: Exception) -> None:
             self._launch_busy = False
-            self._launch_status = f"Не проверено: {error}"
+            self._launch_status, self._launch_failed = tr("Не проверено: {error}", error=error), True
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.trial_llama_model(ref), done, failed)
@@ -505,8 +541,9 @@ class ModelSetup(QObject):
         for role, name, hint in ROLES:
             model_id = roles.get(role, "")
             model = self.app.models.get(model_id)
-            shown = model["name"] if model else (f"{model_id} — сейчас нет" if model_id else "не задана")
-            out.append({"id": role, "name": name, "hint": hint, "model": model_id, "modelName": shown})
+            shown = model["name"] if model else (tr("{model} — сейчас нет", model=model_id) if model_id
+                                                 else tr("не задана"))  # fmt: skip
+            out.append({"id": role, "name": tr(name), "hint": tr(hint), "model": model_id, "modelName": shown})
         return out
 
     @Property(list, notify=choicesChanged)
@@ -514,7 +551,7 @@ class ModelSetup(QObject):
         """The models a role may have (Claude Code is an agent of its own: not a role's model)."""
         models = [m for m in presenter.sorted_models(self.app.model_list)
                   if not m["id"].startswith("claude-code/")]  # fmt: skip
-        return [{"id": "", "name": "не задана", "icon": "close"}] + [
+        return [{"id": "", "name": tr("не задана"), "icon": "close"}] + [
             {"id": m["id"], "name": m["name"], "icon": "cpu" if m.get("locality") == "local" else "cloud"}
             for m in models]  # fmt: skip
 
@@ -530,8 +567,8 @@ class ModelSetup(QObject):
     def budgetFields(self) -> list:
         """The context's budgets with the hub's defaults as hints."""
         limits = self._info.get("limits") or {}
-        return [{"id": f"budget_{name}", "name": label,
-                 "hint": f"{limits[name]['default']} по умолчанию" if name in limits else ""}
+        return [{"id": f"budget_{name}", "name": tr(label),
+                 "hint": tr("{value} по умолчанию", value=limits[name]["default"]) if name in limits else ""}
                 for name, label in BUDGETS]  # fmt: skip
 
     @Slot(str)
@@ -543,14 +580,15 @@ class ModelSetup(QObject):
             try:
                 path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             except OSError as exc:
-                self.app.show_error(f"Файл не записан: {exc}")
+                self.app.show_error(tr("Файл не записан: {error}", error=exc))
                 return
             count = len(data.get("models") or {})
             whose = presenter.plural(count, "модели", "моделей", "моделей")
-            self.app.flash(f"Настройки {count} {whose} записаны в {path.name}")
+            self.app.flash(tr("Настройки {count} {models} записаны в {file}", count=count, models=whose,
+                              file=path.name))  # fmt: skip
 
         self.app.call_or_fail(lambda: self.app.client.export_model_settings(), write,
-                              lambda e: self.app.show_error(f"Не выгружено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не выгружено: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def importFrom(self, url: str) -> None:
@@ -558,29 +596,29 @@ class ModelSetup(QObject):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            self.app.show_error(f"Файл не прочитан: {exc}")
+            self.app.show_error(tr("Файл не прочитан: {error}", error=exc))
             return
 
         def done(report: dict[str, Any]) -> None:
-            said = f"Загружено: {len(report.get('saved') or [])}"
+            said = tr("Загружено: {count}", count=len(report.get("saved") or []))
             if report.get("skipped"):
-                said += f"; пропущено (нет в этом хабе): {', '.join(report['skipped'])}"
+                said += tr("; пропущено (нет в этом хабе): {models}", models=", ".join(report["skipped"]))
             if report.get("errors"):
-                said += "; ошибки: " + "; ".join(f"{k} — {v}" for k, v in report["errors"].items())
+                said += tr("; ошибки: {errors}", errors="; ".join(f"{k} — {v}" for k, v in report["errors"].items()))
             self.app.flash(said, error=bool(report.get("errors")), ms=15000)
             self.app.load_models()
             self.open(self._model)
 
         self.app.call_or_fail(lambda: self.app.client.import_model_settings(data), done,
-                              lambda e: self.app.show_error(f"Не загружено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не загружено: {error}", error=e)))  # fmt: skip
 
     @Property(list, constant=True)
     def presets(self) -> list:
-        return [{"id": i, "name": n} for i, n in PRESETS]
+        return [{"id": i, "name": tr(n)} for i, n in PRESETS]
 
     @Property(list, constant=True)
     def efforts(self) -> list:
-        return [{"id": "", "name": "как в чате"}] + [{"id": v, "name": label} for v, label in presenter.efforts()]
+        return [{"id": "", "name": tr("как в чате")}] + [{"id": v, "name": label} for v, label in presenter.efforts()]
 
     @Property("QVariantMap", notify=changed)
     def draft(self) -> dict:
@@ -605,6 +643,10 @@ class ModelSetup(QObject):
     @Property(str, notify=changed)
     def checkText(self) -> str:
         return self._check
+
+    @Property(bool, notify=changed)
+    def checkFailed(self) -> bool:
+        return self._check_failed
 
     @Property(bool, notify=changed)
     def checking(self) -> bool:
@@ -634,7 +676,7 @@ class ModelSetup(QObject):
         wanted = model_id or self.app.modelId or GENERAL
         if wanted != GENERAL and wanted not in self.app.models:
             wanted = GENERAL
-        self._model, self._check, self._loading = wanted, "", True
+        self._model, self._check, self._check_failed, self._loading = wanted, "", False, True
         hub_id = self._hub_id()
         self._load_launch(wanted)
         self.changed.emit()
@@ -645,7 +687,7 @@ class ModelSetup(QObject):
 
         def failed(error: Exception) -> None:
             self._loading = False
-            self._error = f"Настройки не прочитаны: {error}"
+            self._error = tr("Настройки не прочитаны: {error}", error=error)
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.model_settings(hub_id), show, failed)
@@ -694,7 +736,7 @@ class ModelSetup(QObject):
         def done(info: dict[str, Any]) -> None:
             if self._hub_id() == hub_id:
                 self._show(info)
-            self.app.flash(f"Сохранено: «{self.title}», версия {info.get('version')}")
+            self.app.flash(tr("Сохранено: «{name}», версия {version}", name=self.title, version=info.get("version")))
             self.app.load_models()  # the picker shows the new name, hides a hidden one; the roles come again
 
         def failed(error: Exception) -> None:
@@ -710,30 +752,32 @@ class ModelSetup(QObject):
         def done(info: dict[str, Any]) -> None:
             if self._hub_id() == hub_id:
                 self._show(info)
-            self.app.flash(f"Возвращена версия {number} — теперь это версия {info.get('version')}")
+            self.app.flash(tr("Возвращена версия {old} — теперь это версия {new}", old=number,
+                              new=info.get("version")))  # fmt: skip
             self.app.load_models()
 
         self.app.call_or_fail(lambda: self.app.client.revert_model_settings(hub_id, number), done,
-                              lambda e: self.app.show_error(f"Не возвращена: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не возвращена: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def check(self) -> None:
         if self._model == GENERAL or self._checking:
             return
         model_id = self._model
-        self._checking, self._check = True, "Спрашиваю модель…" + (" Локальная может загружаться минуту-другую."
-                                                                   if self.local else "")  # fmt: skip
+        self._checking, self._check_failed = True, False
+        self._check = (tr("Спрашиваю модель… Локальная может загружаться минуту-другую.") if self.local
+                       else tr("Спрашиваю модель…"))  # fmt: skip
         self.changed.emit()
 
         def done(result: dict[str, Any]) -> None:
             self._checking = False
             if self._model == model_id:
-                self._check = check_text(result)
+                self._check, self._check_failed = check_text(result), not result.get("ok")
             self.changed.emit()
 
         def failed(error: Exception) -> None:
             self._checking = False
-            self._check = f"Не проверено: {error}"
+            self._check, self._check_failed = tr("Не проверено: {error}", error=error), True
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.check_model(model_id), done, failed)

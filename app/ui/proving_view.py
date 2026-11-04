@@ -9,22 +9,31 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, decimal, plural, tr
+
 from .project_rows import local_time
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-RUNS = {"waiting": "ждёт", "running": "идёт", "passed": "сдано", "failed": "не сдано", "error": "не началось",
-        "skipped": "пропущено", "stopped": "остановлено"}  # fmt: skip
-EXAMS = {"running": "идёт", "done": "закончен", "stopped": "остановлен"}
+RUNS = {"waiting": N_("ждёт"), "running": N_("идёт"), "passed": N_("сдано"), "failed": N_("не сдано"),
+        "error": N_("не началось"), "skipped": N_("пропущено"), "stopped": N_("остановлено")}  # fmt: skip
+EXAMS = {"running": N_("идёт"), "done": N_("закончен"), "stopped": N_("остановлен")}
+
+
+def _named(names: dict[str, str], status: str) -> str:
+    """A run's or an exam's status in words; one the window does not know, as the hub says it."""
+    return tr(names[status]) if status in names else status
 
 
 def minutes(seconds: float) -> str:
-    return f"{seconds / 60:.1f} мин".replace(".", ",") if seconds >= 60 else f"{seconds:.0f} с"
+    if seconds >= 60:
+        return decimal(tr("{value:.1f} мин", value=seconds / 60))
+    return tr("{value:.0f} с", value=seconds)
 
 
 def money(usd: float) -> str:
-    return f"${usd:.2f}".replace(".", ",") if usd else "бесплатно"
+    return decimal(f"${usd:.2f}") if usd else tr("бесплатно")
 
 
 def cell(run: dict[str, Any] | None) -> dict[str, Any]:
@@ -33,10 +42,12 @@ def cell(run: dict[str, Any] | None) -> dict[str, Any]:
         return {"mark": "", "text": "", "why": "", "run": "", "conversation": ""}
     status = run["status"]
     mark = {"passed": "✓", "failed": "✗", "error": "!", "running": "…", "waiting": "·"}.get(status, "–")
-    text = RUNS.get(status, status)
+    text = _named(RUNS, status)
     if status in ("passed", "failed"):
-        tokens = f"{run['tokens'] / 1000:.0f} тыс." if run["tokens"] >= 1000 else str(run["tokens"])
-        text = f"{run['turns']} ход. · {tokens} ток. · {minutes(run['seconds'])}"
+        tokens = tr("{value:.0f} тыс.", value=run["tokens"] / 1000) if run["tokens"] >= 1000 else str(run["tokens"])
+        turns = plural(run["turns"], "ход.", "ход.", "ход.")  # an abbreviation in Russian; English: turn / turns
+        text = tr("{turns} {word} · {tokens} ток. · {time}", turns=run["turns"], word=turns, tokens=tokens,
+                  time=minutes(run["seconds"]))  # fmt: skip
     return {"mark": mark, "text": text, "why": "" if status == "passed" else run.get("detail", ""), "status": status,
             "run": run["id"], "conversation": run.get("conversation_id") or ""}  # fmt: skip
 
@@ -45,7 +56,7 @@ def table(exam: dict[str, Any]) -> dict[str, Any]:
     """The exam as the window draws it: the models' heads with their totals, a row per task with a cell per model."""
     names = {r["model_id"]: r["model_name"] for r in exam["runs"]}
     heads = [{"id": s["model_id"], "name": names.get(s["model_id"], s["model_id"]),
-              "score": f"сдано {s['passed']} из {s['tasks']}",
+              "score": tr("сдано {passed} из {tasks}", passed=s["passed"], tasks=s["tasks"]),
               "spent": f"{money(s['cost_usd'])} · {minutes(s['seconds'])}"} for s in exam["summary"]]  # fmt: skip
     rows = []
     for task_id in exam["tasks"]:
@@ -57,9 +68,10 @@ def table(exam: dict[str, Any]) -> dict[str, Any]:
              for r in exam["runs"] if r["status"] in ("failed", "error")]  # fmt: skip
     going = next((r for r in exam["runs"] if r["status"] == "running"), None)
     done = sum(r["status"] not in ("waiting", "running") for r in exam["runs"])
-    state = EXAMS.get(exam["status"], exam["status"])
+    state = _named(EXAMS, exam["status"])
     if going:
-        state += f": {done} из {len(exam['runs'])}, сейчас «{going['title']}» — {going['model_name']}"
+        state = tr("{state}: {done} из {total}, сейчас «{title}» — {model}", state=state, done=done,
+                   total=len(exam["runs"]), title=going["title"], model=going["model_name"])  # fmt: skip
     return {"id": exam["id"], "status": exam["status"], "state": state, "heads": heads, "rows": rows, "fails": fails,
             "when": local_time(exam["created_at"]), "judge": bool(exam.get("judge"))}  # fmt: skip
 
@@ -91,14 +103,16 @@ class ProvingView(QObject):
         for t in self._tasks:
             limits = t["limits"]
             out.append({**t, "chosen": t["id"] not in self._skipped,
-                        "limit": f"до {limits.get('max_turns', '?')} ходов, {limits.get('max_minutes', '?')} мин",
-                        "checks": f"проверок: {t['criteria']} видимых, {t['hidden']} скрытых"})  # fmt: skip
+                        "limit": tr("до {turns} ходов, {minutes} мин", turns=limits.get("max_turns", "?"),
+                                    minutes=limits.get("max_minutes", "?")),
+                        "checks": tr("проверок: {visible} видимых, {hidden} скрытых", visible=t["criteria"],
+                                     hidden=t["hidden"])})  # fmt: skip
         return out
 
     @Property(list, notify=changed)
     def tries(self) -> list:
         return [{"id": r["id"], "title": r["title"], "model": r["model_name"], "status": r["status"],
-                 "state": RUNS.get(r["status"], r["status"]) + (f": {r['detail']}" if r["status"] == "failed" else ""),
+                 "state": _named(RUNS, r["status"]) + (f": {r['detail']}" if r["status"] == "failed" else ""),
                  "conversation": r.get("conversation_id") or ""} for r in self._tries]  # fmt: skip
 
     @Property(list, notify=changed)
@@ -110,7 +124,7 @@ class ProvingView(QObject):
                 continue
             local = model.get("locality") == "local"
             out.append({"id": model_id, "name": model.get("name") or model_id, "chosen": model_id in self._models,
-                        "note": "локальная: по очереди на видеокарте" if local else "облачная: платная",
+                        "note": tr("локальная: по очереди на видеокарте") if local else tr("облачная: платная"),
                         "icon": "cpu" if local else "cloud"})  # fmt: skip
         return out
 
@@ -140,7 +154,7 @@ class ProvingView(QObject):
     @Property(str, notify=changed)
     def workerName(self) -> str:
         model = self.app.models.get(self.app._model_id) or {}
-        return model.get("name") or "модель не выбрана"
+        return model.get("name") or tr("модель не выбрана")
 
     def _exam_id(self) -> str:
         if self._shown and any(e["id"] == self._shown for e in self._exams):
@@ -171,7 +185,7 @@ class ProvingView(QObject):
                 self.examShown.emit()
             self._reveal = False
 
-        self.app._call(read, show, lambda e: self.app.show_error(f"Полигон не открылся: {e}"))
+        self.app._call(read, show, lambda e: self.app.show_error(tr("Полигон не открылся: {error}", error=e)))
 
     def _act(self, call, done=None, said: str = "") -> None:
         self._busy = True
@@ -187,7 +201,7 @@ class ProvingView(QObject):
 
         def failed(error: Exception) -> None:
             self._busy = False
-            self.app.show_error(f"Не вышло: {error}")
+            self.app.show_error(tr("Не вышло: {error}", error=error))
             self.changed.emit()
 
         self.app.call_or_fail(call, ok, failed)
@@ -197,7 +211,7 @@ class ProvingView(QObject):
         """«Попробовать»: the task on a fresh copy with the chat's model; its chat opens, the goal at work."""
         model_id = self.app._model_id
         if model_id not in self.app.models:
-            self.app.show_error("Выберите модель внизу чата: она и будет решать задание")
+            self.app.show_error(tr("Выберите модель внизу чата: она и будет решать задание"))
             return
 
         def opened(run: dict[str, Any]) -> None:
@@ -205,10 +219,10 @@ class ProvingView(QObject):
                 self.app.setMode("chats")
                 self.app.openChat(run["conversation_id"])
             if run.get("status") == "error":
-                self.app.show_error(run.get("detail") or "Задание не началось")
+                self.app.show_error(run.get("detail") or tr("Задание не началось"))
 
         self._act(lambda: self.app.client.proving_try(task_id, model_id), opened,
-                  "Задание на свежей копии: модель работает, хаб проверит результат")  # fmt: skip
+                  tr("Задание на свежей копии: модель работает, хаб проверит результат"))  # fmt: skip
 
     @Slot(str)
     def openRun(self, conversation_id: str) -> None:
@@ -219,7 +233,7 @@ class ProvingView(QObject):
 
     @Slot(str)
     def deleteRun(self, run_id: str) -> None:
-        self._act(lambda: self.app.client.delete_proving_run(run_id), said="Проба удалена вместе с копией")
+        self._act(lambda: self.app.client.delete_proving_run(run_id), said=tr("Проба удалена вместе с копией"))
 
     @Slot(str)
     def toggleModel(self, model_id: str) -> None:
@@ -242,10 +256,10 @@ class ProvingView(QObject):
         models = [m for m in self._models if m in self.app.models]
         tasks = [t["id"] for t in self._tasks if t["id"] not in self._skipped]
         if not models:
-            self.app.show_error("Отметьте модели для экзамена")
+            self.app.show_error(tr("Отметьте модели для экзамена"))
             return
         if not tasks:
-            self.app.show_error("Отметьте хотя бы одно задание")
+            self.app.show_error(tr("Отметьте хотя бы одно задание"))
             return
 
         def shown(exam: dict[str, Any]) -> None:
@@ -255,13 +269,14 @@ class ProvingView(QObject):
             self.examShown.emit()
 
         self._act(lambda: self.app.client.start_exam(models, tasks, self._judge), shown,
-                  f"Экзамен начался: заданий {len(tasks)}, моделей {len(models)} — по очереди")  # fmt: skip
+                  tr("Экзамен начался: заданий {tasks}, моделей {models} — по очереди", tasks=len(tasks),
+                     models=len(models)))  # fmt: skip
 
     @Slot()
     def stopExam(self) -> None:
         exam_id = self._exam_id()
         if exam_id:
-            self._act(lambda: self.app.client.stop_exam(exam_id), said="Экзамен останавливается")
+            self._act(lambda: self.app.client.stop_exam(exam_id), said=tr("Экзамен останавливается"))
 
     @Slot(str)
     def showExam(self, exam_id: str) -> None:
@@ -278,10 +293,10 @@ class ProvingView(QObject):
         def decide(yes: bool) -> None:
             if yes:
                 self._shown = ""
-                self._act(lambda: self.app.client.delete_exam(exam_id), said="Экзамен удалён вместе с копиями")
+                self._act(lambda: self.app.client.delete_exam(exam_id), said=tr("Экзамен удалён вместе с копиями"))
 
-        self.app._ask("Удалить экзамен?", "Его таблица, чаты прогонов и копии учебных проектов удалятся.", "Удалить",
-                      decide)  # fmt: skip
+        self.app._ask(tr("Удалить экзамен?"), tr("Его таблица, чаты прогонов и копии учебных проектов удалятся."),
+                      tr("Удалить"), decide)  # fmt: skip
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "proving.run":
@@ -296,6 +311,6 @@ class ProvingView(QObject):
         exam = payload.get("exam") or {}
         if kind == "proving.exam" and exam.get("status") == "done" and exam.get("runs"):
             said = "; ".join(f"{h['name']}: {h['score']}" for h in table(exam)["heads"])
-            self.noticed.emit("Экзамен закончен", said)
-            self.app.flash(f"Экзамен закончен — {said}")
+            self.noticed.emit(tr("Экзамен закончен"), said)
+            self.app.flash(tr("Экзамен закончен — {results}", results=said))
         self.load()

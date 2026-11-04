@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import tr
 from hub.mail import preset
 
 if TYPE_CHECKING:
@@ -101,14 +102,14 @@ class MailView(QObject):
         ticket = self.app.connections.ticket
 
         def saved(_result: Any) -> None:
-            self._note = {"ok": True, "text": "Почта подключена — проверьте её кнопкой «Проверить»"}
+            self._note = {"ok": True, "text": tr("Почта подключена — проверьте её кнопкой «Проверить»")}
 
         self._run(lambda: self.app.client.set_mail(body, ticket), saved)
 
     @Slot()
     def check(self) -> None:
         ticket = self.app.connections.ticket
-        self._note = {"ok": True, "text": "Проверяю…"}
+        self._note = {"ok": True, "text": tr("Проверяю…")}
 
         def checked(result: dict[str, Any]) -> None:
             self._note = {"ok": bool(result.get("ok")), "text": str(result.get("detail", ""))}
@@ -124,8 +125,9 @@ class MailView(QObject):
                 self._note = {"ok": True, "text": ""}
                 self._run(lambda: self.app.client.delete_mail(ticket), lambda _r: None)
 
-        self.app._ask("Отключить почту?", "Агент перестанет читать и отправлять письма; пароль приложения удалится.",
-                      "Отключить", decide)  # fmt: skip
+        self.app._ask(tr("Отключить почту?"),
+                      tr("Агент перестанет читать и отправлять письма; пароль приложения удалится."), tr("Отключить"),
+                      decide)  # fmt: skip
 
     def on_event(self, _kind: str, _payload: dict[str, Any]) -> None:
         self.load()

@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "checkSheet"
-    title: "Проверка системы"
+    title: qsTr("Проверка системы")
     iconName: "activity"
     width: Math.min(640, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: Check.run()
@@ -72,14 +72,14 @@ Sheet {
         spacing: 8
         PlainButton {
             iconName: "refresh"
-            text: Check.busy ? "Проверяю…" : "Проверить ещё раз"
+            text: Check.busy ? qsTr("Проверяю…") : qsTr("Проверить ещё раз")
             enabled: !Check.busy
             onClicked: Check.run()
         }
         PlainButton {
             objectName: "collectLogs"
             iconName: "folder"
-            text: "Собрать журналы для поддержки"
+            text: qsTr("Собрать журналы для поддержки")
             enabled: !Check.busy
             onClicked: Check.collect()
         }
@@ -87,8 +87,7 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "В файле — эта проверка, версии и последние записи журналов; ключи и токены из них вырезаны. "
-              + "Базы с вашими разговорами в нём нет."
+        text: qsTr("В файле — эта проверка, версии и последние записи журналов; ключи и токены из них вырезаны. Базы с вашими разговорами в нём нет.")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 11

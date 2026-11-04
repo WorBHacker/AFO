@@ -20,6 +20,7 @@ KEEP = "i18n: keep"  # on a line whose Russian text stays as written: a pattern 
 RUSSIAN = re.compile("[А-Яа-яЁё]")  # i18n: keep
 MARKS = {"tr", "N_"}
 LOGS = {"debug", "info", "warning", "error", "exception", "critical"}  # log.info(...): for whoever reads the log
+QML_CONTEXT = re.compile(r'\s*,\s*"((?:[^"\\\n]|\\.)*)"\s*\)')  # qsTr("Свернуть", "window"): which of two meanings
 QML_TOKEN = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\]|\\.)*`', re.S)
 
 
@@ -86,11 +87,16 @@ def _qml(path: Path) -> tuple[dict[str, list[int]], list[int]]:
     left = []
     for match in QML_TOKEN.finditer(text):
         token = match.group()
-        if token.startswith(("//", "/*")) or not RUSSIAN.search(token):
+        if token.startswith(("//", "/*")):
             continue
         line = text.count("\n", 0, match.start()) + 1
-        if text[max(0, match.start() - 40) : match.start()].rstrip().endswith("qsTr(") and token[0] != "`":
-            keys.setdefault(_unquote(token), []).append(line)
+        marked = text[max(0, match.start() - 40) : match.start()].rstrip().endswith("qsTr(") and token[0] != "`"
+        if not marked and not RUSSIAN.search(token):
+            continue
+        if marked:  # every text qsTr() asks for, Russian letters or not («%1» — %2)
+            context = QML_CONTEXT.match(text, match.end())
+            key = _unquote(token) if context is None else i18n.in_context(context.group(1), _unquote(token))
+            keys.setdefault(key, []).append(line)
         elif KEEP not in lines[line - 1]:
             left.append(line)
     return keys, left

@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "goalSheet"
-    title: "Цель"
+    title: qsTr("Цель")
     iconName: "target"
     width: Math.min(600, (parent ? parent.width : 960) * 0.92)
     readonly property var ed: Goal.editor
@@ -56,12 +56,12 @@ Sheet {
         }
     }
 
-    SectionTitle { text: "Чего добиться" }
+    SectionTitle { text: qsTr("Чего добиться") }
     Box {
         id: wishBox
         objectName: "goalWish"
         area.text: sheet.ed.wish || ""
-        area.placeholderText: "Своими словами: например, «пусть тесты в src проходят» или «вынеси расчёт цен в отдельный модуль»"
+        area.placeholderText: qsTr("Своими словами: например, «пусть тесты в src проходят» или «вынеси расчёт цен в отдельный модуль»")
     }
     Row {
         spacing: 10
@@ -70,20 +70,19 @@ Sheet {
             kind: sheet.filled ? "plain" : "primary"
             iconName: "sparkle"
             enabled: !Goal.drafting
-            text: Goal.drafting ? "Составляю…" : (sheet.filled ? "Составить заново" : "Составить договор")
+            text: Goal.drafting ? qsTr("Составляю…") : (sheet.filled ? qsTr("Составить заново") : qsTr("Составить договор"))
             onClicked: { Goal.setField("wish", wishBox.area.text); Goal.draft() }
         }
         PlainButton {
             objectName: "goalManual"
             visible: !sheet.filled
-            text: "Заполнить самому"
+            text: qsTr("Заполнить самому")
             onClicked: { Goal.setField("wish", wishBox.area.text); Goal.setField("objective", wishBox.area.text);
                          Goal.addCriterion("command") }
         }
     }
     Hint {
-        text: "Модель предложит, что проверять командой (тесты, сборка, файл на месте) и что словами. Составляет: «"
-              + Goal.drafterName + "»"
+        text: qsTr("Модель предложит, что проверять командой (тесты, сборка, файл на месте) и что словами. Составляет: «%1»").arg(Goal.drafterName)
     }
 
     Column {
@@ -92,7 +91,7 @@ Sheet {
         width: parent.width
         spacing: 10
 
-        SectionTitle { text: "Цель" }
+        SectionTitle { text: qsTr("Цель") }
         Field {
             id: objective
             objectName: "goalObjective"
@@ -101,7 +100,7 @@ Sheet {
             onEditingFinished: Goal.setField("objective", text)
         }
 
-        SectionTitle { text: "Готово, когда — хаб проверяет после каждого хода" }
+        SectionTitle { text: qsTr("Готово, когда — хаб проверяет после каждого хода") }
         Repeater {
             model: (sheet.ed.criteria || []).length  // by count: a change of one row does not remake the others
             delegate: Item {
@@ -114,8 +113,8 @@ Sheet {
                     objectName: "goalCriterion_" + crit.index
                     width: parent.width - (crit.c.kind === "command" ? project.width + code.width + 16 : 0) - 38
                     font.family: crit.c.kind === "command" ? Theme.monoFont : Theme.uiFont
-                    placeholderText: crit.c.kind === "command" ? "команда PowerShell, например: pytest -q"
-                                                               : "что должно быть правдой — проверит модель"
+                    placeholderText: crit.c.kind === "command" ? qsTr("команда PowerShell, например: pytest -q")
+                                                               : qsTr("что должно быть правдой — проверит модель")
                     text: crit.c.kind === "command" ? (crit.c.command || "") : (crit.c.rule || "")
                     onEditingFinished: Goal.setCriterion(crit.index, crit.c.kind === "command" ? "command" : "rule", text)
                 }
@@ -124,7 +123,7 @@ Sheet {
                     visible: crit.c.kind === "command"
                     x: parent.width - code.width - width - 46
                     implicitHeight: 34
-                    text: crit.c.project || "проект?"
+                    text: crit.c.project || qsTr("проект?")
                     onClicked: {
                         const names = Goal.projectNames
                         if (names.length)
@@ -132,8 +131,8 @@ Sheet {
                     }
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: Goal.projectNames.length > 1 ? "Где запускать. Щелчок — другой проект чата"
-                                                               : "Где запускать: проект чата"
+                    ToolTip.text: Goal.projectNames.length > 1 ? qsTr("Где запускать. Щелчок — другой проект чата")
+                                                               : qsTr("Где запускать: проект чата")
                 }
                 Field {
                     id: code
@@ -146,36 +145,36 @@ Sheet {
                     onEditingFinished: Goal.setCriterion(crit.index, "code", text)
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: "Код выхода, который значит «готово» (обычно 0)"
+                    ToolTip.text: qsTr("Код выхода, который значит «готово» (обычно 0)")
                 }
                 IconButton {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "trash"
-                    tip: "Убрать критерий"
+                    tip: qsTr("Убрать критерий")
                     onClicked: Goal.removeCriterion(crit.index)
                 }
             }
         }
         Row {
             spacing: 8
-            PlainButton { objectName: "goalAddCommand"; iconName: "terminal"; text: "Команда"; onClicked: Goal.addCriterion("command") }
-            PlainButton { objectName: "goalAddRule"; iconName: "chat"; text: "Правило словами"; onClicked: Goal.addCriterion("semantic") }
+            PlainButton { objectName: "goalAddCommand"; iconName: "terminal"; text: qsTr("Команда"); onClicked: Goal.addCriterion("command") }
+            PlainButton { objectName: "goalAddRule"; iconName: "chat"; text: qsTr("Правило словами"); onClicked: Goal.addCriterion("semantic") }
         }
-        Hint { text: "Команда только смотрит: устанавливать, скачивать, отправлять и удалять ею нельзя. Правило словами проверит модель «Проверка цели»." }
+        Hint { text: qsTr("Команда только смотрит: устанавливать, скачивать, отправлять и удалять ею нельзя. Правило словами проверит модель «Проверка цели».") }
 
-        SectionTitle { text: "Нельзя — по правилу на строку" }
+        SectionTitle { text: qsTr("Нельзя — по правилу на строку") }
         Box {
             id: constraintsBox
             area.text: sheet.ed.constraints || ""
-            area.placeholderText: "например: не трогать папку migrations"
+            area.placeholderText: qsTr("например: не трогать папку migrations")
         }
 
-        SectionTitle { text: "Пределы" }
+        SectionTitle { text: qsTr("Пределы") }
         Row {
             spacing: 10
             Repeater {
-                model: [{ id: "turns", label: "ходов" }, { id: "tokens", label: "тыс. токенов" }, { id: "minutes", label: "минут" }]
+                model: [{ id: "turns", label: qsTr("ходов") }, { id: "tokens", label: qsTr("тыс. токенов") }, { id: "minutes", label: qsTr("минут") }]
                 delegate: Row {
                     required property var modelData
                     spacing: 6
@@ -196,9 +195,9 @@ Sheet {
                 }
             }
         }
-        Hint { text: (Goal.cost ? Goal.cost + ". " : "") + "На 88 % любого предела модель получит последний ход: довести файлы до рабочего состояния и написать, что осталось." }
+        Hint { text: (Goal.cost ? Goal.cost + ". " : "") + qsTr("На 88 % любого предела модель получит последний ход: довести файлы до рабочего состояния и написать, что осталось.") }
 
-        SectionTitle { text: "Проверяет" }
+        SectionTitle { text: qsTr("Проверяет") }
         Chip {
             id: judgeChip
             objectName: "goalJudge"
@@ -206,7 +205,7 @@ Sheet {
             text: Goal.judgeName
             onClicked: { judgeMenu.anchor = judgeChip; judgeMenu.open() }
         }
-        Hint { text: "Работает «" + Goal.workerName + "» с правами этого чата. Проверяющая модель только читает: сверяет сделанное с договором и словам работающей не верит." }
+        Hint { text: qsTr("Работает «%1» с правами этого чата. Проверяющая модель только читает: сверяет сделанное с договором и словам работающей не верит.").arg(Goal.workerName) }
 
         Text {
             visible: (sheet.ed.notes || []).length > 0
@@ -238,14 +237,14 @@ Sheet {
             kind: "primary"
             iconName: "play"
             enabled: !Goal.starting && !Goal.drafting
-            text: Goal.starting ? "Запускаю…" : "Подтвердить и запустить"
+            text: Goal.starting ? qsTr("Запускаю…") : qsTr("Подтвердить и запустить")
             onClicked: { startButton.forceActiveFocus(); sheet.save(); Goal.start() }
         }
-        PlainButton { text: "Отмена"; onClicked: sheet.close() }
+        PlainButton { text: qsTr("Отмена"); onClicked: sheet.close() }
     }
     Hint {
         visible: sheet.filled
-        text: "Запуск разрешает хабу выполнять команды критериев после каждого хода. Писать модели можно и пока она работает: уточнение она прочтёт в начале следующего хода."
+        text: qsTr("Запуск разрешает хабу выполнять команды критериев после каждого хода. Писать модели можно и пока она работает: уточнение она прочтёт в начале следующего хода.")
     }
 
     MenuPopup {

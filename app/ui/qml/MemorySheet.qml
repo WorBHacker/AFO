@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "memorySheet"
-    title: "Память агента"
+    title: qsTr("Память агента")
     iconName: "layers"
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: Memory.load()
@@ -34,7 +34,7 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Агент запоминает факты сам; каждый виден здесь — исправьте или удалите, если неверно. Личные данные (контакты, адреса, телефоны) он сохраняет только с вашего разрешения и никогда не отдаёт облачной модели. Всё хранится на этом компьютере."
+        text: qsTr("Агент запоминает факты сам; каждый виден здесь — исправьте или удалите, если неверно. Личные данные (контакты, адреса, телефоны) он сохраняет только с вашего разрешения и никогда не отдаёт облачной модели. Всё хранится на этом компьютере.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -43,11 +43,11 @@ Sheet {
     Field {
         objectName: "memorySearch"
         width: parent.width
-        placeholderText: "Найти в памяти"
+        placeholderText: qsTr("Найти в памяти")
         onTextEdited: Memory.search(text)
     }
 
-    SectionTitle { text: "Факты" }
+    SectionTitle { text: qsTr("Факты") }
     Row {
         width: parent.width
         spacing: 8
@@ -55,20 +55,20 @@ Sheet {
             id: newFact
             objectName: "memoryNewFact"
             width: parent.width - addButton.width - 8
-            placeholderText: "Запомнить самим: например, «отчёты — в папку D:\\Отчёты»"
+            placeholderText: qsTr("Запомнить самим: например, «отчёты — в папку D:\\Отчёты»")
             onAccepted: addButton.clicked()
         }
         PlainButton {
             id: addButton
             objectName: "memoryAdd"
             iconName: "plus"
-            text: "Запомнить"
+            text: qsTr("Запомнить")
             onClicked: { Memory.addFact(newFact.text, "", false); newFact.text = "" }
         }
     }
     Text {
         visible: Memory.facts.length === 0
-        text: Memory.query ? "Ничего не найдено." : "Пока ничего не запомнено."
+        text: Memory.query ? qsTr("Ничего не найдено.") : qsTr("Пока ничего не запомнено.")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -121,18 +121,18 @@ Sheet {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Toggle {
-                            text: "личное"
+                            text: qsTr("личное")
                             on: factRow.modelData.personal
                             onClicked: Memory.setFlag(factRow.modelData.id, "personal", !on)
                         }
                         Toggle {
                             visible: !factRow.modelData.personal
-                            text: "облачной модели можно"
+                            text: qsTr("облачной модели можно")
                             on: factRow.modelData.cloudOk
                             onClicked: Memory.setFlag(factRow.modelData.id, "cloud_ok", !on)
                         }
                         Toggle {
-                            text: "изменить"
+                            text: qsTr("изменить")
                             onClicked: { factEdit.text = factRow.modelData.text; factRow.editing = true; factEdit.forceActiveFocus() }
                         }
                     }
@@ -143,19 +143,19 @@ Sheet {
                     anchors.rightMargin: 6
                     y: 6
                     iconName: "trash"
-                    tip: "Забыть"
+                    tip: qsTr("Забыть")
                     onClicked: Memory.deleteFact(factRow.modelData.id)
                 }
             }
         }
     }
 
-    SectionTitle { text: "Навыки — планы удачных задач" }
+    SectionTitle { text: qsTr("Навыки — планы удачных задач") }
     Text {
         visible: Memory.skills.length === 0
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Пока нет. Когда задача агента достигнет цели, в её отчёте будет «Сохранить как навык»: похожая цель получит этот план подсказкой."
+        text: qsTr("Пока нет. Когда задача агента достигнет цели, в её отчёте будет «Сохранить как навык»: похожая цель получит этот план подсказкой.")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -208,7 +208,7 @@ Sheet {
                     anchors.rightMargin: 6
                     y: 6
                     iconName: "trash"
-                    tip: "Удалить навык"
+                    tip: qsTr("Удалить навык")
                     onClicked: Memory.deleteSkill(modelData.id)
                 }
             }

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
 from hub.schedule import QUIET_DEFAULT, quiet_until
 
 from .autonomy import goal_body
@@ -17,52 +18,59 @@ from .autonomy import goal_body
 if TYPE_CHECKING:
     from .controller import Controller
 
-DAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
-WHEN = [{"id": "now", "name": "Сейчас"}, {"id": "time", "name": "По времени"}, {"id": "event", "name": "По событию"}]
-EVERY = [{"id": "day", "name": "Каждый день"}, {"id": "weekdays", "name": "По дням недели"},
-         {"id": "hours", "name": "Каждые N часов"}]  # fmt: skip
-EVENTS = [{"id": "file", "name": "Новый файл в папке"}, {"id": "telegram", "name": "Сообщение боту"},
-          {"id": "mail", "name": "Новое письмо"}]  # fmt: skip
+DAYS = [N_("пн"), N_("вт"), N_("ср"), N_("чт"), N_("пт"), N_("сб"), N_("вс")]
+WHEN = [{"id": "now", "name": N_("Сейчас")}, {"id": "time", "name": N_("По времени")},
+        {"id": "event", "name": N_("По событию")}]  # fmt: skip
+EVERY = [{"id": "day", "name": N_("Каждый день")}, {"id": "weekdays", "name": N_("По дням недели")},
+         {"id": "hours", "name": N_("Каждые N часов")}]  # fmt: skip
+EVENTS = [{"id": "file", "name": N_("Новый файл в папке")}, {"id": "telegram", "name": N_("Сообщение боту")},
+          {"id": "mail", "name": N_("Новое письмо")}]  # fmt: skip
 BLANK = {"when": "now", "every": "day", "at": "09:00", "days": [1, 2, 3, 4, 5], "hours": "6", "event": "file",
          "folder": "", "pattern": "*", "contains": "", "words": "", "computer": False}  # fmt: skip
+
+
+def options(found: list[dict[str, str]]) -> list[dict[str, str]]:
+    """A choice's options with their names in the window's language."""
+    return [{**option, "name": tr(option["name"])} for option in found]
 
 
 def trigger_text(trigger: dict[str, Any]) -> str:
     match trigger.get("kind"):
         case "time" if trigger.get("every") == "hours":
-            return f"каждые {trigger['hours']} ч"
+            return tr("каждые {hours} ч", hours=trigger["hours"])
         case "time" if trigger.get("every") == "weekdays":
-            days = ", ".join(DAYS[d - 1] for d in trigger.get("days") or [])
-            return f"по {days} в {trigger['at']}"
+            days = ", ".join(tr(DAYS[d - 1]) for d in trigger.get("days") or [])
+            return tr("по {days} в {at}", days=days, at=trigger["at"])
         case "time":
-            return f"каждый день в {trigger['at']}"
+            return tr("каждый день в {at}", at=trigger["at"])
         case "file":
-            return f"новый файл {trigger.get('pattern') or '*'} в {trigger.get('folder', '')}"
+            return tr("новый файл {pattern} в {folder}", pattern=trigger.get("pattern") or "*",
+                      folder=trigger.get("folder", ""))  # fmt: skip
         case "telegram":
             words = trigger.get("contains") or ""
-            return f"сообщение боту со словами «{words}»" if words else "любое сообщение боту"
+            return tr("сообщение боту со словами «{words}»", words=words) if words else tr("любое сообщение боту")
         case "mail":
             words = trigger.get("words") or ""
-            return f"новое письмо со словами «{words}»" if words else "любое новое письмо"
+            return tr("новое письмо со словами «{words}»", words=words) if words else tr("любое новое письмо")
     return str(trigger.get("kind") or "")
 
 
 def when_text(item: dict[str, Any], now: datetime) -> str:
     """The next start in words: «сегодня в 09:00», «завтра в 07:30», «ждёт конца тихих часов (08:00)»."""
     if not item.get("enabled"):
-        return "выключено"
+        return tr("выключено")
     if item.get("waiting_until"):
-        return f"ждёт конца тихих часов ({item['waiting_until'][11:16]})"
+        return tr("ждёт конца тихих часов ({time})", time=item["waiting_until"][11:16])
     if item.get("pending"):
-        return "событие ждёт запуска"
+        return tr("событие ждёт запуска")
     if not item.get("next_at"):
-        return "ждёт события"
+        return tr("ждёт события")
     at = datetime.fromisoformat(item["next_at"])
     if at.date() == now.date():
-        return f"сегодня в {at:%H:%M}"
+        return tr("сегодня в {at:%H:%M}", at=at)
     if at.date() == (now + timedelta(days=1)).date():
-        return f"завтра в {at:%H:%M}"
-    return f"{DAYS[at.isoweekday() - 1]} {at:%d.%m} в {at:%H:%M}"
+        return tr("завтра в {at:%H:%M}", at=at)
+    return tr("{day} {at:%d.%m} в {at:%H:%M}", day=tr(DAYS[at.isoweekday() - 1]), at=at)
 
 
 def schedule_rows(items: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -78,17 +86,17 @@ def trigger_body(draft: dict[str, Any]) -> dict[str, Any]:
             try:
                 hours = int(str(draft["hours"]).strip())
             except ValueError:
-                raise ValueError("Каждые N часов: нужно целое число") from None
+                raise ValueError(tr("Каждые N часов: нужно целое число")) from None
             return {"kind": "time", "every": "hours", "hours": hours}
         body = {"kind": "time", "every": draft["every"], "at": str(draft["at"]).strip()}
         if draft["every"] == "weekdays":
             if not draft["days"]:
-                raise ValueError("Отметьте хотя бы один день недели")
+                raise ValueError(tr("Отметьте хотя бы один день недели"))
             body["days"] = sorted(draft["days"])
         return body
     if draft["event"] == "file":
         if not str(draft["folder"]).strip():
-            raise ValueError("Выберите папку, в которой ждать новые файлы")
+            raise ValueError(tr("Выберите папку, в которой ждать новые файлы"))
         return {"kind": "file", "folder": str(draft["folder"]).strip(), "pattern": str(draft["pattern"]).strip()}
     if draft["event"] == "mail":
         return {"kind": "mail", "words": str(draft["words"]).strip()}
@@ -123,19 +131,19 @@ class SchedulesView(QObject):
 
     @Property(list, constant=True)
     def whenOptions(self) -> list:
-        return WHEN
+        return options(WHEN)
 
     @Property(list, constant=True)
     def everyOptions(self) -> list:
-        return EVERY
+        return options(EVERY)
 
     @Property(list, constant=True)
     def eventOptions(self) -> list:
-        return EVENTS
+        return options(EVENTS)
 
     @Property(list, constant=True)
     def dayNames(self) -> list:
-        return DAYS
+        return [tr(day) for day in DAYS]
 
     @Property("QVariantMap", notify=changed)
     def quiet(self) -> dict:
@@ -144,9 +152,9 @@ class SchedulesView(QObject):
     @Property(str, notify=changed)
     def quietText(self) -> str:
         if not self._quiet.get("enabled"):
-            return "Тихих часов нет: задачи по расписанию начинаются в любое время"
-        return (f"С {self._quiet['from']} до {self._quiet['to']} задачи не начинаются, а сообщения агента ждут "
-                "утра")  # fmt: skip
+            return tr("Тихих часов нет: задачи по расписанию начинаются в любое время")
+        return tr("С {start} до {end} задачи не начинаются, а сообщения агента ждут утра", start=self._quiet["from"],
+                  end=self._quiet["to"])  # fmt: skip
 
     def quiet_now(self) -> bool:
         return quiet_until(self._quiet, datetime.now()) is not None
@@ -195,12 +203,12 @@ class SchedulesView(QObject):
         body = {"title": goal["goal"][:80], "goal": goal, "trigger": trigger, "computer": self._draft["computer"]}
 
         def done(found: dict[str, Any]) -> None:
-            self.app.flash(f"Запланировано: {trigger_text(found['trigger'])}")
+            self.app.flash(tr("Запланировано: {trigger}", trigger=trigger_text(found["trigger"])))
             self.reset()
             self.load()
 
         def failed(error: Exception) -> None:
-            self._error = f"Не запланировано: {error}"
+            self._error = tr("Не запланировано: {error}", error=error)
             self.draftChanged.emit()
 
         self.app.call_or_fail(lambda: self.app.client.add_schedule(body), done, failed)
@@ -225,23 +233,23 @@ class SchedulesView(QObject):
                 self.app.flash(said)
             self.load()
 
-        self.app.call_or_fail(call, ok, lambda e: self.app.show_error(f"Не вышло: {e}"))
+        self.app.call_or_fail(call, ok, lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))
 
     @Slot(str, bool)
     def setEnabled(self, sid: str, enabled: bool) -> None:
         self._change(lambda: self.app.client.set_schedule(sid, enabled=enabled),
-                     "Расписание включено" if enabled else "Расписание выключено")  # fmt: skip
+                     tr("Расписание включено") if enabled else tr("Расписание выключено"))  # fmt: skip
 
     @Slot(str)
     def runNow(self, sid: str) -> None:
         def started(result: dict[str, Any]) -> None:
-            self.app.flash("Задача по расписанию запущена сейчас")
+            self.app.flash(tr("Задача по расписанию запущена сейчас"))
             self.load()
             self.app.autonomy_view.load()
             self.app.autonomy_view.select(result["run_id"])
 
         self.app.call_or_fail(lambda: self.app.client.run_schedule(sid), started,
-                              lambda e: self.app.show_error(f"Не запущено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не запущено: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def remove(self, sid: str) -> None:
@@ -249,20 +257,21 @@ class SchedulesView(QObject):
 
         def decide(yes: bool) -> None:
             if yes:
-                self._change(lambda: self.app.client.delete_schedule(sid), "Расписание удалено")
+                self._change(lambda: self.app.client.delete_schedule(sid), tr("Расписание удалено"))
 
-        self.app._ask(f"Удалить расписание «{title}»?", "Начатые им задачи останутся в списке.", "Удалить", decide)
+        self.app._ask(tr("Удалить расписание «{title}»?", title=title), tr("Начатые им задачи останутся в списке."),
+                      tr("Удалить"), decide)  # fmt: skip
 
     @Slot(bool, str, str)
     def setQuiet(self, enabled: bool, start: str, end: str) -> None:
         change = {"enabled": enabled, "from": start.strip(), "to": end.strip()}
         if all(self.quiet.get(k) == v for k, v in change.items()):
             return  # a field left without a change
-        self._change(lambda: self.app.client.set_quiet(**change), "Тихие часы сохранены")
+        self._change(lambda: self.app.client.set_quiet(**change), tr("Тихие часы сохранены"))
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "schedule.started":
             title = (payload.get("schedule") or {}).get("title", "")
-            self.app.flash(f"По расписанию начата задача «{title}»")
+            self.app.flash(tr("По расписанию начата задача «{title}»", title=title))
             self.app.autonomy_view.load()
         self.load()

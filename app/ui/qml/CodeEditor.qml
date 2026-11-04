@@ -288,7 +288,7 @@ Item {
                     width: rewriteColumn.width - explainButton.width - askButton.width - 12
                     implicitHeight: 30
                     enabled: !Rewriter.busy
-                    placeholderText: "Что сделать с этими строками? (Enter)"
+                    placeholderText: qsTr("Что сделать с этими строками? (Enter)")
                     Keys.onPressed: (event) => rewrite.keys(event)
                 }
                 PlainButton {
@@ -296,7 +296,7 @@ Item {
                     objectName: "explainCode"
                     implicitHeight: 30
                     focusPolicy: Qt.NoFocus
-                    text: "Объяснить"
+                    text: qsTr("Объяснить")
                     onClicked: Rewriter.explain(editor.tabKey, Rewriter.start, Rewriter.end)
                 }
                 PlainButton {
@@ -304,13 +304,13 @@ Item {
                     objectName: "askInChat"
                     implicitHeight: 30
                     focusPolicy: Qt.NoFocus
-                    text: "Спросить в чате"
+                    text: qsTr("Спросить в чате")
                     onClicked: Rewriter.askInChat(editor.tabKey, Rewriter.start, Rewriter.end)
                 }
             }
             Text {
                 visible: Rewriter.busy
-                text: "Модель правит…"
+                text: qsTr("Модель правит…")
                 color: Theme.p.muted
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -367,12 +367,12 @@ Item {
                     objectName: "acceptEdit"
                     kind: "primary"
                     focusPolicy: Qt.NoFocus
-                    text: "Принять (Ctrl+Enter)"
+                    text: qsTr("Принять (Ctrl+Enter)")
                     onClicked: body.cursorPosition = Rewriter.accept()
                 }
                 PlainButton {
                     focusPolicy: Qt.NoFocus
-                    text: "Отказать (Esc)"
+                    text: qsTr("Отказать (Esc)")
                     onClicked: Rewriter.close()
                 }
             }

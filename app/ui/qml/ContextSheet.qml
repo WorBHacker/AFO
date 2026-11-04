@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "contextSheet"
-    title: "Контекст чата"
+    title: qsTr("Контекст чата")
     iconName: "layers"
     width: Math.min(620, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: App.loadContext()
@@ -15,22 +15,21 @@ Sheet {
         width: parent.width
         wrapMode: Text.Wrap
         lineHeight: 1.3
-        text: "Что хаб сообщает модели о проектах этого чата. Изменения действуют со следующего сообщения: "
-              + "отправленное остаётся в беседе как было — так модель и её кэш видят одно и то же начало."
+        text: qsTr("Что хаб сообщает модели о проектах этого чата. Изменения действуют со следующего сообщения: отправленное остаётся в беседе как было — так модель и её кэш видят одно и то же начало.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
 
     Text {
-        text: App.contextTokens > 0 ? "В беседе ≈ " + App.contextTokens + " токенов контекста" : "Контекста пока нет: он появится с первым сообщением"
+        text: App.contextTokens > 0 ? qsTr("В беседе ≈ %1 токенов контекста").arg(App.contextTokens) : qsTr("Контекста пока нет: он появится с первым сообщением")
         color: Theme.p.text
         font.family: Theme.uiFont
         font.pixelSize: 13
         font.weight: Font.DemiBold
     }
 
-    SectionTitle { text: "Что идёт со следующими сообщениями" }
+    SectionTitle { text: qsTr("Что идёт со следующими сообщениями") }
     Row {
         spacing: 8
         component Switch: AbstractButton {
@@ -65,40 +64,40 @@ Sheet {
         }
         Switch {
             objectName: "contextMap"
-            text: "Карта всех проектов"
+            text: qsTr("Карта всех проектов")
             checked: !!App.contextSettings.map
             onToggled: App.setContextLayer("map", checked)
         }
         Switch {
             objectName: "contextLive"
-            text: "Что происходит сейчас"
+            text: qsTr("Что происходит сейчас")
             checked: !!App.contextSettings.live
             onToggled: App.setContextLayer("live", checked)
         }
     }
 
-    SectionTitle { text: "Права модели в этом чате" }
+    SectionTitle { text: qsTr("Права модели в этом чате") }
     Segmented {
         objectName: "chatMode"
         width: parent.width
-        options: [{ id: "read_only", name: "Только чтение" }, { id: "ask", name: "Спрашивать" },
-                  { id: "sandbox", name: "Песочница" }, { id: "trusted", name: "Доверенный" }]
+        options: [{ id: "read_only", name: qsTr("Только чтение") }, { id: "ask", name: qsTr("Спрашивать") },
+                  { id: "sandbox", name: qsTr("Песочница") }, { id: "trusted", name: qsTr("Доверенный") }]
         value: App.contextSettings.mode || "ask"
         onPicked: (id) => App.setChatMode(id)
     }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: App.contextSettings.mode === "read_only" ? "Модель только читает: правки файлов она предложит словами."
-              : App.contextSettings.mode === "trusted" ? "Модель правит файлы прикреплённых проектов без вопроса. Каждую правку можно откатить в обзоре проекта."
-              : App.contextSettings.mode === "sandbox" ? "Модель правит без вопроса, но не сам проект, а его копию (git worktree от последнего коммита, своя ветка). Потом вы смотрите изменения и применяете их к проекту или отбрасываете. Нужен git-проект."
-              : "Каждую правку файла модель показывает карточкой над чатом с diff и ждёт ответа."
+        text: App.contextSettings.mode === "read_only" ? qsTr("Модель только читает: правки файлов она предложит словами.")
+              : App.contextSettings.mode === "trusted" ? qsTr("Модель правит файлы прикреплённых проектов без вопроса. Каждую правку можно откатить в обзоре проекта.")
+              : App.contextSettings.mode === "sandbox" ? qsTr("Модель правит без вопроса, но не сам проект, а его копию (git worktree от последнего коммита, своя ветка). Потом вы смотрите изменения и применяете их к проекту или отбрасываете. Нужен git-проект.")
+              : qsTr("Каждую правку файла модель показывает карточкой над чатом с diff и ждёт ответа.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
 
-    SectionTitle { text: "Инструкции этого чата" }
+    SectionTitle { text: qsTr("Инструкции этого чата") }
     Rectangle {
         width: parent.width
         height: 96
@@ -110,7 +109,7 @@ Sheet {
             TextArea {
                 id: chatInstructions
                 objectName: "chatInstructions"
-                placeholderText: "Только для этого чата — после общего промпта и промпта модели. Например: «пиши тесты на pytest»"
+                placeholderText: qsTr("Только для этого чата — после общего промпта и промпта модели. Например: «пиши тесты на pytest»")
                 placeholderTextColor: Theme.p.faint
                 text: App.contextSettings.instructions || ""
                 wrapMode: TextArea.Wrap
@@ -128,7 +127,7 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Ответ в этом чате"
+        text: qsTr("Ответ в этом чате")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -137,18 +136,18 @@ Sheet {
     Segmented {
         objectName: "chatPreset"
         width: parent.width
-        options: [{ id: "", name: "как у модели" }, { id: "precise", name: "Точно" }, { id: "balanced", name: "Баланс" },
-                  { id: "creative", name: "Творчески" }]
+        options: [{ id: "", name: qsTr("как у модели") }, { id: "precise", name: qsTr("Точно") }, { id: "balanced", name: qsTr("Баланс") },
+                  { id: "creative", name: qsTr("Творчески") }]
         value: App.contextSettings.preset || ""
         onPicked: (id) => App.setChatPreset(id)
     }
 
-    SectionTitle { text: "Закреплённые файлы" }
+    SectionTitle { text: qsTr("Закреплённые файлы") }
     Text {
         visible: !App.contextSettings.pinned || App.contextSettings.pinned.length === 0
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Нет. Закрепить файл — кнопка со скрепкой в просмотре файла проекта: его начало (до 200 строк) будет в контексте, и снова — когда файл изменится."
+        text: qsTr("Нет. Закрепить файл — кнопка со скрепкой в просмотре файла проекта: его начало (до 200 строк) будет в контексте, и снова — когда файл изменится.")
         color: Theme.p.faint
         lineHeight: 1.3
         font.family: Theme.uiFont
@@ -177,13 +176,13 @@ Sheet {
                 implicitWidth: 24
                 implicitHeight: 24
                 iconName: "close"
-                tip: "Открепить"
+                tip: qsTr("Открепить")
                 onClicked: App.unpinFile(pin.index)
             }
         }
     }
 
-    SectionTitle { text: "Что модель уже получила" }
+    SectionTitle { text: qsTr("Что модель уже получила") }
     Repeater {
         model: App.contextBlocks
         delegate: Column {
@@ -210,7 +209,7 @@ Sheet {
                     Text {
                         x: 26
                         anchors.verticalCenter: parent.verticalCenter
-                        text: block.modelData.label + (block.modelData.local ? "  · только локальным моделям" : "")
+                        text: block.modelData.label + (block.modelData.local ? qsTr("  · только локальным моделям") : "")
                         color: Theme.p.text
                         font.family: Theme.uiFont
                         font.pixelSize: 13
@@ -219,7 +218,7 @@ Sheet {
                         anchors.right: parent.right
                         anchors.rightMargin: 8
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "≈ " + block.modelData.tokens + " ток." + (block.modelData.sent > 1 ? " · ×" + block.modelData.sent : "")
+                        text: qsTr("≈ %1 ток.").arg(block.modelData.tokens) + (block.modelData.sent > 1 ? " · ×" + block.modelData.sent : "")
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12

@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QAbstractNativeEventFilter, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication, QWindow
 
+from common.i18n import tr
+
 if TYPE_CHECKING:
     from .controller import Controller
 
@@ -108,7 +110,9 @@ class ComputerView(QObject):
 
     @Property(str, notify=changed)
     def text(self) -> str:
-        return f"Агент управляет компьютером · {self._program}" if self._program else "Агент управляет компьютером"
+        if self._program:
+            return tr("Агент управляет компьютером · {program}", program=self._program)
+        return tr("Агент управляет компьютером")
 
     @Property(str, constant=True)
     def stopKeys(self) -> str:
@@ -120,7 +124,7 @@ class ComputerView(QObject):
         run = self._run
         if not run or self.app.client is None:
             return
-        self.app.flash("Агент остановлен: он больше ничего не нажмёт")
+        self.app.flash(tr("Агент остановлен: он больше ничего не нажмёт"))
         self.app._call(lambda: self.app.client.cancel_run(run), None, lambda e: self.app.show_error(str(e)))
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
@@ -141,7 +145,7 @@ class ComputerView(QObject):
             self._follow_timer.stop()
             self.changed.emit()
         elif kind == "computer.paused":
-            self.app.flash("Агент ждёт: вы работаете за компьютером — он продолжит, когда вы отпустите мышь")
+            self.app.flash(tr("Агент ждёт: вы работаете за компьютером — он продолжит, когда вы отпустите мышь"))
 
 
 class StopKey(QAbstractNativeEventFilter):

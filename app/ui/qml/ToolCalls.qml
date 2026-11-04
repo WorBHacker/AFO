@@ -97,7 +97,7 @@ Column {
                 }
                 ToolTip.visible: hovered && call.project !== ""
                 ToolTip.delay: 800
-                ToolTip.text: "Проект: " + call.project + " · щелчок — что вернул инструмент"
+                ToolTip.text: qsTr("Проект: %1 · щелчок — что вернул инструмент").arg(call.project)
             }
 
             Rectangle {

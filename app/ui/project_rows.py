@@ -14,6 +14,7 @@ from pygments.lexers import get_lexer_for_filename
 from pygments.util import ClassNotFound
 
 from common import invisible
+from common.i18n import N_, tr
 
 from .. import palette, presenter
 from ..render import highlight_lines
@@ -24,9 +25,9 @@ OUTLINE_SUFFIXES = {
     ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx",
 }  # fmt: skip
 SYMBOL_KINDS = {
-    "function": ("ƒ", "функция"), "method": ("ƒ", "метод"), "class": ("C", "класс"), "interface": ("I", "интерфейс"),
-    "type": ("T", "тип"), "module": ("N", "модуль"), "constant": ("K", "константа"), "macro": ("#", "макрос"),
-    "impl": ("I", "реализация"),
+    "function": ("ƒ", N_("функция")), "method": ("ƒ", N_("метод")), "class": ("C", N_("класс")),
+    "interface": ("I", N_("интерфейс")), "type": ("T", N_("тип")), "module": ("N", N_("модуль")),
+    "constant": ("K", N_("константа")), "macro": ("#", N_("макрос")), "impl": ("I", N_("реализация")),
 }  # fmt: skip
 HIGHLIGHT_MAX_BYTES = 300_000  # bigger files are shown as plain text: colouring them takes ~1 s per MB
 CHUNK_LINES = 300  # the viewer lays out only the pieces on screen and near it: a long file opens like a short one
@@ -74,10 +75,10 @@ def tree_rows(entries: list[dict[str, Any]], depth: int, changed: dict[str, str]
 
 def size_text(size: int) -> str:
     if size < 1024:
-        return f"{size} Б"
+        return tr("{size} Б", size=size)
     if size < 1024 * 1024:
-        return f"{size / 1024:.1f} КБ"
-    return f"{size / 1024 / 1024:.1f} МБ"
+        return tr("{size:.1f} КБ", size=size / 1024)
+    return tr("{size:.1f} МБ", size=size / 1024 / 1024)
 
 
 def language_of(path: str) -> str:
@@ -193,19 +194,20 @@ def file_view(data: dict[str, Any]) -> dict[str, Any]:
 def git_summary(git: dict[str, Any]) -> str:
     """'main · ↑1 ↓2 · 3 изменения' for the title bar."""
     if not git or not git.get("repo"):
-        return "не git-репозиторий"
-    parts = [git.get("branch") or "без ветки"]
+        return tr("не git-репозиторий")
+    parts = [git.get("branch") or tr("без ветки")]
     if git.get("ahead") or git.get("behind"):
         parts.append(f"↑{git.get('ahead', 0)} ↓{git.get('behind', 0)}")
     count = len(git.get("changes", []))
     parts.append(
-        f"{count} {presenter.plural(count, 'изменение', 'изменения', 'изменений')}" if count else "без изменений"
+        f"{count} {presenter.plural(count, 'изменение', 'изменения', 'изменений')}" if count else tr("без изменений")
     )
     return " · ".join(parts)
 
 
 def change_rows(changes: list[dict[str, str]]) -> list[dict[str, str]]:
-    labels = {"M": "изменён", "A": "добавлен", "D": "удалён", "R": "переименован", "U": "новый", "!": "конфликт"}
+    labels = {"M": tr("изменён"), "A": tr("добавлен"), "D": tr("удалён"), "R": tr("переименован"), "U": tr("новый"),
+              "!": tr("конфликт")}  # fmt: skip
     rows = []
     for change in changes:
         path = change["path"].rstrip("/")
@@ -232,23 +234,27 @@ def ago(iso: str, now: datetime | None = None) -> str:
     now = now or datetime.now(UTC)
     seconds = (now - when).total_seconds()
     if seconds < 60:
-        return "только что"
+        return tr("только что")
     if seconds < 3600:
-        return f"{int(seconds // 60)} мин назад"
+        return tr("{minutes} мин назад", minutes=int(seconds // 60))
     if seconds < 86400:
-        return f"{int(seconds // 3600)} ч назад"
+        return tr("{hours} ч назад", hours=int(seconds // 3600))
     if seconds < 7 * 86400:
-        return f"{int(seconds // 86400)} дн назад"
+        return tr("{days} дн назад", days=int(seconds // 86400))
     return when.astimezone().strftime("%d.%m.%Y")
 
 
-TOOL_WORDS = {"edit_file": "правка", "write_file": "запись", "save": "сохранено"}  # save: the user's own (D47)
+TOOL_WORDS = {
+    "edit_file": N_("правка"),
+    "write_file": N_("запись"),
+    "save": N_("сохранено"),
+}  # save: the user's own (D47)
 RULE_TOOLS = {
-    "edit_file": "править файлы",
-    "write_file": "записывать файлы",
-    "Edit": "Claude Code: править файлы",
-    "Write": "Claude Code: записывать файлы",
-    "MultiEdit": "Claude Code: править файлы",
+    "edit_file": N_("править файлы"),
+    "write_file": N_("записывать файлы"),
+    "Edit": N_("Claude Code: править файлы"),
+    "Write": N_("Claude Code: записывать файлы"),
+    "MultiEdit": N_("Claude Code: править файлы"),
 }
 
 
@@ -259,8 +265,8 @@ def write_rows(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "id": c["id"],
         "path": c["path"],
         "note": " · ".join(s for s in (
-            "создан" if c.get("before_hash") is None else TOOL_WORDS.get(c.get("tool", ""), c.get("tool", "")),
-            f"чат «{c['chat']}»" if c.get("chat") else "вы" if c.get("tool") == "save" else "",
+            tr("создан") if c.get("before_hash") is None else tr(TOOL_WORDS.get(c.get("tool", ""), c.get("tool", ""))),
+            tr("чат «{chat}»", chat=c["chat"]) if c.get("chat") else tr("вы") if c.get("tool") == "save" else "",
             local_time(c.get("created_at", "")),
         ) if s),
         "reverted": bool(c.get("reverted_at")),
@@ -271,15 +277,15 @@ def rule_text(key: str) -> str:
     """An "always for this project" answer in words: 'править файлы', 'команда «pytest -q»'."""
     tool, _, command = key.partition(":")
     if command:
-        return f"команда «{command}»"
-    return RULE_TOOLS.get(tool, tool)
+        return tr("команда «{command}»", command=command)
+    return tr(RULE_TOOLS.get(tool, tool))
 
 
 EXPORT_MODES = {
-    "create": "создать файл",
-    "append": "добавить блок в конец файла",
-    "replace": "обновить блок AFO в файле",
-    "unchanged": "уже как в карточке",
+    "create": N_("создать файл"),
+    "append": N_("добавить блок в конец файла"),
+    "replace": N_("обновить блок AFO в файле"),
+    "unchanged": N_("уже как в карточке"),
 }
 
 
@@ -287,11 +293,12 @@ def export_question(target: dict[str, Any]) -> str:
     """What the user agrees to when the card goes into a project file (D23)."""
     path = target["path"]
     what = {
-        "create": f"В проекте появится {path} с карточкой, заметками для моделей и строкой о MCP хаба.",
-        "append": f"В конец {path} добавится блок AFO с карточкой; остальное в файле не изменится.",
-        "replace": f"Блок AFO в {path} заменится нынешней карточкой; остальное в файле не изменится.",
+        "create": N_("В проекте появится {path} с карточкой, заметками для моделей и строкой о MCP хаба."),
+        "append": N_("В конец {path} добавится блок AFO с карточкой; остальное в файле не изменится."),
+        "replace": N_("Блок AFO в {path} заменится нынешней карточкой; остальное в файле не изменится."),
     }.get(target["mode"], "")
-    return what + " Файл увидит git — его можно закоммитить или удалить; прежний вариант хаб хранит у себя."
+    said = tr(what, path=path) if what else ""
+    return said + tr(" Файл увидит git — его можно закоммитить или удалить; прежний вариант хаб хранит у себя.")
 
 
 def local_time(iso: str) -> str:
@@ -315,7 +322,7 @@ def program_args(cmdline: str, exe: str) -> str:
 
 
 def memory_text(mb: float) -> str:
-    return f"{mb / 1024:.1f} ГБ" if mb >= 1024 else f"{mb:.0f} МБ"
+    return tr("{size:.1f} ГБ", size=mb / 1024) if mb >= 1024 else tr("{size:.0f} МБ", size=mb)
 
 
 def age_text(started_at: str, now: datetime) -> str:
@@ -326,12 +333,12 @@ def age_text(started_at: str, now: datetime) -> str:
         return ""
     minutes = max(0, int((now - started).total_seconds() // 60))
     if minutes < 1:
-        return "только что"
+        return tr("только что")
     if minutes < 60:
-        return f"{minutes} мин"
+        return tr("{minutes} мин", minutes=minutes)
     if minutes < 48 * 60:
-        return f"{minutes // 60} ч {minutes % 60} мин"
-    return f"{minutes // (24 * 60)} дн"
+        return tr("{hours} ч {minutes} мин", hours=minutes // 60, minutes=minutes % 60)
+    return tr("{days} дн", days=minutes // (24 * 60))
 
 
 def process_rows(processes: list[dict[str, Any]], now: datetime | None = None) -> list[dict[str, Any]]:
@@ -384,6 +391,7 @@ def highlighted(text: str, ranges: list[list[int]]) -> str:
 
 def _symbol(symbol: dict[str, Any]) -> dict[str, Any]:
     badge, kind = SYMBOL_KINDS.get(symbol["kind"], ("·", symbol["kind"]))
+    kind = tr(kind)
     return {"badge": badge, "kindText": kind, "tip": f"{kind}: {symbol['signature']}"}
 
 
@@ -481,12 +489,12 @@ def card_changes(changes: dict[str, Any] | None) -> str:
     if commits:
         said.append(f"{commits} {presenter.plural(commits, 'коммит', 'коммита', 'коммитов')}")
     if changes.get("dependencies"):
-        said.append("изменились " + ", ".join(changes["dependencies"]))
+        said.append(tr("изменились {names}", names=", ".join(changes["dependencies"])))
     if changes.get("new_folders"):
-        said.append("новые папки: " + ", ".join(f"{f}/" for f in changes["new_folders"]))
+        said.append(tr("новые папки: {folders}", folders=", ".join(f"{f}/" for f in changes["new_folders"])))
     if changes.get("gone_folders"):
-        said.append("исчезли папки: " + ", ".join(f"{f}/" for f in changes["gone_folders"]))
-    return "С подтверждения карточки: " + "; ".join(said)
+        said.append(tr("исчезли папки: {folders}", folders=", ".join(f"{f}/" for f in changes["gone_folders"])))
+    return tr("С подтверждения карточки: {changes}", changes="; ".join(said))
 
 
 def _sections(text: str) -> dict[str, str]:
@@ -504,8 +512,8 @@ def _sections(text: str) -> dict[str, str]:
 def changed_sections(before: str, after: str) -> list[str]:
     """The ## sections of `after` that differ from `before` (new ones too, and those gone, marked)."""
     old, new = _sections(before), _sections(after)
-    changed = [title or "(начало)" for title, body in new.items() if old.get(title) != body]
-    return changed + [f"{title} (убран)" for title in old if title and title not in new]
+    changed = [title or tr("(начало)") for title, body in new.items() if old.get(title) != body]
+    return changed + [tr("{title} (убран)", title=title) for title in old if title and title not in new]
 
 
 def search_summary(result: dict[str, Any] | None) -> str:
@@ -515,21 +523,26 @@ def search_summary(result: dict[str, Any] | None) -> str:
         total, shown = result.get("total", 0), len(result["symbols"])
         text = (
             f"{total} {presenter.plural(total, 'определение', 'определения', 'определений')}"
-            + (" (показаны первые)" if total > shown else "")
+            + (tr(" (показаны первые)") if total > shown else "")
             if total
-            else "определений не найдено"
+            else tr("определений не найдено")
         )
         if result.get("left_out"):
-            return text + f" · в индексе не все файлы: {result['left_out']} не прочитаны, проект слишком большой"
-        return text + ("" if result.get("complete", True) else " · индекс ещё строится")
+            return text + tr(
+                " · в индексе не все файлы: {count} не прочитаны, проект слишком большой", count=result["left_out"]
+            )
+        return text + ("" if result.get("complete", True) else tr(" · индекс ещё строится"))
     count, files = result.get("matches", 0), len(result.get("files", []))
     if not count:
-        return "ничего не найдено"
-    text = (
-        f"{count} {presenter.plural(count, 'совпадение', 'совпадения', 'совпадений')} в {files} "
-        f"{presenter.plural(files, 'файле', 'файлах', 'файлах')}"
+        return tr("ничего не найдено")
+    text = tr(
+        "{count} {matches} в {files} {in_files}",
+        count=count,
+        matches=presenter.plural(count, "совпадение", "совпадения", "совпадений"),
+        files=files,
+        in_files=presenter.plural(files, "файле", "файлах", "файлах"),
     )
-    return text + (" (показаны первые)" if result.get("truncated") else "")
+    return text + (tr(" (показаны первые)") if result.get("truncated") else "")
 
 
 def line_offset(text: str, line: int) -> int:

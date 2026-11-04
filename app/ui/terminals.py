@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 import pyte
 from PySide6.QtCore import Property, QModelIndex, QObject, QPersistentModelIndex, Qt, Signal, Slot
 
+from common.i18n import tr
+
 from ..tasks import Background
 from .models import RowModel
 from .term_screen import Scrolled, TermScreen
@@ -286,7 +288,7 @@ class Terminals(QObject):
     @Slot()
     def newTerminal(self) -> None:
         if not self._project:
-            self.app.show_error("Терминал открывается в проекте: сначала выберите проект")
+            self.app.show_error(tr("Терминал открывается в проекте: сначала выберите проект"))
             return
         pid, cols, rows = self._project, self._cols, self._rows
 
@@ -302,7 +304,7 @@ class Terminals(QObject):
         self.app._call(
             lambda: self.app.client.start_terminal(pid, cols=cols, rows=rows),
             done,
-            lambda error: self.app.show_error(f"Терминал не открылся: {error}"),
+            lambda error: self.app.show_error(tr("Терминал не открылся: {error}", error=error)),
         )
 
     @Slot()
@@ -324,7 +326,7 @@ class Terminals(QObject):
         self.app._call(
             lambda: self.app.client.claude_code_terminal(pid, cols=cols, rows=rows),
             done,
-            lambda error: self.app.show_error(f"Claude Code не запустился: {error}"),
+            lambda error: self.app.show_error(tr("Claude Code не запустился: {error}", error=error)),
         )
 
     def _new_emu(self) -> _Emu:
@@ -396,9 +398,9 @@ class Terminals(QObject):
                     self.app._call(lambda: self.app.client.stop_terminal(terminal_id))
 
             self.app._ask(
-                f"Остановить терминал «{_title(info)}»?",
-                "Всё, что в нём запущено, завершится. Вывод останется в журнале.",
-                "Остановить",
+                tr("Остановить терминал «{title}»?", title=_title(info)),
+                tr("Всё, что в нём запущено, завершится. Вывод останется в журнале."),
+                tr("Остановить"),
                 decide,
             )
         else:
@@ -575,7 +577,7 @@ class Terminals(QObject):
         tid = self._current
         self._sender.run(
             lambda: self.app.client.terminal_input(tid, data),
-            on_error=lambda error: self.app.show_error(f"Ввод не дошёл до терминала: {error}"),
+            on_error=lambda error: self.app.show_error(tr("Ввод не дошёл до терминала: {error}", error=error)),
         )
 
     @Slot()
@@ -589,14 +591,14 @@ class Terminals(QObject):
 
 
 def _title(info: dict[str, Any]) -> str:
-    title = info.get("title") or "терминал"
+    title = info.get("title") or tr("терминал")
     return {"pwsh": "PowerShell 7", "powershell": "PowerShell", "cmd": "cmd"}.get(title, title)
 
 
 def _note(info: dict[str, Any]) -> str:
     if info["status"] == "running":
-        return "работает"
+        return tr("работает")
     if info["status"] == "lost":
-        return "прерван (хаб останавливался)"
+        return tr("прерван (хаб останавливался)")
     code = info.get("exit_code")
-    return "завершён" if code is None else f"завершён, код {code}"
+    return tr("завершён") if code is None else tr("завершён, код {code}", code=code)

@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "sandboxSheet"
-    title: "Правки в песочнице"
+    title: qsTr("Правки в песочнице")
     iconName: "branch"
     width: Math.min(820, (parent ? parent.width : 960) * 0.94)
     onAboutToShow: Sandbox.load()
@@ -14,9 +14,8 @@ Sheet {
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: Sandbox.count ? "Модель писала в отдельную копию проекта (git worktree, своя ветка). Проект не менялся, "
-                              + "пока вы не нажмёте «Применить»."
-                            : "Правок пока нет."
+        text: Sandbox.count ? qsTr("Модель писала в отдельную копию проекта (git worktree, своя ветка). Проект не менялся, пока вы не нажмёте «Применить».")
+                            : qsTr("Правок пока нет.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -43,14 +42,14 @@ Sheet {
                     objectName: "sandboxApply_" + entry.modelData.id
                     kind: "primary"
                     iconName: "check"
-                    text: "Применить"
+                    text: qsTr("Применить")
                     enabled: !Sandbox.busy
                     onClicked: Sandbox.apply(entry.modelData.id)
                 }
                 PlainButton {
                     kind: "danger"
                     iconName: "trash"
-                    text: "Отбросить"
+                    text: qsTr("Отбросить")
                     enabled: !Sandbox.busy
                     onClicked: Sandbox.discard(entry.modelData.id)
                 }

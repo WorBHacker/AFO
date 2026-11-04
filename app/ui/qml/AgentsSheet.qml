@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "agentsSheet"
-    title: "Агенты"
+    title: qsTr("Агенты")
     iconName: "agent"
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: Agents.load()
@@ -63,15 +63,15 @@ Sheet {
                 onClicked: Agents.editProfile(modelData.id)
             }
         }
-        PlainButton { objectName: "newAgent"; iconName: "plus"; text: "Новый агент"; onClicked: Agents.newProfile() }
+        PlainButton { objectName: "newAgent"; iconName: "plus"; text: qsTr("Новый агент"); onClicked: Agents.newProfile() }
     }
 
     // ---------- the draft ----------
-    Label { text: Agents.draft.saved ? "Агент · версия " + Agents.draft.version : "Новый агент" }
+    Label { text: Agents.draft.saved ? qsTr("Агент · версия %1").arg(Agents.draft.version) : qsTr("Новый агент") }
     Field {
         objectName: "agentName"
         width: parent.width
-        placeholderText: "Имя: например, «Ревьюер» или «Чинильщик тестов»"
+        placeholderText: qsTr("Имя: например, «Ревьюер» или «Чинильщик тестов»")
         text: Agents.draft.name || ""
         onEditingFinished: Agents.setField("name", text)
     }
@@ -86,7 +86,7 @@ Sheet {
             TextArea {
                 id: instructions
                 objectName: "agentInstructions"
-                placeholderText: "Роль: что агент делает и как — например, «читаешь код, правишь по одному файлу, после правки запускаешь тесты»"
+                placeholderText: qsTr("Роль: что агент делает и как — например, «читаешь код, правишь по одному файлу, после правки запускаешь тесты»")
                 placeholderTextColor: Theme.p.faint
                 text: Agents.draft.instructions || ""
                 wrapMode: TextArea.Wrap
@@ -111,8 +111,8 @@ Sheet {
             onClicked: { modelMenu.anchor = modelButton; modelMenu.open() }
         }
         Segmented {
-            options: [{ id: "read_only", name: "Только чтение" }, { id: "ask", name: "Спрашивать" },
-                      { id: "trusted", name: "Доверенный" }]
+            options: [{ id: "read_only", name: qsTr("Только чтение") }, { id: "ask", name: qsTr("Спрашивать") },
+                      { id: "trusted", name: qsTr("Доверенный") }]
             value: Agents.draft.mode || "ask"
             onPicked: (id) => Agents.setField("mode", id)
         }
@@ -124,7 +124,7 @@ Sheet {
         onChosen: (id) => Agents.setField("model_id", id)
     }
 
-    Label { text: "Инструменты" }
+    Label { text: qsTr("Инструменты") }
     Flow {
         width: parent.width
         spacing: 2
@@ -138,7 +138,7 @@ Sheet {
             }
         }
     }
-    Label { text: "Проекты" }
+    Label { text: qsTr("Проекты") }
     Flow {
         width: parent.width
         spacing: 2
@@ -156,43 +156,43 @@ Sheet {
         spacing: 8
         Field {
             width: 150
-            placeholderText: "Шагов (1–200)"
+            placeholderText: qsTr("Шагов (1–200)")
             text: Agents.draft.max_steps !== undefined ? String(Agents.draft.max_steps) : ""
             onEditingFinished: Agents.setField("max_steps", text)
         }
         Field {
             width: 150
-            placeholderText: "Минут"
+            placeholderText: qsTr("Минут")
             text: Agents.draft.max_minutes !== undefined ? String(Agents.draft.max_minutes) : ""
             onEditingFinished: Agents.setField("max_minutes", text)
         }
         Field {
             width: 190
-            placeholderText: "Бюджет задачи, $ (платные)"
+            placeholderText: qsTr("Бюджет задачи, $ (платные)")
             text: Agents.draft.budget || ""
             onEditingFinished: Agents.setField("budget", text)
         }
     }
     Row {
         spacing: 8
-        PlainButton { objectName: "saveAgent"; kind: "primary"; iconName: "check"; text: "Сохранить"; onClicked: Agents.save() }
+        PlainButton { objectName: "saveAgent"; kind: "primary"; iconName: "check"; text: qsTr("Сохранить"); onClicked: Agents.save() }
         PlainButton {
             visible: Agents.draft.saved
             kind: "danger"
             iconName: "trash"
-            text: "Удалить"
+            text: qsTr("Удалить")
             onClicked: Agents.deleteProfile()
         }
     }
 
     // ---------- a task ----------
     Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
-    Label { text: Agents.draft.saved ? "Задача для «" + Agents.draft.name + "»" : "Сохраните агента, чтобы дать ему задачу" }
+    Label { text: Agents.draft.saved ? qsTr("Задача для «%1»").arg(Agents.draft.name) : qsTr("Сохраните агента, чтобы дать ему задачу") }
     Text {
         objectName: "agentEstimate"
         visible: Agents.draft.saved && text !== ""
         width: parent.width
-        text: "Цена задачи: " + Agents.estimate
+        text: qsTr("Цена задачи: %1").arg(Agents.estimate)
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -205,21 +205,21 @@ Sheet {
             objectName: "agentTask"
             enabled: Agents.draft.saved
             width: parent.width - go.width - 8
-            placeholderText: "Что сделать — Enter"
+            placeholderText: qsTr("Что сделать — Enter")
             onAccepted: { Agents.startRun(text); text = "" }
         }
         PlainButton {
             id: go
             kind: "primary"
             iconName: "send"
-            text: "Запустить"
+            text: qsTr("Запустить")
             enabled: Agents.draft.saved && task.text.trim() !== ""
             onClicked: { Agents.startRun(task.text); task.text = "" }
         }
     }
 
     // ---------- runs ----------
-    Label { visible: Agents.runs.length > 0; text: "Прогоны" }
+    Label { visible: Agents.runs.length > 0; text: qsTr("Прогоны") }
     Column {
         objectName: "agentRuns"
         width: parent.width
@@ -270,12 +270,12 @@ Sheet {
                     PlainButton {
                         visible: run.modelData.active
                         implicitHeight: 28
-                        text: "Остановить"
+                        text: qsTr("Остановить")
                         onClicked: Agents.cancelRun(run.modelData.id)
                     }
                     PlainButton {
                         implicitHeight: 28
-                        text: "Открыть"
+                        text: qsTr("Открыть")
                         onClicked: { Agents.openRun(run.modelData.id); sheet.close() }
                     }
                 }

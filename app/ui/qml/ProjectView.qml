@@ -30,7 +30,7 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: "Нет открытого проекта"
+            text: qsTr("Нет открытого проекта")
             color: Theme.p.text
             font.family: Theme.uiFont
             font.pixelSize: 16
@@ -41,7 +41,7 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
             lineHeight: 1.3
-            text: "Добавьте папку с кодом: её файлы, git и изменения будут видны здесь. Папка не меняется — хаб только читает её."
+            text: qsTr("Добавьте папку с кодом: её файлы, git и изменения будут видны здесь. Папка не меняется — хаб только читает её.")
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -50,7 +50,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             kind: "primary"
             iconName: "folder-plus"
-            text: "Добавить проект…"
+            text: qsTr("Добавить проект…")
             onClicked: view.addRequested()
         }
     }
@@ -124,7 +124,7 @@ Item {
                             Text {
                                 id: badge
                                 anchors.centerIn: parent
-                                text: Projects.currentCloud ? "облачные модели — можно" : "только локальные модели"
+                                text: Projects.currentCloud ? qsTr("облачные модели — можно") : qsTr("только локальные модели")
                                 color: Projects.currentCloud ? Theme.p.accent : Theme.p.muted
                                 font.family: Theme.uiFont
                                 font.pixelSize: 11
@@ -138,33 +138,33 @@ Item {
                     spacing: 2
                     IconButton {
                         iconName: "chat"
-                        tip: "Новый чат об этом проекте"
+                        tip: qsTr("Новый чат об этом проекте")
                         onClicked: App.newChatAbout(Projects.currentId)
                     }
                     IconButton {
                         objectName: "claudeCodeTerminal"
                         visible: App.claudeCodeInstalled
                         iconName: "agent"
-                        tip: "Claude Code в терминале — с инструментами хаба (проекту нужно разрешение на облако)"
+                        tip: qsTr("Claude Code в терминале — с инструментами хаба (проекту нужно разрешение на облако)")
                         onClicked: Terminals.newClaudeCode()
                     }
                     IconButton {
                         objectName: "projectSettings"
                         iconName: "sliders"
-                        tip: "Настройки проекта: описание, облачные модели"
+                        tip: qsTr("Настройки проекта: описание, облачные модели")
                         onClicked: view.settingsRequested()
                     }
                     IconButton {
                         iconName: "terminal"
-                        tip: Terminals.panelOpen ? "Скрыть терминалы (Ctrl+J)" : "Терминалы проекта (Ctrl+J)"
+                        tip: Terminals.panelOpen ? qsTr("Скрыть терминалы (Ctrl+J)") : qsTr("Терминалы проекта (Ctrl+J)")
                         onClicked: Terminals.setPanelOpen(!Terminals.panelOpen)
                     }
-                    IconButton { iconName: "external"; tip: "Открыть в проводнике"; onClicked: Projects.openFolder("") }
-                    IconButton { iconName: "copy"; tip: "Копировать путь"; onClicked: Projects.copyPath("") }
-                    IconButton { iconName: "refresh"; tip: "Обновить (F5)"; onClicked: Projects.refresh() }
+                    IconButton { iconName: "external"; tip: qsTr("Открыть в проводнике"); onClicked: Projects.openFolder("") }
+                    IconButton { iconName: "copy"; tip: qsTr("Копировать путь"); onClicked: Projects.copyPath("") }
+                    IconButton { iconName: "refresh"; tip: qsTr("Обновить (F5)"); onClicked: Projects.refresh() }
                     IconButton {
                         iconName: "trash"
-                        tip: "Убрать из списка (папка останется)"
+                        tip: qsTr("Убрать из списка (папка останется)")
                         onClicked: Projects.askRemoveProject(Projects.currentId)
                     }
                 }
@@ -180,7 +180,7 @@ Item {
                 Text {
                     x: 14
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Папки проекта нет на месте — её переместили или удалили."
+                    text: qsTr("Папки проекта нет на месте — её переместили или удалили.")
                     color: Theme.p.error
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -208,7 +208,7 @@ Item {
                     spacing: 2
                     Text {
                         width: parent.width
-                        text: view.git.repo === undefined ? "Читаю git…" : view.git.summary
+                        text: view.git.repo === undefined ? qsTr("Читаю git…") : view.git.summary
                         elide: Text.ElideRight
                         color: Theme.p.text
                         font.family: Theme.uiFont
@@ -217,7 +217,7 @@ Item {
                     Text {
                         width: parent.width
                         visible: view.git.repo === false
-                        text: "Дерево без служебных папок (node_modules, .venv, кэши); с git — по .gitignore."
+                        text: qsTr("Дерево без служебных папок (node_modules, .venv, кэши); с git — по .gitignore.")
                         elide: Text.ElideRight
                         color: Theme.p.faint
                         font.family: Theme.uiFont
@@ -240,7 +240,7 @@ Item {
                     height: 24
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "Карточка проекта" + (cardBox.card.confirmed ? " · версия " + cardBox.card.version : "")
+                        text: cardBox.card.confirmed ? qsTr("Карточка проекта · версия %1").arg(cardBox.card.version) : qsTr("Карточка проекта")
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
@@ -253,19 +253,19 @@ Item {
                         visible: cardBox.card.state === "confirmed"
                         IconButton {
                             iconName: "edit"
-                            tip: "Изменить карточку"
+                            tip: qsTr("Изменить карточку")
                             onClicked: view.cardEditRequested(cardBox.card.text, false)
                         }
                         IconButton {
                             iconName: "sparkle"
-                            tip: "Новый черновик от модели «" + cardBox.card.writer + "»"
+                            tip: qsTr("Новый черновик от модели «%1»").arg(cardBox.card.writer)
                             onClicked: Projects.draftCard()
                         }
                         IconButton {
                             id: exportButton
                             objectName: "cardExport"
                             iconName: "external"
-                            tip: "В проект: записать карточку в CLAUDE.md, AGENTS.md или .clinerules"
+                            tip: qsTr("В проект: записать карточку в CLAUDE.md, AGENTS.md или .clinerules")
                             onClicked: view.exportRequested(exportButton)
                         }
                     }
@@ -276,8 +276,7 @@ Item {
                     width: parent.width
                     wrapMode: Text.Wrap
                     lineHeight: 1.3
-                    text: "Карточки нет. Модель составит черновик по README, зависимостям, дереву папок и истории git — "
-                          + "вы проверите и подтвердите. Подтверждённая карточка — первое, что модели узнают о проекте."
+                    text: qsTr("Карточки нет. Модель составит черновик по README, зависимостям, дереву папок и истории git — вы проверите и подтвердите. Подтверждённая карточка — первое, что модели узнают о проекте.")
                     color: Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -285,12 +284,12 @@ Item {
                 PlainButton {
                     visible: cardBox.card.state === "none"
                     iconName: "sparkle"
-                    text: "Составить черновик" + (cardBox.card.writer ? " (" + cardBox.card.writer + ")" : "")
+                    text: cardBox.card.writer ? qsTr("Составить черновик (%1)").arg(cardBox.card.writer) : qsTr("Составить черновик")
                     onClicked: Projects.draftCard()
                 }
                 Text {
                     visible: cardBox.card.state === "drafting"
-                    text: "Модель «" + cardBox.card.writer + "» составляет черновик…"
+                    text: qsTr("Модель «%1» составляет черновик…").arg(cardBox.card.writer)
                     color: Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -311,7 +310,7 @@ Item {
                     Text {
                         x: 14
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "Черновик от «" + cardBox.card.draftModel + "» готов — проверьте и подтвердите"
+                        text: qsTr("Черновик от «%1» готов — проверьте и подтвердите").arg(cardBox.card.draftModel)
                         color: Theme.p.text
                         font.family: Theme.uiFont
                         font.pixelSize: 13
@@ -323,17 +322,17 @@ Item {
                         spacing: 6
                         PlainButton {
                             kind: "primary"
-                            text: "Открыть черновик"
+                            text: qsTr("Открыть черновик")
                             onClicked: view.cardEditRequested(cardBox.card.draft, true)
                         }
-                        PlainButton { text: "Выбросить"; onClicked: Projects.dropCardDraft() }
+                        PlainButton { text: qsTr("Выбросить"); onClicked: Projects.dropCardDraft() }
                     }
                 }
                 Text {
                     visible: cardBox.card.missing.length > 0
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: "Карточка устарела: в ней есть то, чего уже нет в проекте — " + cardBox.card.missing.join(", ")
+                    text: qsTr("Карточка устарела: в ней есть то, чего уже нет в проекте — %1").arg(cardBox.card.missing.join(", "))
                     color: Theme.p.warn
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -349,7 +348,7 @@ Item {
                         width: parent.width - updateButton.width - 12
                         anchors.verticalCenter: parent.verticalCenter
                         wrapMode: Text.Wrap
-                        text: cardBox.card.changes + " — карточка могла устареть."
+                        text: qsTr("%1 — карточка могла устареть.").arg(cardBox.card.changes)
                         color: Theme.p.warn
                         font.family: Theme.uiFont
                         font.pixelSize: 12
@@ -360,11 +359,11 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         implicitHeight: 28
                         iconName: "sparkle"
-                        text: "Обновить карточку"
+                        text: qsTr("Обновить карточку")
                         onClicked: Projects.updateCard()
                         ToolTip.visible: hovered
                         ToolTip.delay: 600
-                        ToolTip.text: "Модель «" + cardBox.card.writer + "» поправит только разделы, которых касаются изменения; вы проверите"
+                        ToolTip.text: qsTr("Модель «%1» поправит только разделы, которых касаются изменения; вы проверите").arg(cardBox.card.writer)
                     }
                 }
                 Item {
@@ -391,7 +390,7 @@ Item {
                 Component { id: cardCode; CodeBlock { width: parent ? parent.width : 0 } }
                 PlainButton {
                     visible: cardBox.card.confirmed && cardBox.card.state !== "draft" && cardText.height > 200
-                    text: cardBox.expanded ? "Свернуть" : "Показать полностью"
+                    text: cardBox.expanded ? qsTr("Свернуть") : qsTr("Показать полностью")
                     onClicked: cardBox.expanded = !cardBox.expanded
                 }
             }
@@ -403,7 +402,7 @@ Item {
                 spacing: 4
                 Text {
                     bottomPadding: 2
-                    text: "Заметки для моделей"
+                    text: qsTr("Заметки для моделей")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -437,7 +436,7 @@ Item {
                             implicitWidth: 26
                             implicitHeight: 26
                             iconName: "trash"
-                            tip: "Удалить заметку"
+                            tip: qsTr("Удалить заметку")
                             onClicked: Projects.deleteNote(note.modelData.id)
                         }
                     }
@@ -446,7 +445,7 @@ Item {
                     id: newNote
                     objectName: "newNote"
                     width: parent.width
-                    placeholderText: "Добавить заметку: например, «деплой только из main» — Enter"
+                    placeholderText: qsTr("Добавить заметку: например, «деплой только из main» — Enter")
                     onAccepted: { Projects.addNote(text); text = "" }
                 }
             }
@@ -459,7 +458,7 @@ Item {
                 spacing: 4
                 Text {
                     bottomPadding: 2
-                    text: "Правки моделей"
+                    text: qsTr("Правки моделей")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -482,7 +481,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             Text {
                                 width: parent.width
-                                text: write.modelData.path + (write.modelData.reverted ? " — откачена" : "")
+                                text: write.modelData.reverted ? qsTr("%1 — откачена").arg(write.modelData.path) : write.modelData.path
                                 elide: Text.ElideMiddle
                                 color: write.modelData.reverted ? Theme.p.faint : Theme.p.text
                                 font.family: Theme.uiFont
@@ -503,7 +502,7 @@ Item {
                             anchors.rightMargin: 4
                             anchors.verticalCenter: parent.verticalCenter
                             implicitHeight: 28
-                            text: "Откатить"
+                            text: qsTr("Откатить")
                             onClicked: Projects.revertChange(write.modelData.id)
                         }
                     }
@@ -520,7 +519,7 @@ Item {
                             x: 10
                             width: parent.width - 50
                             anchors.verticalCenter: parent.verticalCenter
-                            text: "Без вопроса в этом проекте: " + rule.modelData.text
+                            text: qsTr("Без вопроса в этом проекте: %1").arg(rule.modelData.text)
                             elide: Text.ElideRight
                             color: Theme.p.muted
                             font.family: Theme.uiFont
@@ -534,7 +533,7 @@ Item {
                             implicitWidth: 26
                             implicitHeight: 26
                             iconName: "trash"
-                            tip: "Снова спрашивать"
+                            tip: qsTr("Снова спрашивать")
                             onClicked: Projects.removeRule(rule.modelData.id)
                         }
                     }
@@ -552,7 +551,7 @@ Item {
                     height: 24
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "Связи с другими проектами"
+                        text: qsTr("Связи с другими проектами")
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
@@ -565,18 +564,18 @@ Item {
                         implicitHeight: 26
                         iconName: "search"
                         enabled: !view.links.scanning
-                        text: view.links.scanning ? "Ищу…" : "Найти связи"
+                        text: view.links.scanning ? qsTr("Ищу…") : qsTr("Найти связи")
                         onClicked: Projects.scanLinks()
                         ToolTip.visible: hovered
                         ToolTip.delay: 600
-                        ToolTip.text: "Пути к папкам других проектов в файлах зависимостей, имена их пакетов, порты, которые они слушают"
+                        ToolTip.text: qsTr("Пути к папкам других проектов в файлах зависимостей, имена их пакетов, порты, которые они слушают")
                     }
                 }
                 Text {
                     visible: view.links.confirmed.length === 0 && view.links.proposed.length === 0
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: "Связей нет. Хаб поищет улики — зависимости, пути, порты — и предложит, а вы подтвердите."
+                    text: qsTr("Связей нет. Хаб поищет улики — зависимости, пути, порты — и предложит, а вы подтвердите.")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -609,7 +608,7 @@ Item {
                             implicitWidth: 26
                             implicitHeight: 26
                             iconName: "trash"
-                            tip: "Удалить связь"
+                            tip: qsTr("Удалить связь")
                             onClicked: Projects.deleteLink(link.modelData.id)
                         }
                     }
@@ -631,7 +630,7 @@ Item {
                             width: parent.width - 24
                             spacing: 6
                             Text {
-                                text: "Похоже на связь: " + proposal.modelData.title
+                                text: qsTr("Похоже на связь: %1").arg(proposal.modelData.title)
                                 color: Theme.p.text
                                 font.family: Theme.uiFont
                                 font.pixelSize: 13
@@ -655,17 +654,17 @@ Item {
                                     id: linkNote
                                     width: Math.min(360, proposalColumn.width - 220)
                                     implicitHeight: 30
-                                    placeholderText: "Описание, например: REST /api, порт 8000"
+                                    placeholderText: qsTr("Описание, например: REST /api, порт 8000")
                                 }
                                 PlainButton {
                                     kind: "primary"
                                     implicitHeight: 30
-                                    text: "Подтвердить"
+                                    text: qsTr("Подтвердить")
                                     onClicked: Projects.confirmLink(proposal.modelData.id, linkNote.text)
                                 }
                                 PlainButton {
                                     implicitHeight: 30
-                                    text: "Не связаны"
+                                    text: qsTr("Не связаны")
                                     onClicked: Projects.rejectLink(proposal.modelData.id)
                                 }
                             }
@@ -682,7 +681,7 @@ Item {
                 spacing: 2
                 Text {
                     bottomPadding: 6
-                    text: "Процессы · " + Projects.processesSummary
+                    text: qsTr("Процессы · %1").arg(Projects.processesSummary)
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -755,7 +754,7 @@ Item {
                                     }
                                     ToolTip.visible: hovered
                                     ToolTip.delay: 600
-                                    ToolTip.text: "Открыть http://localhost:" + modelData
+                                    ToolTip.text: qsTr("Открыть http://localhost:%1").arg(modelData)
                                 }
                             }
                         }
@@ -778,13 +777,13 @@ Item {
                             enabled: !proc.modelData.hub
                             iconName: "power"
                             hoverTint: Theme.p.error
-                            tip: "Завершить (вместе с дочерними)"
+                            tip: qsTr("Завершить (вместе с дочерними)")
                             onClicked: Projects.askStopProcess(proc.modelData.pid)
                         }
                         ToolTip.visible: procHover.hovered && !stopButton.hovered
                         ToolTip.delay: 900
-                        ToolTip.text: (proc.modelData.hub ? "Это сам хаб AFO\n" : "") + "PID " + proc.modelData.pid
-                                      + (proc.modelData.folder ? " · папка " + proc.modelData.folder : "")
+                        ToolTip.text: (proc.modelData.hub ? qsTr("Это сам хаб AFO\n") : "") + "PID " + proc.modelData.pid
+                                      + (proc.modelData.folder ? qsTr(" · папка %1").arg(proc.modelData.folder) : "")
                                       + "\n" + proc.modelData.cmdline
                     }
                 }
@@ -797,7 +796,7 @@ Item {
                 spacing: 2
                 Text {
                     bottomPadding: 6
-                    text: "Изменения"
+                    text: qsTr("Изменения")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -863,7 +862,7 @@ Item {
                 spacing: 2
                 Text {
                     bottomPadding: 6
-                    text: "Недавно"
+                    text: qsTr("Недавно")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -914,7 +913,7 @@ Item {
                 spacing: 2
                 Text {
                     bottomPadding: 6
-                    text: "Последние коммиты"
+                    text: qsTr("Последние коммиты")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -1031,7 +1030,7 @@ Item {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             visible: tabItem.restored
-                            text: "восстановлено"
+                            text: qsTr("восстановлено")
                             color: Theme.p.warn
                             font.family: Theme.uiFont
                             font.pixelSize: 11
@@ -1054,7 +1053,7 @@ Item {
                                 anchors.fill: parent
                                 visible: !tabItem.dirty || tabMouse.containsMouse || hovered
                                 iconName: "close"
-                                tip: "Закрыть вкладку"
+                                tip: qsTr("Закрыть вкладку")
                                 onClicked: Projects.closeTab(tabItem.key)
                             }
                         }
@@ -1075,7 +1074,7 @@ Item {
                 x: 8
                 anchors.verticalCenter: parent.verticalCenter
                 iconName: "back"
-                tip: "К обзору проекта (вкладки остаются)"
+                tip: qsTr("К обзору проекта (вкладки остаются)")
                 onClicked: Projects.closeView()
             }
             Column {
@@ -1088,9 +1087,9 @@ Item {
                     textFormat: Text.StyledText
                     text: (view.file.folder ? "<font color='" + Theme.p.faint + "'>" + view.file.folder + "/</font>" : "")
                           + (view.file.name || "") + (view.editing && Editor.dirty ? "  <font color='" + Theme.p.accent
-                          + "'>● не сохранено</font>" : "")
+                          + "'>" + qsTr("● не сохранено") + "</font>" : "")
                           + (view.editing && Editor.restored ? "  <font color='" + Theme.p.warn
-                          + "'>восстановлено после сбоя</font>" : "")
+                          + "'>" + qsTr("восстановлено после сбоя") + "</font>" : "")
                     elide: Text.ElideMiddle
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -1099,9 +1098,9 @@ Item {
                 }
                 Text {
                     width: parent.width
-                    text: view.file.missing ? "удалён с диска"
+                    text: view.file.missing ? qsTr("удалён с диска")
                           : [view.file.sizeText, view.file.encoding, view.file.eol, view.file.lang,
-                             view.file.truncated ? "показаны первые 2 МБ" : "",
+                             view.file.truncated ? qsTr("показаны первые 2 МБ") : "",
                              view.file.linesText].filter(s => !!s).join(" · ")
                     elide: Text.ElideRight
                     color: Theme.p.faint
@@ -1131,7 +1130,7 @@ Item {
                     enabled: !view.file.editBlock && !Editor.busy
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "edit"
-                    text: "Править"
+                    text: qsTr("Править")
                     ToolTip.visible: hovered && !!view.file.editBlock
                     ToolTip.text: view.file.editBlock || ""
                     onClicked: Editor.open(Projects.currentId, view.file.path)
@@ -1143,20 +1142,20 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     kind: "primary"
                     iconName: "check"
-                    text: Editor.busy ? "Сохраняю…" : "Сохранить"
+                    text: Editor.busy ? qsTr("Сохраняю…") : qsTr("Сохранить")
                     onClicked: { Editor.check(); Editor.save() }
                 }
                 PlainButton {
                     objectName: "doneEditing"
                     visible: view.editing
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Готово"
+                    text: qsTr("Готово")
                     onClicked: Editor.stop()
                 }
                 Segmented {
                     visible: !!view.file.hasDiff && !view.editing
                     anchors.verticalCenter: parent.verticalCenter
-                    options: [{ id: "file", name: "Файл" }, { id: "diff", name: "Изменения" }]
+                    options: [{ id: "file", name: qsTr("Файл") }, { id: "diff", name: qsTr("Изменения") }]
                     value: view.file.diffMode ? "diff" : "file"
                     onPicked: (id) => Projects.showDiff(id === "diff")
                 }
@@ -1166,7 +1165,7 @@ Item {
                     visible: !!view.file.outline && !view.file.diffMode && !view.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "outline"
-                    tip: "Структура файла: классы, функции, методы"
+                    tip: qsTr("Структура файла: классы, функции, методы")
                     onClicked: { Projects.loadOutline(); outlinePopup.open() }
                 }
                 IconButton {
@@ -1174,14 +1173,14 @@ Item {
                     visible: !view.file.binary && !view.file.missing && App.currentId !== ""
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "pin"
-                    tip: "Закрепить в контексте открытого чата: «" + App.currentTitle + "»"
+                    tip: qsTr("Закрепить в контексте открытого чата: «%1»").arg(App.currentTitle)
                     onClicked: App.pinFile(Projects.currentId, view.file.path)
                 }
                 IconButton {
                     visible: !view.file.binary && !view.file.diffMode && !view.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "copy"
-                    tip: "Копировать содержимое"
+                    tip: qsTr("Копировать содержимое")
                     onClicked: Projects.copyFile()
                 }
                 IconButton {
@@ -1189,19 +1188,19 @@ Item {
                     visible: !view.file.missing
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "code"
-                    tip: "Открыть в VS Code" + (view.editing ? " на строке курсора" : "")
+                    tip: view.editing ? qsTr("Открыть в VS Code на строке курсора") : qsTr("Открыть в VS Code")
                     onClicked: Projects.openInCode(view.editing ? Editor.line : (view.file.gotoLine || 1))
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "external"
-                    tip: "Показать в проводнике"
+                    tip: qsTr("Показать в проводнике")
                     onClicked: Projects.openFolder(view.file.path)
                 }
                 IconButton {
                     anchors.verticalCenter: parent.verticalCenter
                     iconName: "close"
-                    tip: "Закрыть файл"
+                    tip: qsTr("Закрыть файл")
                     onClicked: Projects.closeFile()
                 }
             }
@@ -1237,10 +1236,10 @@ Item {
                     width: parent.width - 16
                     height: 28
                     verticalAlignment: Text.AlignVCenter
-                    text: view.outline.state === "loading" && view.outline.rows.length === 0 ? "Читаю…"
-                          : view.outline.state === "failed" ? "Структуру получить не удалось"
-                          : view.outline.rows.length === 0 ? "Определений нет"
-                          : "Структура · " + view.outline.rows.length
+                    text: view.outline.state === "loading" && view.outline.rows.length === 0 ? qsTr("Читаю…")
+                          : view.outline.state === "failed" ? qsTr("Структуру получить не удалось")
+                          : view.outline.rows.length === 0 ? qsTr("Определений нет")
+                          : qsTr("Структура · %1").arg(view.outline.rows.length)
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -1320,7 +1319,7 @@ Item {
                 x: 36
                 width: Math.max(0, conflictButtons.x - x - 12)
                 anchors.verticalCenter: parent.verticalCenter
-                text: (Editor.conflict.message || "") + (Editor.dirty ? " У вас есть несохранённые правки." : "")
+                text: (Editor.conflict.message || "") + (Editor.dirty ? qsTr(" У вас есть несохранённые правки.") : "")
                 elide: Text.ElideRight
                 color: Theme.p.text
                 font.family: Theme.uiFont
@@ -1335,18 +1334,18 @@ Item {
                 PlainButton {
                     objectName: "takeDisk"
                     visible: Editor.conflict.reason === "changed"
-                    text: "Взять с диска"
+                    text: qsTr("Взять с диска")
                     onClicked: Editor.takeDisk()
                 }
                 PlainButton {
                     objectName: "compareDisk"
-                    text: "Сравнить"
+                    text: qsTr("Сравнить")
                     onClicked: { Editor.compare(); compareSheet.open() }
                 }
                 PlainButton {
                     objectName: "keepMine"
                     kind: "primary"
-                    text: Editor.conflict.reason === "gone" ? "Создать заново" : "Оставить мой"
+                    text: Editor.conflict.reason === "gone" ? qsTr("Создать заново") : qsTr("Оставить мой")
                     onClicked: Editor.keepMine()
                 }
             }
@@ -1384,7 +1383,7 @@ Item {
                 width: Math.min(implicitWidth, parent.width / 2)
                 elide: Text.ElideRight
                 text: Ghost.state !== "" ? Ghost.state
-                      : Ghost.everywhere && Ghost.inProject(Projects.currentId) ? "Дописывание: вкл ▾" : "Дописывание: выкл ▾"
+                      : Ghost.everywhere && Ghost.inProject(Projects.currentId) ? qsTr("Дописывание: вкл ▾") : qsTr("Дописывание: выкл ▾")
                 color: Ghost.paused !== "" ? Theme.p.warn : Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 11
@@ -1395,11 +1394,11 @@ Item {
                 menuWidth: 340
                 wrapNotes: true
                 items: [
-                    { id: "project", name: "Дописывание в этом проекте", icon: "sparkle",
+                    { id: "project", name: qsTr("Дописывание в этом проекте"), icon: "sparkle",
                       selected: Ghost.inProject(Projects.currentId) },
-                    { id: "everywhere", name: "Дописывание везде", icon: "sparkle", selected: Ghost.everywhere }
-                ].concat(Ghost.paused === "not_loaded" ? [{ id: "load", name: "Загрузить модель дописывания", icon: "cpu",
-                         note: "Может выгрузить модель чата из видеокарты, если обе не помещаются рядом" }] : [])
+                    { id: "everywhere", name: qsTr("Дописывание везде"), icon: "sparkle", selected: Ghost.everywhere }
+                ].concat(Ghost.paused === "not_loaded" ? [{ id: "load", name: qsTr("Загрузить модель дописывания"), icon: "cpu",
+                         note: qsTr("Может выгрузить модель чата из видеокарты, если обе не помещаются рядом") }] : [])
                 onChosen: (id) => id === "project" ? Ghost.setInProject(Projects.currentId, !Ghost.inProject(Projects.currentId))
                                  : id === "everywhere" ? Ghost.setEverywhere(!Ghost.everywhere) : Ghost.load()
                 function openAt(item) { anchor = item; open() }
@@ -1439,8 +1438,8 @@ Item {
                     x: 16
                     height: 40
                     verticalAlignment: Text.AlignVCenter
-                    text: Editor.compareView.empty ? "Различий нет: на диске то же, что у вас"
-                          : "Что изменит сохранение: на диске → у вас"
+                    text: Editor.compareView.empty ? qsTr("Различий нет: на диске то же, что у вас")
+                          : qsTr("Что изменит сохранение: на диске → у вас")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -1475,9 +1474,9 @@ Item {
             width: Math.min(420, parent.width - 48)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
-            text: view.file.diffMode ? "Изменений нет: файл совпадает с последним коммитом (или изменения уже в индексе)."
-                  : view.file.missing ? "Файла больше нет на диске." + (view.file.hasDiff ? " Его удаление — во вкладке «Изменения»." : "")
-                  : "Двоичный файл (" + (view.file.sizeText || "") + ") — не показывается."
+            text: view.file.diffMode ? qsTr("Изменений нет: файл совпадает с последним коммитом (или изменения уже в индексе).")
+                  : view.file.missing ? (view.file.hasDiff ? qsTr("Файла больше нет на диске. Его удаление — во вкладке «Изменения».") : qsTr("Файла больше нет на диске."))
+                  : qsTr("Двоичный файл (%1) — не показывается.").arg(view.file.sizeText || "")
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13

@@ -183,7 +183,7 @@ Item {
                 Icon { name: "agent"; size: 30; tint: Theme.p.accent; anchors.horizontalCenter: parent.horizontalCenter }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: "Что сделать агенту?"
+                    text: qsTr("Что сделать агенту?")
                     color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 24
@@ -194,7 +194,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
-                    text: "Напишите задачу в поле внизу — как человеку. Агент составит план, выполнит шаги, проверит себя и напишет отчёт. Под полем — режим, модель, проекты, время запуска и ограничения: нажмите любое, чтобы увидеть, что оно значит."
+                    text: qsTr("Напишите задачу в поле внизу — как человеку. Агент составит план, выполнит шаги, проверит себя и напишет отчёт. Под полем — режим, модель, проекты, время запуска и ограничения: нажмите любое, чтобы увидеть, что оно значит.")
                     color: Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 13
@@ -220,13 +220,13 @@ Item {
                     PlainButton {
                         objectName: "agentMemory"
                         iconName: "layers"
-                        text: "Память агента"
+                        text: qsTr("Память агента")
                         onClicked: App.openUi("memory")
                     }
                     PlainButton {
                         objectName: "agentAccess"
                         iconName: "folder"
-                        text: "Папки и сайты"
+                        text: qsTr("Папки и сайты")
                         onClicked: App.openUi("agent-access")
                     }
                 }
@@ -242,13 +242,13 @@ Item {
                 Said {
                     objectName: "agentTaskGoal"
                     text: view.task.goal || ""
-                    note: view.task.doneWhen ? "Готово, когда: " + view.task.doneWhen : ""
+                    note: view.task.doneWhen ? qsTr("Готово, когда: %1").arg(view.task.doneWhen) : ""
                 }
                 Text {
                     objectName: "agentStatus"
                     width: parent.width
                     wrapMode: Text.Wrap
-                    text: [view.task.statusLabel, view.task.autonomy ? "режим «" + view.task.autonomy + "»" : "", view.task.refusal, view.task.meta]
+                    text: [view.task.statusLabel, view.task.autonomy ? qsTr("режим «%1»").arg(view.task.autonomy) : "", view.task.refusal, view.task.meta]
                           .filter(s => !!s).join(" · ")
                     color: view.task.status === "waiting" ? Theme.p.warn : view.task.status === "error" ? Theme.p.error : Theme.p.faint
                     font.family: Theme.uiFont
@@ -257,9 +257,10 @@ Item {
 
                 // ---------- the plan ----------
                 Told {
-                    title: view.task.planVersion ? "План · версия " + view.task.planVersion + (view.task.progress ? " · сделано " + view.task.progress : "")
-                                                 : (view.task.live ? "Составляю план…" : "Плана нет")
-                    text: view.task.planReason ? "Почему новый план: " + view.task.planReason : ""
+                    title: view.task.planVersion ? (view.task.progress ? qsTr("План · версия %1 · сделано %2").arg(view.task.planVersion).arg(view.task.progress)
+                                                                       : qsTr("План · версия %1").arg(view.task.planVersion))
+                                                 : (view.task.live ? qsTr("Составляю план…") : qsTr("Плана нет"))
+                    text: view.task.planReason ? qsTr("Почему новый план: %1").arg(view.task.planReason) : ""
                     Column {
                         objectName: "agentSteps"
                         width: parent.width
@@ -301,7 +302,7 @@ Item {
                                         visible: modelData.check !== "" && modelData.note === ""
                                         width: parent.width
                                         wrapMode: Text.Wrap
-                                        text: "проверка: " + modelData.check
+                                        text: qsTr("проверка: %1").arg(modelData.check)
                                         color: Theme.p.faint
                                         font.family: Theme.uiFont
                                         font.pixelSize: 12
@@ -333,7 +334,7 @@ Item {
                         Told {
                             id: agentRow
                             visible: modelData.who !== "you"
-                            text: modelData.text + (modelData.expired ? "\n(вопрос снят — ответа не было)" : "")
+                            text: modelData.text + (modelData.expired ? qsTr("\n(вопрос снят — ответа не было)") : "")
                         }
                     }
                 }
@@ -342,7 +343,7 @@ Item {
                     visible: !!(view.task.question && view.task.question.id)
                     framed: true
                     line: Theme.p.warn
-                    title: "Агент спрашивает"
+                    title: qsTr("Агент спрашивает")
                     text: (view.task.question || {}).question || ""
                     Flow {
                         width: parent.width
@@ -366,8 +367,8 @@ Item {
                         width: parent.width
                         wrapMode: Text.Wrap
                         text: ((view.task.question || {}).options || []).length
-                              ? "Выберите ответ или напишите свой в поле внизу — агент ждёт и продолжит после ответа."
-                              : "Ответьте в поле внизу — агент ждёт и продолжит после ответа."
+                              ? qsTr("Выберите ответ или напишите свой в поле внизу — агент ждёт и продолжит после ответа.")
+                              : qsTr("Ответьте в поле внизу — агент ждёт и продолжит после ответа.")
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
@@ -398,19 +399,19 @@ Item {
                     visible: view.editing
                     width: parent.width
                     spacing: 8
-                    Label { text: "Свой план: шаг на строку, «что сделать — как проверить»" }
+                    Label { text: qsTr("Свой план: шаг на строку, «что сделать — как проверить»") }
                     Area { id: planEditor; width: parent.width; height: 140; name: "agentPlanEditor" }
-                    Field { id: planReason; width: parent.width; placeholderText: "Почему (агент прочтёт)" }
+                    Field { id: planReason; width: parent.width; placeholderText: qsTr("Почему (агент прочтёт)") }
                     Row {
                         spacing: 8
                         PlainButton {
                             objectName: "agentPlanSave"
                             kind: "primary"
                             iconName: "check"
-                            text: "Отдать агенту"
+                            text: qsTr("Отдать агенту")
                             onClicked: { Autonomy.editPlan(planEditor.text, planReason.text); view.editing = false }
                         }
-                        PlainButton { text: "Отмена"; onClicked: view.editing = false }
+                        PlainButton { text: qsTr("Отмена"); onClicked: view.editing = false }
                     }
                 }
 
@@ -420,12 +421,12 @@ Item {
                     visible: !!(view.task.report && view.task.report.summary)
                     framed: true
                     line: (view.task.report || {}).goalMet ? Theme.p.ok : Theme.p.hairline_strong
-                    title: "Отчёт · " + ((view.task.report || {}).verdict || "")
+                    title: qsTr("Отчёт · %1").arg((view.task.report || {}).verdict || "")
                     text: (view.task.report || {}).summary || ""
                     Repeater {
-                        model: [{ name: "Сделано", items: (view.task.report || {}).done || [] },
-                                { name: "Не сделано", items: (view.task.report || {}).notDone || [] },
-                                { name: "Файлы", items: (view.task.report || {}).files || [] }]
+                        model: [{ name: qsTr("Сделано"), items: (view.task.report || {}).done || [] },
+                                { name: qsTr("Не сделано"), items: (view.task.report || {}).notDone || [] },
+                                { name: qsTr("Файлы"), items: (view.task.report || {}).files || [] }]
                         delegate: Text {
                             required property var modelData
                             visible: modelData.items.length > 0
@@ -441,7 +442,7 @@ Item {
                         objectName: "agentKeepSkill"
                         visible: !!(view.task.report || {}).goalMet
                         iconName: "check"
-                        text: "Сохранить как навык"
+                        text: qsTr("Сохранить как навык")
                         onClicked: Memory.keepSkill(view.task.id, view.task.goal)
                     }
                 }
@@ -450,7 +451,7 @@ Item {
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.Wrap
-                    text: "Задача закончена. Новую можно написать в поле внизу."
+                    text: qsTr("Задача закончена. Новую можно написать в поле внизу.")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
                     font.pixelSize: 12

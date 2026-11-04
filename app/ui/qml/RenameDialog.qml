@@ -39,7 +39,7 @@ Popup {
     contentItem: Column {
         spacing: 14
         Text {
-            text: "Переименовать чат"
+            text: qsTr("Переименовать чат")
             color: Theme.p.text
             font.family: Theme.uiFont
             font.pixelSize: 16
@@ -53,8 +53,8 @@ Popup {
         Row {
             anchors.right: parent.right
             spacing: 8
-            PlainButton { text: "Отмена"; onClicked: dialog.close() }
-            PlainButton { kind: "primary"; text: "Сохранить"; enabled: title.text.trim() !== ""; onClicked: dialog.save() }
+            PlainButton { text: qsTr("Отмена"); onClicked: dialog.close() }
+            PlainButton { kind: "primary"; text: qsTr("Сохранить"); enabled: title.text.trim() !== ""; onClicked: dialog.save() }
         }
     }
 }

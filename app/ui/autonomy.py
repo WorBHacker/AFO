@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
+from common.i18n import N_, tr
 from common.plain_errors import explain
 
 from .. import presenter
@@ -26,39 +27,43 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 # the modes, as the person reads them: who decides what (named so «Сам» can no longer read as "I do it myself")
-AUTONOMY = [("free", "Авто", "Работает сам: план не утверждается, в разрешённых программах действует без вопросов. "
-                             "Спрашивает только о рискованном — отправка сообщений, запись в проекты, команды, сеть."),
-            ("plan", "Сначала план", "Покажет план — вы его утверждаете. Дальше работает сам; первое действие в "
-                                     "каждой программе спросит один раз."),
-            ("each_step", "Каждый шаг", "Утверждаете план и каждый шаг перед его началом. Медленнее всего, но всё "
-                                        "под вашим контролем.")]  # fmt: skip
-LIMITS = [("done_when", "Готово, когда", "По этому агент проверит себя в конце, например «все тесты проходят». "
-                                        "Можно оставить пустым — тогда он сверится с самой целью."),
-          ("max_steps", "Шагов, не больше", "Сколько действий агент может сделать, прежде чем остановится."),
-          ("max_minutes", "Минут, не больше", "Сколько времени задача может идти."),
-          ("budget_usd", "Бюджет, $", "Сколько можно потратить на платные модели; локальные — бесплатно."),
-          ("max_replans", "Новых планов", "Сколько раз агент может переделать план, если пошло не так.")]  # fmt: skip
-STATUSES = {"queued": "в очереди", "running": "идёт", "waiting": "ждёт вас", "done": "готово", "error": "ошибка",
-            "cancelled": "остановлено", "paused": "пауза"}  # fmt: skip
-STEP_STATES = {"pending": ("ждёт", "dots"), "running": ("идёт", "refresh"), "done": ("готово", "check"),
-               "failed": ("не вышло", "close"), "skipped": ("пропущен", "back")}  # fmt: skip
+AUTONOMY = [("free", N_("Авто"), N_("Работает сам: план не утверждается, в разрешённых программах действует без "
+                                     "вопросов. Спрашивает только о рискованном — отправка сообщений, запись в "
+                                     "проекты, команды, сеть.")),
+            ("plan", N_("Сначала план"), N_("Покажет план — вы его утверждаете. Дальше работает сам; первое действие "
+                                            "в каждой программе спросит один раз.")),
+            ("each_step", N_("Каждый шаг"), N_("Утверждаете план и каждый шаг перед его началом. Медленнее всего, но "
+                                               "всё под вашим контролем."))]  # fmt: skip
+LIMITS = [("done_when", N_("Готово, когда"), N_("По этому агент проверит себя в конце, например «все тесты "
+                                                "проходят». Можно оставить пустым — тогда он сверится с самой целью.")),
+          ("max_steps", N_("Шагов, не больше"), N_("Сколько действий агент может сделать, прежде чем остановится.")),
+          ("max_minutes", N_("Минут, не больше"), N_("Сколько времени задача может идти.")),
+          ("budget_usd", N_("Бюджет, $"), N_("Сколько можно потратить на платные модели; локальные — бесплатно.")),
+          ("max_replans", N_("Новых планов"),
+           N_("Сколько раз агент может переделать план, если пошло не так."))]  # fmt: skip
+STATUSES = {"queued": N_("в очереди"), "running": N_("идёт"), "waiting": N_("ждёт вас"), "done": N_("готово"),
+            "error": N_("ошибка"), "cancelled": N_("остановлено"), "paused": N_("пауза")}  # fmt: skip
+STEP_STATES = {"pending": (N_("ждёт"), "dots"), "running": (N_("идёт"), "refresh"), "done": (N_("готово"), "check"),
+               "failed": (N_("не вышло"), "close"), "skipped": (N_("пропущен"), "back")}  # fmt: skip
+# the templates' goals are the person's words once chosen: in the window's language, as they would write them
 TEMPLATES = [
-    ("research", "Исследование в сети", "Найди в сети, что известно о …: сравни несколько источников и напиши отчёт",
-     "отчёт со ссылками на источники, разногласия источников отмечены"),
-    ("tests", "Починить тесты", "Запусти тесты проекта, найди причины падений и исправь их",
-     "все тесты проходят; что исправлено — перечислено"),
-    ("data", "Данные в таблицу", "Собери … из файлов папки … в CSV-таблицу",
-     "таблица создана, несколько строк сверены с исходными файлами"),
-    ("review", "Проверка изменений", "Прочитай изменения в проекте (git diff) и напиши, что стоит поправить",
-     "список замечаний с файлами и строками"),
-    ("docs", "Порядок в документации", "Сверь README проекта с кодом и поправь устаревшее",
-     "README соответствует коду; изменения перечислены"),
+    ("research", N_("Исследование в сети"),
+     N_("Найди в сети, что известно о …: сравни несколько источников и напиши отчёт"),
+     N_("отчёт со ссылками на источники, разногласия источников отмечены")),
+    ("tests", N_("Починить тесты"), N_("Запусти тесты проекта, найди причины падений и исправь их"),
+     N_("все тесты проходят; что исправлено — перечислено")),
+    ("data", N_("Данные в таблицу"), N_("Собери … из файлов папки … в CSV-таблицу"),
+     N_("таблица создана, несколько строк сверены с исходными файлами")),
+    ("review", N_("Проверка изменений"), N_("Прочитай изменения в проекте (git diff) и напиши, что стоит поправить"),
+     N_("список замечаний с файлами и строками")),
+    ("docs", N_("Порядок в документации"), N_("Сверь README проекта с кодом и поправь устаревшее"),
+     N_("README соответствует коду; изменения перечислены")),
 ]  # fmt: skip
 LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
                          "max_replans": "3", "network": False, "refusal_vector": ""}  # fmt: skip
-REFUSAL_SAID = {1: "снятие отказов вкл", 0: "снятие отказов выкл"}
+REFUSAL_SAID = {1: N_("снятие отказов вкл"), 0: N_("снятие отказов выкл")}
 
 
 def utc_now() -> str:
@@ -76,8 +81,8 @@ def task_rows(runs: list[dict[str, Any]], selected: str, paused: set[str]) -> li
             run["status"]  # fmt: skip
         live = run["status"] in ("queued", "running")
         out.append({"id": run["id"], "title": run.get("goal") or run.get("task", ""), "status": status,
-                    "statusLabel": STATUSES.get(status, status), "live": live, "waiting": status == "waiting",
-                    "section": "Идут" if live else "Готовы", "selected": run["id"] == selected,
+                    "statusLabel": tr(STATUSES.get(status, status)), "live": live, "waiting": status == "waiting",
+                    "section": tr("Идут") if live else tr("Готовы"), "selected": run["id"] == selected,
                     "goalMet": bool((run.get("report") or {}).get("goal_met"))})  # fmt: skip
     out.sort(key=lambda r: (not r["live"],))  # stable: newest first within each, as the hub lists them
     return out
@@ -87,9 +92,9 @@ def step_rows(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
     rows = []
     for step in (plan or {}).get("steps") or []:
         label, icon = STEP_STATES.get(step["status"], (step["status"], "dots"))
-        tries = f" · попыток {step['attempts']}" if step.get("attempts") else ""
+        tries = tr(" · попыток {count}", count=step["attempts"]) if step.get("attempts") else ""
         rows.append({"n": step["n"], "title": step["title"], "check": step.get("check") or "", "status": step["status"],
-                     "label": label + tries, "icon": icon, "note": step.get("note") or ""})  # fmt: skip
+                     "label": tr(label) + tries, "icon": icon, "note": step.get("note") or ""})  # fmt: skip
     return rows
 
 
@@ -114,7 +119,7 @@ def report_rows(report: dict[str, Any] | None) -> dict[str, Any]:
     if not report:
         return {}
     return {"summary": report.get("summary", ""), "goalMet": bool(report.get("goal_met")),
-            "verdict": "Цель достигнута" if report.get("goal_met") else "Цель не достигнута",
+            "verdict": tr("Цель достигнута") if report.get("goal_met") else tr("Цель не достигнута"),
             "done": report.get("done") or [], "notDone": report.get("not_done") or [],
             "files": report.get("files") or []}  # fmt: skip
 
@@ -123,25 +128,25 @@ def goal_body(draft: dict[str, Any]) -> dict[str, Any]:
     """The form as the hub's request; a field that is not a number says so (ValueError)."""
     goal = draft["goal"].strip()
     if not goal:
-        raise ValueError("Напишите цель: что агент должен сделать")
+        raise ValueError(tr("Напишите цель: что агент должен сделать"))
     if not draft["model_id"]:
-        raise ValueError("Выберите модель, которая будет работать")
+        raise ValueError(tr("Выберите модель, которая будет работать"))
 
     def whole(key: str, label: str) -> int:
         try:
             return int(str(draft[key]).strip())
         except ValueError:
-            raise ValueError(f"{label}: нужно целое число") from None
+            raise ValueError(tr("{label}: нужно целое число", label=label)) from None
 
     budget_text = str(draft["budget_usd"]).strip().replace(",", ".")
     try:
         budget = float(budget_text) if budget_text else None
     except ValueError:
-        raise ValueError("Бюджет: нужно число долларов") from None
+        raise ValueError(tr("Бюджет: нужно число долларов")) from None
     return {"goal": goal, "done_when": draft["done_when"].strip(), "model_id": draft["model_id"],
             "planner_model_id": draft["planner_model_id"] or None, "project_ids": list(draft["project_ids"]),
-            "autonomy": draft["autonomy"], "max_steps": whole("max_steps", "Шагов"),
-            "max_minutes": whole("max_minutes", "Минут"), "max_replans": whole("max_replans", "Новых планов"),
+            "autonomy": draft["autonomy"], "max_steps": whole("max_steps", tr("Шагов")),
+            "max_minutes": whole("max_minutes", tr("Минут")), "max_replans": whole("max_replans", tr("Новых планов")),
             "budget_usd": budget, "network": bool(draft.get("network")),
             "refusal_vector": {"on": True, "off": False}.get(draft.get("refusal_vector") or "")}  # fmt: skip
 
@@ -198,17 +203,18 @@ class AutonomyView(QObject):
         done = sum(1 for s in steps if s["status"] in ("done", "skipped"))
         return {
             "id": self._selected, "goal": detail.get("goal") or run.get("goal") or "",
-            "doneWhen": detail.get("done_when") or "", "status": status, "statusLabel": STATUSES.get(status, status),
+            "doneWhen": detail.get("done_when") or "", "status": status,
+            "statusLabel": tr(STATUSES.get(status, status)),
             "live": run.get("status") in ("queued", "running"), "paused": bool(detail.get("paused")),
-            "autonomy": dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", ""),  # the mode
-            "refusal": REFUSAL_SAID.get(detail.get("refusal_vector"), ""),  # the task's own choice
+            "autonomy": tr(dict((a, n) for a, n, _h in AUTONOMY).get(detail.get("autonomy") or "", "")),  # the mode
+            "refusal": tr(REFUSAL_SAID.get(detail.get("refusal_vector"), "")),  # the task's own choice
             "level": detail.get("autonomy") or "",
             "model": model, "detail": run.get("detail") or "",
             "detailPlain": " — ".join(explain(run.get("detail") or "") or ()),  # the usual errors in plain words
-            "meta": " · ".join(p for p in (model, f"шагов {run['steps']}" if run.get("steps") else "",  # at its end
+            "meta": " · ".join(p for p in (model, tr("шагов {steps}", steps=run["steps"]) if run.get("steps") else "",
                                            presenter.money(run["cost_usd"]) if run.get("cost_usd") else "",
-                                           local_time(run.get("created_at", ""))) if p),
-            "steps": steps, "progress": f"{done} из {len(steps)}" if steps else "",
+                                           local_time(run.get("created_at", ""))) if p),  # at its end
+            "steps": steps, "progress": tr("{done} из {total}", done=done, total=len(steps)) if steps else "",
             "planVersion": plan["version"] if plan else 0, "planReason": (plan or {}).get("reason") or "",
             "planApproved": (plan or {}).get("approved") or "", "planText": plan_text(plan),
             "question": question or {}, "report": report_rows(detail.get("report")),
@@ -219,9 +225,10 @@ class AutonomyView(QObject):
         models = self.app.models
         d = self._draft
         names = {p["id"]: p["name"] for p in self.app.projects.items}
-        return {**d, "modelName": model_name(models, d["model_id"]) if d["model_id"] else "выберите модель",
+        return {**d, "modelName": model_name(models, d["model_id"]) if d["model_id"] else tr("выберите модель"),
                 "plannerName": model_name(models, d["planner_model_id"]) if d["planner_model_id"]
-                else "та же модель", "projectNames": ", ".join(names.get(p, p) for p in d["project_ids"])}  # fmt: skip
+                else tr("та же модель"),
+                "projectNames": ", ".join(names.get(p, p) for p in d["project_ids"])}  # fmt: skip
 
     @Property(str, notify=changed)
     def error(self) -> str:
@@ -229,7 +236,7 @@ class AutonomyView(QObject):
 
     @Property(list, constant=True)
     def autonomyOptions(self) -> list:
-        return [{"id": a, "name": n, "hint": h} for a, n, h in AUTONOMY]
+        return [{"id": a, "name": tr(n), "hint": tr(h)} for a, n, h in AUTONOMY]
 
     # ---------- the input at the bottom, as in a chat ----------
 
@@ -249,17 +256,17 @@ class AutonomyView(QObject):
     def modes(self) -> list:
         """The mode chip's menu: each mode with what it means."""
         current = self._mode()
-        return [{"section": "Режим — кто что решает", "id": ""}] + [
-            {"id": a, "name": n, "note": h, "icon": "shield", "selected": a == current} for a, n, h in AUTONOMY
+        return [{"section": tr("Режим — кто что решает"), "id": ""}] + [
+            {"id": a, "name": tr(n), "note": tr(h), "icon": "shield", "selected": a == current} for a, n, h in AUTONOMY
         ]
 
     @Property(str, notify=changed)
     def modeName(self) -> str:
-        return dict((a, n) for a, n, _h in AUTONOMY).get(self._mode(), "")
+        return tr(dict((a, n) for a, n, _h in AUTONOMY).get(self._mode(), ""))
 
     @Property(str, notify=changed)
     def modeHint(self) -> str:
-        return dict((a, h) for a, _n, h in AUTONOMY).get(self._mode(), "")
+        return tr(dict((a, h) for a, _n, h in AUTONOMY).get(self._mode(), ""))
 
     @Property(list, notify=changed)
     def projectItems(self) -> list:
@@ -267,12 +274,9 @@ class AutonomyView(QObject):
         chosen = set(self._draft["project_ids"])
         rows = [{"id": p["id"], "name": p["name"], "icon": "folder", "selected": p["id"] in chosen}
                 for p in self.app.projects.items]  # fmt: skip
-        return [{"section": "Проекты — агент видит и меняет только их", "id": ""}] + (
-            rows
-            or [
-                {"id": "", "name": "Проектов нет", "note": "агент будет работать без файлов проектов", "enabled": False}
-            ]
-        )
+        nothing = {"id": "", "name": tr("Проектов нет"), "note": tr("агент будет работать без файлов проектов"),
+                   "enabled": False}  # fmt: skip
+        return [{"section": tr("Проекты — агент видит и меняет только их"), "id": ""}] + (rows or [nothing])
 
     @Property(list, notify=changed)
     def thread(self) -> list:
@@ -305,7 +309,7 @@ class AutonomyView(QObject):
     @Property(list, notify=changed)
     def refusalItems(self) -> list:
         return refusal_items(self.app.models, self._draft["model_id"], self._draft.get("refusal_vector") or "",
-                             "этой задачи")  # fmt: skip
+                             tr("этой задачи"))  # fmt: skip
 
     @Slot(str)
     def chooseRefusal(self, choice: str) -> None:
@@ -313,12 +317,12 @@ class AutonomyView(QObject):
 
     @Property(list, constant=True)
     def limitFields(self) -> list:
-        return [{"id": k, "name": n, "hint": h} for k, n, h in LIMITS]
+        return [{"id": k, "name": tr(n), "hint": tr(h)} for k, n, h in LIMITS]
 
     @Property(str, notify=changed)
     def limitsText(self) -> str:
         d = self._draft
-        parts = [f"{d['max_steps']} шагов", f"{d['max_minutes']} мин"]
+        parts = [tr("{steps} шагов", steps=d["max_steps"]), tr("{minutes} мин", minutes=d["max_minutes"])]
         if str(d.get("budget_usd") or "").strip():
             parts.append(f"${d['budget_usd']}")
         return " · ".join(parts)
@@ -327,15 +331,15 @@ class AutonomyView(QObject):
     def projectsText(self) -> str:
         names = {p["id"]: p["name"] for p in self.app.projects.items}
         chosen = [names.get(p, p) for p in self._draft["project_ids"]]
-        return ", ".join(chosen) if chosen else "Без проектов"
+        return ", ".join(chosen) if chosen else tr("Без проектов")
 
     @Property(str, notify=changed)
     def placeholder(self) -> str:
         if not self._running():
-            return "Что сделать агенту? Опишите, как человеку.  Enter — начать, Shift+Enter — новая строка"
+            return tr("Что сделать агенту? Опишите, как человеку.  Enter — начать, Shift+Enter — новая строка")
         if any(q["status"] == "pending" for q in self._detail.get("questions") or []):
-            return "Ответ на вопрос агента…  Enter — отправить"
-        return "Написать агенту по ходу работы: уточнение, ограничение — он учтёт со следующего шага"
+            return tr("Ответ на вопрос агента…  Enter — отправить")
+        return tr("Написать агенту по ходу работы: уточнение, ограничение — он учтёт со следующего шага")
 
     @Slot(str)
     def chooseMode(self, autonomy: str) -> None:
@@ -371,19 +375,19 @@ class AutonomyView(QObject):
 
         def done(result: dict[str, Any]) -> None:
             if result.get("answered"):
-                self.app.flash("Ответ передан агенту")
+                self.app.flash(tr("Ответ передан агенту"))
             else:  # the hub keeps it for the agent only: the thread here remembers it
                 self._said.setdefault(run_id, []).append((utc_now(), text))
-                self.app.flash("Агент прочтёт это перед следующим шагом")
+                self.app.flash(tr("Агент прочтёт это перед следующим шагом"))
             self._load_detail()
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.message_run(run_id, text), done,
-                              lambda e: self.app.show_error(f"Не передано: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не передано: {error}", error=e)))  # fmt: skip
 
     @Property(list, constant=True)
     def templates(self) -> list:
-        return [{"id": t[0], "name": t[1]} for t in TEMPLATES]
+        return [{"id": t[0], "name": tr(t[1])} for t in TEMPLATES]
 
     @Property(list, notify=changed)
     def modelChoices(self) -> list:
@@ -424,11 +428,11 @@ class AutonomyView(QObject):
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         run_id = payload.get("run_id") or (payload.get("run") or {}).get("id") or ""
         if kind == "run.question":  # a task's (a chat's question is the chat's: controller.py)
-            self.app.flash("Агент спрашивает — ответ в режиме «Агент»", ms=10000)
-            self.asked.emit("Агент спрашивает", str(payload.get("question", ""))[:200])
+            self.app.flash(tr("Агент спрашивает — ответ в режиме «Агент»"), ms=10000)
+            self.asked.emit(tr("Агент спрашивает"), str(payload.get("question", ""))[:200])
         if kind == "run.notice":  # the agent tells the user something (9.4)
-            self.app.flash(f"Агент: {payload.get('text', '')}", ms=12000)
-            self.asked.emit("Агент сообщает", str(payload.get("text", ""))[:200])
+            self.app.flash(tr("Агент: {text}", text=payload.get("text", "")), ms=12000)
+            self.asked.emit(tr("Агент сообщает"), str(payload.get("text", ""))[:200])
         if kind in ("run.paused", "run.resumed"):
             (self._paused.add if kind == "run.paused" else self._paused.discard)(run_id)
         if kind.startswith("run.") and run_id and run_id == self._selected and kind != "run.status":
@@ -483,12 +487,15 @@ class AutonomyView(QObject):
             return
 
         def done(result: dict[str, Any]) -> None:
-            name = dict((a, n) for a, n, _h in AUTONOMY).get(autonomy, autonomy)
-            self.app.flash(f"Режим: «{name}»" + (" — ждавший вопрос разрешён" if result.get("answered") else ""))
+            name = tr(dict((a, n) for a, n, _h in AUTONOMY).get(autonomy, autonomy))
+            if result.get("answered"):
+                self.app.flash(tr("Режим: «{name}» — ждавший вопрос разрешён", name=name))
+            else:
+                self.app.flash(tr("Режим: «{name}»", name=name))
             self._load_detail()
 
         self.app.call_or_fail(lambda: self.app.client.set_autonomy(run_id, autonomy), done,
-                              lambda e: self.app.show_error(f"Не изменено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не изменено: {error}", error=e)))  # fmt: skip
 
     @Slot(str, bool)
     def setFlag(self, name: str, value: bool) -> None:
@@ -516,7 +523,7 @@ class AutonomyView(QObject):
 
     def _save_access(self, **changes: Any) -> None:
         self.app.call_or_fail(lambda: self.app.client.set_agent_access(**changes), self._show_access,
-                              lambda e: self.app.show_error(f"Не сохранено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не сохранено: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def addFolder(self, url: str) -> None:
@@ -549,7 +556,7 @@ class AutonomyView(QObject):
     def setDomains(self, text: str) -> None:
         hosts = [h for h in text.replace(",", " ").split() if h]
         self._save_access(domains=hosts)
-        self.app.flash("Список сайтов сохранён")
+        self.app.flash(tr("Список сайтов сохранён"))
 
     @Slot()
     def resetDomains(self) -> None:
@@ -566,7 +573,7 @@ class AutonomyView(QObject):
     def applyTemplate(self, template: str) -> None:
         found = next((t for t in TEMPLATES if t[0] == template), None)
         if found:
-            self._draft = {**self._draft, "goal": found[2], "done_when": found[3]}
+            self._draft = {**self._draft, "goal": tr(found[2]), "done_when": tr(found[3])}
             self.changed.emit()
 
     @Slot()
@@ -579,14 +586,14 @@ class AutonomyView(QObject):
             return
 
         def done(run: dict[str, Any]) -> None:
-            self.app.flash("Задача отдана агенту")
+            self.app.flash(tr("Задача отдана агенту"))
             self._runs = [run, *self._runs]
             self.select(run["id"])
             self.load()
             self.app.load_conversations()
 
         def failed(error: Exception) -> None:
-            self._error = f"Не началось: {error}"
+            self._error = tr("Не началось: {error}", error=error)
             self.changed.emit()
             self.goalBack.emit(body["goal"])
 
@@ -596,22 +603,22 @@ class AutonomyView(QObject):
 
     @Slot()
     def pause(self) -> None:
-        self._act(lambda rid: self.app.client.pause_run(rid), "Пауза: агент остановится перед следующим шагом")
+        self._act(lambda rid: self.app.client.pause_run(rid), tr("Пауза: агент остановится перед следующим шагом"))
 
     @Slot()
     def resume(self) -> None:
-        self._act(lambda rid: self.app.client.resume_run(rid), "Агент продолжает")
+        self._act(lambda rid: self.app.client.resume_run(rid), tr("Агент продолжает"))
 
     @Slot()
     def stop(self) -> None:
-        self._act(lambda rid: self.app.client.cancel_run(rid), "Агент остановлен")
+        self._act(lambda rid: self.app.client.cancel_run(rid), tr("Агент остановлен"))
 
     def _act(self, call, said: str) -> None:
         run_id = self._selected
         if not run_id:
             return
         self.app.call_or_fail(lambda: call(run_id), lambda _r: (self.app.flash(said), self.load()),
-                              lambda e: self.app.show_error(f"Не вышло: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
 
     @Slot(str, str)
     def answer(self, question_id: str, text: str) -> None:
@@ -620,19 +627,19 @@ class AutonomyView(QObject):
             return
         self.app.call_or_fail(lambda: self.app.client.answer_question(run_id, question_id, text.strip()),
                               lambda _r: self.load(),
-                              lambda e: self.app.show_error(f"Ответ не принят: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Ответ не принят: {error}", error=e)))  # fmt: skip
 
     @Slot(str, str)
     def editPlan(self, text: str, reason: str) -> None:
         run_id = self._selected
         steps = steps_from_text(text)
         if not steps or not run_id:
-            self.app.show_error("В плане нет ни одного шага")
+            self.app.show_error(tr("В плане нет ни одного шага"))
             return
         self.app.call_or_fail(lambda: self.app.client.edit_run_plan(run_id, steps, reason.strip()),
-                              lambda _r: (self.app.flash("План изменён — агент узнает перед следующим шагом"),
+                              lambda _r: (self.app.flash(tr("План изменён — агент узнает перед следующим шагом")),
                                           self._load_detail()),
-                              lambda e: self.app.show_error(f"План не изменён: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("План не изменён: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def openLog(self) -> None:

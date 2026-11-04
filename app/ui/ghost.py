@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QTextCursor
 
+from common.i18n import tr
+
 if TYPE_CHECKING:
     from .controller import Controller
     from .editor import EditorView
@@ -171,7 +173,7 @@ class Ghost(QObject):
     def load(self) -> None:
         """«Загрузить модель»: the person's word - a local model not loaded may be loaded now (the chat's may go)."""
         self._load = True
-        self._state, self._paused = "Дописывание: модель загружается…", ""
+        self._state, self._paused = tr("Дописывание: модель загружается…"), ""
         self.changed.emit()
         self._ask()
 

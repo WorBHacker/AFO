@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, tr
+
 if TYPE_CHECKING:
     from .controller import Controller
 
-MARKS = {True: ("ok", "в порядке"), None: ("warn", "стоит взглянуть"), False: ("error", "не работает")}
+MARKS = {True: ("ok", N_("в порядке")), None: ("warn", N_("стоит взглянуть")), False: ("error", N_("не работает"))}
 
 
 def check_rows(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -19,7 +21,7 @@ def check_rows(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for line in lines:
         tone, word = MARKS.get(line.get("ok"), ("", ""))
         out.append({"id": line["id"], "title": line["title"], "text": line.get("text", ""),
-                    "advice": line.get("advice", ""), "tone": tone, "mark": word})  # fmt: skip
+                    "advice": line.get("advice", ""), "tone": tone, "mark": tr(word) if word else ""})  # fmt: skip
     return out
 
 
@@ -29,12 +31,12 @@ def summary(lines: list[dict[str, Any]]) -> str:
     if not lines:
         return ""
     if not bad and not warn:
-        return "Всё в порядке"
+        return tr("Всё в порядке")
     parts = []
     if bad:
-        parts.append(f"не работает: {bad}")
+        parts.append(tr("не работает: {count}", count=bad))
     if warn:
-        parts.append(f"стоит взглянуть: {warn}")
+        parts.append(tr("стоит взглянуть: {count}", count=warn))
     return ", ".join(parts).capitalize()
 
 
@@ -54,7 +56,7 @@ class CheckView(QObject):
 
     @Property(str, notify=changed)
     def summary(self) -> str:
-        return "Проверяю…" if self._busy and not self._lines else summary(self._lines)
+        return tr("Проверяю…") if self._busy and not self._lines else summary(self._lines)
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
@@ -77,8 +79,8 @@ class CheckView(QObject):
 
         def failed(error: Exception) -> None:
             self._busy = False
-            advice = "Хаб не ответил: закройте окно и откройте снова — оно запустит хаб."
-            self._lines = [{"id": "hub", "title": "Хаб", "ok": False, "text": str(error), "advice": advice}]
+            advice = tr("Хаб не ответил: закройте окно и откройте снова — оно запустит хаб.")
+            self._lines = [{"id": "hub", "title": tr("Хаб"), "ok": False, "text": str(error), "advice": advice}]
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.support_check(), done, failed)
@@ -93,12 +95,12 @@ class CheckView(QObject):
         def done(data: dict[str, Any]) -> None:
             self._busy, self._lines, self._report = False, data.get("lines") or self._lines, data.get("path", "")
             self.changed.emit()
-            self.app.flash(f"Журналы собраны: {self._report}")
+            self.app.flash(tr("Журналы собраны: {path}", path=self._report))
             self.app.openFolder(data.get("folder", ""))
 
         def failed(error: Exception) -> None:
             self._busy = False
             self.changed.emit()
-            self.app.show_error(f"Журналы не собраны: {error}")
+            self.app.show_error(tr("Журналы не собраны: {error}", error=error))
 
         self.app.call_or_fail(lambda: self.app.client.support_report(), done, failed)

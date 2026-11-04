@@ -5,7 +5,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "budgetsSheet"
-    title: "Бюджеты"
+    title: qsTr("Бюджеты")
     iconName: "wallet"
 
     property bool saving: false
@@ -41,8 +41,7 @@ Sheet {
 
     Text {
         width: parent.width
-        text: "Считаются только платные модели — локальные бесплатны. Порог даёт уведомление; после лимита платный "
-              + "запрос уходит только с вашего подтверждения или не уходит вовсе."
+        text: qsTr("Считаются только платные модели — локальные бесплатны. Порог даёт уведомление; после лимита платный запрос уходит только с вашего подтверждения или не уходит вовсе.")
         wrapMode: Text.Wrap
         color: Theme.p.muted
         font.family: Theme.uiFont
@@ -105,14 +104,14 @@ Sheet {
                             Text {
                                 id: badge
                                 anchors.centerIn: parent
-                                text: card.modelData.state === "hard" ? "лимит исчерпан" : "порог пройден"
+                                text: card.modelData.state === "hard" ? qsTr("лимит исчерпан") : qsTr("порог пройден")
                                 color: card.modelData.state === "hard" ? Theme.p.error : Theme.p.warn
                                 font.family: Theme.uiFont
                                 font.pixelSize: 11
                             }
                         }
-                        IconButton { iconName: "edit"; tip: "Изменить"; onClicked: sheet.edit(card.modelData) }
-                        IconButton { iconName: "trash"; tip: "Удалить"; onClicked: App.deleteBudget(card.modelData.id) }
+                        IconButton { iconName: "edit"; tip: qsTr("Изменить"); onClicked: sheet.edit(card.modelData) }
+                        IconButton { iconName: "trash"; tip: qsTr("Удалить"); onClicked: App.deleteBudget(card.modelData.id) }
                     }
                 }
                 Row {
@@ -167,7 +166,7 @@ Sheet {
         visible: App.budgetItems.length === 0 && !form.visible
         width: parent.width
         topPadding: 8
-        text: "Бюджетов пока нет — платные модели ничем не ограничены."
+        text: qsTr("Бюджетов пока нет — платные модели ничем не ограничены.")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -177,7 +176,7 @@ Sheet {
         visible: !form.visible
         width: parent.width
         iconName: "plus"
-        text: "Добавить бюджет"
+        text: qsTr("Добавить бюджет")
         onClicked: sheet.startNew()
     }
 
@@ -199,15 +198,15 @@ Sheet {
             width: parent.width - 32
             spacing: 8
             Text {
-                text: form.budgetId >= 0 ? "Изменить бюджет" : "Новый бюджет"
+                text: form.budgetId >= 0 ? qsTr("Изменить бюджет") : qsTr("Новый бюджет")
                 color: Theme.p.text
                 font.family: Theme.uiFont
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
             }
-            SectionTitle { text: "Для чего" }
+            SectionTitle { text: qsTr("Для чего") }
             Segmented { id: scopes; width: parent.width; options: App.budgetScopes }
-            SectionTitle { text: "Период" }
+            SectionTitle { text: qsTr("Период") }
             Segmented { id: periods; width: parent.width; options: App.budgetPeriods }
             Row {
                 width: parent.width
@@ -215,17 +214,17 @@ Sheet {
                 Column {
                     width: (parent.width - 12) / 2
                     spacing: 6
-                    SectionTitle { text: "Предупредить с, $" }
-                    Field { id: soft; width: parent.width; placeholderText: "нет"; validator: DoubleValidator { bottom: 0 } }
+                    SectionTitle { text: qsTr("Предупредить с, $") }
+                    Field { id: soft; width: parent.width; placeholderText: qsTr("нет", "no limit"); validator: DoubleValidator { bottom: 0 } }
                 }
                 Column {
                     width: (parent.width - 12) / 2
                     spacing: 6
-                    SectionTitle { text: "Лимит, $" }
-                    Field { id: hard; width: parent.width; placeholderText: "нет"; validator: DoubleValidator { bottom: 0 } }
+                    SectionTitle { text: qsTr("Лимит, $") }
+                    Field { id: hard; width: parent.width; placeholderText: qsTr("нет", "no limit"); validator: DoubleValidator { bottom: 0 } }
                 }
             }
-            SectionTitle { text: "После лимита"; visible: hard.text !== "" }
+            SectionTitle { text: qsTr("После лимита"); visible: hard.text !== "" }
             Segmented { id: actions; width: parent.width; options: App.budgetActions; visible: hard.text !== "" }
             Text {
                 visible: form.error !== ""
@@ -239,10 +238,10 @@ Sheet {
             Row {
                 topPadding: 6
                 spacing: 8
-                PlainButton { text: "Отмена"; onClicked: form.visible = false }
+                PlainButton { text: qsTr("Отмена"); onClicked: form.visible = false }
                 PlainButton {
                     kind: "primary"
-                    text: "Сохранить"
+                    text: qsTr("Сохранить")
                     enabled: soft.text !== "" || hard.text !== ""
                     onClicked: {
                         sheet.saving = true
@@ -255,7 +254,7 @@ Sheet {
     }
 
     // what the hub saw of each model in 30 days (D11): speed, errors, money, agent tasks
-    SectionTitle { visible: App.statsRows.length > 0; text: "Модели за 30 дней" }
+    SectionTitle { visible: App.statsRows.length > 0; text: qsTr("Модели за 30 дней") }
     Column {
         objectName: "modelStats"
         width: parent.width

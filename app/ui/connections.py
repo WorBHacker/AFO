@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
+from common.i18n import tr
 from hub.connections import MIN_PASSWORD
 
 if TYPE_CHECKING:
@@ -27,13 +28,13 @@ def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> l
     out = []
     for c in data.get("connections", []):
         if c["kind"] == "address":
-            status = c.get("value") or "не задан"
+            status = c.get("value") or tr("не задан")
         elif c["set"]:
-            status = "задан" + (f" · …{c['tail']}" if c.get("tail") else "")
+            status = tr("задан") + (f" · …{c['tail']}" if c.get("tail") else "")
             if c.get("choose"):
-                status += f" · моделей в списке: {c.get('chosen', 0)}"
+                status += " · " + tr("моделей в списке: {count}", count=c.get("chosen", 0))
         else:
-            status = "не задан"
+            status = tr("не задан")
         note = notes.get(c["name"], {})
         out.append({
             "name": c["name"],
@@ -60,9 +61,9 @@ def choice_rows(models: list[dict[str, Any]], picked: set[str], query: str) -> t
     found.sort(key=lambda m: (m["id"] not in picked, m.get("name", m["id"]).casefold()))
     rows = []
     for m in found[:SHOWN_CHOICES]:
-        note = f"${m.get('input', 0):g} / ${m.get('output', 0):g} за 1M"
+        note = tr("${input:g} / ${output:g} за 1M", input=m.get("input", 0), output=m.get("output", 0))
         if m.get("context"):
-            note += f" · контекст {int(m['context']) // 1000}K"
+            note += " · " + tr("контекст {size}K", size=int(m["context"]) // 1000)
         rows.append({"id": m["id"], "name": m.get("name") or m["id"], "note": f"{m['id']} · {note}",
                      "picked": m["id"] in picked})  # fmt: skip
     return rows, len(found)
@@ -132,10 +133,12 @@ class Connections(QObject):
     @Property(str, notify=changed)
     def choicesNote(self) -> str:
         if not self._choices:
-            return "Загружаю список моделей…" if self._busy else ""
+            return tr("Загружаю список моделей…") if self._busy else ""
         shown, total = choice_rows(self._choices, self._picked, self._query)
-        head = f"Выбрано: {len(self._picked)} · найдено: {total}"
-        return head + (f" (показаны первые {len(shown)} — уточните поиск)" if total > len(shown) else "")
+        head = tr("Выбрано: {picked} · найдено: {found}", picked=len(self._picked), found=total)
+        if total > len(shown):
+            return head + tr(" (показаны первые {count} — уточните поиск)", count=len(shown))
+        return head
 
     @Property(int, notify=changed)
     def pickedCount(self) -> int:
@@ -173,7 +176,10 @@ class Connections(QObject):
         name, ticket, ids = self._choosing, self._ticket, sorted(self._picked)
 
         def saved(result: dict[str, Any]) -> None:
-            self._notes[name] = {"ok": True, "text": f"В списке моделей: {len(result.get('chosen', []))}"}
+            self._notes[name] = {
+                "ok": True,
+                "text": tr("В списке моделей: {count}", count=len(result.get("chosen", []))),
+            }
             self.closeModels()
             self.load()
             self.app.load_models()
@@ -199,7 +205,7 @@ class Connections(QObject):
         self._busy = False
         if getattr(error, "code", None) == "locked":  # ten minutes without a change, or the hub restarted
             self._ticket, self._link = "", ""
-            self._error = "Подключения закрылись: введите пароль снова"
+            self._error = tr("Подключения закрылись: введите пароль снова")
         else:
             self._error = str(error)
         self.changed.emit()
@@ -214,7 +220,7 @@ class Connections(QObject):
         def show(data: dict[str, Any]) -> None:
             if ticket and ticket == self._ticket and not data.get("unlocked"):
                 self._ticket, self._link = "", ""
-                self._error = "Подключения закрылись (10 минут без изменений): введите пароль снова"
+                self._error = tr("Подключения закрылись (10 минут без изменений): введите пароль снова")
             self._data = data
             self.app.show_connections(data.get("connections", []))
             self.changed.emit()
@@ -224,9 +230,9 @@ class Connections(QObject):
     @Slot(str, str)
     def createPassword(self, password: str, repeat: str) -> None:
         if len(password) < MIN_PASSWORD:
-            self._say(f"Пароль — не короче {MIN_PASSWORD} символов")
+            self._say(tr("Пароль — не короче {count} символов", count=MIN_PASSWORD))
         elif password != repeat:
-            self._say("Пароли не совпадают")
+            self._say(tr("Пароли не совпадают"))
         else:
             self._run(lambda: self.app.client.set_connections_password(password), lambda _r: self.unlock(password))
 
@@ -257,9 +263,9 @@ class Connections(QObject):
 
         def saved(result: dict[str, Any]) -> None:
             errors = (result.get("catalog") or {}).get("errors")
-            text = f"Сохранено, но список моделей не получен: {errors}" if errors else "Сохранено"
+            text = tr("Сохранено, но список моделей не получен: {errors}", errors=errors) if errors else tr("Сохранено")
             self._notes[name] = {"ok": not errors, "text": text}
-            self.app.flash(f"«{self._title(name)}» сохранено в хабе")
+            self.app.flash(tr("«{title}» сохранено в хабе", title=self._title(name)))
             self.load()
             self.app.load_models()
 
@@ -275,13 +281,14 @@ class Connections(QObject):
                 self._run(lambda: self.app.client.delete_connection(name, ticket), lambda _r: self.load())
 
         title = self._title(name)
-        self.app._ask(f"Удалить подключение «{title}»?", "Ключ удалится из диспетчера учётных данных Windows; "
-                      "то, что от него зависит, перестанет работать.", "Удалить", decide)  # fmt: skip
+        self.app._ask(tr("Удалить подключение «{title}»?", title=title),
+                      tr("Ключ удалится из диспетчера учётных данных Windows; то, что от него зависит, перестанет "
+                         "работать."), tr("Удалить"), decide)  # fmt: skip
 
     @Slot(str)
     def check(self, name: str) -> None:
         ticket = self._ticket
-        self._notes[name] = {"ok": True, "text": "Проверяю…"}
+        self._notes[name] = {"ok": True, "text": tr("Проверяю…")}
 
         def checked(result: dict[str, Any]) -> None:
             self._notes[name] = {"ok": bool(result.get("ok")), "text": str(result.get("detail", ""))}
@@ -291,15 +298,15 @@ class Connections(QObject):
     @Slot(str, str, str)
     def changePassword(self, old: str, new: str, repeat: str) -> None:
         if len(new) < MIN_PASSWORD:
-            self._say(f"Новый пароль — не короче {MIN_PASSWORD} символов")
+            self._say(tr("Новый пароль — не короче {count} символов", count=MIN_PASSWORD))
             return
         if new != repeat:
-            self._say("Новые пароли не совпадают")
+            self._say(tr("Новые пароли не совпадают"))
             return
 
         def changed(_result: Any) -> None:
             self._ticket = ""
-            self.app.flash("Пароль подключений изменён")
+            self.app.flash(tr("Пароль подключений изменён"))
             self.unlock(new)
 
         self._run(lambda: self.app.client.set_connections_password(new, old), changed)
@@ -328,7 +335,7 @@ class Connections(QObject):
     def on_event(self, kind: str, _payload: dict[str, Any]) -> None:
         if kind == "telegram.linked":
             self._link = ""
-            self.app.flash("Telegram-чат привязан: подтверждения придут и на телефон")
+            self.app.flash(tr("Telegram-чат привязан: подтверждения придут и на телефон"))
         self.load()
 
     def _say(self, text: str) -> None:

@@ -105,7 +105,7 @@ Rectangle {
             spacing: 4
             Small {
                 iconName: Finder.replacing ? "chevron-down" : "chevron-right"
-                tip: "Замена (Ctrl+H)"
+                tip: qsTr("Замена (Ctrl+H)")
                 onClicked: Finder.setReplacing(!Finder.replacing)
             }
             Field {
@@ -113,20 +113,20 @@ Rectangle {
                 objectName: "findQuery"
                 width: rows.width - 26 * 6 - 84 - 4 * 7
                 implicitHeight: 30
-                placeholderText: "Найти"
+                placeholderText: qsTr("Найти")
                 font.family: Theme.monoFont
                 onTextEdited: Finder.setQuery(text)
                 Keys.onPressed: (event) => bar.keys(event, false)
             }
             Toggle {
                 text: "Aa"
-                tip: "Учитывать регистр"
+                tip: qsTr("Учитывать регистр")
                 checked: Finder.caseSensitive
                 onClicked: Finder.setCase(!Finder.caseSensitive)
             }
             Toggle {
                 text: ".*"
-                tip: "Регулярное выражение (Python: группы — $1 или \\1)"
+                tip: qsTr("Регулярное выражение (Python: группы — $1 или \\1)")
                 checked: Finder.regex
                 onClicked: Finder.setRegex(!Finder.regex)
             }
@@ -144,17 +144,17 @@ Rectangle {
             Small {
                 iconName: "chevron-down"
                 rotation: 180
-                tip: "Предыдущее (Shift+F3)"
+                tip: qsTr("Предыдущее (Shift+F3)")
                 onClicked: bar.go(true)
             }
             Small {
                 iconName: "chevron-down"
-                tip: "Следующее (F3)"
+                tip: qsTr("Следующее (F3)")
                 onClicked: bar.go(false)
             }
             Small {
                 iconName: "close"
-                tip: "Закрыть (Esc)"
+                tip: qsTr("Закрыть (Esc)")
                 onClicked: bar.close()
             }
         }
@@ -168,7 +168,7 @@ Rectangle {
                 objectName: "findReplacement"
                 width: query.width
                 implicitHeight: 30
-                placeholderText: "Заменить на"
+                placeholderText: qsTr("Заменить на")
                 font.family: Theme.monoFont
                 Keys.onPressed: (event) => bar.keys(event, true)
             }
@@ -176,19 +176,19 @@ Rectangle {
                 objectName: "replaceOne"
                 implicitHeight: 30
                 focusPolicy: Qt.NoFocus
-                text: "Заменить"
+                text: qsTr("Заменить")
                 onClicked: bar.replaceOne()
             }
             PlainButton {
                 objectName: "replaceAll"
                 implicitHeight: 30
                 focusPolicy: Qt.NoFocus
-                text: "Все"
+                text: qsTr("Все")
                 enabled: Finder.ready && Finder.count > 0
                 onClicked: Finder.replaceAll(replacement.text)
                 ToolTip.visible: hovered
                 ToolTip.delay: 600
-                ToolTip.text: "Заменить все — одной отменой (Ctrl+Alt+Enter)"
+                ToolTip.text: qsTr("Заменить все — одной отменой (Ctrl+Alt+Enter)")
             }
         }
 

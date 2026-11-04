@@ -7,7 +7,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "connectionsSheet"
-    title: "Подключения"
+    title: qsTr("Подключения")
     iconName: "key"
     width: Math.min(600, (parent ? parent.width : 960) * 0.92)
     onAboutToShow: { Services.load(); Mcp.load(); Mail.load(); AgentKeys.load() }
@@ -22,8 +22,7 @@ Sheet {
     }
 
     Note {
-        text: "Ключи и токены хранятся в диспетчере учётных данных Windows и не выходят из хаба: окно видит только, "
-              + "задан ли ключ. Менять их можно по паролю подключений."
+        text: qsTr("Ключи и токены хранятся в диспетчере учётных данных Windows и не выходят из хаба: окно видит только, задан ли ключ. Менять их можно по паролю подключений.")
     }
 
     // ---------- the first time: a password ----------
@@ -31,21 +30,21 @@ Sheet {
         visible: Services.state === "new"
         width: parent.width
         spacing: 8
-        SectionTitle { text: "Придумайте пароль подключений" }
-        Note { text: "Он нужен, чтобы добавить, заменить или удалить ключ и привязать Telegram. Не короче 6 символов." }
+        SectionTitle { text: qsTr("Придумайте пароль подключений") }
+        Note { text: qsTr("Он нужен, чтобы добавить, заменить или удалить ключ и привязать Telegram. Не короче 6 символов.") }
         Field {
             id: first
             objectName: "newPassword"
             width: parent.width
             echoMode: TextInput.Password
-            placeholderText: "Пароль"
+            placeholderText: qsTr("Пароль")
         }
         Field {
             id: again
             objectName: "newPasswordAgain"
             width: parent.width
             echoMode: TextInput.Password
-            placeholderText: "Ещё раз"
+            placeholderText: qsTr("Ещё раз")
             onAccepted: create.clicked()
         }
         PlainButton {
@@ -53,7 +52,7 @@ Sheet {
             objectName: "createPassword"
             kind: "primary"
             iconName: "lock"
-            text: "Задать пароль"
+            text: qsTr("Задать пароль")
             enabled: first.text !== "" && !Services.busy
             onClicked: { Services.createPassword(first.text, again.text); first.text = ""; again.text = "" }
         }
@@ -69,7 +68,7 @@ Sheet {
             objectName: "unlockPassword"
             width: parent.width - open.width - 8
             echoMode: TextInput.Password
-            placeholderText: "Пароль подключений"
+            placeholderText: qsTr("Пароль подключений")
             onAccepted: open.clicked()
         }
         PlainButton {
@@ -77,7 +76,7 @@ Sheet {
             objectName: "unlock"
             kind: "primary"
             iconName: "lock"
-            text: "Открыть"
+            text: qsTr("Открыть")
             enabled: password.text !== "" && !Services.busy
             onClicked: { Services.unlock(password.text); password.text = "" }
         }
@@ -89,13 +88,13 @@ Sheet {
         spacing: 10
         Rectangle { width: 7; height: 7; radius: 3.5; color: Theme.p.ok; anchors.verticalCenter: parent.verticalCenter }
         Text {
-            text: "Открыто · закроется через 10 минут без изменений"
+            text: qsTr("Открыто · закроется через 10 минут без изменений")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 13
             anchors.verticalCenter: parent.verticalCenter
         }
-        PlainButton { iconName: "lock"; text: "Закрыть"; onClicked: Services.lock() }
+        PlainButton { iconName: "lock"; text: qsTr("Закрыть"); onClicked: Services.lock() }
     }
 
     Text {
@@ -144,7 +143,7 @@ Sheet {
             }
             Note { text: entry.modelData.purpose }
             Text {
-                text: "Где взять →"
+                text: qsTr("Где взять →")
                 color: Theme.p.accent
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -163,14 +162,14 @@ Sheet {
                     objectName: "value_" + entry.modelData.name
                     width: parent.width - save.width - 8
                     echoMode: entry.modelData.secret ? TextInput.Password : TextInput.Normal
-                    placeholderText: entry.modelData.set ? "Новое значение, чтобы заменить" : entry.modelData.hint
+                    placeholderText: entry.modelData.set ? qsTr("Новое значение, чтобы заменить") : entry.modelData.hint
                     onAccepted: save.clicked()
                 }
                 PlainButton {
                     id: save
                     objectName: "save_" + entry.modelData.name
                     kind: "primary"
-                    text: "Сохранить"
+                    text: qsTr("Сохранить")
                     enabled: value.text.trim() !== "" && !Services.busy
                     onClicked: { Services.save(entry.modelData.name, value.text); value.text = "" }
                 }
@@ -181,32 +180,32 @@ Sheet {
                 spacing: 8
                 PlainButton {
                     iconName: "refresh"
-                    text: "Проверить"
+                    text: qsTr("Проверить")
                     enabled: !Services.busy
                     onClicked: Services.check(entry.modelData.name)
                 }
                 PlainButton {
                     kind: "danger"
                     iconName: "trash"
-                    text: "Удалить"
+                    text: qsTr("Удалить")
                     onClicked: Services.remove(entry.modelData.name)
                 }
                 PlainButton {
                     objectName: "chooseModels"
                     visible: entry.modelData.choose
                     iconName: "cpu"
-                    text: "Модели…"
+                    text: qsTr("Модели…")
                     onClicked: Services.openModels(entry.modelData.name)
                 }
                 PlainButton {
                     visible: entry.modelData.telegram
                     iconName: "chat"
-                    text: Services.telegramLinked ? "Привязать другой чат" : "Привязать чат"
+                    text: Services.telegramLinked ? qsTr("Привязать другой чат") : qsTr("Привязать чат")
                     onClicked: Services.linkTelegram()
                 }
                 PlainButton {
                     visible: entry.modelData.telegram && Services.telegramLinked
-                    text: "Отвязать"
+                    text: qsTr("Отвязать")
                     onClicked: Services.unlinkTelegram()
                 }
             }
@@ -217,7 +216,7 @@ Sheet {
                 spacing: 6
                 Field {
                     width: parent.width
-                    placeholderText: "Поиск: например, deepseek, gpt, qwen coder"
+                    placeholderText: qsTr("Поиск: например, deepseek, gpt, qwen coder")
                     onTextChanged: Services.filterModels(text)
                 }
                 Note { text: Services.choicesNote }
@@ -277,11 +276,11 @@ Sheet {
                     PlainButton {
                         objectName: "saveModels"
                         kind: "primary"
-                        text: "Сохранить выбор (" + Services.pickedCount + ")"
+                        text: qsTr("Сохранить выбор (%1)").arg(Services.pickedCount)
                         enabled: !Services.busy
                         onClicked: Services.saveModels()
                     }
-                    PlainButton { text: "Отмена"; onClicked: Services.closeModels() }
+                    PlainButton { text: qsTr("Отмена"); onClicked: Services.closeModels() }
                 }
             }
             Text {
@@ -299,9 +298,9 @@ Sheet {
                 wrapMode: Text.Wrap
                 textFormat: Text.StyledText
                 text: Services.linkCode !== ""
-                      ? "Отправьте своему боту в Telegram: <b>/link " + Services.linkCode + "</b> — код действует 10 минут"
-                      : Services.telegramLinked ? "Чат привязан: подтверждения приходят и на телефон"
-                                                   : "Чат не привязан"
+                      ? qsTr("Отправьте своему боту в Telegram: <b>/link %1</b> — код действует 10 минут").arg(Services.linkCode)
+                      : Services.telegramLinked ? qsTr("Чат привязан: подтверждения приходят и на телефон")
+                                                   : qsTr("Чат не привязан")
                 color: Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -324,12 +323,12 @@ Sheet {
         width: parent.width
         spacing: 8
         Rectangle { width: parent.width; height: 1; color: Theme.p.hairline }
-        SectionTitle { text: "Сменить пароль" }
-        Field { id: oldPassword; width: parent.width; echoMode: TextInput.Password; placeholderText: "Текущий пароль" }
-        Field { id: newPassword; width: parent.width; echoMode: TextInput.Password; placeholderText: "Новый пароль" }
-        Field { id: newAgain; width: parent.width; echoMode: TextInput.Password; placeholderText: "Новый ещё раз" }
+        SectionTitle { text: qsTr("Сменить пароль") }
+        Field { id: oldPassword; width: parent.width; echoMode: TextInput.Password; placeholderText: qsTr("Текущий пароль") }
+        Field { id: newPassword; width: parent.width; echoMode: TextInput.Password; placeholderText: qsTr("Новый пароль") }
+        Field { id: newAgain; width: parent.width; echoMode: TextInput.Password; placeholderText: qsTr("Новый ещё раз") }
         PlainButton {
-            text: "Сменить пароль"
+            text: qsTr("Сменить пароль")
             enabled: oldPassword.text !== "" && newPassword.text !== "" && !Services.busy
             onClicked: {
                 Services.changePassword(oldPassword.text, newPassword.text, newAgain.text)
@@ -340,7 +339,6 @@ Sheet {
     Note {
         visible: Services.state !== "new"
         color: Theme.p.faint
-        text: "Забыли пароль — в консоли python -m hub connections reset: он сбросится вместе со всеми сохранёнными "
-              + "подключениями, их нужно будет ввести заново."
+        text: qsTr("Забыли пароль — в консоли python -m hub connections reset: он сбросится вместе со всеми сохранёнными подключениями, их нужно будет ввести заново.")
     }
 }

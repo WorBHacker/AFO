@@ -63,7 +63,7 @@ Window {
         }
         ToolTip.visible: containsMouse && !pressed
         ToolTip.delay: 800
-        ToolTip.text: "Потяните влево или вправо. Двойной щелчок — обычная ширина"
+        ToolTip.text: qsTr("Потяните влево или вправо. Двойной щелчок — обычная ширина")
     }
 
     Item {
@@ -160,8 +160,8 @@ Window {
         id: modelMenu
         menuWidth: 430
         items: App.pickerItems.concat([{ section: " ", id: "" },
-                                       { id: "+settings", name: "Настроить модели…", icon: "sliders" },
-                                       { id: "+install", name: "Установить локальную модель…", icon: "download" }])
+                                       { id: "+settings", name: qsTr("Настроить модели…"), icon: "sliders" },
+                                       { id: "+install", name: qsTr("Установить локальную модель…"), icon: "download" }])
         onChosen: (id) => id === "+settings" ? modelsSheet.openFor(App.modelId)
                         : id === "+install" ? installSheet.open() : App.chooseModel(id)
         function openAt(item) { anchor = item; open() }
@@ -177,9 +177,9 @@ Window {
         id: themeMenu
         menuWidth: 220
         items: [
-            { id: "system", name: "Как в системе", icon: "layers", selected: Theme.mode === "system" },
-            { id: "light", name: "Светлая", icon: "sun", selected: Theme.mode === "light" },
-            { id: "dark", name: "Тёмная", icon: "moon", selected: Theme.mode === "dark" }
+            { id: "system", name: qsTr("Как в системе"), icon: "layers", selected: Theme.mode === "system" },
+            { id: "light", name: qsTr("Светлая"), icon: "sun", selected: Theme.mode === "light" },
+            { id: "dark", name: qsTr("Тёмная"), icon: "moon", selected: Theme.mode === "dark" }
         ]
         onChosen: (id) => App.setTheme(id)
         function openAt(item) { anchor = item; open() }
@@ -188,14 +188,14 @@ Window {
         id: chatMenu
         property string chatId
         menuWidth: 200
-        items: [{ id: "rename", name: "Переименовать", icon: "edit" }, { id: "delete", name: "Удалить", icon: "trash" }]
+        items: [{ id: "rename", name: qsTr("Переименовать"), icon: "edit" }, { id: "delete", name: qsTr("Удалить"), icon: "trash" }]
         onChosen: (id) => id === "rename" ? renameDialog.openFor(chatId) : App.askDeleteChat(chatId)
         function openFor(id, point) { chatId = id; at = point; open() }
     }
     MenuPopup {
         id: chatProjectMenu
         menuWidth: 340
-        items: [{ section: "Проекты этого чата", id: "" }].concat(App.chatProjectChoices)
+        items: [{ section: qsTr("Проекты этого чата"), id: "" }].concat(App.chatProjectChoices)
         onChosen: (id) => App.toggleChatProject(id)
         function openAt(item) { anchor = item; open() }
     }
@@ -203,7 +203,7 @@ Window {
         id: projectMenu
         menuWidth: 320
         items: Projects.projectList.map(p => ({ id: p.id, name: p.name, note: p.path, icon: "folder", selected: p.selected }))
-                   .concat([{ section: " ", id: "" }, { id: "+add", name: "Добавить проект…", icon: "folder-plus" }])
+                   .concat([{ section: " ", id: "" }, { id: "+add", name: qsTr("Добавить проект…"), icon: "folder-plus" }])
         onChosen: (id) => id === "+add" ? folderDialog.open() : Projects.openProject(id)
         function openBelow(item) { at = item.mapToItem(null, 0, item.height + 4); open() }
     }
@@ -211,13 +211,13 @@ Window {
         id: exportMenu
         objectName: "exportMenu"
         menuWidth: 360
-        items: [{ section: "Записать карточку в проект", id: "" }].concat(Projects.exportTargets)
+        items: [{ section: qsTr("Записать карточку в проект"), id: "" }].concat(Projects.exportTargets)
         onChosen: (id) => Projects.exportCard(id)
         function openAt(item) { anchor = item; open() }
     }
     FolderDialog {
         id: folderDialog
-        title: "Папка проекта"
+        title: qsTr("Папка проекта")
         onAccepted: Projects.addProject(selectedFolder.toString())
     }
     CommandPalette { id: palette }

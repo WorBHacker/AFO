@@ -16,15 +16,16 @@
     "onStartupFinished"
   ],
   "main": "./extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "commands": [
       {
         "command": "localchat.setToken",
-        "title": "AFO: задать токен хаба"
+        "title": "%command.setToken%"
       },
       {
         "command": "localchat.status",
-        "title": "AFO: связь с хабом"
+        "title": "%command.status%"
       }
     ],
     "configuration": {
@@ -33,17 +34,17 @@
         "localchat.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Сообщать хабу AFO открытый файл и команды терминалов."
+          "description": "%config.enabled%"
         },
         "localchat.hubUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8765",
-          "description": "Адрес хаба. Только этот компьютер: на другой адрес расширение ничего не отправляет."
+          "description": "%config.hubUrl%"
         },
         "localchat.sendOutput": {
           "type": "boolean",
           "default": true,
-          "description": "Отправлять конец вывода команды (хаб хранит последние 25 строк и прячет в них ключи и пароли)."
+          "description": "%config.sendOutput%"
         }
       }
     }

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import tr
+
 if TYPE_CHECKING:
     from .controller import Controller
 
@@ -25,7 +27,7 @@ class AgentKeys(QObject):
     @Property(list, notify=changed)
     def items(self) -> list:
         return [{"name": k["name"], "host": k["host"], "header": k["header"], "set": bool(k.get("set")),
-                 "note": f"{k['header']}: {k['prefix']}…" if k.get("set") else "ключ не задан"}
+                 "note": f"{k['header']}: {k['prefix']}…" if k.get("set") else tr("ключ не задан")}
                 for k in self._keys]  # fmt: skip
 
     @Property(str, notify=changed)
@@ -65,10 +67,12 @@ class AgentKeys(QObject):
         body = {"host": host.strip(), "header": header.strip() or "Authorization", "prefix": prefix,
                 "value": value.strip()}  # fmt: skip
         if not name or not body["host"]:
-            self._error = "Нужны имя ключа и сайт, например weather и api.weather.example"
+            self._error = tr("Нужны имя ключа и сайт, например weather и api.weather.example")
             self.changed.emit()
             return
-        self._run(lambda: self.app.client.set_agent_key(name, body, ticket), f"Ключ «{name}» сохранён в хабе")
+        self._run(
+            lambda: self.app.client.set_agent_key(name, body, ticket), tr("Ключ «{name}» сохранён в хабе", name=name)
+        )
 
     @Slot(str)
     def remove(self, name: str) -> None:
@@ -76,9 +80,14 @@ class AgentKeys(QObject):
 
         def decide(yes: bool) -> None:
             if yes:
-                self._run(lambda: self.app.client.delete_agent_key(name, ticket), f"Ключ «{name}» удалён")
+                self._run(lambda: self.app.client.delete_agent_key(name, ticket), tr("Ключ «{name}» удалён", name=name))
 
-        self.app._ask(f"Удалить ключ «{name}»?", "Запросы агента к его сайту пойдут без ключа.", "Удалить", decide)
+        self.app._ask(
+            tr("Удалить ключ «{name}»?", name=name),
+            tr("Запросы агента к его сайту пойдут без ключа."),
+            tr("Удалить"),
+            decide,
+        )
 
     def on_event(self, _kind: str, _payload: dict[str, Any]) -> None:
         self.load()

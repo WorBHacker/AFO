@@ -18,45 +18,50 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import N_, decimal, plural, tr
+
 if TYPE_CHECKING:
     from .controller import Controller
 
-STATUS = {"active": "идёт", "paused": "на паузе", "blocked": "ждёт вас", "budget": "у предела",
-          "achieved": "достигнута", "cleared": "снята"}  # fmt: skip
+STATUS = {"active": N_("идёт"), "paused": N_("на паузе"), "blocked": N_("ждёт вас"), "budget": N_("у предела"),
+          "achieved": N_("достигнута"), "cleared": N_("снята")}  # fmt: skip
 OPEN = ("active", "paused", "blocked", "budget")
-NOTICES = {"achieved": "Цель достигнута", "blocked": "Цель ждёт вас", "budget": "Цель дошла до предела"}
-VERDICTS = {"ACHIEVED": "выполнено", "INCOMPLETE": "не выполнено", "REGRESSED": "потеряно то, что работало"}
+NOTICES = {"achieved": N_("Цель достигнута"), "blocked": N_("Цель ждёт вас"), "budget": N_("Цель дошла до предела")}
+VERDICTS = {"ACHIEVED": N_("выполнено"), "INCOMPLETE": N_("не выполнено"), "REGRESSED": N_("потеряно то, что работало")}
 DEFAULT_LIMITS = {"turns": "25", "tokens": "500", "minutes": "60"}  # tokens in thousands (Q26)
-ROUTES = {"continue": "дальше", "last_turn": "последний ход", "achieved": "достигнута", "blocked": "ждёт вас",
-          "budget": "предел", "paused": "пауза"}  # fmt: skip
+ROUTES = {"continue": N_("дальше"), "last_turn": N_("последний ход"), "achieved": N_("достигнута"),
+          "blocked": N_("ждёт вас"), "budget": N_("предел"), "paused": N_("пауза")}  # fmt: skip
 
 
 def thousands(n: int | float) -> str:
     n = int(n)
     if n < 1000:
         return str(n)
-    return f"{n / 1_000_000:.1f} млн".replace(".", ",") if n >= 1_000_000 else f"{n / 1000:.0f} тыс."
+    if n >= 1_000_000:
+        return decimal(tr("{value:.1f} млн", value=n / 1_000_000))
+    return tr("{value:.0f} тыс.", value=n / 1000)
 
 
 def progress_text(goal: dict[str, Any]) -> str:
     """«ход 3 из 25 · 12 тыс. из 500 тыс. токенов · 4 из 60 мин · $0,02»."""
-    parts = [f"ход {goal['turns_used']} из {goal['max_turns']}",
-             f"{thousands(goal['tokens_used'])} из {thousands(goal['max_tokens'])} токенов",
-             f"{goal['seconds_used'] / 60:.0f} из {goal['max_minutes']} мин"]  # fmt: skip
+    parts = [tr("ход {used} из {limit}", used=goal["turns_used"], limit=goal["max_turns"]),
+             tr("{used} из {limit} токенов", used=thousands(goal["tokens_used"]), limit=thousands(goal["max_tokens"])),
+             tr("{used:.0f} из {limit} мин", used=goal["seconds_used"] / 60, limit=goal["max_minutes"])]  # fmt: skip
     if goal.get("cost_usd"):
-        parts.append(f"${goal['cost_usd']:.2f}".replace(".", ","))
+        parts.append(decimal(f"${goal['cost_usd']:.2f}"))
     return " · ".join(parts)
 
 
 def check_text(check: dict[str, Any] | None) -> str:
     """What the last check found, in a line."""
     if not check:
-        return "проверка — после первого хода"
+        return tr("проверка — после первого хода")
     verdict = VERDICTS.get(check.get("verdict") or "", "")
     missing = len(check.get("missing") or [])
-    said = f"проверка после хода {check['turn']}: " + (verdict or ROUTES.get(check["route"], check["route"]))
+    found = tr(verdict) if verdict else tr(ROUTES[check["route"]]) if check["route"] in ROUTES else check["route"]
+    said = tr("проверка после хода {turn}: {found}", turn=check["turn"], found=found)
     if missing and check.get("verdict") != "ACHIEVED":
-        said += f" — {missing} {'пункт' if missing == 1 else 'пункта' if missing < 5 else 'пунктов'}"
+        said += f" — {missing} {plural(missing, 'пункт', 'пункта', 'пунктов')}"
     return said
 
 
@@ -64,8 +69,11 @@ def criteria_rows(goal: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for c in goal.get("criteria") or []:
         if c["kind"] == "command":
-            where = f" в «{c.get('project_name') or ''}»" if c.get("project_name") else ""
-            text = f"`{c['command']}`{where} → код {c['expected_exit_code']}"
+            if c.get("project_name"):
+                text = tr("`{command}` в «{project}» → код {code}", command=c["command"], project=c["project_name"],
+                          code=c["expected_exit_code"])  # fmt: skip
+            else:
+                text = tr("`{command}` → код {code}", command=c["command"], code=c["expected_exit_code"])
         else:
             text = c.get("rule") or ""
         out.append({"text": text, "met": bool(c.get("verified")), "words": c["kind"] == "semantic"})
@@ -99,7 +107,7 @@ def contract_of(editor: dict[str, Any], model_id: str, effort: str) -> tuple[dic
     """The card as the goal the hub takes - or None and what is wrong, in the user's words."""
     objective = " ".join((editor.get("objective") or editor.get("wish") or "").split())
     if not objective:
-        return None, "Напишите, чего добиться"
+        return None, tr("Напишите, чего добиться")
     criteria = []
     for n, c in enumerate(editor.get("criteria") or [], 1):
         if c["kind"] == "command":
@@ -109,13 +117,13 @@ def contract_of(editor: dict[str, Any], model_id: str, effort: str) -> tuple[dic
             try:
                 code = int((c.get("code") or "0").strip())
             except ValueError:
-                return None, f"Критерий {n}: код выхода — целое число"
+                return None, tr("Критерий {n}: код выхода — целое число", n=n)
             criteria.append({"kind": "command", "command": command, "project": c.get("project") or "",
                              "expected_exit_code": code})  # fmt: skip
         elif (c.get("rule") or "").strip():
             criteria.append({"kind": "semantic", "rule": " ".join(c["rule"].split())})
     if not criteria:
-        return None, "Нужен хотя бы один критерий: команда с кодом выхода или правило словами"
+        return None, tr("Нужен хотя бы один критерий: команда с кодом выхода или правило словами")
     limits = {}
     for field, key, scale in (("turns", "max_turns", 1), ("tokens", "max_tokens", 1000), ("minutes", "max_minutes", 1)):
         text = str(editor.get(field) or "").strip().replace(" ", "")
@@ -124,7 +132,7 @@ def contract_of(editor: dict[str, Any], model_id: str, effort: str) -> tuple[dic
         try:
             limits[key] = int(float(text.replace(",", ".")) * scale)
         except ValueError:
-            return None, "Пределы — числа"
+            return None, tr("Пределы — числа")
     rules = [line.strip() for line in (editor.get("constraints") or "").splitlines() if line.strip()]
     contract = {"objective": objective, "criteria": criteria, "model_id": model_id, "effort": effort,
                 "constraints": rules, "limits": limits}  # fmt: skip
@@ -139,13 +147,13 @@ def cost_text(model: dict[str, Any] | None, tokens_k: str) -> str:
         return ""
     prices = model.get("prices") or {}
     if not prices:
-        return "Цена: бесплатно — модель локальная"
+        return tr("Цена: бесплатно — модель локальная")
     try:
         tokens = float(str(tokens_k).replace(",", ".")) * 1000
     except ValueError:
         return ""
     most = tokens / 1_000_000 * (0.85 * prices.get("input", 0) + 0.15 * prices.get("output", 0))
-    return f"Цена: до ≈ ${most:.2f} за работу модели (без проверяющей)".replace(".", ",", 1)
+    return tr("Цена: до ≈ ${cost} за работу модели (без проверяющей)", cost=decimal(f"{most:.2f}"))
 
 
 class GoalView(QObject):
@@ -185,10 +193,10 @@ class GoalView(QObject):
     @Property(str, notify=changed)
     def statusText(self) -> str:
         if self._checking == "judge":
-            return "проверяет модель"
+            return tr("проверяет модель")
         if self._checking:
-            return "проверка"
-        return STATUS.get(self.status, "")
+            return tr("проверка")
+        return tr(STATUS[self.status]) if self.status in STATUS else ""
 
     @Property(str, notify=changed)
     def objective(self) -> str:
@@ -270,11 +278,11 @@ class GoalView(QObject):
                 self.app.flash(said)
             self.load()
 
-        self.app.call_or_fail(lambda: call(cid), done, lambda e: self.app.show_error(f"Не вышло: {e}"))
+        self.app.call_or_fail(lambda: call(cid), done, lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))
 
     @Slot()
     def pause(self) -> None:
-        self._act(self.app.client.pause_goal, "Цель на паузе: идущий ход доработает, следующий не начнётся")
+        self._act(self.app.client.pause_goal, tr("Цель на паузе: идущий ход доработает, следующий не начнётся"))
 
     @Slot()
     def resume(self) -> None:
@@ -284,17 +292,18 @@ class GoalView(QObject):
             limits = {"max_turns": max(goal["max_turns"], goal["turns_used"] + max(5, goal["max_turns"] // 2)),
                       "max_tokens": max(goal["max_tokens"], int(goal["tokens_used"] * 1.5) + 1000),
                       "max_minutes": max(goal["max_minutes"], int(goal["seconds_used"] / 60) + 30)}  # fmt: skip
-        said = "Цель снова в работе" + (" — пределы подняты" if limits else "")
+        said = tr("Цель снова в работе — пределы подняты") if limits else tr("Цель снова в работе")
         self._act(lambda cid: self.app.client.resume_goal(cid, limits), said)
 
     @Slot()
     def clear(self) -> None:
         def decide(yes: bool) -> None:
             if yes:
-                self._act(self.app.client.clear_goal, "Цель снята")
+                self._act(self.app.client.clear_goal, tr("Цель снята"))
 
-        self.app._ask("Снять цель?", "Идущий ход доработает, следующий не начнётся. История чата и проверок останется.",
-                      "Снять", decide)  # fmt: skip
+        self.app._ask(tr("Снять цель?"),
+                      tr("Идущий ход доработает, следующий не начнётся. История чата и проверок останется."),
+                      tr("Снять"), decide)  # fmt: skip
 
     @Slot(str)
     def steer(self, text: str) -> None:
@@ -303,18 +312,19 @@ class GoalView(QObject):
             return
         cid = self._conversation
         self.app.call_or_fail(lambda: self.app.client.steer_goal(cid, text),
-                              lambda _r: (self.app.flash("Уточнение передано: модель прочтёт его в начале "
-                                                         "следующего хода"), self.load()),
-                              lambda e: (self.app.show_error(f"Не вышло: {e}"),
+                              lambda _r: (self.app.flash(tr("Уточнение передано: модель прочтёт его в начале "
+                                                            "следующего хода")), self.load()),
+                              lambda e: (self.app.show_error(tr("Не вышло: {error}", error=e)),
                                          self.app.draftRestored.emit(text)))  # fmt: skip
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         cid = payload.get("conversation_id") or ""
         if kind == "goal.status" and payload.get("status") in NOTICES and not payload.get("proving"):
             goal = payload.get("goal") or {}
-            self.noticed.emit(NOTICES[payload["status"]], f"{goal.get('objective', '')}\n{payload.get('detail', '')}")
+            notice = tr(NOTICES[payload["status"]])
+            self.noticed.emit(notice, f"{goal.get('objective', '')}\n{payload.get('detail', '')}")
             if cid != (self.app.current or ""):
-                self.app.flash(f"{NOTICES[payload['status']]}: «{goal.get('objective', '')[:60]}»")
+                self.app.flash(tr("{notice}: «{objective}»", notice=notice, objective=goal.get("objective", "")[:60]))
         if cid != (self.app.current or ""):
             return
         if kind == "goal.checking":
@@ -356,16 +366,16 @@ class GoalView(QObject):
     @Property(str, notify=editorChanged)
     def workerName(self) -> str:
         model = self.app.models.get(self.app._model_id) or {}
-        return model.get("name") or self.app._model_id or "модель не выбрана"
+        return model.get("name") or self.app._model_id or tr("модель не выбрана")
 
     @Property(list, notify=editorChanged)
     def judgeItems(self) -> list:
         role = self.app.role_model("judge")
         named = (self.app.models.get(role) or {}).get("name", "")
         chosen = self._editor.get("judge", "")
-        items = [{"id": "", "name": f"Как в «Ролях»: {named or 'не выбрана'}", "icon": "check",
-                  "note": "модель роли «Проверка цели»" if named else "без судьи цель из команд закрывают команды, "
-                  "а критерии словами ждут вас", "selected": not chosen}]  # fmt: skip
+        items = [{"id": "", "name": tr("Как в «Ролях»: {name}", name=named or tr("не выбрана")), "icon": "check",
+                  "note": tr("модель роли «Проверка цели»") if named else tr("без судьи цель из команд закрывают "
+                  "команды, а критерии словами ждут вас"), "selected": not chosen}]  # fmt: skip
         for model_id, model in self.app.models.items():
             if model.get("provider") == "claude-code" or not model.get("enabled", True):
                 continue
@@ -380,7 +390,7 @@ class GoalView(QObject):
         if chosen:
             return (self.app.models.get(chosen) or {}).get("name") or chosen
         role = self.app.role_model("judge")
-        return ((self.app.models.get(role) or {}).get("name") or "") if role else "нет (только команды)"
+        return ((self.app.models.get(role) or {}).get("name") or "") if role else tr("нет (только команды)")
 
     def _edit(self, **changes: Any) -> None:
         self._editor = {**self._editor, **changes}
@@ -438,7 +448,7 @@ class GoalView(QObject):
         """«Составить договор»: a model drafts the contract from the wish."""
         wish = self._editor.get("wish", "").strip()
         if not wish:
-            self._error = "Напишите, чего хотите добиться"
+            self._error = tr("Напишите, чего хотите добиться")
             self.editorChanged.emit()
             return
         model_id = self.app._model_id
@@ -448,7 +458,7 @@ class GoalView(QObject):
 
         def failed(error: Exception) -> None:
             self._drafting = False
-            self._error = f"Черновик не получился: {error}"
+            self._error = tr("Черновик не получился: {error}", error=error)
             self.editorChanged.emit()
 
         def drafted(found: dict[str, Any]) -> None:
@@ -473,7 +483,7 @@ class GoalView(QObject):
 
         def failed(error: Exception) -> None:
             self._starting = False
-            self._error = f"Цель не поставлена: {error}"
+            self._error = tr("Цель не поставлена: {error}", error=error)
             self.editorChanged.emit()
 
         def started(goal: dict[str, Any]) -> None:
@@ -481,7 +491,7 @@ class GoalView(QObject):
             self._editor = blank_editor()
             self.editorChanged.emit()
             self.started.emit()
-            self.app.flash("Цель поставлена: модель начала работу, хаб проверит её после каждого хода")
+            self.app.flash(tr("Цель поставлена: модель начала работу, хаб проверит её после каждого хода"))
             self.load()
 
         self.app.ensure_chat(lambda cid: self.app.call_or_fail(

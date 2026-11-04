@@ -64,7 +64,7 @@ Popup {
                 x: 44
                 width: parent.width - 110
                 anchors.verticalCenter: parent.verticalCenter
-                placeholderText: "Команда, чат, модель или бюджет…"
+                placeholderText: qsTr("Команда, чат, модель или бюджет…")
                 placeholderTextColor: Theme.p.faint
                 color: Theme.p.text
                 selectionColor: Theme.p.selection
@@ -107,7 +107,7 @@ Popup {
             height: 64
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-            text: "Ничего не найдено"
+            text: qsTr("Ничего не найдено")
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 13

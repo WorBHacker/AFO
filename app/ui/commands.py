@@ -9,42 +9,44 @@ from __future__ import annotations
 import html
 from typing import Any
 
+from common.i18n import N_, tr
+
 from .. import presenter
 
 # name, title, icon, key hint; "current" - only with a chat open
 ACTIONS: list[tuple[str, str, str, str, bool]] = [
-    ("new", "Новый чат", "plus", "Ctrl N", False),
-    ("mode:chats", "Перейти к чатам", "chat", "Ctrl 1", False),
-    ("mode:projects", "Перейти к проектам", "folder", "Ctrl 2", False),
-    ("mode:agent", "Перейти к агенту: задачи автономного агента", "agent", "Ctrl 3", False),
-    ("add-project", "Добавить проект…", "folder-plus", "", False),
-    ("search-project", "Найти в файлах проекта", "search", "Ctrl Shift F", False),
-    ("new-terminal", "Новый терминал в проекте", "terminal", "Ctrl Shift `", False),
-    ("terminals", "Показать или скрыть терминалы", "terminal", "Ctrl `", False),
-    ("models", "Выбрать модель…", "cpu", "", False),
-    ("model-settings", "Настройка моделей: параметры, промпты, цены…", "sliders", "", False),
-    ("install-models", "Установить локальную модель…", "download", "", False),
-    ("setup", "Мастер первого запуска: движок и первая модель…", "sparkle", "", False),
-    ("check-system", "Проверить систему и собрать журналы…", "activity", "", False),
-    ("memory", "Память агента: факты и навыки…", "layers", "", False),
-    ("agent-access", "Папки и сайты для агента…", "folder", "", False),
-    ("budgets", "Бюджеты…", "wallet", "Ctrl B", False),
-    ("feed", "Лента событий", "activity", "Ctrl E", False),
-    ("approvals", "Подтверждения: кто ждёт", "shield", "Ctrl Shift A", False),
-    ("agents", "Агенты", "agent", "Ctrl Shift G", False),
-    ("proving", "Полигон: задания и экзамен моделей…", "flask", "", False),
-    ("programs", "Программы для агента…", "shield", "", False),
-    ("settings", "Настройки…", "sliders", "Ctrl ,", False),
-    ("connections", "Подключения: ключи API и токены…", "key", "Ctrl Shift K", False),
-    ("mcp", "Серверы MCP: инструменты для чатов и агента…", "layers", "", False),
-    ("sync", "Обновить список моделей", "refresh", "", False),
-    ("unload", "Выгрузить локальную модель из видеопамяти", "cpu", "Ctrl Shift U", False),
-    ("theme:system", "Тема: как в системе", "layers", "", False),
-    ("theme:light", "Тема: светлая", "sun", "", False),
-    ("theme:dark", "Тема: тёмная", "moon", "", False),
-    ("rename", "Переименовать этот чат", "edit", "F2", True),
-    ("delete", "Удалить этот чат", "trash", "", True),
-    ("stop-hub", "Остановить хаб и выйти", "power", "", False),
+    ("new", N_("Новый чат"), "plus", "Ctrl N", False),
+    ("mode:chats", N_("Перейти к чатам"), "chat", "Ctrl 1", False),
+    ("mode:projects", N_("Перейти к проектам"), "folder", "Ctrl 2", False),
+    ("mode:agent", N_("Перейти к агенту: задачи автономного агента"), "agent", "Ctrl 3", False),
+    ("add-project", N_("Добавить проект…"), "folder-plus", "", False),
+    ("search-project", N_("Найти в файлах проекта"), "search", "Ctrl Shift F", False),
+    ("new-terminal", N_("Новый терминал в проекте"), "terminal", "Ctrl Shift `", False),
+    ("terminals", N_("Показать или скрыть терминалы"), "terminal", "Ctrl `", False),
+    ("models", N_("Выбрать модель…"), "cpu", "", False),
+    ("model-settings", N_("Настройка моделей: параметры, промпты, цены…"), "sliders", "", False),
+    ("install-models", N_("Установить локальную модель…"), "download", "", False),
+    ("setup", N_("Мастер первого запуска: движок и первая модель…"), "sparkle", "", False),
+    ("check-system", N_("Проверить систему и собрать журналы…"), "activity", "", False),
+    ("memory", N_("Память агента: факты и навыки…"), "layers", "", False),
+    ("agent-access", N_("Папки и сайты для агента…"), "folder", "", False),
+    ("budgets", N_("Бюджеты…"), "wallet", "Ctrl B", False),
+    ("feed", N_("Лента событий"), "activity", "Ctrl E", False),
+    ("approvals", N_("Подтверждения: кто ждёт"), "shield", "Ctrl Shift A", False),
+    ("agents", N_("Агенты"), "agent", "Ctrl Shift G", False),
+    ("proving", N_("Полигон: задания и экзамен моделей…"), "flask", "", False),
+    ("programs", N_("Программы для агента…"), "shield", "", False),
+    ("settings", N_("Настройки…"), "sliders", "Ctrl ,", False),
+    ("connections", N_("Подключения: ключи API и токены…"), "key", "Ctrl Shift K", False),
+    ("mcp", N_("Серверы MCP: инструменты для чатов и агента…"), "layers", "", False),
+    ("sync", N_("Обновить список моделей"), "refresh", "", False),
+    ("unload", N_("Выгрузить локальную модель из видеопамяти"), "cpu", "Ctrl Shift U", False),
+    ("theme:system", N_("Тема: как в системе"), "layers", "", False),
+    ("theme:light", N_("Тема: светлая"), "sun", "", False),
+    ("theme:dark", N_("Тема: тёмная"), "moon", "", False),
+    ("rename", N_("Переименовать этот чат"), "edit", "F2", True),
+    ("delete", N_("Удалить этот чат"), "trash", "", True),
+    ("stop-hub", N_("Остановить хаб и выйти"), "power", "", False),
 ]
 RECENT_CHATS = 6
 MAX_MATCHES = 8
@@ -80,17 +82,18 @@ def palette_items(
             items.append({"section": title, "id": ""})
             items.extend(entries)
 
+    actions = [(name, tr(title), icon, key, needs_chat) for name, title, icon, key, needs_chat in ACTIONS]
     section(
-        "Действия",
+        tr("Действия"),
         [
             {"id": f"action:{name}", "name": highlight(title, q), "icon": icon, "key": key, "note": ""}
-            for name, title, icon, key, needs_chat in ACTIONS
+            for name, title, icon, key, needs_chat in actions
             if (has_current or not needs_chat) and hit(title)
         ],
     )
     matched_chats = [c for c in chats if hit(c["title"])]
     section(
-        "Чаты" if q else "Недавние чаты",
+        tr("Чаты") if q else tr("Недавние чаты"),
         [
             {
                 "id": f"chat:{c['id']}",
@@ -103,7 +106,7 @@ def palette_items(
         ],
     )
     section(
-        "Проекты",
+        tr("Проекты"),
         [
             {
                 "id": f"project:{p['id']}",
@@ -118,7 +121,7 @@ def palette_items(
     )
     if q:
         section(
-            "Модели",
+            tr("Модели"),
             [
                 {
                     "id": f"model:{m['id']}",
@@ -132,7 +135,7 @@ def palette_items(
             ][:MAX_MATCHES],
         )
         section(
-            "Бюджеты",
+            tr("Бюджеты"),
             [
                 {
                     "id": f"budget:{b['id']}",
@@ -142,7 +145,7 @@ def palette_items(
                     "key": "",
                 }
                 for b in budgets
-                if hit(presenter.budget_title(b), "бюджет")
+                if hit(presenter.budget_title(b), "бюджет")  # i18n: keep
             ],
         )
     return items
@@ -156,16 +159,16 @@ def budget_items(budgets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         scale = hard or soft or 1
         parts = []
         if soft is not None:
-            parts.append(f"предупредить с {presenter.money(soft)}")
+            parts.append(tr("предупредить с {soft}", soft=presenter.money(soft)))
         if hard is not None:
             action = dict(presenter.hard_actions()).get(b.get("hard_action"), "")
-            parts.append(f"после лимита — {action}")
+            parts.append(tr("после лимита — {action}", action=action))
         cards.append(
             {
                 "id": b["id"],
                 "title": presenter.budget_title(b),
                 "spent": presenter.money(spent),
-                "limit": f"из {presenter.money(hard)}" if hard is not None else "без лимита",
+                "limit": tr("из {limit}", limit=presenter.money(hard)) if hard is not None else tr("без лимита"),
                 "ratio": min(1.0, spent / scale),
                 "softAt": (soft / scale) if soft is not None and hard else -1,
                 "state": b.get("state", "ok"),
@@ -184,6 +187,6 @@ def budget_scopes(models: list[dict[str, Any]], budgets: list[dict[str, Any]]) -
     """What a budget can cover: all paid models, or a provider that has paid models or a budget already."""
     providers = {(m.get("provider") or m["id"].partition("/")[0]) for m in models if m.get("prices")}
     providers |= {b["scope_ref"] for b in budgets if b["scope"] == "provider"}
-    return [{"id": "total:", "name": "Все платные модели"}] + [
+    return [{"id": "total:", "name": tr("Все платные модели")}] + [
         {"id": f"provider:{p}", "name": presenter.provider_name(p)} for p in sorted(providers)
     ]

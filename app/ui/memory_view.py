@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from common.i18n import tr
+
 from .project_rows import local_time
 
 if TYPE_CHECKING:
@@ -18,7 +20,7 @@ if TYPE_CHECKING:
 def fact_rows(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for f in facts:
-        source = "вы" if f.get("source") == "user" else "агент"
+        source = tr("вы") if f.get("source") == "user" else tr("агент")
         when = local_time(f.get("created_at", ""))
         out.append(
             {
@@ -36,8 +38,8 @@ def fact_rows(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def skill_rows(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": s["id"], "name": s["name"], "goal": s["goal"],
              "steps": "\n".join(f"{n}. {st['title']}" for n, st in enumerate(s["steps"], 1)),
-             "meta": f"шагов {len(s['steps'])} · подсказан {s.get('uses', 0)} раз · "
-                     f"{local_time(s.get('created_at', ''))}"}
+             "meta": tr("шагов {steps} · подсказан {uses} раз · {when}", steps=len(s["steps"]), uses=s.get("uses", 0),
+                        when=local_time(s.get("created_at", "")))}
             for s in skills]  # fmt: skip
 
 
@@ -85,7 +87,8 @@ class MemoryView(QObject):
         if not text.strip():
             return
         self.app.call_or_fail(lambda: self.app.client.add_fact(text.strip(), about.strip(), personal),
-                              lambda _f: self.load(), lambda e: self.app.show_error(f"Не запомнено: {e}"))  # fmt: skip
+                              lambda _f: self.load(),
+                              lambda e: self.app.show_error(tr("Не запомнено: {error}", error=e)))  # fmt: skip
 
     @Slot(int, str)
     def saveFact(self, fact_id: int, text: str) -> None:
@@ -99,28 +102,28 @@ class MemoryView(QObject):
 
     def _change(self, fact_id: int, **changes: Any) -> None:
         self.app.call_or_fail(lambda: self.app.client.change_fact(fact_id, **changes), lambda _f: self.load(),
-                              lambda e: self.app.show_error(f"Не изменено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не изменено: {error}", error=e)))  # fmt: skip
 
     @Slot(int)
     def deleteFact(self, fact_id: int) -> None:
         self.app.call_or_fail(lambda: self.app.client.delete_fact(fact_id), lambda _r: self.load(),
-                              lambda e: self.app.show_error(f"Не удалено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не удалено: {error}", error=e)))  # fmt: skip
 
     @Slot(int)
     def deleteSkill(self, skill_id: int) -> None:
         self.app.call_or_fail(lambda: self.app.client.delete_skill(skill_id), lambda _r: self.load(),
-                              lambda e: self.app.show_error(f"Не удалено: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Не удалено: {error}", error=e)))  # fmt: skip
 
     @Slot(str, str)
     def keepSkill(self, run_id: str, name: str) -> None:
         """A finished task's plan as a skill (the user chose to, from its report)."""
 
         def done(found: dict[str, Any]) -> None:
-            self.app.flash(f"Навык «{found['name']}» сохранён: похожие задачи получат его подсказкой")
+            self.app.flash(tr("Навык «{name}» сохранён: похожие задачи получат его подсказкой", name=found["name"]))
             self.load()
 
         self.app.call_or_fail(lambda: self.app.client.add_skill(run_id, name), done,
-                              lambda e: self.app.show_error(f"Навык не сохранён: {e}"))  # fmt: skip
+                              lambda e: self.app.show_error(tr("Навык не сохранён: {error}", error=e)))  # fmt: skip
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "memory.changed":

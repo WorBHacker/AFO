@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic
 Sheet {
     id: sheet
     objectName: "feedSheet"
-    title: "Лента событий"
+    title: qsTr("Лента событий")
     iconName: "activity"
     width: Math.min(560, (parent ? parent.width : 960) * 0.9)
     onAboutToShow: Feed.load()
@@ -25,7 +25,7 @@ Sheet {
         topPadding: 24
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
-        text: "Здесь пока ничего нет"
+        text: qsTr("Здесь пока ничего нет")
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -49,7 +49,7 @@ Sheet {
     PlainButton {
         visible: Feed.more
         anchors.horizontalCenter: parent.horizontalCenter
-        text: "Показать ещё"
+        text: qsTr("Показать ещё")
         onClicked: Feed.loadMore()
     }
 

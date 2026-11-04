@@ -46,7 +46,7 @@ Drawer {
             }
             IconButton {
                 iconName: "close"
-                tip: "Закрыть (Esc)"
+                tip: qsTr("Закрыть (Esc)")
                 anchors.right: parent.right
                 anchors.rightMargin: 14
                 anchors.verticalCenter: parent.verticalCenter

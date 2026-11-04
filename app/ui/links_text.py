@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from common.i18n import N_, tr
+
 KIND_LABELS = {
-    "uses": "использует",
-    "provides": "предоставляет",
-    "shares": "общее",
-    "deploys_with": "развёртываются вместе",
-    "same_product": "части одного продукта",
-    "other": "связь",
+    "uses": N_("использует"),
+    "provides": N_("предоставляет"),
+    "shares": N_("общее"),
+    "deploys_with": N_("развёртываются вместе"),
+    "same_product": N_("части одного продукта"),
+    "other": N_("связь"),
 }
 
 
@@ -22,7 +24,7 @@ def project_links(links: list[dict[str, Any]], project_id: str) -> dict[str, lis
             continue
         outgoing = link["a_id"] == project_id
         other = link["b_name"] if outgoing else link["a_name"]
-        kind = KIND_LABELS.get(link["kind"], link["kind"])
+        kind = tr(KIND_LABELS.get(link["kind"], link["kind"]))
         row = {
             "id": link["id"],
             "other": other,

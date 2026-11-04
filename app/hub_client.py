@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from common.i18n import tr
 from common.paths import DataPaths, data_paths
 from hub.locate import START_TIMEOUT_S, HubUnavailable, hub_address, probe, running_hub
 
@@ -66,7 +67,7 @@ class HubClient:
             response = self._http.request(method, path, json=body, params=params,
                                           headers={**self._headers, **(headers or {})}, **extra)  # fmt: skip
         except httpx.HTTPError as exc:
-            raise HubError(f"хаб не отвечает ({exc})") from exc
+            raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
         if response.status_code >= 400:
             try:
                 detail = response.json().get("detail")
@@ -475,7 +476,7 @@ class HubClient:
                     if line:
                         yield json.loads(line)
         except httpx.HTTPError as exc:
-            raise HubError(f"хаб не отвечает ({exc})") from exc
+            raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
 
     def editor_edit(self, project_id: str, path: str, selected: str, before: str, after: str,
                     instruction: str) -> dict:  # fmt: skip
@@ -788,5 +789,5 @@ def connect(paths: DataPaths | None = None, *, start: bool = True, timeout: floa
     try:
         token = (paths.tokens / "app.token").read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise HubError(f"нет токена приложения ({exc})") from exc
+        raise HubError(tr("нет токена приложения ({error})", error=exc)) from exc
     return HubClient(base, token)

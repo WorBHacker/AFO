@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QTextCursor
 
+from common.i18n import tr
 from hub.symbols import language_of
 
 from ..hub_client import HubError
@@ -144,7 +145,7 @@ class Rewriter(QObject):
         if self._replacement is None or b is None or b.document is None:
             return self._end
         if b.text()[self._start : self._end] != self._original:
-            self._error = "Текст под правкой изменился — закройте и попросите снова"
+            self._error = tr("Текст под правкой изменился — закройте и попросите снова")
             self.changed.emit()
             return self._end
         cursor = QTextCursor(b.document)
@@ -170,7 +171,10 @@ class Rewriter(QObject):
         if b is None or b.document is None:
             return None
         first, last, low, high = lines_of(b, start, end)
-        where = f"`{b.path}`, " + (f"строка {first}" if first == last else f"строки {first}–{last}")
+        lines = (
+            tr("строка {line}", line=first) if first == last else tr("строки {first}–{last}", first=first, last=last)
+        )
+        where = f"`{b.path}`, {lines}"
         fence = FENCES.get(language_of(b.path) or "", "")
         return f"{where}:\n```{fence}\n{b.text()[low:high]}\n```"
 
@@ -181,7 +185,7 @@ class Rewriter(QObject):
         if quoted is not None:
             self.close()
             self.app.newProjectChat()
-            self.app.send(f"Объясни этот код из {quoted}")
+            self.app.send(tr("Объясни этот код из {quoted}", quoted=quoted))
 
     @Slot(str, int, int)
     def askInChat(self, key: str, start: int, end: int) -> None:
@@ -189,5 +193,5 @@ class Rewriter(QObject):
         quoted = self._quoted(key, start, end)
         if quoted is not None:
             self.close()
-            self.app.keep_new_draft(f"Про код из {quoted}\n\n")
+            self.app.keep_new_draft(tr("Про код из {quoted}\n\n", quoted=quoted))
             self.app.newProjectChat()

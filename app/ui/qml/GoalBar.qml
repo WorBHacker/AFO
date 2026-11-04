@@ -36,7 +36,7 @@ Rectangle {
                 x: mark.width + 10
                 width: Math.min(implicitWidth, parent.width - x - state.width - buttons.width - 24)
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Цель: " + Goal.objective
+                text: qsTr("Цель: %1").arg(Goal.objective)
                 elide: Text.ElideRight
                 color: Theme.p.text
                 font.family: Theme.uiFont
@@ -72,38 +72,38 @@ Rectangle {
                     visible: ["paused", "blocked", "budget"].indexOf(Goal.status) >= 0
                     implicitHeight: 26
                     iconName: "play"
-                    text: Goal.status === "budget" ? "Продолжить с запасом" : "Продолжить"
+                    text: Goal.status === "budget" ? qsTr("Продолжить с запасом") : qsTr("Продолжить")
                     onClicked: Goal.resume()
                     ToolTip.visible: hovered
                     ToolTip.delay: 600
-                    ToolTip.text: Goal.status === "budget" ? "Пределы поднимутся на половину, и работа пойдёт дальше"
-                                                           : "Следующий ход начнётся сейчас"
+                    ToolTip.text: Goal.status === "budget" ? qsTr("Пределы поднимутся на половину, и работа пойдёт дальше")
+                                                           : qsTr("Следующий ход начнётся сейчас")
                 }
                 IconButton {
                     objectName: "goalPause"
                     visible: Goal.status === "active"
                     iconName: "pause"
-                    tip: "Пауза: идущий ход доработает, следующий не начнётся"
+                    tip: qsTr("Пауза: идущий ход доработает, следующий не начнётся")
                     onClicked: Goal.pause()
                 }
                 IconButton {
                     objectName: "goalClear"
                     visible: Goal.status !== "achieved"
                     iconName: "close"
-                    tip: "Снять цель"
+                    tip: qsTr("Снять цель")
                     onClicked: Goal.clear()
                 }
                 PlainButton {
                     objectName: "goalDismiss"
                     visible: Goal.status === "achieved"
                     implicitHeight: 26
-                    text: "Скрыть"
+                    text: qsTr("Скрыть")
                     onClicked: Goal.dismiss()
                 }
                 IconButton {
                     objectName: "goalDetails"
                     iconName: Goal.expanded ? "chevron-down" : "chevron-right"
-                    tip: Goal.expanded ? "Свернуть" : "Критерии, чего не хватает, слово проверяющей модели"
+                    tip: Goal.expanded ? qsTr("Свернуть") : qsTr("Критерии, чего не хватает, слово проверяющей модели")
                     onClicked: Goal.toggle()
                 }
             }
@@ -114,7 +114,7 @@ Rectangle {
             width: parent.width - x
             elide: Text.ElideRight
             text: Goal.progress + "  ·  " + Goal.lastCheck + (Goal.detail ? " — " + Goal.detail : "")
-                  + (Goal.waitingWords ? "  ·  уточнений ждут: " + Goal.waitingWords : "")
+                  + (Goal.waitingWords ? qsTr("  ·  уточнений ждут: %1").arg(Goal.waitingWords) : "")
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -141,7 +141,7 @@ Rectangle {
                     Text {
                         width: parent.width - 24
                         wrapMode: Text.Wrap
-                        text: (modelData.words ? "словами: " : "") + modelData.text
+                        text: modelData.words ? qsTr("словами: %1").arg(modelData.text) : modelData.text
                         color: Theme.p.text_soft
                         font.family: modelData.words ? Theme.uiFont : Theme.monoFont
                         font.pixelSize: 12
@@ -153,7 +153,7 @@ Rectangle {
                 width: parent.width
                 wrapMode: Text.Wrap
                 topPadding: 4
-                text: "Не хватает:\n" + Goal.missing.map(m => "• " + m).join("\n")
+                text: qsTr("Не хватает:\n%1").arg(Goal.missing.map(m => "• " + m).join("\n"))
                 color: Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 12
@@ -162,7 +162,7 @@ Rectangle {
                 visible: Goal.judgeWord !== ""
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: "Проверяющая модель: «" + Goal.judgeWord + "»"
+                text: qsTr("Проверяющая модель: «%1»").arg(Goal.judgeWord)
                 color: Theme.p.text_soft
                 font.family: Theme.uiFont
                 font.pixelSize: 12

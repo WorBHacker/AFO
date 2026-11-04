@@ -8,7 +8,7 @@ import QtQuick.Dialogs
 Sheet {
     id: sheet
     objectName: "installSheet"
-    title: "Установка моделей"
+    title: qsTr("Установка моделей")
     iconName: "download"
     width: Math.min(820, (parent ? parent.width : 960) * 0.94)
 
@@ -27,7 +27,7 @@ Sheet {
             visible: !jb.job.id
             kind: jb.primary ? "primary" : "plain"
             iconName: "download"
-            text: "Установить"
+            text: qsTr("Установить")
             enabled: !Installer.busy && jb.can
             onClicked: jb.install()
         }
@@ -47,12 +47,12 @@ Sheet {
             iconName: "close"
             tint: Theme.p.error
             hoverTint: Theme.p.error
-            tip: jb.job.dismiss === "cancel" ? "Отменить установку" : "Убрать из списка"
+            tip: jb.job.dismiss === "cancel" ? qsTr("Отменить установку") : qsTr("Убрать из списка")
             onClicked: Installer.act(jb.job.id, jb.job.dismiss)
         }
         Text {
             visible: !!jb.job.id && !jb.job.primary && !jb.job.dismiss
-            text: jb.job.installed ? "✓ установлена" : (jb.job.line || "")
+            text: jb.job.installed ? qsTr("✓ установлена") : (jb.job.line || "")
             color: jb.job.installed ? Theme.p.ok : Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -116,8 +116,8 @@ Sheet {
         objectName: "installTabs"
         visible: Installer.repoName === ""
         width: parent.width
-        options: [{ id: "catalog", name: "Подборка" }, { id: "search", name: "Поиск на Hugging Face" },
-                  { id: "jobs", name: Installer.activeCount ? "Установки (" + Installer.activeCount + ")" : "Установки" }]
+        options: [{ id: "catalog", name: qsTr("Подборка") }, { id: "search", name: qsTr("Поиск на Hugging Face") },
+                  { id: "jobs", name: Installer.activeCount ? qsTr("Установки (%1)").arg(Installer.activeCount) : qsTr("Установки") }]
         value: Installer.tab
         onPicked: (id) => Installer.setTab(id)
     }
@@ -135,7 +135,7 @@ Sheet {
         }
         Note {
             visible: Installer.catalogLoading || Installer.catalogError !== ""
-            text: Installer.catalogLoading ? "Спрашиваю Hugging Face о моделях и прикидываю, что поместится…" : Installer.catalogError
+            text: Installer.catalogLoading ? qsTr("Спрашиваю Hugging Face о моделях и прикидываю, что поместится…") : Installer.catalogError
             color: Installer.catalogError !== "" ? Theme.p.error : Theme.p.faint
         }
         Repeater {
@@ -172,8 +172,8 @@ Sheet {
                             font.pixelSize: 12
                             anchors.verticalCenter: parent.verticalCenter
                         }
-                        Badge { visible: card.modelData.installed; text: "установлена"; tint: Theme.p.ok; anchors.verticalCenter: parent.verticalCenter }
-                        Badge { visible: card.modelData.gated; text: "лицензия на сайте"; tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
+                        Badge { visible: card.modelData.installed; text: qsTr("установлена"); tint: Theme.p.ok; anchors.verticalCenter: parent.verticalCenter }
+                        Badge { visible: card.modelData.gated; text: qsTr("лицензия на сайте"); tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
                     }
                     Note { text: card.modelData.about; color: Theme.p.text_soft }
                     Row {
@@ -199,12 +199,12 @@ Sheet {
                             onInstall: Installer.installRecommended(card.modelData.repo)
                         }
                         PlainButton {
-                            text: "Варианты…"
+                            text: qsTr("Варианты…")
                             onClicked: Installer.openRepo(card.modelData.repo)
                         }
                         Text {
                             visible: card.modelData.license !== ""
-                            text: "лицензия " + card.modelData.license
+                            text: qsTr("лицензия %1").arg(card.modelData.license)
                             color: Theme.p.faint
                             font.family: Theme.uiFont
                             font.pixelSize: 11
@@ -222,19 +222,18 @@ Sheet {
         width: parent.width
         spacing: 8
         Note {
-            text: "Любая модель в формате GGUF для llama.cpp. Подборка выше проверена; здесь — всё подряд, включая "
-                  + "модели со снятыми ограничениями (они помечены): решайте сами, чему доверять."
+            text: qsTr("Любая модель в формате GGUF для llama.cpp. Подборка выше проверена; здесь — всё подряд, включая модели со снятыми ограничениями (они помечены): решайте сами, чему доверять.")
             color: Theme.p.faint
         }
         Field {
             objectName: "installQuery"
             width: parent.width
-            placeholderText: "Название модели, например qwen coder"
+            placeholderText: qsTr("Название модели, например qwen coder")
             onAccepted: Installer.search(text)
         }
         Note {
             visible: Installer.searching || Installer.searchError !== ""
-            text: Installer.searching ? "Ищу на Hugging Face…" : Installer.searchError
+            text: Installer.searching ? qsTr("Ищу на Hugging Face…") : Installer.searchError
             color: Installer.searchError !== "" ? Theme.p.error : Theme.p.faint
         }
         Repeater {
@@ -295,7 +294,7 @@ Sheet {
         spacing: 10
         Row {
             spacing: 8
-            PlainButton { iconName: "back"; text: "Назад"; onClicked: Installer.closeRepo() }
+            PlainButton { iconName: "back"; text: qsTr("Назад"); onClicked: Installer.closeRepo() }
             Text {
                 text: Installer.repoName
                 color: Theme.p.text
@@ -307,30 +306,30 @@ Sheet {
         }
         Note {
             visible: Installer.repoLoading || Installer.repoError !== ""
-            text: Installer.repoLoading ? "Смотрю файлы модели и прикидываю память…" : Installer.repoError
+            text: Installer.repoLoading ? qsTr("Смотрю файлы модели и прикидываю память…") : Installer.repoError
             color: Installer.repoError !== "" ? Theme.p.error : Theme.p.faint
         }
         Note { visible: Installer.repo.notes !== undefined; text: Installer.repo.notes || "" }
         Note {
             visible: !!Installer.repo.unrestricted
-            text: "У этой модели сняты ограничения (abliterated / uncensored): она не откажется от опасных просьб. Ставьте, только если понимаете зачем."
+            text: qsTr("У этой модели сняты ограничения (abliterated / uncensored): она не откажется от опасных просьб. Ставьте, только если понимаете зачем.")
             color: Theme.p.warn
         }
         Note {
             visible: !!Installer.repo.gated
-            text: "Модель закрыта: примите её лицензию на странице модели на huggingface.co и добавьте токен в «Подключениях»."
+            text: qsTr("Модель закрыта: примите её лицензию на странице модели на huggingface.co и добавьте токен в «Подключениях».")
             color: Theme.p.warn
         }
         Segmented {
             objectName: "installProjector"
             visible: !!Installer.repo.projector
             width: parent.width
-            options: [{ id: "on", name: Installer.repo.projectorText || "" }, { id: "off", name: "Без картинок" }]
+            options: [{ id: "on", name: Installer.repo.projectorText || "" }, { id: "off", name: qsTr("Без картинок") }]
             value: Installer.projector ? "on" : "off"
             onPicked: (id) => Installer.setProjector(id === "on")
         }
         Text {
-            text: "Куда сохранить"
+            text: qsTr("Куда сохранить")
             color: Theme.p.muted
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -349,7 +348,7 @@ Sheet {
                 id: ownFolder
                 objectName: "installFolder"
                 width: parent.width - browse.width - parent.spacing
-                placeholderText: "Или своя папка, например F:\\Модели (необязательно)"
+                placeholderText: qsTr("Или своя папка, например F:\\Модели (необязательно)")
                 text: Installer.folder
                 onEditingFinished: Installer.setFolder(text)
             }
@@ -357,13 +356,13 @@ Sheet {
                 id: browse
                 objectName: "installBrowse"
                 iconName: "folder"
-                text: "Обзор…"
+                text: qsTr("Обзор…")
                 onClicked: folderPick.open()
             }
         }
         FolderDialog {
             id: folderPick
-            title: "Папка для моделей"
+            title: qsTr("Папка для моделей")
             onAccepted: Installer.setFolder(selectedFolder.toString())
         }
         Text {
@@ -371,7 +370,7 @@ Sheet {
             visible: Installer.target !== ""
             width: parent.width
             wrapMode: Text.WrapAnywhere
-            text: "Сохранится в: " + Installer.target
+            text: qsTr("Сохранится в: %1").arg(Installer.target)
             color: Theme.p.faint
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -397,7 +396,7 @@ Sheet {
                         spacing: 2
                         Text {
                             text: variant.modelData.quant + " · " + variant.modelData.size
-                                  + (variant.modelData.recommended ? "  — рекомендую"
+                                  + (variant.modelData.recommended ? qsTr("  — рекомендую")
                                      : variant.modelData.pick !== "" ? "  — " + variant.modelData.pick : "")
                             color: Theme.p.text
                             font.family: Theme.uiFont
@@ -444,7 +443,7 @@ Sheet {
         spacing: 8
         Note {
             visible: Installer.jobs.length === 0
-            text: "Установок пока нет. Выберите модель в «Подборке»."
+            text: qsTr("Установок пока нет. Выберите модель в «Подборке».")
             color: Theme.p.faint
         }
         Repeater {
