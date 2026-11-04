@@ -103,6 +103,19 @@ as in `requirements.lock`, and the code of `hub`, `app`, `common`; the built fol
 text needs its English in the catalog — `python -m common.i18n_catalog --sync` adds the missing keys, and the tests
 fail until each has a translation.
 
+## Claude Code and your subscription
+
+AFO never signs in to a Claude account and never asks for a password or a token. Chats with the “Claude Code” model
+run your own `claude` — Anthropic's official CLI, unmodified, which you signed in to yourself through Anthropic's own
+page: it works on your subscription or your API key, and AFO neither reads nor keeps its tokens. Other programs cannot
+reach Claude Code through AFO: the hub's OpenAI-compatible server does not offer it, and the hub listens on `127.0.0.1`
+only. AFO is not affiliated with or endorsed by Anthropic.
+
+The Pro and Max plans' limits are meant for one person's ordinary use. Scheduled agents, the Goal mode and the models'
+exam can run Claude Code often and without you — for that kind of work a Claude model with an API key (Connections) is
+the safer choice. Anthropic's terms: [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
+[Usage Policy](https://www.anthropic.com/legal/aup).
+
 ## License
 
 AFO is free software: you can use, study, change and share it under the GNU General Public License, version 3 or (at
