@@ -34,6 +34,15 @@
 | GET | `/v1/status` | токен | GPU, memory and the loaded local model (the latest sample, or a fresh one), plus busy chats. The same picture arrives as `system.status` events whenever it changes. |  |
 | POST | `/v1/shutdown` | только окно | Graceful stop: the hub finishes requests, publishes hub.stopping and removes hub.json. |  |
 
+### language
+
+/v1/language - the language of what the hub writes for people (step 10.5): the desktop app chooses it (Settings → Language) and tells it again on every connect.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/language` | только окно | `get_language()` |  |
+| PUT | `/v1/language` | только окно | `set_language()` | тело `{language: str}` |
+
 ### models
 
 /v1/models - the model catalog (D5-D7); /v1/models/sync - refresh it from the providers.

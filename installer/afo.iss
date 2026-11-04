@@ -54,6 +54,9 @@ russian.AtLogin=Запускать хаб при входе в Windows (моде
 english.AtLogin=Start the hub when I sign in to Windows (models and projects ready before the window opens)
 russian.Starting=Запуск:
 english.Starting=Starting:
+; the program's language until one is chosen in its Settings (common/i18n.py reads it)
+russian.LanguageCode=ru
+english.LanguageCode=en
 russian.DeleteData=Удалить и данные AFO — разговоры, настройки, журналы — и скачанные модели?%n%nЕсли их оставить, они пригодятся, когда AFO будет установлен снова.
 english.DeleteData=Also delete AFO's data - chats, settings, logs - and the downloaded models?%n%nKept, they are there when AFO is installed again.
 russian.DirTooLong=Путь к папке слишком длинный: Windows не запишет в неё самые глубокие файлы программы. Вернитесь и выберите папку с путём не длиннее %1 знаков — например, предложенную.
@@ -81,6 +84,8 @@ Name: "{autodesktop}\AFO"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m
 [Registry]
 ; the value «Settings → Start» turns on and off (hub/autostart.py RUN_VALUE, login_command)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AFO hub"; ValueData: """{app}\python\pythonw.exe"" -m hub"; Flags: uninsdeletevalue; Tasks: atlogin
+; the language the wizard was run in: AFO's too, until one is chosen in Settings (common/i18n.py)
+Root: HKCU; Subkey: "Software\AFO"; ValueType: string; ValueName: "Language"; ValueData: "{cm:LanguageCode}"; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: "-m app"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,AFO}"; Flags: postinstall nowait skipifsilent

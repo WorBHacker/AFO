@@ -591,6 +591,10 @@ class HubClient:
     def autostart(self) -> dict:
         return self._call("GET", "/v1/autostart")
 
+    def set_language(self, code: str) -> dict:
+        """The language of what the hub writes for people: the window's (10.5)."""
+        return self._call("PUT", "/v1/language", {"language": code})
+
     def set_autostart(self, **change: bool | str) -> dict:
         """login (the hub at Windows login), llama_swap (the hub starts it); llama_swap_config, llama_swap_start - the
         files chosen in the window ('' - the default; 10.3)."""

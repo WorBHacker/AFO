@@ -580,7 +580,7 @@ class ModelSetup(QObject):
 
     @Property(list, constant=True)
     def efforts(self) -> list:
-        return [{"id": "", "name": "как в чате"}] + [{"id": v, "name": label} for v, label in presenter.EFFORTS]
+        return [{"id": "", "name": "как в чате"}] + [{"id": v, "name": label} for v, label in presenter.efforts()]
 
     @Property("QVariantMap", notify=changed)
     def draft(self) -> dict:

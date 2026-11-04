@@ -18,6 +18,7 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 
+from common import i18n
 from common.paths import DataPaths
 
 from .. import palette, presenter
@@ -51,6 +52,7 @@ from .setup_view import SetupView
 from .terminals import Terminals
 from .theme import Theme
 from .transfer_view import TransferView
+from .translator import LANGUAGE_KEY
 
 log = logging.getLogger("app.ui")
 
@@ -155,6 +157,7 @@ class Controller(QObject):
     draftRestored = Signal(str)  # a message that did not go out comes back to the composer
     uiRequested = Signal(str)  # the view should open something: "models", "budgets", "settings", "rename", ...
     budgetError = Signal(str)  # the hub refused a budget (e.g. a warning above the limit)
+    restartRequested = Signal()  # another language: the window opens again in it (10.5)
 
     def __init__(self, paths: DataPaths, settings: QSettings, theme: Theme, parent: QObject | None = None):
         super().__init__(parent)
@@ -389,11 +392,11 @@ class Controller(QObject):
 
     @Property(str, notify=effortChanged)
     def effortLabel(self) -> str:
-        return dict(presenter.EFFORTS).get(self._effort, self._effort)
+        return dict(presenter.efforts()).get(self._effort, self._effort)
 
     @Property(list, constant=True)
     def efforts(self) -> list:
-        return [{"value": v, "label": label} for v, label in presenter.EFFORTS]
+        return [{"value": v, "label": label} for v, label in presenter.efforts()]
 
     @Property(bool, notify=busyChanged)
     def busyNow(self) -> bool:
@@ -474,11 +477,11 @@ class Controller(QObject):
 
     @Property(list, constant=True)
     def budgetPeriods(self) -> list:
-        return [{"id": v, "name": label} for v, label in presenter.PERIODS]
+        return [{"id": v, "name": label} for v, label in presenter.periods()]
 
     @Property(list, constant=True)
     def budgetActions(self) -> list:
-        return [{"id": v, "name": label} for v, label in presenter.HARD_ACTIONS]
+        return [{"id": v, "name": label} for v, label in presenter.hard_actions()]
 
     @Property(bool, notify=keyChanged)
     def keySet(self) -> bool:
@@ -643,6 +646,9 @@ class Controller(QObject):
         self.hubChanged.emit()
 
     def reload_all(self) -> None:
+        # the hub writes for people in the window's language: one started at login, or by another window, may not
+        # know it yet (10.5)
+        self._call(lambda: self.client.set_language(i18n.language()), lambda _found: None, lambda _e: None)
         # first: on a computer without an engine the wizard opens by itself (10.2) - right away, not ~15 s later
         # behind the other calls (4 threads), over whatever the user has started doing by then (2026-10-28)
         self.setup_view.load()
@@ -1892,6 +1898,30 @@ class Controller(QObject):
     def setTheme(self, mode: str) -> None:
         self.settings.setValue("ui/theme", mode)
         self.theme.setMode(mode)
+
+    @Property(str, constant=True)
+    def language(self) -> str:
+        return i18n.language()
+
+    @Property(list, constant=True)
+    def languages(self) -> list:
+        """Each in its own words: Русский, English."""
+        return [{"id": code, "name": name} for code, name in i18n.LANGUAGES.items()]
+
+    @Slot(str)
+    def setLanguage(self, code: str) -> None:
+        """Another language (10.5): kept, told to the hub, and the window opens again in it - its texts are made as
+        it starts. The hub, its chats and agents go on (D2)."""
+        if code == i18n.language() or code not in i18n.LANGUAGES:
+            return
+        self.settings.setValue(LANGUAGE_KEY, code)
+        self.settings.sync()
+        if self.client is not None:
+            try:
+                self.client.set_language(code)  # now, not in the background: the window goes next
+            except HubError as exc:
+                log.warning("the hub was not told the language (it hears it on the next connect): %s", exc)
+        self.restartRequested.emit()
 
     def _restyle(self) -> None:
         """A theme switch: the messages' HTML carries the old colours, render it again."""

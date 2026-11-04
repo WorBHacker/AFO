@@ -92,6 +92,16 @@ def test_the_wizard_agrees_with_the_program():
     assert "russian.DeleteData=" in iss and "english.DeleteData=" in iss and "MB_DEFBUTTON2" in iss  # «no» first
     assert "-m hub stop" in iss  # the running hub lets its files go before they are replaced or removed
     assert not re.search(r"all\s+for\s+one", iss, re.I)
+    # the wizard's language is the program's until Settings chooses one (10.5)
+    from common import i18n
+
+    assert (
+        f'Subkey: "{i18n.INSTALLER_KEY}"; ValueType: string; ValueName: "Language"; ValueData: "{{cm:LanguageCode}}"'
+        in iss
+    )
+    assert {re.search(rf"^{name}\.LanguageCode=(\w+)$", iss, re.M).group(1) for name in ("russian", "english")} == set(
+        i18n.LANGUAGES
+    )
 
 
 def test_the_icon_has_every_size_windows_asks_for():

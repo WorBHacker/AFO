@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+from common import i18n
 from common.paths import DATA_DIR_ENV, HOME_ENV, MODELS_ENV
 from hub.autostart import LLAMA_SWAP_START_ENV, RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
@@ -31,6 +32,16 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(HOME_ENV, str(tmp_path / "localchat-home"))
     monkeypatch.setenv(MODELS_ENV, str(tmp_path / "localchat-model"))  # nor models into the checkout's `model` folder
     return data
+
+
+@pytest.fixture(autouse=True)
+def russian(monkeypatch):
+    """Russian - the code's own texts, which the tests compare - in the test and in the hubs it starts, whatever this
+    computer's language and whatever language a test switched to (10.5)."""
+    monkeypatch.setenv(i18n.ENV, i18n.SOURCE)
+    i18n.set_language(i18n.SOURCE)
+    yield
+    i18n.set_language(i18n.SOURCE)
 
 
 class StandInClipboard:

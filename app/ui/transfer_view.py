@@ -31,7 +31,7 @@ ACTIONS = {"add": ("добавится", "ok"), "change": ("изменится",
 
 def window_values(models: dict[str, Any]) -> dict[str, dict[str, str]]:
     """What each of the window's keys may be, as a person reads it."""
-    return {"ui/theme": THEMES, "chat/priority": PRIORITIES, "chat/effort": dict(presenter.EFFORTS),
+    return {"ui/theme": THEMES, "chat/priority": PRIORITIES, "chat/effort": dict(presenter.efforts()),
             "chat/model": {mid: m.get("name") or mid for mid, m in models.items()},
             LEVEL_KEY: {a: name for a, name, _hint in AUTONOMY}}  # fmt: skip
 

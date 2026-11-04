@@ -7,40 +7,58 @@ import QtQuick.Dialogs
 Sheet {
     id: sheet
     objectName: "settingsSheet"
-    title: "Настройки"
+    title: qsTr("Настройки")
     iconName: "sliders"
 
-    SectionTitle { text: "Тема" }
+    // both words, whatever the window's language: whoever cannot read one finds the other (10.5)
+    SectionTitle { text: "Язык · Language" }  // i18n: keep
+    Segmented {
+        objectName: "language"
+        width: parent.width
+        options: App.languages
+        value: App.language
+        onPicked: (id) => App.setLanguage(id)
+    }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: qsTr("Окно откроется заново на выбранном языке; разговоры и агенты в хабе продолжат работу.")
+        color: Theme.p.faint
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+
+    SectionTitle { text: qsTr("Тема") }
     Segmented {
         width: parent.width
         options: [
-            { id: "system", name: "Как в системе" },
-            { id: "light", name: "Светлая" },
-            { id: "dark", name: "Тёмная" }
+            { id: "system", name: qsTr("Как в системе") },
+            { id: "light", name: qsTr("Светлая") },
+            { id: "dark", name: qsTr("Тёмная") }
         ]
         value: Theme.mode
         onPicked: (id) => App.setTheme(id)
     }
 
-    SectionTitle { text: "Подбор модели: что важнее" }
+    SectionTitle { text: qsTr("Подбор модели: что важнее") }
     Segmented {
         objectName: "priority"
         width: parent.width
         options: [
-            { id: "balanced", name: "Баланс" },
-            { id: "quality", name: "Качество" },
-            { id: "speed", name: "Скорость" },
-            { id: "price", name: "Цена" }
+            { id: "balanced", name: qsTr("Баланс") },
+            { id: "quality", name: qsTr("Качество") },
+            { id: "speed", name: qsTr("Скорость") },
+            { id: "price", name: qsTr("Цена") }
         ]
         value: App.priority
         onPicked: (id) => App.setPriority(id)
     }
 
-    SectionTitle { text: "Модели" }
+    SectionTitle { text: qsTr("Модели") }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Для каждой модели: показывать ли в выборе, своё имя, параметры ответа, системный промпт, цены."
+        text: qsTr("Для каждой модели: показывать ли в выборе, своё имя, параметры ответа, системный промпт, цены.")
         color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -48,28 +66,28 @@ Sheet {
     PlainButton {
         objectName: "openModelSettings"
         iconName: "sliders"
-        text: "Настройка моделей…"
+        text: qsTr("Настройка моделей…")
         onClicked: { sheet.close(); App.openUi("model-settings") }
     }
     PlainButton {
         objectName: "openInstallModels"
         iconName: "download"
-        text: "Установить локальную модель…"
+        text: qsTr("Установить локальную модель…")
         onClicked: { sheet.close(); App.openUi("install-models") }
     }
     PlainButton {
         objectName: "openWizard"
         iconName: "sparkle"
-        text: "Мастер первого запуска…"
+        text: qsTr("Мастер первого запуска…")
         onClicked: { sheet.close(); App.openUi("setup") }
     }
 
-    SectionTitle { text: "Подключения" }
+    SectionTitle { text: qsTr("Подключения") }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Ключи API (Anthropic, Gemini, поиск) и токен Telegram-бота — под паролем подключений. "
-              + (App.keySet ? "Ключ Anthropic задан." : "Ключ Anthropic не задан — модели Claude по ключу недоступны.")
+        text: (App.keySet ? qsTr("Ключи API (Anthropic, Gemini, поиск) и токен Telegram-бота — под паролем подключений. Ключ Anthropic задан.")
+                          : qsTr("Ключи API (Anthropic, Gemini, поиск) и токен Telegram-бота — под паролем подключений. Ключ Anthropic не задан — модели Claude по ключу недоступны."))
         color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -77,15 +95,15 @@ Sheet {
     PlainButton {
         objectName: "openConnections"
         iconName: "key"
-        text: "Открыть подключения…"
+        text: qsTr("Открыть подключения…")
         onClicked: { sheet.close(); App.openUi("connections") }
     }
 
-    SectionTitle { text: "Автономный агент" }
+    SectionTitle { text: qsTr("Автономный агент") }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Программы, которыми агент может управлять: хаб находит их сам и спрашивает о каждой новой."
+        text: qsTr("Программы, которыми агент может управлять: хаб находит их сам и спрашивает о каждой новой.")
         color: Theme.p.text_soft
         font.family: Theme.uiFont
         font.pixelSize: 13
@@ -93,20 +111,20 @@ Sheet {
     PlainButton {
         objectName: "openPrograms"
         iconName: "shield"
-        text: "Программы для агента…"
+        text: qsTr("Программы для агента…")
         onClicked: { sheet.close(); App.openUi("programs") }
     }
     PlainButton {
         objectName: "openAgentAccess"
         iconName: "folder"
-        text: "Папки и сайты для агента…"
+        text: qsTr("Папки и сайты для агента…")
         onClicked: { sheet.close(); App.openUi("agent-access") }
     }
     Row {
         objectName: "quietHours"
         spacing: 8
         Text {
-            text: "Тихие часы: с"
+            text: qsTr("Тихие часы: с")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -120,7 +138,7 @@ Sheet {
             onEditingFinished: Schedules.setQuiet(Schedules.quiet.enabled !== false, quietFrom.text, quietTo.text)
         }
         Text {
-            text: "до"
+            text: qsTr("до")
             color: Theme.p.text_soft
             font.family: Theme.uiFont
             font.pixelSize: 13
@@ -135,7 +153,7 @@ Sheet {
         }
         Segmented {
             objectName: "quietEnabled"
-            options: [{ id: "on", name: "вкл" }, { id: "off", name: "выкл" }]
+            options: [{ id: "on", name: qsTr("вкл") }, { id: "off", name: qsTr("выкл") }]
             value: Schedules.quiet.enabled === false ? "off" : "on"
             onPicked: (id) => Schedules.setQuiet(id === "on", quietFrom.text, quietTo.text)
         }
@@ -149,7 +167,7 @@ Sheet {
         font.pixelSize: 12
     }
 
-    SectionTitle { text: "Запуск" }
+    SectionTitle { text: qsTr("Запуск") }
     Column {
         width: parent.width
         spacing: 6
@@ -185,13 +203,13 @@ Sheet {
         }
         Switch {
             objectName: "autostartLogin"
-            text: "Запускать хаб при входе в Windows"
+            text: qsTr("Запускать хаб при входе в Windows")
             checked: !!App.autostart.login
             onToggled: App.setAutostart("login", checked)
         }
         Switch {
             objectName: "autostartLlamaSwap"
-            text: "Хаб сам запускает llama-swap, если тот не отвечает"
+            text: qsTr("Хаб сам запускает llama-swap, если тот не отвечает")
             checked: App.autostart.llama_swap !== false
             onToggled: App.setAutostart("llama_swap", checked)
         }
@@ -199,7 +217,7 @@ Sheet {
             width: parent.width
             wrapMode: Text.Wrap
             visible: App.autostart.llama_swap_script !== undefined && !App.autostart.llama_swap_found
-            text: "Запуск llama-swap не найден: " + (App.autostart.llama_swap_script || "")
+            text: qsTr("Запуск llama-swap не найден: %1").arg(App.autostart.llama_swap_script || "")
             color: Theme.p.warn
             font.family: Theme.uiFont
             font.pixelSize: 12
@@ -207,9 +225,9 @@ Sheet {
         // where llama-swap is (10.3): chosen here, or AFO's default
         Repeater {
             model: [
-                { id: "llama_swap_config", name: "Конфиг llama-swap", path: App.autostart.llama_swap_config || "",
+                { id: "llama_swap_config", name: qsTr("Конфиг llama-swap"), path: App.autostart.llama_swap_config || "",
                   found: App.autostart.llama_swap_config_found, source: App.autostart.llama_swap_config_source || "" },
-                { id: "llama_swap_start", name: "Запуск llama-swap", path: App.autostart.llama_swap_script || "",
+                { id: "llama_swap_start", name: qsTr("Запуск llama-swap"), path: App.autostart.llama_swap_script || "",
                   found: App.autostart.llama_swap_found, source: App.autostart.llama_swap_script_source || "" }
             ]
             delegate: Column {
@@ -221,9 +239,9 @@ Sheet {
                     width: parent.width
                     wrapMode: Text.WrapAnywhere
                     text: place.modelData.name + ": " + (place.modelData.path || "—")
-                          + (place.modelData.source === "chosen" ? " (выбран вами)"
-                             : place.modelData.source === "env" ? " (задан переменной окружения)" : "")
-                          + (place.modelData.found === false ? " — файла нет" : "")
+                          + (place.modelData.source === "chosen" ? qsTr(" (выбран вами)")
+                             : place.modelData.source === "env" ? qsTr(" (задан переменной окружения)") : "")
+                          + (place.modelData.found === false ? qsTr(" — файла нет") : "")
                     color: place.modelData.found === false ? Theme.p.warn : Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 12
@@ -233,12 +251,12 @@ Sheet {
                     PlainButton {
                         objectName: "choose_" + place.modelData.id
                         iconName: "folder"
-                        text: "Выбрать…"
+                        text: qsTr("Выбрать…")
                         onClicked: { pathDialog.what = place.modelData.id; pathDialog.open() }
                     }
                     PlainButton {
                         visible: place.modelData.source === "chosen"
-                        text: "По умолчанию"
+                        text: qsTr("По умолчанию")
                         onClicked: App.chooseLlamaSwap(place.modelData.id, "")
                     }
                 }
@@ -247,18 +265,18 @@ Sheet {
         FileDialog {
             id: pathDialog
             property string what
-            title: what === "llama_swap_config" ? "Конфиг llama-swap" : "Программа или скрипт запуска llama-swap"
+            title: what === "llama_swap_config" ? qsTr("Конфиг llama-swap") : qsTr("Программа или скрипт запуска llama-swap")
             fileMode: FileDialog.OpenFile
-            nameFilters: what === "llama_swap_config" ? ["Конфиг llama-swap (*.yaml *.yml)"]
-                                                       : ["llama-swap или скрипт (*.exe *.cmd *.bat)"]
+            nameFilters: what === "llama_swap_config" ? [qsTr("Конфиг llama-swap (*.yaml *.yml)")]
+                                                       : [qsTr("llama-swap или скрипт (*.exe *.cmd *.bat)")]
             onAccepted: App.chooseLlamaSwap(what, selectedFile.toString())
         }
     }
 
-    SectionTitle { text: "Хаб" }
+    SectionTitle { text: qsTr("Хаб") }
     Text {
         width: parent.width
-        text: "Адрес 127.0.0.1" + App.hubPort + " · данные в " + App.dataDir
+        text: qsTr("Адрес 127.0.0.1%1 · данные в %2").arg(App.hubPort).arg(App.dataDir)
         wrapMode: Text.Wrap
         color: Theme.p.muted
         font.family: Theme.uiFont
@@ -267,24 +285,22 @@ Sheet {
     Flow {
         width: parent.width
         spacing: 8
-        PlainButton { iconName: "refresh"; text: "Обновить список моделей"; onClicked: App.syncModels() }
-        PlainButton { iconName: "folder"; text: "Открыть папку данных"; onClicked: App.openFolder(App.dataDir) }
+        PlainButton { iconName: "refresh"; text: qsTr("Обновить список моделей"); onClicked: App.syncModels() }
+        PlainButton { iconName: "folder"; text: qsTr("Открыть папку данных"); onClicked: App.openFolder(App.dataDir) }
         PlainButton {
             objectName: "openCheck"
             iconName: "activity"
-            text: "Проверить систему…"
+            text: qsTr("Проверить систему…")
             onClicked: { sheet.close(); App.openUi("check-system") }
         }
-        PlainButton { iconName: "cpu"; text: "Выгрузить локальную модель"; onClicked: App.unloadLocal() }
-        PlainButton { kind: "danger"; iconName: "power"; text: "Остановить хаб и выйти"; onClicked: App.stopHub() }
+        PlainButton { iconName: "cpu"; text: qsTr("Выгрузить локальную модель"); onClicked: App.unloadLocal() }
+        PlainButton { kind: "danger"; iconName: "power"; text: qsTr("Остановить хаб и выйти"); onClicked: App.stopHub() }
     }
     // D30: snapshots of changed files, the agent's screen snapshots, terminal logs - a term and a size per kind
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Хранение: копии файлов до и после правок моделей (для отката), снимки экрана агента и журналы "
-              + "терминалов. Старше срока или сверх предела — удаляются, сначала самые старые; разговоры, задачи и "
-              + "расходы хранятся всегда."
+        text: qsTr("Хранение: копии файлов до и после правок моделей (для отката), снимки экрана агента и журналы терминалов. Старше срока или сверх предела — удаляются, сначала самые старые; разговоры, задачи и расходы хранятся всегда.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -292,7 +308,7 @@ Sheet {
     Flow {
         width: parent.width
         spacing: 8
-        Text { text: "Хранить, дней"; color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Text { text: qsTr("Хранить, дней"); color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
         Field {
             id: keepDays
             objectName: "retentionDays"
@@ -300,7 +316,7 @@ Sheet {
             text: App.retention.days || ""
             onEditingFinished: App.setRetention(text, keepGb.text)
         }
-        Text { text: "не больше, ГБ каждого вида"; color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Text { text: qsTr("не больше, ГБ каждого вида"); color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
         Field {
             id: keepGb
             objectName: "retentionGb"
@@ -311,7 +327,7 @@ Sheet {
         PlainButton {
             objectName: "retentionPrune"
             iconName: "trash"
-            text: "Очистить старое сейчас"
+            text: qsTr("Очистить старое сейчас")
             onClicked: App.pruneKept()
         }
     }
@@ -320,19 +336,17 @@ Sheet {
         visible: text !== ""
         width: parent.width
         wrapMode: Text.Wrap
-        text: App.retention.usage ? "Сейчас: " + App.retention.usage : ""
+        text: App.retention.usage ? qsTr("Сейчас: %1").arg(App.retention.usage) : ""
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
 
-    SectionTitle { text: "Перенос настроек" }
+    SectionTitle { text: qsTr("Перенос настроек") }
     Text {
         width: parent.width
         wrapMode: Text.Wrap
-        text: "Все настройки одним файлом: модели, бюджеты, проекты и их правила, агенты, расписания, папки и сайты "
-              + "агента, тихие часы, подключения без ключей, MCP-серверы, тема окна. Ключей, паролей и разговоров в "
-              + "файле нет. Перед загрузкой видно, что изменится."
+        text: qsTr("Все настройки одним файлом: модели, бюджеты, проекты и их правила, агенты, расписания, папки и сайты агента, тихие часы, подключения без ключей, MCP-серверы, тема окна. Ключей, паролей и разговоров в файле нет. Перед загрузкой видно, что изменится.")
         color: Theme.p.muted
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -343,36 +357,36 @@ Sheet {
         PlainButton {
             objectName: "exportSettings"
             iconName: "external"
-            text: "Сохранить все настройки в файл…"
+            text: qsTr("Сохранить все настройки в файл…")
             onClicked: settingsOut.open()
         }
         PlainButton {
             objectName: "importSettings"
             iconName: "download"
-            text: "Загрузить из файла…"
+            text: qsTr("Загрузить из файла…")
             onClicked: settingsIn.open()
         }
     }
     FileDialog {
         id: settingsOut
-        title: "Сохранить все настройки"
+        title: qsTr("Сохранить все настройки")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "json"
-        nameFilters: ["Настройки AFO (*.json)"]
+        nameFilters: [qsTr("Настройки AFO (*.json)")]
         onAccepted: Transfer.exportTo(selectedFile.toString())
     }
     FileDialog {
         id: settingsIn
-        title: "Загрузить настройки"
+        title: qsTr("Загрузить настройки")
         fileMode: FileDialog.OpenFile
-        nameFilters: ["Настройки AFO (*.json)"]
+        nameFilters: [qsTr("Настройки AFO (*.json)")]
         onAccepted: if (Transfer.openFile(selectedFile.toString())) { sheet.close(); App.openUi("transfer") }
     }
 
-    SectionTitle { text: "О программе" }
+    SectionTitle { text: qsTr("О программе") }
     Text {
         width: parent.width
-        text: "AFO " + App.version + " · окно рисует процессор, видеопамять остаётся моделям"
+        text: qsTr("AFO %1 · окно рисует процессор, видеопамять остаётся моделям").arg(App.version)
         wrapMode: Text.Wrap
         color: Theme.p.faint
         font.family: Theme.uiFont

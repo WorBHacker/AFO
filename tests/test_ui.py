@@ -299,6 +299,7 @@ class FakeClient:
         self.key = False
         self.password = None  # the connections' (D13)
         self.started = {"login": False, "llama_swap": True, "llama_swap_found": True, "llama_swap_script": "x.cmd"}
+        self.languages = []  # what the window told the hub (10.5)
         self.ticket = ""
         self.chosen = []
         self.project_list = [dict(PROJECT)]
@@ -1330,6 +1331,10 @@ class FakeClient:
         self.started.update(change)
         return dict(self.started)
 
+    def set_language(self, code):
+        self.languages.append(code)
+        return {"language": code}
+
     def claude_code(self):
         return {"installed": True, "command": ["claude.exe"], "detail": "", "running": []}
 
@@ -1771,6 +1776,23 @@ def test_a_chat_is_laid_out_off_the_windows_thread(app, monkeypatch):
     app.openChat("c1")
     wait_until(lambda: len(app.messages.rows) == 2)
     assert palette.LIGHT.text_soft in app.messages.rows[1]["segments"][0]["html"]
+
+
+def test_the_language_switch_keeps_the_choice_tells_the_hub_and_opens_the_window_again(app):
+    """Settings → «Язык · Language» (10.5): the choice is kept in app.ini, the hub hears it at once (it heard the
+    window's language on connect too), and the window opens again - its texts are made as it starts."""
+    from app.ui.translator import LANGUAGE_KEY
+
+    assert app.language == "ru" and [(x["id"], x["name"]) for x in app.languages] == [("ru", "Русский"),
+                                                                                       ("en", "English")]  # fmt: skip
+    assert app.client.languages == ["ru"]  # told on connect
+    again = []
+    app.restartRequested.connect(lambda: again.append(True))
+    app.setLanguage("ru")
+    app.setLanguage("xx")
+    assert again == [] and app.client.languages == ["ru"]  # the same language, or none AFO speaks: nothing
+    app.setLanguage("en")
+    assert app.settings.value(LANGUAGE_KEY) == "en" and app.client.languages == ["ru", "en"] and again == [True]
 
 
 def test_theme_switch_rerenders_the_html(app):

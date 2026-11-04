@@ -158,7 +158,7 @@ def budget_items(budgets: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if soft is not None:
             parts.append(f"предупредить с {presenter.money(soft)}")
         if hard is not None:
-            action = dict(presenter.HARD_ACTIONS).get(b.get("hard_action"), "")
+            action = dict(presenter.hard_actions()).get(b.get("hard_action"), "")
             parts.append(f"после лимита — {action}")
         cards.append(
             {

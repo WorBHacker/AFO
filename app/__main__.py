@@ -13,7 +13,7 @@ import logging
 import sys
 
 from PySide6 import __version__ as pyside_version
-from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+from PySide6.QtCore import QSettings, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from common import __version__
@@ -21,8 +21,8 @@ from common.logging_setup import setup_logging
 from common.paths import data_paths
 from hub.secret_filter import clean
 
-from .ui import brand
-from .ui.main import QuickApp, install_russian, use_software_rendering
+from .ui import brand, translator
+from .ui.main import QuickApp, use_software_rendering
 
 APP_ID = "AFO.App"  # the taskbar's group: the window's, and the installer's shortcuts' (installer/afo.iss)
 
@@ -43,8 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])  # QtWidgets for the tray icon and its menu (D21); QML runs on it
     app.setApplicationName("AFO")
     app.setWindowIcon(brand.icon())
-    install_russian(app)
-    quick = QuickApp(app, data_paths().ensure(), connect=not args.smoke)
+    paths = data_paths().ensure()
+    language = translator.use(app, QSettings(str(paths.root / "app.ini"), QSettings.Format.IniFormat))
+    log.info("language: %s", language)
+    quick = QuickApp(app, paths, connect=not args.smoke)
     if args.smoke:
         log.info("smoke check: the window was built (%d QML warnings)", len(quick.warnings))
         quick.close()

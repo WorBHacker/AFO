@@ -9,7 +9,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QLocale, QPoint, QSettings, QTimer, QTranslator
+from PySide6.QtCore import QPoint, QProcess, QSettings, QTimer
 from PySide6.QtGui import QGuiApplication, QWindow
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
@@ -31,14 +31,6 @@ QML_DIR = Path(__file__).parent / "qml"
 def use_software_rendering() -> None:
     """Must run before the first Qt Quick window exists."""
     QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
-
-
-def install_russian(app: QGuiApplication) -> None:
-    """Qt's own words in Russian, like the rest of the window."""
-    translator = QTranslator(app)
-    folder = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
-    if translator.load(QLocale(QLocale.Language.Russian), "qtbase", "_", folder):
-        app.installTranslator(translator)
 
 
 def native_frame_touches(window: QWindow) -> None:
@@ -146,6 +138,7 @@ class QuickApp:
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
         self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
         self.notifier.opened.connect(self._front)
+        self.controller.restartRequested.connect(self.restart)
         self.notifier.quiet = self.controller.schedules_view.quiet_now  # notices wait out the quiet hours (Q23)
         view = self.controller.computer_view  # «Стоп» in the tray's menu too, while the agent acts (D41)
         view.changed.connect(lambda: self.notifier.show_stop(view.active, view.stop))
@@ -163,6 +156,14 @@ class QuickApp:
         self.window.raise_()
         self.window.requestActivate()
         self.controller.approvals.show_latest()
+
+    def restart(self) -> None:
+        """Another language (Settings, 10.5): this window goes and a new one opens, its texts made in that language
+        as it starts. The hub, its chats and agents go on (D2)."""
+        if self.window is not None:
+            save_geometry(self.window, self.settings)  # before the new window reads it
+        QProcess.startDetached(sys.executable, ["-m", "app"], str(Path.cwd()))
+        QGuiApplication.instance().quit()
 
     def _warned(self, warnings) -> None:
         for warning in warnings:

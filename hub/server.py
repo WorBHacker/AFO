@@ -14,7 +14,7 @@ from starlette.routing import Route
 
 from common import __version__
 
-from . import autostart, mcp_server
+from . import autostart, language, mcp_server
 from .agent_tools import AgentToolbox
 from .agents import AgentRunner
 from .api import (
@@ -55,6 +55,9 @@ from .api import (
 )
 from .api import (
     autostart as autostart_api,
+)
+from .api import (
+    language as language_api,
 )
 from .api.model_settings import run_check
 from .approvals import ApprovalQueue
@@ -110,6 +113,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
         load_token_files(paths.tokens)  # masked in all a model sees, by value (D46)
         db.call(autostart.load_choices)  # llama-swap's config and its start, as chosen in the window (10.3)
+        log.info("language: %s", db.call(language.load))  # what the hub writes for people (10.5)
         bus = EventBus(db)
         secrets_store = secret_store if secret_store is not None else default_secret_store()
         gateway = build_default_gateway(db, settings.llama_swap_url, secrets_store)
@@ -264,6 +268,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     # set by `python -m hub` once the server object exists; POST /v1/shutdown calls it
     app.state.request_shutdown = None
     app.include_router(system.router)
+    app.include_router(language_api.router)
     app.include_router(events_ws.router)
     app.include_router(models.router)
     app.include_router(model_settings.router)

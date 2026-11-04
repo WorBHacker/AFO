@@ -6,27 +6,34 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from common.i18n import N_, plural, tr
+
+__all__ = ["plural"]  # presenter.plural: the views' plural forms (common.i18n)
+
 EFFORTS = [
-    ("low", "низкая"),
-    ("medium", "средняя"),
-    ("high", "высокая"),
-    ("xhigh", "очень высокая"),
-    ("max", "максимальная"),
+    ("low", N_("низкая")),
+    ("medium", N_("средняя")),
+    ("high", N_("высокая")),
+    ("xhigh", N_("очень высокая")),
+    ("max", N_("максимальная")),
 ]
-STATE_NAMES = {"ready": "готова", "starting": "загружается", "stopping": "выгружается", "shutdown": "выгружается"}
+STATE_NAMES = {"ready": N_("готова"), "starting": N_("загружается"), "stopping": N_("выгружается"),
+               "shutdown": N_("выгружается")}  # fmt: skip
+
+
+def efforts() -> list[tuple[str, str]]:
+    """(value, label) in the window's language."""
+    return [(value, tr(label)) for value, label in EFFORTS]
+
+
+def _state(state: str) -> str:
+    return tr(STATE_NAMES[state]) if state in STATE_NAMES else state
 
 
 def seconds(value: float) -> str:
-    return f"{value:.1f} с" if value < 60 else f"{int(value // 60)} мин {int(value % 60)} с"
-
-
-def plural(n: int, one: str, few: str, many: str) -> str:
-    """Russian: 1 сообщение, 2 сообщения, 5 сообщений, 21 сообщение."""
-    if n % 10 == 1 and n % 100 != 11:
-        return one
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return few
-    return many
+    if value < 60:
+        return tr("{value:.1f} с", value=value)
+    return tr("{minutes} мин {seconds} с", minutes=int(value // 60), seconds=int(value % 60))
 
 
 def money(usd: float) -> str:
@@ -44,11 +51,12 @@ def _price(value: float) -> str:
 def model_label(model: dict[str, Any]) -> str:
     """'Flash-Next Coder · локальная' or 'Claude Opus 5.5 · $4/$20 за 1M'."""
     if model.get("locality") == "local":
-        return f"{model['name']} · локальная"
+        return tr("{name} · локальная", name=model["name"])
     prices = model.get("prices") or {}
     if prices:
-        return f"{model['name']} · ${_price(prices.get('input', 0))}/${_price(prices.get('output', 0))} за 1M"
-    return f"{model['name']} · облако"
+        return tr("{name} · ${input}/${output} за 1M", name=model["name"], input=_price(prices.get("input", 0)),
+                  output=_price(prices.get("output", 0)))  # fmt: skip
+    return tr("{name} · облако", name=model["name"])
 
 
 def sorted_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -70,23 +78,23 @@ def answer_meta(usage: dict[str, Any] | None, *, stats: dict | None = None, cost
     stats = stats if stats is not None else usage.get("stats") or {}
     parts = []
     if stats.get("tok_s"):
-        parts.append(f"{stats['tok_s']:.1f} т/с")
+        parts.append(tr("{speed:.1f} т/с", speed=stats["tok_s"]))
     out = usage.get("output_tokens")
     if out:
-        parts.append(f"{'~' if usage.get('estimated') else ''}{out} ток.")
+        parts.append(tr("{tokens} ток.", tokens=f"{'~' if usage.get('estimated') else ''}{out}"))
     cached = usage.get("cached_input_tokens")
     if cached:
-        parts.append(f"кэш {cached}")
+        parts.append(tr("кэш {tokens}", tokens=cached))
     cost = cost if cost is not None else usage.get("cost_usd")
     if cost:
         parts.append(money(cost))
     if stats.get("subscription"):  # Claude Code: the subscription pays; its own estimate for scale (D12)
         estimate = stats.get("cost_estimate_usd")
-        parts.append("подписка" + (f", по оценке ≈{money(estimate)}" if estimate else ""))
+        parts.append(tr("подписка, по оценке ≈{cost}", cost=money(estimate)) if estimate else tr("подписка"))
     if usage.get("cancelled"):
-        parts.append("остановлено")
+        parts.append(tr("остановлено"))
     if usage.get("stop_reason") == "max_tokens":
-        parts.append("обрезано по лимиту")
+        parts.append(tr("обрезано по лимиту"))
     return " · ".join(parts)
 
 
@@ -96,10 +104,14 @@ def claude_code_limit(info: dict[str, Any]) -> str:
     when = ""
     if isinstance(resets, int | float) and resets > 0:
         seconds = resets / 1000 if resets > 10**11 else resets  # seconds or milliseconds: the docs do not say
-        when = " до " + datetime.fromtimestamp(seconds).strftime("%d.%m %H:%M")
+        when = datetime.fromtimestamp(seconds).strftime("%d.%m %H:%M")
     if info.get("status") == "rejected":
-        return f"Claude Code: лимит подписки исчерпан{when}"
-    return f"Claude Code: лимит подписки близко{when}"
+        if when:
+            return tr("Claude Code: лимит подписки исчерпан до {when}", when=when)
+        return tr("Claude Code: лимит подписки исчерпан")
+    if when:
+        return tr("Claude Code: лимит подписки близко до {when}", when=when)
+    return tr("Claude Code: лимит подписки близко")
 
 
 def status_text(status: dict[str, Any] | None) -> str:
@@ -109,7 +121,9 @@ def status_text(status: dict[str, Any] | None) -> str:
     parts = []
     gpu = status.get("gpu")
     if gpu:
-        line = f"VRAM {gpu['vram_used_mib'] / 1024:.1f}/{gpu['vram_total_mib'] / 1024:.1f} ГБ"
+        line = tr(
+            "VRAM {used:.1f}/{total:.1f} ГБ", used=gpu["vram_used_mib"] / 1024, total=gpu["vram_total_mib"] / 1024
+        )
         if gpu.get("util_pct") is not None:
             line += f" · {gpu['util_pct']}%"
         if gpu.get("temp_c") is not None:
@@ -119,17 +133,17 @@ def status_text(status: dict[str, Any] | None) -> str:
     if memory:
         parts.append(
             # tenths: whole numbers showed 63/63 - "full" - for 62.5 of 63.4
-            f"ОЗУ {memory['ram_used_gib']:.1f}/{memory['ram_total_gib']:.1f} ГБ, "
-            f"выделено {memory['commit_used_gib']:.0f}/{memory['commit_limit_gib']:.0f} ГБ"
-        )
+            tr("ОЗУ {used:.1f}/{total:.1f} ГБ, выделено {committed:.0f}/{limit:.0f} ГБ", used=memory["ram_used_gib"],
+               total=memory["ram_total_gib"], committed=memory["commit_used_gib"], limit=memory["commit_limit_gib"])
+        )  # fmt: skip
     local = status.get("local") or {}
     if not local.get("reachable"):
-        parts.append("llama-swap не отвечает")
+        parts.append(tr("llama-swap не отвечает"))
     elif local.get("running"):
-        loaded = ", ".join(f"{r['model']} ({STATE_NAMES.get(r['state'], r['state'])})" for r in local["running"])
-        parts.append(f"загружена: {loaded}")
+        loaded = ", ".join(f"{r['model']} ({_state(r['state'])})" for r in local["running"])
+        parts.append(tr("загружена: {models}", models=loaded))
     else:
-        parts.append("локальная модель не загружена")
+        parts.append(tr("локальная модель не загружена"))
     return "  │  ".join(parts)
 
 
@@ -142,7 +156,8 @@ def commit_is_tight(status: dict[str, Any] | None, margin_gib: float = 4.0) -> b
 def usage_text(totals: dict[str, Any] | None) -> str:
     if not totals:
         return ""
-    return f"Расходы: сегодня {money(totals.get('today_cost_usd', 0))} · всего {money(totals.get('total_cost_usd', 0))}"
+    return tr("Расходы: сегодня {today} · всего {total}", today=money(totals.get("today_cost_usd", 0)),
+              total=money(totals.get("total_cost_usd", 0)))  # fmt: skip
 
 
 def tokens_short(count: int) -> str:
@@ -173,15 +188,15 @@ class Session:
 
     def text(self) -> str:
         tokens = tokens_short(self.input_tokens + self.output_tokens)
-        return f"Сессия: {tokens} ток. · {money(self.cost_usd)}"
+        return tr("Сессия: {tokens} ток. · {cost}", tokens=tokens, cost=money(self.cost_usd))
 
     def tooltip(self, totals: dict[str, Any] | None) -> str:
         lines = [
-            f"С открытия окна: {self.requests} запросов",
-            f"вход {tokens_short(self.input_tokens)} (из кэша {tokens_short(self.cached_tokens)}), "
-            f"выход {tokens_short(self.output_tokens)}",
-            f"стоимость {money(self.cost_usd)}",
-        ]
+            tr("С открытия окна: {count} запросов", count=self.requests),
+            tr("вход {input} (из кэша {cached}), выход {output}", input=tokens_short(self.input_tokens),
+               cached=tokens_short(self.cached_tokens), output=tokens_short(self.output_tokens)),
+            tr("стоимость {cost}", cost=money(self.cost_usd)),
+        ]  # fmt: skip
         if totals:
             lines.append(usage_text(totals))
         return "\n".join(lines)
@@ -196,7 +211,7 @@ def vram_meter(status: dict[str, Any] | None) -> tuple[float, str] | None:
     if not gpu or not gpu.get("vram_total_mib"):
         return None
     ratio = gpu["vram_used_mib"] / gpu["vram_total_mib"]
-    return ratio, f"{gpu['vram_used_mib'] / 1024:.1f}/{gpu['vram_total_mib'] / 1024:.1f} ГБ"
+    return ratio, tr("{used:.1f}/{total:.1f} ГБ", used=gpu["vram_used_mib"] / 1024, total=gpu["vram_total_mib"] / 1024)
 
 
 def commit_meter(status: dict[str, Any] | None) -> tuple[float, str] | None:
@@ -204,7 +219,7 @@ def commit_meter(status: dict[str, Any] | None) -> tuple[float, str] | None:
     if not memory or not memory.get("commit_limit_gib"):
         return None
     ratio = memory["commit_used_gib"] / memory["commit_limit_gib"]
-    return ratio, f"{memory['commit_used_gib']:.0f}/{memory['commit_limit_gib']:.0f} ГБ"
+    return ratio, tr("{used:.0f}/{total:.0f} ГБ", used=memory["commit_used_gib"], total=memory["commit_limit_gib"])
 
 
 def gpu_load(status: dict[str, Any] | None) -> str:
@@ -218,17 +233,17 @@ def gpu_load(status: dict[str, Any] | None) -> str:
 def local_model(status: dict[str, Any] | None) -> str:
     local = (status or {}).get("local") or {}
     if not local.get("reachable"):
-        return "llama-swap не отвечает"
+        return tr("llama-swap не отвечает")
     running = local.get("running") or []
     if not running:
-        return "видеопамять свободна"
-    return ", ".join(f"{r['model']} · {STATE_NAMES.get(r['state'], r['state'])}" for r in running)
+        return tr("видеопамять свободна")
+    return ", ".join(f"{r['model']} · {_state(r['state'])}" for r in running)
 
 
 # --- budgets (D12) ---
 
-PERIODS = [("day", "за день"), ("week", "за неделю"), ("month", "за месяц")]
-HARD_ACTIONS = [("ask", "спрашивать"), ("block", "запрещать")]
+PERIODS = [("day", N_("за день")), ("week", N_("за неделю")), ("month", N_("за месяц"))]
+HARD_ACTIONS = [("ask", N_("спрашивать")), ("block", N_("запрещать"))]
 PROVIDER_NAMES = {
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
@@ -239,25 +254,33 @@ PROVIDER_NAMES = {
 STATE_ORDER = {"ok": 0, "soft": 1, "hard": 2}
 
 
+def periods() -> list[tuple[str, str]]:
+    return [(value, tr(label)) for value, label in PERIODS]
+
+
+def hard_actions() -> list[tuple[str, str]]:
+    return [(value, tr(label)) for value, label in HARD_ACTIONS]
+
+
 def provider_name(ref: str) -> str:
     return PROVIDER_NAMES.get(ref, ref)
 
 
 def budget_title(budget: dict[str, Any]) -> str:
     """'Все платные модели за месяц' / 'Anthropic за день'."""
-    who = provider_name(budget["scope_ref"]) if budget["scope"] == "provider" else "Все платные модели"
-    return f"{who} {dict(PERIODS).get(budget['period'], budget['period'])}"
+    who = provider_name(budget["scope_ref"]) if budget["scope"] == "provider" else tr("Все платные модели")
+    return f"{who} {dict(periods()).get(budget['period'], budget['period'])}"
 
 
 def budget_line(budget: dict[str, Any]) -> str:
     """'Anthropic за день: $4.10 из $10.00 (предупреждение с $5.00)'."""
     used = money(budget.get("spent_usd", 0))
     if budget.get("hard_usd") is not None:
-        text = f"{used} из {money(budget['hard_usd'])}"
+        text = tr("{used} из {limit}", used=used, limit=money(budget["hard_usd"]))
         if budget.get("soft_usd") is not None:
-            text += f" (предупреждение с {money(budget['soft_usd'])})"
+            text += tr(" (предупреждение с {soft})", soft=money(budget["soft_usd"]))
     else:
-        text = f"{used}, предупреждение с {money(budget['soft_usd'])}"
+        text = tr("{used}, предупреждение с {soft}", used=used, soft=money(budget["soft_usd"]))
     return f"{budget_title(budget)}: {text}"
 
 
@@ -268,13 +291,17 @@ def budgets_state(budgets: list[dict[str, Any]]) -> str:
 
 def budget_question(over: list[dict[str, Any]]) -> str:
     lines = "\n".join(f"• {budget_line(b)}" for b in over)
-    return f"Бюджет исчерпан:\n{lines}\n\nОтправить запрос всё равно? Это отметится в журнале хаба."
+    return tr("Бюджет исчерпан:\n{lines}\n\nОтправить запрос всё равно? Это отметится в журнале хаба.", lines=lines)
 
 
 def budget_event_text(kind: str, budget: dict[str, Any]) -> str:
     """The status-bar line for budget.warning / budget.exceeded."""
     title, used = budget_title(budget), money(budget.get("spent_usd", 0))
     if kind == "warning":
-        return f"Бюджет «{title}»: потрачено {used}, достигнут порог предупреждения {money(budget['soft_usd'])}"
-    after = "запрещены" if budget.get("hard_action") == "block" else "только с подтверждением"
-    return f"Бюджет «{title}» исчерпан: {used} из {money(budget['hard_usd'])}. Новые платные запросы — {after}"
+        return tr("Бюджет «{title}»: потрачено {used}, достигнут порог предупреждения {soft}", title=title, used=used,
+                  soft=money(budget["soft_usd"]))  # fmt: skip
+    if budget.get("hard_action") == "block":
+        return tr("Бюджет «{title}» исчерпан: {used} из {limit}. Новые платные запросы — запрещены", title=title,
+                  used=used, limit=money(budget["hard_usd"]))  # fmt: skip
+    return tr("Бюджет «{title}» исчерпан: {used} из {limit}. Новые платные запросы — только с подтверждением",
+              title=title, used=used, limit=money(budget["hard_usd"]))  # fmt: skip
