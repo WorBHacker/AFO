@@ -169,6 +169,11 @@ Sheet {
 
     SectionTitle { text: qsTr("Запуск") }
     Column {
+        id: startup
+        // no llama-swap anywhere yet - none chosen, none running, AFO's own engine not installed: one calm line
+        readonly property bool engineMissing: App.autostart.llama_swap_config_source === "default"
+            && App.autostart.llama_swap_config_found === false && App.autostart.llama_swap_script_source === "default"
+            && App.autostart.llama_swap_found === false
         width: parent.width
         spacing: 6
         component Switch: AbstractButton {
@@ -217,12 +222,29 @@ Sheet {
             width: parent.width
             wrapMode: Text.Wrap
             visible: App.autostart.llama_swap_script !== undefined && !App.autostart.llama_swap_found
+                     && !startup.engineMissing
             text: qsTr("Запуск llama-swap не найден: %1").arg(App.autostart.llama_swap_script || "")
             color: Theme.p.warn
             font.family: Theme.uiFont
             font.pixelSize: 12
         }
-        // where llama-swap is (10.3): chosen here, or AFO's default
+        Text {
+            objectName: "engineMissing"
+            visible: startup.engineMissing
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: qsTr("Движок локальных моделей ещё не установлен: его скачает и запустит мастер первого запуска. Если llama-swap у вас уже есть — запустите его или укажите его конфиг и программу ниже.")
+            color: Theme.p.text_soft
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+        }
+        PlainButton {
+            visible: startup.engineMissing
+            iconName: "sparkle"
+            text: qsTr("Мастер первого запуска…")
+            onClicked: { sheet.close(); App.openUi("setup") }
+        }
+        // where llama-swap is (10.3): chosen here, the running one's (found), or AFO's default
         Repeater {
             model: [
                 { id: "llama_swap_config", name: qsTr("Конфиг llama-swap"), path: App.autostart.llama_swap_config || "",
@@ -240,9 +262,10 @@ Sheet {
                     wrapMode: Text.WrapAnywhere
                     text: place.modelData.name + ": " + (place.modelData.path || "—")
                           + (place.modelData.source === "chosen" ? qsTr(" (выбран вами)")
-                             : place.modelData.source === "env" ? qsTr(" (задан переменной окружения)") : "")
-                          + (place.modelData.found === false ? qsTr(" — файла нет") : "")
-                    color: place.modelData.found === false ? Theme.p.warn : Theme.p.muted
+                             : place.modelData.source === "env" ? qsTr(" (задан переменной окружения)")
+                             : place.modelData.source === "found" ? qsTr(" (у запущенного llama-swap)") : "")
+                          + (place.modelData.found === false && !startup.engineMissing ? qsTr(" — файла нет") : "")
+                    color: place.modelData.found === false && !startup.engineMissing ? Theme.p.warn : Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 12
                 }

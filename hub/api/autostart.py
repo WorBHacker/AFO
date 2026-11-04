@@ -34,6 +34,7 @@ def _app_only(client: Client) -> None:
 
 async def _state(request: Request) -> dict:
     state = request.app.state
+    await autostart.find_running(state.db, state.settings.llama_swap_url)  # a llama-swap started since: its paths
     script = autostart.llama_swap_script()
     config = llama_config.config_path()
     return {

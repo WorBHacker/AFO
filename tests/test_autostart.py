@@ -157,3 +157,49 @@ def test_the_window_chooses_the_paths(hub, tmp_path, monkeypatch):  # noqa: F811
     assert "не конфиг llama-swap" in refused.json()["detail"]
     back = hub.put("/v1/autostart", json={"llama_swap_config": "", "llama_swap_start": ""}).json()
     assert back["llama_swap_config_source"] == "default" and back["llama_swap_script_source"] == "default"
+
+
+def test_the_running_llama_swap_is_found_and_kept(hub, tmp_path, monkeypatch):  # noqa: F811
+    """The installed AFO beside a llama-swap the person runs already (2026-11-04: «Конфиг llama-swap … файла нет»
+    though llama-swap answered): with nothing chosen and AFO's own files not there, the llama-swap running at the
+    hub's address gives its program and its config - from its command line - and they are kept, so that the hub can
+    start it later itself. The window's choice and the environment come first."""
+    from hub import llama_config as lc
+
+    monkeypatch.delenv(lc.CONFIG_ENV)
+    monkeypatch.delenv(autostart.LLAMA_SWAP_START_ENV)
+    monkeypatch.setattr(lc, "DEFAULT_CONFIG", tmp_path / "none" / "config.yaml")
+    monkeypatch.setattr(autostart, "DEFAULT_LLAMA_SWAP_START", tmp_path / "none" / "start-llama-swap.cmd")
+    swap = tmp_path / "AI" / "llama-swap"
+    swap.mkdir(parents=True)
+    exe = swap / "llama-swap.exe"
+    exe.write_bytes(b"MZ")
+    (swap / "config.yaml").write_text('models:\n  "a":\n    cmd: |\n      llama-server -m a.gguf\n', encoding="utf-8")
+
+    class Process:
+        def __init__(self, name, exe, cmdline, cwd):
+            self.info = {"name": name, "exe": exe, "cmdline": cmdline, "cwd": cwd}
+
+    running = [Process("llama-swap.exe", "C:/other/llama-swap.exe", ["llama-swap.exe"], "C:/other"),  # :8080
+               Process("llama-server.exe", "C:/x/llama-server.exe", ["llama-server", "--port", "9"], "C:/x"),
+               Process("llama-swap.exe", str(exe), [str(exe), "-config", "config.yaml", "-listen=127.0.0.1:9"],
+                       str(swap))]  # fmt: skip
+    monkeypatch.setattr(autostart.psutil, "process_iter", lambda attrs: iter(running))
+    assert autostart.running_llama_swap("http://127.0.0.1:9") == (exe, swap / "config.yaml")
+    assert autostart.running_llama_swap("http://127.0.0.1:7") is None
+    found = hub.get("/v1/autostart").json()
+    assert (found["llama_swap_config"], found["llama_swap_config_source"], found["llama_swap_config_found"]) == (
+        str(swap / "config.yaml"), "found", True)  # fmt: skip
+    assert (found["llama_swap_script"], found["llama_swap_script_source"], found["llama_swap_found"]) == (
+        str(exe), "found", True)  # fmt: skip
+    # kept: a hub started again, llama-swap not running now, still knows them
+    monkeypatch.setattr(autostart.psutil, "process_iter", lambda attrs: iter([]))
+    lc.found = autostart.found_start = None
+    hub.app.state.db.call(autostart.load_choices)
+    assert lc.config_path() == swap / "config.yaml" and autostart.llama_swap_script() == exe
+    assert autostart.start_command(exe, "http://127.0.0.1:9")[:3] == [str(exe), "--config", str(swap / "config.yaml")]
+    # the window's choice comes first
+    other = tmp_path / "mine.yaml"
+    other.write_text('models:\n  "b":\n    cmd: |\n      llama-server -m b.gguf\n', encoding="utf-8")
+    chosen = hub.put("/v1/autostart", json={"llama_swap_config": str(other)}).json()
+    assert (chosen["llama_swap_config"], chosen["llama_swap_config_source"]) == (str(other), "chosen")

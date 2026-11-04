@@ -28,6 +28,8 @@ CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
 CONFIG_SETTING = "llama_swap.config"  # the file chosen in the window (the settings table)
 DEFAULT_CONFIG = PROJECT_ROOT.parent / "llama-swap" / "config.yaml"
 configured: Path | None = None  # the chosen file, as the hub read it from its settings
+FOUND_SETTING = "llama_swap.found_config"  # the running llama-swap's config, kept (hub/autostart.py)
+found: Path | None = None
 KEEP_BACKUPS = 10
 RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
 NOT_ANSWERING = N_("llama-swap не отвечает")  # what reloaded() says, in the language: compared as tr(NOT_ANSWERING)
@@ -55,17 +57,24 @@ class ConfigError(ValueError):
 
 def config_path() -> Path:
     """llama-swap's config: LOCALCHAT_LLAMA_SWAP_CONFIG; the file chosen in the window's settings (10.3); the one
-    beside LocalChat's folder on the computer it was built on; else the one the first-run wizard writes (10.2)."""
+    beside LocalChat's folder on the computer it was built on; the running llama-swap's, found and kept
+    (hub/autostart.py); else the one the first-run wizard writes (10.2)."""
     if os.environ.get(CONFIG_ENV):
         return Path(os.environ[CONFIG_ENV])
     if configured is not None:
         return configured
-    return DEFAULT_CONFIG if DEFAULT_CONFIG.is_file() else engines_home() / "llama-swap" / "config.yaml"
+    if DEFAULT_CONFIG.is_file():
+        return DEFAULT_CONFIG
+    return found if found is not None else engines_home() / "llama-swap" / "config.yaml"
 
 
 def config_source() -> str:
-    """Where config_path() comes from: env | chosen | default."""
-    return "env" if os.environ.get(CONFIG_ENV) else "chosen" if configured is not None else "default"
+    """Where config_path() comes from: env | chosen | found | default."""
+    if os.environ.get(CONFIG_ENV):
+        return "env"
+    if configured is not None:
+        return "chosen"
+    return "found" if found is not None and not DEFAULT_CONFIG.is_file() else "default"
 
 
 def _unquote(value: str) -> str:

@@ -25,6 +25,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 import httpx
+import psutil
 
 from common.paths import PROJECT_ROOT, engines_home
 
@@ -41,6 +42,8 @@ DEFAULT_LLAMA_SWAP_START = PROJECT_ROOT.parent / "llama-swap" / "start-llama-swa
 LLAMA_SWAP_SETTING = "autostart.llama_swap"
 START_SETTING = "llama_swap.start"  # the script or llama-swap.exe chosen in the window (10.3)
 configured_start: Path | None = None  # the chosen one, as the hub read it from its settings
+FOUND_START_SETTING = "llama_swap.found_start"  # the running llama-swap's program, kept
+found_start: Path | None = None
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 READY_TIMEOUT_S = 60.0  # llama-swap itself starts in a second; models load only when asked
 BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
@@ -144,11 +147,79 @@ def llama_swap_script() -> Path:
         return configured_start
     if DEFAULT_LLAMA_SWAP_START.is_file():
         return DEFAULT_LLAMA_SWAP_START
-    return engines_home() / "llama-swap" / "llama-swap.exe"
+    return found_start if found_start is not None else engines_home() / "llama-swap" / "llama-swap.exe"
 
 
 def start_source() -> str:
-    return "env" if os.environ.get(LLAMA_SWAP_START_ENV) else "chosen" if configured_start is not None else "default"
+    """Where llama_swap_script() comes from: env | chosen | found | default."""
+    if os.environ.get(LLAMA_SWAP_START_ENV):
+        return "env"
+    if configured_start is not None:
+        return "chosen"
+    return "found" if found_start is not None and not DEFAULT_LLAMA_SWAP_START.is_file() else "default"
+
+
+def _flag(args: list[str], name: str) -> str | None:
+    """A Go program's flag: -name value, --name value, -name=value, --name=value."""
+    for i, arg in enumerate(args):
+        for prefix in (f"-{name}", f"--{name}"):
+            if arg == prefix and i + 1 < len(args):
+                return args[i + 1]
+            if arg.startswith(prefix + "="):
+                return arg.split("=", 1)[1]
+    return None
+
+
+def running_llama_swap(url: str) -> tuple[Path, Path] | None:
+    """The llama-swap running at `url`'s port - one the person ran before AFO came, say: its program and its config,
+    from its command line (`-config` relative to its folder; `-listen` is :8080 when not given)."""
+    port = str(urlsplit(url).port or 8080)
+    for process in psutil.process_iter(["name", "exe", "cmdline", "cwd"]):
+        info = process.info
+        args = info.get("cmdline") or []
+        if not (info.get("name") or "").lower().startswith("llama-swap") or not args:
+            continue
+        if (_flag(args, "listen") or ":8080").rsplit(":", 1)[-1] != port:
+            continue
+        config = Path(_flag(args, "config") or "config.yaml")
+        if not config.is_absolute():
+            config = Path(info.get("cwd") or ".") / config
+        return Path(info.get("exe") or args[0]), config
+    return None
+
+
+def needs_finding() -> bool:
+    """Neither the environment nor the window chose llama-swap's config or start, and the files the hub would use
+    are not there: AFO's own engine is not installed (and none was found before)."""
+    from .llama_config import config_path, config_source
+
+    return (config_source() == "default" and not config_path().is_file()) or (
+        start_source() == "default" and not llama_swap_script().is_file())  # fmt: skip
+
+
+def keep_found(conn: sqlite3.Connection, found: tuple[Path, Path]) -> None:
+    """The running llama-swap's program and config, kept: a hub started later uses them, and can start it itself."""
+    from . import llama_config
+
+    for key, path in ((FOUND_START_SETTING, found[0]), (llama_config.FOUND_SETTING, found[1])):
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+            " value = excluded.value, updated_at = excluded.updated_at",
+            (key, json.dumps(str(path)), utc_now()),
+        )
+    load_choices(conn)
+
+
+async def find_running(db, url: str) -> bool:
+    """When the hub needs it (needs_finding), the running llama-swap's program and config are found and kept."""
+    if not needs_finding():
+        return False
+    found = await asyncio.to_thread(running_llama_swap, url)
+    if found is None:
+        return False
+    await db.acall(lambda conn: keep_found(conn, found))
+    log.info("llama-swap found running: %s with %s", found[0], found[1])
+    return True
 
 
 def start_command(script: Path, url: str) -> list[str]:
@@ -171,9 +242,11 @@ def load_choices(conn: sqlite3.Connection) -> None:
         value = json.loads(row["value"]) if row else ""
         return Path(value) if value else None
 
-    global configured_start
+    global configured_start, found_start
     configured_start = chosen(START_SETTING)
+    found_start = chosen(FOUND_START_SETTING)
     llama_config.configured = chosen(llama_config.CONFIG_SETTING)
+    llama_config.found = chosen(llama_config.FOUND_SETTING)
 
 
 def set_choice(conn: sqlite3.Connection, key: str, path: str) -> None:

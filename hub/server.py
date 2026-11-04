@@ -115,6 +115,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
         load_token_files(paths.tokens)  # masked in all a model sees, by value (D46)
         db.call(autostart.load_choices)  # llama-swap's config and its start, as chosen in the window (10.3)
+        if await autostart.find_running(db, settings.llama_swap_url):  # one the person runs already (10.4)
+            log.info("llama-swap's paths: those of the one running")
         log.info("language: %s", db.call(language.load))  # what the hub writes for people (10.5)
         bus = EventBus(db)
         secrets_store = secret_store if secret_store is not None else default_secret_store()
