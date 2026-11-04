@@ -7,9 +7,10 @@ administrator rights: a process in it gets no network unless given the internetC
 127.0.0.1: loopback stays closed to it either way), and reads and writes only where an access rule names its
 container. Two folders do: the script's own (data/sandbox/<run>) and the scripts' Python.
 
-The scripts' Python is the core of the hub's own - python.exe, its DLLs and the standard library, ~50 MB - copied
-once into LocalChat's folder (`app_home()/scripts-python/<version>`), and the container may read only that copy. The
-user's Python installation is not touched, nor its site-packages: a script has the standard library.
+The scripts' Python is the core of the hub's own - python.exe, its DLLs and the standard library, ~50 MB (the
+embeddable one of an installed AFO, ~20 MB) - copied once into AFO's folder (`app_home()/scripts-python/<version>`),
+and the container may read only that copy. The user's Python installation is not touched, nor its site-packages: a
+script has the standard library.
 
 Windows keeps the container's profile (its name, NAME) like an installed app's; `delete_profile` removes it.
 """
@@ -155,14 +156,21 @@ def runtime(home: Path) -> Path:
         shutil.rmtree(part, ignore_errors=True)
         part.mkdir(parents=True)
         grant(part, "RX")
+        # the embeddable Python an installed AFO brings (10.4c): one folder, the standard library zipped beside it
+        embedded = not (base / "Lib" / "os.py").is_file()
         try:
             for item in base.iterdir():
-                if item.is_file() and item.suffix.lower() in (".exe", ".dll"):
+                if item.is_file() and item.suffix.lower() in ((".exe", ".dll", ".pyd", ".zip") if embedded
+                                                              else (".exe", ".dll")):  # fmt: skip
                     shutil.copy2(item, part / item.name)
-            shutil.copytree(base / "DLLs", part / "DLLs")
-            top = base / "Lib"
-            shutil.copytree(top, part / "Lib", ignore=lambda where, names: LEFT_OUT & set(names) if Path(where) == top
-                            else [])  # fmt: skip
+            if embedded:  # a path file of the copy's own: AFO's code and libraries left out
+                stdlib = next(base.glob("python3*.zip"))
+                (part / stdlib.with_suffix("._pth").name).write_text(f"{stdlib.name}\n.\n", encoding="utf-8")
+            else:
+                shutil.copytree(base / "DLLs", part / "DLLs")
+                top = base / "Lib"
+                shutil.copytree(top, part / "Lib", ignore=lambda where, names: LEFT_OUT & set(names)
+                                if Path(where) == top else [])  # fmt: skip
             part.rename(folder)
         except OSError as exc:
             shutil.rmtree(part, ignore_errors=True)

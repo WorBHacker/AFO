@@ -21,7 +21,10 @@ from common.logging_setup import setup_logging
 from common.paths import data_paths
 from hub.secret_filter import clean
 
+from .ui import brand
 from .ui.main import QuickApp, install_russian, use_software_rendering
+
+APP_ID = "AFO.App"  # the taskbar's group: the window's, and the installer's shortcuts' (installer/afo.iss)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,10 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     watch_for_crashes(log)
     if sys.platform == "win32":
         # the taskbar groups the window as AFO, not as python.exe
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AFO.App")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     use_software_rendering()
     app = QApplication(sys.argv[:1])  # QtWidgets for the tray icon and its menu (D21); QML runs on it
     app.setApplicationName("AFO")
+    app.setWindowIcon(brand.icon())
     install_russian(app)
     quick = QuickApp(app, data_paths().ensure(), connect=not args.smoke)
     if args.smoke:

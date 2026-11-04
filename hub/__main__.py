@@ -22,6 +22,7 @@ python -m hub db restore              the copies of the database (daily, before 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import faulthandler
 import json
 import logging
@@ -160,6 +161,28 @@ def stop(settings: HubSettings) -> int:
         time.sleep(0.2)
     print(f"Хаб не остановился за {STOP_TIMEOUT_S} с", file=sys.stderr)
     return 2
+
+
+def let_go(python: Path | None = None) -> int:
+    """Before the installer replaces or removes the program's files (10.4c): every other process run by this
+    installed program's Python - the window, a hub that did not stop - is ended. Only the embedded Python of an
+    installed AFO (its ._pth beside it): a checkout's Python is shared with other programs."""
+    import psutil
+
+    here = (python or Path(sys.executable)).resolve().parent
+    if not any(here.glob("python*._pth")):
+        print("Это не установленная программа: её процессы не ищу", file=sys.stderr)
+        return 1
+    mine = []
+    for process in psutil.process_iter(["exe"]):
+        exe = process.info.get("exe")
+        if process.pid != os.getpid() and exe and Path(exe).resolve().parent == here:
+            mine.append(process)
+    for process in mine:
+        with contextlib.suppress(psutil.Error):
+            process.terminate()
+    psutil.wait_procs(mine, timeout=5)
+    return 0
 
 
 def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
@@ -398,7 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m hub", description="AFO hub")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="start the hub")
-    commands.add_parser("stop", help="stop the running hub gracefully")
+    stopping = commands.add_parser("stop", help="stop the running hub gracefully")
+    stopping.add_argument("--program", action="store_true",
+                          help="then end the installed program's other processes (the installer, 10.4c)")  # fmt: skip
     token = commands.add_parser("token", help="client tokens (D31)")
     actions = token.add_subparsers(dest="action", required=True)
     create = actions.add_parser("create", help="register a client and print its token once")
@@ -436,7 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "db":
         return db_command(settings, args)
     if args.command == "stop":
-        return stop(settings)
+        stopped = stop(settings)
+        return let_go() if args.program else stopped
     if args.command == "mcp":
         return mcp_command(settings, args)
     if args.command == "telegram":
