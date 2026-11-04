@@ -22,13 +22,14 @@ Rectangle {
             x: 16
             anchors.verticalCenter: parent.verticalCenter
             spacing: 10
-            Rectangle {
-                width: 24; height: 24; radius: 7
-                gradient: Gradient {
-                    GradientStop { position: 0; color: Theme.p.accent }
-                    GradientStop { position: 1; color: "#8b5cf6" }
-                }
-                Icon { anchors.centerIn: parent; name: "chat"; size: 14; tint: "#ffffff" }
+            Image {  // AFO's logo (app/ui/brand.py)
+                objectName: "logo"
+                width: 26; height: 26
+                source: "../logo.png"
+                sourceSize: Qt.size(52, 52)
+                smooth: true
+                mipmap: true
+                anchors.verticalCenter: parent.verticalCenter
             }
             Text {
                 text: "AFO"

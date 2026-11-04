@@ -120,8 +120,14 @@ def test_the_icon_has_every_size_windows_asks_for():
         assert height == width  # square
         assert data[offset : offset + 8] == b"\x89PNG\r\n\x1a\n" and offset + size <= len(data)
     assert sides == list(brand.SIDES) and 16 in sides and 256 in sides
-    picture = brand.picture(64)
-    assert picture.pixelColor(0, 0).alpha() == 0 and picture.pixelColor(32, 6).alpha() == 255  # a rounded square
+    # the user's logo: transparent around the bubble, its white inside kept (it reads on a dark taskbar too)
+    for side in (16, 64, 256):
+        picture = brand.picture(side)
+        assert (picture.width(), picture.height()) == (side, side) and picture.hasAlphaChannel()
+        assert all(picture.pixelColor(x, y).alpha() == 0 for x, y in ((0, 0), (side - 1, 0), (0, side - 1)))
+        if side >= 64:  # between the bubble's top and the </+>: its white inside
+            inside = picture.pixelColor(side // 2, int(side * 0.17))
+            assert inside.alpha() == 255 and inside.lightness() > 230
 
 
 def test_the_installer_lets_the_programs_files_go(tmp_path, monkeypatch):

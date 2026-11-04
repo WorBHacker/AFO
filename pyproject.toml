@@ -35,7 +35,7 @@ include = ["hub*", "app*", "common*"]
 "hub" = ["model_catalog.json", "proving_tasks/*/task.json", "proving_tasks/*/files/**/*", "proving_tasks/*/exam/*"]
 "hub.db" = ["migrations/*.sql"]
 "common" = ["locale/*.json"]
-"app.ui" = ["qml/*.qml", "icons/*.svg", "icons/*.txt", "fonts/*.ttf", "fonts/*.txt"]
+"app.ui" = ["qml/*.qml", "icons/*.svg", "icons/*.txt", "fonts/*.ttf", "fonts/*.txt", "logo.png"]
 
 [tool.ruff]
 line-length = 120

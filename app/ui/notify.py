@@ -8,26 +8,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QByteArray, QObject, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from common.i18n import tr
 
-from .icons import svg
+from . import brand
 
 SHOW_MS = 10_000
 
 
-def tray_icon(name: str = "shield", colour: str = "#4f8cff", side: int = 64) -> QIcon:
-    image = QImage(side, side, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    QSvgRenderer(QByteArray(svg(name, colour).encode())).render(painter, QRectF(0, 0, side, side))
-    painter.end()
-    return QIcon(QPixmap.fromImage(image))
+def tray_icon() -> QIcon:
+    """The notification area's icon: AFO's logo, as on the taskbar (app/ui/brand.py)."""
+    return brand.icon()
 
 
 class Notifier(QObject):

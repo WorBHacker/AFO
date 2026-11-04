@@ -1,5 +1,7 @@
 # AFO
 
+<img src="app/ui/logo.png" width="96" alt="AFO">
+
 English · [Русский](README.md)
 
 A local AI ecosystem for Windows: a **hub** that knows your projects, processes, terminals and models, and a **light
