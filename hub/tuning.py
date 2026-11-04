@@ -1,10 +1,11 @@
 """Launch settings by measurement (step 15.2, D49): for a llama.cpp model in llama-swap's config, llama-bench of the
 same llama.cpp build measures what a few settings give on this computer - flash attention on and off, the KV cache's
 type, the ubatch - with a filled context (DEPTH tokens already in it, as a chat with some history). The fastest answer
-wins (answers within CLOSE of each other: the faster prompt decides); the model's placement stays as the config has
-it (all on the graphics card, a number of layers, or llama.cpp's own --fit). The winner goes into the config - a copy
-of the old one beside it - and the model is loaded with its whole context to check it still fits; if not, the old
-config comes back.
+wins (answers within CLOSE of each other: the faster prompt decides), and the config changes only when the winner is
+faster than its own settings by more than CLOSE - less is the measurement's noise; the model's placement stays as the
+config has it (all on the graphics card, a number of layers, or llama.cpp's own --fit). The winner goes into the
+config - a copy of the old one beside it - and the model is loaded with its whole context to check it still fits; if
+not, the old config comes back.
 
 Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no chat has run for
 IDLE_S: measuring unloads the models and takes the graphics card for minutes. The person's «Подобрать» waits only for
@@ -44,12 +45,16 @@ PROMPT, GEN, REPEAT = 512, 128, 2
 DEPTH = 4096  # tokens already in the context while it measures
 UBATCHES = (512, 1024, 2048)
 BATCH = 2048
+UNQUANTIZED = ("f16", "bf16", "f32")  # KV cache types that work with flash attention off
 FIT_MARGIN_MIB = 1024  # what llama.cpp's fitting leaves free on the graphics card
 CLOSE = 0.03
 IDLE_S = 60.0
 WAIT_S = 5.0
 BENCH_TIMEOUT_S = 1800.0
 CHECK_TIMEOUT_S = 300.0
+WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write with the same context is not seen
+RELOADING = "shutting down"  # llama-swap's answer while it rereads the file («group is shutting down»)
+RETRY_S = 1.0
 GIB = 1024**3
 COMPUTE_GIB = 1.5  # llama.cpp's buffers beside the weights and the cache (hub/model_install.py)
 
@@ -85,10 +90,18 @@ def caches(view: dict[str, Any], info: dict[str, Any], size: int, space: dict[st
     return out
 
 
+def flash(cache: str) -> list[str]:
+    """Flash attention to measure with a KV cache type: a quantized V cache only with it on - without it llama.cpp
+    makes no context, and llama-bench stops at the first setting it cannot make."""
+    return ["on", "off"] if cache in UNQUANTIZED else ["on"]
+
+
 def command(bench: Path, view: dict[str, Any], cache: str, *, threads: int, depth: int) -> list[str]:
-    """llama-bench for one KV cache type: flash attention on and off, each ubatch - one load of the model."""
+    """llama-bench for one KV cache type: flash attention (on and off, where it can be off), each ubatch - one load
+    of the model."""
     args = [str(bench), "-m", view["file"], "-p", str(PROMPT), "-n", str(GEN), "-d", str(depth), "-r", str(REPEAT),
-            "-o", "jsonl", "-fa", "on,off", "-ctk", cache, "-ctv", cache, "-ub", ",".join(map(str, UBATCHES)),
+            "-o", "jsonl", "-fa", ",".join(flash(cache)), "-ctk", cache, "-ctv", cache,
+            "-ub", ",".join(map(str, UBATCHES)),
             "-b", str(BATCH), "-t", str(threads)]  # fmt: skip
     if view["gpu_layers"] == "auto":  # llama.cpp places it: as it will with --fit, for the model's context
         args += ["-fitt", str(FIT_MARGIN_MIB), "-fitc", str(view["context"] or 4096)]
@@ -137,6 +150,15 @@ def current(view: dict[str, Any], measured: list[dict[str, Any]]) -> dict[str, A
 
 def same(view: dict[str, Any], choice: dict[str, Any]) -> bool:
     return current(view, [choice]) is not None
+
+
+def worth(choice: dict[str, Any], before: dict[str, Any] | None) -> bool:
+    """A change pays only past the measurement's noise: a faster answer, or as fast an answer with a faster prompt."""
+    if before is None:
+        return True
+    if choice["tg"] > before["tg"] * (1 + CLOSE):
+        return True
+    return choice["tg"] >= before["tg"] * (1 - CLOSE) and choice.get("pp", 0.0) > before.get("pp", 0.0) * (1 + CLOSE)
 
 
 def changes_for(choice: dict[str, Any]) -> dict[str, Any]:
@@ -295,7 +317,7 @@ class Tuner:
         threads = psutil.cpu_count(logical=False) or os.cpu_count() or 4
         depth = DEPTH if (info.get("context_trained") or 0) >= 2 * DEPTH else 0
         kinds = caches(view, info, info.get("size_bytes") or file.stat().st_size, self._space())
-        self.job.update(total=len(kinds) * 2 * len(UBATCHES) * 2)  # each setting: a prompt and an answer
+        self.job.update(total=sum(len(flash(k)) for k in kinds) * len(UBATCHES) * 2)  # each: a prompt and an answer
         await self._unload()
         loop = asyncio.get_running_loop()
 
@@ -310,14 +332,16 @@ class Tuner:
             measured += results(lines)
         if not measured:
             raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
+        log.info("measured %s: %s", model_id, measured)
         choice, before = best(measured), current(view, measured)
-        if same(view, choice):
-            return {"status": "same", "before": before, "after": choice, "settings": {}}
+        if same(view, choice) or not worth(choice, before):
+            return {"status": "same", "before": before, "after": before or choice, "settings": {}}
         changes = changes_for(choice)
         self.job.update(status="checking")
         await self._publish()
         new = llama_config.edit(text, model_id, changes)
         backup = await asyncio.to_thread(llama_config.write, path, new)
+        await asyncio.sleep(WATCH_S)  # llama-swap has seen the new file: the check is not answered by the old one
         ids = list(llama_config.model_blocks(new))
         ok, problem = await llama_config.reloaded(self._url, ids, (model_id, view["context"]))
         checked = await self._check(model_id) if ok or problem == tr(llama_config.NOT_ANSWERING) else {
@@ -355,18 +379,26 @@ class Tuner:
             code = self._process.wait()
         finally:
             timer.cancel()
-        if code and not lines:
+        if code:
             tail = " ".join(error.strip().splitlines()[-3:])
-            raise TuneError(tr("llama-bench не смог: {error}", error=tail or code))
+            if not lines:
+                raise TuneError(tr("llama-bench не смог: {error}", error=tail or code))
+            log.warning("llama-bench stopped (exit %s) after %d measurements: %s", code, len(lines), tail)
         return lines
 
     async def _load(self, model_id: str) -> dict[str, Any]:
-        """The model loaded with its whole context and one short answer: it fits with the new settings."""
+        """The model loaded with its whole context and one short answer: it fits with the new settings. llama-swap
+        still rereading the file is asked again (for llama_config.RELOAD_S)."""
         started = time.monotonic()
         body = {"model": model_id, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 4}
         try:
             async with httpx.AsyncClient(timeout=CHECK_TIMEOUT_S) as http:
-                answer = await http.post(f"{self._url}/v1/chat/completions", json=body)
+                while True:
+                    answer = await http.post(f"{self._url}/v1/chat/completions", json=body)
+                    if answer.status_code == 200 or RELOADING not in answer.text or \
+                            time.monotonic() - started > llama_config.RELOAD_S:  # fmt: skip
+                        break
+                    await asyncio.sleep(RETRY_S)
         except httpx.HTTPError as exc:
             return {"ok": False, "error": exc.__class__.__name__}
         ok = answer.status_code == 200 and bool((answer.json() or {}).get("choices"))

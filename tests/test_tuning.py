@@ -6,8 +6,10 @@ stand-ins."""
 
 import asyncio
 import json
+import sys
 import time
 
+import httpx
 import pytest
 
 from hub import llama_config as lc
@@ -54,10 +56,58 @@ def test_what_llama_bench_is_asked(tmp_path):
     whole = tuning.command(bench, lc.model_view(CONFIG, "big"), "q8_0", threads=16, depth=4096)
     assert whole[:3] == [str(bench), "-m", "F:/models/big.gguf"] and "-ngl" in whole and "99" in whole
     asked = dict(zip(whole[3::2], whole[4::2], strict=False))
+    # a quantized V cache: flash attention on only - without it llama.cpp makes no context, and llama-bench stops at
+    # the first setting it cannot make (live on 2026-11-04: one setting of six measured)
     assert (asked["-fa"], asked["-ctk"], asked["-ctv"], asked["-ub"], asked["-d"], asked["-o"]) == (
-        "on,off", "q8_0", "q8_0", "512,1024,2048", "4096", "jsonl")  # fmt: skip
+        "on", "q8_0", "q8_0", "512,1024,2048", "4096", "jsonl")  # fmt: skip
+    f16 = tuning.command(bench, lc.model_view(CONFIG, "big"), "f16", threads=16, depth=4096)
+    assert f16[f16.index("-fa") + 1] == "on,off"
     fit = tuning.command(bench, lc.model_view(CONFIG, "huge"), "q8_0", threads=16, depth=0)
     assert "-fitt" in fit and fit[fit.index("-fitc") + 1] == "16384" and "-ngl" not in fit  # llama.cpp places it
+
+
+def test_llama_bench_stopping_halfway_is_logged(tmp_path, caplog):
+    """llama-bench quits at the first setting it cannot make: what it measured before counts, and why it stopped is
+    in the hub's log; with nothing measured, the reason goes to the window."""
+    bench = tmp_path / "bench.py"
+    measured = [line(True, "q8_0", 512, 16, pp=900), line(True, "q8_0", 512, 16, tg=40)]
+    bench.write_text(f"import sys\nfor text in {measured!r}:\n    print(text)\nsys.stdout.flush()\n"
+                     "print('main: error: failed to create context with model', file=sys.stderr)\nsys.exit(1)\n",
+                     encoding="utf-8")  # fmt: skip
+    found = tuning.Tuner(None, Bus(), Chat(), url="http://127.0.0.1:9", space=dict)
+    ticks = []
+    with caplog.at_level("WARNING", logger="hub.tuning"):
+        lines = found._bench([sys.executable, str(bench)], lambda: ticks.append(1))
+    assert len(lines) == 2 and len(ticks) == 2
+    assert "failed to create context" in caplog.text and "2" in caplog.text
+    bench.write_text(
+        "import sys\nprint('main: error: unknown model', file=sys.stderr)\nsys.exit(1)\n", encoding="utf-8"
+    )
+    with pytest.raises(tuning.TuneError, match="unknown model"):
+        found._bench([sys.executable, str(bench)], lambda: None)
+
+
+def test_the_check_asks_again_while_llama_swap_rereads_its_file(monkeypatch):
+    """llama-swap answers «group is shutting down» while it rereads the file (live on 2026-11-04: the check came in
+    the middle of it, and good settings were taken back); any other error is the answer."""
+    answers = [(500, "unspecific error: group is shutting down")] * 2 + [(200, "")]
+    asked = []
+
+    def answer(request):
+        asked.append(json.loads(request.content)["model"])
+        code, error = answers[min(len(asked), len(answers)) - 1]
+        body = {"choices": [{"message": {"content": "Hi"}}]} if code == 200 else {"error": {"message": error}}
+        return httpx.Response(code, json=body)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(tuning.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
+    monkeypatch.setattr(tuning, "RETRY_S", 0.01)
+    found = tuning.Tuner(None, Bus(), Chat(), url="http://127.0.0.1:9", space=dict)
+    assert asyncio.run(found._load("big"))["ok"] and asked == ["big"] * 3
+    answers[:] = [(500, "upstream command exited prematurely")]
+    asked.clear()
+    checked = asyncio.run(found._load("big"))
+    assert not checked["ok"] and "exited prematurely" in checked["error"] and len(asked) == 1
 
 
 @pytest.fixture
@@ -82,6 +132,7 @@ def setup(tmp_path, monkeypatch):
     config.write_text(text, encoding="utf-8")
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     monkeypatch.setattr(lc, "reloaded", _reloaded)
+    monkeypatch.setattr(tuning, "WATCH_S", 0.0)
     return config
 
 
@@ -126,6 +177,8 @@ def test_the_fastest_goes_into_the_config_and_is_checked(hub, setup):  # noqa: F
     result = asyncio.run(found.tune("big"))
     assert result["status"] == "better", result
     assert [c[c.index("-ctk") + 1] for c in asked] == ["q8_0", "f16"]  # f16 too: the model keeps its context with it
+    totals = {p["job"].get("total") for _, p in found._bus.said if p["job"].get("total")}
+    assert totals == {(1 + 2) * 3 * 2}  # q8_0: flash attention on; f16: on and off - each ubatch, prompt and answer
     view = lc.model_view(setup.read_text(encoding="utf-8"), "big")
     assert (view["flash_attn"], view["cache_type"], view["ubatch"], view["batch"], view["threads"]) == (
         "on", "q8_0", 2048, 2048, 16)  # fmt: skip
@@ -147,6 +200,12 @@ def test_the_config_already_fastest_is_left_as_it_is(hub, setup):  # noqa: F811
     found = tuner(hub, measured={"q8_0": [(512, 900, 50), (2048, 1000, 40)]})
     result = asyncio.run(found.tune("big"))
     assert result["status"] == "same" and setup.read_text(encoding="utf-8") == before
+    # within the measurement's noise is not faster (live on 2026-11-04: ubatch 1024 «won» by 0.5 % of the prompt)
+    noise = asyncio.run(tuner(hub, measured={"q8_0": [(512, 2290, 59.3), (1024, 2301, 59.2)]}).tune("big"))
+    assert noise["status"] == "same" and noise["after"]["ubatch"] == 512, noise
+    assert setup.read_text(encoding="utf-8") == before
+    prompt = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 50), (2048, 1500, 49.5)]}).tune("big"))
+    assert prompt["status"] == "better" and prompt["settings"]["ubatch"] == 2048  # as fast an answer, a faster prompt
     refused = asyncio.run(tuner(hub, measured={}).tune("fast"))  # Strata's: nothing of llama.cpp to tune
     assert refused["status"] == "failed" and "llama.cpp" in refused["error"]
 
