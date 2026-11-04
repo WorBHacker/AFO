@@ -98,6 +98,10 @@
 | GET | `/v1/install/search` | только окно | `search()` | `?q: str` |
 | GET | `/v1/install/repo/{author}/{name}` | только окно | `repository()` | `?fresh: bool = False` |
 | POST | `/v1/install` | только окно | `install()` | тело `{repo: str, quant: str, projector: bool \| None = None, drive: str = '', folder: str = '', name: str = ''}` |
+| GET | `/v1/install/found` | только окно | The models found on the drives (15.1): each with whether it would fit, and its id when the config runs it. |  |
+| POST | `/v1/install/found/scan` | только окно | `scan()` |  |
+| POST | `/v1/install/found/cancel` | только окно | `stop_scan()` |  |
+| POST | `/v1/install/local` | только окно | A model already on this computer into llama-swap's config, where it lies (15.1). | тело `{path: str, projector: str = '', name: str = ''}` |
 | GET | `/v1/install/jobs` | только окно | `jobs()` |  |
 | POST | `/v1/install/jobs/{job_id}/{action}` | только окно | `act()` |  |
 | DELETE | `/v1/install/jobs/{job_id}` | только окно | `forget()` |  |
@@ -556,6 +560,7 @@ conversation's text, an approval or a terminal's output.
 | `hub.stopping` | да | — | hub/server.py |
 | `install.changed` | да | `job` | hub/model_install.py |
 | `install.forgotten` | да | `id` | hub/model_install.py |
+| `install.found` | да | `job` | hub/model_scan.py |
 | `install.progress` | нет | — | hub/model_install.py |
 | `link.confirmed` | да | `a_name`, `b_name`, `kind`, `description` | hub/api/links.py |
 | `links.changed` | нет | — | hub/api/links.py, hub/links.py |

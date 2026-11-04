@@ -366,6 +366,7 @@ class FakeClient:
         self.schedule_calls = []
         self.install_calls = []
         self.install_jobs_list = []
+        self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.setup = {
             "needed": False,
             "answering": True,
@@ -693,6 +694,25 @@ class FakeClient:
     def install_forget(self, job_id):
         self.install_calls.append(("forget", job_id))
         return {"forgotten": job_id}
+
+    def install_found(self):
+        return json.loads(json.dumps(self.found))
+
+    def install_scan(self):
+        self.install_calls.append(("scan",))
+        self.found["job"] = {"status": "scanning", "folders": 0, "files": 0, "drive": ""}
+        return self.install_found()
+
+    def install_scan_cancel(self):
+        self.install_calls.append(("scan-cancel",))
+        self.found["job"] = {"status": "cancelled"}
+        return self.install_found()
+
+    def install_local(self, path, projector=""):
+        self.install_calls.append(("local", path, projector))
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".gguf")
+        return {"job": {"id": "l1", "name": name, "model_id": "mine", "repo": "", "status": "queued", "files": [],
+                        "own_files": 0, "total_bytes": 1, "done_bytes": 1}}  # fmt: skip
 
     def install_remove(self, model_id):
         self.install_calls.append(("remove", model_id))
@@ -5799,6 +5819,41 @@ def test_a_long_file_in_pieces():
     plain = project_rows.code_view("a\r\nb\r\n" * n, "notes.unknownext")
     assert [c["start"] for c in plain["chunks"]] == [0, 2 * n]  # Windows line ends counted as plain ones
     assert all(c["code"].count("\n") == n - 1 for c in plain["chunks"])
+
+
+def test_models_found_on_the_drives_are_listed_and_added(app):
+    """«Установка моделей → На этом компьютере» (15.1, D49): the search on all drives with how it goes, the models
+    found with whether each fits, «Добавить» - where it lies; one in llama-swap already says so."""
+    view = app.install_view
+    view.setTab("local")
+    wait_until(lambda: not app.bg.busy)
+    assert view.localModels == [] and "лежат на ваших дисках" in view.scanText and not view.scanning
+    view.scanLocal()
+    wait_until(lambda: view.scanning)
+    send(app, "install.found", {"job": {"status": "scanning", "folders": 5000, "files": 2, "drive": "D:\\"}})
+    assert view.scanText == "Ищу на дисках: D:\\ — просмотрено папок: 5000, найдено файлов: 2…"
+    app.client.found = {"job": {"status": "done", "files": 2}, "at": "2026-11-04T20:00:00Z", "models": [
+        {"name": "Qwen3-8B-Q4_K_M", "path": "D:\\LLM\\Qwen3-8B-Q4_K_M.gguf", "size": 4_900_000_000, "quant": "Q4_K_M",
+         "projector": "", "source": "file", "verdict": "gpu", "words": "поместится в видеопамять", "in_config": ""},
+        {"name": "gemma3:4b", "path": "C:\\Users\\u\\.ollama\\models\\blobs\\sha256-aa", "size": 3_300_000_000,
+         "quant": "", "projector": "C:\\x\\sha256-bb", "source": "ollama", "verdict": "gpu", "words": "поместится",
+         "in_config": "gemma3"}]}  # fmt: skip
+    send(app, "install.found", {"job": {"status": "done", "files": 2}})
+    wait_until(lambda: len(view.localModels) == 2)
+    qwen, gemma = view.localModels
+    assert view.scanText == "Найдено моделей: 2. Список хранится до следующего поиска." and not view.scanning
+    assert (qwen["note"], qwen["words"], qwen["tone"], qwen["inConfig"]) == (
+        "4,9 ГБ · Q4_K_M",
+        "поместится в видеопамять",
+        "ok",
+        "",
+    )
+    assert gemma["note"] == "3,3 ГБ · понимает картинки · Ollama" and gemma["inConfig"] == "gemma3"
+    view.addLocal(qwen["path"], qwen["projector"])
+    wait_until(lambda: ("local", qwen["path"], "") in app.client.install_calls)
+    wait_until(lambda: "Добавляю «Qwen3-8B-Q4_K_M»" in app._flash)
+    view.addFile("file:///D:/LLM/other.gguf")  # «Добавить файл…»: any GGUF on this computer
+    wait_until(lambda: any(c[0] == "local" and c[1].endswith("other.gguf") for c in app.client.install_calls))
 
 
 def test_a_finished_install_is_not_undone_by_a_stale_list(app):

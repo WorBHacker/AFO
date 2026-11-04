@@ -117,7 +117,7 @@ Sheet {
         visible: Installer.repoName === ""
         width: parent.width
         options: [{ id: "catalog", name: qsTr("Подборка") }, { id: "search", name: qsTr("Поиск на Hugging Face") },
-                  { id: "jobs", name: Installer.activeCount ? qsTr("Установки (%1)").arg(Installer.activeCount) : qsTr("Установки") }]
+                  { id: "local", name: qsTr("На этом компьютере") }, { id: "jobs", name: Installer.activeCount ? qsTr("Установки (%1)").arg(Installer.activeCount) : qsTr("Установки") }]
         value: Installer.tab
         onPicked: (id) => Installer.setTab(id)
     }
@@ -280,6 +280,121 @@ Sheet {
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 11
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- the models already on this computer (15.1) ----------
+    Column {
+        objectName: "installLocal"
+        visible: Installer.repoName === "" && Installer.tab === "local"
+        width: parent.width
+        spacing: 8
+        Note { text: Installer.scanText; color: Theme.p.faint }
+        Row {
+            spacing: 8
+            PlainButton {
+                objectName: "scanDrives"
+                visible: !Installer.scanning
+                iconName: "search"
+                text: qsTr("Искать на всех дисках")
+                onClicked: Installer.scanLocal()
+            }
+            PlainButton {
+                visible: Installer.scanning
+                text: qsTr("Остановить поиск")
+                onClicked: Installer.stopScan()
+            }
+            PlainButton {
+                objectName: "addModelFile"
+                iconName: "folder"
+                text: qsTr("Добавить файл…")
+                onClicked: modelFile.open()
+            }
+        }
+        FileDialog {
+            id: modelFile
+            title: qsTr("Файл модели GGUF")
+            fileMode: FileDialog.OpenFile
+            nameFilters: [qsTr("Модели GGUF (*.gguf)")]
+            onAccepted: Installer.addFile(selectedFile.toString())
+        }
+        Repeater {
+            model: Installer.localModels
+            delegate: Rectangle {
+                id: local
+                required property var modelData
+                width: parent ? parent.width : 600
+                height: localColumn.height + 16
+                radius: 6
+                color: "transparent"
+                border.color: Theme.p.hairline
+                Column {
+                    id: localColumn
+                    x: 12
+                    y: 8
+                    width: parent.width - 24 - localAction.width - 12
+                    spacing: 2
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: local.modelData.name
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                    }
+                    Row {
+                        spacing: 6
+                        Text {
+                            text: local.modelData.note
+                            color: Theme.p.faint
+                            font.family: Theme.uiFont
+                            font.pixelSize: 11
+                        }
+                        Text {
+                            visible: local.modelData.words !== ""
+                            text: "· " + local.modelData.words
+                            color: local.modelData.tone === "ok" ? Theme.p.ok : local.modelData.tone === "error"
+                                   ? Theme.p.error : Theme.p.warn
+                            font.family: Theme.uiFont
+                            font.pixelSize: 11
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        elide: Text.ElideMiddle
+                        text: local.modelData.path
+                        color: Theme.p.faint
+                        font.family: Theme.uiFont
+                        font.pixelSize: 11
+                    }
+                }
+                Item {
+                    id: localAction
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.max(addButton.implicitWidth, inConfig.implicitWidth)
+                    height: addButton.implicitHeight
+                    PlainButton {
+                        id: addButton
+                        objectName: "addLocal_" + local.modelData.name
+                        anchors.right: parent.right
+                        visible: local.modelData.inConfig === ""
+                        text: qsTr("Добавить")
+                        onClicked: Installer.addLocal(local.modelData.path, local.modelData.projector)
+                    }
+                    Text {
+                        id: inConfig
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: local.modelData.inConfig !== ""
+                        text: qsTr("в llama-swap: %1").arg(local.modelData.inConfig)
+                        color: Theme.p.ok
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
                     }
                 }
             }

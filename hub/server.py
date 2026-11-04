@@ -80,6 +80,7 @@ from .links import Rescanner
 from .mail import MailTools
 from .mcp_client import McpServers
 from .model_install import Installer
+from .model_scan import Scanner
 from .processes import ProcessMonitor
 from .programs import ProgramCatalog
 from .projects import keep_private, list_projects, set_path
@@ -175,6 +176,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             status=lambda: app.state.status.latest,
         )  # local models (10.1, D37)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
+        app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
@@ -212,6 +214,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if expired:
             log.info("%s approval requests left open by the last hub expired", expired)
         app.state.telegram.start()
+        await app.state.scanner.start()  # what the last search found
         await app.state.releases.start()  # says how the last update went, then checks now and then
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
@@ -258,6 +261,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.installer.stop()
             await app.state.setup.stop()
             await app.state.releases.stop()
+            await app.state.scanner.stop()
             await app.state.telegram.stop()
             await app.state.claude_code.stop()
             await app.state.terminals.stop()

@@ -10,6 +10,7 @@ DELETE /jobs/<id> takes an unfinished one off the list (its files too); DELETE /
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -96,6 +97,48 @@ async def install(request: Request, body: Install, client: Annotated[Client, Dep
     try:
         return {"job": await _installer(request).install(body.model_dump(), client)}
     except (hf.HubError, mi.InstallError, llama_config.ConfigError) as exc:
+        raise _refusal(exc) from exc
+
+
+class Local(BaseModel):
+    path: str = Field(max_length=600)
+    projector: str = Field(default="", max_length=600)
+    name: str = Field(default="", max_length=120)
+
+
+@router.get("/found")
+async def found(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """The models found on the drives (15.1): each with whether it would fit, and its id when the config runs it."""
+    installer, scanner = _installer(request), request.app.state.scanner
+    space, running = installer.space(), await installer.config_files()
+    models = []
+    for model in scanner.models:
+        shown = {k: v for k, v in model.items() if k != "info"}
+        shown["verdict"] = mi.verdict(model["size"], model.get("info"), space)
+        shown["words"] = tr(mi.VERDICTS[shown["verdict"]])
+        shown["in_config"] = running.get(os.path.normcase(os.path.normpath(model["path"])), "")
+        models.append(shown)
+    return {"job": dict(scanner.job), "at": scanner.at, "models": models}
+
+
+@router.post("/found/scan")
+async def scan(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    request.app.state.scanner.scan()
+    return await found(request, client)
+
+
+@router.post("/found/cancel")
+async def stop_scan(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    request.app.state.scanner.cancel()
+    return await found(request, client)
+
+
+@router.post("/local")
+async def add_local(request: Request, body: Local, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """A model already on this computer into llama-swap's config, where it lies (15.1)."""
+    try:
+        return {"job": await _installer(request).add_local(body.model_dump(), client)}
+    except (mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
 
 

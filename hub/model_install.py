@@ -25,6 +25,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -43,6 +44,7 @@ from common.paths import NAME, models_home
 
 from . import hf, llama_config, store
 from .db import utc_now
+from .model_scan import SPLIT
 
 log = logging.getLogger("hub.install")
 
@@ -448,6 +450,70 @@ class Installer:
         self._kick()
         return await self._db.acall(lambda conn: job(conn, job_id))
 
+    async def add_local(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
+        """A model already on this computer (15.1, D49): {path (its file; the first part of a split one), projector
+        (a file, or ''), name} - written into llama-swap's config where it lies, without a copy, and tried as an
+        install is. Its files stay the person's: removing it never deletes them."""
+        path = Path(spec["path"]).expanduser()
+        if not path.is_absolute() or not path.is_file() or path.suffix.lower() not in (".gguf", ""):
+            raise InstallError(tr("нет такого файла модели: {path}", path=spec["path"]), 422)
+        try:
+            info = await asyncio.to_thread(model_info, path)
+        except (GGUFError, OSError) as exc:
+            raise InstallError(tr("{path} — не модель GGUF: {error}", path=path, error=exc), 422) from exc
+        rows = await self._db.acall(jobs)
+        same = next((r for r in rows if r["status"] not in ("cancelled", "removed", "failed")
+                     and Path(r["folder"]) / PurePosixPath(r["files"][0]["path"]).name == path), None)  # fmt: skip
+        if same is not None:
+            raise InstallError(tr("эта модель уже добавлена — «{name}»", name=same["name"]))
+        split = SPLIT.match(path.name)
+        parts = sorted(path.parent.glob(f"{split['stem']}-*-of-{split['parts']}.gguf")) if split else [path]
+        files = [{"path": p.name, "size": p.stat().st_size, "sha256": None, "role": "model", "done": True}
+                 for p in parts]  # fmt: skip
+        lens = Path(spec["projector"]) if spec.get("projector") else None
+        if lens is not None:
+            if lens.parent != path.parent or not lens.is_file():
+                raise InstallError(tr("проектор картинок должен лежать рядом с моделью: {path}", path=lens), 422)
+            files.append({"path": lens.name, "size": lens.stat().st_size, "sha256": None, "role": "mmproj",
+                          "done": True})  # fmt: skip
+        stem = split["stem"] if split else path.stem
+        quant = hf.quant_of(path.name) or ""
+        text = config_text()
+        llama_config.server_command(text)  # no llama.cpp in the config: nothing to add into
+        model_id = llama_config.free_id(text, re.sub(r"[^a-z0-9._-]+", "-", stem.lower()).strip("-") or "model")
+        name = spec.get("name") or info.get("name") or stem
+        total = sum(f["size"] for f in files)
+        job_id = uuid.uuid4().hex[:12]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
+                "license, status, total_bytes, done_bytes, own_files) VALUES (?, '', '', ?, ?, ?, ?, ?, ?, '', "
+                "'queued', ?, ?, 0)",
+                (job_id, quant, json.dumps(files), str(path.parent), model_id, name,
+                 json.dumps(["chat", "vision"] if lens else ["chat"]), total, total),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        self._clients[job_id] = client
+        await self._publish(job_id)
+        self._kick()
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def config_files(self) -> dict[str, str]:
+        """The model files llama-swap's config runs (normalised path -> model id): what is in it already."""
+        try:
+            text = await asyncio.to_thread(config_text)
+        except InstallError:
+            return {}
+        out = {}
+        for model_id in llama_config.model_blocks(text):
+            with contextlib.suppress(llama_config.ConfigError):
+                file = llama_config.model_view(text, model_id).get("file") or ""
+                if file:
+                    out[os.path.normcase(os.path.normpath(file))] = model_id
+        return out
+
     async def _get(self, job_id: str) -> dict[str, Any]:
         found = await self._db.acall(lambda conn: job(conn, job_id))
         if found is None:
@@ -771,12 +837,16 @@ def _ours(text: str, model_id: str, job_id: str) -> bool:
 def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, lens_file: Path | None,
            plan: dict[str, Any]) -> str:  # fmt: skip
     purposes = ", ".join(tr(PURPOSES[p]).lower() for p in found["purposes"] if p in PURPOSES)
+    if not found.get("own_files", 1):  # found on the drives (15.1): where it lies, the person's file
+        description = tr("{name}: файл на этом компьютере, добавлен AFO: {purposes}.", name=found["name"],
+                         purposes=purposes)  # fmt: skip
+    else:
+        description = tr("{repo} {quant}, установлена AFO: {purposes}.", repo=found["repo"], quant=found["quant"],
+                         purposes=purposes)  # fmt: skip
     return llama_config.model_block(
         model_id,
         name=found["name"],
-        description=tr(
-            "{repo} {quant}, установлена AFO: {purposes}.", repo=found["repo"], quant=found["quant"], purposes=purposes
-        ),
+        description=description,
         server=server,
         model=str(model_file),
         mmproj=str(lens_file) if lens_file else "",
@@ -786,7 +856,7 @@ def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, 
         cache_type=plan["cache_type"],
         ttl=plan["ttl"],
         metadata={
-            "source": f"huggingface.co/{found['repo']}",
+            "source": f"huggingface.co/{found['repo']}" if found["repo"] else str(model_file),
             "license": found["license"] or "?",
             "localchat_install": found["id"],
         },
@@ -802,7 +872,10 @@ def _check_room(folder: Path, size: int) -> None:
 
 
 def _delete_files(found: dict[str, Any]) -> None:
-    """This install's files (and their parts) gone, then its folder and the author's folder if they are empty."""
+    """This install's files (and their parts) gone, then its folder and the author's folder if they are empty - only
+    files AFO downloaded: a model found on the drives keeps its files whatever happens (15.1)."""
+    if not found.get("own_files", 1):
+        return
     folder = Path(found["folder"])
     for f in found["files"]:
         dest = folder / PurePosixPath(f["path"]).name

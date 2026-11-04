@@ -259,8 +259,46 @@ def trial_text(job: dict[str, Any]) -> str:
     return ""
 
 
+def local_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """The models found on the drives, as «На этом компьютере» lists them (15.1)."""
+    out = []
+    for m in found.get("models") or []:
+        words, tone = verdict_of(m)
+        note = [gb(m["size"])]
+        if m.get("quant"):
+            note.append(m["quant"])
+        if m.get("projector"):
+            note.append(tr("понимает картинки"))
+        if m.get("source") == "ollama":
+            note.append("Ollama")
+        out.append({"name": m["name"], "path": m["path"], "projector": m.get("projector") or "",
+                    "note": " · ".join(note), "words": words, "tone": tone,
+                    "inConfig": m.get("in_config") or ""})  # fmt: skip
+    return out
+
+
+def scan_text(found: dict[str, Any]) -> str:
+    """What the search on the drives is doing, or what it found."""
+    job = found.get("job") or {}
+    status = job.get("status")
+    if status == "scanning":
+        return tr("Ищу на дисках: {drive} — просмотрено папок: {folders}, найдено файлов: {files}…",
+                  drive=job.get("drive") or "", folders=job.get("folders", 0), files=job.get("files", 0))  # fmt: skip
+    if status == "failed":
+        return tr("Поиск не удался: {error}", error=job.get("error", ""))
+    if status == "cancelled":
+        return tr("Поиск остановлен — список прежний.")
+    if found.get("at"):
+        return tr("Найдено моделей: {count}. Список хранится до следующего поиска.",
+                  count=len(found.get("models") or []))  # fmt: skip
+    return tr("Модели, что уже лежат на ваших дисках: LM Studio, Ollama, скачанные вручную. Поиск идёт по всем дискам "
+              "в фоне и может занять несколько минут; модель добавляется в llama-swap прямо оттуда, где лежит, без "
+              "копии.")  # fmt: skip
+
+
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
+             "ownFiles": bool(j.get("own_files", 1)),
              "statusWords": status_words(j["status"]), "percent": j.get("percent") or 0.0,
              "progress": progress_text(j), "error": with_hint(j.get("error") or ""), "trial": trial_text(j),
              "live": j["status"] in ("queued", "downloading", "configuring", "trial"),
@@ -298,6 +336,7 @@ class InstallView(QObject):
         # that load read, so it goes over its answer - else a stale «загружается» could outlive «установлена»
         self._heard: dict[str, dict[str, Any] | None] = {}
         self._busy = False
+        self._local: dict[str, Any] = {}  # the models found on the drives (15.1)
 
     # ================= for QML =================
 
@@ -485,6 +524,56 @@ class InstallView(QObject):
     def setTab(self, tab: str) -> None:
         self._tab = tab
         self.changed.emit()
+        if tab == "local" and not self._local:
+            self.loadLocal()
+
+    # --- the models already on this computer (15.1) ---
+
+    @Property(list, notify=changed)
+    def localModels(self) -> list:
+        return local_rows(self._local)
+
+    @Property(str, notify=changed)
+    def scanText(self) -> str:
+        return scan_text(self._local)
+
+    @Property(bool, notify=changed)
+    def scanning(self) -> bool:
+        return (self._local.get("job") or {}).get("status") == "scanning"
+
+    def _set_local(self, found: dict[str, Any]) -> None:
+        self._local = found
+        self.changed.emit()
+
+    @Slot()
+    def loadLocal(self) -> None:
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.install_found(), self._set_local, lambda _e: None)
+
+    @Slot()
+    def scanLocal(self) -> None:
+        self.app.call_or_fail(lambda: self.app.client.install_scan(), self._set_local,
+                              lambda e: self.app.show_error(tr("Не начать поиск: {error}", error=e)))  # fmt: skip
+
+    @Slot()
+    def stopScan(self) -> None:
+        self.app.call_or_fail(lambda: self.app.client.install_scan_cancel(), self._set_local, lambda _e: None)
+
+    @Slot(str, str)
+    def addLocal(self, path: str, projector: str) -> None:
+        def done(result: dict[str, Any]) -> None:
+            job = result.get("job") or {}
+            self._upsert(job)
+            self.app.flash(tr("Добавляю «{name}» — пробный запуск на вкладке «Установки»", name=job.get("name", "")))
+            self.loadLocal()
+
+        self.app.call_or_fail(lambda: self.app.client.install_local(path, projector), done,
+                              lambda e: self.app.show_error(tr("Не добавить: {error}", error=e)))  # fmt: skip
+
+    @Slot(str)
+    def addFile(self, url: str) -> None:
+        """A model file chosen in the dialog (any GGUF on this computer)."""
+        self.addLocal(QUrl(url).toLocalFile() if url.startswith("file:") else url, "")
 
     @Slot(str)
     def setPurpose(self, purpose: str) -> None:
@@ -603,21 +692,30 @@ class InstallView(QObject):
         if job is None:
             return
         if action == "remove":
+            own = job.get("own_files", 1)
 
             def decide(yes: bool) -> None:
                 if yes:
-                    self._do(job, lambda: self.app.client.install_remove(job["model_id"]),
-                             tr("«{name}» удалена: файлы и запись в llama-swap", name=job["name"]))  # fmt: skip
+                    gone = tr("«{name}» удалена: файлы и запись в llama-swap", name=job["name"])
+                    kept = tr("«{name}» убрана из llama-swap, файл остался на диске", name=job["name"])
+                    said = gone if own else kept
+                    self._do(job, lambda: self.app.client.install_remove(job["model_id"]), said)
 
-            text = tr(
-                "Её файлы ({size}) удалятся с диска, запись в config.yaml llama-swap — тоже "
-                "(копия конфига останется рядом).",
-                size=gb(job["total_bytes"]),
-            )
+            if not own:  # found on the drives: the file is the person's (15.1)
+                text = tr("Её запись в config.yaml llama-swap удалится (копия конфига останется рядом); файл модели "
+                          "останется на диске, где лежал.")  # fmt: skip
+            else:
+                text = tr(
+                    "Её файлы ({size}) удалятся с диска, запись в config.yaml llama-swap — тоже "
+                    "(копия конфига останется рядом).",
+                    size=gb(job["total_bytes"]),
+                )
             self.app._ask(tr("Удалить модель «{name}»?", name=job["name"]), text, tr("Удалить"), decide)
             return
         if action == "forget":
-            self._do(job, lambda: self.app.client.install_forget(job_id), tr("Убрано из списка вместе с файлами"))
+            said = (tr("Убрано из списка вместе с файлами") if job.get("own_files", 1)
+                    else tr("Убрано из списка, файл остался на диске"))  # fmt: skip
+            self._do(job, lambda: self.app.client.install_forget(job_id), said)
             return
         self._do(job, lambda: self.app.client.install_act(job_id, action), "")
 
@@ -647,6 +745,14 @@ class InstallView(QObject):
         self._jobs.insert(0, job)
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "install.found":  # the search on the drives
+            job = payload.get("job") or {}
+            if job.get("status") == "scanning":
+                self._local = {**self._local, "job": job}
+                self.changed.emit()
+            else:
+                self.loadLocal()
+            return
         if kind == "install.changed":
             job = payload.get("job") or {}
             before = next((j["status"] for j in self._jobs if j["id"] == job.get("id")), "")

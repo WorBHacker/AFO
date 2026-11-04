@@ -167,6 +167,21 @@ class HubClient:
     def install_forget(self, job_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/jobs/{job_id}")
 
+    def install_found(self) -> dict:
+        """The models found on the drives (15.1): {job, at, models: [{name, path, size, verdict, words,
+        in_config…}]}."""
+        return self._call("GET", "/v1/install/found")
+
+    def install_scan(self) -> dict:
+        return self._call("POST", "/v1/install/found/scan")
+
+    def install_scan_cancel(self) -> dict:
+        return self._call("POST", "/v1/install/found/cancel")
+
+    def install_local(self, path: str, projector: str = "") -> dict:
+        """A model already on this computer into llama-swap's config, where it lies."""
+        return self._call("POST", "/v1/install/local", {"path": path, "projector": projector})
+
     def install_remove(self, model_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
 
