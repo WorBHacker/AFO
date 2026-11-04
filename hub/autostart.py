@@ -1,12 +1,13 @@
 """Starting by itself (Q8): the hub at Windows login, llama-swap together with the hub.
 
-- At login: a value in the user's Run key (HKCU\\...\\CurrentVersion\\Run, "LocalChat hub") that runs `pythonw -m hub`
-  - no console, no administrator rights. Off until the user turns it on in Settings; off again removes the value.
+- At login: a value in the user's Run key (HKCU\\...\\CurrentVersion\\Run, "AFO hub") that runs `pythonw -m hub` - no
+  console, no administrator rights. Off until the user turns it on in Settings; off again removes the value. The value
+  under the old name ("LocalChat hub", before 10.4b) becomes this one when the hub starts.
 - llama-swap: when the hub starts and llama-swap does not answer on this computer, the hub starts it hidden and on
   its own - it keeps running when the hub stops, as the hub does when the window closes (D2). What it starts:
   LOCALCHAT_LLAMA_SWAP_START, else the script or llama-swap.exe chosen in Settings (10.3), else the start script beside
-  LocalChat's folder on the computer it was built on, else the llama-swap.exe the first-run wizard put in LocalChat's
-  engines (10.2) - an .exe gets the config (hub/llama_config.py) and the address. On unless the user turns it off in
+  the checkout on the computer it was built on, else the llama-swap.exe the first-run wizard put in AFO's engines
+  (10.2) - an .exe gets the config (hub/llama_config.py) and the address. On unless the user turns it off in
   Settings. Its output goes to data/logs/llama-swap.out.log.
 """
 
@@ -32,7 +33,8 @@ from .db import utc_now
 log = logging.getLogger("hub.autostart")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE = "LocalChat hub"
+RUN_VALUE = "AFO hub"
+OLD_RUN_VALUE = "LocalChat hub"  # before the name AFO (10.4b)
 RUN_STORE_ENV = "LOCALCHAT_RUN_KEY"  # "memory": tests and throwaway runs never touch the registry
 LLAMA_SWAP_START_ENV = "LOCALCHAT_LLAMA_SWAP_START"
 DEFAULT_LLAMA_SWAP_START = PROJECT_ROOT.parent / "llama-swap" / "start-llama-swap.cmd"
@@ -51,14 +53,17 @@ class RunStore(Protocol):
 
 
 class RegistryRunStore:
-    """The user's Run key in the Windows registry."""
+    """A value in the user's Run key in the Windows registry."""
+
+    def __init__(self, name: str = RUN_VALUE) -> None:
+        self.name = name
 
     def get(self) -> str | None:
         import winreg
 
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-                return str(winreg.QueryValueEx(key, RUN_VALUE)[0])
+                return str(winreg.QueryValueEx(key, self.name)[0])
         except FileNotFoundError:
             return None
 
@@ -66,14 +71,14 @@ class RegistryRunStore:
         import winreg
 
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, command)
+            winreg.SetValueEx(key, self.name, 0, winreg.REG_SZ, command)
 
     def delete(self) -> None:
         import winreg
 
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.DeleteValue(key, RUN_VALUE)
+                winreg.DeleteValue(key, self.name)
         except FileNotFoundError:
             pass
 
@@ -92,10 +97,22 @@ class MemoryRunStore:
         self.value = None
 
 
-def default_run_store() -> RunStore:
+def default_run_store(name: str = RUN_VALUE) -> RunStore:
     if os.environ.get(RUN_STORE_ENV, "").lower() == "memory" or os.name != "nt":
         return MemoryRunStore()
-    return RegistryRunStore()
+    return RegistryRunStore(name)
+
+
+def renamed(store: RunStore, old: RunStore) -> None:
+    """The hub at login under the old name becomes AFO's, with the same command (10.4b)."""
+    try:
+        command = old.get()
+        if command:
+            if not store.get():
+                store.set(command)
+            old.delete()
+    except OSError as exc:
+        log.warning("the login value under the old name stays: %s", exc)
 
 
 def login_command() -> str:

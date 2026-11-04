@@ -118,7 +118,7 @@ def _sid() -> tuple[int, str]:
         raise ContainerError("an AppContainer is Windows only")
     userenv, advapi, kernel = _api()
     sid = ctypes.c_void_p()
-    made = userenv.CreateAppContainerProfile(NAME, NAME, "LocalChat: the agent's scripts", None, 0,
+    made = userenv.CreateAppContainerProfile(NAME, NAME, "AFO: the agent's scripts", None, 0,
                                              ctypes.byref(sid)) & 0xFFFFFFFF  # fmt: skip
     if made == ALREADY_EXISTS:
         made = userenv.DeriveAppContainerSidFromAppContainerName(NAME, ctypes.byref(sid)) & 0xFFFFFFFF

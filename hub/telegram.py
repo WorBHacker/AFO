@@ -44,7 +44,7 @@ IDLE_S = 30.0  # without a token: look again this often
 BACKOFF_S = (2, 5, 15, 60)
 PREVIEW_LINES = 30
 DECIDED = {"allowed": "✅ Разрешено", "denied": "⛔ Отклонено", "expired": "⌛ Не дождался ответа"}
-GOAL_WORDS = {"achieved": "🎯 Цель достигнута", "blocked": "✋ Цель ждёт вас (решение — в окне LocalChat)",
+GOAL_WORDS = {"achieved": "🎯 Цель достигнута", "blocked": "✋ Цель ждёт вас (решение — в окне AFO)",
               "budget": "⏳ Цель дошла до предела (продолжить можно в окне)"}  # fmt: skip
 
 
@@ -102,9 +102,9 @@ def request_text(approval: dict[str, Any], project: dict[str, Any] | None) -> st
     if approval.get("destructive"):
         head += "\n⚠️ Разрушительное действие — ответить можно только в приложении."
     if approval.get("unsaved"):  # D47
-        head += "\n⚠️ Файл открыт в редакторе LocalChat с несохранёнными правками."
+        head += "\n⚠️ Файл открыт в редакторе AFO с несохранёнными правками."
     if not project or not project.get("cloud_ok"):  # D21: a local-only project's code does not go to the cloud
-        return head + "\nПодробности — в приложении LocalChat."
+        return head + "\nПодробности — в приложении AFO."
     preview = approval.get("preview") or {}
     lines = str(preview.get("text") or "").splitlines()
     shown = "\n".join(lines[:PREVIEW_LINES]) + (f"\n… ещё {len(lines) - PREVIEW_LINES} строк" if len(lines) >
@@ -204,7 +204,7 @@ class TelegramBot:
             code = text.removeprefix("/link ") if text.startswith("/link ") else None
             if code is not None and await self._db.acall(lambda conn: try_link(conn, chat_id, code)):
                 await self._call("sendMessage", chat_id=chat_id,
-                                 text="Готово: этот чат получает запросы подтверждения LocalChat.")  # fmt: skip
+                                 text="Готово: этот чат получает запросы подтверждения AFO.")  # fmt: skip
                 await self._bus.publish("telegram.linked", {"chat_id": chat_id})
             if chat is not None and chat_id == chat and text and not text.startswith("/"):  # the user's own word
                 await self._bus.publish("telegram.message", {"text": text[:2000]})  # schedules wait for it (9.7)
@@ -269,7 +269,7 @@ class TelegramBot:
         if chat is None or not self._store.get(TOKEN):
             return
         if kind in ("run.question", "run.notice"):  # the autonomous agent asks, or says (9.4): answered in the window
-            head = "Агент спрашивает (ответ — в окне LocalChat)" if kind == "run.question" else "Агент сообщает"
+            head = "Агент спрашивает (ответ — в окне AFO)" if kind == "run.question" else "Агент сообщает"
             body = html.escape(str(payload.get("question") or payload.get("text") or ""))
             await self._call("sendMessage", chat_id=chat, text=f"<b>{head}</b>\n{body}", parse_mode="HTML")
             return

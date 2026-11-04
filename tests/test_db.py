@@ -84,8 +84,9 @@ def test_transaction_rolls_back_on_error(db):
     assert db.call(lambda c: c.execute("SELECT COUNT(*) FROM settings").fetchone()[0]) == 0
 
 
-def test_the_data_folder_and_localchats_own(tmp_path, monkeypatch):
-    """10.3: LOCALCHAT_DATA_DIR; a checkout that keeps its data in <project>/data keeps it; else LocalChat's folder."""
+def test_the_data_folder_and_the_programs_own(tmp_path, monkeypatch):
+    """10.3: LOCALCHAT_DATA_DIR; a checkout that keeps its data in <project>/data keeps it; else the program's folder -
+    AFO (10.4b); a folder under the old name that already holds data stays where it is."""
     from common import paths
 
     monkeypatch.delenv(paths.DATA_DIR_ENV)
@@ -98,7 +99,13 @@ def test_the_data_folder_and_localchats_own(tmp_path, monkeypatch):
     monkeypatch.delenv(paths.HOME_ENV)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
     if paths.os.name == "nt":
-        assert paths.app_home() == tmp_path / "appdata" / "LocalChat"
+        assert paths.app_home() == tmp_path / "appdata" / "AFO"
+        (tmp_path / "appdata" / "LocalChat" / "cache").mkdir(parents=True)  # Qt's cache only: no data there
+        assert paths.app_home() == tmp_path / "appdata" / "AFO"
+        (tmp_path / "appdata" / "LocalChat" / "data").mkdir()  # data under the old name: llama-swap's config and the
+        assert paths.app_home() == tmp_path / "appdata" / "LocalChat"  # database point into it, so it stays
+        (tmp_path / "appdata" / "AFO" / "data").mkdir(parents=True)
+        assert paths.app_home() == tmp_path / "appdata" / "AFO"
 
 
 def test_models_go_into_localchats_own_model_folder(tmp_path, monkeypatch):

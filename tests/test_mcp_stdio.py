@@ -77,7 +77,7 @@ def test_the_bridge_forwards_messages_as_they_are(hub):
         "{not json",
     ]
     (init, initialized, listed, outline, wrong, garbage), protocol = through(hub, token, lines)
-    assert init[0]["id"] == 1 and init[0]["result"]["serverInfo"]["name"] == "LocalChat hub"
+    assert init[0]["id"] == 1 and init[0]["result"]["serverInfo"]["name"] == "AFO hub"
     assert protocol == init[0]["result"]["protocolVersion"]  # sent with every later request
     assert initialized == []  # a notification: the hub accepts it (202) and nothing goes back
     assert {t["name"] for t in listed[0]["result"]["tools"]} == TOOLS | {"approval_prompt"}

@@ -47,7 +47,7 @@ INSTRUCTIONS_CHARS = 8000
 AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE]  # what a profile may choose from
 TOOL_NAMES = [t["name"] for t in AGENT_TOOLS]
 DEFAULT_TOOLS = [n for n in TOOL_NAMES if n != DELEGATE["name"]]  # "all": a coordinator is chosen, not by default
-RESUMED = "[LocalChat hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
+RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
 
 

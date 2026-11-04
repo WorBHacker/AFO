@@ -48,7 +48,7 @@ LAST_WORDS = frozenset({"update_step", "finish"})  # still run at the step limit
 LIMIT = ("not run: the step limit is reached. Call finish now with an honest report - what was done, what was not, "
          "whether the goal is met.")  # fmt: skip
 MAX_STEPS_IN_PLAN = 30
-NOTE = "[LocalChat hub]"
+NOTE = "[AFO hub]"
 MAX_OPTIONS = 6  # answers offered with a question
 MAX_DISPUTES = 2  # «goal met» the judge does not agree with is sent back this often; then the report says «not met»
 

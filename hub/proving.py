@@ -112,7 +112,7 @@ def copy_task(spec: dict[str, Any], folder: Path) -> None:
     shutil.copytree(TASKS_DIR / spec["id"] / "files", folder)
     (folder / ".gitignore").write_text("__pycache__/\n*.pyc\n", encoding="utf-8")  # Python's caches are not changes
     # the user's own git settings stay out of it (D46): their hooks, their signing - a copy is not their project
-    own = ["-c", "user.name=LocalChat", "-c", "user.email=proving@localchat", "-c", "commit.gpgsign=false",
+    own = ["-c", "user.name=AFO", "-c", "user.email=proving@afo", "-c", "commit.gpgsign=false",
            "-c", f"core.hooksPath={folder / '.git' / 'no-hooks'}"]  # fmt: skip
     steps = (("init", "-q", "-b", "main"), (*own, "add", "-A"), (*own, "commit", "-q", "-m", "the task as given"))
     for args in steps:

@@ -23,7 +23,7 @@ def project(root):
 def test_the_block(tmp_path):
     text = export.block(project(tmp_path), CARD + f"\nключ {SECRET}", [{"text": "тесты: pytest -q"}])
     assert text.startswith(BEGIN) and text.rstrip().endswith(END)
-    assert "## Карточка проекта «demo» (LocalChat)" in text
+    assert "## Карточка проекта «demo» (AFO)" in text and "LocalChat" not in text
     assert "### Назначение\nДемо-проект." in text and "### Как запускать" in text  # one level down, under the block
     assert "### Заметки для моделей\n- тесты: pytest -q" in text
     assert "MCP" in text and SECRET not in text  # the file may be committed: secrets are masked
@@ -60,10 +60,32 @@ def test_a_clinerules_folder_gets_a_file_of_its_own(tmp_path):
     (tmp_path / ".clinerules" / "style.md").write_text("свои правила\n", encoding="utf-8")
     text = export.block(project(tmp_path), CARD, [])
     plan = export.plan(project(tmp_path), "cline", text)
-    assert plan.path == tmp_path / ".clinerules" / "localchat.md" and plan.mode == "create"
+    assert plan.path == tmp_path / ".clinerules" / "afo.md" and plan.mode == "create"
     export.write(plan, tmp_path / "snapshots")
     assert export.plan(project(tmp_path), "cline", text).mode == "unchanged"
     assert (tmp_path / ".clinerules" / "style.md").read_text(encoding="utf-8") == "свои правила\n"
+
+
+def test_a_block_and_a_cline_file_from_before_the_name_afo(tmp_path):
+    """10.4b: a block written under the old name (LocalChat) is found and replaced, not added a second time; Cline's
+    localchat.md becomes afo.md - the old file goes, kept in the snapshots."""
+    p = project(tmp_path)
+    old = ("<!-- LocalChat: начало карточки проекта. Её обновляет кнопка «В проект» в LocalChat — правки внутри блока "
+           "будут заменены -->\n\nстарая карточка\n\n<!-- LocalChat: конец карточки проекта -->\n")  # fmt: skip
+    (tmp_path / "CLAUDE.md").write_text("# Мои правила\n\n" + old + "\nХвост.\n", encoding="utf-8", newline="")
+    text = export.block(p, CARD, [])
+    replaced = export.plan(p, "claude", text)
+    assert replaced.mode == "replace" and "LocalChat" not in replaced.after and "старая" not in replaced.after
+    assert replaced.after.startswith("# Мои правила\n\n" + BEGIN) and replaced.after.endswith("\nХвост.\n")
+
+    (tmp_path / ".clinerules").mkdir()
+    (tmp_path / ".clinerules" / "localchat.md").write_text(old, encoding="utf-8", newline="")
+    moved = export.plan(p, "cline", text)
+    assert moved.path == tmp_path / ".clinerules" / "afo.md" and moved.mode == "replace" and moved.before == old
+    assert export.write(moved, tmp_path / "snapshots")  # the old file is kept
+    assert not (tmp_path / ".clinerules" / "localchat.md").exists()
+    assert (tmp_path / ".clinerules" / "afo.md").read_text(encoding="utf-8") == text
+    assert export.plan(p, "cline", text).mode == "unchanged"
 
 
 def test_what_is_refused(tmp_path):

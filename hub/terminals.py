@@ -47,7 +47,7 @@ LOG_MAX_BYTES = 50 * 1024 * 1024
 LOG_KEEP_DAYS = 90
 LOGS_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 PRUNE_EVERY_S = 6 * 3600
-LOG_CUT = "\r\n\x1b[33m[LocalChat: журнал достиг предела, дальше вывод не сохраняется]\x1b[0m\r\n"
+LOG_CUT = "\r\n\x1b[33m[AFO: журнал достиг предела, дальше вывод не сохраняется]\x1b[0m\r\n"
 SHELLS = ("pwsh", "powershell", "cmd")
 
 

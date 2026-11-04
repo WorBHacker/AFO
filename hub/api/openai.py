@@ -60,7 +60,7 @@ async def _complete(request: Request, client: Client, body: dict[str, Any]) -> J
     if model is None or not model["enabled"] or model["provider"] == CLAUDE_CODE:
         raise ProxyError(404, "model_not_found", f"no model {model_id!r} here; GET /v1/openai/models lists them")
     if model["prices"] and await state.db.acall(lambda conn: budgets.reached(conn, model_id)):
-        raise ProxyError(402, "insufficient_quota", "a budget for this model is used up (LocalChat budgets, D12)")
+        raise ProxyError(402, "insufficient_quota", "a budget for this model is used up (AFO budgets, D12)")
     messages = to_hub_messages(body.get("messages"))
     tools = to_hub_tools(body.get("tools"))
     number, own = await state.db.acall(lambda conn: model_settings.current(conn, model_id))

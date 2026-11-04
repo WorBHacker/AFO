@@ -128,7 +128,7 @@ class TransferView(QObject):
             self.app.show_error(f"Файл не прочитан: {exc}")
             return False
         if not isinstance(data, dict) or data.get("kind") != KIND:
-            self.app.show_error("Это не файл настроек LocalChat (настройки моделей загружаются в «Настройке моделей»)")
+            self.app.show_error("Это не файл настроек AFO (настройки моделей загружаются в «Настройке моделей»)")
             return False
         self.close()
         self._data, self._file, self._parts = data, path.name, {}

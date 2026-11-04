@@ -20,6 +20,17 @@ def test_the_login_value():
     assert store.value is None and isinstance(autostart.default_run_store(), autostart.MemoryRunStore)
 
 
+def test_the_login_value_under_the_old_name_moves():
+    """10.4b: the hub at login under the old name (LocalChat) becomes AFO's, with the same command; none - nothing."""
+    assert (autostart.RUN_VALUE, autostart.OLD_RUN_VALUE) == ("AFO hub", "LocalChat hub")
+    new, old = autostart.MemoryRunStore(), autostart.MemoryRunStore()
+    autostart.renamed(new, old)
+    assert new.value is None and old.value is None
+    old.value = '"C:\\Python\\pythonw.exe" -m hub'
+    autostart.renamed(new, old)
+    assert new.value == '"C:\\Python\\pythonw.exe" -m hub' and old.value is None
+
+
 class FakeLlamaSwap:
     """Answers once "started"; counts the starts."""
 

@@ -338,7 +338,7 @@ def test_a_model_installed_tried_and_removed(hub):
     assert system["server"] == "${llama_server}" and system["space"]["vram_gib"] == 14.7
     home = hub.tmp / "localchat-model"  # LocalChat's own `model` folder (conftest points it at the test's folder)
     assert system["folder"] == str(home) and system["home"]["folder"] == str(home)
-    assert system["drives"][0]["folder"] == str(Path(hub.tmp / "T" / "LocalChat" / "models"))
+    assert system["drives"][0]["folder"] == str(Path(hub.tmp / "T" / "AFO" / "models"))
     shown = hub.get("/v1/install/repo/test/Tiny-GGUF").json()
     assert [(v["quant"], v["bits"], v["verdict"]) for v in shown["variants"]] == [
         ("Q4_K_M", 4.5, "gpu"), ("Q8_0", 8.5, "gpu"), ("BF16", 16.0, "gpu")]  # fmt: skip

@@ -25,20 +25,20 @@ from .ui.main import QuickApp, install_russian, use_software_rendering
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m app", description="LocalChat window")
+    parser = argparse.ArgumentParser(prog="python -m app", description="AFO window")
     parser.add_argument("--smoke", action="store_true", help="build the window, do not connect, exit")
     args = parser.parse_args(argv)
 
     log = setup_logging("app", redact=clean)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per hub call is noise
-    log.info("LocalChat app %s (PySide6 %s)", __version__, pyside_version)
+    log.info("AFO app %s (PySide6 %s)", __version__, pyside_version)
     watch_for_crashes(log)
     if sys.platform == "win32":
-        # the taskbar groups the window as LocalChat, not as python.exe
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LocalChat.App")
+        # the taskbar groups the window as AFO, not as python.exe
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("AFO.App")
     use_software_rendering()
     app = QApplication(sys.argv[:1])  # QtWidgets for the tray icon and its menu (D21); QML runs on it
-    app.setApplicationName("LocalChat")
+    app.setApplicationName("AFO")
     install_russian(app)
     quick = QuickApp(app, data_paths().ensure(), connect=not args.smoke)
     if args.smoke:

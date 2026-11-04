@@ -783,7 +783,7 @@ Item {
                         }
                         ToolTip.visible: procHover.hovered && !stopButton.hovered
                         ToolTip.delay: 900
-                        ToolTip.text: (proc.modelData.hub ? "Это сам хаб LocalChat\n" : "") + "PID " + proc.modelData.pid
+                        ToolTip.text: (proc.modelData.hub ? "Это сам хаб AFO\n" : "") + "PID " + proc.modelData.pid
                                       + (proc.modelData.folder ? " · папка " + proc.modelData.folder : "")
                                       + "\n" + proc.modelData.cmdline
                     }

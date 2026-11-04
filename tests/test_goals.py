@@ -81,7 +81,7 @@ def settled(hub, conv, *statuses):  # noqa: F811
 def hub_note(messages):
     """The goal's last word to the worker in these messages."""
     return next(m["content"] for m in reversed(messages)
-                if m["role"] == "user" and m["content"].startswith("[LocalChat hub] <goal_loop"))  # fmt: skip
+                if m["role"] == "user" and m["content"].startswith("[AFO hub] <goal_loop"))  # fmt: skip
 
 
 def test_a_goal_works_turn_after_turn_until_its_check_passes(hub, repo):  # noqa: F811
@@ -100,7 +100,7 @@ def test_a_goal_works_turn_after_turn_until_its_check_passes(hub, repo):  # noqa
     assert (second["route"], second["verdict"], second["results"][0]["met"]) == ("achieved", "ACHIEVED", True)
     assert reached["criteria"][0]["verified"] is True and reached["detail"].startswith("цель достигнута")
     start = hub_note(worker.prompts[0])
-    assert start.startswith('[LocalChat hub] <goal_loop type="start">') and "GOAL: Создать done.txt" in start
+    assert start.startswith('[AFO hub] <goal_loop type="start">') and "GOAL: Создать done.txt" in start
     assert f"1. `{DONE}` in «proj» ends with exit code 0" in start and "- Не трогать README.md" in start
     going = hub_note(worker.prompts[1])
     assert 'type="continuation"' in going and "CHECK OF YOUR LAST TURN: not met." in going
@@ -407,5 +407,5 @@ def test_a_goal_cut_off_in_its_first_turn_gets_its_contract_again(hub, repo):  #
     hub.portal.call(hub.app.state.goals.start)
     settled(hub, conv, "achieved")
     note = hub_note(worker.prompts[0])
-    assert note.startswith('[LocalChat hub] <goal_loop type="start">\nThe hub restarted')
+    assert note.startswith('[AFO hub] <goal_loop type="start">\nThe hub restarted')
     assert "GOAL: Создать done.txt" in note and "THE USER ADDED:\nФайл — в корне" in note

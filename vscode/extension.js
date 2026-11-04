@@ -1,5 +1,5 @@
 'use strict';
-// LocalChat for VS Code (stage 6.6): tells the hub on this computer which file is open and which commands ran in the
+// AFO for VS Code (stage 6.6): tells the hub on this computer which file is open and which commands ran in the
 // terminals (with shell integration), so the hub's chats and agents see what the user is doing. It only reports;
 // it reads nothing from the hub and changes nothing in VS Code. Nothing is queued: with the hub stopped, reports
 // are simply dropped.
@@ -24,7 +24,7 @@ async function askForToken(context, why) {
   }
   askedForToken = true;
   const choice = await vscode.window.showInformationMessage(
-    `LocalChat: ${why}. Создайте токен: python -m hub token create vscode — и вставьте его.`,
+    `AFO: ${why}. Создайте токен: python -m hub token create vscode — и вставьте его.`,
     'Задать токен',
   );
   if (choice) {
@@ -34,7 +34,7 @@ async function askForToken(context, why) {
 
 async function setToken(context) {
   const token = await vscode.window.showInputBox({
-    title: 'Токен хаба LocalChat',
+    title: 'Токен хаба AFO',
     prompt: 'Его печатает python -m hub token create vscode (показывается один раз)',
     password: true,
     ignoreFocusOut: true,
@@ -43,7 +43,7 @@ async function setToken(context) {
     await context.secrets.store(lib.TOKEN_KEY, token.trim());
     askedForToken = false;
     lastProblem = '';
-    vscode.window.showInformationMessage('LocalChat: токен сохранён в хранилище секретов VS Code');
+    vscode.window.showInformationMessage('AFO: токен сохранён в хранилище секретов VS Code');
   }
 }
 
@@ -137,7 +137,7 @@ function activate(context) {
     vscode.commands.registerCommand('localchat.setToken', () => setToken(context)),
     vscode.commands.registerCommand('localchat.status', () => {
       const state = lastProblem ? `проблема: ${lastProblem}` : 'связь в порядке';
-      vscode.window.showInformationMessage(`LocalChat: ${state}; отправлено сообщений: ${reported}`);
+      vscode.window.showInformationMessage(`AFO: ${state}; отправлено сообщений: ${reported}`);
     }),
   );
   reportFocus();

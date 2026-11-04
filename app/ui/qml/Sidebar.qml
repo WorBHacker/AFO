@@ -31,7 +31,7 @@ Rectangle {
                 Icon { anchors.centerIn: parent; name: "chat"; size: 14; tint: "#ffffff" }
             }
             Text {
-                text: "LocalChat"
+                text: "AFO"
                 color: Theme.p.text
                 font.family: Theme.uiFont
                 font.pixelSize: 14

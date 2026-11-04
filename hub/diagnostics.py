@@ -80,7 +80,7 @@ async def check(state: Any) -> list[dict[str, Any]]:
     lines = []
     paths = state.settings.paths
     url = state.settings.llama_swap_url
-    lines.append(_line("hub", "Хаб", True, f"LocalChat {__version__} работает, данные в {paths.root}"))
+    lines.append(_line("hub", "Хаб", True, f"AFO {__version__} работает, данные в {paths.root}"))
 
     answering = await autostart.answers(url)
     lines.append(_line("llama-swap", "Локальные модели (llama-swap)", answering,
@@ -177,8 +177,8 @@ def report(paths: Any, lines: list[dict[str, Any]]) -> Path:
     llama-swap config. The last few reports are kept."""
     folder = paths.root / "reports"
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"localchat-report-{datetime.now():%Y-%m-%d-%H%M%S}.zip"
-    versions = {"localchat": __version__, "python": sys.version, "windows": platform.platform(),
+    target = folder / f"afo-report-{datetime.now():%Y-%m-%d-%H%M%S}.zip"
+    versions = {"afo": __version__, "python": sys.version, "windows": platform.platform(),
                 "machine": platform.machine(), "made": datetime.now().isoformat(timespec="seconds")}  # fmt: skip
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("check.json", json.dumps(lines, ensure_ascii=False, indent=2))
@@ -192,6 +192,7 @@ def report(paths: Any, lines: list[dict[str, Any]]) -> Path:
         swap_log = config.parent / "llama-swap.log"
         with contextlib.suppress(OSError):
             zf.writestr("llama-swap/llama-swap.log", secret_filter.clean(_tail(swap_log)))
-    for old in sorted(folder.glob("localchat-report-*.zip"))[:-REPORT_KEEP]:
+    made = [*folder.glob("afo-report-*.zip"), *folder.glob("localchat-report-*.zip")]  # before 10.4b too
+    for old in sorted(made, key=lambda p: p.name.split("-report-")[-1])[:-REPORT_KEEP]:
         old.unlink(missing_ok=True)
     return target

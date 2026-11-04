@@ -123,7 +123,7 @@ HANDED = re.compile(r"\s-(?:FileP\w*|PSPath|Ar\w*)\b", re.IGNORECASE)  # Start-P
 # folder; the folder's own path is projects.HUB_DATA
 HUB_DATA_NAMES = re.compile(
     r"(?<![\w.$])(?:app|hub-[\w-]+)\.token\b(?!\s*\()|\*\.token\b|\btokens/+[^\s\"']*\.token\b|\bhub\.db\b"
-    r"|\bLOCALCHAT_(?:DATA_DIR|HOME)\b|\bLocalChat/+data\b",
+    r"|\bLOCALCHAT_(?:DATA_DIR|HOME)\b|\b(?:AFO|LocalChat)/+data\b",
     re.IGNORECASE,
 )
 SEARCHES = {"web_search", "WebSearch"}  # a query leaves this computer: asked every time, never covered (D19)

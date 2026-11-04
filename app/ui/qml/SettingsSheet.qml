@@ -204,7 +204,7 @@ Sheet {
             font.family: Theme.uiFont
             font.pixelSize: 12
         }
-        // where llama-swap is (10.3): chosen here, or LocalChat's default
+        // where llama-swap is (10.3): chosen here, or AFO's default
         Repeater {
             model: [
                 { id: "llama_swap_config", name: "Конфиг llama-swap", path: App.autostart.llama_swap_config || "",
@@ -358,21 +358,21 @@ Sheet {
         title: "Сохранить все настройки"
         fileMode: FileDialog.SaveFile
         defaultSuffix: "json"
-        nameFilters: ["Настройки LocalChat (*.json)"]
+        nameFilters: ["Настройки AFO (*.json)"]
         onAccepted: Transfer.exportTo(selectedFile.toString())
     }
     FileDialog {
         id: settingsIn
         title: "Загрузить настройки"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["Настройки LocalChat (*.json)"]
+        nameFilters: ["Настройки AFO (*.json)"]
         onAccepted: if (Transfer.openFile(selectedFile.toString())) { sheet.close(); App.openUi("transfer") }
     }
 
     SectionTitle { text: "О программе" }
     Text {
         width: parent.width
-        text: "LocalChat " + App.version + " · окно рисует процессор, видеопамять остаётся моделям"
+        text: "AFO " + App.version + " · окно рисует процессор, видеопамять остаётся моделям"
         wrapMode: Text.Wrap
         color: Theme.p.faint
         font.family: Theme.uiFont

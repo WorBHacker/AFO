@@ -35,7 +35,7 @@ def hub_address(paths: DataPaths) -> str:
 
 
 def probe(base_url: str) -> str:
-    """'ok' - a LocalChat hub answers; 'absent' - nothing listens; 'foreign' - some other program does."""
+    """'ok' - an AFO hub answers; 'absent' - nothing listens; 'foreign' - some other program does."""
     try:
         response = httpx.get(f"{base_url}/v1/health", timeout=1.0)
     except httpx.HTTPError:
@@ -74,7 +74,7 @@ def running_hub(paths: DataPaths, *, start: bool = True, timeout: float = START_
     base = hub_address(paths)
     state = probe(base)
     if state == "foreign":
-        raise HubUnavailable(f"на {base} отвечает не хаб LocalChat — порт занят другой программой")
+        raise HubUnavailable(f"на {base} отвечает не хаб AFO — порт занят другой программой")
     if state == "ok":
         return base
     if not start:

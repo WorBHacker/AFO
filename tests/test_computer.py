@@ -135,7 +135,7 @@ def test_the_agents_own_test_window(tmp_path, test_window):
     assert sent[1] and "the user said no" in sent[0]
     assert keys[1] and "leaves the program" in keys[0]
     assert 'value="Анна"' in looked and "no model with vision is set" in looked
-    assert unwatched[1] and "the LocalChat window is not open" in unwatched[0]
+    assert unwatched[1] and "the AFO window is not open" in unwatched[0]
     log = test_window["log"].read_text("utf-8").splitlines()
     assert log[-1] == "save name=Анна remember=True note=''" and not any(line.startswith("send") for line in log)
     assert asked == [("screen_act", "Имя", True), ("screen_act", "Запомнить", True), ("screen_act", "Сохранить", True),
@@ -335,7 +335,8 @@ def test_windows_windows_keeps_out_of_sight_are_not_offered(monkeypatch):
 
 
 def test_localchat_itself_is_never_the_agents_to_control(monkeypatch):
-    """Whatever is allowed - IDLE runs in pythonw.exe as LocalChat's window does - LocalChat's own windows stay out."""
+    """Whatever is allowed - IDLE runs in pythonw.exe as AFO's window does - AFO's own windows stay out, an installed
+    AFO.exe too, and LocalChat.exe of before the name AFO (10.4b)."""
     import os
 
     from hub import computer
@@ -343,9 +344,9 @@ def test_localchat_itself_is_never_the_agents_to_control(monkeypatch):
     assert computer.is_localchat(os.getpid())  # the hub
     lines = {1: ["C:\\Python314\\pythonw.exe", "-m", "app"], 2: ["C:\\Program Files\\LocalChat\\LocalChat.exe"],
              3: ["C:\\Python314\\pythonw.exe", "C:\\Python314\\Lib\\idlelib\\idle.pyw"],
-             4: ["notepad.exe"]}  # fmt: skip
+             4: ["notepad.exe"], 5: ["C:\\Users\\u\\AppData\\Local\\Programs\\AFO\\AFO.exe"]}  # fmt: skip
     monkeypatch.setattr(computer, "_cmdline", lambda pid: lines.get(pid, []))
-    assert [pid for pid in lines if computer.is_localchat(pid)] == [1, 2]
+    assert [pid for pid in lines if computer.is_localchat(pid)] == [1, 2, 5]
 
 
 def test_a_program_opens_a_link_of_its_own_kind(tmp_path, monkeypatch):

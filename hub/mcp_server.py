@@ -36,7 +36,7 @@ from .tools import ToolContext, run_tool
 from .tools import ToolError as WrongInput
 
 INSTRUCTIONS = (
-    "LocalChat hub: the projects on the user's computer, their code, git, terminals, processes and how they link. "
+    "AFO hub: the projects on the user's computer, their code, git, terminals, processes and how they link. "
     "Start with get_ecosystem_map, then get_project_card for the project you work on; read code with the other "
     "tools. Everything here only reads. Secrets appear as [REDACTED]."
 )
@@ -75,7 +75,7 @@ class McpGate:
 
 def build(app: Any) -> tuple[MCPServer, ASGIApp]:
     """The MCP server over the hub's state, and its ASGI app (gated) for the /mcp route."""
-    server = MCPServer("LocalChat hub", instructions=INSTRUCTIONS, version=__version__)
+    server = MCPServer("AFO hub", instructions=INSTRUCTIONS, version=__version__)
 
     async def caller(ctx: Context) -> Client:
         headers = ctx.headers
@@ -281,7 +281,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         ctx: Context,
         tool_use_id: Annotated[str | None, Field(description="The call's id.")] = None,
     ) -> str:
-        """Not for models: Claude Code's --permission-prompt-tool. Asks the user in the LocalChat app whether the
+        """Not for models: Claude Code's --permission-prompt-tool. Asks the user in the AFO app whether the
         tool may run, waits for the answer, and returns it as Claude Code expects."""
         client = await caller(ctx)
         conversation = ctx.headers.get(CONVERSATION_HEADER) if ctx.headers is not None else None

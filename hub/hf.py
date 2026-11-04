@@ -70,7 +70,7 @@ def safe_base(override: str | None, default: str) -> str:
 
 
 def headers(token: str | None = None) -> dict[str, str]:
-    out = {"User-Agent": f"LocalChat/{__version__}"}
+    out = {"User-Agent": f"AFO/{__version__}"}
     if token:
         out["Authorization"] = f"Bearer {token}"
     return out
@@ -217,7 +217,7 @@ class _Stream:
     def read(self, size: int) -> bytes:
         while len(self._buffer) < size:
             if self._read > self._limit:
-                raise GGUFError("the header is longer than LocalChat reads over the network")
+                raise GGUFError("the header is longer than AFO reads over the network")
             chunk = next(self._chunks, b"")
             if not chunk:
                 break

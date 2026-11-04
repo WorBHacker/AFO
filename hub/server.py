@@ -117,6 +117,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.secrets = secrets_store
         app.state.lock = ConnectionLock(secrets_store)  # the connections' password (D13)
         app.state.run_store = autostart.default_run_store()  # the hub at Windows login (Q8)
+        autostart.renamed(app.state.run_store, autostart.default_run_store(autostart.OLD_RUN_VALUE))  # 10.4b
         app.state.db = db
         app.state.bus = bus
         app.state.gateway = gateway
@@ -255,7 +256,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
 
     # the interactive docs pages are for browsers, which this hub does not serve (D31)
     app = FastAPI(
-        title="LocalChat hub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+        title="AFO hub", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
     )
     app.add_middleware(
         LocalOnlyMiddleware, allowed_hostnames=settings.allowed_hostnames, allowed_origins=settings.allowed_origins

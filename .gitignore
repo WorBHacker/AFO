@@ -13,7 +13,7 @@ dist/
 # Hub data: database, logs, terminal logs, file snapshots (D29)
 data/
 
-# local models the installer puts in LocalChat's own folder (10.1)
+# local models the installer puts in AFO's own folder (10.1)
 /model/
 
 # third-party programs fetched for the hub (ripgrep); not part of the repository

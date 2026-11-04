@@ -87,7 +87,7 @@ class Bridge:
             response = await self._post(line)
         except httpx.TransportError as exc:
             log.warning("the hub at %s did not answer: %s", self.base_url, exc)
-            return failed(HUB_ERROR, f"LocalChat hub does not answer at {self.base_url}")
+            return failed(HUB_ERROR, f"AFO hub does not answer at {self.base_url}")
         if response.status_code == 401:
             return failed(HUB_ERROR, "the hub refused the token: python -m hub token create <name> --save")
         if response.status_code == 202 or not response.content:
@@ -176,7 +176,7 @@ def main(paths: DataPaths, client: str) -> int:
     try:
         asyncio.run(run(paths, token))
     except HubUnavailable as exc:
-        print(f"LocalChat hub: {exc}", file=sys.stderr)
+        print(f"AFO hub: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         pass

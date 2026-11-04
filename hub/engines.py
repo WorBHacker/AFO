@@ -37,7 +37,7 @@ LLAMA_CPP = "ggml-org/llama.cpp"
 LLAMA_SWAP = "mostlygeek/llama-swap"
 ASSET = re.compile(r"^llama-(b\d+)-bin-win-(cuda-(\d+)\.(\d+)|vulkan|cpu)-x64\.zip$")
 CONFIG = """# llama-swap: one OpenAI-compatible address (http://127.0.0.1:8080/v1) for every local model.
-# Written by LocalChat's first-run wizard; models are added by «Установка моделей». The model asked for is started,
+# Written by AFO's first-run wizard; models are added by «Установка моделей». The model asked for is started,
 # the one running before it stopped (one graphics card).
 
 healthCheckTimeout: 600      # a large model's first load from disk can take minutes

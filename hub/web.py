@@ -28,7 +28,7 @@ TIMEOUT_S = 20.0
 MAX_BYTES = 2 * 1024 * 1024
 MAX_REDIRECTS = 5
 PART_CHARS = 12_000
-USER_AGENT = "LocalChat-hub/0.1 (a local assistant reading one page for its user)"
+USER_AGENT = "AFO-hub/0.1 (a local assistant reading one page for its user)"
 # the carriers' and VPNs' shared space (Tailscale gives its machines addresses there): not "private" to Python, yet
 # never the open web
 SHARED = ipaddress.ip_network("100.64.0.0/10")

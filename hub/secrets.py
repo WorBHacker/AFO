@@ -13,7 +13,8 @@ from typing import Protocol
 
 log = logging.getLogger("hub.secrets")
 
-SERVICE = "LocalChat"
+SERVICE = "AFO"
+OLD_SERVICE = "LocalChat"  # the name before 10.4b: a secret still kept under it moves to SERVICE when first read
 # "memory" keeps secrets in the process only: tests and throwaway runs never touch the OS store
 STORE_ENV = "LOCALCHAT_SECRETS"
 
@@ -29,13 +30,20 @@ class SecretStore(Protocol):
 class KeyringSecretStore:
     """Backed by the OS secret store (Windows Credential Manager via keyring's WinVaultKeyring)."""
 
-    def __init__(self, service: str = SERVICE):
+    def __init__(self, service: str = SERVICE, old: str | None = OLD_SERVICE):
         self.service = service
+        self.old = old
 
     def get(self, name: str) -> str | None:
         import keyring
 
-        return keyring.get_password(self.service, name)
+        value = keyring.get_password(self.service, name)
+        if value is None and self.old:
+            value = keyring.get_password(self.old, name)
+            if value is not None:  # kept under the old name: moved
+                keyring.set_password(self.service, name, value)
+                self._drop(self.old, name)
+        return value
 
     def set(self, name: str, value: str) -> None:
         import keyring
@@ -43,11 +51,17 @@ class KeyringSecretStore:
         keyring.set_password(self.service, name, value)
 
     def delete(self, name: str) -> bool:
+        """Under the old name too, so a secret never comes back from there."""
+        gone = self._drop(self.service, name)
+        return (self._drop(self.old, name) if self.old else False) or gone
+
+    @staticmethod
+    def _drop(service: str, name: str) -> bool:
         import keyring
         from keyring.errors import PasswordDeleteError
 
         try:
-            keyring.delete_password(self.service, name)
+            keyring.delete_password(service, name)
             return True
         except PasswordDeleteError:
             return False

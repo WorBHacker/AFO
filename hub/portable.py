@@ -454,7 +454,7 @@ def _connections_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _L
         connection = conns.BY_NAME.get(name)
         what = connection.title if connection else name
         if connection is None or connection.kind != "address":
-            items.append(_item(what, "skip", "такого адреса LocalChat не знает"))
+            items.append(_item(what, "skip", "такого адреса AFO не знает"))
             continue
         try:
             address = conns.clean_value(connection, str(address))
@@ -572,9 +572,9 @@ def load(conn: sqlite3.Connection, data: Any, *, apply: bool, unlocked: bool, ch
     """What loading the file does, part by part - done when `apply`, else taken back. A part behind the password
     without it is shown but not loaded; a part the file holds wrongly is said and skipped, the rest still load."""
     if not isinstance(data, dict) or data.get("kind") != KIND:
-        raise PortableError("это не файл настроек LocalChat")
+        raise PortableError("это не файл настроек AFO")
     if not isinstance(data.get("version"), int) or data["version"] > VERSION:
-        raise PortableError("файл сохранён более новой версией LocalChat: обновите эту")
+        raise PortableError("файл сохранён более новой версией AFO: обновите эту")
     loading = _Loading(by=by, now=datetime.now())
     parts = []
     conn.execute("BEGIN IMMEDIATE")

@@ -130,7 +130,7 @@ def test_app_entry_point_builds_the_window(env, isolated_data_dir):
     result = run({**env, "QT_QPA_PLATFORM": "offscreen"}, "app", "--smoke")
     assert result.returncode == 0, result.stderr
     log_text = (isolated_data_dir / "logs" / "app.log").read_text(encoding="utf-8")
-    assert "LocalChat app" in log_text
+    assert "AFO app" in log_text
     assert "the window was built" in log_text
 
 

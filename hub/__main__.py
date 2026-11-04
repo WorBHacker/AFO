@@ -71,7 +71,7 @@ def serve(settings: HubSettings) -> int:
         }
         paths.hub_info.write_text(json.dumps(info, indent=2), encoding="utf-8")
         log.info(
-            "LocalChat hub %s starting on http://%s:%s, data in %s",
+            "AFO hub %s starting on http://%s:%s, data in %s",
             __version__,
             settings.host,
             settings.port,
@@ -339,7 +339,7 @@ def db_command(settings: HubSettings, args: argparse.Namespace) -> int:
     try:
         lock.acquire()
     except AlreadyRunning:
-        print("Хаб работает. Остановите его (python -m hub stop) и закройте окно LocalChat: оно запускает хаб само",
+        print("Хаб работает. Остановите его (python -m hub stop) и закройте окно AFO: оно запускает хаб само",
               file=sys.stderr)  # fmt: skip
         return EXIT_ALREADY_RUNNING
     try:
@@ -395,7 +395,7 @@ def _utf8_pipes() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _utf8_pipes()
-    parser = argparse.ArgumentParser(prog="python -m hub", description="LocalChat hub")
+    parser = argparse.ArgumentParser(prog="python -m hub", description="AFO hub")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="start the hub")
     commands.add_parser("stop", help="stop the running hub gracefully")

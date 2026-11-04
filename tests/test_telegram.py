@@ -177,7 +177,7 @@ def test_a_chats_goal_met_or_waiting_goes_to_the_phone(bot):
     asyncio.run(scenario())
     texts = [body["text"] for body in api.sent()]
     assert texts == ["<b>🎯 Цель достигнута</b>\nТесты &lt;src&gt; проходят\n<i>цель достигнута</i>",
-                     "<b>✋ Цель ждёт вас (решение — в окне LocalChat)</b>\nТесты &lt;src&gt; проходят\n"
+                     "<b>✋ Цель ждёт вас (решение — в окне AFO)</b>\nТесты &lt;src&gt; проходят\n"
                      "<i>проверяющая модель не ответила</i>"]  # fmt: skip
 
 

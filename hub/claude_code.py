@@ -69,11 +69,11 @@ WAIT_MS = 24 * 3600 * 1000  # an MCP call may wait this long: the user answers a
 NOT_PASSED = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
               "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SIMPLE"}  # fmt: skip
 APPEND_PROMPT = (
-    "You work under LocalChat, a hub on the user's computer that knows all their projects. Its MCP tools "
+    "You work under AFO, a hub on the user's computer that knows all their projects. Its MCP tools "
     "(mcp__localchat__*) give the map of the projects and their links (get_ecosystem_map), a project's card "
     "confirmed by the user (get_project_card), and other projects' code, git, terminals, processes and recent "
     "events. Use them when the task touches another project or what is running. The user answers your permission "
-    "requests in the LocalChat app; a denial may carry their comment - follow it."
+    "requests in the AFO app; a denial may carry their comment - follow it."
 )
 NO_PROJECT_PROMPT = (
     " This chat has no project attached: you start in an empty folder of the chat's own, and the user's files are "

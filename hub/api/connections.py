@@ -249,7 +249,7 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
     if connection.name in engines:
         engine = engines[connection.name]
         try:
-            found = await websearch.search("LocalChat", engine=engine, store=state.secrets, db=state.db, count=3)
+            found = await websearch.search("AFO", engine=engine, store=state.secrets, db=state.db, count=3)
         except websearch.SearchError as exc:
             return False, str(exc)
         return True, f"поиск работает: результатов — {len(found)}"

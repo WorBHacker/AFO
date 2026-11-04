@@ -12,7 +12,7 @@ Window {
     minimumWidth: 900
     minimumHeight: 560
     visible: true
-    title: "LocalChat"
+    title: "AFO"
     color: Theme.p.window
     flags: Qt.Window | Qt.FramelessWindowHint
 

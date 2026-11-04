@@ -28,7 +28,7 @@ class Change(BaseModel):
 
 def _app_only(client: Client) -> None:
     if client.name != APP_CLIENT:
-        raise HTTPException(status_code=403, detail="only the desktop app changes how LocalChat starts")
+        raise HTTPException(status_code=403, detail="only the desktop app changes how AFO starts")
 
 
 async def _state(request: Request) -> dict:

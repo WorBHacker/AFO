@@ -405,7 +405,7 @@ class AgentToolbox:
             refused = await ask("http_request", {"method": method, "url": url, "json": args.get("json")}, False)
             if refused:
                 return refused, True
-        headers = {"User-Agent": "LocalChat-agent"}
+        headers = {"User-Agent": "AFO-agent"}
         secret = ""
         named = await self._db.acall(keys)
         key = next((k for k in named if host == k["host"] or host.endswith("." + k["host"])), None)

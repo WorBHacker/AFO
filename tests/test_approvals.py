@@ -151,7 +151,8 @@ def test_a_command_into_the_hubs_own_data_is_asked_every_time(tmp_path, monkeypa
     full = str(data.resolve())
     for command in ("Get-Content data\\tokens\\app.token", "type hub-claude-code.token", "sqlite3 hub.db .dump",
                     f'type "{full}\\logs\\hub.log"', f"Get-ChildItem {full.replace(chr(92), '/')}",
-                    "ls $env:LOCALAPPDATA\\LocalChat\\data", "echo $env:LOCALCHAT_DATA_DIR",
+                    "ls $env:LOCALAPPDATA\\LocalChat\\data", "ls $env:LOCALAPPDATA\\AFO\\data",
+                    "echo $env:LOCALCHAT_DATA_DIR",
                     "c`at app.t`oken"):  # fmt: skip
         assert hub_data("run_command", {"command": command}), command
         assert not trusted_skips("run_command", {"command": command}), command

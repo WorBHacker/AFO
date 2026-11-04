@@ -125,7 +125,7 @@ class SetupView(QObject):
         if not self._state.get("needed"):
             return f"Движок на месте: {engine.get('start', '')}"
         folder = self._state.get("folder", "")
-        return (f"Движка для локальных моделей ещё нет. LocalChat скачает llama.cpp и llama-swap с их страниц на "
+        return (f"Движка для локальных моделей ещё нет. AFO скачает llama.cpp и llama-swap с их страниц на "
                 f"GitHub (около 40–600 МБ, смотря по сборке) в {folder} и сам их запустит.")  # fmt: skip
 
     @Property(str, notify=changed)

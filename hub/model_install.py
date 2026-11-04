@@ -4,9 +4,9 @@
   Each variant of a model is judged against this computer before anything is downloaded - whether it fits in the
   video memory (fast), goes partly into RAM (slower) or does not fit - from its size and its header's attention
   shape (the file's first bytes over the network); the one recommended is the best that fits the video memory.
-- Where: the `model` folder in LocalChat's own folder by default (2026-10-28, the user's word; common/paths.py
-  models_home), or a drive the person picks - `X:\\LocalChat\\models` (on the Windows drive
-  `%LOCALAPPDATA%\\LocalChat\\models`) -, or a folder of their own; a folder per repository.
+- Where: the `model` folder in AFO's own folder by default (2026-10-28, the user's word; common/paths.py
+  models_home), or a drive the person picks - `X:\\AFO\\models` (on the Windows drive `%LOCALAPPDATA%\\AFO\\models`;
+  LocalChat before 10.4b) -, or a folder of their own; a folder per repository.
 - The download: one install at a time, resumable (a cut connection is tried again, and a part left by a stopped hub
   goes on after «Продолжить»), each file kept only when its sha256 matches what Hugging Face publishes.
 - The config: a block of its own at the end of llama-swap's `models:` (a copy of the file first, llama-swap must list
@@ -38,7 +38,7 @@ import httpx
 from common import disks
 from common.gguf import GGUFError, model_info
 from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
-from common.paths import models_home
+from common.paths import NAME, models_home
 
 from . import hf, llama_config, store
 from .db import utc_now
@@ -193,10 +193,10 @@ def smaller(plan: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def models_root(drive: dict[str, Any]) -> Path:
-    """Where models go on a drive: `X:\\LocalChat\\models`; on the Windows drive the user's own app data."""
+    """Where models go on a drive: `X:\\AFO\\models`; on the Windows drive the user's own app data."""
     if drive.get("system") and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "LocalChat" / "models"
-    return Path(drive["root"]) / "LocalChat" / "models"
+        return Path(os.environ["LOCALAPPDATA"]) / NAME / "models"
+    return Path(drive["root"]) / NAME / "models"
 
 
 def pick_drive(found: list[dict[str, Any]], size_gib: float) -> dict[str, Any] | None:
@@ -504,7 +504,7 @@ class Installer:
             going = next((r for r in await self._db.acall(jobs) if r["model_id"] == model_id), None)
             if going is not None:
                 raise InstallError(f"«{going['name']}» ещё не установлена — её установку можно отменить")
-            raise InstallError(f"«{model_id}» ставил не LocalChat — удалите её из config.yaml сами", 404)
+            raise InstallError(f"«{model_id}» ставил не AFO — удалите её из config.yaml сами", 404)
         await self._unload(model_id)
         path = llama_config.config_path()
         text = await asyncio.to_thread(config_text)
@@ -767,7 +767,7 @@ def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, 
     return llama_config.model_block(
         model_id,
         name=found["name"],
-        description=f"{found['repo']} {found['quant']}, установлена LocalChat: {purposes}.",
+        description=f"{found['repo']} {found['quant']}, установлена AFO: {purposes}.",
         server=server,
         model=str(model_file),
         mmproj=str(lens_file) if lens_file else "",

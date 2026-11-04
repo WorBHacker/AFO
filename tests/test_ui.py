@@ -506,7 +506,7 @@ class FakeClient:
 
     def support_report(self):
         self.install_calls.append(("report",))
-        return {"path": "C:/data/reports/localchat-report.zip", "folder": "", **self.support_check()}
+        return {"path": "C:/data/reports/afo-report.zip", "folder": "", **self.support_check()}
 
     def setup_state(self):
         return dict(self.setup)
@@ -4910,7 +4910,7 @@ def test_installing_a_local_model_from_the_window(qapp):
         view.setPurpose("")
         places = view.drives  # LocalChat's own `model` folder first, and chosen (2026-10-28, the user's word)
         assert [d["id"] for d in places] == ["home", "D", "F"] and places[0]["selected"] and places[2]["slow"]
-        assert places[0]["name"] == "Папка LocalChat (D: NVMe) · свободно 456,5 ГБ"
+        assert places[0]["name"] == "Папка AFO (D: NVMe) · свободно 456,5 ГБ"
 
         assert view.status["name"] == "" and not quick.window.findChild(QObject, "statusInstall").property("visible")
         view.installRecommended("ggml-org/gemma-4-E4B-it-GGUF")
@@ -5137,7 +5137,7 @@ def test_checking_the_system_and_collecting_the_logs(qapp):
         assert view.summary == "Стоит взглянуть: 1" and [r["tone"] for r in view.lines] == ["ok", "warn"]
         view.collect()
         wait_until(lambda: not app.bg.busy and view.report)
-        assert app.flashText == "Журналы собраны: C:/data/reports/localchat-report.zip"
+        assert app.flashText == "Журналы собраны: C:/data/reports/afo-report.zip"
         assert ("report",) in client.install_calls
         for _ in range(10):
             QApplication.processEvents()

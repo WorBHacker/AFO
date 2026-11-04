@@ -48,9 +48,9 @@ class Notifier(QObject):
         self._morning.start()
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(tray_icon(), self)
-            self.tray.setToolTip("LocalChat")
+            self.tray.setToolTip("AFO")
             menu = QMenu()
-            menu.addAction("Открыть LocalChat", self.opened.emit)
+            menu.addAction("Открыть AFO", self.opened.emit)
             self._stop = menu.addAction("Остановить агента (управляет компьютером)", self._stop_now)
             self._stop.setVisible(False)
             self.tray.setContextMenu(menu)

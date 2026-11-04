@@ -98,10 +98,10 @@ def test_what_the_goal_says_in_words():
 
 def test_the_hubs_notes_are_quiet_lines():
     note = {"id": 7, "role": "user", "content": [{"type": "text", "hub": True, "text":
-            '[LocalChat hub] <goal_loop type="continuation">\nCHECK OF YOUR LAST TURN: not met.\n- criterion 1: x\n'
+            '[AFO hub] <goal_loop type="continuation">\nCHECK OF YOUR LAST TURN: not met.\n- criterion 1: x\n'
             "- criterion 2: y\nTHE JUDGE SAYS: z\nTHE USER ADDED WHILE YOU WORKED - it comes first:\n"
             "только src\n"}]}  # fmt: skip
-    nudge = {"id": 8, "role": "user", "content": [{"type": "text", "hub": True, "text": "[LocalChat hub] Go on."}]}
+    nudge = {"id": 8, "role": "user", "content": [{"type": "text", "hub": True, "text": "[AFO hub] Go on."}]}
     mine = {"id": 9, "role": "user", "content": [{"type": "text", "text": "привет"}]}
     found = rows.rows_for([note, nudge, mine], {})
     assert [r["role"] for r in found] == ["hub", "hub", "user"]

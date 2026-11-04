@@ -28,6 +28,7 @@ import ctypes
 import ctypes.wintypes as wt
 import json
 import logging
+import ntpath
 import os
 import re
 import sqlite3
@@ -346,12 +347,13 @@ def _cmdline(pid: int) -> list[str]:
 
 
 def is_localchat(pid: int) -> bool:
-    """A window of LocalChat itself - the hub, the window (`-m app`), an installed LocalChat.exe: never the agent's
+    """A window of AFO itself - the hub, the window (`-m app`), an installed AFO.exe (LocalChat.exe before 10.4b):
+    never the agent's
     to control, whatever programs are allowed (it would answer its own approval cards)."""
     if pid == os.getpid():
         return True
     parts = [p.lower() for p in _cmdline(pid)]
-    if any(p.endswith("localchat.exe") for p in parts):
+    if any(ntpath.basename(p) in ("afo.exe", "localchat.exe") for p in parts):
         return True
     return any(p == "-m" and i + 1 < len(parts) and parts[i + 1] in ("app", "hub") for i, p in enumerate(parts))
 
@@ -962,7 +964,7 @@ class Computer:
 
     async def _hold(self, run_id: str) -> None:
         if not self._watched():
-            raise ScreenError("not done: the LocalChat window is not open - only there the user sees the frame and "
+            raise ScreenError("not done: the AFO window is not open - only there the user sees the frame and "
                               "has «stop» (D41). Ask the user to open it.")  # fmt: skip
         if self._holder and self._holder != run_id and self._running(self._holder):
             raise ScreenError("not done: another task controls the computer now; one at a time (D41)")

@@ -1,7 +1,7 @@
 {
   "name": "localchat",
-  "displayName": "LocalChat",
-  "description": "Tells the LocalChat hub on this computer what you do in VS Code: the open file and the commands run in your terminals.",
+  "displayName": "AFO",
+  "description": "Tells the AFO hub on this computer what you do in VS Code: the open file and the commands run in your terminals.",
   "version": "0.1.0",
   "publisher": "localchat",
   "license": "UNLICENSED",
@@ -20,20 +20,20 @@
     "commands": [
       {
         "command": "localchat.setToken",
-        "title": "LocalChat: задать токен хаба"
+        "title": "AFO: задать токен хаба"
       },
       {
         "command": "localchat.status",
-        "title": "LocalChat: связь с хабом"
+        "title": "AFO: связь с хабом"
       }
     ],
     "configuration": {
-      "title": "LocalChat",
+      "title": "AFO",
       "properties": {
         "localchat.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Сообщать хабу LocalChat открытый файл и команды терминалов."
+          "description": "Сообщать хабу AFO открытый файл и команды терминалов."
         },
         "localchat.hubUrl": {
           "type": "string",

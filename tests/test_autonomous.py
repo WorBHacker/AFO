@@ -110,7 +110,7 @@ def test_a_goal_planned_carried_out_checked_and_reported(hub):  # noqa: F811
     assert "failed 3 times" in said[7] and "change the plan" in said[7]
     assert "needs its reason" in said[8] and said[9].startswith("Plan version 2 saved")
     assert "Every step is done" in said[11] and said[12].startswith("Report saved")
-    nudged = [t for t in agent.prompts[9] if t["role"] == "user" and t["content"].startswith("[LocalChat hub]")]
+    nudged = [t for t in agent.prompts[9] if t["role"] == "user" and t["content"].startswith("[AFO hub]")]
     assert "steps left - 2. Посчитать строки (failed)" in nudged[0]["content"]  # told what is left
     first = agent.prompts[0]
     assert first[0]["content"] == "Цель: Посчитать строки в README\nГотово, когда: число строк названо"

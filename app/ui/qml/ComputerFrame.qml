@@ -4,7 +4,7 @@ import QtQuick.Window
 
 // The agent at the desktop (9.6, D41): a frame around the window it controls - it lets every click through - and a
 // bar above it: who acts, in what, and «Стоп». Both are windows of their own, on top of everything, and do not go
-// away with LocalChat's own window minimized.
+// away with AFO's own window minimized.
 Item {
     id: root
     readonly property var place: AgentScreen.frame  // [x, y, w, h]

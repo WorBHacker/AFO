@@ -195,7 +195,7 @@ async def import_settings(request: Request, body: Imported, client: Annotated[Cl
     have is skipped, a role naming one is dropped; a wrong value is said, and the rest still saved."""
     data = body.data
     if data.get("kind") != EXPORT_KIND:
-        raise HTTPException(status_code=422, detail="это не файл настроек моделей LocalChat")
+        raise HTTPException(status_code=422, detail="это не файл настроек моделей AFO")
     db = request.app.state.db
 
     def apply(conn):

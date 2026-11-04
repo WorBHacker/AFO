@@ -125,7 +125,7 @@ def drive_rows(drives: list[dict[str, Any]], chosen: str, home: dict[str, Any] |
     if home and home.get("folder"):
         free = f" · свободно {gb(home['free_gib'], of_bytes=False)}" if home.get("free_gib") is not None else ""
         out.append({"id": "home", "selected": chosen in ("", "home"), "slow": home.get("kind") in ("hdd", "usb"),
-                    "name": "Папка LocalChat" + (f" ({home['letter']}: {home['words']})" if home.get("letter")
+                    "name": "Папка AFO" + (f" ({home['letter']}: {home['words']})" if home.get("letter")
                                                  else "") + free})  # fmt: skip
     return out + [{"id": d["letter"], "selected": d["letter"] == chosen, "slow": d.get("kind") in ("hdd", "usb"),
                    "name": f"{d['letter']}: {d.get('words', '')} · свободно {gb(d['free_gib'], of_bytes=False)}"}
