@@ -39,16 +39,17 @@ KEEP_TAIL = 8  # the last messages stay whole
 TOOL_MIN = 400  # a tool result shorter than this is not worth cutting
 TEXT_MAX = 2000  # an old text longer than this keeps its beginning and end
 STUB = ("[{name}: прежний результат ({chars} знаков) убран, чтобы разговор поместился в контекст модели; "
-        "вызовите снова, если он нужен]")  # fmt: skip
+        "вызовите снова, если он нужен]")  # fmt: skip  # i18n: keep
 LOOKS = frozenset({"screen_look"})  # stale once the agent looked again
 LOOKS_KEPT = 2
 LOOKS_BATCH = 3
-STALE = "[{name}: прежний осмотр окна ({chars} знаков) убран — окно с тех пор менялось; смотрите последний осмотр]"
+STALE = ("[{name}: прежний осмотр окна ({chars} знаков) убран — окно с тех пор менялось; "
+         "смотрите последний осмотр]")  # fmt: skip  # i18n: keep
 OVERFLOW = re.compile(r"(?i)exceed\w*\s+(?:the\s+)?(?:available\s+)?context|context\s+(?:window|length)|"
                       r"maximum\s+context|prompt\s+is\s+too\s+long|too\s+many\s+tokens")  # fmt: skip
 LAST_MIN = 1500  # the very last result keeps at least this many characters
 CUT = ("\n[… урезано, чтобы поместиться в контекст модели: {kept} знаков из {chars}. Нужна середина - смотрите частью "
-       "(screen_look с part= или find=) или читайте меньше за раз …]\n")  # fmt: skip
+       "(screen_look с part= или find=) или читайте меньше за раз …]\n")  # fmt: skip  # i18n: keep
 
 
 def tokens(value: Any) -> int:
@@ -123,7 +124,7 @@ def fit(prompt: list[dict[str, Any]], *, window: int | None, tools: list[dict] |
         if entry["role"] != "tool" or not isinstance(text, str) or len(text) <= TOOL_MIN:
             continue
         before = cost(entry)
-        entry["content"] = STUB.format(name=entry.get("name") or "инструмент", chars=len(text))
+        entry["content"] = STUB.format(name=entry.get("name") or "инструмент", chars=len(text))  # i18n: keep
         total -= before - cost(entry)
         shortened += 1
         if total <= budget:
@@ -147,7 +148,7 @@ def fit(prompt: list[dict[str, Any]], *, window: int | None, tools: list[dict] |
         if entry["role"] != "tool" or not isinstance(text, str) or len(text) <= TOOL_MIN:
             continue
         before = cost(entry)
-        entry["content"] = STUB.format(name=entry.get("name") or "инструмент", chars=len(text))
+        entry["content"] = STUB.format(name=entry.get("name") or "инструмент", chars=len(text))  # i18n: keep
         total -= before - cost(entry)
         shortened += 1
         if total <= budget:

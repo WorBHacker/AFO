@@ -13,6 +13,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from common.i18n import tr
+
 from .. import engines, hf
 from .. import model_install as mi
 from ..auth import Client
@@ -65,7 +67,7 @@ async def update(request: Request, client: Annotated[Client, Depends(require_app
     except engines.EngineError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not found["build"]:
-        raise HTTPException(status_code=409, detail="не найден llama-server, который можно обновить")
+        raise HTTPException(status_code=409, detail=tr("не найден llama-server, который можно обновить"))
     return {"job": setup.start(found["build"], update=True)}
 
 

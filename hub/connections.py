@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from common.i18n import N_, tr
+
 from .db import utc_now
 from .secrets import ANTHROPIC_API_KEY, SecretStore
 
@@ -54,9 +56,9 @@ HUGGINGFACE_TOKEN = "huggingface_token"  # hub/hf.py reads it (10.1)
 @dataclass(frozen=True)
 class Connection:
     name: str
-    title: str
+    title: str  # N_(): tr() where it is shown
     kind: str  # "key" (an API key), "token" (a bot's token), "address" (not a secret: the settings table)
-    purpose: str  # what it gives, for the window
+    purpose: str  # what it gives, for the window - N_(), as the title
     site: str  # where to get it
     hint: str  # what it looks like
     provider: str = ""  # the gateway provider whose models it brings: the catalog syncs when it changes
@@ -64,31 +66,31 @@ class Connection:
 
 
 CONNECTIONS: list[Connection] = [
-    Connection(ANTHROPIC_API_KEY, "Anthropic", "key", "Модели Claude по ключу — оплата за токены",
+    Connection(ANTHROPIC_API_KEY, "Anthropic", "key", N_("Модели Claude по ключу — оплата за токены"),
                "https://console.anthropic.com/settings/keys", "sk-ant-…", provider="anthropic"),
-    Connection(OPENAI_API_KEY, "OpenAI", "key", "Модели GPT по ключу — оплата за токены",
+    Connection(OPENAI_API_KEY, "OpenAI", "key", N_("Модели GPT по ключу — оплата за токены"),
                "https://platform.openai.com/api-keys", "sk-…", provider="openai"),
-    Connection(GEMINI_API_KEY, "Google Gemini", "key", "Модели Gemini. На бесплатном уровне Google может "
-               "использовать запросы для улучшения своих моделей — для закрытого кода нужен платный",
+    Connection(GEMINI_API_KEY, "Google Gemini", "key", N_("Модели Gemini. На бесплатном уровне Google может "
+               "использовать запросы для улучшения своих моделей — для закрытого кода нужен платный"),
                "https://aistudio.google.com/apikey", "AIza…", provider="gemini"),
-    Connection(DEEPSEEK_API_KEY, "DeepSeek", "key", "Модели DeepSeek — недорогие; запросы обрабатываются на "
-               "серверах в Китае — для закрытого кода решайте сами", "https://platform.deepseek.com/api_keys", "sk-…",
-               provider="deepseek"),
-    Connection(OPENROUTER_API_KEY, "OpenRouter", "key", "Сотни моделей разных компаний по одному ключу; какие "
-               "показывать в списке — кнопка «Модели…»", "https://openrouter.ai/settings/keys", "sk-or-…",
+    Connection(DEEPSEEK_API_KEY, "DeepSeek", "key", N_("Модели DeepSeek — недорогие; запросы обрабатываются на "
+               "серверах в Китае — для закрытого кода решайте сами"), "https://platform.deepseek.com/api_keys",
+               "sk-…", provider="deepseek"),
+    Connection(OPENROUTER_API_KEY, "OpenRouter", "key", N_("Сотни моделей разных компаний по одному ключу; какие "
+               "показывать в списке — кнопка «Модели…»"), "https://openrouter.ai/settings/keys", "sk-or-…",
                provider="openrouter", choose=True),
-    Connection(SEARXNG_URL, "SearXNG", "address", "Свой поисковик для web_search — бесплатно и без лимитов; "
-               "адрес сервера (ищется первым)", "https://docs.searxng.org/admin/installation-docker.html",
+    Connection(SEARXNG_URL, "SearXNG", "address", N_("Свой поисковик для web_search — бесплатно и без лимитов; "
+               "адрес сервера (ищется первым)"), "https://docs.searxng.org/admin/installation-docker.html",
                "http://127.0.0.1:8888"),
-    Connection(TAVILY_API_KEY, "Tavily", "key", "Поиск в сети для моделей (web_search): 1000 поисков в месяц "
-               "бесплатно, без карты", "https://app.tavily.com/home", "tvly-…"),
-    Connection(BRAVE_SEARCH_KEY, "Brave Search", "key", "Поиск в сети для моделей (web_search): $5 за 1000 "
-               "поисков, $5 в месяц в подарок, нужна карта (ищется последним)",
+    Connection(TAVILY_API_KEY, "Tavily", "key", N_("Поиск в сети для моделей (web_search): 1000 поисков в месяц "
+               "бесплатно, без карты"), "https://app.tavily.com/home", "tvly-…"),
+    Connection(BRAVE_SEARCH_KEY, "Brave Search", "key", N_("Поиск в сети для моделей (web_search): $5 за 1000 "
+               "поисков, $5 в месяц в подарок, нужна карта (ищется последним)"),
                "https://api-dashboard.search.brave.com/app/keys", "BSA…"),
-    Connection(TELEGRAM_TOKEN, "Telegram-бот", "token", "Подтверждения с телефона: токен вашего бота",
+    Connection(TELEGRAM_TOKEN, N_("Telegram-бот"), "token", N_("Подтверждения с телефона: токен вашего бота"),
                "https://t.me/BotFather", "123456789:AA…"),
-    Connection(HUGGINGFACE_TOKEN, "Hugging Face", "token", "Установка закрытых моделей (Llama, часть Gemma): "
-               "токен для чтения. Лицензию модели примите сами на её странице; открытые модели ставятся и без него",
+    Connection(HUGGINGFACE_TOKEN, "Hugging Face", "token", N_("Установка закрытых моделей (Llama, часть Gemma): "
+               "токен для чтения. Лицензию модели примите сами на её странице; открытые модели ставятся и без него"),
                "https://huggingface.co/settings/tokens", "hf_…"),
 ]  # fmt: skip
 BY_NAME = {c.name: c for c in CONNECTIONS}
@@ -145,7 +147,7 @@ class ConnectionLock:
     def set_password(self, new: str, old: str = "") -> None:
         """The first password, or a new one in place of `old`. Every unlock ends: the window asks again."""
         if len(new) < MIN_PASSWORD:
-            raise LockError(f"пароль — не короче {MIN_PASSWORD} символов", "weak", 422)
+            raise LockError(tr("пароль — не короче {count} символов", count=MIN_PASSWORD), "weak", 422)
         if self.has_password:
             self._verify(old)
         self._store.set(PASSWORD, json.dumps(hash_password(new)))
@@ -155,15 +157,16 @@ class ConnectionLock:
         now = self._clock()
         if now < self._wait_until:
             wait = math.ceil(self._wait_until - now)
-            raise LockError(f"слишком много неверных паролей: следующая попытка через {wait} с", "wait", 429, wait)
+            said = tr("слишком много неверных паролей: следующая попытка через {wait} с", wait=wait)
+            raise LockError(said, "wait", 429, wait)
         record = self._record()
         if record is None:
-            raise LockError("пароль подключений ещё не задан", "no_password", 409)
+            raise LockError(tr("пароль подключений ещё не задан"), "no_password", 409)
         if not password_matches(record, password):
             self._failures += 1
             if self._failures >= FREE_TRIES:
                 self._wait_until = now + WAIT_S[min(self._failures - FREE_TRIES, len(WAIT_S) - 1)]
-            raise LockError("неверный пароль", "wrong_password", 403)
+            raise LockError(tr("неверный пароль"), "wrong_password", 403)
         self._failures = 0
 
     def unlock(self, password: str) -> str:
@@ -180,7 +183,7 @@ class ConnectionLock:
     def check(self, ticket: str | None) -> None:
         """Lets a change through with a live ticket (and keeps the ticket alive); refuses otherwise."""
         if not self.is_open(ticket):
-            raise LockError("подключения закрыты: введите пароль", "locked", 401)
+            raise LockError(tr("подключения закрыты: введите пароль"), "locked", 401)
         self._tickets[str(ticket)] = self._clock()
 
     def lock(self, ticket: str | None = None) -> None:
@@ -250,17 +253,17 @@ def set_chosen_models(conn: sqlite3.Connection, provider: str, ids: list[str]) -
 
 
 def clean_value(connection: Connection, value: str) -> str:
-    """The value as it is stored, or ValueError with what is wrong (in Russian, for the window)."""
+    """The value as it is stored, or ValueError with what is wrong (in the window's words)."""
     value = value.strip()
     if connection.kind == "address":
         value = value.rstrip("/")
         if not re.fullmatch(r"https?://[^\s/]+(/\S*)?", value):
-            raise ValueError("адрес начинается с http:// или https://, например http://127.0.0.1:8888")
+            raise ValueError(tr("адрес начинается с http:// или https://, например http://127.0.0.1:8888"))
         return value
     if len(value) < 8 or any(ch.isspace() for ch in value):
-        raise ValueError("это не похоже на ключ: слишком коротко или с пробелами внутри")
+        raise ValueError(tr("это не похоже на ключ: слишком коротко или с пробелами внутри"))
     if connection.name == TELEGRAM_TOKEN and not TELEGRAM_FORMAT.fullmatch(value):
-        raise ValueError("токен бота выглядит как 123456789:AA… — его выдаёт @BotFather")
+        raise ValueError(tr("токен бота выглядит как 123456789:AA… — его выдаёт @BotFather"))
     return value
 
 
@@ -268,7 +271,7 @@ def rows(store: SecretStore, conn: sqlite3.Connection, *, unlocked: bool) -> lis
     """What the window shows: never a key's value; its last four characters only while unlocked."""
     out = []
     for c in CONNECTIONS:
-        row: dict[str, Any] = {"name": c.name, "title": c.title, "kind": c.kind, "purpose": c.purpose,
+        row: dict[str, Any] = {"name": c.name, "title": tr(c.title), "kind": c.kind, "purpose": tr(c.purpose),
                                "site": c.site, "hint": c.hint, "choose": c.choose}  # fmt: skip
         if c.choose:
             row["chosen"] = len(chosen_models(conn, c.provider))

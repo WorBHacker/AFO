@@ -8,8 +8,7 @@ import pytest
 from common import i18n, i18n_catalog
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
-# translated so far (10.5a-10.5d); at the end of the step - everything people read in app/, hub/ and common/
-TRANSLATED = ["app", "common/i18n.py", "common/i18n_catalog.py"]
+TRANSLATED = ["app", "hub", "common"]  # everything people read (10.5a-10.5c)
 
 
 @pytest.fixture
@@ -208,3 +207,46 @@ def test_the_vscode_extension_speaks_vs_codes_language():
     for name in ("package.nls.json", "package.nls.ru.json"):
         assert set(json.loads((folder / name).read_text(encoding="utf-8"))) == keys, name
     assert keys and not i18n_catalog.RUSSIAN.search(manifest + script)
+
+
+def test_the_readme_in_both_languages():
+    """GitHub shows README.md (Russian); README.en.md is the English one; each links the other."""
+    russian = (i18n_catalog.ROOT / "README.md").read_text(encoding="utf-8")
+    english = (i18n_catalog.ROOT / "README.en.md").read_text(encoding="utf-8")
+    assert russian.startswith("# AFO\n") and english.startswith("# AFO\n")
+    assert "(README.en.md)" in russian and "(README.md)" in english
+    assert "python -m common.i18n_catalog" in english  # how a new text gets its English
+
+
+def test_the_proving_grounds_tasks_in_both_languages():
+    """People read a task's title, level, about and each hidden check's why in the window's language; the objective
+    and the constraints are the model's task and stay the same in every language, so exams stay comparable (10.5c)."""
+    import json
+
+    from hub import proving
+
+    for folder in proving.TASKS_DIR.iterdir():
+        spec = json.loads((folder / "task.json").read_text(encoding="utf-8"))
+        english = spec["en"]
+        assert len(english["why"]) == len(spec["exam"]), folder.name
+        words = [english["title"], english["level"], english["about"], *english["why"]]
+        assert all(words) and not any(i18n_catalog.RUSSIAN.search(w) for w in words), folder.name
+    russian = {t["id"]: t for t in proving.tasks()}
+    i18n.set_language("en")
+    english = {t["id"]: t for t in proving.tasks()}
+    assert russian.keys() == english.keys() and len(english) >= 6
+    for name, task in english.items():
+        assert not i18n_catalog.RUSSIAN.search(task["title"] + task["level"] + task["about"]), name
+        assert task["objective"] == russian[name]["objective"] and task["grade"] == russian[name]["grade"]
+        assert proving.check_why(proving._spec(proving.TASKS_DIR / name), 1).isascii()
+    assert {t["grade"] for t in english.values()} == {"easy", "medium", "hard"}  # the window colours by it
+
+
+def test_an_error_is_explained_in_the_hubs_language():
+    """The plain words for an error the hub wrote in English find it too (the patterns know both languages)."""
+    from common.plain_errors import explain
+
+    i18n.set_language("en")
+    title, advice = explain("llama-swap is not answering")
+    assert title == "Local models are not running" and "Settings → Startup" in advice
+    assert explain("the budget is used up")[0] == "Budget used up"

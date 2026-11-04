@@ -15,6 +15,8 @@ import sys
 from ctypes import wintypes
 from typing import Any
 
+from .i18n import N_, tr
+
 GIB = 1024**3
 IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
 DEVICE_PROPERTY, SEEK_PENALTY_PROPERTY = 0, 7
@@ -22,8 +24,8 @@ BUS_USB, BUS_NVME = 7, 17
 DRIVE_REMOVABLE, DRIVE_FIXED = 2, 3
 # the order a model's files prefer: the fastest first
 SPEED = {"nvme": 0, "ssd": 1, "unknown": 2, "hdd": 3, "usb": 4}
-WORDS = {"nvme": "NVMe", "ssd": "SSD", "hdd": "жёсткий диск (медленно)", "usb": "USB-диск (медленно)",
-         "unknown": "диск"}  # fmt: skip
+WORDS = {"nvme": "NVMe", "ssd": "SSD", "hdd": N_("жёсткий диск (медленно)"), "usb": N_("USB-диск (медленно)"),
+         "unknown": N_("диск")}  # fmt: skip
 
 
 class _Query(ctypes.Structure):
@@ -100,6 +102,6 @@ def drives() -> list[dict[str, Any]]:
         with contextlib.suppress(OSError):
             kind, product = _media(letter)
         out.append({"letter": letter, "root": root, "label": _label(root), "free_gib": round(free.value / GIB, 1),
-                    "total_gib": round(total.value / GIB, 1), "kind": kind, "words": WORDS[kind],
+                    "total_gib": round(total.value / GIB, 1), "kind": kind, "words": tr(WORDS[kind]),
                     "product": product, "system": letter == system})  # fmt: skip
     return sorted(out, key=lambda d: (SPEED[d["kind"]], -d["free_gib"]))

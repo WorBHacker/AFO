@@ -23,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from common.i18n import tr
+
 from . import hf
 
 GITHUB_ENV = "LOCALCHAT_GITHUB_API"  # tests point it at a stand-in
@@ -37,7 +39,7 @@ LLAMA_CPP = "ggml-org/llama.cpp"
 LLAMA_SWAP = "mostlygeek/llama-swap"
 ASSET = re.compile(r"^llama-(b\d+)-bin-win-(cuda-(\d+)\.(\d+)|vulkan|cpu)-x64\.zip$")
 CONFIG = """# llama-swap: one OpenAI-compatible address (http://127.0.0.1:8080/v1) for every local model.
-# Written by AFO's first-run wizard; models are added by «Установка моделей». The model asked for is started,
+# Written by AFO's first-run wizard; models are added by {installer}. The model asked for is started,
 # the one running before it stopped (one graphics card).
 
 healthCheckTimeout: 600      # a large model's first load from disk can take minutes
@@ -61,10 +63,12 @@ async def _releases(http: httpx.AsyncClient, repo: str, path: str = "releases?pe
         wanted = {"Accept": "application/vnd.github+json", **hf.headers()}
         response = await http.get(f"{github_api()}/repos/{repo}/{path}", headers=wanted)
     except httpx.HTTPError as exc:
-        raise EngineError(f"нет связи с GitHub ({exc.__class__.__name__})") from exc
+        raise EngineError(tr("нет связи с GitHub ({error})", error=exc.__class__.__name__)) from exc
     if response.status_code != 200:
-        later = " — слишком много запросов, попробуйте через час" if response.status_code == 403 else ""
-        raise EngineError(f"GitHub ответил {response.status_code}{later}")
+        if response.status_code == 403:
+            raise EngineError(tr("GitHub ответил {status} — слишком много запросов, попробуйте через час",
+                                 status=response.status_code))  # fmt: skip
+        raise EngineError(tr("GitHub ответил {status}", status=response.status_code))
     return response.json()
 
 
@@ -114,14 +118,14 @@ def pick_llama_swap(release: dict[str, Any]) -> dict[str, Any] | None:
 async def llama_cpp_release(http: httpx.AsyncClient, build: str) -> dict[str, Any]:
     found = pick_llama_cpp(await _releases(http, LLAMA_CPP), build)
     if found is None:
-        raise EngineError(f"в последних выпусках llama.cpp нет сборки {build} для Windows")
+        raise EngineError(tr("в последних выпусках llama.cpp нет сборки {build} для Windows", build=build))
     return found
 
 
 async def llama_swap_release(http: httpx.AsyncClient) -> dict[str, Any]:
     found = pick_llama_swap(await _releases(http, LLAMA_SWAP, "releases/latest"))
     if found is None:
-        raise EngineError("в последнем выпуске llama-swap нет архива для Windows")
+        raise EngineError(tr("в последнем выпуске llama-swap нет архива для Windows"))
     return found
 
 
@@ -133,7 +137,7 @@ def unpack(archive: Path, folder: Path) -> list[str]:
         for name in zf.namelist():
             target = (folder / name).resolve()
             if not target.is_relative_to(root):
-                raise EngineError(f"в архиве {archive.name} файл вне папки: {name}")
+                raise EngineError(tr("в архиве {archive} файл вне папки: {name}", archive=archive.name, name=name))
         zf.extractall(folder)
         return zf.namelist()
 
@@ -144,8 +148,8 @@ def fetch(assets: list[dict[str, Any]], downloads: Path, folder: Path, *, report
     `folder` (blocking: in a thread)."""
     missing = [a["name"] for a in assets if not a.get("sha256")]
     if missing:  # without it a changed or broken file would be run (D46): as ripgrep, nothing is put in
-        raise EngineError(f"GitHub не дал контрольную сумму для {', '.join(missing)}: без неё программа не ставится — "
-                          "попробуйте позже или выберите другую сборку")  # fmt: skip
+        raise EngineError(tr("GitHub не дал контрольную сумму для {files}: без неё программа не ставится — "
+                             "попробуйте позже или выберите другую сборку", files=", ".join(missing)))  # fmt: skip
     total = sum(a["size"] for a in assets)
     base = 0
     downloads.mkdir(parents=True, exist_ok=True)
@@ -183,7 +187,7 @@ def server_in(folder: Path) -> Path:
     """llama-server.exe in an unpacked build (at its top or one folder down)."""
     found = next(iter(sorted(folder.rglob("llama-server.exe"), key=lambda p: len(p.parts))), None)
     if found is None:
-        raise EngineError(f"в {folder} нет llama-server.exe")
+        raise EngineError(tr("в {folder} нет llama-server.exe", folder=folder))
     return found
 
 
@@ -191,9 +195,10 @@ def write_config(path: Path, server: Path) -> None:
     """llama-swap's first config: no models yet, llama-server in the macro the installer looks for. An existing
     config is never overwritten."""
     if path.exists():
-        raise EngineError(f"{path} уже есть — его не трогаю")
+        raise EngineError(tr("{path} уже есть — его не трогаю", path=path))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(CONFIG.format(server=str(server).replace("\\", "/")).encode("utf-8"))
+    text = CONFIG.format(server=str(server).replace("\\", "/"), installer=tr("«Установка моделей»"))
+    path.write_bytes(text.encode("utf-8"))
 
 
 def remove_tree(folder: Path) -> None:

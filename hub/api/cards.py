@@ -22,6 +22,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
+
 from .. import budgets, cards, export, model_settings, notes, projects, store
 from ..auth import APP_CLIENT, Client
 from ..cards import CardError
@@ -204,7 +206,7 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
             if end is not None and end.refusal:
                 reason = end.refusal
             elif current is not None and "".join(text).strip():
-                reason = "модель не нашла, что менять в карточке"
+                reason = tr("модель не нашла, что менять в карточке")
             else:
                 reason = "the model wrote nothing"
             raise GatewayError(reason)

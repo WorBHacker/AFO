@@ -12,6 +12,8 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from common.i18n import tr
+
 from . import budgets, model_settings, stats, store
 
 PRIORITIES = {  # weights of quality, speed, price
@@ -73,46 +75,49 @@ def advise(
         blocked = None
         cloud = model["locality"] == "cloud"
         if cloud and local_only:
-            blocked = f"«{', '.join(local_only)}» — только для локальных моделей (D10)"
+            blocked = tr("«{projects}» — только для локальных моделей (D10)", projects=", ".join(local_only))
         elif model["prices"]:
             over = budgets.reached(conn, model["id"])
             if over and not all(b["hard_action"] == "ask" for b in over):
-                blocked = "бюджет исчерпан"
+                blocked = tr("бюджет исчерпан")
             elif over:
-                reasons.append("бюджет исчерпан — только с подтверждением")
+                reasons.append(tr("бюджет исчерпан — только с подтверждением"))
         quality = _prior(model)
         if mine and mine.get("runs"):
             quality = 0.5 * quality + 0.5 * (mine["run_success"] or 0)
-            reasons.append(f"задачи агентов: {mine['runs_done']} из {mine['runs']}")
+            reasons.append(tr("задачи агентов: {done} из {runs}", done=mine["runs_done"], runs=mine["runs"]))
         if mine and mine["error_rate"]:
             quality *= 1 - min(mine["error_rate"], 0.9)
-            reasons.append(f"ошибки {mine['error_rate'] * 100:.0f}%")
+            reasons.append(tr("ошибки {percent:.0f}%", percent=mine["error_rate"] * 100))
         speed = min((mine or {}).get("tok_s") or (80 if cloud else 60), 120) / 120
         ref = model["model_ref"]
         if not cloud:
             if ref in loaded:
                 speed = min(speed + 0.3, 1.0)
-                reasons.insert(0, "уже в видеопамяти")
+                reasons.insert(0, tr("уже в видеопамяти"))
             else:
                 speed *= 0.7  # a swap first
-                reasons.insert(0, "загрузится в видеопамять (до пары минут)")
+                reasons.insert(0, tr("загрузится в видеопамять (до пары минут)"))
         if mine and mine.get("tok_s"):
-            reasons.append(f"{mine['tok_s']:g} т/с здесь")
+            reasons.append(tr("{speed:g} т/с здесь", speed=mine["tok_s"]))
         cost = answer_cost(model, mine)
         subscription = (model.get("capabilities") or {}).get("subscription")
         if subscription:
             price = 0.9
-            reasons.append("платит подписка Claude Code")
+            reasons.append(tr("платит подписка Claude Code"))
         elif cost:
             price = 1 / (1 + cost * 40)
-            reasons.append(f"≈ ${cost:.4f} за ответ" + (" по прошлым ответам" if mine and mine["cost_usd"] else ""))
+            if mine and mine["cost_usd"]:
+                reasons.append(tr("≈ ${cost:.4f} за ответ по прошлым ответам", cost=cost))
+            else:
+                reasons.append(tr("≈ ${cost:.4f} за ответ", cost=cost))
         else:
             price = 1.0
-            reasons.append("бесплатно")
+            reasons.append(tr("бесплатно"))
         score = weights[0] * quality + weights[1] * speed + weights[2] * price
         if roles.get("chat") == model["id"]:  # the user's choice for chats counts a little (D39); never alone
             score += 0.05
-            reasons.append("ваша модель для чатов")
+            reasons.append(tr("ваша модель для чатов"))
         score = round(score, 3)
         options.append({"model_id": model["id"], "name": model["name"], "score": score, "reasons": reasons,
                         "blocked": blocked, "estimate_usd": round(cost, 6)})  # fmt: skip
@@ -128,11 +133,11 @@ def run_estimate(conn: sqlite3.Connection, profile: dict[str, Any]) -> dict[str,
     ).fetchall()
     if rows:
         cost = sum(r["cost_usd"] for r in rows) / len(rows)
-        return {"estimate_usd": round(cost, 6), "basis": f"по {len(rows)} прошлым задачам этого агента"}
+        return {"estimate_usd": round(cost, 6), "basis": tr("по {count} прошлым задачам этого агента", count=len(rows))}
     model = store.get_model(conn, profile["model_id"])
     if model is None:
-        return {"estimate_usd": None, "basis": "модель недоступна"}
+        return {"estimate_usd": None, "basis": tr("модель недоступна")}
     seen = {m["model_id"]: m for m in stats.model_stats(conn)}.get(model["id"])
     steps = (seen or {}).get("run_steps") or DEFAULT_STEPS
     cost = answer_cost(model, seen) * steps
-    return {"estimate_usd": round(cost, 6), "basis": f"≈ {steps:g} шагов по цене ответа модели"}
+    return {"estimate_usd": round(cost, 6), "basis": tr("≈ {steps:g} шагов по цене ответа модели", steps=steps)}

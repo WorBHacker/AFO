@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from common.gguf import GGUFError, model_info
+from common.i18n import tr
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
@@ -105,9 +106,10 @@ async def change(request: Request, model_id: str, body: Change, client: Annotate
     ids = list(llama_config.model_blocks(new))
     context = (model_id, body.changes["context"]) if body.changes.get("context") else None
     verified, problem = await _verify(request, ids, context)
-    if not verified and problem != llama_config.NOT_ANSWERING:  # it read the file and something is wrong: undo
+    if not verified and problem != tr(llama_config.NOT_ANSWERING):  # it read the file and something is wrong: undo
         await asyncio.to_thread(llama_config.restore, path, backup)
-        raise HTTPException(status_code=502, detail=f"llama-swap не принял правку ({problem}) — конфиг возвращён")
+        raise HTTPException(status_code=502, detail=tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                                       problem=problem))  # fmt: skip
     request.app.state.llama_trial = (model_id, backup)  # a failed trial of this model puts this copy back
     await request.app.state.bus.publish("llama.config", {"model_id": model_id, "changes": body.changes,
                                                          "backup": backup.name, "verified": verified})  # fmt: skip

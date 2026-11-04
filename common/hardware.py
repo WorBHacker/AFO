@@ -16,6 +16,8 @@ import re
 import sys
 from typing import Any
 
+from .i18n import tr
+
 GIB = 1024**3
 DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 VENDORS = {"10de": "nvidia", "1002": "amd", "8086": "intel"}
@@ -89,13 +91,17 @@ def build_for(cards: list[dict[str, Any]], nvidia: dict[str, Any] | None) -> dic
     usable = [c for c in cards if c["vram_gib"] >= MIN_VRAM_GIB]
     green = next((c for c in usable if c["vendor"] == "nvidia"), None)
     if green and nvidia and nvidia["cuda"] >= 13000:
-        return {"build": "cuda-13", "card": green["name"], "why": "видеокарта NVIDIA: сборка с CUDA — быстрее всего"}
+        return {
+            "build": "cuda-13",
+            "card": green["name"],
+            "why": tr("видеокарта NVIDIA: сборка с CUDA — быстрее всего"),
+        }
     if green and nvidia and nvidia["cuda"] >= 12040:
-        return {"build": "cuda-12", "card": green["name"], "why": "видеокарта NVIDIA со старым драйвером: CUDA 12"}
+        return {"build": "cuda-12", "card": green["name"], "why": tr("видеокарта NVIDIA со старым драйвером: CUDA 12")}
     if usable:
         card = usable[0]
-        why = "драйвер NVIDIA не ответил — Vulkan" if card["vendor"] == "nvidia" else \
-            "видеокарта AMD или Intel: сборка с Vulkan"  # fmt: skip
+        why = tr("драйвер NVIDIA не ответил — Vulkan") if card["vendor"] == "nvidia" else \
+            tr("видеокарта AMD или Intel: сборка с Vulkan")  # fmt: skip
         return {"build": "vulkan", "card": card["name"], "why": why}
-    return {"build": "cpu", "card": "", "why": "подходящей видеокарты нет: модели будут работать на процессоре — "
-                                                 "только маленькие и медленнее"}  # fmt: skip
+    return {"build": "cpu", "card": "", "why": tr("подходящей видеокарты нет: модели будут работать на процессоре — "
+                                                    "только маленькие и медленнее")}  # fmt: skip

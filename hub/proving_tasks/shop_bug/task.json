@@ -6,5 +6,8 @@
   "criteria": [{"command": "{python} -m unittest -q", "expected_exit_code": 0}],
   "constraints": ["Не менять test_shop.py"],
   "limits": {"max_turns": 10, "max_minutes": 20},
-  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "итог верен на разных корзинах и скидках, тесты не тронуты"}]
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "итог верен на разных корзинах и скидках, тесты не тронуты"}],
+  "en": {"title": "Find the bug in the shop", "level": "hard",
+         "about": "A package of several modules: the discount is calculated wrong. One test fails; the hidden checks try other carts and discounts.",
+         "why": ["the total is right for different carts and discounts, the tests are untouched"]}
 }

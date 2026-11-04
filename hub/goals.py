@@ -37,6 +37,8 @@ import sqlite3
 import uuid
 from typing import Any
 
+from common.i18n import N_, tr
+
 from . import approvals, commands, judge, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
@@ -61,8 +63,8 @@ CHECK_TIMEOUT_S = 300  # a criterion's command, by default
 TAIL_LINES = 30  # of a failed criterion's command, for the worker
 TITLE_CHARS = 48
 NO_JUDGE = "none"  # `judge_model_id` that says: no judge, not even the role's (the proving ground's exams, D45)
-REGRESSED_AGAIN = "второй раз подряд потеряно то, что работало (тесты или ограничения)"
-ASK_PERSON = ": решите, как быть, и продолжите или снимите цель"  # left out of an exam's table (D45)
+REGRESSED_AGAIN = N_("второй раз подряд потеряно то, что работало (тесты или ограничения)")
+ASK_PERSON = N_(": решите, как быть, и продолжите или снимите цель")  # left out of an exam's table (D45)
 
 
 class GoalError(ValueError):
@@ -283,10 +285,13 @@ def usage_line(goal: dict[str, Any], *, ahead: int = 1) -> str:
 
 def _limit_words(goal: dict[str, Any]) -> str:
     """Which limit is the nearest, in the user's words."""
-    shares = [(goal["turns_used"] / goal["max_turns"], f"ходов {goal['turns_used']} из {goal['max_turns']}"),
-              (goal["tokens_used"] / goal["max_tokens"], f"токенов {goal['tokens_used']} из {goal['max_tokens']}"),
+    shares = [(goal["turns_used"] / goal["max_turns"],
+               tr("ходов {used} из {limit}", used=goal["turns_used"], limit=goal["max_turns"])),
+              (goal["tokens_used"] / goal["max_tokens"],
+               tr("токенов {used} из {limit}", used=goal["tokens_used"], limit=goal["max_tokens"])),
               (goal["seconds_used"] / goal["max_seconds"],
-               f"минут {goal['seconds_used'] / 60:.0f} из {goal['max_minutes']}")]  # fmt: skip
+               tr("минут {used:.0f} из {limit}", used=goal["seconds_used"] / 60,
+                  limit=goal["max_minutes"]))]  # fmt: skip
     return max(shares)[1]
 
 
@@ -442,7 +447,7 @@ def read_draft(text: str, project_names: list[str]) -> dict[str, Any] | None:
             if (approvals.destructive("run_command", {"command": command})
                     or approvals.network("run_command", {"command": command})
                     or approvals.hub_data("run_command", {"command": command})):  # fmt: skip
-                notes.append(f"команда «{command}» убрана: проверка только смотрит")
+                notes.append(tr("команда «{command}» убрана: проверка только смотрит", command=command))
                 continue
             project = str(item.get("project") or "")
             match = next((n for n in project_names if n.casefold() == project.casefold()), None)
@@ -544,10 +549,11 @@ class Goals:
             return chosen, store.get_model(conn, chosen) if chosen else None, _attached(conn, conversation_id)
 
         chosen, model, projects = await self._db.acall(read)
+        role = tr("Проверка цели")  # the role's name as the window shows it
         if model is None or not model["enabled"]:
-            raise GoalError("choose the chat's model first: it drafts the goal (or the model of «Проверка цели»)")
+            raise GoalError(f"choose the chat's model first: it drafts the goal (or the model of «{role}»)")
         if model["provider"] == CLAUDE_CODE:
-            raise GoalError("Claude Code does not draft goals: choose another model, or one for «Проверка цели»")
+            raise GoalError(f"Claude Code does not draft goals: choose another model, or one for «{role}»")
         context = await asyncio.to_thread(draft_context, projects, cloud=model["locality"] == "cloud")
         names = [p.name for p in projects]
         prompt = clean(f"<projects>\n{context}\n</projects>\n<wish>\n{text}\n</wish>\nWrite the goal contract. "
@@ -580,7 +586,7 @@ class Goals:
         goal = await self._open(conversation_id)
         if goal["status"] != "active":
             raise GoalConflict(f"the goal is {goal['status']}, not at work")
-        return await self._status(goal, "paused", f"на паузе ({by})")
+        return await self._status(goal, "paused", tr("на паузе ({by})", by=by))
 
     async def resume(self, conversation_id: str, limits: dict[str, Any] | None, *, by: str) -> dict[str, Any]:
         """Back to work - a parked goal with limits it has not used up yet; the next turn starts."""
@@ -608,13 +614,13 @@ class Goals:
     async def clear(self, conversation_id: str, *, by: str) -> dict[str, Any]:
         """The goal is given up: no next turn (a turn running now finishes)."""
         goal = await self._open(conversation_id)
-        return await self._status(goal, "cleared", f"снята ({by})", ended=True)
+        return await self._status(goal, "cleared", tr("снята ({by})", by=by), ended=True)
 
     async def steer(self, conversation_id: str, text: str, *, by: str) -> dict[str, Any]:
         """The user's word while the goal works: the worker reads it at the start of its next turn."""
         text = text.strip()[:4000]
         if not text:
-            raise GoalError("Пустое сообщение")
+            raise GoalError(tr("Пустое сообщение"))
         goal = await self._open(conversation_id)
         row_id = await self._db.acall(lambda conn: conn.execute(
             "INSERT INTO goal_steering (goal_id, text, by) VALUES (?, ?, ?)", (goal["id"], text, by)
@@ -663,10 +669,10 @@ class Goals:
             if goal["status"] != "active":
                 return
             if outcome.status == "cancelled":
-                await self._checked(goal, "paused", None, {}, "остановлено: ход прерван")
+                await self._checked(goal, "paused", None, {}, tr("остановлено: ход прерван"))
                 return
             if outcome.status == "error" and not outcome.limited:
-                await self._checked(goal, "blocked", None, {}, f"ход не удался: {outcome.detail}")
+                await self._checked(goal, "blocked", None, {}, tr("ход не удался: {error}", error=outcome.detail))
                 return
             await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
                                     persist=False)  # fmt: skip
@@ -681,17 +687,18 @@ class Goals:
                 await self._checked(goal, "blocked", verdict, found, found["blocked"])
                 return
             if verdict == "REGRESSED" and await self._regressed_before(goal):
-                await self._checked(goal, "blocked", verdict, found, REGRESSED_AGAIN + ASK_PERSON)
+                await self._checked(goal, "blocked", verdict, found, tr(REGRESSED_AGAIN) + tr(ASK_PERSON))
                 return
             share = used(goal)
             if goal["last_turn"] or share >= 1.0:
-                await self._checked(goal, "budget", verdict, found, f"предел: {_limit_words(goal)}")
+                await self._checked(goal, "budget", verdict, found, tr("предел: {limit}", limit=_limit_words(goal)))
                 return
             said = await self._take_steering(goal)
             if share >= goal["soft_ratio"]:
                 await self._db.acall(lambda conn: conn.execute("UPDATE goals SET last_turn = 1 WHERE id = ?",
                                                                (goal["id"],)))  # fmt: skip
-                await self._checked(goal, "last_turn", verdict, found, f"последний ход: {_limit_words(goal)}")
+                await self._checked(goal, "last_turn", verdict, found,
+                                    tr("последний ход: {limit}", limit=_limit_words(goal)))  # fmt: skip
                 await self._turn(goal, last_turn_note(goal, found, said))
                 return
             await self._checked(goal, "continue", verdict, found, "")
@@ -731,20 +738,21 @@ class Goals:
         try:
             judge_id, words = await self._db.acall(choose)
         except judge.JudgeError as exc:
-            return {**found, "verdict": None, "blocked": f"проверяющая модель не может проверить: {exc}"}
+            said = tr("проверяющая модель не может проверить: {error}", error=exc)
+            return {**found, "verdict": None, "blocked": said}
         if not judge_id:
             if semantic:
-                nobody = ("команды прошли, а критерии словами проверить некому: выберите модель для роли «Проверка "
-                          "цели» и продолжите — или проверьте сами и снимите цель")  # fmt: skip
+                nobody = tr("команды прошли, а критерии словами проверить некому: выберите модель для роли «Проверка "
+                            "цели» и продолжите — или проверьте сами и снимите цель")  # fmt: skip
                 return {**found, "verdict": None, "blocked": nobody}
-            return {**found, "verdict": "ACHIEVED", "detail": "цель достигнута: все критерии выполнены"}
+            return {**found, "verdict": "ACHIEVED", "detail": tr("цель достигнута: все критерии выполнены")}
         await self._bus.publish("goal.judging", {"conversation_id": conversation_id, "goal_id": goal["id"],
                                                  "model_id": judge_id}, persist=False)  # fmt: skip
         try:
             said = await self._judge.ask(judge_id, judge.goal_prompt(goal, results, evidence, words),
                                          conversation_id=conversation_id, meta={"goal_id": goal["id"]})  # fmt: skip
         except judge.JudgeError as exc:
-            return {**found, "verdict": None, "blocked": f"проверяющая модель не ответила: {exc}"}
+            return {**found, "verdict": None, "blocked": tr("проверяющая модель не ответила: {error}", error=exc)}
         await self._db.acall(lambda conn: conn.execute(
             "UPDATE goals SET tokens_used = tokens_used + ?, cost_usd = cost_usd + ? WHERE id = ?",
             (said["tokens"], said["cost_usd"], goal["id"])))  # fmt: skip
@@ -757,7 +765,7 @@ class Goals:
             await self._db.acall(lambda conn: conn.executemany(
                 "UPDATE goal_criteria SET verified = 1 WHERE goal_id = ? AND n = ?",
                 [(goal["id"], r["n"]) for r in semantic]))  # fmt: skip
-            found["detail"] = "цель достигнута: проверки прошли, проверяющая модель согласна"
+            found["detail"] = tr("цель достигнута: проверки прошли, проверяющая модель согласна")
         return found
 
     async def _regressed_before(self, goal: dict[str, Any]) -> bool:
@@ -798,7 +806,8 @@ class Goals:
             short = c["command"] if len(c["command"]) <= TITLE_CHARS else c["command"][: TITLE_CHARS - 1] + "…"
             try:
                 done = await commands.execute(self._chat.terminals, project, c["command"], folder=c["path"],
-                                              timeout=c["timeout_s"], by="goal", title=f"Цель: {short}")  # fmt: skip
+                                              timeout=c["timeout_s"], by="goal",
+                                              title=tr("Цель: {command}", command=short))  # fmt: skip
             except Exception as exc:  # a folder gone, a terminal that would not start
                 log.warning("goal %s: criterion %s did not run: %s", goal["id"], c["n"], exc)
                 results.append({**result, "why": f"did not run: {exc}"})
@@ -887,4 +896,4 @@ class Goals:
                 return
             current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
             if current["status"] == "active":
-                await self._status(current, "blocked", f"следующий ход не начался: {exc}")
+                await self._status(current, "blocked", tr("следующий ход не начался: {error}", error=exc))

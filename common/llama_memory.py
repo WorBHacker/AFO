@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .i18n import tr
+
 GIB = 1024**3
 # bytes per cached value: llama.cpp's KV cache types (a block of 32 values with its scale)
 CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32,
@@ -50,9 +52,10 @@ def estimate(
         ram = spill + (mmproj_bytes - vision_gpu) / GIB  # the vision projector kept in RAM is not slower layers
     out = {"vram_gb": round(vram, 1), "ram_gb": round(ram, 1), "kv_gb": round(kv / GIB, 2),
            "weights_gb": round(weights / GIB, 1), "total_gb": round(total, 1) if total else None}  # fmt: skip
-    where = f"≈ {out['vram_gb']} ГБ видеопамяти" + (f" из {out['total_gb']:g}" if total else "")
-    where += f" и {out['ram_gb']} ГБ ОЗУ" if out["ram_gb"] >= 0.1 else ""
-    where += f" (KV-кэш {out['kv_gb']} ГБ)"
+    where = tr("≈ {vram} ГБ видеопамяти из {total:g}", vram=out["vram_gb"], total=out["total_gb"]) if total else \
+        tr("≈ {vram} ГБ видеопамяти", vram=out["vram_gb"])  # fmt: skip
+    where += tr(" и {ram} ГБ ОЗУ", ram=out["ram_gb"]) if out["ram_gb"] >= 0.1 else ""
+    where += tr(" (KV-кэш {kv} ГБ)", kv=out["kv_gb"])
     if total is None:
         out["verdict"] = "unknown"
     elif gpu_layers == "auto":
@@ -64,10 +67,12 @@ def estimate(
     out["text"] = (
         where
         + {
-            "fits": " — помещается в видеопамять целиком",
-            "split": " — часть слоёв в ОЗУ: работать будет медленнее",
-            "auto": " — llama.cpp сам положит в видеопамять, что поместится, остальное — в ОЗУ (медленнее)",
-            "over": " — не поместится в видеопамять: меньше слоёв на видеокарте, меньше контекст или сжатие KV-кэша",
+            "fits": tr(" — помещается в видеопамять целиком"),
+            "split": tr(" — часть слоёв в ОЗУ: работать будет медленнее"),
+            "auto": tr(" — llama.cpp сам положит в видеопамять, что поместится, остальное — в ОЗУ (медленнее)"),
+            "over": tr(
+                " — не поместится в видеопамять: меньше слоёв на видеокарте, меньше контекст или сжатие KV-кэша"
+            ),
             "unknown": "",
         }[out["verdict"]]
     )

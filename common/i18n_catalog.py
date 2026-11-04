@@ -108,7 +108,11 @@ def _files(roots: Iterable[Path]) -> list[Path]:
         if root.is_file():
             found.append(root)
             continue
-        found += [p for p in sorted(root.rglob("*")) if p.suffix in (".py", ".qml") and "__pycache__" not in p.parts]
+        found += [
+            p
+            for p in sorted(root.rglob("*"))
+            if p.suffix in (".py", ".qml") and "__pycache__" not in p.parts and "proving_tasks" not in p.parts
+        ]  # the proving ground's exams: material a model works on, as is
     return found
 
 

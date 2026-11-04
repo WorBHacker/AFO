@@ -30,7 +30,7 @@
       "purposes": ["chat", "vision"],
       "about": {
         "ru": "Небольшая модель Google: разговоры на многих языках и вопросы о картинках. Хватит 6–8 ГБ видеопамяти.",
-        "en": "A small Google model: conversation in many languages and questions about images. 6–8 GB of video memory is enough."
+        "en": "A small Google model: conversation in many languages and questions about images. 6–8 GB of VRAM is enough."
       }
     },
     {
@@ -40,7 +40,7 @@
       "purposes": ["code"],
       "about": {
         "ru": "Помощник программиста от Qwen: пишет и объясняет код, дописывает строки. Хватит 8 ГБ видеопамяти.",
-        "en": "Qwen's programming helper: writes and explains code, completes lines. 8 GB of video memory is enough."
+        "en": "Qwen's programming helper: writes and explains code, completes lines. 8 GB of VRAM is enough."
       }
     },
     {
@@ -60,7 +60,7 @@
       "purposes": ["chat", "vision"],
       "about": {
         "ru": "Средняя модель Google: хорошо пишет и переводит, понимает картинки. Нужно 10–12 ГБ видеопамяти.",
-        "en": "A mid-size Google model: writes and translates well, understands images. Needs 10–12 GB of video memory."
+        "en": "A mid-size Google model: writes and translates well, understands images. Needs 10–12 GB of VRAM."
       }
     },
     {
@@ -71,7 +71,7 @@
       "moe": true,
       "about": {
         "ru": "Открытая модель OpenAI: рассуждает, работает с инструментами, пишет код. Нужно около 14 ГБ видеопамяти.",
-        "en": "OpenAI's open model: reasons, uses tools, writes code. Needs about 14 GB of video memory."
+        "en": "OpenAI's open model: reasons, uses tools, writes code. Needs about 14 GB of VRAM."
       }
     },
     {
@@ -82,7 +82,7 @@
       "moe": true,
       "about": {
         "ru": "Большая модель Google из «экспертов»: умная и при этом быстрая, понимает картинки. Лучше всего с 16 ГБ видеопамяти.",
-        "en": "A large Google mixture-of-experts model: smart yet fast, understands images. Best with 16 GB of video memory."
+        "en": "A large Google mixture-of-experts model: smart yet fast, understands images. Best with 16 GB of VRAM."
       }
     },
     {
@@ -114,7 +114,7 @@
       "purposes": ["chat", "code", "vision"],
       "about": {
         "ru": "Одна из самых сильных моделей для дома: рассуждает, пишет код, понимает картинки. Нужно 20–24 ГБ видеопамяти, иначе медленнее.",
-        "en": "One of the strongest models for home use: reasons, codes, understands images. Needs 20–24 GB of video memory, slower otherwise."
+        "en": "One of the strongest models for home use: reasons, codes, understands images. Needs 20–24 GB of VRAM, slower otherwise."
       }
     },
     {

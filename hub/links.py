@@ -26,6 +26,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from common.i18n import N_, tr
+
 from . import projects, search
 from .db import utc_now
 from .projects import Project, ProjectError
@@ -33,12 +35,12 @@ from .projects import Project, ProjectError
 log = logging.getLogger("hub.links")
 
 KINDS = {
-    "uses": "использует",
-    "provides": "предоставляет",
-    "shares": "общее",
-    "deploys_with": "развёртываются вместе",
-    "same_product": "части одного продукта",
-    "other": "связь",
+    "uses": N_("использует"),
+    "provides": N_("предоставляет"),
+    "shares": N_("общее"),
+    "deploys_with": N_("развёртываются вместе"),
+    "same_product": N_("части одного продукта"),
+    "other": N_("связь"),
 }
 DEPENDENCY_FILES = (
     "pyproject.toml", "requirements.txt", "requirements-dev.txt", "setup.cfg", "package.json", "Cargo.toml", "go.mod",
@@ -110,7 +112,9 @@ def path_evidence(a: Project, b: Project) -> list[tuple[str, str]]:
                 target = Path(raw.rstrip("/\\")) if Path(raw).is_absolute() else a.root / raw
                 if _inside(target, b.root):
                     kind = "deploys_with" if name in COMPOSE_FILES else "uses"
-                    found.append((kind, f"{a.name}/{name}:{number} указывает на папку {b.name}: {line.strip()[:160]}"))
+                    said = tr("{a}/{file}:{number} указывает на папку {b}: {text}", a=a.name, file=name,
+                              number=number, b=b.name, text=line.strip()[:160])  # fmt: skip
+                    found.append((kind, said))
                     break
     return found
 
@@ -123,7 +127,8 @@ def package_evidence(a: Project, b: Project, b_package: str | None) -> list[tupl
     for name in DEPENDENCY_FILES:
         for number, line in enumerate(_read(a.root, name).splitlines(), 1):
             if pattern.search(line):
-                found.append(("uses", f"{a.name}/{name}:{number} зависит от пакета «{b_package}» проекта {b.name}"))
+                found.append(("uses", tr("{a}/{file}:{number} зависит от пакета «{package}» проекта {b}", a=a.name,
+                                         file=name, number=number, package=b_package, b=b.name)))  # fmt: skip
                 break
     return found
 
@@ -141,8 +146,9 @@ def port_evidence(a: Project, b: Project, b_ports: dict[int, str]) -> list[tuple
             match = item["matches"][0]
             found.append((
                 "uses",
-                f"{a.name}/{item['path']}:{match['line']} обращается к :{port} ({match['text'].strip()[:120]}); "
-                f"в папке {b.name} этот порт слушает {process}",
+                tr("{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушает {process}",
+                   a=a.name, path=item["path"], number=match["line"], port=port, text=match["text"].strip()[:120],
+                   b=b.name, process=process),
             ))  # fmt: skip
     return found
 
@@ -159,8 +165,11 @@ def env_evidence(a: Project, b: Project, a_names: set[str], b_names: set[str]) -
     shared = sorted(a_names & b_names)
     if len(shared) < MIN_SHARED:
         return []
-    listed = ", ".join(shared[:8]) + (f" и ещё {len(shared) - 8}" if len(shared) > 8 else "")
-    return [("shares", f"{a.name} и {b.name} называют одни и те же настройки окружения: {listed}")]
+    listed = ", ".join(shared[:8])
+    if len(shared) > 8:
+        listed = tr("{names} и ещё {count}", names=listed, count=len(shared) - 8)
+    return [("shares", tr("{a} и {b} называют одни и те же настройки окружения: {names}", a=a.name, b=b.name,
+                          names=listed))]  # fmt: skip
 
 
 def scan(all_projects: list[Project], ports: dict[str, dict[int, str]]) -> list[dict[str, Any]]:

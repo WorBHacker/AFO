@@ -7,5 +7,8 @@
                {"command": "{python} check_refactor.py", "expected_exit_code": 0}],
   "constraints": ["Не менять test_inventory.py и check_refactor.py"],
   "limits": {"max_turns": 8, "max_minutes": 15},
-  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "одна функция вместо трёх копий, поведение то же, тесты не тронуты"}]
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "одна функция вместо трёх копий, поведение то же, тесты не тронуты"}],
+  "en": {"title": "Extract the repeated code", "level": "medium",
+         "about": "Refactoring: move the price-with-VAT calculation into a function without breaking anything. The hidden check reads the code itself and compares what it does.",
+         "why": ["one function instead of three copies, it does the same, the tests are untouched"]}
 }

@@ -16,6 +16,8 @@ import re
 import time
 from typing import Any
 
+from common.i18n import N_, tr
+
 from . import store
 from .completion import chosen
 from .db import Database
@@ -32,17 +34,17 @@ PROMPT = (
     "</SELECTION> - no explanation, no Markdown fence, nothing from before or after it. Keep its indentation."
 )
 REFUSALS = {
-    "no_model": "Правка: модель не выбрана — роль «Правка в редакторе» в настройках моделей",
-    "off": "Правка: модель недоступна",
-    "local_only": "Правка: облачная модель, а проект — только локально (D10)",
-    "secret": "Правка: файлы с секретами модели не правят",
+    "no_model": N_("Правка: модель не выбрана — роль «Правка в редакторе» в настройках моделей"),
+    "off": N_("Правка: модель недоступна"),
+    "local_only": N_("Правка: облачная модель, а проект — только локально (D10)"),
+    "secret": N_("Правка: файлы с секретами модели не правят"),
 }
 FENCE = re.compile(r"^\s*```[\w+-]*\n(?P<code>.*?)\n?```\s*$", re.DOTALL)
 
 
 class Refused(Exception):
     def __init__(self, reason: str):
-        super().__init__(REFUSALS[reason])
+        super().__init__(tr(REFUSALS[reason]))
         self.reason = reason
 
 

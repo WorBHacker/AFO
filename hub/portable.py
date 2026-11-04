@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from common import invisible
+from common.i18n import N_, tr
 
 from . import (
     agent_tools,
@@ -45,12 +46,13 @@ from .secret_filter import MASK, redact
 KIND = "localchat-settings"
 VERSION = 1
 RULE_CHARS = 2000
-NAMES = {"name": "имя", "hidden": "скрыта", "capabilities": "возможности", "prices": "цены", "prices_asof": "дата цен",
-         "params": "параметры", "preset": "заготовка", "effort": "размышления", "roles": "роли",
-         "context_budget": "бюджеты контекста", "system_prompt": "системный промпт", "instructions": "инструкции",
-         "model_id": "модель", "tools": "инструменты", "mode": "режим", "project_ids": "проекты",
-         "max_steps": "шагов", "max_minutes": "минут", "budget_usd": "бюджет"}  # fmt: skip
-PERIODS = {"day": "в день", "week": "в неделю", "month": "в месяц"}
+NAMES = {"name": N_("имя"), "hidden": N_("скрыта"), "capabilities": N_("возможности"), "prices": N_("цены"),
+         "prices_asof": N_("дата цен"), "params": N_("параметры"), "preset": N_("заготовка"),
+         "effort": N_("размышления"), "roles": N_("роли"), "context_budget": N_("бюджеты контекста"),
+         "system_prompt": N_("системный промпт"), "instructions": N_("инструкции"), "model_id": N_("модель"),
+         "tools": N_("инструменты"), "mode": N_("режим"), "project_ids": N_("проекты"), "max_steps": N_("шагов"),
+         "max_minutes": N_("минут"), "budget_usd": N_("бюджет")}  # fmt: skip
+PERIODS = {"day": N_("в день"), "week": N_("в неделю"), "month": N_("в месяц")}
 AGENT_FIELDS = ("name", "instructions", "model_id", "tools", "mode", "max_steps", "max_minutes", "budget_usd")
 BUDGET_FIELDS = ("scope", "scope_ref", "period", "soft_usd", "hard_usd", "hard_action")
 
@@ -78,13 +80,15 @@ def _setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
 
 
 def _differs(old: dict[str, Any], new: dict[str, Any]) -> str:
-    return ", ".join(NAMES.get(k, k) for k in sorted(old.keys() | new.keys()) if old.get(k) != new.get(k))
+    changed = (k for k in sorted(old.keys() | new.keys()) if old.get(k) != new.get(k))
+    return ", ".join(tr(NAMES[k]) if k in NAMES else k for k in changed)
 
 
 def _hidden(*texts: Any) -> str:
     """A word when a text a model will be told holds characters a person does not see (D46, «Trojan Source»): a file
     from someone else could hide an instruction in it."""
-    return next((f"{said} — проверьте текст" for t in texts if (said := invisible.summary(str(t or "")))), "")
+    found = (said for t in texts if (said := invisible.summary(str(t or ""))))
+    return next((tr("{said} — проверьте текст", said=said) for said in found), "")
 
 
 def _whole(folder: str) -> bool:
@@ -131,15 +135,15 @@ def _models_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loadin
     known = {m["id"] for m in store.list_models(conn, enabled_only=False)}
     general = dict(value.get("general") or {})
     roles = dict(general.get("roles") or {})
-    items = [_item(f"роль {role}", "skip", f"модели {mid} нет в этом хабе") for role, mid in roles.items()
-             if mid not in known]  # fmt: skip
+    items = [_item(tr("роль {role}", role=role), "skip", tr("модели {model} нет в этом хабе", model=mid))
+             for role, mid in roles.items() if mid not in known]  # fmt: skip
     entries = [(model_settings.ALL, {"system_prompt": general.get("system_prompt"),
                                      "roles": {r: m for r, m in roles.items() if m in known}})]  # fmt: skip
     entries += sorted((value.get("models") or {}).items())
     for model_id, settings in entries:
-        what = model_id or "общие: системный промпт и роли"
+        what = model_id or tr("общие: системный промпт и роли")
         if model_id and model_id not in known:
-            items.append(_item(what, "skip", "такой модели нет в этом хабе"))
+            items.append(_item(what, "skip", tr("такой модели нет в этом хабе")))
             continue
         number, before = model_settings.current(conn, model_id)
         try:
@@ -171,10 +175,12 @@ def _budgets_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading: 
     items = []
     for entry in value:
         scope, ref, period = entry.get("scope"), str(entry.get("scope_ref") or ""), entry.get("period")
-        what = f"{'все платные модели' if scope == 'total' else ref}, {PERIODS.get(period, period)}"
+        whose = tr("все платные модели") if scope == "total" else ref
+        what = f"{whose}, {tr(PERIODS[period]) if period in PERIODS else period}"
         limits = (usd(entry.get("soft_usd")), usd(entry.get("hard_usd")), entry.get("hard_action") or "ask")
-        detail = ", ".join(p for p in (f"предупреждение ${limits[0]:g}" if limits[0] is not None else "",
-                                       f"предел ${limits[1]:g}" if limits[1] is not None else "") if p)  # fmt: skip
+        detail = ", ".join(p for p in (tr("предупреждение ${usd:g}", usd=limits[0]) if limits[0] is not None else "",
+                                       tr("предел ${usd:g}", usd=limits[1]) if limits[1] is not None else "")
+                           if p)  # fmt: skip
         old = have.get((scope, ref, period))
         if old and (old.soft_usd, old.hard_usd, old.hard_action) == limits:
             items.append(_item(what, "same", detail))
@@ -206,7 +212,7 @@ def _projects_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading:
         folder = str(entry.get("path") or "")
         root = _root(folder)
         if root is None:
-            items.append(_item(folder, "skip", "такой папки на этом компьютере нет"))
+            items.append(_item(folder, "skip", tr("такой папки на этом компьютере нет")))
             continue
         name, description = str(entry.get("name") or root.name), str(entry.get("description") or "")
         cloud = bool(entry.get("cloud_ok"))
@@ -219,11 +225,12 @@ def _projects_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading:
                 continue
             update_project(conn, pid, description=description, cloud_ok=cloud)
             loading.added_projects.append(pid)
-            action, was_cloud, detail = "add", False, "облаку можно" if cloud else "только локально"
+            action, was_cloud, detail = "add", False, tr("облаку можно") if cloud else tr("только локально")
         else:
             old = get_project(conn, pid)
-            changed = [label for label, a, b in (("имя", old.name, name), ("описание", old.description, description),
-                                                  ("облако", old.cloud_ok, cloud)) if a != b]  # fmt: skip
+            changed = [label for label, a, b in ((tr("имя"), old.name, name),
+                                                  (tr("описание"), old.description, description),
+                                                  (tr("облако"), old.cloud_ok, cloud)) if a != b]  # fmt: skip
             if changed:
                 update_project(conn, pid, name=name, description=description, cloud_ok=cloud)
             action, was_cloud, detail = "change" if changed else "same", old.cloud_ok, ", ".join(changed)
@@ -232,10 +239,11 @@ def _projects_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading:
             "INSERT OR IGNORE INTO permission_rules (project_id, grant_key, created_by) VALUES (?, ?, ?)",
             (pid, k, loading.by)).rowcount]  # fmt: skip
         if added and action == "same":
-            action, detail = "change", f"правил: +{len(added)}"
-        warns = ["содержимое проекта сможет уходить облачным моделям"] if cloud and not was_cloud else []
+            action, detail = "change", tr("правил: +{count}", count=len(added))
+        warns = [tr("содержимое проекта сможет уходить облачным моделям")] if cloud and not was_cloud else []
         if added:
-            warns.append("разрешено без вопроса в этом проекте: " + "; ".join(invisible.reveal(k) for k in added))
+            rules_said = "; ".join(invisible.reveal(k) for k in added)
+            warns.append(tr("разрешено без вопроса в этом проекте: {rules}", rules=rules_said))
         items.append(_item(str(root), action, detail, ". ".join(warns)))
     return items
 
@@ -261,12 +269,12 @@ def _agents_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading: _
             items.append(_item(what, "skip", str(exc)))
             continue
         old = have.get(checked["name"])
-        notes = f"нет проектов: {', '.join(missing)}" if missing else ""
+        notes = tr("нет проектов: {folders}", folders=", ".join(missing)) if missing else ""
         if old is not None and all(old[k] == checked[k] for k in checked):
             items.append(_item(what, "same", notes))
             continue
         agents.save_profile(conn, checked, old["id"] if old else None)
-        trusted = "режим «Доверенный»: пишет в своих проектах без вопросов" if checked["mode"] == "trusted" else ""
+        trusted = tr("режим «Доверенный»: пишет в своих проектах без вопросов") if checked["mode"] == "trusted" else ""
         warn = "; ".join(w for w in (trusted, _hidden(checked["instructions"])) if w)
         was = {k: old[k] for k in checked} if old else {}
         detail = "; ".join(p for p in (_differs(was, checked) if old else "", notes) if p)
@@ -300,16 +308,16 @@ def _schedules_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading
         notes = []
         if "projects" in goal:
             goal["project_ids"], missing = _project_ids(conn, list(goal.pop("projects") or []))
-            notes += [f"нет проектов: {', '.join(missing)}"] if missing else []
+            notes += [tr("нет проектов: {folders}", folders=", ".join(missing))] if missing else []
         if "profile" in goal:
             name = goal.pop("profile")
             if name not in profiles:
-                items.append(_item(what, "skip", f"нет агента «{name}»"))
+                items.append(_item(what, "skip", tr("нет агента «{name}»", name=name)))
                 continue
             goal["profile_id"] = profiles[name]
         trigger = dict(entry.get("trigger") or {})
         if trigger.get("kind") == "file" and not _whole(str(trigger.get("folder") or "")):
-            items.append(_item(what, "skip", f"папки {trigger.get('folder')} на этом компьютере нет"))
+            items.append(_item(what, "skip", tr("папки {folder} на этом компьютере нет", folder=trigger.get("folder"))))
             continue
         data = {"title": entry.get("title"), "goal": goal, "trigger": trigger, "computer": bool(entry.get("computer")),
                 "enabled": False}  # fmt: skip
@@ -323,8 +331,8 @@ def _schedules_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading
             items.append(_item(what, "same", "; ".join(notes)))
             continue
         schedule.add_schedule(conn, data, loading.now)
-        warns = ["придёт выключенным: включите его в «Расписании», когда посмотрите",
-                 "его задачи смогут управлять компьютером" if checked["computer"] else "",
+        warns = [tr("придёт выключенным: включите его в «Расписании», когда посмотрите"),
+                 tr("его задачи смогут управлять компьютером") if checked["computer"] else "",
                  _hidden(checked["goal"].get("goal"), checked["goal"].get("done_when"))]  # fmt: skip
         warn = "; ".join(w for w in warns if w)
         items.append(_item(what, "add", "; ".join(notes), warn))
@@ -346,7 +354,7 @@ def _access_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loadin
     for entry in value.get("folders") or []:
         folder = str((entry or {}).get("path") or "")
         if not _whole(folder):
-            items.append(_item(folder, "skip", "такой папки на этом компьютере нет"))
+            items.append(_item(folder, "skip", tr("такой папки на этом компьютере нет")))
             continue
         try:
             checked = agent_tools.check_folders([entry])[0]
@@ -354,13 +362,14 @@ def _access_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loadin
             items.append(_item(folder, "skip", str(exc)))
             continue
         old = before.get(checked["path"].lower())
-        rights = ("чтение и запись" if checked["write"] else "чтение") + (", облаку можно" if checked["cloud"] else "")
+        rights = tr("чтение и запись") if checked["write"] else tr("чтение")
+        rights += ", " + tr("облаку можно") if checked["cloud"] else ""
         if old == checked:
             items.append(_item(checked["path"], "same", rights))
             continue
         folders[checked["path"].lower()] = checked
-        warns = [w for w, now, was in (("агент сможет писать в эту папку", checked["write"], old and old["write"]),
-                                       ("её файлы смогут уходить облачным моделям", checked["cloud"],
+        warns = [w for w, now, was in ((tr("агент сможет писать в эту папку"), checked["write"], old and old["write"]),
+                                       (tr("её файлы смогут уходить облачным моделям"), checked["cloud"],
                                         old and old["cloud"])) if now and not was]  # fmt: skip
         items.append(_item(checked["path"], "change" if old else "add", rights, "; ".join(warns)))
     if folders != before:
@@ -369,20 +378,21 @@ def _access_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loadin
     try:
         sites = agent_tools.check_domains(list(value.get("domains") or []))
     except agent_tools.AgentToolError as exc:
-        items.append(_item("сайты без вопроса", "skip", str(exc)))
+        items.append(_item(tr("сайты без вопроса"), "skip", str(exc)))
     else:
         new = [s for s in sites if s not in have]
         if new:
             agent_tools.set_setting(conn, agent_tools.DOMAINS, sorted({*have, *new}))
-        items.append(_item("сайты без вопроса", "add" if new else "same", ", ".join(new)))
+        items.append(_item(tr("сайты без вопроса"), "add" if new else "same", ", ".join(new)))
     if "screen_cloud" in value:
         screen = bool(value["screen_cloud"])
+        what, said = tr("окна программ — облачным моделям"), tr("да") if screen else tr("нет")
         if screen == agent_tools.screen_cloud(conn):
-            items.append(_item("окна программ — облачным моделям", "same", "да" if screen else "нет"))
+            items.append(_item(what, "same", said))
         else:
             agent_tools.set_setting(conn, agent_tools.SCREEN_CLOUD, screen)
-            items.append(_item("окна программ — облачным моделям", "change", "да" if screen else "нет",
-                               "облачная модель сможет читать окна других программ" if screen else ""))  # fmt: skip
+            items.append(_item(what, "change", said,
+                               tr("облачная модель сможет читать окна других программ") if screen else ""))  # fmt: skip
     return items
 
 
@@ -412,25 +422,26 @@ def _hub_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loading) 
 
     if "quiet" in value:
         quiet = schedule.check_quiet(dict(value["quiet"]))
-        one("тихие часы", schedule.quiet_hours(conn), quiet,
-            f"{quiet['from']}–{quiet['to']}" if quiet["enabled"] else "выключены",
+        one(tr("тихие часы"), schedule.quiet_hours(conn), quiet,
+            f"{quiet['from']}–{quiet['to']}" if quiet["enabled"] else tr("выключены"),
             lambda: schedule.set_quiet_hours(conn, quiet))  # fmt: skip
     if "retention" in value:
         kept = dict(value["retention"])
-        one("хранение копий файлов, снимков и журналов", retention.current(conn), kept,
-            f"{kept.get('days')} дней, не больше {kept.get('max_gb')} ГБ",
+        one(tr("хранение копий файлов, снимков и журналов"), retention.current(conn), kept,
+            tr("{days} дней, не больше {gb} ГБ", days=kept.get("days"), gb=kept.get("max_gb")),
             lambda: retention.save(conn, kept.get("days"), kept.get("max_gb")))  # fmt: skip
     if "llama_swap_autostart" in value:
         wanted = bool(value["llama_swap_autostart"])
-        one("хаб сам запускает llama-swap", autostart.llama_swap_wanted(conn), wanted, "да" if wanted else "нет",
-            lambda: autostart.set_llama_swap_wanted(conn, wanted))  # fmt: skip
-    for key, setting, what in (("llama_swap_start", autostart.START_SETTING, "запуск llama-swap"),
-                               ("llama_swap_config", llama_config.CONFIG_SETTING, "конфиг llama-swap")):  # fmt: skip
+        one(tr("хаб сам запускает llama-swap"), autostart.llama_swap_wanted(conn), wanted,
+            tr("да") if wanted else tr("нет"), lambda: autostart.set_llama_swap_wanted(conn, wanted))  # fmt: skip
+    files = (("llama_swap_start", autostart.START_SETTING, tr("запуск llama-swap")),
+             ("llama_swap_config", llama_config.CONFIG_SETTING, tr("конфиг llama-swap")))  # fmt: skip
+    for key, setting, what in files:
         chosen = str(value.get(key) or "")
         if not chosen:  # LocalChat's default in the file: this hub's own choice stays
             continue
         if not Path(chosen).is_file():
-            items.append(_item(what, "skip", f"файла {chosen} на этом компьютере нет"))
+            items.append(_item(what, "skip", tr("файла {path} на этом компьютере нет", path=chosen)))
             continue
         # the hub reads it again after loading (autostart.load_choices)
         one(what, _setting(conn, setting, ""), chosen, chosen,
@@ -452,9 +463,9 @@ def _connections_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _L
     items = []
     for name, address in (value.get("addresses") or {}).items():
         connection = conns.BY_NAME.get(name)
-        what = connection.title if connection else name
+        what = tr(connection.title) if connection else name
         if connection is None or connection.kind != "address":
-            items.append(_item(what, "skip", "такого адреса AFO не знает"))
+            items.append(_item(what, "skip", tr("такого адреса AFO не знает")))
             continue
         try:
             address = conns.clean_value(connection, str(address))
@@ -462,7 +473,7 @@ def _connections_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _L
             items.append(_item(what, "skip", str(exc)))
             continue
         if MASK in address:
-            items.append(_item(what, "skip", "в адресе был пароль, в файл он не попал: впишите адрес сами"))
+            items.append(_item(what, "skip", tr("в адресе был пароль, в файл он не попал: впишите адрес сами")))
             continue
         old = conns.address(conn, name)
         if old != address:
@@ -474,9 +485,10 @@ def _connections_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _L
         if new:
             conns.set_chosen_models(conn, provider, [*have, *new])
             loading.catalog = True
-        items.append(_item(f"модели {provider} в списке", "add" if new else "same", f"+{len(new)}" if new else ""))
+        what = tr("модели {provider} в списке", provider=provider)
+        items.append(_item(what, "add" if new else "same", f"+{len(new)}" if new else ""))
     if value.get("mail"):
-        what = "почтовый ящик"
+        what = tr("почтовый ящик")
         try:
             account = mail.check_account(dict(value["mail"]))
         except mail.MailError as exc:
@@ -488,7 +500,7 @@ def _connections_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _L
         else:
             mail.set_account(conn, account)
             items.append(_item(what, "change" if old else "add", account["address"],
-                               "пароль ящика в файл не попадает: впишите его в «Подключениях»"))  # fmt: skip
+                               tr("пароль ящика в файл не попадает: впишите его в «Подключениях»")))  # fmt: skip
     return items
 
 
@@ -502,14 +514,14 @@ def _mcp_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading: _Loa
     for entry in value:
         name, target = str(entry.get("name") or ""), str(entry.get("target") or "")
         if MASK in target:
-            items.append(_item(name, "skip", "в команде был ключ, в файл он не попал: добавьте сервер сами"))
+            items.append(_item(name, "skip", tr("в команде был ключ, в файл он не попал: добавьте сервер сами")))
             continue
         old = mcp_client.get_server(conn, name.strip().lower())
         if old is not None:
             items.append(
                 _item(name, "same", target)
                 if old["target"] == target
-                else _item(name, "skip", "сервер с таким именем уже есть, с другой командой: оставлен как есть")
+                else _item(name, "skip", tr("сервер с таким именем уже есть, с другой командой: оставлен как есть"))
             )
             continue
         try:
@@ -520,8 +532,8 @@ def _mcp_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading: _Loa
         except mcp_client.McpError as exc:
             items.append(_item(name, "skip", str(exc)))
             continue
-        warn = ("запускает программу от вашего имени: придёт выключенным, включите в «Подключениях», когда "
-                "посмотрите; его ключи впишите там же")  # fmt: skip
+        warn = tr("запускает программу от вашего имени: придёт выключенным, включите в «Подключениях», когда "
+                  "посмотрите; его ключи впишите там же")  # fmt: skip
         items.append(_item(name, "add", invisible.reveal(target), warn))
     return items
 
@@ -536,15 +548,15 @@ class Part:
 
 
 PARTS = (  # in the order of loading: what a later part names comes first
-    Part("models", "Настройки моделей", _models_out, _models_in),
-    Part("budgets", "Бюджеты", _budgets_out, _budgets_in),
-    Part("projects", "Проекты и их правила", _projects_out, _projects_in),
-    Part("agents", "Агенты", _agents_out, _agents_in),
-    Part("schedules", "Расписания", _schedules_out, _schedules_in),
-    Part("access", "Папки и сайты для агента", _access_out, _access_in),
-    Part("hub", "Хаб: тихие часы, хранение, llama-swap", _hub_out, _hub_in),
-    Part("connections", "Подключения: адреса, выбранные модели, почта", _connections_out, _connections_in, True),
-    Part("mcp", "MCP-серверы", _mcp_out, _mcp_in, True),
+    Part("models", N_("Настройки моделей"), _models_out, _models_in),
+    Part("budgets", N_("Бюджеты"), _budgets_out, _budgets_in),
+    Part("projects", N_("Проекты и их правила"), _projects_out, _projects_in),
+    Part("agents", N_("Агенты"), _agents_out, _agents_in),
+    Part("schedules", N_("Расписания"), _schedules_out, _schedules_in),
+    Part("access", N_("Папки и сайты для агента"), _access_out, _access_in),
+    Part("hub", N_("Хаб: тихие часы, хранение, llama-swap"), _hub_out, _hub_in),
+    Part("connections", N_("Подключения: адреса, выбранные модели, почта"), _connections_out, _connections_in, True),
+    Part("mcp", N_("MCP-серверы"), _mcp_out, _mcp_in, True),
 )
 
 
@@ -572,9 +584,9 @@ def load(conn: sqlite3.Connection, data: Any, *, apply: bool, unlocked: bool, ch
     """What loading the file does, part by part - done when `apply`, else taken back. A part behind the password
     without it is shown but not loaded; a part the file holds wrongly is said and skipped, the rest still load."""
     if not isinstance(data, dict) or data.get("kind") != KIND:
-        raise PortableError("это не файл настроек AFO")
+        raise PortableError(tr("это не файл настроек AFO"))
     if not isinstance(data.get("version"), int) or data["version"] > VERSION:
-        raise PortableError("файл сохранён более новой версией AFO: обновите эту")
+        raise PortableError(tr("файл сохранён более новой версией AFO: обновите эту"))
     loading = _Loading(by=by, now=datetime.now())
     parts = []
     conn.execute("BEGIN IMMEDIATE")
@@ -583,7 +595,7 @@ def load(conn: sqlite3.Connection, data: Any, *, apply: bool, unlocked: bool, ch
             if part.id not in data or (chosen is not None and part.id not in chosen):
                 continue
             locked = part.locked and not unlocked
-            shown = {"id": part.id, "title": part.title, "locked": locked, "items": []}
+            shown = {"id": part.id, "title": tr(part.title), "locked": locked, "items": []}
             parts.append(shown)
             if locked and apply:
                 continue
@@ -592,7 +604,7 @@ def load(conn: sqlite3.Connection, data: Any, *, apply: bool, unlocked: bool, ch
                 shown["items"] = part.load(conn, data[part.id], loading)
             except (TypeError, ValueError, AttributeError, KeyError) as exc:
                 conn.execute("ROLLBACK TO part")
-                shown["items"] = [_item(part.title, "skip", f"эта часть файла не читается ({exc})")]
+                shown["items"] = [_item(tr(part.title), "skip", tr("эта часть файла не читается ({error})", error=exc))]
             conn.execute("RELEASE part")
     except BaseException:
         conn.execute("ROLLBACK")

@@ -193,7 +193,7 @@ def allowed_path(conn: sqlite3.Connection, raw: str, *, write: bool = False, clo
             return resolved
     if cloud and inside:
         raise AgentToolError("not read: you are a cloud model, and the user did not let the cloud see this folder "
-                             "(«Папки и сайты для агента»)")  # fmt: skip
+                             "(«Папки и сайты для агента»)")  # fmt: skip  # i18n: keep
     raise AgentToolError("not done: that path is outside the folders the user allowed you"
                          + (" for writing" if write else ""))  # fmt: skip
 

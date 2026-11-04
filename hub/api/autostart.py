@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
 from common.paths import app_home
 
 from .. import autostart, llama_config
@@ -56,9 +57,10 @@ def _checked(path: str, kinds: tuple[str, ...], what: str) -> str:
         return ""
     found = Path(path).expanduser()
     if not found.is_absolute() or not found.is_file():
-        raise HTTPException(status_code=422, detail=f"{what}: нет такого файла — {path}")
+        raise HTTPException(status_code=422, detail=tr("{what}: нет такого файла — {path}", what=what, path=path))
     if found.suffix.lower() not in kinds:
-        raise HTTPException(status_code=422, detail=f"{what}: нужен файл {' или '.join(kinds)}")
+        raise HTTPException(status_code=422, detail=tr("{what}: нужен файл {kinds}", what=what,
+                                                       kinds=tr(" или ").join(kinds)))  # fmt: skip
     return str(found)
 
 
@@ -77,16 +79,16 @@ async def set_autostart(body: Change, request: Request, client: Annotated[Client
     if body.llama_swap is not None:
         await state.db.acall(lambda conn: autostart.set_llama_swap_wanted(conn, body.llama_swap))
     if body.llama_swap_config is not None:
-        chosen = _checked(body.llama_swap_config, (".yaml", ".yml"), "Конфиг llama-swap")
+        chosen = _checked(body.llama_swap_config, (".yaml", ".yml"), tr("Конфиг llama-swap"))
         if chosen:
             try:
                 llama_config.model_blocks(Path(chosen).read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, llama_config.ConfigError) as exc:
-                raise HTTPException(status_code=422, detail=f"Это не конфиг llama-swap: {exc}") from exc
+                raise HTTPException(status_code=422, detail=tr("Это не конфиг llama-swap: {error}", error=exc)) from exc
         await state.db.acall(lambda conn: autostart.set_choice(conn, llama_config.CONFIG_SETTING, chosen))
         await state.gateway.sync_catalog()  # the models of that config
     if body.llama_swap_start is not None:
-        chosen = _checked(body.llama_swap_start, (".exe", ".cmd", ".bat"), "Запуск llama-swap")
+        chosen = _checked(body.llama_swap_start, (".exe", ".cmd", ".bat"), tr("Запуск llama-swap"))
         await state.db.acall(lambda conn: autostart.set_choice(conn, autostart.START_SETTING, chosen))
     found = await _state(request)
     await state.bus.publish("autostart.changed", {"login": found["login"], "llama_swap": found["llama_swap"]})

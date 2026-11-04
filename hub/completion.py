@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from common.i18n import N_, tr
+
 from . import model_settings, store
 from .db import Database
 from .gateway.base import ProviderError, cost_usd
@@ -47,18 +49,18 @@ PROMPT = (
     "no Markdown fence, nothing repeated from before or after it. Reply with nothing when nothing fits."
 )
 PAUSES = {
-    "no_model": "Дописывание: модель не выбрана — роль «Дописывание кода» в настройках моделей",
-    "not_loaded": "Дописывание на паузе: модель не загружена рядом с моделью чата",
-    "unreachable": "Дописывание на паузе: llama-swap не отвечает",
-    "local_only": "Дописывание: облачная модель, а проект — только локально (D10)",
-    "secret": "Дописывание: в файлах с секретами не работает",
-    "off": "Дописывание: модель недоступна",
+    "no_model": N_("Дописывание: модель не выбрана — роль «Дописывание кода» в настройках моделей"),
+    "not_loaded": N_("Дописывание на паузе: модель не загружена рядом с моделью чата"),
+    "unreachable": N_("Дописывание на паузе: llama-swap не отвечает"),
+    "local_only": N_("Дописывание: облачная модель, а проект — только локально (D10)"),
+    "secret": N_("Дописывание: в файлах с секретами не работает"),
+    "off": N_("Дописывание: модель недоступна"),
 }
 
 
 class Paused(Exception):
     def __init__(self, reason: str):
-        super().__init__(PAUSES[reason])
+        super().__init__(tr(PAUSES[reason]))
         self.reason = reason
 
 

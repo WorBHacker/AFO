@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from common.i18n import N_, tr
+
 from .approvals import ApprovalError, ApprovalQueue
 from .db import Database, utc_now
 from .events import EventBus
@@ -43,9 +45,9 @@ POLL_S = 25  # getUpdates long poll
 IDLE_S = 30.0  # without a token: look again this often
 BACKOFF_S = (2, 5, 15, 60)
 PREVIEW_LINES = 30
-DECIDED = {"allowed": "✅ Разрешено", "denied": "⛔ Отклонено", "expired": "⌛ Не дождался ответа"}
-GOAL_WORDS = {"achieved": "🎯 Цель достигнута", "blocked": "✋ Цель ждёт вас (решение — в окне AFO)",
-              "budget": "⏳ Цель дошла до предела (продолжить можно в окне)"}  # fmt: skip
+DECIDED = {"allowed": N_("✅ Разрешено"), "denied": N_("⛔ Отклонено"), "expired": N_("⌛ Не дождался ответа")}
+GOAL_WORDS = {"achieved": N_("🎯 Цель достигнута"), "blocked": N_("✋ Цель ждёт вас (решение — в окне AFO)"),
+              "budget": N_("⏳ Цель дошла до предела (продолжить можно в окне)")}  # fmt: skip
 
 
 # --- linking a chat ---
@@ -95,28 +97,30 @@ def unlink(conn: sqlite3.Connection) -> None:
 
 def request_text(approval: dict[str, Any], project: dict[str, Any] | None) -> str:
     """The message for a request (HTML): with the command or diff for a cloud-allowed project, a notice otherwise."""
-    who = "Claude Code" if approval.get("client") == "hub-claude-code" else "Агент"
-    what = {"command": "команда", "write": "правка файла", "network": "запрос в сеть"}.get(approval["kind"], "действие")
-    where = f" в «{html.escape(project['name'])}»" if project else ""
-    head = f"<b>{who} ждёт ответа</b>{where}: {what} ({html.escape(approval['tool'])})"
+    who = "Claude Code" if approval.get("client") == "hub-claude-code" else tr("Агент")
+    what = {"command": tr("команда"), "write": tr("правка файла"), "network": tr("запрос в сеть")}.get(
+        approval["kind"], tr("действие"))  # fmt: skip
+    where = tr(" в «{project}»", project=html.escape(project["name"])) if project else ""
+    head = tr("<b>{who} ждёт ответа</b>{where}: {what} ({tool})", who=who, where=where, what=what,
+              tool=html.escape(approval["tool"]))  # fmt: skip
     if approval.get("destructive"):
-        head += "\n⚠️ Разрушительное действие — ответить можно только в приложении."
+        head += "\n" + tr("⚠️ Разрушительное действие — ответить можно только в приложении.")
     if approval.get("unsaved"):  # D47
-        head += "\n⚠️ Файл открыт в редакторе AFO с несохранёнными правками."
+        head += "\n" + tr("⚠️ Файл открыт в редакторе AFO с несохранёнными правками.")
     if not project or not project.get("cloud_ok"):  # D21: a local-only project's code does not go to the cloud
-        return head + "\nПодробности — в приложении AFO."
+        return head + "\n" + tr("Подробности — в приложении AFO.")
     preview = approval.get("preview") or {}
     lines = str(preview.get("text") or "").splitlines()
-    shown = "\n".join(lines[:PREVIEW_LINES]) + (f"\n… ещё {len(lines) - PREVIEW_LINES} строк" if len(lines) >
-                                                PREVIEW_LINES else "")  # fmt: skip
+    more = "\n" + tr("… ещё {count} строк", count=len(lines) - PREVIEW_LINES) if len(lines) > PREVIEW_LINES else ""
+    shown = "\n".join(lines[:PREVIEW_LINES]) + more
     return f"{head}\n<pre>{html.escape(shown)}</pre>" if shown else head
 
 
 def buttons(approval: dict[str, Any]) -> dict[str, Any] | None:
     if approval.get("destructive"):
         return None
-    return {"inline_keyboard": [[{"text": "Разрешить", "callback_data": f"ok:{approval['id']}"},
-                                 {"text": "Отклонить", "callback_data": f"no:{approval['id']}"}]]}  # fmt: skip
+    return {"inline_keyboard": [[{"text": tr("Разрешить"), "callback_data": f"ok:{approval['id']}"},
+                                 {"text": tr("Отклонить"), "callback_data": f"no:{approval['id']}"}]]}  # fmt: skip
 
 
 def _project(conn: sqlite3.Connection, project_id: str | None) -> dict[str, Any] | None:
@@ -204,7 +208,7 @@ class TelegramBot:
             code = text.removeprefix("/link ") if text.startswith("/link ") else None
             if code is not None and await self._db.acall(lambda conn: try_link(conn, chat_id, code)):
                 await self._call("sendMessage", chat_id=chat_id,
-                                 text="Готово: этот чат получает запросы подтверждения AFO.")  # fmt: skip
+                                 text=tr("Готово: этот чат получает запросы подтверждения AFO."))  # fmt: skip
                 await self._bus.publish("telegram.linked", {"chat_id": chat_id})
             if chat is not None and chat_id == chat and text and not text.startswith("/"):  # the user's own word
                 await self._bus.publish("telegram.message", {"text": text[:2000]})  # schedules wait for it (9.7)
@@ -216,12 +220,12 @@ class TelegramBot:
         if chat is None or from_chat != chat:
             return
         verb, _, approval_id = str(query.get("data") or "").partition(":")
-        note = "Готово"
+        note = tr("Готово")
         try:
             if verb in ("ok", "no"):
                 await self._approvals.decide(approval_id, allow=verb == "ok", by="telegram")
         except ApprovalError:
-            note = "На этот запрос уже ответили"
+            note = tr("На этот запрос уже ответили")
         await self._call("answerCallbackQuery", callback_query_id=query["id"], text=note)
 
     # --- outgoing: requests, answers, finished runs ---
@@ -269,12 +273,13 @@ class TelegramBot:
         if chat is None or not self._store.get(TOKEN):
             return
         if kind in ("run.question", "run.notice"):  # the autonomous agent asks, or says (9.4): answered in the window
-            head = "Агент спрашивает (ответ — в окне AFO)" if kind == "run.question" else "Агент сообщает"
+            head = tr("Агент спрашивает (ответ — в окне AFO)") if kind == "run.question" else tr("Агент сообщает")
             body = html.escape(str(payload.get("question") or payload.get("text") or ""))
             await self._call("sendMessage", chat_id=chat, text=f"<b>{head}</b>\n{body}", parse_mode="HTML")
             return
         if kind == "goal.status":  # a chat's goal met, or waiting for the human (D44): what to do is in the window
-            head = GOAL_WORDS.get(payload.get("status") or "")
+            status = payload.get("status") or ""
+            head = tr(GOAL_WORDS[status]) if status in GOAL_WORDS else None
             if head and not payload.get("proving"):  # a run of the proving ground (D45): not the person's goal
                 goal = payload.get("goal") or {}
                 text = (f"<b>{head}</b>\n{html.escape(str(goal.get('objective') or ''))}\n"
@@ -283,10 +288,9 @@ class TelegramBot:
             return
         if kind == "run.finished":
             run = payload.get("run") or {}
-            words = {"done": "готово", "error": "ошибка", "cancelled": "отменён"}
-            text = (
-                f"Агент «{html.escape(run.get('profile_name', ''))}»: {words.get(run.get('status'), run.get('status'))}"
-            )
+            words = {"done": tr("готово"), "error": tr("ошибка"), "cancelled": tr("отменён")}
+            text = tr("Агент «{name}»: {status}", name=html.escape(run.get("profile_name", "")),
+                      status=words.get(run.get("status"), run.get("status")))  # fmt: skip
             await self._call("sendMessage", chat_id=chat, text=text, parse_mode="HTML")
             return
         approval = payload.get("approval") or {}
@@ -298,8 +302,9 @@ class TelegramBot:
             self._messages[approval["id"]] = sent["message_id"]
         elif kind == "approval.decided" and approval.get("id") in self._messages:
             message_id = self._messages.pop(approval["id"])
-            by = " (с телефона)" if approval.get("decided_by") == "telegram" else " (в приложении)"
-            said = DECIDED.get(approval.get("status", ""), approval.get("status", "")) + by
+            by = tr(" (с телефона)") if approval.get("decided_by") == "telegram" else tr(" (в приложении)")
+            status = approval.get("status", "")
+            said = (tr(DECIDED[status]) if status in DECIDED else status) + by
             if approval.get("comment") and approval.get("status") == "denied":
                 said += f": {html.escape(approval['comment'])}"
             await self._call("editMessageReplyMarkup", chat_id=chat, message_id=message_id,

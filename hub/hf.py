@@ -25,6 +25,7 @@ import httpx
 
 from common import __version__
 from common.gguf import GGUFError, header_info, read_header
+from common.i18n import tr
 
 BASE_ENV = "LOCALCHAT_HF_URL"  # tests point it at a stand-in
 DEFAULT_BASE = "https://huggingface.co"
@@ -78,20 +79,24 @@ def headers(token: str | None = None) -> dict[str, str]:
 
 def _refused(response: httpx.Response, what: str) -> HubError:
     if response.status_code in (401, 403):
-        return HubError(f"{what}: Hugging Face не пускает — модель закрыта. Примите её лицензию на странице модели "
-                        "на huggingface.co и добавьте свой токен в «Подключениях»", 403)  # fmt: skip
+        return HubError(tr("{what}: Hugging Face не пускает — модель закрыта. Примите её лицензию на странице "
+                           "модели на huggingface.co и добавьте свой токен в «Подключениях»", what=what),
+                        403)  # fmt: skip
     if response.status_code == 404:
-        return HubError(f"{what}: на Hugging Face такого нет", 404)
+        return HubError(tr("{what}: на Hugging Face такого нет", what=what), 404)
     if response.status_code == 429:
-        return HubError(f"{what}: Hugging Face просит подождать (слишком много запросов) — попробуйте позже", 429)
-    return HubError(f"{what}: Hugging Face ответил {response.status_code}")
+        return HubError(tr("{what}: Hugging Face просит подождать (слишком много запросов) — попробуйте позже",
+                           what=what), 429)  # fmt: skip
+    return HubError(tr("{what}: Hugging Face ответил {status}", what=what, status=response.status_code))
 
 
 async def _get(http: httpx.AsyncClient, path: str, what: str, token: str | None, **params: Any) -> Any:
     try:
         response = await http.get(f"{base_url()}{path}", params=params or None, headers=headers(token))
     except httpx.HTTPError as exc:
-        raise HubError(f"{what}: нет связи с Hugging Face ({exc.__class__.__name__})") from exc
+        raise HubError(
+            tr("{what}: нет связи с Hugging Face ({error})", what=what, error=exc.__class__.__name__)
+        ) from exc
     if response.status_code != 200:
         raise _refused(response, what)
     return response.json()
@@ -100,9 +105,9 @@ async def _get(http: httpx.AsyncClient, path: str, what: str, token: str | None,
 async def whoami(token: str | None) -> str:
     """Whose token it is (the «Проверить» of «Подключения»)."""
     if not token:
-        raise HubError("токен не задан", 422)
+        raise HubError(tr("токен не задан"), 422)
     async with httpx.AsyncClient(timeout=20.0) as http:
-        found = await _get(http, "/api/whoami-v2", "Токен", token)
+        found = await _get(http, "/api/whoami-v2", tr("Токен"), token)
     return str(found.get("name") or found.get("fullname") or "?")
 
 
@@ -134,7 +139,7 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
 
 async def search(http: httpx.AsyncClient, query: str, *, limit: int = 30, token: str | None = None) -> list[dict]:
     """GGUF repositories matching the words, the most downloaded first."""
-    found = await _get(http, "/api/models", "Поиск", token, search=query, filter="gguf", sort="downloads",
+    found = await _get(http, "/api/models", tr("Поиск"), token, search=query, filter="gguf", sort="downloads",
                        direction="-1", limit=str(limit), **{"expand[]": list(SEARCH_FIELDS)})  # fmt: skip
     return [summary(info) for info in found if isinstance(info, dict)]
 
@@ -184,7 +189,7 @@ async def repository(http: httpx.AsyncClient, repo: str, token: str | None = Non
     """A repository: its licence and gating, its parameter count and trained context (when Hugging Face read the
     GGUF), the variants and the vision projectors."""
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-        raise HubError("имя репозитория — «автор/модель»", 422)
+        raise HubError(tr("имя репозитория — «автор/модель»"), 422)
     info = await _get(http, f"/api/models/{repo}", repo, token, **{"expand[]": list(INFO_FIELDS)})
     tree = await _get(http, f"/api/models/{repo}/tree/main", repo, token, recursive="true")
     files = [{"path": f["path"], "size": int(f.get("size") or 0),
@@ -247,7 +252,9 @@ def header(repo: str, path: str, token: str | None = None, revision: str = "main
                     raise _refused(response, path)
                 head = read_header(_Stream(response.iter_bytes(256 << 10), HEADER_LIMIT), until_tokenizer=True)
         except httpx.HTTPError as exc:
-            raise HubError(f"{path}: нет связи с Hugging Face ({exc.__class__.__name__})") from exc
+            raise HubError(
+                tr("{what}: нет связи с Hugging Face ({error})", what=path, error=exc.__class__.__name__)
+            ) from exc
     return header_info(head)
 
 
@@ -308,12 +315,15 @@ def download(url: str, dest: Path, *, size: int, sha256: str | None, token: str 
                         progress.done += len(chunk)
                         report(progress.done)
         except httpx.HTTPError as exc:
-            raise HubError(f"{dest.name}: связь оборвалась ({exc.__class__.__name__}) — загрузка продолжится") from exc
+            raise HubError(tr("{file}: связь оборвалась ({error}) — загрузка продолжится", file=dest.name,
+                              error=exc.__class__.__name__)) from exc  # fmt: skip
     if size and progress.done != size:
-        raise HubError(f"{dest.name}: пришло {progress.done} байт из {size} — загрузка продолжится")
+        raise HubError(tr("{file}: пришло {done} байт из {size} — загрузка продолжится", file=dest.name,
+                          done=progress.done, size=size))  # fmt: skip
     if sha256 and progress.hasher.hexdigest() != sha256.lower():
         with contextlib.suppress(OSError):
             part.unlink()
         progress.hasher, progress.done = hashlib.sha256(), 0
-        raise HubError(f"{dest.name}: файл пришёл повреждённым (sha256 не совпал) — скачается заново", 409)
+        raise HubError(tr("{file}: файл пришёл повреждённым (sha256 не совпал) — скачается заново", file=dest.name),
+                       409)  # fmt: skip
     os.replace(part, dest)

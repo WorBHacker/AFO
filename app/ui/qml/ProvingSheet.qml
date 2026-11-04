@@ -78,7 +78,7 @@ Sheet {
                     Line { text: modelData.title; font.weight: Font.DemiBold }
                     Text {
                         text: modelData.level
-                        color: modelData.level === "трудное" ? Theme.p.warn : Theme.p.faint  // i18n: keep
+                        color: modelData.grade === "hard" ? Theme.p.warn : Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 12
                         anchors.verticalCenter: parent.verticalCenter

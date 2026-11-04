@@ -21,6 +21,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from common.i18n import tr
+
 from .db import Database, utc_now
 from .terminals import prune_logs
 
@@ -46,9 +48,9 @@ def current(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def save(conn: sqlite3.Connection, days: Any, max_gb: Any) -> dict[str, Any]:
     if isinstance(days, bool) or not isinstance(days, int) or not DAYS[0] <= days <= DAYS[1]:
-        raise RetentionError(f"сколько дней хранить: целое от {DAYS[0]} до {DAYS[1]}")
+        raise RetentionError(tr("сколько дней хранить: целое от {low} до {high}", low=DAYS[0], high=DAYS[1]))
     if isinstance(max_gb, bool) or not isinstance(max_gb, int | float) or not MAX_GB[0] <= max_gb <= MAX_GB[1]:
-        raise RetentionError(f"предел размера: от {MAX_GB[0]:g} до {MAX_GB[1]:g} ГБ")
+        raise RetentionError(tr("предел размера: от {low:g} до {high:g} ГБ", low=MAX_GB[0], high=MAX_GB[1]))
     value = {"days": days, "max_gb": float(max_gb)}
     conn.execute(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"

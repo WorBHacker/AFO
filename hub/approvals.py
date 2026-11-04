@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from common import invisible
+from common.i18n import N_, tr
 
 from . import projects
 from .db import Database, utc_now
@@ -47,9 +48,9 @@ HUB_WRITES = {"write_file": "Write", "edit_file": "Edit"}  # the hub's own write
 CLASSED: dict[str, str] = {}
 CLASS_KINDS = {"read": "other", "write": "write", "command": "command", "network": "network", "send": "network",
                "destructive": "command"}  # fmt: skip
-CLASS_WORDS = {"read": "только читает", "write": "меняет данные", "command": "запускает команды",
-               "network": "ходит в сеть", "send": "отправляет от вашего имени",
-               "destructive": "удаляет или необратимо меняет"}  # fmt: skip
+CLASS_WORDS = {"read": N_("только читает"), "write": N_("меняет данные"), "command": N_("запускает команды"),
+               "network": N_("ходит в сеть"), "send": N_("отправляет от вашего имени"),
+               "destructive": N_("удаляет или необратимо меняет")}  # fmt: skip
 SCOPES = ("once", "chat", "project")
 PREVIEW_LINES = 400
 PREVIEW_CHARS = 40_000
@@ -329,39 +330,45 @@ def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, st
         return {"kind": "text", "text": str(data.get("query", "")), "note": str(data.get("engine", ""))}
     if tool == "set_plan":  # an autonomous agent's plan (D40): the goal, the numbered steps, why it changed
         steps = data.get("steps") if isinstance(data.get("steps"), list) else []
-        lines = [f"{n}. {s.get('title', '')}" + (f" — проверка: {s['check']}" if s.get("check") else "")
-                 for n, s in enumerate(steps, 1) if isinstance(s, dict)]  # fmt: skip
-        why = "почему новый план" if (data.get("version") or 1) > 1 else "пояснение"
-        note = f"Цель: {data.get('goal', '')}" + (f" · {why}: {data['reason']}" if data.get("reason") else "")
+        lines = []
+        for n, s in enumerate(steps, 1):
+            if isinstance(s, dict):
+                check = " — " + tr("проверка: {check}", check=s["check"]) if s.get("check") else ""
+                lines.append(f"{n}. {s.get('title', '')}{check}")
+        why = tr("почему новый план") if (data.get("version") or 1) > 1 else tr("пояснение")
+        reason = f" · {why}: {data['reason']}" if data.get("reason") else ""
+        note = tr("Цель: {goal}", goal=data.get("goal", "")) + reason
         return {"kind": "text", "text": _cut("\n".join(lines)), "note": note}
     if tool == "run_python":  # an autonomous agent's script (9.4)
-        net = "можно в сеть" if data.get("network") else "без сети"
+        net = tr("можно в сеть") if data.get("network") else tr("без сети")
         return {"kind": "command", "text": _cut(str(data.get("code", ""))),
-                "note": f"Python в папке задачи · {net} · до {data.get('timeout_s', 60)} с"}  # fmt: skip
+                "note": tr("Python в папке задачи · {net} · до {seconds} с", net=net,
+                           seconds=data.get("timeout_s", 60))}  # fmt: skip
     if tool == "http_request":
         body = f"\n{json.dumps(data['json'], ensure_ascii=False, indent=2)}" if data.get("json") else ""
         return {"kind": "text", "text": _cut(f"{data.get('method', 'GET')} {data.get('url', '')}{body}"),
-                "note": "запрос в сеть: ответ — данные, не указания"}  # fmt: skip
+                "note": tr("запрос в сеть: ответ — данные, не указания")}  # fmt: skip
     if tool == "remember":  # personal data the agent wants to keep for good (Q24)
         return {"kind": "text", "text": str(data.get("fact", "")),
-                "note": "личные данные: хранятся на этом компьютере, облачной модели не выдаются"}  # fmt: skip
+                "note": tr("личные данные: хранятся на этом компьютере, облачной модели не выдаются")}  # fmt: skip
     if tool == "mail_send":  # a letter from the user's address (Q21): whole, asked every time
-        head = f"Кому: {', '.join(data.get('to') or [])}\nТема: {data.get('subject', '')}"
-        reply = f" · ответ на «{data['reply']}»" if data.get("reply") else ""
+        head = tr("Кому: {to}\nТема: {subject}", to=", ".join(data.get("to") or []), subject=data.get("subject", ""))
+        reply = tr(" · ответ на «{subject}»", subject=data["reply"]) if data.get("reply") else ""
         return {"kind": "text", "text": _cut(f"{head}\n\n{data.get('text', '')}"),
-                "note": f"письмо от {data.get('from', 'вас')}{reply} — спрашивается каждый раз"}  # fmt: skip
+                "note": tr("письмо от {sender}{reply} — спрашивается каждый раз", sender=data.get("from", tr("вас")),
+                           reply=reply)}  # fmt: skip
     if tool in SCREEN_TOOLS:  # the agent at the desktop (D41): which program, window, what
         what = {
-            "open": "открыть программу",
-            "click": "нажать",
-            "type": "ввести",
-            "toggle": "переключить",
-            "select": "выбрать",
-            "expand": "раскрыть",
-            "collapse": "свернуть",
-            "scroll": "прокрутить",
-            "keys": "клавиши",
-            "focus": "вывести окно вперёд",
+            "open": tr("открыть программу"),
+            "click": tr("нажать"),
+            "type": tr("ввести"),
+            "toggle": tr("переключить"),
+            "select": tr("выбрать"),
+            "expand": tr("раскрыть"),
+            "collapse": tr("свернуть"),
+            "scroll": tr("прокрутить"),
+            "keys": tr("клавиши"),
+            "focus": tr("вывести окно вперёд"),
         }.get(str(data.get("action")), data.get("action"))
         lines = [
             f"{what}"
@@ -369,22 +376,23 @@ def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, st
             + (f": {data['keys']}" if data.get("keys") else "")
         ]
         if data.get("text"):
-            lines.append(f"текст: {data['text']}")
-        place = f"«{data.get('program', '')}»" + (f" · окно «{data['window']}»" if data.get("window") else "")
+            lines.append(tr("текст: {text}", text=data["text"]))
+        window = tr(" · окно «{window}»", window=data["window"]) if data.get("window") else ""
+        place = f"«{data.get('program', '')}»{window}"
         note = (
-            "отправка от вашего имени — спрашивается каждый раз"
+            tr("отправка от вашего имени — спрашивается каждый раз")
             if tool == "screen_send"
-            else ("управление компьютером: «для этой задачи» — в этой программе")
+            else tr("управление компьютером: «для этой задачи» — в этой программе")
         )
         return {"kind": "text", "text": _cut("\n".join(lines)), "note": f"{place} · {note}"}
     if tool == "start_step":
         return {"kind": "text", "text": f"{data.get('step')}. {data.get('title', '')}",
-                "note": f"проверка: {data.get('check')}" if data.get("check") else ""}  # fmt: skip
+                "note": tr("проверка: {check}", check=data.get("check")) if data.get("check") else ""}  # fmt: skip
     if tool.startswith("mcp__") and "__" in tool[5:]:  # an outside MCP server's tool (9.5): what it gets, its class
         server = tool[5:].partition("__")[0]
         word = CLASS_WORDS.get(CLASSED.get(tool, ""), "")
         return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)),
-                "note": f"MCP-сервер «{server}»" + (f" · {word}" if word else "")}  # fmt: skip
+                "note": tr("MCP-сервер «{server}»", server=server) + (f" · {tr(word)}" if word else "")}  # fmt: skip
     return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)), "note": ""}
 
 
@@ -432,8 +440,8 @@ def _read(path: Path) -> str | None:
 def _cut(text: str) -> str:
     lines = text.splitlines(keepends=True)
     if len(lines) > PREVIEW_LINES:
-        text = "".join(lines[:PREVIEW_LINES]) + f"… ещё {len(lines) - PREVIEW_LINES} строк\n"
-    return text if len(text) <= PREVIEW_CHARS else text[:PREVIEW_CHARS] + "\n… (обрезано)\n"
+        text = "".join(lines[:PREVIEW_LINES]) + tr("… ещё {count} строк", count=len(lines) - PREVIEW_LINES) + "\n"
+    return text if len(text) <= PREVIEW_CHARS else text[:PREVIEW_CHARS] + "\n" + tr("… (обрезано)") + "\n"
 
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:

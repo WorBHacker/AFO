@@ -27,6 +27,7 @@ EVENT_TYPE = re.compile(r"^[a-z][a-z_]*(\.[a-z_*{}]+)+$")
 APP_GUARD = re.compile(r"client\.name != APP_CLIENT")
 PUBLISHERS = ("publish", "_publish")  # the bus's own, and the helpers some modules wrap it in
 
+# docs/API.md is a document in Russian, for developers: its words are its own, not the window's (10.5c)
 INTRO = """\
 # API хаба AFO
 
@@ -48,7 +49,7 @@ INTRO = """\
 - Ответ модели в чате идёт не в ответе на `POST .../messages`, а событиями `chat.*` по WebSocket `/v1/events`.
 - MCP для внешних агентов (D32): `/mcp` (Streamable HTTP, с токеном клиента). OpenAI-совместимый вход (D33):
   `http://127.0.0.1:8765/v1/openai`.
-"""
+"""  # i18n: keep
 
 
 def _type(annotation: Any) -> str:
@@ -91,14 +92,14 @@ def _calls(dependant: Any) -> set[str]:
 def _who(route: APIRoute, guards: set[str]) -> str:
     calls = _calls(route.dependant)
     if "require_client" not in calls and not route.dependant.dependencies:
-        return "без токена"
+        return "без токена"  # i18n: keep
     source = inspect.getsource(route.endpoint)
     helpers = guards - {"require_app", route.endpoint.__name__}  # a route that compares the client itself is no guard
     if "require_app" in calls or any(re.search(rf"\b{g}\(", source) for g in helpers):
-        return "только окно"
+        return "только окно"  # i18n: keep
     if not any((method, route.path) in OUTSIDE_ROUTES for method in route.methods):  # require_client's own list (D46)
-        return "только окно"
-    return "токен"
+        return "только окно"  # i18n: keep
+    return "токен"  # i18n: keep
 
 
 def _params(route: APIRoute) -> str:
@@ -109,9 +110,9 @@ def _params(route: APIRoute) -> str:
         known = getattr(model, "model_fields", None)
         if known:
             body = ", ".join(f"{n}: {_type(f.annotation)}{_default(f.default)}" for n, f in known.items())
-            said.append(f"тело `{{{body}}}`")
+            said.append(f"тело `{{{body}}}`")  # i18n: keep
         else:
-            said.append(f"тело `{_type(model)}`")
+            said.append(f"тело `{_type(model)}`")  # i18n: keep
     return "<br>".join(said).replace("|", "\\|")
 
 
@@ -128,14 +129,14 @@ def _routes(app: Any) -> list[tuple[Any, list[Any]]]:
 
 
 def endpoints(app: Any) -> str:
-    out = ["## Эндпоинты", ""]
+    out = ["## Эндпоинты", ""]  # i18n: keep
     for module, routes in _routes(app):
         http = [r for r in routes if isinstance(r, APIRoute)]
         if not http:
             continue
         guards = _guards(module)
         out += [f"### {module.__name__.rsplit('.', 1)[-1]}", "", _first_line(module.__doc__), "",
-                "| Метод | Путь | Кто | Что | Параметры |", "|---|---|---|---|---|"]  # fmt: skip
+                "| Метод | Путь | Кто | Что | Параметры |", "|---|---|---|---|---|"]  # fmt: skip  # i18n: keep
         for route in http:
             methods = ", ".join(sorted(route.methods - {"HEAD"}))
             what = _first_line(route.endpoint.__doc__) or f"`{route.endpoint.__name__}()`"  # no docstring: its name
@@ -211,11 +212,11 @@ def events() -> str:
     out = ["## WebSocket `/v1/events`", "", "```text", (events_ws.__doc__ or "").strip(), "```", "",
            f"Каждое событие — JSON-объект `{{{envelope}}}`. `id` есть только у событий, которые хаб хранит в журнале "
            "(их можно дочитать после переподключения: `since`, а также `GET /v1/feed`); у живых событий `id` — "
-           "`null`.", "", "### Типы событий", "",
-           "| Тип | Хранится | Поля payload | Где публикуется |", "|---|---|---|---|"]  # fmt: skip
+           "`null`.", "", "### Типы событий", "",  # i18n: keep
+           "| Тип | Хранится | Поля payload | Где публикуется |", "|---|---|---|---|"]  # fmt: skip  # i18n: keep
     for kind, entry in event_types().items():
         keys = ", ".join(f"`{k}`" for k in entry["keys"]) or "—"
-        stored = "да" if entry["stored"] else "нет"
+        stored = "да" if entry["stored"] else "нет"  # i18n: keep
         out.append(f"| `{kind}` | {stored} | {keys} | {', '.join(entry['where'])} |")
     out.append("")
     return "\n".join(out)

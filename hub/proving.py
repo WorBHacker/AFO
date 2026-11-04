@@ -37,6 +37,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from common import i18n
+from common.i18n import tr
+
 from . import commands, projects, store
 from .db import Database, utc_now
 from .events import EventBus
@@ -47,7 +50,8 @@ from .secret_filter import clean
 log = logging.getLogger("hub.proving")
 
 TASKS_DIR = Path(__file__).with_name("proving_tasks")
-LEVELS = {"лёгкое": 1, "среднее": 2, "трудное": 3}
+LEVELS = {"лёгкое": 1, "среднее": 2, "трудное": 3}  # task.json's level, as it is written there  # i18n: keep
+GRADES = {1: "easy", 2: "medium", 3: "hard"}  # the level without words: the window colours the hard ones
 GRACE_S = 120  # a run's hard time: the task's minutes and this
 CHECK_TIMEOUT_S = 120
 ENDED = ("achieved", "blocked", "budget", "cleared")  # a goal's ways to end a run
@@ -78,11 +82,26 @@ def _spec(folder: Path) -> dict[str, Any]:
     return {"id": folder.name, **data}
 
 
+def shown(spec: dict[str, Any], field: str) -> str:
+    """What people read of a task - its title, level, about - in the hub's language: task.json's own words are
+    Russian, its "en" holds the English. The objective and the constraints are the task the model gets: they stay as
+    written, the same in every language, so that exams stay comparable."""
+    words = spec.get(i18n.language(), {}) if i18n.language() != i18n.SOURCE else {}
+    return words.get(field) or spec.get(field, "")
+
+
+def check_why(spec: dict[str, Any], n: int) -> str:
+    """What the n-th hidden check (from 1) looks at, in the hub's language (task.json's "en" "why": one per check)."""
+    words = spec.get(i18n.language(), {}).get("why", []) if i18n.language() != i18n.SOURCE else []
+    return (words[n - 1] if n <= len(words) else "") or spec["exam"][n - 1].get("why", "")
+
+
 def tasks() -> list[dict[str, Any]]:
     """The tasks, the easy ones first: what the window shows (without the hidden checks' commands)."""
     found = [_spec(f) for f in TASKS_DIR.iterdir() if (f / "task.json").is_file()]
-    found.sort(key=lambda t: (LEVELS.get(t.get("level", ""), 9), t["title"]))
-    return [{"id": t["id"], "title": t["title"], "level": t.get("level", ""), "about": t.get("about", ""),
+    found.sort(key=lambda t: (LEVELS.get(t.get("level", ""), 9), shown(t, "title")))
+    return [{"id": t["id"], "title": shown(t, "title"), "level": shown(t, "level"),
+             "grade": GRADES.get(LEVELS.get(t.get("level", ""), 0), ""), "about": shown(t, "about"),
              "objective": substitute(t["objective"], t["id"]), "limits": t.get("limits", {}),
              "criteria": len(t.get("criteria", [])), "hidden": len(t.get("exam", []))} for t in found]  # fmt: skip
 
@@ -216,8 +235,8 @@ class ProvingGround:
         def mark(conn) -> tuple[list[str], list[str]]:
             going = [r[0] for r in conn.execute(
                 "SELECT conversation_id FROM proving_runs WHERE status IN ('running', 'waiting')")]  # fmt: skip
-            conn.execute("UPDATE proving_runs SET status = 'stopped', detail = 'хаб перезапустился', ended_at = ?"
-                         " WHERE status IN ('running', 'waiting')", (utc_now(),))  # fmt: skip
+            conn.execute("UPDATE proving_runs SET status = 'stopped', detail = ?, ended_at = ?"
+                         " WHERE status IN ('running', 'waiting')", (tr("хаб перезапустился"), utc_now()))  # fmt: skip
             conn.execute("UPDATE proving_exams SET status = 'stopped', ended_at = ? WHERE status = 'running'",
                          (utc_now(),))  # fmt: skip
             known = [r[0] for r in conn.execute("SELECT conversation_id FROM proving_runs WHERE conversation_id"
@@ -317,7 +336,7 @@ class ProvingGround:
         try:
             for run in await self._db.acall(lambda conn: runs_of(conn, exam_id)):
                 if exam_id in self._stopping:
-                    await self._set(run["id"], status="skipped", detail="экзамен остановлен")
+                    await self._set(run["id"], status="skipped", detail=tr("экзамен остановлен"))
                     continue
                 spec = task(run["task_id"])
                 run = await self._prepare(run, spec, judge=judge)
@@ -346,7 +365,7 @@ class ProvingGround:
         conn.execute(
             "INSERT INTO proving_runs (id, exam_id, n, task_id, title, model_id, model_name, status, folder)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?)",
-            (run_id, exam_id, n, spec["id"], spec["title"], model_id, model["name"], str(self._root / run_id)),
+            (run_id, exam_id, n, spec["id"], shown(spec, "title"), model_id, model["name"], str(self._root / run_id)),
         )
         return get_run(conn, run_id)
 
@@ -357,10 +376,11 @@ class ProvingGround:
             await asyncio.to_thread(copy_task, spec, folder)
 
             def make(conn):
-                project = add_project(conn, str(folder), f"полигон · {spec['title']}")
+                # the project's name is the model's to read (its criteria name it): as written, like the objective
+                project = add_project(conn, str(folder), f"полигон · {spec['title']}")  # i18n: keep
                 conn.execute("UPDATE projects SET scratch = 1, cloud_ok = 1 WHERE id = ?", (project.id,))
-                cid = store.create_conversation(conn, title=f"Полигон: {spec['title']} · {run['model_name']}",
-                                                home_project=project.id)  # fmt: skip
+                title = tr("Полигон: {title} · {model}", title=shown(spec, "title"), model=run["model_name"])
+                cid = store.create_conversation(conn, title=title, home_project=project.id)
                 conn.execute("UPDATE conversations SET archived = 1 WHERE id = ?", (cid,))  # not in the chats' list
                 store.set_context_settings(conn, cid, mode="trusted")
                 conn.execute("UPDATE proving_runs SET project_id = ?, conversation_id = ? WHERE id = ?",
@@ -372,7 +392,7 @@ class ProvingGround:
             await self._set(run["id"], status="running", started_at=utc_now())
             await self._goals.set(cid, contract(spec, project.name, run["model_id"], judge=judge), by="proving")
         except (OSError, ProjectError, GoalError) as exc:
-            await self._set(run["id"], status="error", detail=f"не началось: {exc}", ended_at=utc_now())
+            await self._set(run["id"], status="error", detail=tr("не началось: {error}", error=exc), ended_at=utc_now())
         return await self._db.acall(lambda conn: get_run(conn, run["id"]))
 
     async def _finish_when_done(self, run: dict[str, Any], spec: dict[str, Any]) -> None:
@@ -406,13 +426,15 @@ class ProvingGround:
         met = goal.get("status") == "achieved"
         failed = [c for c in checks if not c["passed"]]
         if timed_out:
-            detail = "время вышло"
+            detail = tr("время вышло")
         elif not met:
-            detail = f"цель не достигнута: {(goal.get('detail') or goal.get('status', '')).removesuffix(ASK_PERSON)}"
+            said = (goal.get("detail") or goal.get("status", "")).removesuffix(tr(ASK_PERSON))
+            detail = tr("цель не достигнута: {detail}", detail=said)
         elif failed:
-            detail = f"скрытая проверка не прошла: {failed[0]['why']} — {failed[0]['said'][:200]}"
+            first = failed[0]
+            detail = tr("скрытая проверка не прошла: {why} — {said}", why=first["why"], said=first["said"][:200])
         else:
-            detail = "сдано"
+            detail = tr("сдано")
         found = json.dumps(checks, ensure_ascii=False)
         await self._set(run["id"], status="passed" if met and not failed and not timed_out else "failed",
                         detail=detail, goal_status=goal.get("status", ""), checks=found,
@@ -425,17 +447,18 @@ class ProvingGround:
         out = []
         for n, check in enumerate(spec.get("exam", []), 1):
             command = substitute(check["command"], spec["id"])
+            title = tr("Экзамен: {title} · {n}", title=shown(spec, "title"), n=n)
             try:
                 done = await commands.execute(self._chat.terminals, project, command, timeout=CHECK_TIMEOUT_S,
-                                              by="proving", title=f"Экзамен: {spec['title']} · {n}")  # fmt: skip
+                                              by="proving", title=title)  # fmt: skip
             except Exception as exc:
-                out.append({"n": n, "why": check.get("why", ""), "passed": False, "said": f"did not run: {exc}"})
+                out.append({"n": n, "why": check_why(spec, n), "passed": False, "said": f"did not run: {exc}"})
                 continue
             if done["status"] == "running":
                 with contextlib.suppress(Exception):
                     await self._chat.terminals.kill(done["terminal"])
             said = clean("\n".join(done["lines"][-10:]))
-            out.append({"n": n, "why": check.get("why", ""), "said": said,
+            out.append({"n": n, "why": check_why(spec, n), "said": said,
                         "passed": done["status"] != "running" and done["exit_code"] == 0})  # fmt: skip
         return out
 

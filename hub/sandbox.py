@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from common.i18n import tr
+
 from . import projects
 from .changes import write_atomic
 from .projects import Project
@@ -90,7 +92,7 @@ def ensure(folder: Path, conversation_id: str, project: Project) -> Project:
     """The project as the chat's tools see it in the sandbox: the same name and id, its worktree for a root."""
     if not is_git(project):
         raise SandboxError(f"«{project.name}» is not a git repository: the sandbox needs one - switch the chat to "
-                           "«Спрашивать»")  # fmt: skip
+                           "«Спрашивать»")  # fmt: skip  # i18n: keep
     path = place(folder, conversation_id, project)
     if not (path / ".git").exists():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,7 +186,8 @@ def _merge_one(root: Path, sandbox: Path, base_rev: str, name: str, status: str)
         for label, data in (("mine", mine_kept), ("base", base or b""), ("theirs", _clean(root, name, theirs))):
             files.append(Path(tmp) / label)
             files[-1].write_bytes(data or b"")
-        done = subprocess.run(["git", "merge-file", "-p", "-L", "проект", "-L", "начало", "-L", "песочница",
+        marks = ["-L", tr("проект"), "-L", tr("начало"), "-L", tr("песочница")]  # what a conflict's lines say
+        done = subprocess.run(["git", "merge-file", "-p", *marks,
                                *map(str, files)], capture_output=True, timeout=GIT_TIMEOUT,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
     if done.returncode < 0 or done.returncode > 127:

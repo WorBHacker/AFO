@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from common.i18n import N_, tr
 from common.paths import PROJECT_ROOT, engines_home
 
 CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
@@ -29,7 +30,7 @@ DEFAULT_CONFIG = PROJECT_ROOT.parent / "llama-swap" / "config.yaml"
 configured: Path | None = None  # the chosen file, as the hub read it from its settings
 KEEP_BACKUPS = 10
 RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
-NOT_ANSWERING = "llama-swap не отвечает"
+NOT_ANSWERING = N_("llama-swap не отвечает")  # what reloaded() says, in the language: compared as tr(NOT_ANSWERING)
 
 # the launch settings: the flags that carry each (the first is written when the flag is new)
 FLAGS = {
@@ -89,7 +90,7 @@ def model_blocks(text: str) -> dict[str, tuple[int, int]]:
     lines = text.splitlines()
     section = _section(lines, "models")
     if section is None:
-        raise ConfigError("в config.yaml нет раздела models")
+        raise ConfigError(tr("в config.yaml нет раздела models"))
     found: list[tuple[str, int]] = []
     for i in range(*section):
         match = _MODEL_KEY.match(lines[i])
@@ -124,14 +125,14 @@ def set_macro(text: str, name: str, value: str) -> str:
         if match:
             lines[i] = match.group(1) + value + (match.group(3) or "")
             return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
-    raise ConfigError(f"в config.yaml нет макроса {name}")
+    raise ConfigError(tr("в config.yaml нет макроса {name}", name=name))
 
 
 def _cmd_lines(lines: list[str], start: int, end: int) -> tuple[int, int]:
     """The `cmd: |` block scalar of a model: its lines (the first after `cmd:` to the end of the indent)."""
     head = next((i for i in range(start, end) if re.match(r"^\s+cmd:\s*[|>]", lines[i])), None)
     if head is None:
-        raise ConfigError("у модели нет команды запуска (cmd: |)")
+        raise ConfigError(tr("у модели нет команды запуска (cmd: |)"))
     indent = len(lines[head]) - len(lines[head].lstrip()) + 1
     last = head + 1
     while last < end and (not lines[last].strip() or len(lines[last]) - len(lines[last].lstrip()) >= indent):
@@ -162,7 +163,7 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     """What the window shows of a model: its engine, files and launch settings (llama.cpp), or its profile (Strata)."""
     blocks = model_blocks(text)
     if model_id not in blocks:
-        raise ConfigError(f"в config.yaml нет модели {model_id}")
+        raise ConfigError(tr("в config.yaml нет модели {model}", model=model_id))
     lines = text.splitlines()
     start, end = blocks[model_id]
     block = lines[start:end]
@@ -183,7 +184,7 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     view: dict[str, Any] = {"id": model_id, "name": name, "engine": engine, "editable": editable, "ttl": ttl,
                             "command": cmd}  # fmt: skip
     if engine == "llama.cpp" and not edited_here:
-        view["problem"] = "команда записана в одну строку — её настройки меняются в самом config.yaml"
+        view["problem"] = tr("команда записана в одну строку — её настройки меняются в самом config.yaml")
     if engine == "strata":
         view["profile"] = value("model") or next((_unquote(tokens[i + 1]) for i, t in enumerate(tokens)
                                                   if t == "--profile" and i + 1 < len(tokens)), "")  # fmt: skip
@@ -213,22 +214,23 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, An
         if value is None:
             continue
         if key not in allowed:
-            raise ConfigError(f"«{key}» у этой модели не меняется" + (" (её профиль пишет Strata)"
-                                                                      if not view["editable"] else ""))  # fmt: skip
+            if not view["editable"]:
+                raise ConfigError(tr("«{key}» у этой модели не меняется (её профиль пишет Strata)", key=key))
+            raise ConfigError(tr("«{key}» у этой модели не меняется", key=key))
         if key in ("ttl", "context", "parallel"):
             if isinstance(value, bool) or not isinstance(value, int):
-                raise ConfigError(f"{key}: нужно целое число")
+                raise ConfigError(tr("{key}: нужно целое число", key=key))
             low, high = {"ttl": (0, 7 * 86400), "context": (512, 4_194_304), "parallel": (1, 64)}[key]
             if not low <= value <= high:
-                raise ConfigError(f"{key}: от {low} до {high}")
+                raise ConfigError(tr("{key}: от {low} до {high}", key=key, low=low, high=high))
         elif key == "gpu_layers":
             if value not in ("auto", "all") and (isinstance(value, bool) or not isinstance(value, int)
                                                  or not 0 <= value <= 999):  # fmt: skip
-                raise ConfigError("слои на видеокарте: auto, all или число от 0 до 999")
+                raise ConfigError(tr("слои на видеокарте: auto, all или число от 0 до 999"))
         elif key == "flash_attn" and value not in ("on", "off", "auto"):
-            raise ConfigError("flash attention: on, off или auto")
+            raise ConfigError(tr("flash attention: on, off или auto"))
         elif key == "cache_type" and value not in CACHE_TYPES:
-            raise ConfigError(f"сжатие KV-кэша: одно из {', '.join(CACHE_TYPES)}")
+            raise ConfigError(tr("сжатие KV-кэша: одно из {types}", types=", ".join(CACHE_TYPES)))
         out[key] = value
     return out
 
@@ -303,7 +305,7 @@ def edit(text: str, model_id: str, changes: dict[str, Any]) -> str:
         _set_flag(lines, first, last, FLAGS["parallel"], str(changes["parallel"]))
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     if set(model_blocks(out)) != set(model_blocks(text)):  # the edit must leave every model in place
-        raise ConfigError("правка задела другие модели — не записано")
+        raise ConfigError(tr("правка задела другие модели — не записано"))
     return out
 
 
@@ -342,14 +344,15 @@ async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | Non
             try:
                 listed = {m["id"]: m for m in (await http.get(url)).json().get("data", [])}
             except httpx.HTTPError, ValueError:
-                seen = NOT_ANSWERING
+                seen = tr(NOT_ANSWERING)
             else:
                 missing = [m for m in ids if m not in listed]
                 said = context and ((listed.get(context[0]) or {}).get("meta") or {}).get("llamaswap", {}).get(
                     "context")  # fmt: skip
                 if not missing and (context is None or said == context[1]):
                     return True, ""
-                seen = f"llama-swap не видит: {', '.join(missing)}" if missing else "llama-swap ещё не перечитал файл"
+                seen = tr("llama-swap не видит: {models}", models=", ".join(missing)) if missing else \
+                    tr("llama-swap ещё не перечитал файл")  # fmt: skip
             await asyncio.sleep(0.5)
     return False, seen
 
@@ -371,7 +374,7 @@ def server_command(text: str) -> str:
         if view["engine"] == "llama.cpp":
             program = next(t for t in _TOKEN.findall(view["command"]) if "llama-server" in t)
             return program if program.startswith(("'", '"')) else f'"{program}"' if " " in program else program
-    raise ConfigError("в config.yaml нет llama-server: сначала нужна сборка llama.cpp (мастер первого запуска)")
+    raise ConfigError(tr("в config.yaml нет llama-server: сначала нужна сборка llama.cpp (мастер первого запуска)"))
 
 
 def quoted(value: str) -> str:
@@ -429,11 +432,11 @@ def _in_groups(lines: list[str], model_id: str) -> bool:
 def add_model(text: str, model_id: str, block: str) -> str:
     """The config with a new model's block after the last model; every other line as it was."""
     if model_id in model_blocks(text):
-        raise ConfigError(f"модель {model_id} в config.yaml уже есть")
+        raise ConfigError(tr("модель {model} в config.yaml уже есть", model=model_id))
     lines = text.splitlines()
     section = _section(lines, "models")
     if section is None:
-        raise ConfigError("в config.yaml нет раздела models")
+        raise ConfigError(tr("в config.yaml нет раздела models"))
     at = section[1]
     while at > section[0] and not lines[at - 1].strip():
         at -= 1
@@ -441,7 +444,7 @@ def add_model(text: str, model_id: str, block: str) -> str:
     lines[at:at] = ["", *block.splitlines(), *tail]
     out = "\n".join(lines) + "\n"
     if set(model_blocks(out)) != {*model_blocks(text), model_id}:
-        raise ConfigError("новая модель задела другие — не записано")
+        raise ConfigError(tr("новая модель задела другие — не записано"))
     return out
 
 
@@ -449,15 +452,16 @@ def remove_model(text: str, model_id: str) -> str:
     """The config without this model's block (and the blank line before it)."""
     blocks = model_blocks(text)
     if model_id not in blocks:
-        raise ConfigError(f"в config.yaml нет модели {model_id}")
+        raise ConfigError(tr("в config.yaml нет модели {model}", model=model_id))
     lines = text.splitlines()
     if _in_groups(lines, model_id):
-        raise ConfigError(f"модель {model_id} входит в группу (groups:) — уберите её оттуда в config.yaml сами")
+        raise ConfigError(tr("модель {model} входит в группу (groups:) — уберите её оттуда в config.yaml сами",
+                             model=model_id))  # fmt: skip
     start, end = blocks[model_id]
     while start > 0 and not lines[start - 1].strip():
         start -= 1
     del lines[start:end]
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     if set(model_blocks(out)) != set(blocks) - {model_id}:
-        raise ConfigError("удаление задело другие модели — не записано")
+        raise ConfigError(tr("удаление задело другие модели — не записано"))
     return out

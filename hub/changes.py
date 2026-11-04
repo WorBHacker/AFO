@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from common.i18n import tr
+
 from .db import utc_now
 from .projects import Project, ProjectError, linked_secret, resolve_inside
 from .secret_filter import is_secret_file
@@ -327,7 +329,7 @@ def diff(path: str, before: bytes | None, after: bytes | None) -> str:
         tofile=f"b/{path}" if after is not None else "/dev/null",
     ))  # fmt: skip
     text = "".join(line if line.endswith("\n") else line + "\n" for line in lines[:DIFF_LINES])
-    return text + (f"… ещё {len(lines) - DIFF_LINES} строк\n" if len(lines) > DIFF_LINES else "")
+    return text + (tr("… ещё {count} строк", count=len(lines) - DIFF_LINES) + "\n" if len(lines) > DIFF_LINES else "")
 
 
 def summary(planned: Planned) -> str:

@@ -29,6 +29,8 @@ from email.message import EmailMessage
 from html.parser import HTMLParser
 from typing import Any
 
+from common.i18n import tr
+
 from .db import Database
 from .secret_filter import clean
 
@@ -354,7 +356,7 @@ class Mailbox:
         count = len(self.letters(limit=1))
         with self._smtp():
             pass
-        return "почта работает: входящие читаются, отправка доступна" + ("" if count else " (входящих нет)")
+        return tr("почта работает: входящие читаются, отправка доступна") + ("" if count else tr(" (входящих нет)"))
 
 
 def _quoted(folder: str) -> str:
@@ -386,7 +388,7 @@ class MailTools:
         settings = await self._db.acall(account)
         password = self._secrets.get(PASSWORD) if self._secrets is not None else None
         if settings is None or not password:
-            raise MailError("no mailbox is connected: the user sets it up in Connections → Почта")
+            raise MailError("no mailbox is connected: the user sets it up in Connections → Почта")  # i18n: keep
         return Mailbox(settings, password)
 
     async def handle(self, run_id: str, call: dict[str, Any], cancel: asyncio.Event, ask: Any,

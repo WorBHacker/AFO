@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from common.i18n import tr
 from common.paths import app_home
 
 from . import engines, hf, search
@@ -52,7 +53,7 @@ async def latest(http: httpx.AsyncClient) -> dict[str, Any]:
     """The latest release's Windows build, its sha256 known."""
     found = pick(await engines._releases(http, REPO, "releases/latest"))
     if found is None:
-        raise EngineError("в последнем выпуске ripgrep нет сборки для Windows")
+        raise EngineError(tr("в последнем выпуске ripgrep нет сборки для Windows"))
     if found["asset"]["sha256"] is None and found["sums"]:
         try:
             response = await http.get(found["sums"], headers=hf.headers())
@@ -61,7 +62,7 @@ async def latest(http: httpx.AsyncClient) -> dict[str, Any]:
             said = ""
         found["asset"]["sha256"] = said.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", said) else None
     if found["asset"]["sha256"] is None:
-        raise EngineError("у сборки ripgrep нет sha256 — непроверенное не ставлю")
+        raise EngineError(tr("у сборки ripgrep нет sha256 — непроверенное не ставлю"))
     return found
 
 
@@ -78,7 +79,7 @@ def install(found: dict[str, Any], into: Path, cancel: threading.Event) -> Path:
         engines.unpack(archive, Path(unpacked))
         program = next(iter(sorted(Path(unpacked).rglob("rg.exe"), key=lambda p: len(p.parts))), None)
         if program is None:
-            raise EngineError(f"в {asset['name']} нет rg.exe")
+            raise EngineError(tr("в {archive} нет rg.exe", archive=asset["name"]))
         folder.mkdir(parents=True, exist_ok=True)
         for name in KEEP:
             if (program.parent / name).is_file():

@@ -31,6 +31,8 @@ from typing import Any
 
 import psutil
 
+from common.i18n import tr
+
 from .limits import limit
 from .projects import Project, ProjectError, resolve_inside
 from .secret_filter import clean
@@ -54,7 +56,7 @@ NO_QUESTIONS = {
     "PIP_NO_INPUT": "1",
 }
 ASKS = re.compile(
-    r"(?:[\[(](?:y|yes|n|no|д|да|н|нет)(?:\s*[/|,]\s*\w+)+[\])]"  # [Y/n] (yes/no) [Y,N] (Yes/No/All) [Д/н]
+    r"(?:[\[(](?:y|yes|n|no|д|да|н|нет)(?:\s*[/|,]\s*\w+)+[\])]"  # [Y/n] (yes/no) [Y,N] (Yes/No/All) [Д/н]; i18n: keep
     r"|\?\s*\(y\)"  # npx: Ok to proceed? (y)
     r"|\(default is \"?\w*\"?\)"  # PowerShell's confirmation: [Y] Yes  [A] Yes to All ... (default is "Y")
     # Password for 'https://...':, Enter passphrase for key '...':, Password (again): - the word, then only whom it is
@@ -140,7 +142,8 @@ async def run(terminals: Any, project: Project, args: dict[str, Any], *, by: str
     timeout = args.get("timeout_s", DEFAULT_TIMEOUT_S)
     if isinstance(timeout, bool) or not isinstance(timeout, int):
         raise ToolError("`timeout_s` must be a whole number of seconds")
-    title = "Модель: " + (command if len(command) <= TITLE_CHARS else command[: TITLE_CHARS - 1] + "…")
+    short = command if len(command) <= TITLE_CHARS else command[: TITLE_CHARS - 1] + "…"
+    title = tr("Модель: {command}", command=short)
     done = await execute(terminals, project, command, folder=args.get("path") or "", timeout=timeout, by=by,
                          title=title, early=True)  # fmt: skip
     lines = done["lines"]

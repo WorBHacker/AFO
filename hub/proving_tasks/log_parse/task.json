@@ -6,5 +6,8 @@
   "criteria": [{"command": "{python} -m unittest -q", "expected_exit_code": 0}],
   "constraints": ["Не менять test_logparse.py"],
   "limits": {"max_turns": 8, "max_minutes": 15},
-  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "краевые случаи из описания функции"}]
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "краевые случаи из описания функции"}],
+  "en": {"title": "Log parsing", "level": "medium",
+         "about": "Write a function from its description. The visible tests are simple; the hidden ones check the edge cases: empty and malformed lines, extra spaces, CRLF.",
+         "why": ["the edge cases from the function's description"]}
 }

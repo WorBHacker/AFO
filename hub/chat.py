@@ -49,6 +49,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from common.i18n import tr
+
 from . import (
     agent_tools,
     attachments,
@@ -228,8 +230,8 @@ class ChatService:
             raise GatewayError(str(exc)) from None
         sees = (model.get("capabilities") or {}).get("vision")
         if attachments.has_images(found) and model["provider"] != CLAUDE_CODE and sees is False:
-            raise GatewayError(f"«{model['name']}» не видит картинки: выберите модель со зрением — или отметьте "
-                               "«картинки» в настройке модели, если она их видит")  # fmt: skip
+            raise GatewayError(tr("«{name}» не видит картинки: выберите модель со зрением — или отметьте «картинки» в "
+                                  "настройке модели, если она их видит", name=model["name"]))  # fmt: skip
         return found
 
     def _files_for_agent(self, conversation_id: str, message_id: int, text: str, sent: list[dict[str, Any]]) -> str:
@@ -885,7 +887,7 @@ class ChatService:
             return _no_sandbox(project, why), True
         if self.sandboxes is None or not project.root.is_relative_to(self.sandboxes):
             return (f"not done: «{project.name}» is not a git repository, and the sandbox needs one - the user may "
-                    "switch the chat to «Спрашивать»"), True  # fmt: skip
+                    "switch the chat to «Спрашивать»"), True  # fmt: skip  # i18n: keep
         if self.snapshots is None:
             return "not done: the hub keeps no snapshots here", True
         try:

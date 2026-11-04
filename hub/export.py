@@ -21,18 +21,19 @@ from .projects import Project
 from .secret_filter import clean
 
 TARGETS = {"claude": "CLAUDE.md", "agents": "AGENTS.md", "cline": ".clinerules"}
-START = "<!-- AFO: начало карточки проекта"
-BEGIN = START + ". Её обновляет кнопка «В проект» в AFO — правки внутри блока будут заменены -->"
-END = "<!-- AFO: конец карточки проекта -->"
+# the block is for the models that read these files: its words stay as written, whatever the window speaks
+START = "<!-- AFO: начало карточки проекта"  # i18n: keep
+BEGIN = START + ". Её обновляет кнопка «В проект» в AFO — правки внутри блока будут заменены -->"  # i18n: keep
+END = "<!-- AFO: конец карточки проекта -->"  # i18n: keep
 # the block is found by its markers, whatever follows the first; as written before the name AFO (10.4b) too
 BLOCK = re.compile(r"<!-- (?:AFO|LocalChat): начало карточки проекта.*?"
-                   r"<!-- (?:AFO|LocalChat): конец карточки проекта -->", re.DOTALL)  # fmt: skip
+                   r"<!-- (?:AFO|LocalChat): конец карточки проекта -->", re.DOTALL)  # fmt: skip  # i18n: keep
 CLINE_FILE = "afo.md"
 OLD_CLINE_FILE = "localchat.md"  # before 10.4b: the next export moves it to CLINE_FILE
 HUB_LINE = (
     "Этот проект знает хаб AFO на этом компьютере. Его MCP-сервер (`http://127.0.0.1:8765/mcp`, у Claude Code "
     "из AFO — `localchat`) даёт карту всех проектов и их связей, карточки связанных проектов, их код, git, "
-    "терминалы и процессы."
+    "терминалы и процессы."  # i18n: keep
 )
 
 
@@ -61,9 +62,9 @@ def block(project: Project, card: str, notes: list[dict]) -> str:
     """The card (its headings one level down, under the block's own), the notes, the hub line - through the secret
     filter, since the file may be committed."""
     body = re.sub(r"^(#{1,5}) ", r"#\1 ", card.strip(), flags=re.MULTILINE)
-    parts = [BEGIN, f"## Карточка проекта «{project.name}» (AFO)", body]
+    parts = [BEGIN, f"## Карточка проекта «{project.name}» (AFO)", body]  # i18n: keep
     if notes:
-        parts.append("### Заметки для моделей\n" + "\n".join(f"- {n['text']}" for n in notes))
+        parts.append("### Заметки для моделей\n" + "\n".join(f"- {n['text']}" for n in notes))  # i18n: keep
     parts += [HUB_LINE, END]
     return clean("\n\n".join(parts)) + "\n"
 

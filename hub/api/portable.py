@@ -63,7 +63,7 @@ async def _load(request: Request, body: Loaded, client: Client, ticket: str | No
     state = request.app.state
     unlocked = state.lock.is_open(ticket)
     chosen = set(body.parts) if body.parts is not None else None
-    by = f"{client.name} (импорт)"
+    by = f"{client.name} (импорт)"  # stored as who made the change  # i18n: keep
     try:
         result = await state.db.acall(
             lambda conn: portable.load(conn, body.data, apply=apply, unlocked=unlocked, chosen=chosen, by=by)

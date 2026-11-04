@@ -6,5 +6,8 @@
   "criteria": [{"command": "if (Test-Path README.md) { exit 0 } else { exit 1 }", "expected_exit_code": 0}],
   "constraints": ["Не менять tool.py"],
   "limits": {"max_turns": 5, "max_minutes": 10},
-  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в README все параметры, значения по умолчанию, форматы и пример; tool.py не тронут"}]
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в README все параметры, значения по умолчанию, форматы и пример; tool.py не тронут"}],
+  "en": {"title": "README from the code", "level": "medium",
+         "about": "Describe a command-line program from its code. The hidden check looks in the README for every option, the default values and a sample run.",
+         "why": ["the README has every option, the default values, the formats and a sample run; tool.py is untouched"]}
 }

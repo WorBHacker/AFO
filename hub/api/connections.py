@@ -14,6 +14,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
+
 from .. import connections as conns
 from ..auth import APP_CLIENT, Client
 from ..telegram import LINK_TTL_S, linked_chat, new_link_code, unlink
@@ -201,7 +203,7 @@ async def choose_models(name: str, body: Chosen, request: Request, client: Annot
 def _chooser(name: str) -> conns.Connection:
     connection = _connection(name)
     if not connection.choose:
-        raise HTTPException(status_code=404, detail=f"{connection.title}: its models are not chosen by hand")
+        raise HTTPException(status_code=404, detail=f"{tr(connection.title)}: its models are not chosen by hand")
     return connection
 
 
@@ -217,7 +219,8 @@ async def check_connection(name: str, request: Request, client: Annotated[Client
 
 async def _changed(request: Request, connection: conns.Connection, *, is_set: bool) -> dict[str, Any]:
     state = request.app.state
-    await state.bus.publish("secrets.changed", {"name": connection.name, "title": connection.title, "set": is_set})
+    title = tr(connection.title)
+    await state.bus.publish("secrets.changed", {"name": connection.name, "title": title, "set": is_set})
     result: dict[str, Any] = {"name": connection.name, "set": is_set}
     if connection.provider:
         result["catalog"] = await state.gateway.sync_catalog()
@@ -235,16 +238,18 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
     else:
         is_set = bool(state.secrets.get(connection.name))
     if not is_set:
-        return False, "не задан: проверять нечего"
+        return False, tr("не задан: проверять нечего")
     if connection.provider:
         provider = state.gateway.provider(connection.provider)
         if provider is None:
-            return False, "адаптера этого поставщика в хабе нет"
+            return False, tr("адаптера этого поставщика в хабе нет")
         try:
             models = await provider.list_models()
         except ProviderError as exc:
             return False, exc.detail
-        return bool(models), f"ключ работает: моделей — {len(models)}" if models else "ключ принят, но моделей нет"
+        if not models:
+            return False, tr("ключ принят, но моделей нет")
+        return True, tr("ключ работает: моделей — {count}", count=len(models))
     engines = {conns.BRAVE_SEARCH_KEY: "brave", conns.TAVILY_API_KEY: "tavily", conns.SEARXNG_URL: "searxng"}
     if connection.name in engines:
         engine = engines[connection.name]
@@ -252,7 +257,7 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
             found = await websearch.search("AFO", engine=engine, store=state.secrets, db=state.db, count=3)
         except websearch.SearchError as exc:
             return False, str(exc)
-        return True, f"поиск работает: результатов — {len(found)}"
+        return True, tr("поиск работает: результатов — {count}", count=len(found))
     if connection.name == conns.HUGGINGFACE_TOKEN:
         from .. import hf
 
@@ -260,13 +265,13 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
             who = await hf.whoami(state.secrets.get(connection.name))
         except hf.HubError as exc:
             return False, str(exc)
-        return True, f"токен принят: {who}"
+        return True, tr("токен принят: {who}", who=who)
     if connection.name == conns.TELEGRAM_TOKEN:
         try:
             me = await state.telegram.me()
         except LookupError:
-            return False, "токен не задан"
+            return False, tr("токен не задан")
         except Exception as exc:  # the Bot API's refusal or the network's trouble, said briefly
             return False, f"Telegram: {exc}"
-        return True, f"бот @{me.get('username', '?')} на связи"
-    return False, "проверки для этого подключения нет"
+        return True, tr("бот @{name} на связи", name=me.get("username", "?"))
+    return False, tr("проверки для этого подключения нет")

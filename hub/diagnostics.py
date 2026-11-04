@@ -24,6 +24,7 @@ import httpx
 
 from common import __version__, hardware
 from common.disks import drives
+from common.i18n import decimal, tr
 
 from . import autostart, engines, hf, llama_config, search, secret_filter
 from .setup import page_file
@@ -35,8 +36,8 @@ LOW_DISK_GIB = 10.0
 
 
 def _n(value: float) -> str:
-    """A number as Russian writes it: 15,9."""
-    return f"{value:g}".replace(".", ",")
+    """A number as the language writes it: 15,9 in Russian, 15.9 in English."""
+    return decimal(f"{value:g}")
 
 
 def _line(key: str, title: str, ok: bool | None, text: str, advice: str = "") -> dict[str, Any]:
@@ -80,49 +81,51 @@ async def check(state: Any) -> list[dict[str, Any]]:
     lines = []
     paths = state.settings.paths
     url = state.settings.llama_swap_url
-    lines.append(_line("hub", "Хаб", True, f"AFO {__version__} работает, данные в {paths.root}"))
+    lines.append(_line("hub", tr("Хаб"), True, tr("AFO {version} работает, данные в {folder}", version=__version__,
+                                                  folder=paths.root)))  # fmt: skip
 
     answering = await autostart.answers(url)
-    lines.append(_line("llama-swap", "Локальные модели (llama-swap)", answering,
-                       f"отвечает на {url}" if answering else f"не отвечает на {url}",
-                       "" if answering else "Включите «Хаб сам запускает llama-swap» в «Настройки → Запуск» и "
-                       "перезапустите хаб; если движка ещё нет — «Мастер первого запуска»."))  # fmt: skip
+    lines.append(_line("llama-swap", tr("Локальные модели (llama-swap)"), answering,
+                       tr("отвечает на {url}", url=url) if answering else tr("не отвечает на {url}", url=url),
+                       "" if answering else tr("Включите «Хаб сам запускает llama-swap» в «Настройки → Запуск» и "
+                       "перезапустите хаб; если движка ещё нет — «Мастер первого запуска».")))  # fmt: skip
 
     config = llama_config.config_path()
     text = ""
     try:
         text = config.read_text(encoding="utf-8")
     except OSError:
-        advice = "Укажите его в «Настройки → Запуск» или поставьте движок в «Мастере первого запуска»."
-        lines.append(_line("config", "Конфиг llama-swap", False, f"нет файла {config}", advice))
+        advice = tr("Укажите его в «Настройки → Запуск» или поставьте движок в «Мастере первого запуска».")
+        lines.append(_line("config", tr("Конфиг llama-swap"), False, tr("нет файла {path}", path=config), advice))
     program = _server_program(text) if text else None
     if text:
         found = program is not None and program.is_file()
         count = len(llama_config.model_blocks(text)) if "models:" in text else 0
-        lines.append(_line("config", "Конфиг llama-swap", found,
-                           f"{config}: моделей — {count}; llama-server — {program or 'не указан'}"
-                           + ("" if found else " (файла нет)"),
-                           "" if found else "Программа llama-server не найдена: обновите движок в «Мастере первого "
-                           "запуска»."))  # fmt: skip
+        said = tr("{config}: моделей — {count}; llama-server — {program}", config=config, count=count,
+                  program=program or tr("не указан"))  # fmt: skip
+        lines.append(_line("config", tr("Конфиг llama-swap"), found, said + ("" if found else tr(" (файла нет)")),
+                           "" if found else tr("Программа llama-server не найдена: обновите движок в «Мастере "
+                           "первого запуска».")))  # fmt: skip
 
     cards = hardware.adapters()
     nvidia = hardware.nvidia_driver()
     wanted = hardware.build_for(cards, nvidia)
     build = _build_of(program)
-    names = ", ".join(f"{c['name']} ({_n(c['vram_gib'])} ГБ)" for c in cards) or "видеокарта не найдена"
-    driver = f"; драйвер NVIDIA {nvidia['version']}, CUDA {nvidia['cuda'] // 1000}.{nvidia['cuda'] % 1000 // 10}" \
-        if nvidia else ""  # fmt: skip
+    names = ", ".join(tr("{name} ({gib} ГБ)", name=c["name"], gib=_n(c["vram_gib"])) for c in cards) or \
+        tr("видеокарта не найдена")  # fmt: skip
+    driver = tr("; драйвер NVIDIA {version}, CUDA {cuda}", version=nvidia["version"],
+                cuda=f"{nvidia['cuda'] // 1000}.{nvidia['cuda'] % 1000 // 10}") if nvidia else ""  # fmt: skip
     mismatch = build == "cpu" and wanted["build"] != "cpu"
-    advice = ("llama.cpp здесь — сборка для процессора, а видеокарта есть: поставьте сборку для неё в «Мастере "
-              "первого запуска» — будет в разы быстрее.") if mismatch else ""  # fmt: skip
-    lines.append(_line("gpu", "Видеокарта", None if mismatch else True, names + driver, advice))
+    advice = tr("llama.cpp здесь — сборка для процессора, а видеокарта есть: поставьте сборку для неё в «Мастере "
+                "первого запуска» — будет в разы быстрее.") if mismatch else ""  # fmt: skip
+    lines.append(_line("gpu", tr("Видеокарта"), None if mismatch else True, names + driver, advice))
 
     memory = memory_sample()
     page = page_file(memory)
     if memory:
-        said = (f"ОЗУ {_n(memory['ram_total_gib'])} ГБ, занято {_n(memory['ram_used_gib'])} ГБ; файл подкачки "
-                f"≈ {_n(page['gib'])} ГБ")  # fmt: skip
-        lines.append(_line("memory", "Память", None if page["advice"] else True, said, page["advice"]))
+        said = tr("ОЗУ {total} ГБ, занято {used} ГБ; файл подкачки ≈ {page} ГБ", total=_n(memory["ram_total_gib"]),
+                  used=_n(memory["ram_used_gib"]), page=_n(page["gib"]))  # fmt: skip
+        lines.append(_line("memory", tr("Память"), None if page["advice"] else True, said, page["advice"]))
 
     files = model_files(text) if text else []
     by_drive = {d["letter"]: d for d in drives()}
@@ -134,32 +137,36 @@ async def check(state: Any) -> list[dict[str, Any]]:
         low = disk["free_gib"] < LOW_DISK_GIB
         advice = []
         if slow:
-            advice.append("Модели на жёстком диске загружаются в разы медленнее — перенесите их на SSD или NVMe.")
+            advice.append(tr("Модели на жёстком диске загружаются в разы медленнее — перенесите их на SSD или NVMe."))
         if low:
-            advice.append("На диске мало места: новая модель может не поместиться.")
-        said = f"{disk['words']}, свободно {_n(disk['free_gib'])} ГБ — тут модели"
-        lines.append(_line(f"disk-{letter}", f"Диск {letter}:", None if advice else True, said, " ".join(advice)))
+            advice.append(tr("На диске мало места: новая модель может не поместиться."))
+        said = tr("{kind}, свободно {free} ГБ — тут модели", kind=disk["words"], free=_n(disk["free_gib"]))
+        title = tr("Диск {letter}:", letter=letter)
+        lines.append(_line(f"disk-{letter}", title, None if advice else True, said, " ".join(advice)))
     missing = [f for f in files if not f.exists()]
     if missing:
-        advice = "Модель удалили или перенесли: поправьте путь в config.yaml или удалите её запись."
-        said = "нет файлов: " + ", ".join(str(f) for f in missing[:3])
-        lines.append(_line("files", "Файлы моделей", False, said, advice))
+        advice = tr("Модель удалили или перенесли: поправьте путь в config.yaml или удалите её запись.")
+        said = tr("нет файлов: {files}", files=", ".join(str(f) for f in missing[:3]))
+        lines.append(_line("files", tr("Файлы моделей"), False, said, advice))
 
     rg = search.ripgrep()
     trouble = getattr(getattr(state, "ripgrep", None), "error", "")  # the hub's last try to fetch it (hub/ripgrep.py)
-    advice = "" if rg else "Хаб скачает ripgrep с GitHub сам, когда будет связь"
-    advice += f" (сейчас: {trouble})." if advice and trouble else "." if advice else ""
-    said = f"ripgrep: {rg}" if rg else "ripgrep нет — поиск идёт медленнее, обходом файлов"
-    lines.append(_line("ripgrep", "Поиск по проектам", True if rg else None, said, advice))
+    advice = ""
+    if not rg:
+        advice = tr("Хаб скачает ripgrep с GitHub сам, когда будет связь (сейчас: {trouble}).", trouble=trouble) \
+            if trouble else tr("Хаб скачает ripgrep с GitHub сам, когда будет связь.")  # fmt: skip
+    said = f"ripgrep: {rg}" if rg else tr("ripgrep нет — поиск идёт медленнее, обходом файлов")
+    lines.append(_line("ripgrep", tr("Поиск по проектам"), True if rg else None, said, advice))
     async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
         for key, site in (("hf", hf.base_url()), ("github", engines.github_api())):
             try:
                 ok = (await http.head(site)).status_code < 500
             except httpx.HTTPError:
                 ok = False
-            lines.append(_line(f"net-{key}", f"Связь с {site.split('//')[1]}", ok, "есть" if ok else "нет",
-                               "" if ok else "Без неё не скачать модели и движок; работающие локальные модели "
-                               "это не трогает."))  # fmt: skip
+            lines.append(_line(f"net-{key}", tr("Связь с {site}", site=site.split("//")[1]), ok,
+                               tr("есть") if ok else tr("нет"),
+                               "" if ok else tr("Без неё не скачать модели и движок; работающие локальные модели "
+                               "это не трогает.")))  # fmt: skip
     return lines
 
 

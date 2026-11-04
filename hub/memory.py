@@ -26,7 +26,7 @@ NOTE_CHARS = 2000
 FOUND = 8  # at most this many matches go back to a model
 # what looks like personal data: an e-mail, a phone number, a card or document number, a street address
 PERSONAL = re.compile(
-    r"[\w.+-]+@[\w-]+\.[\w.]+"
+    r"[\w.+-]+@[\w-]+\.[\w.]+"  # the Russian words below match what people write  # i18n: keep
     r"|(?:\+\d[\d\s()-]{8,}\d)|\b\d{3}[\s-]?\d{2}[\s-]?\d{2}\b"
     r"|\b(?:\d{4}[\s-]?){3}\d{4}\b"
     r"|\b(?:ул(?:ица)?|улиц[аы]|просп(?:ект)?|пер(?:еулок)?|дом|кв(?:артира)?|street|st\.|avenue|apt)\.?\s+\S+",

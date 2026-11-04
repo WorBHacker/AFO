@@ -13,6 +13,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
+
 from .. import agent_tools, agents, autonomous
 from ..agents import AgentError
 from ..auth import APP_CLIENT, Client
@@ -233,7 +235,7 @@ async def message_run(run_id: str, body: Message, request: Request,
     _app_only(client)
     text = body.text.strip()
     if not text:
-        raise HTTPException(status_code=422, detail="Пустое сообщение")
+        raise HTTPException(status_code=422, detail=tr("Пустое сообщение"))
     await _running_autonomous(request, run_id)
     state = request.app.state
     waiting = next((q for q in await _db(request, lambda conn: autonomous.questions(conn, run_id))

@@ -37,6 +37,7 @@ import httpx
 
 from common import disks
 from common.gguf import GGUFError, model_info
+from common.i18n import N_, tr
 from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
 from common.paths import NAME, models_home
 
@@ -46,7 +47,7 @@ from .db import utc_now
 log = logging.getLogger("hub.install")
 
 CATALOG = Path(__file__).with_name("model_catalog.json")
-PURPOSES = {"chat": "Разговоры", "code": "Код", "vision": "Картинки"}
+PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Картинки")}
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -61,11 +62,11 @@ REPO_TTL_S = 3600.0  # Hugging Face's answers are kept this long
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 LIVE = ("queued", "downloading", "configuring", "trial")
 VERDICTS = {
-    "gpu": "помещается в видеопамять — быстро",
-    "split": "часть в ОЗУ — медленнее",
-    "split_moe": "часть в ОЗУ — у модели из «экспертов» это замедляет немного",
-    "cpu": "без видеокарты — в ОЗУ, медленно",
-    "no": "не поместится: не хватает памяти",
+    "gpu": N_("помещается в видеопамять — быстро"),
+    "split": N_("часть в ОЗУ — медленнее"),
+    "split_moe": N_("часть в ОЗУ — у модели из «экспертов» это замедляет немного"),
+    "cpu": N_("без видеокарты — в ОЗУ, медленно"),
+    "no": N_("не поместится: не хватает памяти"),
 }
 
 
@@ -281,7 +282,7 @@ class Installer:
             return conn.execute(
                 "UPDATE model_installs SET status = 'paused', error = ?, updated_at = ? WHERE status IN "
                 "('queued', 'downloading', 'configuring', 'trial')",
-                ("хаб перезапускался — загрузка продолжится по кнопке «Продолжить»", utc_now()),
+                (tr("хаб перезапускался — загрузка продолжится по кнопке «Продолжить»"), utc_now()),
             ).rowcount
 
         return await self._db.acall(pause)
@@ -328,7 +329,7 @@ class Installer:
         found = await self.repository(repo)
         variants = found["variants"]
         if not variants:
-            raise InstallError("в этом репозитории нет файлов GGUF для llama.cpp", 404)
+            raise InstallError(tr("в этом репозитории нет файлов GGUF для llama.cpp"), 404)
         info = await self.header(repo, variants[0]["files"][0]["path"])
         lens = projector(found["projectors"])
         space = self.space()
@@ -337,7 +338,7 @@ class Installer:
                   for v in variants}  # fmt: skip
         best = recommend(variants, judged, moe=moe)
         ends = extremes(variants, judged)
-        shown = [{**v, "verdict": judged[v["quant"]], "words": VERDICTS[judged[v["quant"]]],
+        shown = [{**v, "verdict": judged[v["quant"]], "words": tr(VERDICTS[judged[v["quant"]]]),
                   "gb": round(v["size"] / 1e9, 1), "recommended": v["quant"] == best,
                   "pick": "fast" if v["quant"] == ends["fast"] and ends["fast"] != best else
                   "quality" if v["quant"] == ends["quality"] and ends["quality"] != best else ""}
@@ -349,7 +350,7 @@ class Installer:
         """The curated list, each with the variant recommended for this computer (or why it cannot say)."""
 
         async def one(entry: dict[str, Any]) -> dict[str, Any]:
-            shown = {**entry, "purpose_words": [PURPOSES[p] for p in entry["purposes"]]}
+            shown = {**entry, "purpose_words": [tr(PURPOSES[p]) for p in entry["purposes"]]}
             try:
                 found = await self.details(entry["repo"], entry)
             except (hf.HubError, InstallError) as exc:
@@ -391,12 +392,12 @@ class Installer:
         found = await self.details(repo, entry)
         variant = next((v for v in found["variants"] if v["quant"] == quant), None)
         if variant is None:
-            raise InstallError(f"у {repo} нет варианта {quant}", 404)
+            raise InstallError(tr("у {repo} нет варианта {quant}", repo=repo, quant=quant), 404)
         rows = await self._db.acall(jobs)
         same = next((r for r in rows if r["repo"] == repo and r["quant"] == quant
                      and r["status"] not in ("cancelled", "removed")), None)  # fmt: skip
         if same and same["status"] == "done":
-            raise InstallError(f"эта модель уже установлена — «{same['name']}»")
+            raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
         if same:
             return same
         lens = found["projector"] if spec.get("projector") is not False else None
@@ -410,11 +411,11 @@ class Installer:
         if spec.get("folder"):
             root = Path(spec["folder"]).expanduser()
             if not root.is_absolute():
-                raise InstallError("папка для моделей — полный путь", 422)
+                raise InstallError(tr("папка для моделей — полный путь"), 422)
         elif spec.get("drive"):
             drive = next((d for d in found["drives"] if d["letter"] == spec["drive"].upper()[:1]), None)
             if drive is None:
-                raise InstallError(f"нет диска {spec['drive']}", 422)
+                raise InstallError(tr("нет диска {drive}", drive=spec["drive"]), 422)
             root = models_root(drive)
         else:  # LocalChat's own `model` folder; too little room there - the check below says so
             root = models_home()
@@ -422,7 +423,8 @@ class Installer:
         try:
             _check_room(folder, total)
         except OSError as exc:
-            raise InstallError(f"папка {folder} недоступна: {exc.strerror or exc}", 422) from exc
+            raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
+                               422) from exc  # fmt: skip
         text = config_text()
         llama_config.server_command(text)  # no llama.cpp in the config: nothing to install into
         model_id = llama_config.free_id(text, id_base(repo, quant))
@@ -449,7 +451,7 @@ class Installer:
     async def _get(self, job_id: str) -> dict[str, Any]:
         found = await self._db.acall(lambda conn: job(conn, job_id))
         if found is None:
-            raise InstallError("нет такой установки", 404)
+            raise InstallError(tr("нет такой установки"), 404)
         return found
 
     async def pause(self, job_id: str) -> dict[str, Any]:
@@ -460,13 +462,13 @@ class Installer:
             self._wanted[job_id] = "paused"
             self._cancel[job_id].set()
         else:
-            raise InstallError("приостановить можно только загрузку")
+            raise InstallError(tr("приостановить можно только загрузку"))
         return await self._get(job_id)
 
     async def resume(self, job_id: str, client: Any) -> dict[str, Any]:
         found = await self._get(job_id)
         if found["status"] not in ("paused", "failed"):
-            raise InstallError("продолжить можно приостановленную или неудачную установку")
+            raise InstallError(tr("продолжить можно приостановленную или неудачную установку"))
         self._clients[job_id] = client
         await self._set(job_id, status="queued", error="")
         self._kick()
@@ -476,7 +478,7 @@ class Installer:
         """Stops an install and throws its files away; an installed model is removed with `remove`."""
         found = await self._get(job_id)
         if found["status"] == "done":
-            raise InstallError("модель уже установлена — её можно удалить")
+            raise InstallError(tr("модель уже установлена — её можно удалить"))
         if found["status"] in ("cancelled", "removed"):
             return found
         if job_id in self._cancel:
@@ -491,7 +493,7 @@ class Installer:
         """An install that did not finish off the list - with its files."""
         found = await self._get(job_id)
         if found["status"] in (*LIVE, "done"):
-            raise InstallError("эта установка ещё идёт или модель установлена")
+            raise InstallError(tr("эта установка ещё идёт или модель установлена"))
         await asyncio.to_thread(_delete_files, found)
         await self._db.acall(lambda conn: conn.execute("DELETE FROM model_installs WHERE id = ?", (job_id,)))
         await self._bus.publish("install.forgotten", {"id": job_id})
@@ -503,8 +505,8 @@ class Installer:
         if found is None:
             going = next((r for r in await self._db.acall(jobs) if r["model_id"] == model_id), None)
             if going is not None:
-                raise InstallError(f"«{going['name']}» ещё не установлена — её установку можно отменить")
-            raise InstallError(f"«{model_id}» ставил не AFO — удалите её из config.yaml сами", 404)
+                raise InstallError(tr("«{name}» ещё не установлена — её установку можно отменить", name=going["name"]))
+            raise InstallError(tr("«{model}» ставил не AFO — удалите её из config.yaml сами", model=model_id), 404)
         await self._unload(model_id)
         path = llama_config.config_path()
         text = await asyncio.to_thread(config_text)
@@ -512,9 +514,10 @@ class Installer:
             new = llama_config.remove_model(text, model_id)
             backup = await asyncio.to_thread(llama_config.write, path, new)
             ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-            if not ok and problem != llama_config.NOT_ANSWERING:
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
                 await asyncio.to_thread(llama_config.restore, path, backup)
-                raise InstallError(f"llama-swap не принял правку ({problem}) — конфиг возвращён", 502)
+                raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён", problem=problem),
+                                   502)  # fmt: skip
         await asyncio.to_thread(_delete_files, found)
         await self._set(found["id"], status="removed", error="")
         await self._sync()
@@ -554,7 +557,9 @@ class Installer:
                 await self._run(found)
             except Exception:  # one install's trouble must not stop the rest
                 log.exception("install %s", found["id"])
-                await self._set(found["id"], status="failed", error="внутренняя ошибка хаба — подробности в журнале")
+                await self._set(
+                    found["id"], status="failed", error=tr("внутренняя ошибка хаба — подробности в журнале")
+                )
 
     async def _run(self, found: dict[str, Any]) -> None:
         job_id = found["id"]
@@ -641,7 +646,7 @@ class Installer:
                 if exc.status in (403, 404, 429) or broken > 1 or attempt == len(RETRIES_S):
                     raise
                 wait = RETRIES_S[attempt]
-                await self._set(found["id"], error=f"{exc} — новая попытка через {wait} с")
+                await self._set(found["id"], error=tr("{error} — новая попытка через {wait} с", error=exc, wait=wait))
                 if await asyncio.to_thread(cancel.wait, wait):
                     raise hf.Cancelled() from exc
                 await self._set(found["id"], error="")
@@ -670,9 +675,10 @@ class Installer:
         new = llama_config.add_model(text, model_id, block)
         backup = await asyncio.to_thread(llama_config.write, path, new)
         ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-        if not ok and problem != llama_config.NOT_ANSWERING:
+        if not ok and problem != tr(llama_config.NOT_ANSWERING):
             await asyncio.to_thread(llama_config.restore, path, backup)
-            raise InstallError(f"llama-swap не принял новую модель ({problem}) — конфиг возвращён", 502)
+            raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
+                                  problem=problem), 502)  # fmt: skip
         await self._set(job_id, model_id=model_id, plan={**plan, "info": info})
         await self._sync()
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
@@ -683,8 +689,8 @@ class Installer:
         job_id, model_id = found["id"], found["model_id"]
         client = self._clients.get(job_id)
         if not reachable or self.trial is None or client is None:
-            why = "llama-swap не отвечает — модель проверится при первом разговоре" if not reachable else \
-                "проверка запуска не выполнялась"  # fmt: skip
+            why = tr("llama-swap не отвечает — модель проверится при первом разговоре") if not reachable else \
+                tr("проверка запуска не выполнялась")  # fmt: skip
             await self._set(job_id, status="done", trial={"skipped": why})
             return
         await self._set(job_id, status="trial")
@@ -694,7 +700,7 @@ class Installer:
         while True:
             model = await self._model(model_id)
             if model is None:
-                result = {"ok": False, "error": "хаб не видит модель в списке llama-swap"}
+                result = {"ok": False, "error": tr("хаб не видит модель в списке llama-swap")}
             else:
                 try:
                     result = await self.trial(model, client)
@@ -715,8 +721,9 @@ class Installer:
             return
         await self._withdraw(model_id)
         await self._set(job_id, status="failed", trial={"tries": tries},
-                        error=f"модель скачана, но не запустилась: {result.get('error') or 'нет ответа'}. Файлы "
-                              "остались — «Повторить» попробует снова; или удалите")  # fmt: skip
+                        error=tr("модель скачана, но не запустилась: {error}. Файлы остались — «Повторить» "
+                                 "попробует снова; или удалите",
+                                 error=result.get("error") or tr("нет ответа")))  # fmt: skip
 
     async def _model(self, model_id: str) -> dict[str, Any] | None:
         for _ in range(5):
@@ -752,8 +759,8 @@ def config_text() -> str:
     try:
         return path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise InstallError(f"нет конфига llama-swap ({path}): сначала нужен llama-swap (мастер первого запуска)",
-                           409) from exc  # fmt: skip
+        raise InstallError(tr("нет конфига llama-swap ({path}): сначала нужен llama-swap (мастер первого запуска)",
+                              path=path), 409) from exc  # fmt: skip
 
 
 def _ours(text: str, model_id: str, job_id: str) -> bool:
@@ -763,11 +770,13 @@ def _ours(text: str, model_id: str, job_id: str) -> bool:
 
 def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, lens_file: Path | None,
            plan: dict[str, Any]) -> str:  # fmt: skip
-    purposes = ", ".join(PURPOSES[p].lower() for p in found["purposes"] if p in PURPOSES)
+    purposes = ", ".join(tr(PURPOSES[p]).lower() for p in found["purposes"] if p in PURPOSES)
     return llama_config.model_block(
         model_id,
         name=found["name"],
-        description=f"{found['repo']} {found['quant']}, установлена AFO: {purposes}.",
+        description=tr(
+            "{repo} {quant}, установлена AFO: {purposes}.", repo=found["repo"], quant=found["quant"], purposes=purposes
+        ),
         server=server,
         model=str(model_file),
         mmproj=str(lens_file) if lens_file else "",
@@ -788,8 +797,8 @@ def _check_room(folder: Path, size: int) -> None:
     anchor = Path(folder.anchor or folder)
     free = shutil.disk_usage(anchor).free
     if free < size + DISK_MARGIN_GIB * GIB:
-        raise InstallError(f"на диске {anchor} не хватает места: нужно {(size / GIB) + DISK_MARGIN_GIB:.1f} ГБ, "
-                           f"свободно {free / GIB:.1f} ГБ", 507)  # fmt: skip
+        raise InstallError(tr("на диске {disk} не хватает места: нужно {need:.1f} ГБ, свободно {free:.1f} ГБ",
+                              disk=anchor, need=size / GIB + DISK_MARGIN_GIB, free=free / GIB), 507)  # fmt: skip
 
 
 def _delete_files(found: dict[str, Any]) -> None:

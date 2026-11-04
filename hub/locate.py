@@ -10,6 +10,7 @@ import time
 
 import httpx
 
+from common.i18n import tr
 from common.paths import PROJECT_ROOT, DataPaths
 
 from .settings import DEFAULT_PORT, PORT_ENV
@@ -74,11 +75,11 @@ def running_hub(paths: DataPaths, *, start: bool = True, timeout: float = START_
     base = hub_address(paths)
     state = probe(base)
     if state == "foreign":
-        raise HubUnavailable(f"на {base} отвечает не хаб AFO — порт занят другой программой")
+        raise HubUnavailable(tr("на {address} отвечает не хаб AFO — порт занят другой программой", address=base))
     if state == "ok":
         return base
     if not start:
-        raise HubUnavailable("хаб не запущен")
+        raise HubUnavailable(tr("хаб не запущен"))
     start_hub()
     deadline = time.monotonic() + timeout
     while True:
@@ -86,5 +87,6 @@ def running_hub(paths: DataPaths, *, start: bool = True, timeout: float = START_
         if probe(base) == "ok":
             return base
         if time.monotonic() > deadline:
-            raise HubUnavailable(f"хаб не запустился за {timeout:.0f} с, подробности в {paths.logs / 'hub.log'}")
+            raise HubUnavailable(tr("хаб не запустился за {seconds:.0f} с, подробности в {log}", seconds=timeout,
+                                     log=paths.logs / "hub.log"))  # fmt: skip
         time.sleep(0.2)

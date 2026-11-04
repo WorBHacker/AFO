@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from common.i18n import tr
 from common.paths import DataPaths
 
 from . import projects, store
@@ -237,7 +238,8 @@ class Translator:
             call_id = block.get("tool_use_id", "")
             output = _text_of(block.get("content"))
             if len(output) > RESULT_MAX_CHARS:
-                output = output[:RESULT_MAX_CHARS] + f"\n… (ещё {len(output) - RESULT_MAX_CHARS} символов)"
+                more = tr("… (ещё {count} символов)", count=len(output) - RESULT_MAX_CHARS)
+                output = output[:RESULT_MAX_CHARS] + "\n" + more
             results.append(tool_result_block(call_id, self.calls.get(call_id, ""), output, bool(block.get("is_error"))))
         return results
 

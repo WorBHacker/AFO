@@ -15,6 +15,8 @@ import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
+from common.i18n import tr
+
 from .db import utc_now
 from .limits import LIMITS
 
@@ -56,18 +58,18 @@ class SettingsError(ValueError):
 
 def _number(name: str, value: Any, kind: type, low: float, high: float) -> float | int:
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise SettingsError(f"{name}: нужно число")
+        raise SettingsError(tr("{name}: нужно число", name=name))
     if kind is int and value != int(value):
-        raise SettingsError(f"{name}: нужно целое число")
+        raise SettingsError(tr("{name}: нужно целое число", name=name))
     if not low <= value <= high:
-        raise SettingsError(f"{name}: от {low:g} до {high:g}")
+        raise SettingsError(tr("{name}: от {low:g} до {high:g}", name=name, low=low, high=high))
     return int(value) if kind is int else float(value)
 
 
 def check_params(params: Any) -> dict[str, Any]:
     """The answer's parameters as the hub keeps them; anything wrong is refused, never quietly dropped."""
     if not isinstance(params, dict):
-        raise SettingsError("параметры ответа: нужен словарь")
+        raise SettingsError(tr("параметры ответа: нужен словарь"))
     out: dict[str, Any] = {}
     for name, value in params.items():
         if value is None:
@@ -76,28 +78,28 @@ def check_params(params: Any) -> dict[str, Any]:
             out[name] = _number(name, value, *NUMBERS[name])
         elif name == "stop":
             if not isinstance(value, list) or not all(isinstance(s, str) and s for s in value):
-                raise SettingsError("стоп-последовательности: список непустых строк")
+                raise SettingsError(tr("стоп-последовательности: список непустых строк"))
             if len(value) > STOP_MAX:
-                raise SettingsError(f"стоп-последовательности: не больше {STOP_MAX}")
+                raise SettingsError(tr("стоп-последовательности: не больше {count}", count=STOP_MAX))
             if value:
                 out[name] = list(value)
         elif name == "thinking":
             if not isinstance(value, bool):
-                raise SettingsError("размышления: да или нет")
+                raise SettingsError(tr("размышления: да или нет"))
             out[name] = value
         elif name == "refusal_vector":
             if not isinstance(value, bool):
-                raise SettingsError("снятие отказов: да или нет")
+                raise SettingsError(tr("снятие отказов: да или нет"))
             out[name] = value
         else:
-            raise SettingsError(f"неизвестный параметр «{name}»")
+            raise SettingsError(tr("неизвестный параметр «{name}»", name=name))
     return out
 
 
 def check(settings: Any) -> dict[str, Any]:
     """A whole settings record as it is saved."""
     if not isinstance(settings, dict):
-        raise SettingsError("настройки: нужен словарь")
+        raise SettingsError(tr("настройки: нужен словарь"))
     out: dict[str, Any] = {}
     for key, value in settings.items():
         if value is None:
@@ -105,7 +107,7 @@ def check(settings: Any) -> dict[str, Any]:
         match key:
             case "hidden":
                 if not isinstance(value, bool):
-                    raise SettingsError("показывать в выборе: да или нет")
+                    raise SettingsError(tr("показывать в выборе: да или нет"))
                 if value:
                     out[key] = True
             case "name":
@@ -114,29 +116,29 @@ def check(settings: Any) -> dict[str, Any]:
                     out[key] = name
             case "capabilities":
                 if not isinstance(value, dict):
-                    raise SettingsError("возможности: нужен словарь")
+                    raise SettingsError(tr("возможности: нужен словарь"))
                 caps: dict[str, Any] = {}
                 for cap, cap_value in value.items():
                     if cap_value is None:
                         continue
                     if cap not in CAPABILITIES:
-                        raise SettingsError(f"неизвестная возможность «{cap}»")
+                        raise SettingsError(tr("неизвестная возможность «{name}»", name=cap))
                     if CAPABILITIES[cap] is bool and not isinstance(cap_value, bool):
-                        raise SettingsError(f"{cap}: да или нет")
+                        raise SettingsError(tr("{name}: да или нет", name=cap))
                     if CAPABILITIES[cap] is int:
-                        cap_value = int(_number("контекст", cap_value, int, 512, 10_000_000))
+                        cap_value = int(_number(tr("контекст"), cap_value, int, 512, 10_000_000))
                     caps[cap] = cap_value
                 if caps:
                     out[key] = caps
             case "prices":
                 if not isinstance(value, dict):
-                    raise SettingsError("цены: нужен словарь")
+                    raise SettingsError(tr("цены: нужен словарь"))
                 prices = {}
                 for part, price in value.items():
                     if part not in PRICES:
-                        raise SettingsError(f"неизвестная цена «{part}»")
+                        raise SettingsError(tr("неизвестная цена «{name}»", name=part))
                     if price is not None:
-                        prices[part] = float(_number(f"цена {part}", price, float, 0.0, 10_000.0))
+                        prices[part] = float(_number(tr("цена {name}", name=part), price, float, 0.0, 10_000.0))
                 if prices:
                     out[key] = prices
             case "prices_asof":
@@ -147,42 +149,42 @@ def check(settings: Any) -> dict[str, Any]:
                     out[key] = params
             case "preset":
                 if value not in PRESETS:
-                    raise SettingsError(f"неизвестная заготовка «{value}»")
+                    raise SettingsError(tr("неизвестная заготовка «{name}»", name=value))
                 out[key] = value
             case "effort":
                 if value not in EFFORTS:
-                    raise SettingsError(f"неизвестная глубина размышлений «{value}»")
+                    raise SettingsError(tr("неизвестная глубина размышлений «{name}»", name=value))
                 out[key] = value
             case "roles":
                 if not isinstance(value, dict):
-                    raise SettingsError("роли: нужен словарь")
+                    raise SettingsError(tr("роли: нужен словарь"))
                 roles = {}
                 for role, model_id in value.items():
                     if role not in ROLES:
-                        raise SettingsError(f"неизвестная роль «{role}»")
+                        raise SettingsError(tr("неизвестная роль «{name}»", name=role))
                     if model_id:
                         roles[role] = str(model_id)
                 if roles:
                     out[key] = roles
             case "context_budget":  # «для опытных»: the layers' budgets and the tools' portions (D22)
                 if not isinstance(value, dict):
-                    raise SettingsError("бюджеты контекста: нужен словарь")
+                    raise SettingsError(tr("бюджеты контекста: нужен словарь"))
                 own = {}
                 for name, amount in value.items():
                     if name not in LIMITS:
-                        raise SettingsError(f"неизвестный бюджет «{name}»")
+                        raise SettingsError(tr("неизвестный бюджет «{name}»", name=name))
                     if amount is not None:
-                        own[name] = int(_number(f"бюджет {name}", amount, int, *LIMITS[name][1:]))
+                        own[name] = int(_number(tr("бюджет {name}", name=name), amount, int, *LIMITS[name][1:]))
                 if own:
                     out[key] = own
             case "system_prompt":
                 text = str(value).strip()
                 if len(text) > SYSTEM_PROMPT_MAX:
-                    raise SettingsError(f"системный промпт: не длиннее {SYSTEM_PROMPT_MAX} символов")
+                    raise SettingsError(tr("системный промпт: не длиннее {count} символов", count=SYSTEM_PROMPT_MAX))
                 if text:
                     out[key] = text
             case _:
-                raise SettingsError(f"неизвестная настройка «{key}»")
+                raise SettingsError(tr("неизвестная настройка «{name}»", name=key))
     if "prices" in out and "prices_asof" not in out:
         out["prices_asof"] = utc_now()[:10]
     return out

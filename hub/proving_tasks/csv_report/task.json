@@ -6,5 +6,8 @@
   "criteria": [{"command": "if (Test-Path report.json) { exit 0 } else { exit 1 }", "expected_exit_code": 0}],
   "constraints": ["Не менять sales.csv"],
   "limits": {"max_turns": 5, "max_minutes": 10},
-  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в report.json ровно все регионы и верные суммы"}]
+  "exam": [{"command": "{python} \"{exam}\\check.py\"", "why": "в report.json ровно все регионы и верные суммы"}],
+  "en": {"title": "Sales report", "level": "easy",
+         "about": "Sum the sales by region from a CSV file and write them as JSON. Every figure is checked.",
+         "why": ["report.json has exactly all the regions and the right sums"]}
 }

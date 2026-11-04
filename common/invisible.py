@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 
+from .i18n import tr
+
 HIDDEN = re.compile("[؜​-‏‪-‮⁠-⁤⁦-⁩﻿]")
 
 
@@ -39,8 +41,8 @@ def warning(text: str) -> str:
     for m in found:
         counts[code(m.group())] = counts.get(code(m.group()), 0) + 1
     listed = ", ".join(f"{c} ×{n}" if n > 1 else c for c, n in counts.items())
-    return (f"Невидимые символы: {listed} — показаны как ⟦U+…⟧. Они могут заставить код выглядеть не так, как он "
-            "работает: проверьте эти места.")  # fmt: skip
+    return tr("Невидимые символы: {listed} — показаны как ⟦U+…⟧. Они могут заставить код выглядеть не так, как он "
+              "работает: проверьте эти места.", listed=listed)  # fmt: skip
 
 
 def summary(text: str) -> str:
@@ -50,4 +52,6 @@ def summary(text: str) -> str:
         return ""
     lines = lines_with(text)
     where = ", ".join(map(str, lines[:5])) + ("…" if len(lines) > 5 else "")
-    return f"⚠ невидимые символы: {len(found)} ({'строка' if len(lines) == 1 else 'строки'} {where})"
+    if len(lines) == 1:
+        return tr("⚠ невидимые символы: {count} (строка {where})", count=len(found), where=where)
+    return tr("⚠ невидимые символы: {count} (строки {where})", count=len(found), where=where)

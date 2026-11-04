@@ -28,6 +28,8 @@ import time
 import uuid
 from typing import Any
 
+from common.i18n import tr
+
 from . import agent_tools, autonomous, compact, computer, mail, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -170,7 +172,7 @@ RUN_SELECT = (
     " AND q.status = 'pending')) AS waiting, (SELECT p.profile_name FROM agent_runs p"
     " WHERE p.conversation_id = r.parent_run) AS parent_name FROM agent_runs r"
 )
-AUTONOMOUS_PROFILE = "Автономный агент"  # the profile an autonomous run gets when none is chosen
+AUTONOMOUS_PROFILE = "Автономный агент"  # the profile an autonomous run gets when none is chosen  # i18n: keep
 
 
 def _run(row: sqlite3.Row) -> dict[str, Any]:
@@ -342,7 +344,8 @@ class AgentRunner:
                 check_profile(conn, {**profile, "model_id": model_id})  # a model a profile may have
                 profile["model_id"] = model_id
             projects = data.get("project_ids")
-            task = f"Цель: {goal['goal']}" + (f"\nГотово, когда: {goal['done_when']}" if goal["done_when"] else "")
+            done_when = f"\nГотово, когда: {goal['done_when']}" if goal["done_when"] else ""  # i18n: keep
+            task = f"Цель: {goal['goal']}{done_when}"  # the agent's task: as written  # i18n: keep
             return create_run(conn, profile, task, profile["project_ids"] if projects is None else
                               [str(p) for p in projects], goal=goal, outside=outside)  # fmt: skip
 
@@ -458,7 +461,7 @@ class AgentRunner:
             autonomy.forget(run_id)
             info = await autonomy.info(run_id)
             if info is not None and info["report"] is None and status == "done" and not outcome.detail:
-                outcome.detail = "закончил без отчёта"
+                outcome.detail = tr("закончил без отчёта")
 
         def write(conn):
             conn.execute(

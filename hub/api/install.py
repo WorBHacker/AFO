@@ -15,6 +15,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
+
 from .. import hf, llama_config
 from .. import model_install as mi
 from ..auth import Client
@@ -48,7 +50,7 @@ async def system(request: Request, client: Annotated[Client, Depends(require_app
             "server": server, "problem": problem, "folder": str(home),  # where a model goes unless told otherwise
             "home": {"folder": str(home), "letter": on["letter"] if on else "", "words": on.get("words", "") if on
                      else "", "kind": on.get("kind", "") if on else "", "free_gib": on["free_gib"] if on else None},
-            "token": bool(installer.token()), "purposes": mi.PURPOSES}  # fmt: skip
+            "token": bool(installer.token()), "purposes": {k: tr(v) for k, v in mi.PURPOSES.items()}}  # fmt: skip
 
 
 @router.get("/catalog")

@@ -34,6 +34,8 @@ from typing import Any, TextIO
 
 import winpty
 
+from common.i18n import N_, tr
+
 from .db import utc_now
 from .processes import stop_tree
 
@@ -47,7 +49,7 @@ LOG_MAX_BYTES = 50 * 1024 * 1024
 LOG_KEEP_DAYS = 90
 LOGS_MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 PRUNE_EVERY_S = 6 * 3600
-LOG_CUT = "\r\n\x1b[33m[AFO: журнал достиг предела, дальше вывод не сохраняется]\x1b[0m\r\n"
+LOG_CUT = N_("[AFO: журнал достиг предела, дальше вывод не сохраняется]")  # in yellow, on a line of its own
 SHELLS = ("pwsh", "powershell", "cmd")
 
 
@@ -341,7 +343,7 @@ class TerminalManager:
                 size = len(data.encode("utf-8", "replace"))
                 try:
                     if live.log_bytes + size > LOG_MAX_BYTES:
-                        live.log.write(LOG_CUT)
+                        live.log.write(f"\r\n\x1b[33m{tr(LOG_CUT)}\x1b[0m\r\n")
                         live.log_cut = True
                     else:
                         live.log.write(data)

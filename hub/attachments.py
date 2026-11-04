@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from common.i18n import tr
+
 from .secret_filter import clean
 
 MAX_BYTES = 20 * 1024 * 1024  # one file
@@ -72,7 +74,7 @@ def docx_text(data: bytes) -> str:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             root = ElementTree.fromstring(archive.read("word/document.xml"))
     except (zipfile.BadZipFile, KeyError, ElementTree.ParseError) as exc:
-        raise AttachmentError(f"документ Word не читается ({exc})") from None
+        raise AttachmentError(tr("документ Word не читается ({error})", error=exc)) from None
     lines = []
     for paragraph in root.iter(f"{WORD}p"):
         parts = []
@@ -91,13 +93,13 @@ def pdf_text(data: bytes) -> str:
     try:
         import pypdf
     except ImportError:
-        raise AttachmentError("PDF пока не читается: нужен пакет pypdf. Сохраните документ как текст или .docx") \
+        raise AttachmentError(tr("PDF пока не читается: нужен пакет pypdf. Сохраните документ как текст или .docx")) \
             from None  # fmt: skip
     try:
         reader = pypdf.PdfReader(io.BytesIO(data))
         return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
     except Exception as exc:  # a broken or encrypted file
-        raise AttachmentError(f"PDF не читается ({exc})") from None
+        raise AttachmentError(tr("PDF не читается ({error})", error=exc)) from None
 
 
 def decode_text(data: bytes) -> str | None:
@@ -117,23 +119,24 @@ def blocks(folder: Path, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The message's blocks for the files sent with it ({name, data (base64)}): pictures by reference, text read
     out. Raises AttachmentError with what is wrong, before anything is kept."""
     if len(items) > MAX_FILES:
-        raise AttachmentError(f"не больше {MAX_FILES} файлов в одном сообщении")
+        raise AttachmentError(tr("не больше {count} файлов в одном сообщении", count=MAX_FILES))
     decoded = []
     total = 0
+    unnamed = tr("файл")
     for item in items:
-        name = " ".join(str(item.get("name") or "файл").split())[:200] or "файл"
+        name = " ".join(str(item.get("name") or unnamed).split())[:200] or unnamed
         try:
             data = base64.b64decode(str(item.get("data") or ""), validate=True)
         except binascii.Error, ValueError:
-            raise AttachmentError(f"«{name}»: файл пришёл повреждённым") from None
+            raise AttachmentError(tr("«{name}»: файл пришёл повреждённым", name=name)) from None
         if not data:
-            raise AttachmentError(f"«{name}»: файл пустой")
+            raise AttachmentError(tr("«{name}»: файл пустой", name=name))
         if len(data) > MAX_BYTES:
-            raise AttachmentError(f"«{name}»: больше {MAX_BYTES // (1024 * 1024)} МБ")
+            raise AttachmentError(tr("«{name}»: больше {size} МБ", name=name, size=MAX_BYTES // (1024 * 1024)))
         total += len(data)
         decoded.append((name, data))
     if total > MAX_TOTAL:
-        raise AttachmentError(f"вместе файлы больше {MAX_TOTAL // (1024 * 1024)} МБ")
+        raise AttachmentError(tr("вместе файлы больше {size} МБ", size=MAX_TOTAL // (1024 * 1024)))
     out = []
     for name, data in decoded:
         kind = picture_type(data)
@@ -150,9 +153,9 @@ def blocks(folder: Path, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             text, source = decode_text(data), "text"
             if text is None:
-                raise AttachmentError(f"«{name}»: не текст и не картинка — такие файлы модель не прочтёт")
+                raise AttachmentError(tr("«{name}»: не текст и не картинка — такие файлы модель не прочтёт", name=name))
         if not text.strip():
-            raise AttachmentError(f"«{name}»: в файле нет текста")
+            raise AttachmentError(tr("«{name}»: в файле нет текста", name=name))
         cut = len(text) > TEXT_CHARS
         out.append({"type": "file", "name": name, "size": len(data), "source": source, "blob": keep(folder, data),
                     "text": clean(text[:TEXT_CHARS]), "cut": cut})  # fmt: skip

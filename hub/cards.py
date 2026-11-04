@@ -39,23 +39,26 @@ DEPENDENCY_FILES = (
     "Dockerfile", "Makefile", "justfile", "tsconfig.json",
 )  # fmt: skip
 NOTES = ("README.md", "README.rst", "README.txt", "README", "CLAUDE.md", "AGENTS.md", ".clinerules", "CONTRIBUTING.md")
+# the texts a model is given (the card's material, its instructions) stay as written whatever the window's language
 SECTIONS = (
-    "Назначение", "Устройство", "Ключевые папки и файлы", "Как запускать, тестировать, собирать", "Соглашения",
-    "Известные проблемы",
+    "Назначение", "Устройство", "Ключевые папки и файлы", "Как запускать, тестировать, собирать",  # i18n: keep
+    "Соглашения", "Известные проблемы",  # i18n: keep
 )  # fmt: skip
 INSTRUCTIONS = (
     "Ты пишешь карточку проекта для других моделей: короткое, точное описание, которое они получат перед работой с "
     "проектом. Пиши по-русски, в Markdown, только по фактам из материалов ниже - ничего не выдумывай; где данных нет, "
-    "так и напиши. Разделы (заголовки ##): " + "; ".join(SECTIONS) + ". Пути к файлам и папкам - в `обратных "
-    "кавычках`, как в проекте. До 600 слов. Выведи только карточку, без вступления."
+    "так и напиши. Разделы (заголовки ##): "  # i18n: keep
+    + "; ".join(SECTIONS)
+    + ". Пути к файлам и папкам - в `обратных кавычках`, как в проекте. До 600 слов. Выведи только карточку, "
+    "без вступления."  # i18n: keep
 )
-NO_CHANGES = "БЕЗ ИЗМЕНЕНИЙ"
+NO_CHANGES = "БЕЗ ИЗМЕНЕНИЙ"  # i18n: keep
 UPDATE_INSTRUCTIONS = (
     "В теге <card> - карточка проекта, которую подтвердил пользователь; в теге <changes> - что изменилось в проекте "
     "с тех пор. Выведи только те разделы карточки, которые из-за этих изменений стали неверными или неполными: "
     "каждый целиком, с его заголовком ## как в карточке и исправленным текстом. Разделы, которых изменения не "
     "касаются, не выводи. Исправляй только по фактам из <changes>, ничего не выдумывай. Без тегов и пояснений. "
-    f"Если менять нечего, выведи: {NO_CHANGES}"
+    f"Если менять нечего, выведи: {NO_CHANGES}"  # i18n: keep
 )
 SIGNIFICANT_COMMITS = 20  # this many commits since the card was confirmed make it worth a look
 REQUIREMENT = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")  # a package's name at the start of a requirement
@@ -104,13 +107,13 @@ def gather(project: Project) -> str:
     if not root.is_dir():
         raise CardError(f"the project's folder is missing: {project.path}")
     parts = [
-        f"# Проект «{project.name}»",
-        f"Папка: {project.path}",
-        f"Описание от пользователя: {project.description or 'нет'}",
+        f"# Проект «{project.name}»",  # i18n: keep
+        f"Папка: {project.path}",  # i18n: keep
+        f"Описание от пользователя: {project.description or 'нет'}",  # i18n: keep
     ]
     tree = _tree(root)
     if tree:
-        parts.append("## Дерево папок (как его показывает git)\n" + "\n".join(tree))
+        parts.append("## Дерево папок (как его показывает git)\n" + "\n".join(tree))  # i18n: keep
     names = {e["name"] for e in projects.tree(root)}
     for name in NOTES:
         if name in names:
@@ -120,11 +123,12 @@ def gather(project: Project) -> str:
             parts.append(f"## {name}\n{_file_head(root, name, 6_000)}")
     log = projects.git_log(root, 15)
     if log:
-        parts.append(
-            "## Последние коммиты\n" + "\n".join(f"- {c['sha']} {c['subject']} ({c['when'][:10]})" for c in log)
-        )
+        commits = "\n".join(f"- {c['sha']} {c['subject']} ({c['when'][:10]})" for c in log)
+        parts.append("## Последние коммиты\n" + commits)  # i18n: keep
     text = clean("\n\n".join(parts))
-    return text if len(text) <= SOURCE_BUDGET_CHARS else text[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"
+    if len(text) <= SOURCE_BUDGET_CHARS:
+        return text
+    return text[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"  # i18n: keep
 
 
 def prompt(project: Project) -> list[dict[str, Any]]:
@@ -255,31 +259,33 @@ def update_prompt(project: Project, card: str, baseline: dict[str, Any] | None) 
     changes = changes_since(project, baseline)
     parts = []
     if changes is None:  # no baseline: what the project is now, in full
-        parts.append("## Проект сейчас\n" + gather(project))
+        parts.append("## Проект сейчас\n" + gather(project))  # i18n: keep
     else:
         said = []
         if changes["commits"]:
-            said.append(f"коммитов: {changes['commits']}")
+            said.append(f"коммитов: {changes['commits']}")  # i18n: keep
         if changes["new_folders"]:
-            said.append("новые папки: " + ", ".join(changes["new_folders"]))
+            said.append("новые папки: " + ", ".join(changes["new_folders"]))  # i18n: keep
         if changes["gone_folders"]:
-            said.append("исчезли папки: " + ", ".join(changes["gone_folders"]))
+            said.append("исчезли папки: " + ", ".join(changes["gone_folders"]))  # i18n: keep
         if changes["dependencies"]:
-            said.append("изменились файлы зависимостей и сборки: " + ", ".join(changes["dependencies"]))
-        parts.append("## Что изменилось с подтверждения\n" + ("; ".join(said) or "заметных изменений нет"))
+            said.append("изменились файлы зависимостей и сборки: " + ", ".join(changes["dependencies"]))  # i18n: keep
+        said_all = "; ".join(said) or "заметных изменений нет"  # i18n: keep
+        parts.append("## Что изменилось с подтверждения\n" + said_all)  # i18n: keep
         if baseline and baseline.get("head") and changes["commits"]:
             log = projects.git(root, "log", "--format=%h %s", "-n", "40", f"{baseline['head']}..HEAD")
             if log.returncode == 0:
-                parts.append("## Коммиты с подтверждения\n" + log.stdout.decode("utf-8", "replace").strip())
+                commits = log.stdout.decode("utf-8", "replace").strip()
+                parts.append("## Коммиты с подтверждения\n" + commits)  # i18n: keep
         tree = _tree(root, max_depth=2)
         if tree:
-            parts.append("## Дерево папок сейчас\n" + "\n".join(tree))
+            parts.append("## Дерево папок сейчас\n" + "\n".join(tree))  # i18n: keep
         for name in changes["dependencies"]:
             if (root / name).is_file() and not is_secret_file(name):
-                parts.append(f"## {name} (сейчас)\n{_file_head(root, name, 6_000)}")
+                parts.append(f"## {name} (сейчас)\n{_file_head(root, name, 6_000)}")  # i18n: keep
     material = clean("\n\n".join(parts))
     if len(material) > SOURCE_BUDGET_CHARS:
-        material = material[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"
+        material = material[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"  # i18n: keep
     # the card last, in its own tag: a model copies what it has just read more faithfully, and does not take the
     # material for a part of the card (a local model did, with both under ## headings)
     text = f'<changes project="{project.name}">\n{material}\n</changes>\n\n<card>\n{clean(card)}\n</card>'

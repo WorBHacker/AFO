@@ -14,6 +14,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from common.i18n import tr
+
 from .. import budgets, model_settings, store
 from ..auth import APP_CLIENT, Client
 from ..db import utc_now
@@ -23,7 +25,7 @@ from ..limits import LIMITS
 from .deps import require_client
 
 router = APIRouter(prefix="/v1")
-CHECK_PROMPT = "Ответь одним коротким предложением: ты на связи?"
+CHECK_PROMPT = "Ответь одним коротким предложением: ты на связи?"  # for the model  # i18n: keep
 
 
 def require_app(client: Annotated[Client, Depends(require_client)]) -> Client:
@@ -75,7 +77,9 @@ async def write(request: Request, body: Saved, client: Annotated[Client, Depends
         settings = {"system_prompt": settings.get("system_prompt"), "roles": settings.get("roles")}
         for role, model_id in (settings["roles"] or {}).items():
             if model_id and await request.app.state.db.acall(lambda conn, m=model_id: store.get_model(conn, m)) is None:
-                raise HTTPException(status_code=422, detail=f"роль «{role}»: нет модели {model_id!r}")
+                raise HTTPException(
+                    status_code=422, detail=tr("роль «{role}»: нет модели {model!r}", role=role, model=model_id)
+                )
     return await _save(request, body.model_id, settings, client)
 
 
@@ -195,7 +199,7 @@ async def import_settings(request: Request, body: Imported, client: Annotated[Cl
     have is skipped, a role naming one is dropped; a wrong value is said, and the rest still saved."""
     data = body.data
     if data.get("kind") != EXPORT_KIND:
-        raise HTTPException(status_code=422, detail="это не файл настроек моделей AFO")
+        raise HTTPException(status_code=422, detail=tr("это не файл настроек моделей AFO"))
     db = request.app.state.db
 
     def apply(conn):
@@ -203,7 +207,9 @@ async def import_settings(request: Request, body: Imported, client: Annotated[Cl
         report: dict[str, Any] = {"saved": [], "skipped": [], "errors": {}}
         general = dict(data.get("general") or {})
         roles = general.get("roles") or {}
-        report["skipped"] += [f"роль {role}: {mid}" for role, mid in roles.items() if mid not in known]
+        report["skipped"] += [
+            tr("роль {role}: {model}", role=role, model=mid) for role, mid in roles.items() if mid not in known
+        ]
         general["roles"] = {role: mid for role, mid in roles.items() if mid in known}
         entries = [(model_settings.ALL, {k: general.get(k) for k in ("system_prompt", "roles")})]
         entries += list((data.get("models") or {}).items())
@@ -212,11 +218,12 @@ async def import_settings(request: Request, body: Imported, client: Annotated[Cl
                 report["skipped"].append(model_id)
                 continue
             try:
-                model_settings.save(conn, model_id, settings, by=f"{client.name} (импорт)")
+                by = f"{client.name} (импорт)"  # stored as who made the change  # i18n: keep
+                model_settings.save(conn, model_id, settings, by=by)
             except model_settings.SettingsError as exc:
-                report["errors"][model_id or "общие"] = str(exc)
+                report["errors"][model_id or tr("общие")] = str(exc)
                 continue
-            report["saved"].append(model_id or "общие")
+            report["saved"].append(model_id or tr("общие"))
         return report
 
     report = await db.acall(apply)

@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from common import hardware
+from common.i18n import N_, decimal, tr
 from common.paths import engines_home
 
 from . import autostart, engines, llama_config
@@ -31,7 +32,7 @@ from .system_status import memory_sample
 
 log = logging.getLogger("hub.setup")
 BUILDS = {"cuda-13": "NVIDIA, CUDA 13", "cuda-12": "NVIDIA, CUDA 12", "vulkan": "Vulkan (AMD, Intel, NVIDIA)",
-          "cpu": "только процессор"}  # fmt: skip
+          "cpu": N_("только процессор")}  # fmt: skip
 PAGEFILE_GIB = 16.0  # below this a model partly in RAM may meet «not enough memory» (the commit limit, Q11)
 PROGRESS_S = 1.0
 
@@ -41,11 +42,11 @@ def page_file(memory: dict[str, Any] | None) -> dict[str, Any]:
     if not memory:
         return {"gib": None, "advice": ""}
     size = max(round((memory.get("commit_limit_gib") or 0) - (memory.get("ram_total_gib") or 0), 1), 0.0)
-    shown = f"{size:g}".replace(".", ",")
-    advice = "" if size >= PAGEFILE_GIB else (
-        f"Файл подкачки — {shown} ГБ. Большой модели, которая не помещается в видеопамять, может не хватить памяти: "
+    shown = decimal(f"{size:g}")
+    advice = "" if size >= PAGEFILE_GIB else tr(
+        "Файл подкачки — {size} ГБ. Большой модели, которая не помещается в видеопамять, может не хватить памяти: "
         "в «Параметры → Система → О системе → Дополнительные параметры → Быстродействие → Виртуальная память» "
-        "поставьте «Размер по выбору системы» или не меньше 16 ГБ.")  # fmt: skip
+        "поставьте «Размер по выбору системы» или не меньше 16 ГБ.", size=shown)  # fmt: skip
     return {"gib": size, "advice": advice}
 
 
@@ -98,8 +99,8 @@ class Setup:
         answering = await autostart.answers(self._url)
         ready = answering or bool(engine["server"] and engine["start_found"])
         return {"needed": not ready, "answering": answering, "engine": engine, "cards": cards,
-                "nvidia": nvidia, "build": build, "builds": BUILDS, "memory": memory, "page_file": page_file(memory),
-                "job": dict(self.job), "folder": str(engines_home())}  # fmt: skip
+                "nvidia": nvidia, "build": build, "builds": {k: tr(v) for k, v in BUILDS.items()}, "memory": memory,
+                "page_file": page_file(memory), "job": dict(self.job), "folder": str(engines_home())}  # fmt: skip
 
     async def first_models(self) -> dict[str, Any]:
         return suggestions(await self._installer.catalog())
@@ -108,7 +109,7 @@ class Setup:
 
     def start(self, build: str, *, update: bool = False) -> dict[str, Any]:
         if build not in BUILDS:
-            raise ValueError(f"сборка — одна из {', '.join(BUILDS)}")
+            raise ValueError(tr("сборка — одна из {builds}", builds=", ".join(BUILDS)))
         if self._task is not None and not self._task.done():
             return dict(self.job)
         self._cancel = threading.Event()
@@ -157,7 +158,7 @@ class Setup:
                 cpp = await engines.llama_cpp_release(http, build)
             folder = engines_home() / "llama.cpp" / f"{cpp['tag']}-{build}"
             self.job.update(total=sum(a["size"] for a in cpp["assets"]), tag=cpp["tag"],
-                            step=f"llama.cpp {cpp['tag']} ({BUILDS[build]})")  # fmt: skip
+                            step=f"llama.cpp {cpp['tag']} ({tr(BUILDS[build])})")  # fmt: skip
             await self._publish()
             await asyncio.to_thread(self._fetch, cpp["assets"], engines_home() / "downloads", folder, 0, report)
             server = engines.server_in(folder)
@@ -165,14 +166,15 @@ class Setup:
             text = await asyncio.to_thread(path.read_text, encoding="utf-8")
             command = llama_config.server_command(text)
             if not command.startswith("${"):
-                raise engines.EngineError("в config.yaml llama-server указан в каждой модели, а не в макросе — "
-                                          f"поменяйте путь на {server} сами")  # fmt: skip
+                raise engines.EngineError(tr("в config.yaml llama-server указан в каждой модели, а не в макросе — "
+                                             "поменяйте путь на {server} сами", server=server))  # fmt: skip
             new = llama_config.set_macro(text, command.strip("${}"), "'\"" + str(server).replace("\\", "/") + "\"'")
             backup = await asyncio.to_thread(llama_config.write, path, new)
             ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-            if not ok and problem != llama_config.NOT_ANSWERING:
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
                 await asyncio.to_thread(llama_config.restore, path, backup)
-                raise engines.EngineError(f"llama-swap не принял новый конфиг ({problem}) — возвращён прежний")
+                raise engines.EngineError(tr("llama-swap не принял новый конфиг ({problem}) — возвращён прежний",
+                                             problem=problem))  # fmt: skip
             self.job.update(status="done", step="", backup=backup.name)
         except engines.EngineError as exc:
             self.job.update(status="failed", error=str(exc))
@@ -181,7 +183,7 @@ class Setup:
                 self.job.update(status="cancelled", error="")
             else:
                 log.exception("the engine's update failed")
-                self.job.update(status="failed", error=f"не вышло: {exc}")
+                self.job.update(status="failed", error=tr("не вышло: {error}", error=exc))
         await self._publish()
 
     def cancel(self) -> None:
@@ -216,7 +218,8 @@ class Setup:
             swap_folder = home / "llama-swap"
             assets = [*cpp["assets"], *swap["assets"]]
             self.job.update(total=sum(a["size"] for a in assets), tag=cpp["tag"], swap=swap["tag"],
-                            step=f"llama.cpp {cpp['tag']} ({BUILDS[build]}) и llama-swap {swap['tag']}")  # fmt: skip
+                            step=tr("llama.cpp {tag} ({build}) и llama-swap {swap}", tag=cpp["tag"],
+                                    build=tr(BUILDS[build]), swap=swap["tag"]))  # fmt: skip
             await self._publish()
             downloads = home / "downloads"
             await asyncio.to_thread(self._fetch, cpp["assets"], downloads, cpp_folder, 0, report)
@@ -225,11 +228,11 @@ class Setup:
             server = engines.server_in(cpp_folder)
             exe = swap_folder / "llama-swap.exe"
             if not exe.is_file():
-                raise engines.EngineError(f"в архиве llama-swap нет llama-swap.exe ({swap_folder})")
+                raise engines.EngineError(tr("в архиве llama-swap нет llama-swap.exe ({folder})", folder=swap_folder))
             config = swap_folder / "config.yaml"
             if not config.exists():
                 engines.write_config(config, server)
-            self.job.update(status="starting", step="запускаю llama-swap")
+            self.job.update(status="starting", step=tr("запускаю llama-swap"))
             await self._publish()
 
             def choose(conn) -> None:
@@ -244,7 +247,7 @@ class Setup:
             if started in ("running", "started", "slow"):
                 self.job.update(status="done", step="", started=started)
             else:
-                self.job.update(status="failed", error=f"llama-swap не запустился ({started})")
+                self.job.update(status="failed", error=tr("llama-swap не запустился ({state})", state=started))
         except engines.EngineError as exc:
             self.job.update(status="failed", error=str(exc))
         except Exception as exc:
@@ -252,7 +255,7 @@ class Setup:
                 self.job.update(status="cancelled", error="")
             else:
                 log.exception("the engine's install failed")
-                self.job.update(status="failed", error=f"не вышло: {exc}")
+                self.job.update(status="failed", error=tr("не вышло: {error}", error=exc))
         await self._publish()
 
     def _fetch(self, assets, downloads: Path, folder: Path, base: int, report) -> None:

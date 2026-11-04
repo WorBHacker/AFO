@@ -12,6 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from common.i18n import tr
+
 from .. import projects
 from ..auth import Client
 from ..completion import AFTER, BEFORE, Paused
@@ -132,7 +134,7 @@ async def edit(body: Edit, request: Request, client: Annotated[Client, Depends(r
     except Refused as exc:
         raise HTTPException(status_code=409, detail={"reason": exc.reason, "message": str(exc)}) from exc
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="модель не ответила за 2 минуты") from exc
+        raise HTTPException(status_code=504, detail=tr("модель не ответила за 2 минуты")) from exc
 
 
 @router.get("")

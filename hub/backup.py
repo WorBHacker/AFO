@@ -16,6 +16,8 @@ import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
+from common.i18n import decimal, tr
+
 from .db import Database, available_migrations, current_version, migrate
 
 log = logging.getLogger("hub.backup")
@@ -109,16 +111,16 @@ def restorable(folder: Path) -> list[Path]:
 def describe(path: Path) -> str:
     """One line for the list: name, when, size, the schema it has."""
     when = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-    size = f"{path.stat().st_size / 1024 / 1024:.1f} МБ".replace(".", ",")
+    size = decimal(tr("{size:.1f} МБ", size=path.stat().st_size / 1024 / 1024))
     try:
         conn = _read_only(path)
         try:
             version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
         finally:
             conn.close()
-        schema = f"схема {version}"
+        schema = tr("схема {version}", version=version)
     except sqlite3.Error:
-        schema = "не читается"
+        schema = tr("не читается")
     return f"{path.name:40} {when}  {size:>9}  {schema}"
 
 
@@ -133,7 +135,7 @@ def restore(copy: Path, target: Path, folder: Path, now: datetime | None = None)
     finally:
         conn.close()
     if verdict != "ok":
-        raise ValueError(f"копия {copy.name} повреждена: {verdict}")
+        raise ValueError(tr("копия {name} повреждена: {verdict}", name=copy.name, verdict=verdict))
     kept = None
     if target.exists():
         kept = folder / f"{REPLACED}{_stamp(now or datetime.now())}{SUFFIX}"

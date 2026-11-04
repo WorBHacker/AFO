@@ -44,6 +44,8 @@ from typing import Any
 
 import psutil
 
+from common.i18n import tr
+
 from . import agent_tools, model_settings, programs, store
 from .db import Database
 from .events import EventBus
@@ -74,7 +76,7 @@ TOOLS = [
         "name or text has every word of it - any case, Cyrillic and Latin alike: find='behruz bro' shows «Behruz "
         "Bro» and «Бехруз Бро» in a chat list (the numbers stay those of the whole look). With `question`, a "
         "snapshot of the window goes to the model with vision and you get its answer in words (for what the tree "
-        "does not say: a picture, a chart, colours).",
+        "does not say: a picture, a chart, colours).",  # i18n: keep
         "parameters": {
             "type": "object",
             "properties": {
@@ -151,14 +153,17 @@ READING = frozenset({"screen_windows", "screen_look"})
 FORBIDDEN = re.compile(
     r"парол|password|passcode|pin-?код|cvv|cvc|card\s*number|номер\s*карт|срок\s*действ|expir|iban|swift|бик\b"
     r"|оплат|оплатить|pay\b|payment|checkout|купить|buy\b|purchase|заказать|place\s*order|перевест|перевод\s*сред"
-    r"|transfer|принимаю|принять\s*услов|accept\s*(the\s*)?terms|i\s*agree|согласен\s*с\s*услов",
+    r"|transfer|принимаю|принять\s*услов|accept\s*(the\s*)?terms|i\s*agree|согласен\s*с\s*услов",  # i18n: keep
     re.IGNORECASE,
 )
 # what sends from the person's name: asked every time (D41)
-SENDS = re.compile(r"отправ|send\b|submit|опублик|publish|\bpost\b|ответить|reply|переслать|forward", re.IGNORECASE)
+SENDS = re.compile(
+    r"отправ|send\b|submit|опублик|publish|\bpost\b|ответить|reply|переслать|forward",  # i18n: keep
+    re.IGNORECASE,
+)
 # a name as the agent looks for it (2026-10-28: «behruz bro» became a made-up @behruz_bro): any case, Cyrillic as
 # Latin (х and x as h, as Uzbek and Russian names are spelt both ways), no apostrophes, @ or _
-CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ",
+CYRILLIC = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюяўқғҳ",  # i18n: keep
                     ["a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s",
                      "t", "u", "f", "h", "ts", "ch", "sh", "sh", "", "y", "", "e", "yu", "ya", "o", "q", "g", "h"],
                     strict=True))  # fmt: skip
@@ -180,7 +185,7 @@ def name_fits(query: str, text: str) -> bool:
 
 
 # a field Enter does not send from (a search, an address)
-SEARCHES = re.compile(r"поиск|найти|search|find|фильтр|filter|адрес|address|url", re.IGNORECASE)
+SEARCHES = re.compile(r"поиск|найти|search|find|фильтр|filter|адрес|address|url", re.IGNORECASE)  # i18n: keep
 BLOCKED_KEYS = {"win", "lwin", "rwin", "meta", "super"}  # the Start menu and the shell are outside the program
 BLOCKED_COMBOS = {("alt", "tab"), ("alt", "esc"), ("ctrl", "esc"), ("alt", "shift", "tab")}
 
@@ -907,7 +912,7 @@ class Computer:
         args = call["input"] if isinstance(call["input"], dict) else {}
         if cloud and call["name"] in READING and not await self._db.acall(agent_tools.screen_cloud):
             return ("not done: you are a cloud model, and the user did not let the cloud see other programs' windows "
-                    "(«Папки и сайты для агента»); a local model can look"), True  # fmt: skip
+                    "(«Папки и сайты для агента»); a local model can look"), True  # fmt: skip  # i18n: keep
         try:
             match call["name"]:
                 case "screen_windows":  # what another program shows may hold a key or a password (D10, D46)
@@ -993,10 +998,10 @@ class Computer:
             field = await uia.run(uia.focused_field, window["id"])
             if field is None:
                 sends = True
-                shown = {**shown, "element": "окно не впереди — куда уйдёт Enter, не видно"}
+                shown = {**shown, "element": tr("окно не впереди — куда уйдёт Enter, не видно")}
             elif field["text"] and field["value"] != "" and not SEARCHES.search(field["name"]):
                 sends = True
-                shown = {**shown, "element": field["name"] or "поле ввода", "text": str(field["value"] or "")[:300]}
+                shown = {**shown, "element": field["name"] or tr("поле ввода"), "text": str(field["value"] or "")[:300]}
         why = await ask("screen_send" if sends else "screen_act", shown, not sends)
         if why is not None:
             raise ScreenError(why)

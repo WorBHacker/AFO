@@ -33,11 +33,12 @@ import sys
 import time
 from pathlib import Path
 
-from common import __version__
+from common import __version__, i18n
+from common.i18n import tr
 from common.logging_setup import setup_logging
 from common.paths import DataPaths
 
-from . import backup
+from . import backup, language
 from .auth import APP_CLIENT, create_client, list_clients, revoke_client
 from .db import Database, utc_now
 from .secret_filter import clean
@@ -140,26 +141,26 @@ def stop(settings: HubSettings) -> int:
 
     hub = _running_hub(settings)
     if hub is None:
-        print("Хаб не запущен (нет hub.json или токена приложения)", file=sys.stderr)
+        print(tr("Хаб не запущен (нет hub.json или токена приложения)"), file=sys.stderr)
         return 1
     base, token = hub
     try:
         response = httpx.post(f"{base}/v1/shutdown", headers={"Authorization": f"Bearer {token}"}, timeout=10)
     except httpx.HTTPError:
-        print(f"Хаб не отвечает на {base}", file=sys.stderr)
+        print(tr("Хаб не отвечает на {address}", address=base), file=sys.stderr)
         return 1
     if response.status_code != 202:
-        print(f"Хаб отказал: {response.status_code} {response.text}", file=sys.stderr)
+        print(tr("Хаб отказал: {status} {text}", status=response.status_code, text=response.text), file=sys.stderr)
         return 2
     deadline = time.monotonic() + STOP_TIMEOUT_S
     while time.monotonic() < deadline:
         try:
             httpx.get(f"{base}/v1/health", timeout=1)
         except httpx.HTTPError:
-            print("Хаб остановлен")
+            print(tr("Хаб остановлен"))
             return 0
         time.sleep(0.2)
-    print(f"Хаб не остановился за {STOP_TIMEOUT_S} с", file=sys.stderr)
+    print(tr("Хаб не остановился за {seconds} с", seconds=STOP_TIMEOUT_S), file=sys.stderr)
     return 2
 
 
@@ -171,7 +172,7 @@ def let_go(python: Path | None = None) -> int:
 
     here = (python or Path(sys.executable)).resolve().parent
     if not any(here.glob("python*._pth")):
-        print("Это не установленная программа: её процессы не ищу", file=sys.stderr)
+        print(tr("Это не установленная программа: её процессы не ищу"), file=sys.stderr)
         return 1
     mine = []
     for process in psutil.process_iter(["exe"]):
@@ -194,26 +195,29 @@ def token_command(settings: HubSettings, args: argparse.Namespace) -> int:
             try:
                 token = db.call(lambda conn: create_client(conn, args.name, cloud=not args.local))
             except sqlite3.IntegrityError:
-                print(f"Клиент {args.name!r} уже есть", file=sys.stderr)
+                print(tr("Клиент {name} уже есть", name=repr(args.name)), file=sys.stderr)
                 return 1
-            kind = "локальный" if args.local else "облачный (D32)"
+            kind = tr("локальный") if args.local else tr("облачный (D32)")
             if args.save:
                 saved = save_token(paths, args.name, token)
-                print(f"Клиент {args.name!r}, {kind}. Токен сохранён в {saved}")
-                print(f"Переходник stdio для него: python -m hub mcp --client {args.name}")
+                print(tr("Клиент {name}, {kind}. Токен сохранён в {path}", name=repr(args.name), kind=kind, path=saved))
+                print(tr("Переходник stdio для него: python -m hub mcp --client {name}", name=args.name))
             else:
-                print(f"Клиент {args.name!r}, {kind}. Токен показывается один раз:\n{token}")
+                print(tr("Клиент {name}, {kind}. Токен показывается один раз:\n{token}", name=repr(args.name),
+                         kind=kind, token=token))  # fmt: skip
         elif args.action == "list":
             for c in db.call(list_clients):
-                state = f"отозван {c.revoked_at}" if c.revoked_at else "активен"
-                print(f"{c.name:20} {'облачный' if c.cloud else 'локальный':10} создан {c.created_at}  {state}")
+                state = tr("отозван {when}", when=c.revoked_at) if c.revoked_at else tr("активен")
+                kind = tr("облачный") if c.cloud else tr("локальный")
+                print(tr("{name:20} {kind:10} создан {when}  {state}", name=c.name, kind=kind, when=c.created_at,
+                         state=state))  # fmt: skip
         elif args.action == "revoke":
             if not db.call(lambda conn: revoke_client(conn, args.name)):
-                print(f"Активного клиента {args.name!r} нет", file=sys.stderr)
+                print(tr("Активного клиента {name} нет", name=repr(args.name)), file=sys.stderr)
                 return 1
             if args.name != APP_CLIENT:
                 (paths.tokens / f"{args.name}.token").unlink(missing_ok=True)
-            print(f"Токен клиента {args.name!r} отозван")
+            print(tr("Токен клиента {name} отозван", name=repr(args.name)))
         return 0
     finally:
         db.close()
@@ -250,14 +254,15 @@ def telegram_command(settings: HubSettings, args: argparse.Namespace) -> int:
         if args.action == "link":
             code = db.call(new_link_code)
             if not has_token:
-                print("Сначала токен бота: python -m hub key set telegram_bot_token (бота создаёт @BotFather)")
-            print(f"Отправьте своему боту в Telegram: /link {code}  (код действует 10 минут)")
+                print(tr("Сначала токен бота: python -m hub key set telegram_bot_token (бота создаёт @BotFather)"))
+            print(tr("Отправьте своему боту в Telegram: /link {code}  (код действует 10 минут)", code=code))
         elif args.action == "unlink":
             db.call(unlink)
-            print("Чат отвязан: бот больше никому не пишет")
+            print(tr("Чат отвязан: бот больше никому не пишет"))
         else:
             chat = db.call(linked_chat)
-            print(f"токен: {'задан' if has_token else 'не задан'}; чат: {chat if chat is not None else 'не привязан'}")
+            token = tr("задан") if has_token else tr("не задан")
+            print(tr("токен: {token}; чат: {chat}", token=token, chat=chat if chat is not None else tr("не привязан")))
         return 0
     finally:
         db.close()
@@ -273,30 +278,35 @@ def key_command(settings: HubSettings, args: argparse.Namespace) -> int:
     store = default_secret_store()
     if args.action == "status":
         for c in secret.values():
-            print(f"{c.name:22} {'задан' if store.get(c.name) else 'не задан':9} {c.title}: {c.purpose}")
+            state = tr("задан") if store.get(c.name) else tr("не задан")
+            print(f"{c.name:22} {state:9} {tr(c.title)}: {tr(c.purpose)}")
         return 0
     if args.name not in secret:
-        print(f"Неизвестный ключ {args.name!r}. Известные: {', '.join(secret)}", file=sys.stderr)
+        print(tr("Неизвестный ключ {name}. Известные: {known}", name=repr(args.name), known=", ".join(secret)),
+              file=sys.stderr)  # fmt: skip
         return 1
     if not isinstance(store, KeyringSecretStore):
-        print("Хранилище секретов Windows недоступно, ключ не сохранён (подробности в логе)", file=sys.stderr)
+        print(tr("Хранилище секретов Windows недоступно, ключ не сохранён (подробности в логе)"), file=sys.stderr)
         return 1
     if not _password_given(store):
         return 1
     if args.action == "set":
-        value = _read_secret(f"{secret[args.name].title} — {secret[args.name].purpose} (ввод скрыт): ")
+        chosen = secret[args.name]
+        value = _read_secret(tr("{title} — {purpose} (ввод скрыт): ", title=tr(chosen.title),
+                                purpose=tr(chosen.purpose)))  # fmt: skip
         if not value:
-            print("Пустое значение, ничего не сохранено", file=sys.stderr)
+            print(tr("Пустое значение, ничего не сохранено"), file=sys.stderr)
             return 1
         try:
             value = clean_value(secret[args.name], value)
         except ValueError as exc:
-            print(f"Не сохранено: {exc}", file=sys.stderr)
+            print(tr("Не сохранено: {error}", error=exc), file=sys.stderr)
             return 1
         store.set(args.name, value)
-        print(f"Ключ {args.name} сохранён в диспетчере учётных данных Windows")
+        print(tr("Ключ {name} сохранён в диспетчере учётных данных Windows", name=args.name))
     else:
-        print(f"Ключ {args.name} удалён" if store.delete(args.name) else f"Ключ {args.name} и не был задан")
+        print(tr("Ключ {name} удалён", name=args.name) if store.delete(args.name) else
+              tr("Ключ {name} и не был задан", name=args.name))  # fmt: skip
     _refresh_catalog(settings)
     return 0
 
@@ -308,8 +318,8 @@ def _password_given(store) -> bool:
     raw = store.get(PASSWORD)
     if not raw:
         return True
-    if not password_matches(json.loads(raw), _read_secret("Пароль подключений (ввод скрыт): ")):
-        print("Неверный пароль. Забыли его — python -m hub connections reset", file=sys.stderr)
+    if not password_matches(json.loads(raw), _read_secret(tr("Пароль подключений (ввод скрыт): "))):
+        print(tr("Неверный пароль. Забыли его — python -m hub connections reset"), file=sys.stderr)
         return False
     return True
 
@@ -321,12 +331,13 @@ def connections_command(settings: HubSettings, args: argparse.Namespace) -> int:
 
     store = default_secret_store()
     if not isinstance(store, KeyringSecretStore):
-        print("Хранилище секретов Windows недоступно (подробности в логе)", file=sys.stderr)
+        print(tr("Хранилище секретов Windows недоступно (подробности в логе)"), file=sys.stderr)
         return 1
-    titles = ", ".join(c.title for c in CONNECTIONS)
-    print(f"Будут удалены пароль подключений и все сохранённые подключения ({titles}).")
-    if _read_secret("Чтобы продолжить, напишите СБРОС: ").casefold() != "сброс":
-        print("Ничего не изменено")
+    titles = ", ".join(tr(c.title) for c in CONNECTIONS)
+    print(tr("Будут удалены пароль подключений и все сохранённые подключения ({titles}).", titles=titles))
+    word = tr("СБРОС")  # what the person types to go on, in their language
+    if _read_secret(tr("Чтобы продолжить, напишите {word}: ", word=word)).casefold() != word.casefold():
+        print(tr("Ничего не изменено"))
         return 1
     paths = settings.paths.ensure()
     db = Database(paths.db)
@@ -335,7 +346,8 @@ def connections_command(settings: HubSettings, args: argparse.Namespace) -> int:
         removed = db.call(lambda conn: reset(store, conn))
     finally:
         db.close()
-    print(f"Пароль сброшен; удалены: {', '.join(removed) or 'ничего не было задано'}. Новый пароль задаётся в окне")
+    print(tr("Пароль сброшен; удалены: {removed}. Новый пароль задаётся в окне",
+             removed=", ".join(removed) or tr("ничего не было задано")))  # fmt: skip
     _refresh_catalog(settings)
     return 0
 
@@ -347,34 +359,34 @@ def db_command(settings: HubSettings, args: argparse.Namespace) -> int:
     found = backup.restorable(paths.backups)
     if not args.name:
         if not found:
-            print(f"Копий базы нет ({paths.backups})")
+            print(tr("Копий базы нет ({folder})", folder=paths.backups))
             return 0
-        print(f"Копии базы в {paths.backups}, старые выше:")
+        print(tr("Копии базы в {folder}, старые выше:", folder=paths.backups))
         for copy in found:
             print(backup.describe(copy))
-        print("Восстановить: python -m hub db restore ИМЯ — при остановленном хабе")
+        print(tr("Восстановить: python -m hub db restore ИМЯ — при остановленном хабе"))
         return 0
     chosen = next((p for p in found if p.name == args.name), None)
     if chosen is None:
-        print(f"Копии {args.name!r} нет в {paths.backups}", file=sys.stderr)
+        print(tr("Копии {name} нет в {folder}", name=repr(args.name), folder=paths.backups), file=sys.stderr)
         return 1
     lock = InstanceLock(paths.hub_lock)
     try:
         lock.acquire()
     except AlreadyRunning:
-        print("Хаб работает. Остановите его (python -m hub stop) и закройте окно AFO: оно запускает хаб само",
+        print(tr("Хаб работает. Остановите его (python -m hub stop) и закройте окно AFO: оно запускает хаб само"),
               file=sys.stderr)  # fmt: skip
         return EXIT_ALREADY_RUNNING
     try:
         kept = backup.restore(chosen, paths.db, paths.backups)
     except (OSError, sqlite3.Error, ValueError) as exc:
-        print(f"База не восстановлена: {exc}", file=sys.stderr)
+        print(tr("База не восстановлена: {error}", error=exc), file=sys.stderr)
         return 1
     finally:
         lock.release()
-    print(f"База восстановлена из {chosen.name}")
+    print(tr("База восстановлена из {name}", name=chosen.name))
     if kept is not None:
-        print(f"Прежняя база сохранена как {kept.name}: вернуть её — python -m hub db restore {kept.name}")
+        print(tr("Прежняя база сохранена как {name}: вернуть её — python -m hub db restore {name}", name=kept.name))
     return 0
 
 
@@ -393,20 +405,20 @@ def _refresh_catalog(settings: HubSettings) -> None:
 
     hub = _running_hub(settings)
     if hub is None:
-        print("Хаб не запущен: каталог моделей обновится при его запуске")
+        print(tr("Хаб не запущен: каталог моделей обновится при его запуске"))
         return
     base, token = hub
     try:
         response = httpx.post(f"{base}/v1/models/sync", headers={"Authorization": f"Bearer {token}"}, timeout=30)
         response.raise_for_status()
     except httpx.HTTPError as exc:
-        print(f"Хаб не обновил каталог ({exc}); можно повторить: POST /v1/models/sync", file=sys.stderr)
+        print(tr("Хаб не обновил каталог ({error}); можно повторить: POST /v1/models/sync", error=exc), file=sys.stderr)
         return
     body = response.json()
     enabled = [m["id"] for m in body.get("models", []) if m.get("enabled")]
-    print(f"Каталог хаба обновлён, доступно моделей: {len(enabled)}")
+    print(tr("Каталог хаба обновлён, доступно моделей: {count}", count=len(enabled)))
     if body.get("errors"):
-        print(f"Ошибки поставщиков: {body['errors']}", file=sys.stderr)
+        print(tr("Ошибки поставщиков: {errors}", errors=body["errors"]), file=sys.stderr)
 
 
 def _utf8_pipes() -> None:
@@ -416,8 +428,23 @@ def _utf8_pipes() -> None:
             stream.reconfigure(encoding="utf-8")
 
 
+def speak(settings: HubSettings) -> str:
+    """The console's language, before any text is made: the one the window chose (the hub keeps a copy in its
+    database, read here without changing it), else as i18n.chosen() finds it."""
+    saved = None
+    with contextlib.suppress(Exception):  # no database yet, an older one, a locked file: as if none was chosen
+        conn = sqlite3.connect(f"file:{settings.paths.db.as_posix()}?mode=ro", uri=True)
+        try:
+            saved = language.saved(conn)
+        finally:
+            conn.close()
+    return i18n.set_language(i18n.chosen(saved))
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_pipes()
+    settings = HubSettings.from_env()
+    speak(settings)
     parser = argparse.ArgumentParser(prog="python -m hub", description="AFO hub")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="start the hub")
@@ -451,7 +478,6 @@ def main(argv: list[str] | None = None) -> int:
     database.add_argument("name", nargs="?", help="the copy to restore; without it, the list of copies")
     args = parser.parse_args(argv)
 
-    settings = HubSettings.from_env()
     if args.command == "token":
         return token_command(settings, args)
     if args.command == "key":
