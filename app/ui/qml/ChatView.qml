@@ -18,6 +18,9 @@ ListView {
     clip: true
     // rows this far out of view stay laid out, so their heights are real: a list of estimates moves under the reader
     cacheBuffer: 20000
+    // a row that leaves is used again for one that comes in, not made anew (2026-11-05: the longest frames while
+    // scrolling a 1000-message chat at 2560×1400 went from ~25 ms to ~15); it forgets its old message (reused())
+    reuseItems: true
     boundsBehavior: Flickable.StopAtBounds
     flickDeceleration: 4000
 
@@ -31,6 +34,7 @@ ListView {
         height: loader.height
         // the last row grows while an answer streams: its end stays in view
         onHeightChanged: if (list.follow && index === list.count - 1) Qt.callLater(list.toEnd)
+        ListView.onReused: if (loader.item && loader.item.reused) loader.item.reused()
         Loader {
             id: loader
             x: (slot.width - list.column) / 2

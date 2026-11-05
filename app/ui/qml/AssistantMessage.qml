@@ -7,6 +7,15 @@ Column {
     property var row: ({})  // read as row?.x: while a delegate is torn down, its row is null for a moment
     property int rowIndex: -1
     spacing: 12
+    // the chat's row now shows another answer (ChatView.reuseItems): its pieces are kept where they match, so
+    // their selection, a code block's sideways scroll and «Скопировано» are cleared
+    function reused() {
+        for (let i = 0; i < parts.count; ++i) {
+            const piece = parts.itemAt(i)
+            if (piece && piece.item && piece.item.reused)
+                piece.item.reused()
+        }
+    }
 
     Row {
         spacing: 8
@@ -83,6 +92,7 @@ Column {
     ListModel { id: pieces }
 
     Repeater {
+        id: parts
         model: pieces
         delegate: Loader {
             required property string kind

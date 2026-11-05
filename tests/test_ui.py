@@ -5129,6 +5129,82 @@ def test_a_coordinators_board_in_the_window(qapp):
         quick.close()
 
 
+def test_the_chats_rows_are_used_again_and_forget_their_state(qapp):
+    """2026-11-05 («прокрутка иногда лагает»): the chat uses a row that leaves the view again for one that comes in -
+    measured at 2560×1400, the longest frames while scrolling a 1000-message chat went from ~25 ms to ~15. A row used
+    again forgets what belonged to its old message: the selection, a code block moved sideways, «Скопировано»."""
+    from PySide6.QtCore import QMetaObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+
+        def walk(item):
+            yield item
+            for child in item.childItems():
+                yield from walk(child)
+
+        def find(prefix):
+            return [i for i in walk(quick.window.contentItem()) if i.metaObject().className().startswith(prefix)]
+
+        wait_until(lambda: find("AssistantMessage") and find("CodeBlock"))
+        (chat,) = find("ChatView")
+        assert chat.property("reuseItems") is True
+        user, answer, block = find("UserMessage")[0], find("AssistantMessage")[0], find("CodeBlock")[0]
+        texts = [i for i in walk(user) if i.metaObject().className() == "QQuickTextEdit"]
+        QMetaObject.invokeMethod(texts[0], "selectAll")
+        prose = [i for i in walk(answer) if i.metaObject().className().startswith("Prose")]
+        QMetaObject.invokeMethod(prose[0], "selectAll")
+        code = next(i for i in walk(block) if i.metaObject().className() == "QQuickTextEdit")
+        QMetaObject.invokeMethod(code, "selectAll")
+        scroller = next(i for i in walk(block) if i.metaObject().className() == "QQuickFlickable")
+        scroller.setProperty("contentX", 40.0)
+        assert texts[0].property("selectedText") and prose[0].property("selectedText") and code.property("selectedText")
+        QMetaObject.invokeMethod(user, "reused")
+        QMetaObject.invokeMethod(answer, "reused")
+        assert not texts[0].property("selectedText") and not prose[0].property("selectedText")
+        assert not code.property("selectedText") and scroller.property("contentX") == 0
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_busy_window_thread_is_written_down(qapp, caplog):
+    """The software scene graph draws on the window's thread, with its Python: a frame waits while that thread is
+    busy. The watch writes a stall longer than its limit to the window's log - how long, and where it was."""
+    from PySide6.QtCore import QTimer
+
+    from app.ui.hitches import HitchWatch
+
+    watch = HitchWatch(stall_ms=100, quiet_s=0)
+    watch.start()
+    try:
+
+        def slow_thing():
+            time.sleep(0.3)  # the window's thread busy: no frame, no event
+
+        for _ in range(5):
+            QApplication.processEvents()
+            time.sleep(0.02)
+        with caplog.at_level("INFO", logger="app.hitches"):
+            QTimer.singleShot(0, slow_thing)
+            wait_until(lambda: watch.told, timeout=5)
+        (said,) = watch.told
+        busy = int(said.split("busy ")[1].split(" ms")[0])
+        assert 250 <= busy <= 800 and "slow_thing" in said and said in caplog.text
+        for _ in range(10):  # an idle thread: nothing more is written
+            QApplication.processEvents()
+            time.sleep(0.02)
+        assert len(watch.told) == 1
+    finally:
+        watch.stop()
+
+
 def test_a_sandbox_chat_in_the_window(qapp):
     from PySide6.QtCore import QObject
 

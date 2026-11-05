@@ -22,6 +22,7 @@ from common.paths import data_paths
 from hub.secret_filter import clean
 
 from .ui import brand, translator
+from .ui.hitches import HitchWatch
 from .ui.main import QuickApp, use_software_rendering
 
 APP_ID = "AFO.App"  # the taskbar's group: the window's, and the installer's shortcuts' (installer/afo.iss)
@@ -51,7 +52,10 @@ def main(argv: list[str] | None = None) -> int:
         log.info("smoke check: the window was built (%d QML warnings)", len(quick.warnings))
         quick.close()
         return 1 if quick.warnings else 0
+    hitches = HitchWatch(app)  # a lag the person sees leaves a line in the log: how long, and where (2026-11-05)
+    hitches.start()
     code = app.exec()
+    hitches.stop()
     log.info("the window closed (exit code %s)", code)
     return code
 

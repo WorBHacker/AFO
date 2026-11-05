@@ -17,5 +17,6 @@ TextEdit {
     font.family: Theme.uiFont
     font.pixelSize: 14
     onLinkActivated: (link) => App.openLink(link)
+    function reused() { deselect() }
     HoverHandler { cursorShape: prose.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor }
 }

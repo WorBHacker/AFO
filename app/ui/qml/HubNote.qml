@@ -9,6 +9,7 @@ Item {
     property int rowIndex: -1
     property bool open: false
     implicitHeight: line.height + (open ? body.height + 8 : 0)
+    function reused() { open = false }  // the chat's row now shows another note (ChatView.reuseItems)
 
     AbstractButton {
         id: line

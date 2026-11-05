@@ -11,6 +11,11 @@ Rectangle {
     color: Theme.p.code_bg
     border.color: Theme.p.hairline
     implicitHeight: head.height + scroller.height + 2
+    function reused() {  // the chat's row now shows another answer: nothing of this block's stays
+        code.deselect()
+        scroller.contentX = 0
+        copy.done = false
+    }
 
     Rectangle {
         id: head

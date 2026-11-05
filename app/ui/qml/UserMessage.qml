@@ -7,6 +7,7 @@ Item {
     property int rowIndex: -1
     readonly property var files: message.row?.files || []
     implicitHeight: bubble.height
+    function reused() { body.deselect() }  // the chat's row now shows another message (ChatView.reuseItems)
     Rectangle {
         id: bubble
         anchors.right: parent.right
