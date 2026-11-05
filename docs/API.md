@@ -243,11 +243,12 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/goal` | токен | The chat's goal - the open one, else its last - with its recent checks and what the user wrote to it. |  |
-| PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits, judge_model_id: str \| None = None}` |
+| PUT | `/v1/conversations/{conversation_id}/goal` | только окно | A new goal for the chat; its first turn starts at once. | тело `{objective: str, criteria: list[Criterion], constraints: list[str], model_id: str, effort: str = 'medium', limits: Limits, judge_model_id: str \| None = None, milestones: list[str]}` |
 | POST | `/v1/conversations/{conversation_id}/goal/draft` | только окно | A contract drafted by a model from the user's words, for the window to show and change; nothing is set. | тело `{text: str, model_id: str = ''}` |
 | POST | `/v1/conversations/{conversation_id}/goal/pause` | только окно | No next turn starts; the turn running now finishes. |  |
 | POST | `/v1/conversations/{conversation_id}/goal/resume` | только окно | Back to work (a parked goal with higher limits): the next turn starts. | тело `Resume \| None` |
 | DELETE | `/v1/conversations/{conversation_id}/goal` | только окно | The goal is given up; the turn running now finishes, no next one starts. |  |
+| PUT | `/v1/conversations/{conversation_id}/goal/milestones` | только окно | The user's stages in place of those not done yet (11.5); the worker hears it at its next turn. | тело `{milestones: list[str]}` |
 | POST | `/v1/conversations/{conversation_id}/goal/steer` | только окно | The user's word while the goal works: read at the start of the next turn, without stopping this one. | тело `{text: str}` |
 
 ### proving
@@ -568,7 +569,7 @@ conversation's text, an approval or a terminal's output.
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
 | `goal.judging` | нет | `conversation_id`, `goal_id`, `model_id` | hub/goals.py |
 | `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
-| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving` | hub/goals.py |
+| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving`, `by` | hub/goals.py |
 | `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
 | `hub.shutdown_requested` | да | `by` | hub/api/system.py |
 | `hub.started` | да | `version`, `migrations_applied` | hub/server.py |

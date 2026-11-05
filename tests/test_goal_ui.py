@@ -17,6 +17,9 @@ GOAL = {"id": "g1", "conversation_id": "c1", "objective": "Тесты прохо
         "criteria": [{"n": 1, "kind": "command", "command": "pytest -q", "project_name": "LocalChat",
                       "expected_exit_code": 0, "verified": False},
                      {"n": 2, "kind": "semantic", "rule": "README описывает запуск", "verified": False}]}  # fmt: skip
+STAGES = [{"n": 1, "title": "Починить тесты", "status": "done", "summary": "поправлен test_app.py", "turn": 2},
+          {"n": 2, "title": "Обновить README", "status": "pending", "summary": "", "turn": None},
+          {"n": 3, "title": "Проверить запуск", "status": "pending", "summary": "", "turn": None}]  # fmt: skip
 CHECK = {"id": 5, "turn": 3, "route": "continue", "verdict": "INCOMPLETE", "detail": "",
          "missing": ["criterion 1: `pytest -q` ended with exit code 1 (expected 0)"],
          "results": [{"kind": "judge", "status": "INCOMPLETE", "feedback": "Допиши тест", "missing": []}]}  # fmt: skip
@@ -54,6 +57,14 @@ class GoalClient(FakeClient):
         self.goal_calls.append(("pause", cid))
         return self._status("paused")
 
+    def set_milestones(self, cid, titles):
+        self.goal_calls.append(("stages", cid, titles))
+        done = [m for m in self.goal_data["goal"].get("milestones") or [] if m["status"] == "done"]
+        self.goal_data["goal"]["milestones"] = done + [
+            {"n": len(done) + n, "title": t, "status": "pending", "summary": "", "turn": None}
+            for n, t in enumerate(titles, 1)]  # fmt: skip
+        return self.goal_data["goal"]
+
     def resume_goal(self, cid, limits=None):
         self.goal_calls.append(("resume", cid, limits))
         return self._status("active")
@@ -65,6 +76,25 @@ class GoalClient(FakeClient):
     def steer_goal(self, cid, text):
         self.goal_calls.append(("steer", cid, text))
         return {"id": 1, "text": text}
+
+
+def test_a_goals_stages_in_the_window():
+    """11.5: the stages with a tick and the one at work; the card's stages - a line each; the pending ones edited."""
+    rows_ = goal_view.stage_rows({**GOAL, "milestones": STAGES})
+    assert [(r["text"], r["done"], r["current"]) for r in rows_] == [
+        ("1. Починить тесты", True, False),
+        ("2. Обновить README", False, True),
+        ("3. Проверить запуск", False, False),
+    ]
+    assert rows_[0]["summary"] == "поправлен test_app.py" and goal_view.stage_rows(GOAL) == []
+    assert goal_view.pending_stages({**GOAL, "milestones": STAGES}) == "Обновить README\nПроверить запуск"
+    editor = {**goal_view.blank_editor(), "objective": "x", "milestones": "Первое\n\n Второе ",
+              "criteria": [{"kind": "semantic", "rule": "всё хорошо"}]}  # fmt: skip
+    contract, error = goal_view.contract_of(editor, "agent/m", "medium")
+    assert not error and contract["milestones"] == ["Первое", "Второе"]
+    drafted = goal_view.editor_of_draft(goal_view.blank_editor(), {"draft": {"objective": "y", "milestones": [
+        "Раз", "Два"]}})  # fmt: skip
+    assert drafted["milestones"] == "Раз\nДва"
 
 
 def test_what_the_goal_says_in_words():
@@ -170,6 +200,16 @@ def test_the_goal_in_the_window(qapp):  # noqa: F811
         assert noticed == [("Цель достигнута", "Другая\nцель достигнута")]
         assert app.flashText == "Цель достигнута: «Другая»"
 
+        # the stages (11.5): in the bar, the pending ones edited there
+        client.goal_data["goal"] = {**client.goal_data["goal"], "status": "active", "milestones": copy.deepcopy(STAGES)}
+        view.load()
+        wait_until(lambda: not app.bg.busy and len(view.stages) == 3)
+        assert view.pendingStages == "Обновить README\nПроверить запуск"
+        view.saveStages("Обновить README\n\nСобрать установщик\n")
+        wait_until(lambda: not app.bg.busy and [s["text"] for s in view.stages][-1] == "3. Собрать установщик")
+        assert client.goal_calls[-1] == ("stages", "c1", ["Обновить README", "Собрать установщик"])
+        assert app.flashText.startswith("Этапы изменены")
+
         view.clear()
         assert app.question["title"] == "Снять цель?"
         app.answer(True)
@@ -192,10 +232,12 @@ def test_the_goal_in_the_window(qapp):  # noqa: F811
         view.addCriterion("semantic")
         view.setCriterion(2, "rule", "сборка без предупреждений")
         view.setField("tokens", "200")
+        view.setField("milestones", "Тесты\nREADME")
         view.start()
         wait_until(lambda: not app.bg.busy and not sheet.property("opened"))
         _kind, cid, contract = client.goal_calls[-1]
         assert cid == "c1" and contract["model_id"] == app.modelId and contract["limits"]["max_tokens"] == 200_000
+        assert contract["milestones"] == ["Тесты", "README"]
         rules = [c.get("rule") for c in contract["criteria"]][1:]
         assert rules == ["README описывает запуск", "сборка без предупреждений"]
         wait_until(lambda: view.shown and view.status == "active")

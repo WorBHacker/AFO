@@ -126,6 +126,78 @@ Rectangle {
             width: parent.width - x
             spacing: 4
             topPadding: 6
+            // the stages (11.5): done ticked with the worker's line, the one at work marked; the rest edited here
+            Repeater {
+                model: Goal.stages
+                delegate: Row {
+                    required property var modelData
+                    spacing: 8
+                    width: parent.width
+                    Icon {
+                        name: modelData.done ? "check" : modelData.current ? "chevron-right" : "dots"
+                        size: 13
+                        tint: modelData.done ? Theme.p.ok : modelData.current ? Theme.p.accent : Theme.p.faint
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        width: parent.width - 24
+                        wrapMode: Text.Wrap
+                        text: modelData.text + (modelData.summary ? " — " + modelData.summary : "")
+                        color: modelData.current ? Theme.p.text : Theme.p.text_soft
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                }
+            }
+            Row {
+                visible: Goal.stages.length > 0 && !stageEditor.visible
+                spacing: 8
+                PlainButton {
+                    objectName: "goalEditStages"
+                    iconName: "edit"
+                    text: qsTr("Изменить этапы")
+                    onClicked: { stageText.text = Goal.pendingStages; stageEditor.visible = true; stageText.forceActiveFocus() }
+                }
+            }
+            Column {
+                id: stageEditor
+                objectName: "goalStageEditor"
+                visible: false
+                width: parent.width
+                spacing: 6
+                Rectangle {
+                    width: parent.width
+                    height: Math.min(140, Math.max(56, stageText.implicitHeight + 8))
+                    radius: 6
+                    color: Theme.p.card
+                    border.color: stageText.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
+                    TextArea {
+                        id: stageText
+                        objectName: "goalStageText"
+                        anchors.fill: parent
+                        wrapMode: TextEdit.Wrap
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                        placeholderText: qsTr("этапы, что ещё не готовы, — по одному на строку")
+                        background: null
+                    }
+                }
+                Row {
+                    spacing: 8
+                    PlainButton {
+                        objectName: "goalSaveStages"
+                        kind: "primary"
+                        iconName: "check"
+                        text: qsTr("Сохранить этапы")
+                        onClicked: { Goal.saveStages(stageText.text); stageEditor.visible = false }
+                    }
+                    PlainButton {
+                        text: qsTr("Отмена")
+                        onClicked: stageEditor.visible = false
+                    }
+                }
+            }
             Repeater {
                 model: Goal.criteria
                 delegate: Row {

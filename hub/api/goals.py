@@ -44,6 +44,11 @@ class GoalBody(BaseModel):
     effort: str = "medium"
     limits: Limits = Field(default_factory=Limits)
     judge_model_id: str | None = None  # the model that checks it (11.2); left out - the role «Проверка цели»
+    milestones: list[str] = Field(default_factory=list)  # its stages, in order (11.5)
+
+
+class Stages(BaseModel):
+    milestones: list[str]  # in place of the stages not done yet
 
 
 class Resume(BaseModel):
@@ -123,6 +128,15 @@ async def clear_goal(conversation_id: str, request: Request, client: Annotated[C
     """The goal is given up; the turn running now finishes, no next one starts."""
     _app_only(client)
     return {"goal": await _call(request.app.state.goals.clear(conversation_id, by=client.name))}
+
+
+@router.put("/conversations/{conversation_id}/goal/milestones")
+async def set_milestones(conversation_id: str, body: Stages, request: Request,
+                         client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
+    """The user's stages in place of those not done yet (11.5); the worker hears it at its next turn."""
+    _app_only(client)
+    return {"goal": await _call(request.app.state.goals.set_milestones(conversation_id, body.milestones,
+                                                                       by=client.name))}  # fmt: skip
 
 
 @router.post("/conversations/{conversation_id}/goal/steer")

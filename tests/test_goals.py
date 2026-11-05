@@ -199,6 +199,66 @@ def test_one_file_edited_again_and_again_without_progress_sends_an_investigator(
     assert "notes.txt" in done["checks"][0]["detail"] and "5" in done["checks"][0]["detail"]
 
 
+def test_a_goal_in_stages_keeps_one_line_for_a_stage_done(hub, repo):  # noqa: F811
+    """11.5 (the user's plan 5, level 2): the contract's stages in order; the worker ends a turn with «STAGE DONE:
+    …»; the hub accepts it when its own check finds nothing broken - and from then on the stage's turns go to the
+    model as one line, the contract staying where it was (the start of the goal). The conversation keeps it all."""
+    first = [("write_file", {"project": "proj", "path": "a.txt", "content": "a\n"})]
+    worker = use(hub, Gated("agent", [first, "Сделал a.txt.\nSTAGE DONE: создан a.txt", WRITE,
+                                      "STAGE DONE: создан done.txt"]))  # fmt: skip
+    _pid, conv = chat_with_project(hub, repo, worker)
+    started = set_goal(hub, conv, milestones=["Создать a.txt", "Создать done.txt"])
+    assert [(m["n"], m["title"], m["status"]) for m in started["milestones"]] == [
+        (1, "Создать a.txt", "pending"), (2, "Создать done.txt", "pending")]  # fmt: skip
+    done = settled(hub, conv, "achieved")
+    one, _two = done["goal"]["milestones"]
+    assert (one["status"], one["summary"], one["turn"]) == ("done", "создан a.txt", 1)
+    assert done["checks"][0]["results"][-1] == {"kind": "stage", "n": 1, "accepted": True, "why": ""}
+    start = hub_note(worker.prompts[0])
+    assert "STAGES (in order):\n1. Создать a.txt  <- now\n2. Создать done.txt" in start and "STAGE DONE:" in start
+    sent = worker.prompts[2]  # the second turn's first request
+    going = hub_note(sent)
+    assert "STAGE 1 ACCEPTED" in going and "2. Создать done.txt  <- now" in going
+    assert not any(m.get("tool_calls") for m in sent) and not any(m["role"] == "tool" for m in sent)
+    summary = [m["content"] for m in sent if m["role"] == "assistant"]
+    assert summary == ["[STAGE 1 DONE - turn 1] Создать a.txt: создан a.txt"]
+    assert any(m["role"] == "user" and 'type="start"' in str(m["content"]) for m in sent)  # the contract stays
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    assert sum(1 for m in stored if m["role"] == "tool") == 2  # the conversation itself keeps every call (D14)
+
+
+def test_a_stage_said_done_with_a_broken_file_is_not_accepted(hub, repo):  # noqa: F811
+    broken = [("read_file", {"project": "proj", "path": "src/app.py"}),
+              ("write_file", {"project": "proj", "path": "src/app.py", "content": "def f(:\n    pass\n"})]  # fmt: skip
+    fixed = [("write_file", {"project": "proj", "path": "src/app.py", "content": "def f():\n    pass\n"})]
+    worker = use(hub, Gated("agent", [broken, "STAGE DONE: написана f", fixed, "STAGE DONE: f поправлена", WRITE,
+                                      "Готово."]))  # fmt: skip
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, milestones=["Написать f", "Создать done.txt"])
+    done = settled(hub, conv, "achieved")
+    assert [(m["status"], m["turn"]) for m in done["goal"]["milestones"]] == [("done", 2), ("pending", None)]
+    refused = hub_note(worker.prompts[2])
+    assert "STAGE DONE was not accepted" in refused and "does not parse" in refused
+
+
+def test_the_user_changes_the_stages_while_the_goal_works(hub, repo):  # noqa: F811
+    worker = use(hub, Gated("agent", ["STAGE DONE: первое готово", WRITE, "Готово."]))
+    worker.gate.clear()
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, milestones=["А", "Б"])
+    wait(worker.waiting.is_set)
+    url = f"/v1/conversations/{conv}/goal/milestones"
+    assert hub.put(url, json={"milestones": ["Первое", "Второе", "Третье"]}).status_code == 200
+    assert hub.put(url, json={"milestones": ["x" * 300]}).status_code == 422
+    assert hub.put(url, json={"milestones": [f"{n}" for n in range(9)]}).status_code == 422
+    worker.gate.set()
+    done = settled(hub, conv, "achieved")
+    assert [(m["title"], m["status"]) for m in done["goal"]["milestones"]] == [
+        ("Первое", "done"), ("Второе", "pending"), ("Третье", "pending")]  # fmt: skip
+    assert "THE USER CHANGED THE STAGES" in hub_note(worker.prompts[1])
+    assert hub.put(url, json={"milestones": ["Новое"]}).status_code == 404  # no open goal any more
+
+
 def test_a_check_that_asks_is_stopped_and_says_so(hub, repo, monkeypatch):  # noqa: F811
     """A check command waiting for an answer is stopped like the model's commands (D46, step 13.8), and the worker
     reads why it is not met - not «ended with exit code None»."""
@@ -361,6 +421,7 @@ def test_a_model_drafts_the_contract_from_the_wish(hub, repo):  # noqa: F811
                 {"rule": "README говорит, как запускать"},
             ],
             "constraints": ["не трогать .github"],
+            "milestones": ["Починить тесты", "", "Обновить README"],
             "limits": {"max_turns": 999, "max_minutes": 30},
         },
         ensure_ascii=False,
@@ -373,6 +434,7 @@ def test_a_model_drafts_the_contract_from_the_wish(hub, repo):  # noqa: F811
     assert found["draft"] == {
         "objective": "Тесты проходят", "constraints": ["не трогать .github"], "limits": {"max_turns": 500,
                                                                                        "max_minutes": 30},
+        "milestones": ["Починить тесты", "Обновить README"],
         "criteria": [{"kind": "command", "command": "pytest -q", "project": "proj", "expected_exit_code": 0},
                      {"kind": "semantic", "rule": "README говорит, как запускать"}]}  # fmt: skip
     assert found["notes"] == ["команда «git push origin main» убрана: проверка только смотрит"]
@@ -427,6 +489,8 @@ def test_what_a_goal_refuses(hub, repo):  # noqa: F811
     assert "say the rule" in refused({"criteria": [{"kind": "semantic"}]})
     assert "max_turns" in refused({"limits": {"max_turns": 0}})
     assert "soft_ratio" in refused({"limits": {"soft_ratio": 0.1}})
+    assert "at most 8 stages" in refused({"milestones": [f"этап {n}" for n in range(9)]})  # 11.5
+    refused({"milestones": ["x" * 201]})
     assert "choose the model" in refused({"model_id": "nope/x"})
     assert hub.put("/v1/conversations/nope/goal", json=base).status_code == 404
     token = hub.app.state.db.call(lambda c: create_client(c, "cline"))

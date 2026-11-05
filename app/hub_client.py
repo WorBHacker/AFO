@@ -283,6 +283,10 @@ class HubClient:
     def clear_goal(self, conversation_id: str) -> dict:
         return self._call("DELETE", f"/v1/conversations/{conversation_id}/goal")["goal"]
 
+    def set_milestones(self, conversation_id: str, titles: list[str]) -> dict:
+        """The stages in place of those not done yet (11.5)."""
+        return self._call("PUT", f"/v1/conversations/{conversation_id}/goal/milestones", {"milestones": titles})["goal"]
+
     def steer_goal(self, conversation_id: str, text: str) -> dict:
         return self._call("POST", f"/v1/conversations/{conversation_id}/goal/steer", {"text": text})
 

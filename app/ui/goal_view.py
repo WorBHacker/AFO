@@ -88,8 +88,25 @@ def judge_word(check: dict[str, Any] | None) -> str:
     return (found or {}).get("feedback") or ""
 
 
+def stage_rows(goal: dict[str, Any]) -> list[dict[str, Any]]:
+    """The goal's stages (11.5): done ones ticked with the worker's line, the one at work marked."""
+    stages = goal.get("milestones") or []
+    current = next((m["n"] for m in stages if m["status"] == "pending"), None)
+    return [{"text": f"{m['n']}. {m['title']}", "done": m["status"] == "done", "current": m["n"] == current,
+             "summary": m.get("summary") or ""} for m in stages]  # fmt: skip
+
+
+def pending_stages(goal: dict[str, Any]) -> str:
+    """The stages not done yet, a line each - what the user edits."""
+    return "\n".join(m["title"] for m in goal.get("milestones") or [] if m["status"] == "pending")
+
+
+def lines_of(text: str) -> list[str]:
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
 def blank_editor() -> dict[str, Any]:
-    return {"wish": "", "objective": "", "criteria": [], "constraints": "", "judge": "", "notes": [],
+    return {"wish": "", "objective": "", "criteria": [], "constraints": "", "milestones": "", "judge": "", "notes": [],
             "drafted": False, **DEFAULT_LIMITS}  # fmt: skip
 
 
@@ -102,6 +119,7 @@ def editor_of_draft(editor: dict[str, Any], found: dict[str, Any]) -> dict[str, 
                           "code": str(c.get("expected_exit_code", 0)), "rule": c.get("rule", "")}
                          for c in draft.get("criteria") or []],
             "constraints": "\n".join(draft.get("constraints") or []), "notes": found.get("notes") or [],
+            "milestones": "\n".join(draft.get("milestones") or []),
             "turns": str(limits.get("max_turns") or editor["turns"]),
             "minutes": str(limits.get("max_minutes") or editor["minutes"]), "drafted": True}  # fmt: skip
 
@@ -136,9 +154,11 @@ def contract_of(editor: dict[str, Any], model_id: str, effort: str) -> tuple[dic
             limits[key] = int(float(text.replace(",", ".")) * scale)
         except ValueError:
             return None, tr("Пределы — числа")
-    rules = [line.strip() for line in (editor.get("constraints") or "").splitlines() if line.strip()]
+    rules = lines_of(editor.get("constraints") or "")
     contract = {"objective": objective, "criteria": criteria, "model_id": model_id, "effort": effort,
                 "constraints": rules, "limits": limits}  # fmt: skip
+    if stages := lines_of(editor.get("milestones") or ""):  # 11.5
+        contract["milestones"] = stages
     if editor.get("judge"):
         contract["judge_model_id"] = editor["judge"]
     return contract, ""
@@ -221,6 +241,21 @@ class GoalView(QObject):
     @Property(list, notify=changed)
     def criteria(self) -> list:
         return criteria_rows(self._goal) if self._goal else []
+
+    @Property(list, notify=changed)
+    def stages(self) -> list:
+        return stage_rows(self._goal) if self._goal else []
+
+    @Property(str, notify=changed)
+    def pendingStages(self) -> str:
+        return pending_stages(self._goal) if self._goal else ""
+
+    @Slot(str)
+    def saveStages(self, text: str) -> None:
+        """The stages not done yet, as the user wrote them (11.5) - the worker hears it at its next turn."""
+        titles = lines_of(text)
+        self._act(lambda cid: self.app.client.set_milestones(cid, titles),
+                  tr("Этапы изменены: модель узнает об этом в начале следующего хода"))  # fmt: skip
 
     @Property(list, notify=changed)
     def missing(self) -> list:
@@ -422,7 +457,7 @@ class GoalView(QObject):
 
     @Slot(str, str)
     def setField(self, name: str, value: str) -> None:
-        if name in ("wish", "objective", "constraints", "turns", "tokens", "minutes", "judge"):
+        if name in ("wish", "objective", "constraints", "milestones", "turns", "tokens", "minutes", "judge"):
             self._edit(**{name: value})
 
     @Slot(int, str, str)

@@ -18,6 +18,7 @@ Sheet {
         if (filled) {
             Goal.setField("objective", objective.text)
             Goal.setField("constraints", constraintsBox.area.text)
+            Goal.setField("milestones", stagesBox.area.text)
         }
     }
     onClosed: if (!Goal.starting) save()  // the card keeps what was typed for the next time
@@ -169,6 +170,15 @@ Sheet {
             area.text: sheet.ed.constraints || ""
             area.placeholderText: qsTr("например: не трогать папку migrations")
         }
+
+        SectionTitle { text: qsTr("Этапы — по одному на строку, по порядку (необязательно)") }
+        Box {
+            id: stagesBox
+            objectName: "goalStages"
+            area.text: sheet.ed.milestones || ""
+            area.placeholderText: qsTr("например: починить тесты\nобновить README")
+        }
+        Hint { text: qsTr("Модель скажет, когда этап готов; хаб проверит, и дальше этап пойдёт ей одной строкой итога — длинная цель не переполнит контекст.") }
 
         SectionTitle { text: qsTr("Пределы") }
         Row {

@@ -151,6 +151,7 @@ class ChatService:
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
         self.guards: dict[str, guard.TurnGuard] = {}  # a goal's turn: its constraints, an investigation (11.4)
+        self.compact = None  # a goal's stages done as one line each in the request (11.5; hub/goals.py sets it)
         # chats whose Claude Code went to read the web (D19): known at once, before its results are stored
         self.outside: set[str] = set()
         # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
@@ -464,6 +465,8 @@ class ChatService:
                 for notice in self.autonomy.take_notices(conversation_id):
                     await self._hub_note(conversation_id, notice)
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
+            if self.compact is not None:  # a goal's stages done: one line each (11.5), the conversation stays whole
+                history = await self.compact(conversation_id, history)
             prompt = _to_prompt(history, cloud=cloud, blobs=self.blobs)
             if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
                 prompt = [{"role": "system", "content": system}, *prompt]

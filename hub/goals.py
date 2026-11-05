@@ -11,6 +11,11 @@ the chat ends (hub/chat.py calls turn_ended) it counts what the goal used, runs 
                 the criteria in words, or tests were lost twice in a row;
     budget    - a limit is near: from soft_ratio of one on the worker gets its last turn (leave the files working,
                 write down what is done and what is left); after it the goal is parked.
+Stages (11.5, the user's plan 5, level 2): the contract may split the work into stages, in order. The worker ends a
+turn with «STAGE DONE: …» when the stage at work is done; the hub accepts it when its own check finds nothing broken
+(files parse, no test lost), and from then on that stage's turns go to the model as one line (`compact`) - the
+contract's note, the first of the goal, stays where it is, and the stored conversation stays whole (D14). The user may
+change the stages not done yet.
 Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file written again and again -
 the next turn investigates (writing and commands refused, the root cause asked for); after that, the human. The
 contract's constraints in the forms the hub can check are refused at the call; three tries in a turn - the human.
@@ -36,6 +41,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from typing import Any
@@ -51,6 +57,7 @@ from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
 from .secret_filter import clean
+from .store import MessageRow
 from .tools import ToolError
 
 log = logging.getLogger("hub.goals")
@@ -62,6 +69,10 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 TURN_STEPS = 30  # tool steps within one turn of a goal (a chat's own answer has 12)
 MAX_CRITERIA = 10
 MAX_CONSTRAINTS = 20
+MAX_MILESTONES = 8
+MILESTONE_CHARS = 200
+SUMMARY_CHARS = 300  # a stage's «STAGE DONE» line, kept
+STAGE_DONE = re.compile(r"^\W*(?:STAGE DONE|ЭТАП ГОТОВ)\W*:\s*(?P<said>.+?)\s*$", re.M | re.I)  # i18n: keep
 CHECK_TIMEOUT_S = 300  # a criterion's command, by default
 TAIL_LINES = 30  # of a failed criterion's command, for the worker
 TITLE_CHARS = 48
@@ -134,6 +145,7 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
     if not objective:
         raise GoalError("say what the goal is (`objective`)")
     criteria = check_criteria(data.get("criteria"), _attached(conn, conversation_id))
+    milestones = check_milestones(data.get("milestones") or [])
     constraints = data.get("constraints") or []
     if not isinstance(constraints, list):
         raise GoalError("`constraints` is a list of rules")
@@ -161,7 +173,19 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
         except judge.JudgeError as exc:
             raise GoalError(str(exc)) from None
     return {"objective": objective, "criteria": criteria, "constraints": constraints, "model_id": model_id,
-            "effort": effort, "judge_model_id": named, **limits}  # fmt: skip
+            "effort": effort, "judge_model_id": named, "milestones": milestones, **limits}  # fmt: skip
+
+
+def check_milestones(raw: Any, done: int = 0) -> list[str]:
+    """A goal's stages (11.5): a list of titles, in order - `done` of them done already count too."""
+    if not isinstance(raw, list):
+        raise GoalError("`milestones` is a list of stages")
+    found = [" ".join(str(m).split()) for m in raw if str(m).strip()]
+    if done + len(found) > MAX_MILESTONES:
+        raise GoalError(f"at most {MAX_MILESTONES} stages")
+    if any(len(m) > MILESTONE_CHARS for m in found):
+        raise GoalError(f"a stage is at most {MILESTONE_CHARS} characters")
+    return found
 
 
 def check_criteria(raw: Any, attached: list) -> list[dict[str, Any]]:
@@ -225,6 +249,8 @@ def create_goal(conn: sqlite3.Connection, conversation_id: str, contract: dict[s
             (goal_id, n, c["kind"], c.get("project_id"), c.get("command"), c.get("path", ""),
              c.get("expected_exit_code"), c.get("timeout_s"), c.get("rule")),
         )  # fmt: skip
+    conn.executemany("INSERT INTO goal_milestones (goal_id, n, title) VALUES (?, ?, ?)",
+                     [(goal_id, n, title) for n, title in enumerate(contract.get("milestones") or [], 1)])  # fmt: skip
     return goal_id
 
 
@@ -240,6 +266,8 @@ def _row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
     ).fetchall()
     goal["criteria"] = [{k: v for k, v in dict(c).items() if k != "goal_id"} | {"verified": bool(c["verified"])}
                         for c in found]  # fmt: skip
+    goal["milestones"] = [{k: v for k, v in dict(m).items() if k != "goal_id"} for m in conn.execute(
+        "SELECT * FROM goal_milestones WHERE goal_id = ? ORDER BY n", (row["id"],))]  # fmt: skip
     return goal
 
 
@@ -317,6 +345,30 @@ def criteria_text(goal: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def stages_text(goal: dict[str, Any]) -> str:
+    """The stages for the worker (11.5): done ones with their line, the one at work marked; "" with none."""
+    stages = goal.get("milestones") or []
+    if not stages:
+        return ""
+    current = next((m["n"] for m in stages if m["status"] == "pending"), None)
+    lines = [f"{m['n']}. {m['title']}" + (f"  (done: {m['summary']})" if m["status"] == "done" else "  <- now"
+                                          if m["n"] == current else "") for m in stages]  # fmt: skip
+    said = ("When the stage marked «now» is done, end your turn with a line «STAGE DONE: what is done, and where» "
+            "- the hub checks it and takes you to the next.")  # fmt: skip
+    return "STAGES (in order):\n" + "\n".join(lines) + "\n" + said + "\n"
+
+
+def stage_text(found: dict[str, Any], goal: dict[str, Any]) -> str:
+    """What the hub made of the worker's «STAGE DONE» (11.5)."""
+    stage = found.get("stage")
+    if not stage:
+        return ""
+    if not stage["accepted"]:
+        return f"STAGE DONE was not accepted: {stage['why']}. Fix that, then say it again.\n"
+    title = next((m["title"] for m in goal.get("milestones") or [] if m["n"] == stage["n"]), "")
+    return f"STAGE {stage['n']} ACCEPTED: {title}.\n"
+
+
 def start_note(goal: dict[str, Any], *, head: str = "", said: list[str] | None = None) -> str:
     """The first turn's word: the contract and how the work goes (`head`: why it starts again - a restart)."""
     rules = "\n".join(f"- {c}" + (" (the hub refuses it)" if guard.checkable(c) else "") for c in goal["constraints"])
@@ -329,6 +381,7 @@ def start_note(goal: dict[str, Any], *, head: str = "", said: list[str] | None =
         "goal met: the check does.\n"
         f"GOAL: {goal['objective']}\n"
         f"DONE WHEN (the hub checks each after every turn):\n{criteria_text(goal)}\n"
+        + stages_text(goal)
         + (f"HARD CONSTRAINTS - never break them:\n{rules}\n" if rules else "")
         + f"LIMITS: {goal['max_turns']} turns, {goal['max_tokens']} tokens, {goal['max_minutes']} minutes.\n"
         + (f"THE USER ADDED:\n{words}\n" if words else "")
@@ -370,6 +423,9 @@ def continue_note(goal: dict[str, Any], found: dict[str, Any], said: list[str], 
         + (f"{head}\n" if head else "")
         + "The work on the goal goes on. No greetings, no report to the user - go straight to your tools.\n"
         f"GOAL: {goal['objective']}\n"
+        + stage_text(found, goal)
+        + ("THE USER CHANGED THE STAGES - work by the list below.\n" if goal.get("stages_changed") else "")
+        + stages_text(goal)
         + check_text(found)
         + (f"THE USER ADDED WHILE YOU WORKED - it comes first in this step:\n{words}\n" if words else "")
         + f"{usage_line(goal)}\n"
@@ -423,14 +479,15 @@ turn in the user's projects; after each turn the hub checks the contract's crite
 Make it measurable. Prefer criteria the hub can run: one PowerShell command line in an attached project and the exit \
 code that means done - the project's tests, a build, a check such as `if (Test-Path done.txt) { exit 0 } else { exit \
 1 }`. Add a criterion in words only for what no command can check. A command only looks: never install, download, \
-push or delete. Add the hard constraints the wish implies (what must not be touched). The hub refuses breaking three \
+push or delete. A bigger goal may be split into 2 to 6 stages, in order (`milestones`, short titles); a small \
+one needs none. Add the hard constraints the wish implies (what must not be touched). The hub refuses breaking three \
 forms of them itself - write a constraint so when it fits: «не трогать: path, ...» (no writing there; a folder ends \
 with /, a pattern like *.lock), «только: path, ...» (writing only there), «не запускать: command, ...» (such commands \
 refused) - in English «don't touch:», «only:», «never run:». Suggest limits: turns (5 to 40) and minutes. Write the \
 objective, the rules and the constraints in the user's language.
 Answer with JSON only:
 {"objective": "...", "criteria": [{"command": "...", "project": "<an attached project's name>", \
-"expected_exit_code": 0}, {"rule": "..."}], "constraints": ["..."], \
+"expected_exit_code": 0}, {"rule": "..."}], "milestones": ["..."], "constraints": ["..."], \
 "limits": {"max_turns": 20, "max_minutes": 60}}"""  # i18n: keep
 DRAFT_FORM = '{"objective": ..., "criteria": [...], "constraints": [...], "limits": {...}}'
 MANIFESTS = ("package.json", "pyproject.toml", "pytest.ini", "setup.cfg", "Cargo.toml", "go.mod", "Makefile",
@@ -498,8 +555,56 @@ def read_draft(text: str, project_names: list[str]) -> dict[str, Any] | None:
         if isinstance(value, int) and not isinstance(value, bool):
             out_limits[key] = max(low, min(value, high))
     constraints = [" ".join(str(c).split())[:500] for c in data.get("constraints") or [] if str(c).strip()]
+    raw = data.get("milestones") if isinstance(data.get("milestones"), list) else []
+    stages = [" ".join(str(m).split())[:MILESTONE_CHARS] for m in raw if str(m).strip()][:MAX_MILESTONES]
     return {"objective": " ".join(str(data["objective"]).split())[:4000], "criteria": criteria[:MAX_CRITERIA],
-            "constraints": constraints[:MAX_CONSTRAINTS], "limits": out_limits, "notes": notes}  # fmt: skip
+            "constraints": constraints[:MAX_CONSTRAINTS], "limits": out_limits, "notes": notes,
+            **({"milestones": stages} if stages else {})}  # fmt: skip
+
+
+def _problems(found: dict[str, Any]) -> list[str]:
+    """What the hub's own check found broken - files that do not parse, tests lost - not the judge's words."""
+    said_by_judge = set((found.get("judge") or {}).get("missing") or [])
+    return [x for x in found.get("extra") or [] if x not in said_by_judge]
+
+
+def _hub_note(row: MessageRow) -> bool:
+    return row.role == "user" and any(b.get("hub") for b in row.content)
+
+
+def compacted(history: list[MessageRow], done: list[dict[str, Any]], start: int | None) -> list[MessageRow]:
+    """The history with each stage `done` as one line (11.5): from after the notes that opened it (the first of them
+    the contract) to its last message, the stage's turns are one message of the worker - «[STAGE n DONE - turns a-b]
+    title: its line»; the context layers stay. A stage the user wrote in is left as it is."""
+    lo, first_turn = (start or 0) - 1, 1
+    for stage in sorted(done, key=lambda m: m["n"]):
+        hi = stage["closed_seq"]
+        turns = f"turn {stage['turn']}" if stage["turn"] == first_turn else f"turns {first_turn}-{stage['turn']}"
+        history = _fold(history, lo, hi, f"[STAGE {stage['n']} DONE - {turns}] {stage['title']}: {stage['summary']}")
+        lo, first_turn = hi, (stage["turn"] or first_turn) + 1
+    return history
+
+
+def _fold(history: list[MessageRow], lo: int, hi: int, line: str) -> list[MessageRow]:
+    inside = [i for i, row in enumerate(history) if lo < row.seq <= hi]
+    k = 0
+    while k < len(inside) and _hub_note(history[inside[k]]):
+        k += 1  # the notes that opened the stage stay
+    gone = []
+    for i in inside[k:]:
+        row = history[i]
+        if row.role == "system":
+            continue  # the context layers stay
+        if row.role == "user" and not _hub_note(row):
+            return history  # the user's own words are never folded away
+        gone.append(i)
+    if not gone:
+        return history
+    first = history[gone[0]]
+    one = MessageRow(0, first.seq, "assistant", None, [{"type": "text", "text": line}], first.created_at)
+    drop = set(gone)
+    return [kept for i, row in enumerate(history) for kept in ([one] if i == gone[0] else []) + (
+        [row] if i not in drop else [])]  # fmt: skip
 
 
 def _found_of(check: dict[str, Any]) -> dict[str, Any]:
@@ -521,6 +626,7 @@ class Goals:
         self._bus = bus
         self._chat = chat
         self._judge = judging  # what changed and the judge's verdict (11.2)
+        chat.compact = self.compact  # a stage done goes to the model as one line (11.5)
         self._locks: dict[str, asyncio.Lock] = {}  # one check at a time per chat
         self._counted: set[str] = set()  # chats whose running turn is the goal's: it counts even if paused meanwhile
 
@@ -595,8 +701,9 @@ class Goals:
                                                form=DRAFT_FORM)  # fmt: skip
         except judge.JudgeError as exc:
             raise GoalError(f"the draft did not come: {exc}") from None
-        return {"draft": {k: found[k] for k in ("objective", "criteria", "constraints", "limits")},
-                "notes": found["notes"], "model_id": chosen, "cost_usd": found["cost_usd"]}  # fmt: skip
+        kept = ("objective", "criteria", "constraints", "limits", "milestones")
+        return {"draft": {k: found[k] for k in kept if k in found}, "notes": found["notes"], "model_id": chosen,
+                "cost_usd": found["cost_usd"]}  # fmt: skip
 
     async def _baselines(self, goal: dict[str, Any]) -> None:
         """Where each git project's files stand as the goal begins: the judge's diff runs from there (11.2)."""
@@ -723,6 +830,8 @@ class Goals:
                                     persist=False)  # fmt: skip
             results = await self.run_checks(goal)
             found = await self.contour(goal, results)
+            if (stage := await self._stage(goal, found)) is not None:  # «STAGE DONE» (11.5)
+                found["stage"] = stage
             goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
             verdict = found["verdict"]
             if verdict == "ACHIEVED":
@@ -735,8 +844,7 @@ class Goals:
                 await self._checked(goal, "blocked", verdict, found, tr(REGRESSED_AGAIN) + tr(ASK_PERSON))
                 return
             # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
-            said_by_judge = set((found.get("judge") or {}).get("missing") or [])
-            extra = [x for x in found.get("extra") or [] if x not in said_by_judge]
+            extra = _problems(found)
             mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
             history = await self._history(goal)
             edited, edits = await self._edits(goal, history, mark[1])
@@ -745,6 +853,74 @@ class Goals:
                 await self._checked(goal, "blocked", verdict, found, loop[1] + tr(ASK_PERSON), mark)
                 return
             await self._go_on(goal, verdict, found, mark=mark, investigate=loop[1] if loop else "")
+
+    async def _stage(self, goal: dict[str, Any], found: dict[str, Any]) -> dict[str, Any] | None:
+        """The worker said «STAGE DONE» this turn (11.5): the stage at work is done when the hub's own check found
+        nothing broken - kept with the worker's line and where its turns end. {kind: stage, n, accepted, why}."""
+        current = next((m for m in goal["milestones"] if m["status"] == "pending"), None)
+        if current is None:
+            return None
+
+        def said(conn):
+            rows = conn.execute("SELECT seq, role, content FROM messages WHERE conversation_id = ? ORDER BY seq DESC"
+                                " LIMIT 400", (goal["conversation_id"],)).fetchall()  # fmt: skip
+            for row in rows:  # the newest first: this turn's last word, back to the note that opened the turn
+                content = json.loads(row["content"])
+                if row["role"] == "user" and any(b.get("hub") for b in content):
+                    return None  # the turn ended with no word of its own: an older line is not this turn's
+                if row["role"] == "assistant":
+                    text = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                    claims = list(STAGE_DONE.finditer(text))
+                    return (claims[-1]["said"], rows[0]["seq"]) if claims else None
+            return None
+
+        claim = await self._db.acall(said)
+        if claim is None:
+            return None
+        problems = _problems(found)
+        if found.get("verdict") == "REGRESSED" or problems:
+            why = problems[0] if problems else "something that worked was lost (tests or constraints)"
+            return {"kind": "stage", "n": current["n"], "accepted": False, "why": why}
+        summary = clean(" ".join(claim[0].split()))[:SUMMARY_CHARS]
+        await self._db.acall(lambda conn: conn.execute(
+            "UPDATE goal_milestones SET status = 'done', summary = ?, turn = ?, closed_seq = ?, done_at = ?"
+            " WHERE goal_id = ? AND n = ?",
+            (summary, goal["turns_used"], claim[1], utc_now(), goal["id"], current["n"])))  # fmt: skip
+        return {"kind": "stage", "n": current["n"], "accepted": True, "why": ""}
+
+    async def set_milestones(self, conversation_id: str, titles: list[str], *, by: str) -> dict[str, Any]:
+        """The user's stages in place of those not done yet (11.5); the next note tells the worker."""
+        goal = await self._open(conversation_id)
+        done = [m for m in goal["milestones"] if m["status"] == "done"]
+        found = check_milestones(titles, len(done))
+
+        def write(conn):
+            conn.execute("DELETE FROM goal_milestones WHERE goal_id = ? AND status = 'pending'", (goal["id"],))
+            conn.executemany("INSERT INTO goal_milestones (goal_id, n, title) VALUES (?, ?, ?)",
+                             [(goal["id"], len(done) + n, t) for n, t in enumerate(found, 1)])  # fmt: skip
+            conn.execute("UPDATE goals SET stages_changed = 1, updated_at = ? WHERE id = ?", (utc_now(), goal["id"]))
+            return get_goal(conn, goal["id"])
+
+        changed = await self._db.acall(write)
+        await self._bus.publish("goal.status", {"conversation_id": conversation_id, "goal_id": goal["id"],
+                                                "status": changed["status"], "detail": changed["detail"],
+                                                "goal": changed, "proving": False, "by": by})  # fmt: skip
+        return changed
+
+    async def compact(self, conversation_id: str, history: list[MessageRow]) -> list[MessageRow]:
+        """The request's history with each stage done as one line (11.5) - for the open goal of the chat."""
+
+        def read(conn):
+            goal = goal_of(conn, conversation_id)
+            done = [m for m in (goal or {}).get("milestones") or [] if m["status"] == "done" and m["closed_seq"]]
+            if not done:
+                return None
+            start = conn.execute("SELECT min(seq) FROM messages WHERE conversation_id = ? AND created_at >= ?",
+                                 (conversation_id, goal["created_at"])).fetchone()[0]  # fmt: skip
+            return done, start
+
+        found = await self._db.acall(read)
+        return compacted(history, *found) if found else history
 
     async def _go_on(self, goal: dict[str, Any], verdict: str | None, found: dict[str, Any], *,
                      mark: tuple[str | None, int] = (None, 0), investigate: str = "", head: str = "",
@@ -765,6 +941,9 @@ class Goals:
                                 tr("последний ход: {limit}", limit=_limit_words(goal)), mark)  # fmt: skip
             await self._turn(goal, last_turn_note(goal, found, said))
             return
+        if goal.get("stages_changed"):  # the note says so this once
+            await self._db.acall(lambda conn: conn.execute("UPDATE goals SET stages_changed = 0 WHERE id = ?",
+                                                           (goal["id"],)))  # fmt: skip
         if investigate:
             await self._db.acall(lambda conn: conn.execute("UPDATE goals SET investigating = 1 WHERE id = ?",
                                                            (goal["id"],)))  # fmt: skip
@@ -942,6 +1121,8 @@ class Goals:
             results.append({"kind": "changes", "projects": found["evidence"]})
         if found.get("judge"):
             results.append({"kind": "judge", **found["judge"]})
+        if found.get("stage"):
+            results.append(found["stage"])
 
         def write(conn):
             cur = conn.execute(
