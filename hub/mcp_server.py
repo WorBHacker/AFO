@@ -172,10 +172,11 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         project: ProjectName,
         query: Annotated[str, Field(description="What to look for.")],
         ctx: Context,
-        regex: Annotated[bool, Field(description="The query is a regular expression.")] = False,
+        regex: Annotated[bool, Field(description="The query is a regular expression (a|b|c: any of them).")] = False,
         glob: Annotated[str, Field(description="Only files matching this, e.g. *.py.")] = "",
     ) -> str:
-        """Lines of a project's files that match, with file and line number (ripgrep; up to 50)."""
+        """Lines of a project's files that match, with file and line number (ripgrep; up to 50). For an idea
+        rather than a name, several words the code would use at once, as a regex: permission|authoriz|forbidden."""
         return await run("search_code", {"project": project, "query": query, "regex": regex, "glob": glob}, ctx)
 
     @server.tool(annotations=READ_ONLY, structured_output=False)

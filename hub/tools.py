@@ -77,13 +77,15 @@ TOOLS: list[dict[str, Any]] = [
         "name": "search_code",
         "description": f"Search a project's files - or all of this chat's projects' - for text (or a regular "
         f"expression); up to {SEARCH_MATCHES} matching lines with their file and line number. Case is ignored unless "
-        "the query has capitals.",
+        "the query has capitals. To find an idea rather than a name (where are rights checked? how are errors "
+        "handled?), search once for several words the code would use - in English, as names are written - with "
+        "regex true: permission|authoriz|forbidden|is_admin.",
         "parameters": {
             "type": "object",
             "properties": {
                 "project": ANY_PROJECT,
                 "query": {"type": "string", "description": "What to look for."},
-                "regex": {"type": "boolean", "description": "Treat the query as a regular expression."},
+                "regex": {"type": "boolean", "description": "Treat the query as a regular expression (a|b|c)."},
                 "glob": {"type": "string", "description": "Only files matching this, e.g. *.py (optional)."},
             },
             "required": ["query"],
@@ -365,8 +367,9 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
     taken = _shared(groups, matches)
     lines = [line for rows in taken for line in rows]
     where = ", ".join(p.name for p in targets)
-    if not lines:
-        return f"no matches for {query!r} in {where}"
+    if not lines:  # 18.1: an idea in the user's words is seldom in the code - what to try instead
+        return (f"no matches for {query!r} in {where} - try the words the code would use (English names), several "
+                "at once as a regex: a|b|c")  # fmt: skip
     note = f"\n[{hidden} matches in secret files not shown]" if hidden else ""
     left = sum(len(rows) for rows in groups) > len(lines)
     more = "\n[more matches exist: narrow the query or use glob]" if truncated or left or len(lines) == matches else ""

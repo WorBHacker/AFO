@@ -171,6 +171,26 @@ def test_search_and_find_symbol_go_through_all_the_projects_without_one_named(re
         assert "project" not in names[name]["parameters"]["required"]
 
 
+def test_an_idea_is_searched_by_several_words_of_the_code_at_once(ctx, repo):
+    """18.1 (D52): «where are rights checked?» is no word in the code - the description tells a model to look once
+    for several words the code would use, in English, as a regular expression; a small window's short description
+    says it too, and a search that finds nothing says what to try."""
+    from hub import compact
+
+    full = {t["name"]: t for t in TOOLS}["search_code"]["description"]
+    small = {t["name"]: t for t in compact.for_model(TOOLS, 8192)}["search_code"]["description"]
+    for said in (full, small):
+        assert "English" in said and "permission|authoriz|forbidden" in said and "regex" in said, said
+    (repo / "auth.py").write_text("def require_permission(user):\n    return user.admin\n", encoding="utf-8")
+    (repo / "guard.py").write_text("class AccessGuard:\n    forbidden = 403\n", encoding="utf-8")
+    found, error = tool("search_code", {"project": "proj", "query": "permission|authoriz|forbidden", "regex": True},
+                        ctx)  # fmt: skip
+    assert not error and "auth.py:1:" in found and "guard.py:2:" in found
+    nothing, error = tool("search_code", {"project": "proj", "query": "проверка прав"}, ctx)
+    assert not error and nothing.startswith("no matches for 'проверка прав' in proj")
+    assert "the words the code would use" in nothing and "a|b|c" in nothing
+
+
 def test_search_git_and_bad_input(ctx):
     found, error = tool("search_code", {"project": "proj", "query": "print"}, ctx)
     assert not error and "src/app.py:1: print('hi')" in found
