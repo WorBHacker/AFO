@@ -107,7 +107,7 @@ def test_hunks_and_a_file_rebuilt_from_some_of_them(repo):
     found = changes.hunks(planned)
     shown = changes.diff(planned.path, planned.before, planned.after)
     assert [h["header"] for h in found] == [line for line in shown.splitlines() if line.startswith("@@")]
-    assert [h["index"] for h in found] == [0, 1, 2] and "-строка 20\r\n" in found[1]["text"]
+    assert [h["index"] for h in found] == [0, 1, 2] and "-строка 20\n" in found[1]["text"]  # read as \n
     assert changes.hunks_diff(planned, found) == shown  # the card's diff, made of the hunks
 
     part = changes.compose(planned, {0, 2})
@@ -118,6 +118,23 @@ def test_hunks_and_a_file_rebuilt_from_some_of_them(repo):
     assert (part.before, part.target) == (planned.before, planned.target)
     assert changes.compose(planned, {0, 1, 2}).after == planned.after
     assert changes.compose(planned, set()).after == planned.before
+
+
+def test_claude_codes_writes_have_hunks_inside_the_project(repo, tmp_path):
+    """17.3: Claude Code's Edit and Write are worked out as the hub's edit_file and write_file - in the project
+    only; a file elsewhere is shown as before, without hunks."""
+    from hub.approvals import preview
+
+    (repo / "conf.py").write_text("".join("x = 1\n" if n in (1, 20) else f"# {n}\n" for n in range(1, 21)),
+                                  encoding="utf-8", newline="\n")  # fmt: skip
+    edit_all = {"file_path": str(repo / "conf.py"), "old_string": "x = 1", "new_string": "x = 2", "replace_all": True}
+    assert len(preview("Edit", edit_all, repo)["hunks"]) == 2
+    write = {"file_path": "conf.py", "content": "x = 2\n"}  # relative: to the project
+    assert len(preview("Write", write, repo)["hunks"]) == 1
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("a\n", encoding="utf-8")
+    shown = preview("Write", {"file_path": str(outside), "content": "b\n"}, repo)
+    assert "hunks" not in shown and "+b" in shown["text"]
 
 
 def test_what_the_model_is_told_of_the_hunks_left_out(repo):

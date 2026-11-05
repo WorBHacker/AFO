@@ -889,6 +889,27 @@ class ChatService:
             return await asyncio.to_thread(changes.partly, whole, set(chosen), change["id"], comment), False
         return f"{changes.summary(planned)} (change {change['id']}; the user can undo it)", False
 
+    async def write_part(self, conversation_id: str, project, tool: str, data: dict, decision: Decision) -> str:
+        """Claude Code's Edit or Write allowed in part (17.3, D51): its own tool would put all of it, so the hub
+        writes the part - worked out as the card showed it, kept as a change - and says so for Claude Code to read."""
+        hub = changes.as_hub_write(tool, data, project.root)
+        if hub is None or self.snapshots is None or decision.hunks is None:
+            return "not done: the hub could not write a part of this"
+        chosen = set(decision.hunks)
+        try:
+            whole = await asyncio.to_thread(changes.plan_at, project.root, *hub)
+            planned = await asyncio.to_thread(changes.compose, whole, chosen)
+            hashes = await asyncio.to_thread(changes.apply, planned, self.snapshots)
+        except changes.WriteError as exc:
+            return f"not done: {exc}"
+        except OSError as exc:
+            return f"not done: could not write the file: {exc.strerror or exc}"
+        change = await self._db.acall(lambda conn: changes.record(conn, project.id, planned, hashes, tool,
+                                                                   conversation_id, decision.approval_id))  # fmt: skip
+        await self._bus.publish("file.changed", {"change": change, "project_id": project.id}, project_id=project.id)
+        said = await asyncio.to_thread(changes.partly, whole, chosen, change["id"], decision.comment)
+        return f"Not run as asked: the user allowed a part of it, and the hub wrote that part. {said}"
+
     async def _sandbox_write(self, conversation_id: str, project, planned) -> tuple[str, bool]:
         if why := self.sandbox_broken.get(conversation_id, {}).get(project.id):
             return _no_sandbox(project, why), True

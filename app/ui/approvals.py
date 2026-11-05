@@ -7,6 +7,9 @@ oldest first ("1 из N"): that chat stands still until they are answered. The s
 requests of every chat; its list says who waits and opens that chat. A request with no chat (an outside MCP client)
 is answered in the list itself. The user allows once, for the rest of the chat, always in the project, or denies
 with a comment the agent reads.
+
+A write of several hunks (17.3, D51) shows each with a tick, on by default; unticked ones are left out - the
+answer allows the rest this once, with the comment saying why (the agent reads it).
 """
 
 from __future__ import annotations
@@ -30,7 +33,8 @@ HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code 
 SCOPE_WORDS = {"set_plan": N_("все новые планы этой задачи"), "start_step": N_("все шаги этой задачи")}
 PREVIEW_LINES = 400
 QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
-               "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time"]  # fmt: skip
+               "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time", "hunks", "ticked",
+               "hunkCount", "allowText"]  # fmt: skip
 
 
 def short_path(path: str, roots: list[str]) -> str:
@@ -99,6 +103,16 @@ def preview_lines(preview: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def hunk_rows(preview: dict[str, Any], skipped: set[int]) -> list[dict[str, Any]]:
+    """A write's hunks with their ticks (17.3) - only when there are two or more: one is the whole, nothing to
+    choose."""
+    hunks = preview.get("hunks") or []
+    if len(hunks) < 2:
+        return []
+    return [{"index": h["index"], "number": h["index"] + 1, "header": h["header"], "ticked": h["index"] not in skipped,
+             "lines": preview_lines({"kind": "diff", "text": h["text"]})} for h in hunks]  # fmt: skip
+
+
 def asker(approval: dict[str, Any], speakers: dict[str, str]) -> str:
     """Who asks: Claude Code, an outside client by its name, or the model of the chat (or agent run) it works in."""
     if approval.get("client") == HUB_CLAUDE_CODE:
@@ -113,9 +127,10 @@ def approval_rows(
     chats: dict[str, str],
     speakers: dict[str, str] | None = None,
     tasks: dict[str, str] | None = None,
+    skipped: dict[str, set[int]] | None = None,
 ) -> list[dict[str, Any]]:
     """`speakers`: a chat's model by name, for the requests of the hub's own models (they come with no client);
-    `tasks`: the open coordinator's tasks' runs - «[a] «Писатель»» (16.4)."""
+    `tasks`: the open coordinator's tasks' runs - «[a] «Писатель»» (16.4); `skipped`: the hunks unticked (17.3)."""
     roots = [p.get("path", "") for p in projects.values() if p.get("path")]
     rows = []
     for a in approvals:
@@ -132,6 +147,8 @@ def approval_rows(
                   else "outside" if cls == "network" else "network" if a.get("network")
                   or a.get("tool") == "http_request" else "personal" if a.get("tool") == "remember"
                   else "script" if a.get("tool") == "run_python" else "")  # fmt: skip
+        hunks = hunk_rows(preview, (skipped or {}).get(a["id"], set()))
+        ticked = sum(h["ticked"] for h in hunks)
         rows.append({
             "id": a["id"],
             "title": title(a.get("tool", ""), data, roots),
@@ -158,6 +175,11 @@ def approval_rows(
             "projectScope": tr("всегда в «{project}»", project=project) if project and not always else "",
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
+            "hunks": hunks,
+            "ticked": ticked,
+            "hunkCount": len(hunks),
+            "allowText": tr("Разрешить") if ticked == len(hunks)
+                         else tr("Разрешить отмеченное ({ticked} из {total})", ticked=ticked, total=len(hunks)),
         })  # fmt: skip
     return rows
 
@@ -224,6 +246,7 @@ class Approvals(QObject):
         self._card: dict[str, Any] = {}
         self._card_count = 0
         self._latest = ""  # the chat of the newest request: a click on its notice opens that chat
+        self._skipped: dict[str, set[int]] = {}  # a write's hunks unticked, by request (17.3)
         # the requests with no chat, as cards in the shield's list, each its own row: an answer or a new request
         # changes its own card only, so a comment being typed in another one stays
         self.loose = RowModel(self, roles=QUEUE_ROLES)
@@ -251,7 +274,8 @@ class Approvals(QObject):
     def _rows(self, approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         projects = {p["id"]: p for p in self.app.projects.items}
         chats = {c["id"]: c.get("title") or "" for c in self.app.conversations}
-        return approval_rows(approvals, projects=projects, chats=chats, speakers=self._speakers(), tasks=self._tasks())
+        return approval_rows(approvals, projects=projects, chats=chats, speakers=self._speakers(), tasks=self._tasks(),
+                             skipped=self._skipped)  # fmt: skip
 
     def tasks_changed(self) -> None:
         """The open coordinator's board changed: its tasks' requests may show on the card now."""
@@ -315,7 +339,13 @@ class Approvals(QObject):
 
     @Slot(str, bool, str, str)
     def answer(self, approval_id: str, allow: bool, scope: str, comment: str) -> None:
-        """The answer goes to the hub, and the request leaves the queue at once; it comes back if the hub refuses."""
+        """The answer goes to the hub, and the request leaves the queue at once; it comes back if the hub refuses.
+        A write with hunks unticked is allowed in part, this once (17.3); with none ticked there is nothing to allow."""
+        hunks = self._part(approval_id) if allow else None
+        if hunks == []:
+            return
+        scope = "once" if hunks else scope or "once"  # a part is no rule
+        self._skipped.pop(approval_id, None)
         self._pending = [a for a in self._pending if a["id"] != approval_id]
         self.changed.emit()
 
@@ -324,10 +354,29 @@ class Approvals(QObject):
             self.load()
 
         self.app._call(
-            lambda: self.app.client.answer_approval(approval_id, allow=allow, scope=scope or "once", comment=comment),
+            lambda: self.app.client.answer_approval(
+                approval_id, allow=allow, scope=scope, comment=comment, hunks=hunks
+            ),
             None,
             failed,
         )
+
+    @Slot(str, int)
+    def tickHunk(self, approval_id: str, index: int) -> None:
+        """A hunk of a write on or off (17.3)."""
+        if not any(a["id"] == approval_id for a in self._pending):
+            return
+        self._skipped.setdefault(approval_id, set()).symmetric_difference_update({index})
+        self.changed.emit()
+
+    def _part(self, approval_id: str) -> list[int] | None:
+        """The hunks ticked when some are not; None - the whole."""
+        found = next((a for a in self._pending if a["id"] == approval_id), {})
+        hunks = (found.get("preview") or {}).get("hunks") or []
+        gone = self._skipped.get(approval_id, set())
+        if len(hunks) < 2 or not gone:
+            return None
+        return [h["index"] for h in hunks if h["index"] not in gone]
 
     # ================= where the requests are =================
 
@@ -360,6 +409,8 @@ class Approvals(QObject):
         if not approval.get("id"):
             return
         self._pending = [a for a in self._pending if a["id"] != approval["id"]]
+        if kind != "approval.requested":
+            self._skipped.pop(approval["id"], None)
         if kind == "approval.requested" and approval.get("status") == "pending":
             self._pending.append(approval)
             self._latest = approval.get("conversation_id") or ""

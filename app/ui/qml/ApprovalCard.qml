@@ -4,7 +4,8 @@ import QtQuick.Controls.Basic
 // One approval request (D17, D18, D38): who asks what, the warning (destructive, network), a short preview - the
 // command, the first lines of a diff - that "Показать всё" opens inside the card, a comment for a denial, and the
 // answers. Keys while the card has focus: Ctrl+Enter allows once (never a destructive action: only its button
-// does), Esc goes to the comment, Enter in the comment denies with it.
+// does), Esc goes to the comment, Enter in the comment denies with it. A write of several hunks (17.3) shows each
+// with a tick: a digit ticks one; with some unticked the rest is allowed this once, the comment saying why.
 FocusScope {
     id: card
     property var request: ({})  // a row of Approvals: a map, or a list model's row with the same names
@@ -15,12 +16,17 @@ FocusScope {
     readonly property string requestId: request && request.id ? request.id : ""
     readonly property var lines: request && request.lines ? request.lines : []
     readonly property bool destructive: !!(request && request.destructive)
+    readonly property var hunks: request && request.hunks ? request.hunks : []
+    readonly property bool partial: hunks.length > 0 && request.ticked < hunks.length
 
     implicitHeight: body.height + 28
     // another request in the card: its own comment, its preview closed
     onRequestIdChanged: { comment.text = ""; expanded = false }
 
-    function allowOnce() { if (requestId) Approvals.answer(requestId, true, "once", "") }
+    function allowOnce() {
+        if (requestId && !(hunks.length > 0 && request.ticked === 0))
+            Approvals.answer(requestId, true, "once", partial ? comment.text : "")
+    }
     function deny() { if (requestId) Approvals.answer(requestId, false, "once", comment.text) }
 
     Keys.onPressed: (event) => {
@@ -30,6 +36,9 @@ FocusScope {
         } else if (event.key === Qt.Key_Escape) {
             event.accepted = true
             comment.forceActiveFocus()
+        } else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9 && event.key - Qt.Key_1 < card.hunks.length) {
+            event.accepted = true
+            Approvals.tickHunk(card.requestId, card.hunks[event.key - Qt.Key_1].index)
         }
     }
 
@@ -146,7 +155,7 @@ FocusScope {
         Rectangle {
             visible: card.lines.length > 0
             width: parent.width
-            height: Math.min(lines.height, lines.lineHeight * card.shortLines
+            height: Math.min(flick.contentHeight, lines.lineHeight * card.shortLines
                                            * (card.expanded ? Math.max(1, card.previewMax / (lines.lineHeight * card.shortLines)) : 1)) + 16
             radius: 6
             color: Theme.p.code_bg
@@ -156,8 +165,8 @@ FocusScope {
                 id: flick
                 anchors.fill: parent
                 anchors.margins: 8
-                contentWidth: lines.width
-                contentHeight: lines.height
+                contentWidth: card.hunks.length ? parts.width : lines.width
+                contentHeight: card.hunks.length ? parts.height : lines.height
                 clip: true
                 interactive: card.expanded || contentWidth > width
                 boundsBehavior: Flickable.StopAtBounds
@@ -169,8 +178,8 @@ FocusScope {
                     readonly property real lineHeight: metrics.height
                     FontMetrics { id: metrics; font.family: Theme.monoFont; font.pixelSize: 12 }
                     Repeater {
-                        // closed, only the lines it shows are made
-                        model: card.expanded ? card.lines : card.lines.slice(0, card.shortLines)
+                        // closed, only the lines it shows are made; none when the hunks show instead
+                        model: card.hunks.length ? [] : card.expanded ? card.lines : card.lines.slice(0, card.shortLines)
                         delegate: Text {
                             required property var modelData
                             text: modelData.text === "" ? " " : modelData.text
@@ -181,6 +190,66 @@ FocusScope {
                                    : modelData.mark === "file" ? Theme.p.faint : Theme.p.text_soft
                             font.family: Theme.monoFont
                             font.pixelSize: 12
+                        }
+                    }
+                }
+                // a write's hunks (17.3): each with its tick and number - the digit that ticks it
+                Column {
+                    id: parts
+                    objectName: "approvalHunks"
+                    visible: card.hunks.length > 0
+                    spacing: 6
+                    Repeater {
+                        model: card.hunks
+                        delegate: Column {
+                            id: part
+                            required property var modelData
+                            Row {
+                                spacing: 6
+                                AbstractButton {
+                                    objectName: "approvalHunk_" + part.modelData.index
+                                    width: 15
+                                    height: 15
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    focusPolicy: Qt.NoFocus  // the card keeps the keyboard
+                                    onClicked: Approvals.tickHunk(card.requestId, part.modelData.index)
+                                    background: Rectangle {
+                                        radius: 3
+                                        color: part.modelData.ticked ? Theme.p.item_selected : "transparent"
+                                        border.color: part.modelData.ticked ? Theme.p.accent : Theme.p.hairline_strong
+                                    }
+                                    contentItem: Item {
+                                        Icon {
+                                            anchors.centerIn: parent
+                                            visible: part.modelData.ticked
+                                            name: "check"
+                                            size: 11
+                                            tint: Theme.p.accent
+                                        }
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: part.modelData.number + "  " + part.modelData.header
+                                    textFormat: Text.PlainText
+                                    color: part.modelData.ticked ? Theme.p.accent : Theme.p.faint
+                                    font.family: Theme.monoFont
+                                    font.pixelSize: 12
+                                }
+                            }
+                            Repeater {
+                                model: part.modelData.lines
+                                delegate: Text {
+                                    required property var modelData
+                                    text: modelData.text === "" ? " " : modelData.text
+                                    textFormat: Text.PlainText
+                                    opacity: part.modelData.ticked ? 1 : 0.45
+                                    color: modelData.mark === "add" ? Theme.p.ok
+                                           : modelData.mark === "del" ? Theme.p.error : Theme.p.text_soft
+                                    font.family: Theme.monoFont
+                                    font.pixelSize: 12
+                                }
+                            }
                         }
                     }
                 }
@@ -202,7 +271,8 @@ FocusScope {
             id: comment
             objectName: "approvalComment"
             width: parent.width
-            placeholderText: qsTr("Комментарий к отказу — его прочтёт агент (необязательно)")
+            placeholderText: card.partial ? qsTr("Почему не всё — это прочтёт агент (необязательно)")
+                                          : qsTr("Комментарий к отказу — его прочтёт агент (необязательно)")
             Keys.onPressed: (event) => {
                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     event.accepted = true  // Ctrl+Enter here never allows: the user is writing why not
@@ -221,18 +291,19 @@ FocusScope {
                 objectName: "approveOnce"
                 kind: "primary"
                 iconName: "check"
-                text: qsTr("Разрешить")
+                text: card.request.allowText || qsTr("Разрешить")
+                enabled: !(card.hunks.length > 0 && card.request.ticked === 0)
                 onClicked: card.allowOnce()
             }
             PlainButton {
                 objectName: "approveChat"
-                visible: (card.request.alwaysAsk || "") === "" && (card.request.conversationId || "") !== ""
+                visible: (card.request.alwaysAsk || "") === "" && (card.request.conversationId || "") !== "" && !card.partial
                 text: qsTr("Разрешить: %1").arg(card.request.chatScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "chat", "")
             }
             PlainButton {
                 objectName: "approveProject"
-                visible: (card.request.projectScope || "") !== ""
+                visible: (card.request.projectScope || "") !== "" && !card.partial
                 text: qsTr("Разрешить %1").arg(card.request.projectScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "project", "")
             }
@@ -248,6 +319,7 @@ FocusScope {
             width: parent.width
             text: comment.activeFocus ? qsTr("Enter — отклонить с комментарием · Esc — назад")
                   : card.destructive ? qsTr("Esc — комментарий к отказу")
+                  : card.hunks.length ? qsTr("Ctrl+Enter — разрешить отмеченное · 1–9 — галочка у фрагмента · Esc — комментарий")
                   : qsTr("Ctrl+Enter — разрешить один раз · Esc — комментарий к отказу")
             visible: card.activeFocus
             elide: Text.ElideRight

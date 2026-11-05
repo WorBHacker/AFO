@@ -315,7 +315,8 @@ def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, Any
 
 
 def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, Any]:
-    if tool in HUB_WRITES and root is not None and (planned := _planned(tool, data, root)) is not None:
+    hub = changes.as_hub_write(tool, data, root) if root is not None else None
+    if hub is not None and root is not None and (planned := _planned(*hub, root)) is not None:
         found = changes.hunks(planned)
         return {"kind": "diff", "text": _cut(changes.hunks_diff(planned, found)), "note": planned.path, "hunks": found}
     if tool in HUB_WRITES:
@@ -404,9 +405,9 @@ def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, An
 
 
 def _planned(tool: str, data: dict[str, Any], root: Path) -> changes.Planned | None:
-    """The hub's own write as it would be done (17.2): the diff and its hunks from the very bytes the write would
-    put - so the hunks the user chooses are the ones it rebuilds the file from. None when it cannot be worked out
-    (the file changed meanwhile, say): the card shows the request as it was asked."""
+    """A write as the hub would do it (17.2; Claude Code's as its own, 17.3): the diff and its hunks from the very
+    bytes it would put - so the hunks the user chooses are the ones the file is rebuilt from. None when it cannot be
+    worked out (the file changed meanwhile, say): the card shows the request as it was asked."""
     try:
         return changes.plan_at(root, tool, data)
     except changes.WriteError, OSError:
@@ -528,6 +529,8 @@ class ApprovalQueue:
         key = grant_key(tool, data, root) if cover and not unsaved else None
         approval_id = uuid.uuid4().hex[:12]
         shown = await asyncio.to_thread(preview, tool, data, root)
+        if project_id is None:  # a part is kept as a change of a project (17.3): no project, no choosing
+            shown.pop("hunks", None)
 
         def write(conn: sqlite3.Connection) -> sqlite3.Row:
             covered = key is not None and (

@@ -1,9 +1,10 @@
 """A stand-in for the `claude` CLI in tests: speaks its stream-json, asks for permission through the hub's MCP.
 
 What it does depends on the user's message: "edit" - asks to edit notes.txt through --permission-prompt-tool and
-edits it if allowed; "run" - asks to run a PowerShell command ("run push": a destructive one) and says the verdict;
-"question" - asks the user (AskUserQuestion, through the same tool) and says what was picked; "fetch" - first reads a
-page (WebFetch, asked the same way), then goes on as the rest of the message says;
+edits it if allowed ("edit every": `x = 1` to `x = 2` all through conf.py); "run" - asks to run a PowerShell
+command ("run push": a destructive one) and says the verdict; "question" - asks the user (AskUserQuestion, through
+the same tool) and says what was picked; "fetch" - first reads a page (WebFetch, asked the same way), then goes on
+as the rest of the message says;
 "limit" - hits a subscription limit; "hang" - waits until stopped; anything else - one answer.
 It writes what it was started with (arguments, environment, input, folder) to $FAKE_CLAUDE_LOG, a line per run.
 """
@@ -89,14 +90,20 @@ def main() -> int:
                       {"type": "text_delta", "text": "Правлю файл."}):  # fmt: skip
             emit({"type": "stream_event", "event": {"type": "content_block_delta", "delta": delta},
                   "parent_tool_use_id": None})  # fmt: skip
-        edit = {"file_path": "notes.txt", "old_string": "свежий", "new_string": "правленый"}
+        edit = (
+            {"file_path": "conf.py", "old_string": "x = 1", "new_string": "x = 2", "replace_all": True}
+            if "every" in text
+            else {"file_path": "notes.txt", "old_string": "свежий", "new_string": "правленый"}
+        )
         for block in ({"type": "thinking", "thinking": "Нужно поправить."}, {"type": "text", "text": "Правлю файл."},
                       {"type": "tool_use", "id": "toolu_1", "name": "Edit", "input": edit}):  # fmt: skip
             emit({"type": "assistant", "parent_tool_use_id": None, "message": {"id": "m1", "content": [block]}})
         verdict = ask_permission(option(argv, "--mcp-config"), option(argv, "--permission-prompt-tool"), "Edit", edit)
         if verdict["behavior"] == "allow":
-            path = Path("notes.txt")
-            path.write_text(path.read_text(encoding="utf-8").replace("свежий", "правленый"), encoding="utf-8")
+            path, old, new = Path(edit["file_path"]), edit["old_string"], edit["new_string"]
+            text = path.read_text(encoding="utf-8")
+            path.write_text(text.replace(old, new) if edit.get("replace_all") else text.replace(old, new, 1),
+                            encoding="utf-8")  # fmt: skip
             result, answer = {"type": "tool_result", "tool_use_id": "toolu_1", "content": "edited"}, "Готово."
         else:
             result = {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True, "content": verdict["message"]}

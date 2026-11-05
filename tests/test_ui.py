@@ -258,6 +258,16 @@ APPROVAL = {
 }
 
 
+PARTED_HUNKS = [{"index": i, "header": f"@@ -{n},4 +{n},4 @@", "text": f" # {n}\n-x = 1\n+x = 2\n # {n + 2}\n"}
+                for i, n in enumerate((1, 17, 37))]  # fmt: skip
+PARTED = {
+    "kind": "diff",
+    "note": "conf.py",
+    "hunks": PARTED_HUNKS,
+    "text": "--- a/conf.py\n+++ b/conf.py\n" + "".join(f"{h['header']}\n{h['text']}" for h in PARTED_HUNKS),
+}
+
+
 LLAMA = [
     {"id": "coder", "name": "Coder", "engine": "strata", "editable": False, "ttl": 0,
      "profile": "C:/Strata/launch/coder.json"},
@@ -1391,10 +1401,10 @@ class FakeClient:
         self.change_list = [{**c, "reverted_at": "2026-10-27T05:00:00Z"} for c in self.change_list]
         return self.change_list[0]
 
-    def answer_approval(self, approval_id, *, allow, scope="once", comment=""):
+    def answer_approval(self, approval_id, *, allow, scope="once", comment="", hunks=None):
         if approval_id == "gone":
             raise HubError("no open approval gone: it was answered already, or never asked")
-        self.answers.append((approval_id, allow, scope, comment))
+        self.answers.append((approval_id, allow, scope, comment, *([hunks] if hunks is not None else [])))
         self.pending = [a for a in self.pending if a["id"] != approval_id]
         return {"id": approval_id, "status": "allowed" if allow else "denied"}
 
@@ -2482,6 +2492,70 @@ def test_the_card_on_top_of_the_chat(qapp):
         item_named(listed.property("contentItem"), "waiting_other").clicked.emit()
         assert app.mode == "chats" and app.current == "other"
         drawn(lambda: not listed.property("visible") and app.approvals.card.get("id") == "ap9")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_write_allowed_in_part_on_the_card(qapp):
+    """17.3 (D51): a write of several hunks shows each with a tick; a digit ticks one from the keyboard; unticked,
+    the button says «Разрешить отмеченное (N из M)», a part is allowed this once only (no «for the chat»), and the
+    comment goes with it - the agent reads why the rest was left out."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtGui import QKeyEvent
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def key(item, code, modifiers=Qt.KeyboardModifier.NoModifier) -> None:
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(item, QKeyEvent(kind, code, modifiers))
+
+    def settle() -> None:
+        for _ in range(10):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.pending = [{**APPROVAL, "preview": PARTED}]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.approvals.count == 1)
+        opened(app)
+        card = quick.window.findChild(QObject, "chatApprovalCard")
+        wait_until(lambda: item_named(card, "approvalHunk_2") is not None)
+        allow = item_named(card, "approveOnce")
+        assert allow.property("text") == "Разрешить" and item_named(card, "approveChat").property("visible")
+        card.forceActiveFocus()
+        key(card, Qt.Key.Key_2)  # the second hunk off
+        settle()
+        assert app.approvals.card["ticked"] == 2 and allow.property("text") == "Разрешить отмеченное (2 из 3)"
+        assert not item_named(card, "approveChat").property("visible")  # a part: this once only
+        item_named(card, "approvalHunk_1").clicked.emit()  # and on again by its tick
+        settle()
+        assert app.approvals.card["ticked"] == 3 and item_named(card, "approveChat").property("visible")
+        key(card, Qt.Key.Key_2)
+        settle()
+        item_named(card, "approvalComment").setProperty("text", "x на 20-й строке не трогай")
+        card.forceActiveFocus()
+        key(card, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+        wait_until(lambda: client.answers == [("ap1", True, "once", "x на 20-й строке не трогай", [0, 2])])
+        for n in (1, 2, 3):
+            app.approvals.tickHunk("ap1", n - 1)  # an answered request's ticks: gone with it
+        assert app.approvals._skipped == {}
+
+        client.pending = [{**APPROVAL, "id": "ap5", "preview": PARTED}]
+        app.approvals.load()
+        wait_until(lambda: app.approvals.card.get("id") == "ap5")
+        for n in range(3):
+            app.approvals.tickHunk("ap5", n)
+        settle()
+        assert app.approvals.card["ticked"] == 0 and not item_named(card, "approveOnce").property("enabled")
+        app.approvals.answer("ap5", True, "once", "")  # nothing ticked: nothing to allow
+        settle()
+        assert len(client.answers) == 1 and app.approvals.count == 1
         assert quick.warnings == []
     finally:
         quick.close()
@@ -3921,6 +3995,16 @@ def test_approval_rows():
     mine, found = approval_rows([own, search], projects=projects, chats={}, speakers={"c1": "Coder"})
     assert (mine["who"], mine["title"]) == ("Coder", "Править a.txt")
     assert (found["who"], found["title"]) == ("Агент", "Искать в сети «qt 6.12»")  # an unknown chat's model
+    assert edit["hunks"] == [] and edit["allowText"] == "Разрешить"  # one hunk: nothing to choose
+    # a write of several hunks (17.3, D51): each with its tick, its lines marked; unticked - the button says so
+    parted = {**APPROVAL, "id": "ap7", "preview": PARTED}
+    (whole,) = approval_rows([parted], projects=projects, chats={})
+    assert [(h["number"], h["ticked"]) for h in whole["hunks"]] == [(1, True), (2, True), (3, True)]
+    assert whole["hunks"][1]["header"] == "@@ -17,4 +17,4 @@" and whole["allowText"] == "Разрешить"
+    assert [line["mark"] for line in whole["hunks"][1]["lines"]] == ["", "del", "add", ""]
+    (part,) = approval_rows([parted], projects=projects, chats={}, skipped={"ap7": {1}})
+    assert (part["ticked"], part["hunkCount"]) == (2, 3) and not part["hunks"][1]["ticked"]
+    assert part["allowText"] == "Разрешить отмеченное (2 из 3)"
 
 
 def test_claude_code_tool_rows_and_footer():

@@ -80,6 +80,7 @@ WRITE_TOOLS: list[dict[str, Any]] = [
     },
 ]
 WRITE_TOOL_NAMES = {tool["name"] for tool in WRITE_TOOLS}
+CLAUDE_WRITES = {"Write": "write_file", "Edit": "edit_file"}  # Claude Code's own, worked out as the hub's (17.3)
 
 
 class WriteError(Exception):
@@ -281,6 +282,28 @@ def plan(tool: str, project: Project, args: dict[str, Any]) -> Planned:
     return plan_at(project.root, tool, args)
 
 
+def as_hub_write(tool: str, data: dict[str, Any], root: Path) -> tuple[str, dict[str, Any]] | None:
+    """A write as the hub's write_file / edit_file in the project at `root` (17.3): the hub's own as it is, Claude
+    Code's Write and Edit by their fields - so the card's diff, its hunks and a part of it are worked out one way.
+    None for another tool, or for a file outside the project."""
+    if tool in WRITE_TOOL_NAMES:
+        return tool, data
+    if tool not in CLAUDE_WRITES:
+        return None
+    path = Path(str(data.get("file_path") or ""))
+    try:
+        rel = Path(os.path.relpath(path if path.is_absolute() else root / path, root))
+    except ValueError:  # another drive
+        return None
+    if not rel.parts or rel.parts[0] == "..":
+        return None
+    if tool == "Write":
+        return "write_file", {"path": rel.as_posix(), "content": data.get("content", "")}
+    return "edit_file", {"path": rel.as_posix(), "old_text": data.get("old_string", ""),
+                         "new_text": data.get("new_string", ""),
+                         "replace_all": bool(data.get("replace_all"))}  # fmt: skip
+
+
 def plan_at(root: Path, tool: str, args: dict[str, Any]) -> Planned:
     """plan() in the project at `root` - also what the approval card shows (hub/approvals.py, 17.2)."""
     rel, target = _target(root, args)
@@ -341,7 +364,7 @@ def diff(path: str, before: bytes | None, after: bytes | None) -> str:
         fromfile=f"a/{path}" if before is not None else "/dev/null",
         tofile=f"b/{path}" if after is not None else "/dev/null",
     ))  # fmt: skip
-    text = "".join(line if line.endswith("\n") else line + "\n" for line in lines[:DIFF_LINES])
+    text = "".join(_shown(line) for line in lines[:DIFF_LINES])
     return text + (tr("… ещё {count} строк", count=len(lines) - DIFF_LINES) + "\n" if len(lines) > DIFF_LINES else "")
 
 
@@ -355,6 +378,11 @@ def _diffed(planned: Planned) -> tuple[list[tuple], list[list[tuple]]]:
     matcher = difflib.SequenceMatcher(None, _lines(planned.before), _lines(planned.after))
     ops = list(matcher.get_opcodes())
     return ops, [g for g in matcher.get_grouped_opcodes(CONTEXT) if any(op[0] != "equal" for op in g)]
+
+
+def _shown(line: str) -> str:
+    """A diff's line as it is read: ending in \\n whatever the file's own end (CRLF) - those are its bytes."""
+    return line.rstrip("\r\n") + "\n"
 
 
 def _range(start: int, stop: int) -> str:
@@ -378,7 +406,7 @@ def hunks(planned: Planned) -> list[dict[str, Any]]:
             else:
                 lines += ["-" + line for line in old[i1:i2]] + ["+" + line for line in new[j1:j2]]
         out.append({"index": index, "header": f"@@ -{_range(first[1], last[2])} +{_range(first[3], last[4])} @@",
-                    "text": "".join(line if line.endswith("\n") else line + "\n" for line in lines)})  # fmt: skip
+                    "text": "".join(_shown(line) for line in lines)})  # fmt: skip
     return out
 
 

@@ -276,6 +276,30 @@ def test_a_denial_with_a_comment_reaches_claude_code(hub):
     assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "свежий файл\n"
 
 
+def test_a_part_of_claude_codes_edit_is_written_by_the_hub(hub):
+    """17.3 (D51): Claude Code's Edit of several hunks shows them on the card as the hub's own writes do; allowed in
+    part, the hub writes that part itself (a change in «Изменения», undone the same) and answers Claude Code with a
+    «no» that says what went, where the rest is and to read the file again - its own Edit would have put it all."""
+    (hub.repo / "conf.py").write_text("".join("x = 1\n" if n in (1, 20, 40) else f"# {n}\n" for n in range(1, 41)),
+                                      encoding="utf-8", newline="\n")  # fmt: skip
+    cid = chat_with_project(hub)
+    send(hub, cid, "edit every x")
+    asked = hub.wait_approval()
+    assert asked["tool"] == "Edit" and [h["index"] for h in asked["preview"]["hunks"]] == [0, 1, 2]
+    decided = hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": True, "hunks": [0, 2],
+                                                                  "comment": "20-ю не трогай"})  # fmt: skip
+    assert decided.status_code == 200
+    chat = hub.wait_idle(cid)
+    said = chat["messages"][2]["content"][0]["output"]
+    assert said.startswith("Not run as asked: the user allowed a part of it, and the hub wrote that part. conf.py: "
+                           "2 of 3 hunks applied")  # fmt: skip
+    assert "line 20" in said and "20-ю не трогай" in said and "read it again" in said
+    lines = (hub.repo / "conf.py").read_text(encoding="utf-8").splitlines()
+    assert (lines[0], lines[19], lines[39]) == ("x = 2", "x = 1", "x = 2")
+    (change,) = hub.http.get(f"/v1/projects/{hub.pid}/changes").json()["changes"]
+    assert (change["tool"], change["path"], change["approval_id"]) == ("Edit", "conf.py", asked["id"])
+
+
 def test_earlier_turns_of_other_models_go_with_the_first_message(hub):
     cid = chat_with_project(hub)
     hub.app.state.db.call(lambda c: store.add_message(c, cid, "user", [{"type": "text", "text": "что в проекте?"}]))

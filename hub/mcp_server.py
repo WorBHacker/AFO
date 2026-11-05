@@ -316,6 +316,10 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             root=root,
             cover=not tainted,
         )
+        if decision.allow and decision.hunks is not None and turn is not None and turn.project is not None:
+            # a part (17.3): its own tool would put all of it - the hub writes the part, and Claude Code reads so
+            said = await app.state.chat.write_part(turn.conversation_id, turn.project, tool_name, input, decision)
+            return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         if decision.allow:
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         return json.dumps({"behavior": "deny", "message": decision.comment}, ensure_ascii=False)

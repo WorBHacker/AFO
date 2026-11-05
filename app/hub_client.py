@@ -812,8 +812,10 @@ class HubClient:
         """What agents wait to be allowed, oldest first, each with its preview (command, diff...)."""
         return self._call("GET", "/v1/approvals")["approvals"]
 
-    def answer_approval(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "") -> dict:
-        body = {"allow": allow, "scope": scope, "comment": comment}
+    def answer_approval(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "",
+                        hunks: list[int] | None = None) -> dict:  # fmt: skip
+        """`hunks`: a write allowed in part, this once (17.2)."""
+        body = {"allow": allow, "scope": scope, "comment": comment, **({"hunks": hunks} if hunks is not None else {})}
         return self._call("POST", f"/v1/approvals/{approval_id}", body)
 
     def programs(self) -> dict:
