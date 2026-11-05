@@ -93,11 +93,16 @@ Item {
     Popup {
         id: limits
         objectName: "agentLimitsPanel"
+        // above the card, no taller than the room up to the window's top: a low window scrolls its content
+        // (2026-11-05: in a window 600 high it went 236 px past the top)
+        property real room: 600
         parent: card
         x: 0
         y: -height - 8
         width: Math.min(480, card.width)
+        height: Math.min(implicitHeight, room)
         padding: 16
+        onAboutToShow: room = Math.max(160, card.mapToItem(null, 0, 0).y - 16)
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
         background: Rectangle {
             radius: 8
@@ -118,76 +123,86 @@ Item {
             font.pixelSize: 12
             font.weight: Font.DemiBold
         }
-        contentItem: Column {
-            spacing: 12
-            Text {
-                text: qsTr("Ограничения задачи")
-                color: Theme.p.text
-                font.family: Theme.uiFont
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-            }
-            Hint { text: qsTr("Упрётся в любое — остановится и напишет, что успел. Можно оставить как есть.") }
+        contentItem: Flickable {
+            implicitHeight: limitRows.height
+            contentHeight: limitRows.height
+            interactive: contentHeight > height
+            clip: interactive
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ThinScrollBar {}
             Column {
+                id: limitRows
                 width: parent.width
-                spacing: 4
-                Name { text: Autonomy.limitFields[0].name }
-                Field {
-                    objectName: "agentLimit_done_when"
-                    width: parent.width
-                    placeholderText: qsTr("например: все тесты проходят")
-                    text: Autonomy.draft.done_when || ""
-                    onEditingFinished: Autonomy.setField("done_when", text)
+                spacing: 12
+                Text {
+                    text: qsTr("Ограничения задачи")
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
                 }
-                Hint { text: Autonomy.limitFields[0].hint }
-            }
-            Grid {
-                id: numbers
-                width: parent.width
-                columns: 2
-                columnSpacing: 16
-                rowSpacing: 10
-                Repeater {
-                    model: Autonomy.limitFields.slice(1)
-                    delegate: Column {
-                        required property var modelData
-                        width: (numbers.width - numbers.columnSpacing) / 2
-                        spacing: 4
-                        Name { text: modelData.name }
-                        Field {
-                            objectName: "agentLimit_" + modelData.id
-                            width: 110
-                            text: Autonomy.draft[modelData.id] || ""
-                            onEditingFinished: Autonomy.setField(modelData.id, text)
+                Hint { text: qsTr("Упрётся в любое — остановится и напишет, что успел. Можно оставить как есть.") }
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    Name { text: Autonomy.limitFields[0].name }
+                    Field {
+                        objectName: "agentLimit_done_when"
+                        width: parent.width
+                        placeholderText: qsTr("например: все тесты проходят")
+                        text: Autonomy.draft.done_when || ""
+                        onEditingFinished: Autonomy.setField("done_when", text)
+                    }
+                    Hint { text: Autonomy.limitFields[0].hint }
+                }
+                Grid {
+                    id: numbers
+                    width: parent.width
+                    columns: 2
+                    columnSpacing: 16
+                    rowSpacing: 10
+                    Repeater {
+                        model: Autonomy.limitFields.slice(1)
+                        delegate: Column {
+                            required property var modelData
+                            width: (numbers.width - numbers.columnSpacing) / 2
+                            spacing: 4
+                            Name { text: modelData.name }
+                            Field {
+                                objectName: "agentLimit_" + modelData.id
+                                width: 110
+                                text: Autonomy.draft[modelData.id] || ""
+                                onEditingFinished: Autonomy.setField(modelData.id, text)
+                            }
+                            Hint { text: modelData.hint }
                         }
-                        Hint { text: modelData.hint }
                     }
                 }
-            }
-            Column {
-                width: parent.width
-                spacing: 4
-                Name { text: qsTr("Кто планирует") }
-                PlainButton {
-                    id: plannerButton
-                    objectName: "agentPlanner"
-                    iconName: "layers"
-                    text: Autonomy.draft.plannerName || ""
-                    onClicked: { plannerMenu.anchor = plannerButton; plannerMenu.open() }
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    Name { text: qsTr("Кто планирует") }
+                    PlainButton {
+                        id: plannerButton
+                        objectName: "agentPlanner"
+                        iconName: "layers"
+                        text: Autonomy.draft.plannerName || ""
+                        onClicked: { plannerMenu.anchor = plannerButton; plannerMenu.open() }
+                    }
+                    Hint { text: qsTr("Модель, которая составляет и пересматривает план. Может быть сильнее той, что выполняет шаги.") }
                 }
-                Hint { text: qsTr("Модель, которая составляет и пересматривает план. Может быть сильнее той, что выполняет шаги.") }
-            }
-            Column {
-                width: parent.width
-                spacing: 4
-                Name { text: qsTr("Скриптам Python — в сеть") }
-                Segmented {
-                    objectName: "agentNetwork"
-                    options: [{ id: "no", name: qsTr("нельзя") }, { id: "yes", name: qsTr("можно") }]
-                    value: Autonomy.draft.network ? "yes" : "no"
-                    onPicked: (id) => Autonomy.setFlag("network", id === "yes")
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    Name { text: qsTr("Скриптам Python — в сеть") }
+                    Segmented {
+                        objectName: "agentNetwork"
+                        options: [{ id: "no", name: qsTr("нельзя") }, { id: "yes", name: qsTr("можно") }]
+                        value: Autonomy.draft.network ? "yes" : "no"
+                        onPicked: (id) => Autonomy.setFlag("network", id === "yes")
+                    }
+                    Hint { text: qsTr("Скрипты, которые агент запускает в песочнице, получат доступ в интернет. Обычно не нужно: сайты агент читает и без этого.") }
                 }
-                Hint { text: qsTr("Скрипты, которые агент запускает в песочнице, получат доступ в интернет. Обычно не нужно: сайты агент читает и без этого.") }
             }
         }
     }

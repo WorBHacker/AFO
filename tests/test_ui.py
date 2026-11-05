@@ -5136,6 +5136,134 @@ def test_a_coordinators_board_in_the_window(qapp):
         quick.close()
 
 
+def test_the_composers_menus_open_at_their_chips_after_the_window_changed(qapp):
+    """2026-11-05 (the user's pictures: «Глубина» and «Права модели» open far from their chips, one past the window's
+    edge): a menu's place was a binding worked out when its anchor changed - opened again from the same chip after
+    the window changed size, it came where the chip had been. Now each opening works it out; the menu stays in the
+    window, and below its chip when there is no room above."""
+    from PySide6.QtCore import QObject, QPointF
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def walk(item):
+        yield item
+        for child in item.childItems():
+            yield from walk(child)
+
+    def pump():
+        for _ in range(30):
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    try:
+        window = quick.window
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.newChat()
+        pump()
+
+        def chips():
+            return {c.property("text"): c for c in walk(window.contentItem())
+                    if c.metaObject().className().startswith("Chip") and c.isVisible()}  # fmt: skip
+
+        def opened():
+            return [o for o in window.findChildren(QObject) if "Popup" in o.metaObject().className()
+                    and o.objectName() != "newProgramPopup" and o.property("opened")]  # fmt: skip
+
+        def open_from(name):
+            chip = chips()[name]
+            chip.clicked.emit()
+            pump()
+            (menu,) = opened()
+            return chip.mapToScene(QPointF(0, 0)), menu
+
+        window.resize(2560, 900)
+        pump()
+        for name in [n for n in chips() if n.startswith(("Глубина", "Спрашивать"))]:
+            _at, menu = open_from(name)
+            menu.close()
+            pump()
+        window.resize(1280, 1395)  # as the user has it: the chips are elsewhere now
+        pump()
+        for name in [n for n in chips() if n.startswith(("Глубина", "Спрашивать"))]:
+            at, menu = open_from(name)
+            x, y, w, h = (menu.property(k) for k in ("x", "y", "width", "height"))
+            assert abs(x - (at.x() - 4)) <= 1 and y + h <= at.y() and at.y() - (y + h) <= 10, (name, x, y, at)
+            menu.close()
+            pump()
+        window.resize(820, 600)  # narrow and low: the wide menu stays inside, and opens below when it must
+        pump()
+        at, menu = open_from(next(n for n in chips() if n.startswith("Спрашивать")))
+        x, y, w, h = (menu.property(k) for k in ("x", "y", "width", "height"))
+        assert x >= 8 and x + w <= 820 - 8 and y >= 8 and y + h <= 600 - 8, (x, y, w, h)
+        menu.close()
+        pump()
+        window.resize(820, 300)  # the model picker taller than the window: it scrolls inside, no edge passed
+        pump()
+        _at, menu = open_from(next(iter(chips())))
+        x, y, w, h = (menu.property(k) for k in ("x", "y", "width", "height"))
+        assert y >= 8 and y + h <= 300 - 8, (y, h)
+        assert item_named(menu.property("contentItem"), "menuList") is None  # the list is the content item itself
+        assert menu.property("contentItem").property("interactive") is True
+        menu.close()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_every_popup_and_sheet_stays_inside_a_small_window(qapp):
+    """2026-11-05 («находи такие баги в интерфейсе»): every popup, menu and sheet of the window, opened in a window of
+    900×600, is inside it once open, and QML says nothing. Found so: the agent's «Пределы» panel went 236 px past
+    the top - it is no taller than the room above its card now, and scrolls."""
+    from PySide6.QtCore import QMetaObject, QObject, QPointF
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def pump(n):
+        for _ in range(n):
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    try:
+        window = quick.window
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        window.resize(900, 600)
+        pump(20)
+        popups = [o for o in window.findChildren(QObject)
+                  if any(k in o.metaObject().className() for k in ("Popup", "Drawer", "Sheet", "Dialog"))
+                  and o.metaObject().indexOfMethod("open()") >= 0]  # fmt: skip
+        assert len(popups) > 50
+        outside = []
+        for popup in popups:
+            QMetaObject.invokeMethod(popup, "open")
+            deadline = time.monotonic() + 2
+            while not popup.property("opened") and time.monotonic() < deadline:
+                pump(2)
+            pump(3)
+            if popup.property("opened"):
+                x, y, w, h = (popup.property(k) or 0 for k in ("x", "y", "width", "height"))
+                holder = popup.property("parent")
+                if holder is not None and hasattr(holder, "mapToScene"):
+                    at = holder.mapToScene(QPointF(x, y))
+                    x, y = at.x(), at.y()
+                if x < -0.5 or y < -0.5 or x + w > 900.5 or y + h > 600.5:
+                    outside.append((popup.objectName() or popup.metaObject().className(), round(x), round(y), w, h))
+            QMetaObject.invokeMethod(popup, "close")
+            pump(8)
+        assert outside == []
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_settings_are_a_button_and_a_sheet_for_each_category(qapp):
     """2026-11-05 (the user's word: «сделай кнопку и отдельную окну для каждого категории»): «Настройки» lists the
     categories, each with how it stands now; a category opens a sheet of its own, whose arrow goes back to the list."""

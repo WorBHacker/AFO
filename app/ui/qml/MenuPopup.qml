@@ -1,12 +1,14 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// A small menu above its anchor: sections and items { section | id, name, note, icon, cloud, loaded, selected }.
+// A small menu above its anchor (`below`: under it): sections and items { section | id, name, note, icon, cloud,
+// loaded, selected }.
 Popup {
     id: menu
     property var items: []
     property Item anchor
     property point at: Qt.point(-1, -1)  // open at a point (a right click) instead of above `anchor`
+    property bool below: false  // under `anchor` rather than above it
     property int menuWidth: 300
     property bool wrapNotes: false  // a note that explains the choice: whole, on several lines
     signal chosen(string id)
@@ -14,10 +16,36 @@ Popup {
     parent: Overlay.overlay
     width: menuWidth
     padding: 8
-    x: at.x >= 0 ? Math.min(at.x, parent.width - width - 8)
-               : anchor ? Math.max(8, anchor.mapToItem(parent, 0, 0).x - 4) : 0
-    y: at.y >= 0 ? Math.min(at.y, parent.height - height - 8)
-               : anchor ? anchor.mapToItem(parent, 0, 0).y - height - 8 : 0
+    // Where it opens is worked out each time it opens, and again when its size settles or the window's changes.
+    // A binding to the anchor's place was worked out only when the anchor changed: opened again from the same chip
+    // after the window changed size, the menu came where the chip had been (2026-11-05). It stays in the window;
+    // without room on its side of the anchor it goes to the other.
+    function place() {
+        const room = menu.parent
+        if (!room)
+            return
+        let left = 0, top = 0
+        if (at.x >= 0) {
+            left = at.x
+            top = at.y
+        } else if (anchor) {
+            const p = anchor.mapToItem(room, 0, 0)
+            const above = p.y - height - 8, under = p.y + anchor.height + 8
+            left = p.x - 4
+            top = below ? (under + height <= room.height - 8 ? under : above)
+                        : (above >= 8 ? above : under)
+        }
+        x = Math.max(8, Math.min(left, room.width - width - 8))
+        y = Math.max(8, Math.min(top, room.height - height - 8))
+    }
+    onAboutToShow: place()
+    onHeightChanged: if (visible) place()
+    onWidthChanged: if (visible) place()
+    Connections {
+        target: menu.parent
+        function onWidthChanged() { if (menu.visible) menu.place() }
+        function onHeightChanged() { if (menu.visible) menu.place() }
+    }
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
     enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120 } }
     exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 90 } }
@@ -29,14 +57,27 @@ Popup {
         SoftShadow {}
     }
 
-    contentItem: Column {
-        Repeater {
-            model: menu.items
-            delegate: Loader {
-                required property var modelData
-                width: menu.availableWidth
-                sourceComponent: modelData.section ? sectionRow : itemRow
-                onLoaded: item.info = modelData
+    // no taller than the window: a long list (many models) scrolls inside the menu instead of going past an edge
+    contentItem: Flickable {
+        objectName: "menuList"
+        implicitHeight: Math.min(rows.height, (menu.parent ? menu.parent.height : 800) - 16 - menu.topPadding
+                                              - menu.bottomPadding)
+        contentHeight: rows.height
+        interactive: contentHeight > height
+        clip: interactive
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ThinScrollBar {}
+        Column {
+            id: rows
+            width: parent.width
+            Repeater {
+                model: menu.items
+                delegate: Loader {
+                    required property var modelData
+                    width: menu.availableWidth
+                    sourceComponent: modelData.section ? sectionRow : itemRow
+                    onLoaded: item.info = modelData
+                }
             }
         }
     }

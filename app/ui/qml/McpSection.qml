@@ -204,7 +204,7 @@ Column {
         menuWidth: 360
         items: Mcp.classes
         onChosen: (id) => Mcp.setClass(server, tool, id)
-        y: anchor ? anchor.mapToItem(parent, 0, 0).y + anchor.height + 6 : 0
+        below: true
     }
 
     // ---------- adding one ----------

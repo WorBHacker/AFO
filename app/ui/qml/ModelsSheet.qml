@@ -118,7 +118,7 @@ Sheet {
         menuWidth: 460
         items: ModelSetup.choices
         onChosen: (id) => ModelSetup.open(id)
-        y: anchor ? anchor.mapToItem(parent, 0, 0).y + anchor.height + 6 : 0
+        below: true
     }
 
     // ---------- the general row ----------
