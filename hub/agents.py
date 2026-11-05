@@ -37,8 +37,8 @@ from typing import Any
 
 from common.i18n import tr
 
-from . import agent_tools, autonomous, compact, computer, mail, memory, store
-from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
+from . import agent_tools, autonomous, compact, computer, mail, memory, sandbox, store
+from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
 from .delegate import DELEGATE, DELEGATE_MANY, BatchError, check_batch, order
@@ -59,6 +59,9 @@ COORDINATING = (DELEGATE["name"], DELEGATE_MANY["name"])
 DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in COORDINATING]  # "all": a coordinator is chosen, not by default
 CLOUD_AT_ONCE = 4  # a batch's cloud tasks running together: the providers' request limits
 ANSWER_CHARS = 6000  # of each answer on the coordinator's board
+CHANGED_SHOWN = 12  # files named per project on the board
+CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
+              "the same place - mend them first: ")  # fmt: skip
 ONE_LEVEL = "you are a sub-agent yourself: you cannot give tasks further (one level, D20)"
 ENDED = {"done": "done", "error": "failed", "cancelled": "cancelled"}  # a run's end -> its task's
 RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
@@ -306,12 +309,24 @@ def _task(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
-    """The coordinator's board: the tasks of its batches (or of one), in the order it wrote them."""
+    """The coordinator's board: the tasks of its batches (or of one), in the order it wrote them; `sandbox` - the
+    task's run writes into copies of its projects (16.2)."""
     rows = conn.execute(
-        "SELECT * FROM delegated_tasks WHERE coordinator = ? AND (? IS NULL OR batch = ?) ORDER BY batch, position",
+        "SELECT t.*, COALESCE(c.mode = 'sandbox', 0) AS sandbox FROM delegated_tasks t LEFT JOIN conversation_context"
+        " c ON c.conversation_id = t.run_id WHERE t.coordinator = ? AND (? IS NULL OR t.batch = ?)"
+        " ORDER BY t.batch, t.position",
         (coordinator, batch, batch),
     ).fetchall()
-    return [_task(r) for r in rows]
+    return [_task(r) | {"sandbox": bool(r["sandbox"])} for r in rows]
+
+
+def applying_order(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The tasks as they ran: batch after batch, each task after those it waited for - the order their changes go
+    onto the project (each task's own diff begins where those before it ended, 16.2)."""
+    out: list[dict[str, Any]] = []
+    for number in dict.fromkeys(t["batch"] for t in tasks):
+        out += order([t for t in tasks if t["batch"] == number], lambda _t: None)
+    return out
 
 
 def save_batch(conn: sqlite3.Connection, coordinator: str, tasks: list[dict[str, Any]]) -> int:
@@ -338,8 +353,9 @@ def _mark(conn: sqlite3.Connection, coordinator: str, task_id: str, **fields: An
     )
 
 
-def board(tasks: list[dict[str, Any]]) -> str:
-    """What the coordinator gets back: how many ended how, then each task with the agent's answer."""
+def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[str]]]] | None = None) -> str:
+    """What the coordinator gets back: how many ended how, then each task with the agent's answer and, for one that
+    wrote into a sandbox, the files it changed there - per project (16.2)."""
     counts = collections.Counter(t["status"] for t in tasks)
     told = [f"{counts[s]} {s}" for s in ("done", "failed", "cancelled", "skipped", "running", "pending") if counts[s]]
     lines = [f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}: {', '.join(told)}."]
@@ -352,7 +368,13 @@ def board(tasks: list[dict[str, Any]]) -> str:
         answer = t["answer"] or ""
         if len(answer) > ANSWER_CHARS:
             answer = answer[:ANSWER_CHARS] + "\n… (cut here; the whole answer is in the agent's run)"
-        lines.append(f"{head}. Answer:\n{answer}" if answer else f"{head}.")
+        entry = f"{head}. Answer:\n{answer}" if answer else f"{head}."
+        files = [f"«{name}»: {', '.join(paths[:CHANGED_SHOWN])}"
+                 + (f" and {len(paths) - CHANGED_SHOWN} more" if len(paths) > CHANGED_SHOWN else "")
+                 for name, paths in (changed or {}).get(t["task_id"], [])]  # fmt: skip
+        if files:
+            entry += "\nIts changes wait in a sandbox, not in the project yet: " + "; ".join(files)
+        lines.append(entry)
     return "\n\n".join(lines)
 
 
@@ -537,7 +559,9 @@ class AgentRunner:
                 await self._gpu.acquire()
                 self._held.add(parent_id)
         ended = await self._db.acall(lambda conn: list_tasks(conn, parent_id, number))
-        return board(ended), any(t["status"] != "done" for t in ended)
+        changed = {t["task_id"]: [(p["name"], [f["path"] for f in p["files"]]) for p in t["projects"]]
+                   for t in await self.task_changes(parent_id, number)}  # fmt: skip
+        return board(ended, changed), any(t["status"] != "done" for t in ended)
 
     async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any],
                           ends: dict[str, asyncio.Event], before: str | None, cloud: asyncio.Semaphore | None,
@@ -571,6 +595,8 @@ class AgentRunner:
                 except (AgentError, ProjectError) as exc:
                     _mark(conn, parent_id, task_id, status="failed", detail=str(exc), ended_at=utc_now())
                     return None
+                if profile["mode"] != "read_only" and profile["project_ids"]:  # it may write: a copy of its own
+                    store.set_context_settings(conn, run_id, mode="sandbox")
                 _mark(conn, parent_id, task_id, status="running", run_id=run_id, started_at=utc_now())
                 return run_id
 
@@ -581,6 +607,16 @@ class AgentRunner:
                 if child_id is None:
                     return
                 ended = self._ended[child_id] = asyncio.Event()
+                try:
+                    clashed = await self._seed(parent_id, task, child_id)
+                except sandbox.SandboxError as exc:
+                    why = f"its sandbox could not start from what the tasks it waited for left: {exc}"
+                    await self._finish(child_id, Outcome(status="error", detail=why))
+                    return
+                if clashed:  # it is told before it begins
+                    await self._db.acall(lambda conn: conn.execute(
+                        "UPDATE agent_runs SET task = task || ? WHERE conversation_id = ?",
+                        (CONFLICTED + ", ".join(clashed), child_id)))  # fmt: skip
                 await self._launch(child_id, resume=False)
                 await _either(ended, cancel)
                 if not ended.is_set():  # the coordinator was stopped: so is this task
@@ -593,6 +629,101 @@ class AgentRunner:
             if child_id is not None:
                 self._ended.pop(child_id, None)
             ends[task_id].set()
+
+    async def _seed(self, parent_id: str, task: dict[str, Any], run_id: str) -> list[str]:
+        """A sandboxed task's copies of its projects start from what the tasks it waited for left there (16.2), not
+        from the project's last commit; the files where two of them changed the same place, «project: path»."""
+        folder = self._chat.sandboxes
+
+        def read(conn):
+            rows = {t["task_id"]: t for t in list_tasks(conn, parent_id)}
+            waited = [rows[d]["run_id"] for d in task["dependencies"] if rows[d]["sandbox"] and rows[d]["run_id"]]
+            mine = store.context_settings(conn, run_id)["mode"] == "sandbox"
+            return (_attached(conn, run_id) if mine else []), waited
+
+        projects, waited = await self._db.acall(read)
+        if folder is None or not projects or not waited:
+            return []
+
+        def seed() -> list[str]:
+            clashed = []
+            for project in projects:
+                if not sandbox.is_git(project):
+                    continue
+                left = [c for c in (sandbox.snapshot(folder, w, project) for w in waited) if c]
+                if left:
+                    start, conflicts = sandbox.start_from(project, left)
+                    sandbox.ensure(folder, run_id, project, start=start)
+                    clashed += [f"«{project.name}»: {name}" for name in conflicts]
+            return clashed
+
+        return await asyncio.to_thread(seed)
+
+    async def _sandboxed_tasks(self, coordinator: str, batch: int | None = None) -> list[tuple[dict[str, Any], list]]:
+        """The coordinator's tasks that wrote into sandboxes, in the order they ran, with their git projects."""
+
+        def read(conn):
+            tasks = applying_order(list_tasks(conn, coordinator, batch))
+            return [(t, _attached(conn, t["run_id"])) for t in tasks if t["sandbox"] and t["run_id"]]
+
+        found = await self._db.acall(read)
+        return [(t, [p for p in projects if sandbox.is_git(p)]) for t, projects in found]
+
+    async def task_changes(self, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
+        """What each of the coordinator's tasks changed in its sandboxes and has not gone onto the projects yet: the
+        files and the diff per project (sandbox.changes); tasks with nothing there are left out."""
+        folder = self._chat.sandboxes
+        if folder is None:
+            return []
+        out = []
+        for task, projects in await self._sandboxed_tasks(coordinator, batch):
+            found = await asyncio.to_thread(
+                lambda task=task, projects=projects: [sandbox.changes(folder, task["run_id"], p) for p in projects]
+            )
+            found = [p for p in found if p["files"]]
+            if found:
+                out.append({"task_id": task["task_id"], "agent": task["agent"], "status": task["status"],
+                            "run_id": task["run_id"], "projects": found})  # fmt: skip
+        return out
+
+    def busy_tasks(self, coordinator: str, tasks: list[dict[str, Any]]) -> bool:
+        return any(r in self._chat.busy for r in [coordinator, *(t["run_id"] for t in tasks if t["run_id"])])
+
+    async def apply_tasks(self, coordinator: str) -> dict[str, Any]:
+        """«Применить всё» (16.2): every done task's sandboxes onto the projects, in the order the tasks ran - each
+        task's diff begins where the tasks before it ended, so one after another they do not clash. A task that did
+        not end done keeps its sandbox (`kept`). Only the user does this (the window)."""
+        folder = self._chat.sandboxes
+        applied, kept = [], []
+        for task, projects in await self._sandboxed_tasks(coordinator):
+            if task["status"] != "done":
+                kept.append(task["task_id"])
+                continue
+            for project in projects:
+                done = await asyncio.to_thread(sandbox.apply, folder, task["run_id"], project)
+                if done["applied"]:
+                    applied.append({"task_id": task["task_id"], "agent": task["agent"], "project_id": project.id,
+                                    "project": project.name, "files": done["applied"],
+                                    "conflicts": done["conflicts"]})  # fmt: skip
+                    await self._bus.publish("sandbox.applied", {"conversation_id": coordinator,
+                                                                "task_id": task["task_id"], "project_id": project.id,
+                                                                **done}, project_id=project.id)  # fmt: skip
+        return {"applied": applied, "kept": kept}
+
+    async def discard_tasks(self, coordinator: str) -> dict[str, Any]:
+        """«Отбросить всё» (16.2): every task's sandboxes go - worktrees, branches, refs; the projects stay as they
+        are."""
+        folder = self._chat.sandboxes
+        gone = []
+        for task, projects in await self._sandboxed_tasks(coordinator):
+            had = [p for p in projects if sandbox.place(folder, task["run_id"], p).exists()]
+            for project in had:
+                await asyncio.to_thread(sandbox.discard, folder, task["run_id"], project)
+            if had:
+                gone.append(task["task_id"])
+        if gone:
+            await self._bus.publish("sandbox.discarded", {"conversation_id": coordinator, "task_ids": gone})
+        return {"discarded": gone}
 
     async def cancel(self, run_id: str) -> bool:
         queued = self._waiting.pop(run_id, None)

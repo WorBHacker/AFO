@@ -362,6 +362,7 @@ class FakeClient:
         self.keys = []
         self.key_calls = []
         self.sandboxed = []
+        self.task_sandboxes = []  # a coordinator's tasks' sandboxes (16.2)
         self.sandbox_calls = []
         self.schedule_calls = []
         self.install_calls = []
@@ -743,7 +744,19 @@ class FakeClient:
         return {"job": {**self.install_jobs_list[0], "status": "removed"}}
 
     def sandbox(self, conversation_id):
-        return {"projects": [dict(x) for x in self.sandboxed]}
+        return {"projects": [dict(x) for x in self.sandboxed], "tasks": [dict(x) for x in self.task_sandboxes]}
+
+    def apply_tasks(self, run_id):
+        self.sandbox_calls.append(("apply all", run_id))
+        self.task_sandboxes = []
+        return {"applied": [{"task_id": "a", "project": "proj", "files": ["src/app.py"], "conflicts": []},
+                            {"task_id": "b", "project": "proj", "files": ["src/app.py", "x.py"], "conflicts": []}],
+                "kept": ["c"]}  # fmt: skip
+
+    def discard_tasks(self, run_id):
+        self.sandbox_calls.append(("discard all", run_id))
+        self.task_sandboxes = []
+        return {"discarded": ["a"]}
 
     def apply_sandbox(self, conversation_id, project_id):
         self.sandbox_calls.append(("apply", conversation_id, project_id))
@@ -5072,6 +5085,33 @@ def test_a_sandbox_chat_in_the_window(qapp):
         wait_until(lambda: not app.bg.busy and view.count == 0)
         app.setChatMode("ask")
         wait_until(lambda: not view.active)
+
+        # a coordinator's run (16.2, D50): its tasks left changes in sandboxes of their own
+        changed = {"project_id": "p1", "name": "proj", "files": [{"path": "src/app.py", "status": "changed"}],
+                   "diff": "-print('hi')\n+print('a')\n", "exists": True}  # fmt: skip
+        client.task_sandboxes = [
+            {"task_id": "a", "agent": "Правщик", "status": "done", "run_id": "r1", "projects": [changed]},
+            {"task_id": "b", "agent": "Правщик", "status": "done", "run_id": "r2",
+             "projects": [changed | {"files": [*changed["files"], {"path": "x.py", "status": "added"}]}]}]  # fmt: skip
+        app.on_event({"type": "run.finished", "payload": {"run": {"id": "r2", "parent_run": "c1"}}})
+        wait_until(lambda: not app.bg.busy and view.taskCount == 3)
+        assert view.active and bar.property("visible") and view.count == 0  # not «Песочница» itself
+        assert view.summary == "Подзадачи: изменено 3 файла в 2 песочницах — посмотрите и примените или отбросьте"
+        assert [r["name"] for r in view.tasks] == ["[a] «Правщик» · proj", "[b] «Правщик» · proj"]
+        assert view.tasks[1]["files"] == ["src/app.py — изменён", "x.py — новый"]
+        view.applyAll()
+        wait_until(lambda: not app.bg.busy and view.taskCount == 0)
+        assert client.sandbox_calls[-1] == ("apply all", "c1") and not view.active
+        assert app.flashText == "Применено к проекту: 3 файлов Не применены (подзадача не закончилась): c"
+        client.task_sandboxes = [{"task_id": "a", "agent": "Правщик", "status": "done", "run_id": "r1",
+                                  "projects": [changed]}]  # fmt: skip
+        app.on_event({"type": "sandbox.changed", "payload": {"conversation_id": "c1"}})
+        wait_until(lambda: not app.bg.busy and view.taskCount == 1)
+        view.discardAll()
+        assert app.question["title"] == "Отбросить правки всех подзадач?"
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and view.taskCount == 0)
+        assert client.sandbox_calls[-1] == ("discard all", "c1")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

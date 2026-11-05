@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // Over the composer of a «Песочница» chat (D17, 9.4b): how many files the model changed in its copy of the project,
-// and the way to them.
+// and the way to them; over a coordinator's run - what its tasks changed in theirs (16.2).
 Rectangle {
     id: bar
     objectName: "sandboxBar"
@@ -29,7 +29,7 @@ Rectangle {
         PlainButton {
             id: review
             objectName: "sandboxReview"
-            visible: Sandbox.count > 0
+            visible: Sandbox.count > 0 || Sandbox.taskCount > 0
             text: qsTr("Посмотреть правки")
             anchors.verticalCenter: parent.verticalCenter
             onClicked: bar.reviewRequested()

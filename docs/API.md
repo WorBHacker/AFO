@@ -212,7 +212,7 @@
 
 ### sandbox
 
-/v1/conversations/{id}/sandbox - what the model changed in a «Песочница» chat (D17, stage 9.4b): per project, the files and the diff; «Применить» puts it onto the project's working tree, «Отбросить» throws it away. The desktop app only: the user decides what reaches the project.
+/v1/conversations/{id}/sandbox - what the model changed in a «Песочница» chat (D17, stage 9.4b): per project, the files and the diff; «Применить» puts it onto the project's working tree, «Отбросить» throws it away. The desktop app only: the user decides what reaches the project. For a coordinator's run, `tasks` - what its tasks left in their own sandboxes (16.2, D50); /v1/runs/{id}/tasks/apply and /discard take them all.
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
@@ -456,6 +456,8 @@
 | GET | `/v1/runs` | только окно | `list_runs()` | `?limit: int = 50` |
 | GET | `/v1/runs/{run_id}` | только окно | `get_run()` |  |
 | GET | `/v1/runs/{run_id}/tasks` | только окно | A coordinator's board (16.1, D50): the tasks of its batches in the order it wrote them - the agent, what it waits for, the status, the run that did it and its answer. |  |
+| POST | `/v1/runs/{run_id}/tasks/apply` | только окно | «Применить всё» (16.2, D50): the done tasks' sandboxes onto the projects, in the order the tasks ran; the files that met the project's own changes at the same place carry conflict marks (`conflicts`). |  |
+| POST | `/v1/runs/{run_id}/tasks/discard` | только окно | «Отбросить всё» (16.2, D50): every task's sandbox goes; the projects stay as they are. |  |
 | POST | `/v1/runs/{run_id}/cancel` | только окно | `cancel_run()` |  |
 | POST | `/v1/runs/autonomous` | только окно | `start_autonomous()` | тело `{goal: str, done_when: str = '', profile_id: str \| None = None, model_id: str \| None = None, planner_model_id: str \| None = None, project_ids: list[str] \| None = None, autonomy: str = 'plan', max_steps: int = 100, max_minutes: int = 60, max_replans: int = 3, budget_usd: float \| None = 1.0, network: bool = False, refusal_vector: bool \| None = None}` |
 | GET | `/v1/runs/{run_id}/plan` | только окно | An autonomous run's goal, every version of its plan with the steps, its questions, its report. |  |
@@ -622,9 +624,9 @@ conversation's text, an approval or a terminal's output.
 | `run.resumed` | да | `run_id` | hub/autonomous.py |
 | `run.started` | да | `run`, `resumed` | hub/agents.py |
 | `run.status` | нет | `run_id`, `status` | hub/agents.py |
-| `sandbox.applied` | да | — | hub/api/sandbox.py |
+| `sandbox.applied` | да | `conversation_id`, `task_id`, `project_id` | hub/agents.py, hub/api/sandbox.py |
 | `sandbox.changed` | да | `conversation_id`, `project_id`, `path` | hub/chat.py |
-| `sandbox.discarded` | да | — | hub/api/sandbox.py |
+| `sandbox.discarded` | да | `conversation_id`, `task_ids` | hub/agents.py, hub/api/sandbox.py |
 | `schedule.added` | да | `schedule` | hub/api/schedules.py |
 | `schedule.changed` | да | `schedule` | hub/api/schedules.py |
 | `schedule.quiet` | да | `quiet` | hub/api/schedules.py |

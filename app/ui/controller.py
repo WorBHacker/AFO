@@ -1725,6 +1725,8 @@ class Controller(QObject):
                 self._chat_question_event(kind, payload)  # a chat's model asks, not an agent's task
             elif kind.startswith("run."):
                 self.autonomy_view.on_event(kind, payload)
+            if kind == "run.finished" and (payload.get("run") or {}).get("parent_run") == self.current:
+                self.sandbox_view.load()  # a task of the coordinator open here ended: what it changed (16.2)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
         elif kind.startswith("install."):

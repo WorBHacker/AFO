@@ -18,6 +18,7 @@ from common.i18n import tr
 from .. import agent_tools, agents, autonomous
 from ..agents import AgentError
 from ..auth import APP_CLIENT, Client
+from ..sandbox import SandboxError
 from .connections import Ticket, _open
 from .deps import require_client
 
@@ -135,6 +136,40 @@ async def run_tasks(run_id: str, request: Request, client: Annotated[Client, Dep
         return agents.list_tasks(conn, run_id)
 
     return {"tasks": await _db(request, read)}
+
+
+async def _tasks_settled(request: Request, run_id: str) -> None:
+    """The coordinator and its tasks have stopped writing: their sandboxes can be taken."""
+
+    def read(conn):
+        agents.get_run(conn, run_id)
+        return agents.list_tasks(conn, run_id)
+
+    if request.app.state.agents.busy_tasks(run_id, await _db(request, read)):
+        raise HTTPException(status_code=409, detail="the tasks are still working: wait for them to end")
+
+
+@router.post("/runs/{run_id}/tasks/apply")
+async def apply_tasks(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """«Применить всё» (16.2, D50): the done tasks' sandboxes onto the projects, in the order the tasks ran; the
+    files that met the project's own changes at the same place carry conflict marks (`conflicts`)."""
+    _app_only(client)
+    await _tasks_settled(request, run_id)
+    try:
+        return await request.app.state.agents.apply_tasks(run_id)
+    except SandboxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/tasks/discard")
+async def discard_tasks(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """«Отбросить всё» (16.2, D50): every task's sandbox goes; the projects stay as they are."""
+    _app_only(client)
+    await _tasks_settled(request, run_id)
+    try:
+        return await request.app.state.agents.discard_tasks(run_id)
+    except SandboxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/runs/{run_id}/cancel", status_code=202)

@@ -5,8 +5,11 @@ import asyncio
 import time
 
 from hub import agents
+from hub import projects as projects_module
+from hub import sandbox as sandbox_module
 from hub.chat import Limits
 from hub.gateway.base import Model, StreamEvent
+from tests.conftest import run_git
 from tests.test_changes import edit, wait
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 
@@ -247,9 +250,10 @@ class ByTask:
     worker's - it works for `pause` seconds (stopping when asked) and answers; «зациклись» calls a tool forever. Who
     worked when is recorded."""
 
-    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",)):
+    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",), edits=None):
         self.name = name
         self.scripts = {task: list(steps) for task, steps in scripts.items()}
+        self.edits = dict(edits or {})  # a worker's task (its first line) -> the edit_file it makes first
         self.pause = pause
         self.calls = []  # (model_ref, messages, tools) per request
         self.active = self.peak = 0
@@ -271,6 +275,11 @@ class ByTask:
         if steps is None and "зациклись" in task:
             yield StreamEvent("end", usage=usage, stop_reason="tool_use",
                               tool_calls=[{"id": f"n{len(self.calls)}", "name": "nothing", "input": {}}])  # fmt: skip
+            return
+        change = self.edits.pop(task.splitlines()[0], None)
+        if steps is None and change is not None:
+            call = {"id": f"e{len(self.calls)}", "name": "edit_file", "input": change}
+            yield StreamEvent("end", usage=usage, stop_reason="tool_use", tool_calls=[call])
             return
         if steps is None:
             self.active += 1
@@ -398,6 +407,76 @@ def test_stopping_the_coordinator_stops_the_whole_batch(hub):  # noqa: F811
     tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
     assert tasks["a"]["status"] == "cancelled" and ended(hub, tasks["a"]["run_id"])["status"] == "cancelled"
     assert (tasks["b"]["status"], tasks["b"]["run_id"]) == ("cancelled", None)  # it never began
+
+
+def test_writing_tasks_work_in_sandboxes_and_the_user_applies_them_all(hub, repo):  # noqa: F811
+    """16.2 (D50): a task that may write gets a sandbox of its own (the project stays as it is); the task after it
+    starts from what it left; the board names the changes; «Применить всё» puts them onto the project in order."""
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "second")
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    tasks = batch(("a", "Правщик", "Поправь a"), ("b", "Правщик", "Поправь b", ["a"]), ("r", "Читатель", "Прочти"))
+    plug(hub, ByTask("fake", "local", {"Сделай дело": [[tasks]]}, pause=0.05, edits={
+        "Поправь a": edit(old="print('hi')", new="print('a')"),
+        "Поправь b": edit(old="print('a')", new="print('b')")}))  # b can only make its edit on a's result  # fmt: skip
+    profile(hub, name="Правщик", tools=["read_file", "edit_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    shown = {k: (t["status"], t["sandbox"]) for k, t in board.items()}  # the reader writes nothing: no copy
+    assert shown == {"a": ("done", True), "b": ("done", True), "r": ("done", False)}
+    assert hub.get("/v1/approvals").json()["approvals"] == []  # the edits went into the copies unasked
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "print('hi')\nprint('new line')\n"  # untouched
+    own = hub.get(f"/v1/conversations/{board['b']['run_id']}/sandbox").json()["projects"][0]
+    assert own["files"] == [{"path": "src/app.py", "status": "changed"}]
+    assert "-print('a')" in own["diff"] and "+print('b')" in own["diff"]  # b's diff is only its own
+    (said,) = outputs(hub, run_id)
+    assert "[b] «Правщик» — done." in said["output"]
+    assert "Its changes wait in a sandbox, not in the project yet: «proj»: src/app.py" in said["output"]
+    waiting = hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"]
+    assert [(t["task_id"], [f["path"] for p in t["projects"] for f in p["files"]]) for t in waiting] == [
+        ("a", ["src/app.py"]), ("b", ["src/app.py"])]  # fmt: skip
+    applied = hub.post(f"/v1/runs/{run_id}/tasks/apply").json()["applied"]
+    assert [(x["task_id"], x["files"], x["conflicts"]) for x in applied] == [
+        ("a", ["src/app.py"], []), ("b", ["src/app.py"], [])]  # fmt: skip
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "print('b')\nprint('new line')\n"
+    assert hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"] == []  # the copies went
+    assert hub.post(f"/v1/runs/{run_id}/tasks/apply").json()["applied"] == []
+
+
+def test_a_task_after_two_that_clashed_is_told_of_the_conflict(hub, repo):  # noqa: F811
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    tasks = batch(("a", "Правщик", "Правь A"), ("c", "Правщик", "Правь C"), ("b", "Читатель", "Сведи", ["a", "c"]))
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.05, edits={
+        "Правь A": edit(path="README.md", old="# Проект", new="# A"),
+        "Правь C": edit(path="README.md", old="# Проект", new="# C")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file", "edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    (told,) = [t for _, t in provider.started if t.startswith("Сведи")]
+    assert told.endswith(agents.CONFLICTED + "«proj»: README.md")  # it begins knowing what to mend
+    b_run = next(t["run_id"] for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"] if t["task_id"] == "b")
+    project = hub.app.state.db.call(lambda conn: projects_module.get_project(conn, pid))
+    copy = sandbox_module.place(hub.app.state.chat.sandboxes, b_run, project)
+    assert "<<<<<<<" in (copy / "README.md").read_text(encoding="utf-8")
+
+
+def test_the_user_throws_the_tasks_changes_away(hub, repo):  # noqa: F811
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    plug(hub, ByTask("fake", "local", {"Сделай": [[batch(("a", "Правщик", "Поправь a"))]]}, pause=0.05,
+                     edits={"Поправь a": edit(old="print('hi')", new="print('a')")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    before = (repo / "src" / "app.py").read_text(encoding="utf-8")
+    assert hub.post(f"/v1/runs/{run_id}/tasks/discard").json() == {"discarded": ["a"]}
+    assert hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"] == []
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8") == before
 
 
 def test_tasks_not_begun_when_the_hub_stopped_are_cancelled(hub):  # noqa: F811

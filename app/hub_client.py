@@ -295,6 +295,12 @@ class HubClient:
     def discard_sandbox(self, conversation_id: str, project_id: str) -> dict:
         return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/discard")
 
+    def apply_tasks(self, run_id: str) -> dict:  # a coordinator's tasks' sandboxes, all (16.2)
+        return self._call("POST", f"/v1/runs/{run_id}/tasks/apply")
+
+    def discard_tasks(self, run_id: str) -> dict:
+        return self._call("POST", f"/v1/runs/{run_id}/tasks/discard")
+
     # --- the user's API keys for the agent's requests (9.4b): behind the connections' password ---
 
     def agent_keys(self) -> dict:

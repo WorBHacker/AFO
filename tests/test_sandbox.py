@@ -178,6 +178,54 @@ def test_sandboxes_of_chats_that_are_gone_are_swept(repo, tmp_path):
     assert "sandbox-keep1" in branches and "sandbox-gone1" not in branches
 
 
+def write(root, name, text):
+    (root / name).write_text(text, encoding="utf-8", newline="\n")
+
+
+def test_a_sandbox_that_starts_from_what_others_left(repo, tmp_path):
+    """16.2 (D50): a task that waited for others starts from what they left in their sandboxes (not committed there:
+    a snapshot), merged; its own diff is only its own - so applying them one after another has no conflict."""
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "second")
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    assert sb.snapshot(folder, "task-a", project) is None  # no sandbox, nothing to start from
+    a = sb.ensure(folder, "task-a", project)
+    write(a.root, "src/app.py", "print('hi')\nprint('new line')\nprint('a')\n")
+    c = sb.ensure(folder, "task-c", project)
+    write(c.root, "README.md", "# Проект\n\nC.\n")
+    start, conflicts = sb.start_from(project, [sb.snapshot(folder, "task-a", project),
+                                               sb.snapshot(folder, "task-c", project)])  # fmt: skip
+    assert conflicts == []
+    b = sb.ensure(folder, "task-b", project, start=start)
+    assert (b.root / "src" / "app.py").read_text(encoding="utf-8").endswith("print('a')\n")
+    assert (b.root / "README.md").read_text(encoding="utf-8") == "# Проект\n\nC.\n"
+    write(b.root, "src/app.py", "print('hi')\nprint('new line')\nprint('a')\nprint('b')\n")
+    assert sb.changes(folder, "task-b", project)["files"] == [{"path": "src/app.py", "status": "changed"}]
+    assert sb.changes(folder, "task-a", project)["files"] == [{"path": "src/app.py", "status": "changed"}]
+    for task in ("task-a", "task-c", "task-b"):  # in the order they ran
+        assert sb.apply(folder, task, project)["conflicts"] == [], task
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").endswith("print('a')\nprint('b')\n")
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n\nC.\n"
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert "src/app.py" in status and "README.md" in status  # in the working tree, for the user to commit
+
+
+def test_tasks_that_changed_the_same_place_hand_over_a_conflict(repo, tmp_path):
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    for task, said in (("task-a", "A"), ("task-c", "C")):
+        write(sb.ensure(folder, task, project).root, "README.md", f"# {said}\n")
+    start, conflicts = sb.start_from(project, [sb.snapshot(folder, "task-a", project),
+                                               sb.snapshot(folder, "task-c", project)])  # fmt: skip
+    assert conflicts == ["README.md"]
+    b = sb.ensure(folder, "task-b", project, start=start)
+    text = (b.root / "README.md").read_text(encoding="utf-8")
+    assert "<<<<<<<" in text and "# A" in text and "# C" in text  # the task after them sees it and can mend it
+    one, none = sb.start_from(project, [sb.snapshot(folder, "task-a", project)])
+    assert none == [] and one == sb.snapshot(folder, "task-a", project)
+
+
 def test_a_lock_of_the_users_git_is_waited_out(repo, monkeypatch):
     """The user's git (a terminal, VS Code) holds .git/index.lock: the hub's own write tries again a little, then
     says it in plain words (common/plain_errors.py)."""

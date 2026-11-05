@@ -1,6 +1,7 @@
 """/v1/conversations/{id}/sandbox - what the model changed in a «Песочница» chat (D17, stage 9.4b): per project, the
 files and the diff; «Применить» puts it onto the project's working tree, «Отбросить» throws it away. The desktop app
-only: the user decides what reaches the project.
+only: the user decides what reaches the project. For a coordinator's run, `tasks` - what its tasks left in their own
+sandboxes (16.2, D50); /v1/runs/{id}/tasks/apply and /discard take them all.
 """
 
 from __future__ import annotations
@@ -36,7 +37,10 @@ async def sandbox_changes(conversation_id: str, request: Request,
             except sb.SandboxError as exc:
                 found.append({"project_id": project.id, "name": project.name, "files": [], "diff": "",
                               "exists": False, "error": str(exc)})  # fmt: skip
-    return {"projects": found}
+    try:
+        return {"projects": found, "tasks": await request.app.state.agents.task_changes(conversation_id)}
+    except sb.SandboxError as exc:
+        return {"projects": found, "tasks": [], "tasks_error": str(exc)}
 
 
 async def _one(request: Request, conversation_id: str, project_id: str):

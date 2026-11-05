@@ -88,8 +88,9 @@ def place(folder: Path, conversation_id: str, project: Project) -> Path:
     return folder / re.sub(r"[^A-Za-z0-9_-]", "_", conversation_id) / re.sub(r"[^A-Za-z0-9_-]", "_", project.id)
 
 
-def ensure(folder: Path, conversation_id: str, project: Project) -> Project:
-    """The project as the chat's tools see it in the sandbox: the same name and id, its worktree for a root."""
+def ensure(folder: Path, conversation_id: str, project: Project, start: str = "HEAD") -> Project:
+    """The project as the chat's tools see it in the sandbox: the same name and id, its worktree for a root. A new
+    one begins at `start` - the project's last commit, or what other tasks left (start_from, 16.2)."""
     if not is_git(project):
         raise SandboxError(f"«{project.name}» is not a git repository: the sandbox needs one - switch the chat to "
                            "«Спрашивать»")  # fmt: skip  # i18n: keep
@@ -102,11 +103,50 @@ def ensure(folder: Path, conversation_id: str, project: Project) -> Project:
             _git(project.root, "worktree", "prune", retry=True)
             _git(project.root, "worktree", "add", str(path), branch, retry=True)
         else:
-            _git(project.root, "worktree", "add", "-b", branch, str(path), "HEAD", retry=True)
+            _git(project.root, "worktree", "add", "-b", branch, str(path), start, retry=True)
         if not _git(project.root, "for-each-ref", base_ref(conversation_id)).strip():
             _git(project.root, "update-ref", base_ref(conversation_id), _git(path, "rev-parse", "HEAD").strip(),
                  retry=True)  # fmt: skip
     return dataclasses.replace(project, path=str(path))
+
+
+IDENTITY = ("-c", "user.name=AFO", "-c", "user.email=afo@localhost")  # the hub's own commits in its sandboxes
+
+
+def snapshot(folder: Path, conversation_id: str, project: Project) -> str | None:
+    """What the sandbox holds now, as a commit on its own branch (files the model did not commit go into it); None
+    when there is no sandbox. Plumbing only - no hooks, no signing, the user's branches untouched (16.2, D50)."""
+    path = place(folder, conversation_id, project)
+    if not (path / ".git").exists():
+        return None
+    _git(path, "add", "-A")
+    tree = _git(path, "write-tree").strip()
+    head = _git(path, "rev-parse", "HEAD").strip()
+    if tree == _git(path, "rev-parse", "HEAD^{tree}").strip():
+        return head
+    commit = _git(path, *IDENTITY, "commit-tree", tree, "-p", head, "-m", "AFO: what the task left").strip()
+    _git(path, "update-ref", f"refs/heads/{branch_name(conversation_id)}", commit, head, retry=True)
+    return commit
+
+
+def start_from(project: Project, commits: list[str]) -> tuple[str, list[str]]:
+    """Where a task's sandbox starts when it waited for others (16.2, D50): what they left, merged by git
+    (merge-tree, nothing checked out); two that changed the same place leave conflict marks there, and those files
+    are named - the task sees them and can mend them."""
+    head, conflicts = commits[0], []
+    for other in commits[1:]:
+        try:
+            done = projects.git(project.root, "merge-tree", "--write-tree", "--name-only", "--no-messages", head,
+                                other, timeout=GIT_TIMEOUT)  # fmt: skip
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SandboxError(f"git did not run: {exc}") from exc
+        if done.returncode not in (0, 1):  # 1: merged, with conflicts
+            raise SandboxError((done.stderr or done.stdout).decode("utf-8", "replace").strip()[:500])
+        tree, *named = done.stdout.decode("utf-8", "replace").splitlines()
+        conflicts += [n for n in named if n]
+        head = _git(project.root, *IDENTITY, "commit-tree", tree, "-p", head, "-p", other, "-m",
+                    "AFO: what the tasks left").strip()  # fmt: skip
+    return head, list(dict.fromkeys(conflicts))
 
 
 def _base(path: Path, conversation_id: str) -> str:
