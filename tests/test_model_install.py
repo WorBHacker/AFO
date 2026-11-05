@@ -69,6 +69,10 @@ class FakeHub(BaseHTTPRequestHandler):
     slow = 0.0  # seconds a chunk
     cdn_auth: ClassVar[list] = []  # the Authorization header each CDN request came with
     ranges: ClassVar[list] = []
+    spans: ClassVar[list] = []  # (file, start, end) of each Range request with an end (a piece, 2026-11-05)
+    no_ranges = False  # a server that ignores Range: the whole file, 200
+    active = peak = 0  # CDN requests being served at once
+    lock = threading.Lock()
 
     def log_message(self, *args):
         pass
@@ -117,19 +121,34 @@ class FakeHub(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
     def _file(self, name):
+        with FakeHub.lock:
+            FakeHub.active += 1
+            FakeHub.peak = max(FakeHub.peak, FakeHub.active)
+        try:
+            self._send_file(name)
+        finally:
+            with FakeHub.lock:
+                FakeHub.active -= 1
+
+    def _send_file(self, name):
         FakeHub.cdn_auth.append(self.headers.get("Authorization"))
         data = FILES[name]
         if name in self.corrupt:
             data = data[:-1] + b"X"
-        start = 0
-        if self.headers.get("Range"):
-            start = int(self.headers["Range"].split("=")[1].split("-")[0])
-            FakeHub.ranges.append((name, start))
+        start, end = 0, len(data) - 1
+        if self.headers.get("Range") and not self.no_ranges:
+            first, _, last = self.headers["Range"].split("=")[1].partition("-")
+            start = int(first)
+            if last:
+                end = min(int(last), len(data) - 1)
+                FakeHub.spans.append((name, start, end))
+            else:
+                FakeHub.ranges.append((name, start))
             self.send_response(206)
-            self.send_header("content-range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+            self.send_header("content-range", f"bytes {start}-{end}/{len(data)}")
         else:
             self.send_response(200)
-        body = data[start:]
+        body = data[start : end + 1]
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         cut = self.break_after.pop(name, None)
@@ -154,6 +173,7 @@ class QuietServer(ThreadingHTTPServer):
 @pytest.fixture
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
+    FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak = [], False, 0, 0
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -293,6 +313,88 @@ def test_a_download_goes_on_after_a_break_and_counts_only_with_its_sha256(fake_h
                     cancel=cancel)  # fmt: skip
     head = hf.header("test/Tiny-GGUF", "Tiny-Q4_K_M.gguf")
     assert (head["layers"], head["kv_heads"], head["context_trained"]) == (8, 2, 16384)
+
+
+@pytest.fixture
+def pieces(monkeypatch):
+    """A big file, as the hub sees it: pieces of 64 KB (64 MB in life), four connections at once (eight in life)."""
+    monkeypatch.setattr(hf, "SEGMENT", 64 * 1024)
+    monkeypatch.setattr(hf, "PARALLEL_MIN", 64 * 1024)
+    monkeypatch.setattr(hf, "PARTS", 4)
+    monkeypatch.setattr(hf, "RETRY_S", 0.01)
+
+
+def test_a_big_file_comes_in_pieces_over_several_connections(fake_hub, pieces, tmp_path):
+    """Live on 2026-11-05 one connection to Hugging Face's CDN gave 0.6-19 MB/s here and 4-16 gave 60-70 (the line's
+    limit): a big file comes in pieces, several at once, each written at its place; the sha256 runs behind them."""
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"  # 320 000 bytes: five pieces
+    data = FILES[name]
+    FakeHub.slow = 0.002  # long enough for the pieces to overlap
+    seen = []
+    dest = tmp_path / "Tiny-BF16-00001-of-00002.gguf"
+    hf.download(hf.file_url("test/Tiny-GGUF", name), dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                token="hf_secret", report=seen.append, cancel=threading.Event())  # fmt: skip
+    assert dest.read_bytes() == data and seen[-1] == len(data)
+    assert sorted((s, e) for _, s, e in FakeHub.spans) == [(0, 65535), (65536, 131071), (131072, 196607),
+                                                           (196608, 262143), (262144, 319999)]  # fmt: skip
+    assert FakeHub.peak >= 2 and FakeHub.ranges == []  # at once, and none «to the end»
+    assert set(FakeHub.cdn_auth) == {None}  # the token stays with huggingface.co
+    assert sorted(p.name for p in tmp_path.iterdir()) == [dest.name]  # no part, no list of pieces left
+
+
+def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_path):
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"
+    data = FILES[name]
+    url = hf.file_url("test/Tiny-GGUF", name)
+    digest = hashlib.sha256(data).hexdigest()
+    FakeHub.break_after[name] = 30_000  # one piece's connection breaks: that piece is asked again
+    dest = tmp_path / "one.gguf"
+    hf.download(url, dest, size=len(data), sha256=digest, token=None, report=lambda n: None,
+                cancel=threading.Event())  # fmt: skip
+    assert dest.read_bytes() == data and len(FakeHub.spans) == 6  # five pieces, one of them twice
+
+    FakeHub.spans.clear()
+    FakeHub.slow = 0.05  # a piece ~0.2 s: the fifth starts only when one of the first four is done
+    cancel, later = threading.Event(), tmp_path / "two.gguf"
+    marks = tmp_path / "two.gguf.parts"
+
+    def stop_once_a_piece_is_done(_n):  # the user stops it (or the hub goes down) half way
+        if marks.exists():
+            cancel.set()
+
+    with pytest.raises(hf.Cancelled):
+        hf.download(url, later, size=len(data), sha256=digest, token=None, report=stop_once_a_piece_is_done,
+                    cancel=cancel)  # fmt: skip
+    done = json.loads(marks.read_text(encoding="utf-8"))
+    assert (tmp_path / "two.gguf.part").stat().st_size == len(data) and 0 < len(done) < 5
+    FakeHub.spans.clear()
+    FakeHub.slow = 0.0
+    hf.download(url, later, size=len(data), sha256=digest, token=None, report=lambda n: None,
+                cancel=threading.Event())  # a new hub: a new Progress, the pieces done read from the list  # fmt: skip
+    assert later.read_bytes() == data and not marks.exists()
+    asked = {s // (64 * 1024) for _, s, _ in FakeHub.spans}
+    assert asked == set(range(5)) - set(done)  # only the pieces that were not there
+
+
+def test_pieces_fall_back_to_one_connection_and_a_wrong_file_is_thrown_away(fake_hub, pieces, tmp_path):
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"
+    data = FILES[name]
+    url = hf.file_url("test/Tiny-GGUF", name)
+    digest = hashlib.sha256(data).hexdigest()
+    FakeHub.no_ranges = True  # a server that sends the whole file whatever is asked
+    plain = tmp_path / "plain.gguf"
+    hf.download(url, plain, size=len(data), sha256=digest, token=None, report=lambda n: None,
+                cancel=threading.Event())  # fmt: skip
+    assert plain.read_bytes() == data and sorted(p.name for p in tmp_path.iterdir()) == ["plain.gguf"]
+
+    FakeHub.no_ranges = False
+    FakeHub.corrupt.add(name)
+    broken = tmp_path / "broken.gguf"
+    with pytest.raises(hf.HubError, match="повреждённым") as caught:
+        hf.download(url, broken, size=len(data), sha256=digest, token=None, report=lambda n: None,
+                    cancel=threading.Event())  # fmt: skip
+    assert caught.value.status == 409
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plain.gguf"]  # the part and its list went too
 
 
 @pytest.fixture

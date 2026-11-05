@@ -160,6 +160,7 @@
  "{error} — новая попытка через {wait} с": "{error} — trying again in {wait} s",
  "{file}: пришло {done} байт из {size} — загрузка продолжится": "{file}: {done} bytes of {size} arrived — the download will go on",
  "{file}: связь оборвалась ({error}) — загрузка продолжится": "{file}: the connection broke ({error}) — the download will go on",
+ "{file}: связь оборвалась — загрузка продолжится": "{file}: the connection broke — the download will go on",
  "{file}: файл пришёл повреждённым (sha256 не совпал) — скачается заново": "{file}: the file arrived damaged (sha256 did not match) — it will be downloaded again",
  "{gib} ГБ видеопамяти": "{gib} GB of VRAM",
  "{gpu}: для новой модели ≈ {size} видеопамяти": "{gpu}: ≈ {size} of VRAM for a new model",

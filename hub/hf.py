@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -32,6 +34,11 @@ DEFAULT_BASE = "https://huggingface.co"
 TOKEN = "huggingface_token"  # the user's token in the secret store («Подключения», connections.HUGGINGFACE_TOKEN)
 CHUNK = 1 << 20
 HEADER_LIMIT = 64 << 20  # a GGUF header longer than this is not read over the network
+PARTS = 8  # connections at once for a big file (live on 2026-11-05: 4-16 fill a 500 Mbit/s line, one does not)
+SEGMENT = 64 << 20  # a piece of a big file: what one connection asks for; a break loses at most this
+PARALLEL_MIN = 2 * SEGMENT  # smaller files come over one connection
+SEGMENT_TRIES = 3  # a piece whose connection breaks is asked again this many times in all
+RETRY_S = 1.0
 SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag")
 INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "gguf", "sha")
 # a variant's quantization in its file name: Q4_K_M, IQ3_XXS, UD-Q4_K_XL, Q8_0, MXFP4, BF16...
@@ -260,10 +267,13 @@ def header(repo: str, path: str, token: str | None = None, revision: str = "main
 
 @dataclass
 class Progress:
-    """A download's state kept between tries: the bytes on disk and their sha256 so far."""
+    """A download's state kept between tries: the bytes on disk and their sha256 so far; for a file that comes in
+    pieces - the pieces on disk and how far from the start the sha256 has gone."""
 
     done: int = 0
     hasher: Any = field(default_factory=hashlib.sha256)
+    pieces: set[int] = field(default_factory=set)
+    hashed: int = 0
 
 
 def _hash_part(part: Path, progress: Progress, report: Callable[[int], None], cancel: threading.Event) -> None:
@@ -280,11 +290,181 @@ def _hash_part(part: Path, progress: Progress, report: Callable[[int], None], ca
 def download(url: str, dest: Path, *, size: int, sha256: str | None, token: str | None,
              report: Callable[[int], None], cancel: threading.Event, progress: Progress | None = None,
              transport: httpx.BaseTransport | None = None) -> None:  # fmt: skip
-    """The file into `dest` (blocking: in a thread). It comes in as `<dest>.part`: a part left by an earlier try is
-    read again for its sha256 (unless `progress` already holds it) and the rest is asked for with Range. The file
-    takes its name only once whole and its sha256 matches; a wrong one is thrown away."""
-    part = dest.with_name(dest.name + ".part")
+    """The file into `dest` (blocking: in a thread). It comes in as `<dest>.part` and takes its name only once whole
+    and its sha256 matches; a wrong one is thrown away. A big file comes in pieces over several connections
+    (_pieces); a small one, or one from a server that ignores Range, over one."""
     progress = progress if progress is not None else Progress()
+    if size >= PARALLEL_MIN and PARTS > 1:
+        try:
+            _pieces(url, dest, size=size, sha256=sha256, token=token, report=report, cancel=cancel,
+                    progress=progress, transport=transport)  # fmt: skip
+            return
+        except _NoRanges:
+            _forget_pieces(dest, progress)
+    _stream(url, dest, size=size, sha256=sha256, token=token, report=report, cancel=cancel, progress=progress,
+            transport=transport)  # fmt: skip
+
+
+class _NoRanges(Exception):
+    """The server sends the whole file whatever part is asked for: pieces cannot come apart."""
+
+
+def _forget_pieces(dest: Path, progress: Progress) -> None:
+    for left in (dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")):
+        with contextlib.suppress(OSError):
+            left.unlink()
+    progress.hasher, progress.done, progress.pieces, progress.hashed = hashlib.sha256(), 0, set(), 0
+
+
+def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str | None,
+            report: Callable[[int], None], cancel: threading.Event, progress: Progress,
+            transport: httpx.BaseTransport | None) -> None:  # fmt: skip
+    """A big file in SEGMENT pieces, PARTS of them at once (live on 2026-11-05: one connection to Hugging Face's CDN
+    gave 0.6-19 MB/s here, four to sixteen - 60-70, the line's limit). Each piece is written at its place in
+    `<dest>.part` (as long as the file from the start); `<dest>.parts` lists the pieces done, so a break - or a new
+    hub - asks only for the rest. A broken piece is asked again (SEGMENT_TRIES); the sha256 follows the pieces done
+    from the start, reading back what was just written. Only this thread calls `report`."""
+    part, marks = dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")
+    count = -(-size // SEGMENT)
+    if not progress.pieces:
+        progress.pieces = _pieces_on_disk(part, marks, size, count)
+        progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in progress.pieces)
+        progress.hasher, progress.hashed = hashlib.sha256(), 0
+    if not part.exists() or part.stat().st_size != size:
+        with open(part, "ab") as f:
+            f.truncate(size)
+    lock, wake, stop = threading.Lock(), threading.Condition(), threading.Event()
+    waiting = [i for i in range(count) if i not in progress.pieces]
+    failed: list[BaseException] = []
+    coming: dict[int, int] = {}  # a piece on its way -> its bytes so far
+
+    def worker() -> None:
+        with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0), transport=transport) as http:
+            while not stop.is_set():
+                with lock:
+                    if not waiting:
+                        return
+                    index = waiting.pop(0)
+                try:
+                    _piece(http, url, part, index, size, token, cancel, stop, coming, lock)
+                except BaseException as exc:  # the main thread raises it
+                    with lock:
+                        failed.append(exc)
+                    stop.set()
+                    with wake:
+                        wake.notify()
+                    return
+                with lock:
+                    progress.pieces.add(index)
+                    coming.pop(index, None)
+                    marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
+                with wake:
+                    wake.notify()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(min(PARTS, len(waiting)))]
+    for t in threads:
+        t.start()
+    try:
+        with open(part, "rb", buffering=0) as f:  # no read-ahead: bytes past the pieces done are not there yet
+            while True:
+                with lock:
+                    ready = progress.pieces.copy()
+                    on_way = sum(coming.values())
+                    progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in ready)
+                report(progress.done + on_way)
+                upto = 0  # the bytes from the start that are on disk
+                while upto < count and upto in ready:
+                    upto += 1
+                end = min(upto * SEGMENT, size)
+                f.seek(progress.hashed)
+                while progress.hashed < end:
+                    chunk = f.read(min(8 * CHUNK, end - progress.hashed))
+                    progress.hasher.update(chunk)
+                    progress.hashed += len(chunk)
+                if failed or progress.hashed >= size:
+                    break
+                if cancel.is_set():
+                    stop.set()
+                    break
+                with wake:
+                    wake.wait(0.2)
+    finally:
+        stop.set()
+        for t in threads:
+            t.join()
+    if failed:
+        raise failed[0]
+    if cancel.is_set() and progress.hashed < size:
+        raise Cancelled()
+    if sha256 and progress.hasher.hexdigest() != sha256.lower():
+        _forget_pieces(dest, progress)
+        raise HubError(tr("{file}: файл пришёл повреждённым (sha256 не совпал) — скачается заново", file=dest.name),
+                       409)  # fmt: skip
+    os.replace(part, dest)
+    with contextlib.suppress(OSError):
+        marks.unlink()
+
+
+def _span(index: int, size: int) -> tuple[int, int]:
+    """The first and the last byte of a piece."""
+    return index * SEGMENT, min((index + 1) * SEGMENT, size) - 1
+
+
+def _pieces_on_disk(part: Path, marks: Path, size: int, count: int) -> set[int]:
+    """The pieces an earlier try left: by its list - or, for a part that came over one connection, the whole pieces
+    from its start."""
+    if not part.exists():
+        return set()
+    if marks.exists():
+        try:
+            listed = json.loads(marks.read_text(encoding="utf-8"))
+            if part.stat().st_size == size and isinstance(listed, list):
+                return {i for i in listed if isinstance(i, int) and 0 <= i < count}
+        except OSError, ValueError:
+            pass
+        return set()
+    return set(range(min(part.stat().st_size, size) // SEGMENT))
+
+
+def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, token: str | None,
+           cancel: threading.Event, stop: threading.Event, coming: dict[int, int],
+           lock: threading.Lock) -> None:  # fmt: skip
+    """One piece at its place in the part, asked again when the connection breaks (SEGMENT_TRIES)."""
+    first, last = _span(index, size)
+    for attempt in range(SEGMENT_TRIES):
+        got = 0
+        try:
+            with http.stream("GET", url, headers={**headers(token), "Range": f"bytes={first}-{last}"}) as response:
+                if response.status_code == 200:
+                    raise _NoRanges()
+                if response.status_code != 206:
+                    raise _refused(response, part.name.removesuffix(".part"))
+                with open(part, "r+b") as f:
+                    f.seek(first)
+                    for chunk in response.iter_bytes(CHUNK):
+                        if cancel.is_set() or stop.is_set():
+                            raise Cancelled()
+                        f.write(chunk[: last + 1 - first - got])
+                        got += len(chunk)
+                        with lock:
+                            coming[index] = min(got, last + 1 - first)
+            if got >= last + 1 - first:
+                return
+        except httpx.HTTPError:
+            pass
+        with lock:
+            coming.pop(index, None)
+        if attempt + 1 < SEGMENT_TRIES:
+            time.sleep(RETRY_S)
+    raise HubError(tr("{file}: связь оборвалась — загрузка продолжится", file=part.name.removesuffix(".part")))
+
+
+def _stream(url: str, dest: Path, *, size: int, sha256: str | None, token: str | None,
+            report: Callable[[int], None], cancel: threading.Event, progress: Progress,
+            transport: httpx.BaseTransport | None) -> None:  # fmt: skip
+    """The file over one connection. A part left by an earlier try is read again for its sha256 (unless `progress`
+    already holds it) and the rest is asked for with Range."""
+    part = dest.with_name(dest.name + ".part")
     on_disk = part.stat().st_size if part.exists() else 0
     if size and on_disk > size:
         part.unlink()
