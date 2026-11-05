@@ -363,6 +363,7 @@ class FakeClient:
         self.key_calls = []
         self.sandboxed = []
         self.task_sandboxes = []  # a coordinator's tasks' sandboxes (16.2)
+        self.boards = {}  # a coordinator's run -> its tasks (16.4)
         self.sandbox_calls = []
         self.schedule_calls = []
         self.install_calls = []
@@ -745,6 +746,11 @@ class FakeClient:
 
     def sandbox(self, conversation_id):
         return {"projects": [dict(x) for x in self.sandboxed], "tasks": [dict(x) for x in self.task_sandboxes]}
+
+    def run_tasks(self, run_id):  # a coordinator's board (16.4); another run or a chat - none
+        if run_id not in self.boards:
+            raise HubError(f"no such run: {run_id}")
+        return {"tasks": [dict(t) for t in self.boards[run_id]]}
 
     def apply_tasks(self, run_id):
         self.sandbox_calls.append(("apply all", run_id))
@@ -5039,6 +5045,78 @@ def test_the_agents_api_keys_in_the_window(qapp):
         assert app.question["title"] == "Удалить ключ «weather»?"
         app.answer(True)
         wait_until(lambda: not app.bg.busy and not keys.items)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_coordinators_board_in_the_window(qapp):
+    """16.4 (D50): the open coordinator's tasks - a bar over the composer, what waits for the user first; the board
+    with each task's agent, model, status, time, cost and check; its tasks' requests show on its card."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def drawn(condition) -> None:
+        for _ in range(150):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+            if condition():
+                return
+            time.sleep(0.02)
+        raise AssertionError("not drawn")
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        view = app.tasks_view
+        bar = quick.window.findChild(QObject, "tasksBar")
+        assert not view.shown and not bar.property("visible")  # a chat, not a coordinator
+        task = {"criteria": [], "rounds": 0, "verdict": None, "detail": None, "dependencies": [], "waiting": False,
+                "cost_usd": 0.0, "steps": 1, "started_at": None, "ended_at": None, "run_id": None}  # fmt: skip
+        client.boards["c1"] = [
+            task | {"task_id": "a", "agent": "Писатель", "status": "done", "model_id": MODELS[0]["id"],
+                    "run_id": "r1", "started_at": "2026-11-05T10:00:00Z", "ended_at": "2026-11-05T10:00:12Z",
+                    "cost_usd": 0.0123, "criteria": [{"kind": "command"}], "rounds": 2, "verdict": "ACHIEVED"},
+            task | {"task_id": "b", "agent": "Тестер", "status": "running", "waiting": True, "run_id": "r2"},
+            task | {"task_id": "c", "agent": "Писатель", "status": "escalated", "run_id": "r3", "rounds": 3,
+                    "criteria": [{"kind": "semantic"}], "verdict": "INCOMPLETE",
+                    "detail": "not passed after 3 rounds: criterion 1"},
+            task | {"task_id": "d", "agent": "Ревьюер", "status": "pending", "dependencies": ["a", "c"]},
+        ]  # fmt: skip
+        app.on_event({"type": "run.tasks", "payload": {"run_id": "c1"}})
+        wait_until(lambda: not app.bg.busy and view.shown)
+        assert bar.property("visible") and view.tone == "warn"
+        assert view.summary == "Подзадачи: ждёт вас 1 · нужен человек 1 · ждёт очереди 1 · готово 1"
+        a, b, c, d = view.rows
+        assert (a["statusText"], a["tone"], a["model"], a["time"], a["cost"], a["check"]) == (
+            "готово", "ok", MODELS[0]["name"], "12.0 с", "$0.01", "круг 2 из 3 · принято")  # fmt: skip
+        assert (b["statusText"], b["tone"], b["check"]) == ("ждёт вас", "warn", "")
+        assert (c["statusText"], c["check"], c["detail"]) == ("нужен человек", "круг 3 из 3 · не дотянула",
+                                                              "not passed after 3 rounds: criterion 1")  # fmt: skip
+        assert (d["statusText"], d["after"], d["time"]) == ("ждёт очереди", "после a, c", "")
+
+        # the task that waits: its request shows here, under the coordinator, named
+        asking = {**APPROVAL, "id": "apb", "conversation_id": "r2", "tool": "run_command", "kind": "command",
+                  "input": {"command": "pytest -q"}, "preview": {"kind": "command", "text": "pytest -q"}}  # fmt: skip
+        app.approvals.answer("ap1", True, "once", "")  # the coordinator's own, older request first
+        client.pending = [asking]
+        app.on_event({"type": "approval.requested", "payload": {"approval": asking}})
+        wait_until(lambda: app.approvals.card.get("id") == "apb")
+        assert app.approvals.card["where"].endswith("подзадача [b] «Тестер»")
+
+        QMetaObject.invokeMethod(quick.window.findChild(QObject, "tasksSheet"), "open")
+        sheet = quick.window.findChild(QObject, "tasksSheet")
+        drawn(lambda: sheet.property("opened") and item_named(sheet.property("contentItem"), "taskRow_d"))
+        app.openChat("c0")  # another chat: no board
+        wait_until(lambda: not app.bg.busy and not view.shown)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

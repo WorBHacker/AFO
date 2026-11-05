@@ -51,6 +51,7 @@ from .release_view import ReleaseView
 from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
 from .setup_view import SetupView
+from .tasks_view import TasksView
 from .terminals import Terminals
 from .theme import Theme
 from .transfer_view import TransferView
@@ -259,6 +260,8 @@ class Controller(QObject):
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
         self.currentChanged.connect(self.goal_view.load)
+        self.tasks_view = TasksView(self)  # a coordinator's board: its tasks, live (16.4, D50)
+        self.currentChanged.connect(self.tasks_view.load)
         self.modelChanged.connect(self.goal_view.editorChanged)  # the card names the model, its price; Claude Code
         self.proving_view = ProvingView(self)  # the proving ground and the models' exam (D45, 12.2)
         self.modelChanged.connect(self.proving_view.changed)  # «пробует …»: the chat's model
@@ -1719,14 +1722,16 @@ class Controller(QObject):
         elif kind.startswith("approval."):
             self.approvals.on_event(kind, payload)
             self.agents.on_event(kind, payload)  # a run waits for the user, or goes on
+            self.tasks_view.on_event(kind, payload)  # a coordinator's task waits for the user (16.4)
         elif kind.startswith(("run.", "agents.")):
             self.agents.on_event(kind, payload)
             if kind in ("run.question", "run.answered") and not self.autonomy_view.is_task(payload.get("run_id") or ""):
                 self._chat_question_event(kind, payload)  # a chat's model asks, not an agent's task
-            elif kind.startswith("run."):
+            elif kind.startswith("run.") and kind != "run.tasks":
                 self.autonomy_view.on_event(kind, payload)
             if kind == "run.finished" and (payload.get("run") or {}).get("parent_run") == self.current:
                 self.sandbox_view.load()  # a task of the coordinator open here ended: what it changed (16.2)
+            self.tasks_view.on_event(kind, payload)  # the coordinator's board (16.4)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
         elif kind.startswith("install."):

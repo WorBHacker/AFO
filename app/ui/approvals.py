@@ -112,8 +112,10 @@ def approval_rows(
     projects: dict[str, dict[str, Any]],
     chats: dict[str, str],
     speakers: dict[str, str] | None = None,
+    tasks: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """`speakers`: a chat's model by name, for the requests of the hub's own models (they come with no client)."""
+    """`speakers`: a chat's model by name, for the requests of the hub's own models (they come with no client);
+    `tasks`: the open coordinator's tasks' runs - «[a] «Писатель»» (16.4)."""
     roots = [p.get("path", "") for p in projects.values() if p.get("path")]
     rows = []
     for a in approvals:
@@ -122,6 +124,7 @@ def approval_rows(
         who = asker(a, speakers or {})
         project = projects.get(a.get("project_id") or "", {}).get("name", "")
         chat = chats.get(a.get("conversation_id") or "", "")
+        task = (tasks or {}).get(a.get("conversation_id") or "", "")
         cls = a.get("class") or ""  # an outside MCP server's tool: its class of action (9.5)
         sends = cls == "send" or a.get("tool") in ("mail_send", "screen_send")
         always = ("unsaved" if a.get("unsaved") else "opaque" if a.get("opaque")
@@ -136,7 +139,8 @@ def approval_rows(
             "kind": a.get("kind", "other"),
             "icon": {"command": "terminal", "write": "edit", "network": "cloud"}.get(a.get("kind", ""), "shield"),
             "who": who,
-            "where": " · ".join(s for s in (project, f"«{chat}»" if chat else "") if s),
+            "where": " · ".join(s for s in (project, f"«{chat}»" if chat else "", tr("подзадача {task}", task=task)
+                                            if task else "") if s),
             "note": short_path(str(preview.get("note") or ""), roots) if preview.get("kind") == "diff"
                     else str(preview.get("note") or ""),
             "previewKind": preview.get("kind", "text"),
@@ -239,15 +243,26 @@ class Approvals(QObject):
             return self.app.autonomy_view.selected() if hasattr(self.app, "autonomy_view") else ""
         return self.app.current or ""
 
+    def _tasks(self) -> dict[str, str]:
+        """In the chats, the open coordinator's tasks' runs: their requests show here, under it (16.4)."""
+        board = getattr(self.app, "tasks_view", None)
+        return board.run_ids() if board is not None and self.app.mode != "agent" else {}
+
     def _rows(self, approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         projects = {p["id"]: p for p in self.app.projects.items}
         chats = {c["id"]: c.get("title") or "" for c in self.app.conversations}
-        return approval_rows(approvals, projects=projects, chats=chats, speakers=self._speakers())
+        return approval_rows(approvals, projects=projects, chats=chats, speakers=self._speakers(), tasks=self._tasks())
+
+    def tasks_changed(self) -> None:
+        """The open coordinator's board changed: its tasks' requests may show on the card now."""
+        self._refresh()
 
     def _refresh(self) -> None:
-        """The card of the open chat (its oldest request) and the cards with no chat; a signal only on a change."""
+        """The card of the open chat (its oldest request; a coordinator's - its tasks' too, 16.4) and the cards with
+        no chat; a signal only on a change."""
         current = self._open()
-        here = [a for a in self._pending if current and a.get("conversation_id") == current]
+        mine = {current, *self._tasks()} if current else set()
+        here = [a for a in self._pending if a.get("conversation_id") in mine]
         card = self._rows(here[:1])[0] if here else {}
         if card != self._card or len(here) != self._card_count:
             self._card, self._card_count = card, len(here)

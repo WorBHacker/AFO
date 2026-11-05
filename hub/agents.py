@@ -37,7 +37,7 @@ from typing import Any
 
 from common.i18n import tr
 
-from . import agent_tools, autonomous, compact, computer, goals, judge, mail, memory, sandbox, store
+from . import agent_tools, autonomous, budgets, compact, computer, goals, judge, mail, memory, sandbox, store
 from .approvals import trusted_skips
 from .autonomous import NOTE
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
@@ -62,6 +62,7 @@ DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in COORDINATING]  # "all": a coo
 CLOUD_AT_ONCE = 4  # a batch's cloud tasks running together: the providers' request limits
 ANSWER_CHARS = 6000  # of each answer on the coordinator's board
 CHANGED_SHOWN = 12  # files named per project on the board
+RESERVE_USD = 0.5  # what a batch keeps for a paid task whose agent has no budget of its own (16.4)
 CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
               "the same place - mend them first: ")  # fmt: skip
 ONE_LEVEL = "you are a sub-agent yourself: you cannot give tasks further (one level, D20)"
@@ -319,14 +320,19 @@ def _task(row: sqlite3.Row) -> dict[str, Any]:
 
 def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
     """The coordinator's board: the tasks of its batches (or of one), in the order it wrote them; `sandbox` - the
-    task's run writes into copies of its projects (16.2)."""
+    task's run writes into copies of its projects (16.2); its run's model, steps, cost and status, and `waiting` -
+    the run waits for the user's answer (16.4)."""
     rows = conn.execute(
-        "SELECT t.*, COALESCE(c.mode = 'sandbox', 0) AS sandbox FROM delegated_tasks t LEFT JOIN conversation_context"
-        " c ON c.conversation_id = t.run_id WHERE t.coordinator = ? AND (? IS NULL OR t.batch = ?)"
-        " ORDER BY t.batch, t.position",
+        "SELECT t.*, COALESCE(c.mode = 'sandbox', 0) AS sandbox, r.model_id, r.steps, r.cost_usd,"
+        " r.status AS run_status, EXISTS (SELECT 1 FROM approvals a WHERE a.conversation_id = t.run_id AND"
+        " a.status = 'pending') AS waiting FROM delegated_tasks t"
+        " LEFT JOIN conversation_context c ON c.conversation_id = t.run_id"
+        " LEFT JOIN agent_runs r ON r.conversation_id = t.run_id"
+        " WHERE t.coordinator = ? AND (? IS NULL OR t.batch = ?) ORDER BY t.batch, t.position",
         (coordinator, batch, batch),
     ).fetchall()
-    return [_task(r) | {"sandbox": bool(r["sandbox"])} for r in rows]
+    return [_task(r) | {"sandbox": bool(r["sandbox"]), "waiting": bool(r["waiting"]), "steps": r["steps"] or 0,
+                        "cost_usd": r["cost_usd"] or 0.0} for r in rows]  # fmt: skip
 
 
 def applying_order(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -409,6 +415,32 @@ def _criteria(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str,
     names = {p.id: p.name for p in attached}
     return [c | {"n": n, "project_name": names.get(c.get("project_id"), ""), "path": c.get("path", "")}
             for n, c in enumerate(checked, 1)]  # fmt: skip
+
+
+def _short_of_money(conn: sqlite3.Connection, tasks: list[dict[str, Any]], found: dict[str, dict]) -> str | None:
+    """A batch keeps money first (16.4): D12 checks a budget by what is spent, and paid tasks running at once could
+    go over it together. Each paid cloud task counts its agent's own budget (its run stops there), or RESERVE_USD;
+    the sum under each budget with a hard limit must fit what that budget has left. None - it fits; else why not."""
+    need: dict[int, float] = {}
+    under: dict[int, dict[str, Any]] = {}
+    for task in tasks:
+        profile = found[task["task_id"]]
+        model = store.get_model(conn, profile["model_id"])
+        if model is None or model["locality"] != "cloud" or not model["prices"]:
+            continue
+        for kept in budgets.statuses(conn, model["id"]):
+            if kept["hard_usd"] is not None:
+                need[kept["id"]] = need.get(kept["id"], 0.0) + (profile["budget_usd"] or RESERVE_USD)
+                under[kept["id"]] = kept
+    for budget_id, amount in need.items():
+        kept = under[budget_id]
+        left = max(kept["hard_usd"] - kept["spent_usd"], 0.0)
+        if amount > left + 1e-9:
+            name = f"{kept['scope_ref'] or kept['scope']} · {kept['period']}"
+            return (f"the batch's paid tasks may spend up to ${amount:.2f} under the budget «{name}» - "
+                    f"${left:.2f} of ${kept['hard_usd']:.2f} is left: give fewer paid tasks, a smaller budget in "
+                    "their agents' profiles, or ask the user to raise the budget")  # fmt: skip
+    return None
 
 
 def round_note(task: dict[str, Any], found: dict[str, Any], round_no: int) -> str:
@@ -579,6 +611,9 @@ class AgentRunner:
             for task in tasks:  # how the hub checks each (16.3): against the agent's own projects
                 if task["criteria"]:
                     task["criteria"] = _criteria(conn, task, found[task["task_id"]])
+            short = _short_of_money(conn, tasks, found)
+            if short:
+                raise AgentError(f"nothing started: {short}")
             return found, local, store.context_settings(conn, parent_id)["mode"]
 
         if any(t["criteria"] for t in tasks) and self.goals is None:
@@ -594,6 +629,7 @@ class AgentRunner:
             number = await self._db.acall(lambda conn: save_batch(conn, parent_id, tasks))
         except AgentError as exc:
             return str(exc), True
+        await self._told(parent_id)
         ordered = order(tasks, lambda t: local[t["task_id"]])
         ends = {t["task_id"]: asyncio.Event() for t in tasks}
         before: dict[str, str | None] = {}  # a local task: the local task before it (the GPU, one after another)
@@ -633,6 +669,7 @@ class AgentRunner:
             if cancel.is_set():
                 await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
                                                         ended_at=utc_now()))  # fmt: skip
+                await self._told(parent_id)
                 return
 
             def start(conn) -> str | None:
@@ -662,6 +699,7 @@ class AgentRunner:
                 await cloud.acquire()
             try:
                 child_id = await self._db.acall(start)
+                await self._told(parent_id)
                 if child_id is None:
                     return
                 ended = self._ended[child_id] = asyncio.Event()
@@ -693,6 +731,7 @@ class AgentRunner:
                     if cancel.is_set():
                         await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
                                                                 ended_at=utc_now()))  # fmt: skip
+                        await self._told(parent_id)
                         return
                     ended = self._ended[child_id] = asyncio.Event()
             finally:
@@ -751,6 +790,7 @@ class AgentRunner:
         word for the next one; short after the last, or a check nobody can make - a person is needed (None)."""
         task_id = task["task_id"]
         await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="checking", rounds=round_no))
+        await self._told(parent_id)
         goal = {
             "id": f"task:{parent_id}:{task_id}",
             "conversation_id": run_id,
@@ -775,10 +815,16 @@ class AgentRunner:
         else:
             await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="running", verdict=verdict,
                                                     feedback=feedback))  # fmt: skip
+            await self._told(parent_id)
             return round_note(task, found, round_no + 1)
         await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, verdict=verdict, feedback=feedback,
                                                 ended_at=utc_now(), **fields))  # fmt: skip
+        await self._told(parent_id)
         return None
+
+    async def _told(self, coordinator: str) -> None:
+        """The window hears that the coordinator's board changed (16.4): it reads the board again."""
+        await self._bus.publish("run.tasks", {"run_id": coordinator}, persist=False)
 
     async def _seed(self, parent_id: str, task: dict[str, Any], run_id: str) -> list[str]:
         """A sandboxed task's copies of its projects start from what the tasks it waited for left there (16.2), not
@@ -952,10 +998,13 @@ class AgentRunner:
                 (ENDED[status], ENDED[status], _last_answer(conn, run_id) or None, outcome.detail or None, utc_now(),
                  run_id),
             )  # fmt: skip
-            return get_run(conn, run_id)
+            board_of = conn.execute("SELECT coordinator FROM delegated_tasks WHERE run_id = ?", (run_id,)).fetchone()
+            return get_run(conn, run_id), board_of[0] if board_of else None
 
-        run = await self._db.acall(write)
+        run, coordinator = await self._db.acall(write)
         await self._bus.publish("run.finished", {"run": run})
+        if coordinator:
+            await self._told(coordinator)
         ended = self._ended.get(run_id)
         if ended is not None:
             ended.set()

@@ -251,7 +251,7 @@ class ByTask:
     worked when is recorded. `edits` / `work`: what a worker's task (its first line) does with a tool at the start of
     each round - the first message, then each word of the hub after a check (16.3)."""
 
-    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",), edits=None, work=None):
+    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",), edits=None, work=None, prices=None):
         self.name = name
         self.scripts = {task: list(steps) for task, steps in scripts.items()}
         self.work = {k: [{"name": "edit_file", "input": v}] for k, v in (edits or {}).items()}
@@ -260,7 +260,7 @@ class ByTask:
         self.calls = []  # (model_ref, messages, tools) per request
         self.active = self.peak = 0
         self.started = []  # (model_ref, task) in the order the workers began
-        self.models = [Model(f"{name}/{ref}", name, ref, ref.title(), locality, {}, {}) for ref in refs]
+        self.models = [Model(f"{name}/{ref}", name, ref, ref.title(), locality, {}, prices or {}) for ref in refs]
 
     async def list_models(self):
         return self.models
@@ -563,6 +563,60 @@ def test_the_checks_of_a_batch_are_the_users_to_allow(hub, repo):  # noqa: F811
     assert second["output"].startswith("nothing started: the checks' commands were not allowed") and second["error"]
     assert "не сейчас" in second["output"]
     assert hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"] == []  # nothing began
+
+
+# --- the board in the window, and the money a batch keeps first (stage 16.4, D50) ---
+
+
+def test_the_board_says_what_the_window_shows_and_tells_it_live(hub, repo, monkeypatch):  # noqa: F811
+    told = []
+    real = hub.app.state.bus.publish
+
+    async def record(kind, payload, *args, **kwargs):
+        if kind == "run.tasks":
+            told.append(payload)
+        return await real(kind, payload, *args, **kwargs)
+
+    monkeypatch.setattr(hub.app.state.bus, "publish", record)
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    command = {"name": "run_command", "input": {"project": "proj", "command": "git log -1"}}  # not of SAFE_COMMANDS
+    tasks = batch(("a", "Правщик", "Запусти"), ("r", "Читатель", "Прочти", ["a"]))
+    plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.02, work={"Запусти": [command]}))
+    profile(hub, name="Правщик", tools=["run_command"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]  # a command in its copy: asked
+    waiting = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert (waiting["a"]["status"], waiting["a"]["waiting"], waiting["a"]["run_status"]) == ("running", True, "running")
+    assert asked["conversation_id"] == waiting["a"]["run_id"] and waiting["r"]["status"] == "pending"
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
+    assert ended(hub, run_id)["status"] == "done"
+    a = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"][0]
+    assert (a["model_id"], a["steps"], a["cost_usd"], a["run_status"], a["waiting"]) == ("fake/echo", 2, 0.0, "done",
+                                                                                        False)  # fmt: skip
+    assert told and {t["run_id"] for t in told} == {run_id}  # the window hears each change of the board
+    assert len(told) >= 5  # saved, a running, a done, r running, r done
+
+
+def test_a_batch_keeps_money_for_its_paid_tasks_first(hub):  # noqa: F811
+    """D12 checks a budget by what is spent; four cloud tasks at once could go over it together - so a batch keeps
+    each paid task's own budget (or RESERVE_USD) out of what its budgets have left, before anything starts."""
+    first, second = batch(("a", "Дорогой", "x"), ("b", "Дорогой", "y")), batch(("c", "Дорогой", "z"), call_id="b2")
+    plug(hub, ByTask("paid", "cloud", {"Сделай": [[first], [second]]}, pause=0.02, prices={"input": 1.0,
+                                                                                         "output": 1.0}))  # fmt: skip
+    assert hub.put("/v1/budgets", json={"scope": "provider", "provider": "paid", "period": "month", "hard_usd": 1.0,
+                                        "hard_action": "block"}).status_code == 200  # fmt: skip
+    profile(hub, name="Дорогой", model_id="paid/echo", tools=[], budget_usd=0.6)
+    boss = profile(hub, name="Координатор", model_id="paid/echo", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    refused, went = outputs(hub, run_id)
+    assert refused["error"] and refused["output"].startswith(
+        "nothing started: the batch's paid tasks may spend up to $1.20 under the budget «paid · month» - $1.00 of "
+        "$1.00 is left")  # fmt: skip
+    assert went["output"].startswith("1 task: 1 done.")  # one fits
+    assert [t["task_id"] for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]] == ["c"]
 
 
 def test_tasks_not_begun_when_the_hub_stopped_are_cancelled(hub):  # noqa: F811

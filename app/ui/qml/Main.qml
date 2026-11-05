@@ -86,7 +86,14 @@ Window {
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - composer.height - (sandboxBar.visible ? sandboxBar.height : 0)
-                    - (goalBar.visible ? goalBar.height : 0)
+                    - (goalBar.visible ? goalBar.height : 0) - (tasksBar.visible ? tasksBar.height : 0)
+        }
+        TasksBar {
+            id: tasksBar
+            visible: (App.mode === "chats" || App.showProjectChat) && Tasks.shown
+            anchors.bottom: goalBar.visible ? goalBar.top : sandboxBar.visible ? sandboxBar.top : composer.top
+            width: parent.width
+            onBoardRequested: tasksSheet.open()
         }
         GoalBar {
             id: goalBar
@@ -235,6 +242,7 @@ Window {
     MemorySheet { id: memorySheet }
     AgentAccessSheet { id: accessSheet }
     SandboxSheet { id: sandboxSheet }
+    TasksSheet { id: tasksSheet }
     GoalSheet { id: goalSheet }
     ProvingSheet { id: provingSheet }
     InstallSheet { id: installSheet }

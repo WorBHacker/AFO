@@ -624,6 +624,7 @@ conversation's text, an approval or a terminal's output.
 | `run.resumed` | да | `run_id` | hub/autonomous.py |
 | `run.started` | да | `run`, `resumed` | hub/agents.py |
 | `run.status` | нет | `run_id`, `status` | hub/agents.py |
+| `run.tasks` | нет | `run_id` | hub/agents.py |
 | `sandbox.applied` | да | `conversation_id`, `task_id`, `project_id` | hub/agents.py, hub/api/sandbox.py |
 | `sandbox.changed` | да | `conversation_id`, `project_id`, `path` | hub/chat.py |
 | `sandbox.discarded` | да | `conversation_id`, `task_ids` | hub/agents.py, hub/api/sandbox.py |

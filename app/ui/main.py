@@ -108,6 +108,7 @@ class QuickApp:
         context.setContextProperty("AgentKeys", self.controller.agent_keys)
         context.setContextProperty("Sandbox", self.controller.sandbox_view)
         context.setContextProperty("Goal", self.controller.goal_view)
+        context.setContextProperty("Tasks", self.controller.tasks_view)
         context.setContextProperty("Proving", self.controller.proving_view)
         context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Setup", self.controller.setup_view)
