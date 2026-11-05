@@ -16,6 +16,11 @@ def project_of(root, pid="p1"):
     return Project(pid, "proj", str(root), "", True, "", "")
 
 
+def named(found):
+    """The sandbox's files by path and status - each carries its hunks too (17.4)."""
+    return [{"path": f["path"], "status": f["status"]} for f in found["files"]]
+
+
 def test_a_worktree_its_diff_and_applying_it(repo, tmp_path):
     folder = tmp_path / "worktrees"
     project = project_of(repo)
@@ -26,7 +31,7 @@ def test_a_worktree_its_diff_and_applying_it(repo, tmp_path):
     (inside.root / "README.md").write_text("# Проект\n\nОписание.\n", encoding="utf-8", newline="\n")
     (inside.root / "docs.md").write_text("# Доки\n", encoding="utf-8", newline="\n")
     found = sb.changes(folder, "conv-1", project)
-    assert found["files"] == [{"path": "README.md", "status": "changed"}, {"path": "docs.md", "status": "added"}]
+    assert named(found) == [{"path": "README.md", "status": "changed"}, {"path": "docs.md", "status": "added"}]
     assert "+Описание." in found["diff"] and found["branch"] == "localchat/sandbox-conv1"
     assert sb.ensure(folder, "conv-1", project).root == inside.root  # the same sandbox the next time
     done = sb.apply(folder, "conv-1", project)
@@ -72,7 +77,7 @@ def test_a_sandbox_chat(hub, repo):  # noqa: F811
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")  # the project: as it was
     assert hub.get(f"/v1/projects/{pid}/changes").json()["changes"] == []  # not a project change (yet)
     shown = hub.get(f"/v1/conversations/{conv}/sandbox").json()["projects"]
-    assert shown[0]["files"] == [{"path": "src/app.py", "status": "changed"}] and "+print('привет')" in shown[0]["diff"]
+    assert named(shown[0]) == [{"path": "src/app.py", "status": "changed"}] and "+print('привет')" in shown[0]["diff"]
     assert hub.post(f"/v1/conversations/{conv}/sandbox/{pid}/apply").json()["applied"] == ["src/app.py"]
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('привет')")
     assert hub.get(f"/v1/conversations/{conv}/sandbox").json()["projects"][0]["files"] == []
@@ -95,10 +100,29 @@ def test_a_sandbox_chat_applies_the_files_ticked(hub, repo):  # noqa: F811
     assert (repo / "docs" / "new.md").exists() and (repo / "src" / "app.py").read_text(encoding="utf-8").startswith(
         "print('hi')")  # fmt: skip
     shown = hub.get(f"/v1/conversations/{conv}/sandbox").json()["projects"][0]
-    assert shown["files"] == [{"path": "src/app.py", "status": "changed"}]
+    assert named(shown) == [{"path": "src/app.py", "status": "changed"}]
     event = hub.get("/v1/feed", params={"types": "sandbox.applied"}).json()["events"][0]
     assert event["payload"]["kept"] == ["src/app.py"]
     assert hub.post(url).json()["applied"] == ["src/app.py"]  # no body: everything left
+
+
+def test_a_sandbox_chat_applies_the_hunks_ticked(hub, repo):  # noqa: F811
+    """17.4 (D51): `hunks` with the apply - a file's hunks by their index, as the sandbox's changes list them."""
+    write(repo, "conf.py", "".join("x = 1\n" if n in (1, 20, 40) else f"# {n}\n" for n in range(1, 41)))
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", "conf")
+    every = {"id": "w1", "name": "edit_file", "input": edit(path="conf.py", old="x = 1", new="x = 2", replace_all=True)}
+    pid, conv, _provider = setup_chat(hub, repo, [[every]], mode="sandbox")
+    say(hub, conv)
+    finished(hub, conv)
+    (shown,) = hub.get(f"/v1/conversations/{conv}/sandbox").json()["projects"]
+    assert [len(f["hunks"]) for f in shown["files"]] == [3]
+    url = f"/v1/conversations/{conv}/sandbox/{pid}/apply"
+    assert hub.post(url, json={"hunks": {"conf.py": [7]}}).status_code == 409
+    done = hub.post(url, json={"hunks": {"conf.py": [1]}}).json()
+    assert done == {"applied": ["conf.py"], "conflicts": [], "kept": ["conf.py"]}
+    lines = (repo / "conf.py").read_text(encoding="utf-8").splitlines()
+    assert (lines[0], lines[19], lines[39]) == ("x = 1", "x = 2", "x = 1")
 
 
 def test_a_sandbox_without_git(hub, tmp_path):  # noqa: F811
@@ -176,10 +200,10 @@ def test_nothing_is_written_until_every_file_is_worked_out(repo, tmp_path, monke
     (inside.root / "src" / "app.py").write_text("print('x')\n", encoding="utf-8", newline="\n")
     merge = sb._merge_one
 
-    def second_fails(root, sandbox, base, name, status):
+    def second_fails(root, sandbox, base, name, status, part=None):
         if name == "src/app.py":
             raise sb.SandboxError("git could not read it")
-        return merge(root, sandbox, base, name, status)
+        return merge(root, sandbox, base, name, status, part)
 
     monkeypatch.setattr(sb, "_merge_one", second_fails)
     with pytest.raises(sb.SandboxError, match="could not read"):
@@ -215,7 +239,7 @@ def test_only_the_files_chosen_go_and_the_rest_stay_in_the_sandbox(repo, tmp_pat
     assert (repo / "README.md").read_text(encoding="utf-8").endswith("Описание.\n")
     assert not (repo / ".gitignore").exists()
     assert not (repo / "доки").exists() and inside.root.exists()  # the rest waits in the sandbox
-    assert sb.changes(folder, "conv-7", project)["files"] == [{"path": "доки/план за год.md", "status": "added"}]
+    assert named(sb.changes(folder, "conv-7", project)) == [{"path": "доки/план за год.md", "status": "added"}]
 
     write(inside.root, "README.md", "# Проект\n\nОписание.\n\nЕщё абзац.\n")  # the model goes on with an applied file
     write(repo, "README.md", "# Проект, правка человека\n\nОписание.\n")  # and the user with the project's
@@ -226,6 +250,58 @@ def test_only_the_files_chosen_go_and_the_rest_stay_in_the_sandbox(repo, tmp_pat
     assert done["conflicts"] == [] and done["kept"] == []
     assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект, правка человека\n\nОписание.\n\nЕщё абзац.\n"
     assert (repo / "доки" / "план за год.md").exists() and not inside.root.exists() and refs(repo) == ""
+
+
+LINES = [f"строка {n}" for n in range(1, 41)]
+
+
+def test_the_hunks_ticked_go_and_the_rest_waits_in_the_sandbox(repo, tmp_path):
+    """17.4 (D51): a changed text file's hunks - as the hub's own writes have them - come with the sandbox's changes;
+    the user takes some: the project gets those, merged with its own changes as a whole file would be; the rest
+    stays in the sandbox, its base past what went, so its diff is only the rest. A project checking files out with
+    CRLF (core.autocrlf) gets them so."""
+    run_git(repo, "config", "core.autocrlf", "true")
+    write(repo, "long.txt", "\n".join(LINES) + "\n")
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", "long")
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-9", project)
+    model = [line + ", правка" if line == "строка 10" else line for line in LINES if line != "строка 20"]
+    model.insert(model.index("строка 38") + 1, "новая")  # a change, a deletion, an addition
+    write(inside.root, "long.txt", "\n".join(model) + "\n")
+    write(inside.root, "README.md", "# Новое\n")  # one hunk only: it goes whole
+    found = {f["path"]: f for f in sb.changes(folder, "conv-9", project)["files"]}
+    assert [h["index"] for h in found["long.txt"]["hunks"]] == [0, 1, 2]
+    assert "-строка 20\n" in found["long.txt"]["hunks"][1]["text"] and len(found["README.md"]["hunks"]) == 1
+    wrong = (({"long.txt": [5]}, None, "there is no hunk 5"), ({"long.txt": []}, None, "no hunk of long.txt chosen"),
+             ({"README.md": [0]}, None, "README.md has no hunks to choose"),
+             ({"long.txt": [0]}, ["README.md"], "long.txt is not among the files applied"))  # fmt: skip
+    for hunks, only, said in wrong:
+        with pytest.raises(sb.SandboxError, match=said):
+            sb.apply(folder, "conv-9", project, only=only, hunks=hunks)
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"  # none of them touched the project
+
+    write(repo, "long.txt", "\n".join(line + ", человек" if line == "строка 30" else line for line in LINES) + "\n")
+    done = sb.apply(folder, "conv-9", project, hunks={"long.txt": [2, 0]})
+    assert done == {"applied": ["README.md", "long.txt"], "conflicts": [], "kept": ["long.txt"]}
+    text = (repo / "long.txt").read_text(encoding="utf-8").splitlines()
+    assert "строка 10, правка" in text and "строка 20" in text and "новая" in text and "строка 30, человек" in text
+    data = (repo / "long.txt").read_bytes()
+    assert data.count(b"\r\n") == data.count(b"\n") == len(text)  # as checkout puts it here: CRLF
+    left = sb.changes(folder, "conv-9", project)["files"]
+    assert [(f["path"], len(f["hunks"])) for f in left] == [("long.txt", 1)]
+    assert "-строка 20\n" in left[0]["hunks"][0]["text"]  # only what is still to go
+    assert sb.apply(folder, "conv-9", project)["kept"] == []
+    text = (repo / "long.txt").read_text(encoding="utf-8").splitlines()
+    assert "строка 20" not in text and "строка 30, человек" in text and "новая" in text
+    assert not inside.root.exists() and refs(repo) == ""
+
+
+def test_blobs_are_read_by_one_git_and_a_missing_one_is_none(repo):
+    """A missing object's line is «<what was asked> missing» - its name may hold spaces."""
+    found = sb._blobs(repo, ["HEAD:нет такого файла.txt", "HEAD:README.md", "HEAD:src/app.py"])
+    assert found == [None, "# Проект\n".encode(), b"print('hi')\n"]
 
 
 def test_applying_the_last_files_chosen_takes_the_sandbox_away(repo, tmp_path):
@@ -273,8 +349,8 @@ def test_a_sandbox_that_starts_from_what_others_left(repo, tmp_path):
     assert (b.root / "src" / "app.py").read_text(encoding="utf-8").endswith("print('a')\n")
     assert (b.root / "README.md").read_text(encoding="utf-8") == "# Проект\n\nC.\n"
     write(b.root, "src/app.py", "print('hi')\nprint('new line')\nprint('a')\nprint('b')\n")
-    assert sb.changes(folder, "task-b", project)["files"] == [{"path": "src/app.py", "status": "changed"}]
-    assert sb.changes(folder, "task-a", project)["files"] == [{"path": "src/app.py", "status": "changed"}]
+    assert named(sb.changes(folder, "task-b", project)) == [{"path": "src/app.py", "status": "changed"}]
+    assert named(sb.changes(folder, "task-a", project)) == [{"path": "src/app.py", "status": "changed"}]
     for task in ("task-a", "task-c", "task-b"):  # in the order they ran
         assert sb.apply(folder, task, project)["conflicts"] == [], task
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").endswith("print('a')\nprint('b')\n")

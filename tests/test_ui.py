@@ -762,8 +762,9 @@ class FakeClient:
             raise HubError(f"no such run: {run_id}")
         return {"tasks": [dict(t) for t in self.boards[run_id]]}
 
-    def apply_tasks(self, run_id, files=None):
-        self.sandbox_calls.append(("apply all", run_id) if files is None else ("apply all", run_id, files))
+    def apply_tasks(self, run_id, files=None, hunks=None):
+        said = ("apply all", run_id) + ((files,) if files is not None or hunks is not None else ())
+        self.sandbox_calls.append(said + ((hunks,) if hunks is not None else ()))
         self.task_sandboxes = []
         return {"applied": [{"task_id": "a", "project": "proj", "files": ["src/app.py"], "conflicts": []},
                             {"task_id": "b", "project": "proj", "files": ["src/app.py", "x.py"], "conflicts": []}],
@@ -774,8 +775,9 @@ class FakeClient:
         self.task_sandboxes = []
         return {"discarded": ["a"]}
 
-    def apply_sandbox(self, conversation_id, project_id, files=None):
-        self.sandbox_calls.append(("apply", conversation_id, project_id, files))
+    def apply_sandbox(self, conversation_id, project_id, files=None, hunks=None):
+        said = ("apply", conversation_id, project_id, files) + ((hunks,) if hunks is not None else ())
+        self.sandbox_calls.append(said)
         self.sandboxed = []
         return {"applied": ["src/app.py"], "conflicts": ["README.md"], "kept": ["docs.md"] if files else []}
 
@@ -6434,6 +6436,73 @@ def test_a_finished_install_is_not_undone_by_a_stale_list(app):
     app.on_event({"type": "install.forgotten", "payload": {"id": "j2"}})
     wait_until(lambda: not app.bg.busy and not view._jobs_loading)
     assert [(j["id"], j["status"]) for j in view._jobs] == [("j1", "done")] and view.activeCount == 0
+
+
+def test_the_sandbox_hunks_in_the_window(qapp):
+    """17.4 (D51): in the sandbox sheet a changed file shows its hunks, each with a tick; the file's tick says all,
+    a part or none - a click on a part takes all of it again, a hunk of a file that was off takes only itself; the
+    apply carries the hunks ticked, a coordinator's too."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        view = app.sandbox_view
+        one = [{"index": 0, "header": "@@ -0,0 +1 @@", "text": "+# Новое\n"}]
+        conf_py = {"path": "conf.py", "status": "changed", "hunks": PARTED_HUNKS}
+        client.sandboxed = [{"project_id": "p1", "name": "LocalChat", "exists": True, "diff": "",
+                             "files": [conf_py, {"path": "new.md", "status": "added", "hunks": one}]}]  # fmt: skip
+        app.setChatMode("sandbox")
+        wait_until(lambda: not app.bg.busy and view.count == 2)
+        row = view.projects[0]
+        conf, new = row["files"]
+        assert row["hunked"] and conf["choosable"] and not new["choosable"]
+        assert (conf["state"], [h["ticked"] for h in conf["hunks"]]) == ("all", [True, True, True])
+        view.tickHunk(conf["key"], 1)
+        row = view.projects[0]
+        assert row["files"][0]["state"] == "part" and row["applyText"] == "Применить отмеченное"
+        sheet = quick.window.findChild(QObject, "sandboxSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: sheet.property("opened"))
+        body = sheet.property("contentItem")
+        wait_until(lambda: item_named(body, "sandboxHunk_conf.py_2") is not None)
+        assert item_named(body, "sandboxFile_new.md") is not None and item_named(body, "sandboxHunk_new.md_0") is None
+        item_named(body, "sandboxFile_conf.py").clicked.emit()  # a part: the file's tick takes all of it again
+        assert view.projects[0]["files"][0]["state"] == "all"
+        view.tick(conf["key"])
+        assert view.projects[0]["files"][0]["state"] == "none"
+        item_named(body, "sandboxHunk_conf.py_2").clicked.emit()  # a hunk of a file that was off: only itself
+        conf = view.projects[0]["files"][0]
+        assert conf["state"] == "part" and [h["ticked"] for h in conf["hunks"]] == [False, False, True]
+        view.tick(new["key"])
+        assert view.projects[0]["applyText"] == "Применить выбранные (1 из 2)"
+        view.apply("p1")
+        wait_until(lambda: not app.bg.busy and view.count == 0)
+        assert client.sandbox_calls[-1] == ("apply", "c1", "p1", ["conf.py"], {"conf.py": [2]})
+        assert view._skipped == set() and view._skipped_hunks == {}
+
+        changed = {"project_id": "p1", "name": "proj", "files": [conf_py], "diff": "", "exists": True}
+        client.task_sandboxes = [{"task_id": "a", "agent": "Правщик", "status": "done", "run_id": "r1",
+                                  "projects": [changed]}]  # fmt: skip
+        app.on_event({"type": "run.finished", "payload": {"run": {"id": "r1", "parent_run": "c1"}}})
+        wait_until(lambda: not app.bg.busy and view.taskCount == 1)
+        view.tickHunk(view.tasks[0]["files"][0]["key"], 0)
+        assert view.taskApplyText == "Применить отмеченное"
+        view.applyAll()
+        wait_until(lambda: not app.bg.busy and view.taskCount == 0)
+        assert client.sandbox_calls[-1] == ("apply all", "c1", None, {"a": {"p1": {"conf.py": [1, 2]}}})
+        QMetaObject.invokeMethod(sheet, "close")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
 
 
 def test_the_sandbox_says_what_of_its_diff_is_not_shown():

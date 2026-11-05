@@ -217,7 +217,7 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/sandbox` | только окно | `sandbox_changes()` |  |
-| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | The sandbox's changes onto the project; with `files`, only those - the rest stays in the sandbox (`kept`). A file that is not there: 409, nothing written. | тело `Files \| None` |
+| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | The sandbox's changes onto the project; with `files`, only those, and with `hunks` only those hunks of a file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written. | тело `Files \| None` |
 | POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/discard` | только окно | `discard_sandbox()` |  |
 
 ### conversations

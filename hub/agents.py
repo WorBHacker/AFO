@@ -351,20 +351,23 @@ def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = N
                         "cost_usd": r["cost_usd"] or 0.0} for r in rows]  # fmt: skip
 
 
-def _check_ticked(folder: Path, sandboxed: list[tuple[dict[str, Any], list]],
-                  files: dict[str, dict[str, list[str]]]) -> None:  # fmt: skip
-    """The files ticked at a coordinator (17.1): each task, project and file there - or SandboxError, before any is
-    applied."""
+def _check_ticked(folder: Path, sandboxed: list[tuple[dict[str, Any], list]], files: dict[str, dict[str, list[str]]],
+                  hunks: dict[str, dict[str, dict[str, list[int]]]]) -> None:  # fmt: skip
+    """The files and hunks ticked at a coordinator (17.1, 17.4): each task, project, file and hunk there - or
+    SandboxError, before any is applied."""
     by_task = {t["task_id"]: (t, projects) for t, projects in sandboxed}
-    for task_id, ticked in files.items():
+    for task_id in {*files, *hunks}:
         if task_id not in by_task:
             raise sandbox.SandboxError(f"no task {task_id!r} with a sandbox")
         task, projects = by_task[task_id]
-        for project_id, only in ticked.items():
+        for project_id in {*files.get(task_id, {}), *hunks.get(task_id, {})}:
             project = next((p for p in projects if p.id == project_id), None)
             if project is None:
                 raise sandbox.SandboxError(f"task {task_id!r} has no sandbox of project {project_id!r}")
-            sandbox.chosen(sandbox.changes(folder, task["run_id"], project)["files"], only)
+            there = sandbox.changes(folder, task["run_id"], project)["files"]
+            only = files.get(task_id, {}).get(project_id) if task_id in files else None
+            sandbox.parts(there if only is None else sandbox.chosen(there, only),
+                          hunks.get(task_id, {}).get(project_id, {}))  # fmt: skip
 
 
 def applying_order(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -924,16 +927,18 @@ class AgentRunner:
     def busy_tasks(self, coordinator: str, tasks: list[dict[str, Any]]) -> bool:
         return any(r in self._chat.busy for r in [coordinator, *(t["run_id"] for t in tasks if t["run_id"])])
 
-    async def apply_tasks(self, coordinator: str, files: dict[str, dict[str, list[str]]] | None = None) -> dict:
+    async def apply_tasks(self, coordinator: str, files: dict[str, dict[str, list[str]]] | None = None,
+                          hunks: dict[str, dict[str, dict[str, list[int]]]] | None = None) -> dict:  # fmt: skip
         """«Применить всё» (16.2): every done task's sandboxes onto the projects, in the order the tasks ran - each
         task's diff begins where the tasks before it ended, so one after another they do not clash. A task that did
         not end done keeps its sandbox (`kept`). Only the user does this (the window). With `files` («Применить
         выбранные», 17.1, D51): per task and project, only the files ticked - all checked before anything is
-        written; what is not ticked stays in the tasks' sandboxes."""
+        written; what is not ticked stays in the tasks' sandboxes. With `hunks` (17.4): of a file, only those hunks.
+        A task left out of `files` is not applied even when `hunks` names it."""
         folder = self._chat.sandboxes
         sandboxed = await self._sandboxed_tasks(coordinator)
-        if files is not None:
-            await asyncio.to_thread(_check_ticked, folder, sandboxed, files)
+        if files is not None or hunks:
+            await asyncio.to_thread(_check_ticked, folder, sandboxed, files or {}, hunks or {})
         applied, kept = [], []
         for task, projects in sandboxed:
             if task["status"] != "done":
@@ -943,7 +948,8 @@ class AgentRunner:
                 only = None if files is None else files.get(task["task_id"], {}).get(project.id)
                 if files is not None and only is None:
                     continue  # nothing of it ticked
-                done = await asyncio.to_thread(sandbox.apply, folder, task["run_id"], project, only)
+                parts = (hunks or {}).get(task["task_id"], {}).get(project.id)
+                done = await asyncio.to_thread(sandbox.apply, folder, task["run_id"], project, only, parts)
                 if done["applied"]:
                     applied.append({"task_id": task["task_id"], "agent": task["agent"], "project_id": project.id,
                                     "project": project.name, "files": done["applied"],

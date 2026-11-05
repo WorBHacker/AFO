@@ -6,7 +6,9 @@ A coordinator's run (16.2, D50): its tasks wrote into sandboxes of their own; th
 left, and «Применить всё» puts them onto the projects in the order the tasks ran, «Отбросить всё» throws them away.
 
 Each file has a tick (17.1, D51), on by default: a file unticked stays in the sandbox, and the button says
-«Применить выбранные (N из M)». After applying, what is left comes back ticked.
+«Применить выбранные (N из M)». After applying, what is left comes back ticked. A changed text file shows its hunks
+(17.4), each with a tick too: the file's tick says all, a part or none; a click on a part takes all of it again, and a
+hunk of a file that was off takes only itself.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     from .controller import Controller
 
 STATUS = {"added": N_("новый"), "deleted": N_("удалён"), "changed": N_("изменён")}
+HUNK_LINES = 80  # a hunk's lines shown in the sheet; the rest is said
 
 
 def file_key(task: str, project_id: str, path: str) -> str:
@@ -30,32 +33,62 @@ def file_key(task: str, project_id: str, path: str) -> str:
     return "\x1f".join((task, project_id, path))
 
 
-def apply_text(ticked: int, total: int, everything: str) -> str:
+def apply_text(ticked: int, total: int, everything: str, partial: bool = False) -> str:
     if ticked == total:
-        return everything
+        return tr("Применить отмеченное") if partial else everything
     return tr("Применить выбранные ({ticked} из {total})", ticked=ticked, total=total)
 
 
-def sandbox_rows(projects: list[dict[str, Any]], task: str = "", skipped: frozenset | set = frozenset()) -> list[dict]:
+def file_row(f: dict[str, Any], key: str, skipped: frozenset | set, skipped_hunks: dict) -> dict[str, Any]:
+    """A file with its tick - and its hunks, each with its own when there are two or more (17.4): the file's tick
+    is all, part or none."""
+    hunks = f.get("hunks") or []
+    choosable = len(hunks) >= 2
+    gone = skipped_hunks.get(key, set()) if choosable else set()
+    ticks = [key not in skipped and h["index"] not in gone for h in hunks]
+    state = ("none" if key in skipped or (choosable and not any(ticks))
+             else "part" if choosable and not all(ticks) else "all")  # fmt: skip
+    rows = []
+    for h, ticked in zip(hunks, ticks, strict=True):
+        lines = preview_lines({"kind": "diff", "text": h["text"]})
+        rows.append({"index": h["index"], "number": h["index"] + 1, "header": h["header"], "ticked": ticked,
+                     "lines": lines[:HUNK_LINES], "more": tr("… ещё {count} строк", count=len(lines) - HUNK_LINES)
+                     if len(lines) > HUNK_LINES else ""})  # fmt: skip
+    return {"path": f["path"], "label": f"{f['path']} — {tr(STATUS.get(f['status'], f['status']))}", "key": key,
+            "ticked": state != "none", "state": state, "choosable": choosable, "hunks": rows}  # fmt: skip
+
+
+def sandbox_rows(projects: list[dict[str, Any]], task: str = "", skipped: frozenset | set = frozenset(),
+                 skipped_hunks: dict | None = None) -> list[dict]:  # fmt: skip
     rows = []
     for p in projects:
         if not (p.get("files") or p.get("error")):
             continue
-        files = [{"path": f["path"], "label": f"{f['path']} — {tr(STATUS.get(f['status'], f['status']))}",
-                  "key": (key := file_key(task, p["project_id"], f["path"])), "ticked": key not in skipped}
+        files = [file_row(f, file_key(task, p["project_id"], f["path"]), skipped, skipped_hunks or {})
                  for f in p.get("files", [])]  # fmt: skip
         ticked = sum(f["ticked"] for f in files)
+        partial = any(f["state"] == "part" for f in files)
         rows.append({"id": p["project_id"], "name": p["name"], "error": p.get("error", ""), "files": files,
-                     "ticked": ticked, "applyText": apply_text(ticked, len(files), tr("Применить")),
+                     "ticked": ticked, "partial": partial,
+                     "applyText": apply_text(ticked, len(files), tr("Применить"), partial),
+                     "hunked": bool(files) and all("hunks" in f for f in p["files"]),  # the hub sends hunks (17.4)
                      "lines": preview_lines({"kind": "diff", "text": p.get("diff", "")}),
                      "more": more_text(p)})  # fmt: skip
     return rows
 
 
-def task_rows(tasks: list[dict[str, Any]], skipped: frozenset | set = frozenset()) -> list[dict[str, Any]]:
+def task_rows(tasks: list[dict[str, Any]], skipped: frozenset | set = frozenset(),
+              skipped_hunks: dict | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """A coordinator's tasks' sandboxes, one row per task and project: «[a] «Писатель» · proj»."""
     return [row | {"name": f"[{t['task_id']}] «{t['agent']}» · {row['name']}"}
-            for t in tasks for row in sandbox_rows(t.get("projects", []), t["task_id"], skipped)]  # fmt: skip
+            for t in tasks for row in sandbox_rows(t.get("projects", []), t["task_id"], skipped,
+                                                   skipped_hunks)]  # fmt: skip
+
+
+def parts(rows: list[dict[str, Any]]) -> dict[str, list[int]]:
+    """Of each file taken in part, the hunks ticked (17.4)."""
+    return {f["path"]: [h["index"] for h in f["hunks"] if h["ticked"]]
+            for row in rows for f in row["files"] if f["state"] == "part"}  # fmt: skip
 
 
 def more_text(project: dict[str, Any]) -> str:
@@ -84,6 +117,7 @@ class SandboxView(QObject):
         self._projects: list[dict[str, Any]] = []
         self._tasks: list[dict[str, Any]] = []  # a coordinator's tasks' sandboxes (16.2)
         self._skipped: set[str] = set()  # the files unticked (17.1): file_key
+        self._skipped_hunks: dict[str, set[int]] = {}  # a file's hunks unticked (17.4), by file_key
         self._busy = False
 
     def _own(self) -> bool:
@@ -99,7 +133,7 @@ class SandboxView(QObject):
 
     @Property(list, notify=changed)
     def projects(self) -> list:
-        return sandbox_rows(self._projects, "", self._skipped)
+        return sandbox_rows(self._projects, "", self._skipped, self._skipped_hunks)
 
     @Property(int, notify=changed)
     def taskCount(self) -> int:
@@ -107,7 +141,7 @@ class SandboxView(QObject):
 
     @Property(list, notify=changed)
     def tasks(self) -> list:
-        return task_rows(self._tasks, self._skipped)
+        return task_rows(self._tasks, self._skipped, self._skipped_hunks)
 
     @Property(int, notify=changed)
     def taskTicked(self) -> int:
@@ -115,16 +149,35 @@ class SandboxView(QObject):
 
     @Property(str, notify=changed)
     def taskApplyText(self) -> str:
-        return apply_text(self.taskTicked, self.taskCount, tr("Применить всё"))
+        partial = any(row["partial"] for row in self.tasks)
+        return apply_text(self.taskTicked, self.taskCount, tr("Применить всё"), partial)
 
     @Slot(str)
     def tick(self, key: str) -> None:
-        """A file's tick on or off (17.1)."""
-        self._skipped ^= {key}
+        """A file's tick (17.1): off - on; a part of it (17.4) - all of it; all - off."""
+        if key in self._skipped:
+            self._skipped.discard(key)
+            self._skipped_hunks.pop(key, None)
+        elif self._skipped_hunks.pop(key, None) is None:
+            self._skipped.add(key)
         self.changed.emit()
 
+    @Slot(str, int)
+    def tickHunk(self, key: str, index: int) -> None:
+        """A hunk's tick (17.4); of a file that was off, the hunk alone comes on."""
+        if key in self._skipped:
+            self._skipped.discard(key)
+            total = next((len(f["hunks"]) for f in self._files() if f["key"] == key), 0)
+            self._skipped_hunks[key] = set(range(total)) - {index}
+        else:
+            self._skipped_hunks.setdefault(key, set()).symmetric_difference_update({index})
+        self.changed.emit()
+
+    def _files(self) -> list[dict[str, Any]]:
+        return [f for row in [*self.projects, *self.tasks] for f in row["files"]]
+
     def _keys(self) -> set[str]:
-        return {f["key"] for row in [*self.projects, *self.tasks] for f in row["files"]}
+        return {f["key"] for f in self._files()}
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
@@ -156,10 +209,13 @@ class SandboxView(QObject):
             if cid == self.app.current:
                 if cid != self._conversation:
                     self._skipped.clear()
+                    self._skipped_hunks.clear()
                 self._conversation = cid
                 self._projects = data.get("projects", []) if self._own() else []
                 self._tasks = data.get("tasks", [])
-                self._skipped &= self._keys()  # a file gone from the sandbox takes its tick with it
+                keys = self._keys()  # a file gone from the sandbox takes its ticks with it
+                self._skipped &= keys
+                self._skipped_hunks = {k: v for k, v in self._skipped_hunks.items() if k in keys}
                 self.changed.emit()
 
         self.app._call(lambda: self.app.client.sandbox(cid), show, lambda _e: None)
@@ -189,6 +245,7 @@ class SandboxView(QObject):
         if row is None or not row["ticked"]:
             return
         files = None if row["ticked"] == len(row["files"]) else [f["path"] for f in row["files"] if f["ticked"]]
+        hunks = parts([row]) or None
 
         def said(result: dict[str, Any]) -> str:
             if result.get("conflicts"):
@@ -201,9 +258,14 @@ class SandboxView(QObject):
             return text
 
         def untick() -> None:  # what is left comes back ticked
-            self._skipped -= {f["key"] for f in row["files"]}
+            self._forget(row["files"])
 
-        self._act(lambda cid: self.app.client.apply_sandbox(cid, project_id, files), said, untick)
+        self._act(lambda cid: self.app.client.apply_sandbox(cid, project_id, files, hunks), said, untick)
+
+    def _forget(self, files: list[dict[str, Any]]) -> None:
+        for f in files:
+            self._skipped.discard(f["key"])
+            self._skipped_hunks.pop(f["key"], None)
 
     @Slot(str)
     def discard(self, project_id: str) -> None:
@@ -228,9 +290,14 @@ class SandboxView(QObject):
         if self.taskTicked < self.taskCount:
             files = {}
             for t in self._tasks:
-                for row in task_rows([t], self._skipped):
+                for row in task_rows([t], self._skipped, self._skipped_hunks):
                     if ticked := [f["path"] for f in row["files"] if f["ticked"]]:
                         files.setdefault(t["task_id"], {})[row["id"]] = ticked
+        hunks: dict[str, dict[str, dict[str, list[int]]]] = {}
+        for t in self._tasks:
+            for row in task_rows([t], self._skipped, self._skipped_hunks):
+                if part := parts([row]):
+                    hunks.setdefault(t["task_id"], {})[row["id"]] = part
 
         def said(result: dict[str, Any]) -> str:
             applied = result.get("applied", [])
@@ -243,9 +310,9 @@ class SandboxView(QObject):
             return text
 
         def untick() -> None:
-            self._skipped -= {f["key"] for row in rows for f in row["files"]}
+            self._forget([f for row in rows for f in row["files"]])
 
-        self._act(lambda cid: self.app.client.apply_tasks(cid, files), said, untick)
+        self._act(lambda cid: self.app.client.apply_tasks(cid, files, hunks or None), said, untick)
 
     @Slot()
     def discardAll(self) -> None:

@@ -19,7 +19,9 @@ its ref go then, as on «Отбросить» - and with the chat, and at the hu
 The user may apply only the files ticked (17.1, D51): those go the same way, the others stay in the sandbox, and its
 base moves past what went (a commit of the hub's own: the base with those files as the sandbox has them) - so the
 sandbox's diff from then on is only what is still to go, and a file applied and changed again brings only its new
-change.
+change. Of a changed text file, the user may take only some hunks (17.4): they are the hunks of the hub's own writes
+(hub/changes.py), worked out in git's form of the text; the part is merged as a whole file would be, and the base
+moves to it - the rest of the file waits in the sandbox.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from typing import Any
 
 from common.i18n import tr
 
+from . import changes as edits
 from . import projects
 from .changes import write_atomic
 from .projects import Project
@@ -172,9 +175,58 @@ def changes(folder: Path, conversation_id: str, project: Project) -> dict[str, A
     names = _git(path, "diff", "--cached", "--name-status", "--no-renames", "-z", base).split("\0")
     files = [{"path": name, "status": STATUS.get(status[:1], "changed")}
              for status, name in zip(names[0::2], names[1::2], strict=False) if status and name]  # fmt: skip
+    for f, planned in zip(files, _versions(path, base, files), strict=True):
+        f["hunks"] = edits.hunks(planned) if planned is not None else []  # 17.4: none for a binary file
     diff = _git(path, "diff", "--cached", "--no-renames", base)
     return {"project_id": project.id, "name": project.name, "branch": branch_name(conversation_id),
             "files": files, "diff": diff[:DIFF_MAX], "diff_chars": len(diff), "exists": True}  # fmt: skip
+
+
+def _versions(path: Path, base: str, files: list[dict[str, Any]]) -> list[edits.Planned | None]:
+    """Each file as the sandbox began (its base) and as it is (its index, after changes() added all), in git's form of
+    the text - what its hunks are worked out from (17.4); None for one that is not UTF-8 text or is too big. One git
+    for all of them."""
+    specs = []
+    for f in files:
+        specs += [None if f["status"] == "added" else f"{base}:{f['path']}",
+                  None if f["status"] == "deleted" else f":{f['path']}"]  # fmt: skip
+    blobs = _blobs(path, [s for s in specs if s is not None])
+    found = iter(blobs)
+    versions = [None if s is None else next(found) for s in specs]
+    out = []
+    for f, before, after in zip(files, versions[0::2], versions[1::2], strict=True):
+        text = all(v is None or (len(v) <= edits.MAX_BYTES and b"\0" not in v and _utf8(v)) for v in (before, after))
+        out.append(edits.Planned(f["path"], path / f["path"], before, after or b"") if text else None)
+    return out
+
+
+def _utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _blobs(path: Path, specs: list[str]) -> list[bytes | None]:
+    """The objects `specs` name («<commit>:<path>», «:<path>» - the index), read by one `git cat-file --batch`;
+    None for one that is missing."""
+    if not specs:
+        return []
+    out = _run(path, "cat-file", "--batch", stdin="".join(f"{s}\n" for s in specs).encode("utf-8"))
+    found: list[bytes | None] = []
+    at = 0
+    for _spec in specs:
+        end = out.index(b"\n", at)
+        header = out[at:end].split()
+        at = end + 1
+        if header[-1:] in ([b"missing"], [b"ambiguous"]):  # «<what was asked> missing» - spaces and all
+            found.append(None)
+            continue
+        size = int(header[2])
+        found.append(out[at : at + size])
+        at += size + 1  # the object, and the newline after it
+    return found
 
 
 def chosen(files: list[dict[str, Any]], only: list[str]) -> list[dict[str, Any]]:
@@ -187,42 +239,74 @@ def chosen(files: list[dict[str, Any]], only: list[str]) -> list[dict[str, Any]]
     return [f for f in files if f["path"] in set(only)]
 
 
-def apply(folder: Path, conversation_id: str, project: Project, only: list[str] | None = None) -> dict[str, Any]:
-    """The sandbox's changes onto the project's working tree - all, or `only` the files ticked (17.1, D51). What is
-    left (`kept`) stays in the sandbox, past its moved base; with nothing left, the sandbox goes."""
+def parts(files: list[dict[str, Any]], hunks: dict[str, list[int]]) -> dict[str, list[int]]:
+    """The hunks ticked of the files applied (17.4): each file among them, with hunks to choose, at least one ticked,
+    each of its own; a file with all of them ticked goes whole (it is not in the result)."""
+    by_name = {f["path"]: f for f in files}
+    out = {}
+    for name, picked in hunks.items():
+        if name not in by_name:
+            raise SandboxError(f"{name} is not among the files applied")
+        total = len(by_name[name].get("hunks") or [])
+        if total < 2:
+            raise SandboxError(f"{name} has no hunks to choose: it goes whole")
+        picked = sorted(set(picked))
+        if not picked:
+            raise SandboxError(f"no hunk of {name} chosen: untick the file instead")
+        if outside := [n for n in picked if not 0 <= n < total]:
+            raise SandboxError(f"{name} has {total} hunks, numbered from 0: there is no hunk {outside[0]}")
+        if len(picked) < total:
+            out[name] = picked
+    return out
+
+
+def apply(folder: Path, conversation_id: str, project: Project, only: list[str] | None = None,
+          hunks: dict[str, list[int]] | None = None) -> dict[str, Any]:  # fmt: skip
+    """The sandbox's changes onto the project's working tree - all, or `only` the files ticked (17.1, D51), and of
+    a file in `hunks` only those hunks (17.4). What is left (`kept`) stays in the sandbox, past its moved base; with
+    nothing left, the sandbox goes."""
     found = changes(folder, conversation_id, project)
     files = found["files"] if only is None else chosen(found["files"], only)
+    picked = parts(files, hunks or {})
     if not found["exists"] or not files:
         discard(folder, conversation_id, project)
         return {"applied": [], "conflicts": [], "kept": []}
     path = place(folder, conversation_id, project)
     base = _base(path, conversation_id)
+    partial = [f for f in files if f["path"] in picked]
+    taken = {f["path"]: edits.compose(v, set(picked[f["path"]])).after
+             for f, v in zip(partial, _versions(path, base, partial), strict=True) if v is not None}  # fmt: skip
     # every file worked out first: one git cannot read stops it all before the project is touched
-    planned = [(f["path"], *_merge_one(project.root, path, base, f["path"], f["status"])) for f in files]
+    planned = [(f["path"], *_merge_one(project.root, path, base, f["path"], f["status"], taken.get(f["path"])))
+               for f in files]  # fmt: skip
     for name, data, _clean in planned:
         target = projects.resolve_inside(project.root, name)
         if data is None:
             target.unlink(missing_ok=True)
         else:
             write_atomic(target, data)  # the whole file or nothing (D46)
-    kept = [f["path"] for f in found["files"] if f not in files]
+    kept = [f["path"] for f in found["files"] if f not in files or f["path"] in taken]
     if kept:
-        _advance(project, path, conversation_id, base, [f["path"] for f in files])
+        _advance(project, path, conversation_id, base, [f["path"] for f in files], taken)
     else:
         discard(folder, conversation_id, project)
     return {"applied": [name for name, _data, _clean in planned],
             "conflicts": [name for name, _data, clean in planned if not clean], "kept": kept}  # fmt: skip
 
 
-def _advance(project: Project, path: Path, conversation_id: str, base: str, names: list[str]) -> None:
+def _advance(project: Project, path: Path, conversation_id: str, base: str, names: list[str],
+             taken: dict[str, bytes] | None = None) -> None:  # fmt: skip
     """The sandbox's base, moved past the files that went onto the project: the commit it began from, with those
-    files as the sandbox's index has them (changes() put everything there) - built in an index of its own, so the
-    sandbox's index, the user's and their branches stay as they are."""
+    files as the sandbox's index has them (changes() put everything there) - or, of a file taken in part (17.4), as
+    that part is - built in an index of its own, so the sandbox's index, the user's and their branches stay as they
+    are."""
     staged = {}
     for entry in _git(path, "ls-files", "-s", "-z").split("\0"):
         if entry:
             info, name = entry.split("\t", 1)
             staged[name] = info.split()  # mode, object, stage
+    for name, data in (taken or {}).items():
+        staged[name] = [staged[name][0], _git(path, "hash-object", "-w", "--no-filters", "--stdin", stdin=data).strip()]
     gone = "0" * len(base)  # mode 0 takes a path out of the index
     lines = [f"{staged[n][0]} {staged[n][1]}\t{n}" if n in staged else f"0 {gone}\t{n}" for n in names]
     with tempfile.TemporaryDirectory() as tmp:
@@ -247,15 +331,20 @@ def _smudge(root: Path, name: str, data: bytes) -> bytes:
     return _run(root, "cat-file", "--filters", f"--path={name}", blob)
 
 
-def _merge_one(root: Path, sandbox: Path, base_rev: str, name: str, status: str) -> tuple[bytes | None, bool]:
+def _merge_one(root: Path, sandbox: Path, base_rev: str, name: str, status: str,
+               part: bytes | None = None) -> tuple[bytes | None, bool]:  # fmt: skip
     """One file of the sandbox as the project's working tree should have it, the project's own changes kept: a
     three-way merge with the commit both began from, done in git's own form of the text and put back in the form
     this computer checks out (core.autocrlf, .gitattributes - Windows line ends are no conflict, D46). (bytes, or None
     for a file to delete; False when both changed the same place - the bytes then hold conflict marks, or (a binary
-    one, or deleted on one side and changed on the other) are the project's as they are)."""
+    one, or deleted on one side and changed on the other) are the project's as they are). `part`: the file as the
+    hunks ticked make it (17.4), in git's form - merged in place of the sandbox's whole file."""
     target = root / name
     mine = target.read_bytes() if target.is_file() else None
-    theirs = None if status == "deleted" else (sandbox / name).read_bytes()
+    if part is not None:
+        theirs = _smudge(root, name, part)
+    else:
+        theirs = None if status == "deleted" else (sandbox / name).read_bytes()
     base = None if status == "added" else _run(root, "cat-file", "blob", f"{base_rev}:{name}")
     mine_kept = None if mine is None else _clean(root, name, mine)
     if mine_kept == base:  # the project did not touch it: the sandbox's file as it is

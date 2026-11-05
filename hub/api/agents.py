@@ -151,6 +151,7 @@ async def _tasks_settled(request: Request, run_id: str) -> None:
 
 class TaskFiles(BaseModel):
     files: dict[str, dict[str, list[str]]] | None = None  # task_id -> project id -> the files ticked (17.1)
+    hunks: dict[str, dict[str, dict[str, list[int]]]] | None = None  # task_id -> project -> file -> hunks (17.4)
 
 
 @router.post("/runs/{run_id}/tasks/apply")
@@ -163,7 +164,8 @@ async def apply_tasks(run_id: str, request: Request, client: Annotated[Client, D
     _app_only(client)
     await _tasks_settled(request, run_id)
     try:
-        return await request.app.state.agents.apply_tasks(run_id, body.files if body else None)
+        return await request.app.state.agents.apply_tasks(run_id, body.files if body else None,
+                                                          body.hunks if body else None)  # fmt: skip
     except SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

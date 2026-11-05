@@ -434,7 +434,7 @@ def test_writing_tasks_work_in_sandboxes_and_the_user_applies_them_all(hub, repo
     assert hub.get("/v1/approvals").json()["approvals"] == []  # the edits went into the copies unasked
     assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "print('hi')\nprint('new line')\n"  # untouched
     own = hub.get(f"/v1/conversations/{board['b']['run_id']}/sandbox").json()["projects"][0]
-    assert own["files"] == [{"path": "src/app.py", "status": "changed"}]
+    assert [(f["path"], f["status"]) for f in own["files"]] == [("src/app.py", "changed")]
     assert "-print('a')" in own["diff"] and "+print('b')" in own["diff"]  # b's diff is only its own
     (said,) = outputs(hub, run_id)
     assert "[b] «Правщик» — done." in said["output"]
@@ -475,6 +475,29 @@ def test_the_user_applies_only_the_tasks_files_ticked(hub, repo):  # noqa: F811
     assert [t["task_id"] for t in waiting] == ["c"]  # c's file waits in its copy
     assert [x["task_id"] for x in hub.post(url).json()["applied"]] == ["c"]
     assert (repo / "README.md").read_text(encoding="utf-8") == "# C\n"
+
+
+def test_the_user_applies_a_tasks_hunks_ticked(hub, repo):  # noqa: F811
+    """17.4 (D51): at a coordinator too - per task, project and file, the hunks ticked; the rest waits."""
+    (repo / "conf.py").write_text("".join("x = 1\n" if n in (1, 20) else f"# {n}\n" for n in range(1, 21)),
+                                  encoding="utf-8", newline="\n")  # fmt: skip
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "conf")
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    plug(hub, ByTask("fake", "local", {"Сделай": [[batch(("a", "Правщик", "Правь"))]]}, pause=0.05,
+                     edits={"Правь": edit(path="conf.py", old="x = 1", new="x = 2", replace_all=True)}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    url = f"/v1/runs/{run_id}/tasks/apply"
+    assert hub.post(url, json={"hunks": {"a": {pid: {"conf.py": [2]}}}}).status_code == 409  # it has two
+    applied = hub.post(url, json={"hunks": {"a": {pid: {"conf.py": [1]}}}}).json()["applied"]
+    assert [(x["task_id"], x["files"], x["kept"]) for x in applied] == [("a", ["conf.py"], ["conf.py"])]
+    lines = (repo / "conf.py").read_text(encoding="utf-8").splitlines()
+    assert (lines[0], lines[19]) == ("x = 1", "x = 2")
+    waiting = hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"]
+    assert [len(f["hunks"]) for t in waiting for p in t["projects"] for f in p["files"]] == [1]  # the first waits
 
 
 def test_a_reading_task_after_a_writing_one_reads_its_result(hub, repo):  # noqa: F811
