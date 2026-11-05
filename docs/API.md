@@ -212,12 +212,12 @@
 
 ### sandbox
 
-/v1/conversations/{id}/sandbox - what the model changed in a «Песочница» chat (D17, stage 9.4b): per project, the files and the diff; «Применить» puts it onto the project's working tree, «Отбросить» throws it away. The desktop app only: the user decides what reaches the project. For a coordinator's run, `tasks` - what its tasks left in their own sandboxes (16.2, D50); /v1/runs/{id}/tasks/apply and /discard take them all.
+/v1/conversations/{id}/sandbox - what the model changed in a «Песочница» chat (D17, stage 9.4b): per project, the files and the diff; «Применить» puts it onto the project's working tree - all, or the files ticked (17.1, D51) -, «Отбросить» throws it away. The desktop app only: the user decides what reaches the project. For a coordinator's run, `tasks` - what its tasks left in their own sandboxes (16.2, D50); /v1/runs/{id}/tasks/apply and /discard take them.
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/sandbox` | только окно | `sandbox_changes()` |  |
-| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | `apply_sandbox()` |  |
+| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | The sandbox's changes onto the project; with `files`, only those - the rest stays in the sandbox (`kept`). A file that is not there: 409, nothing written. | тело `Files \| None` |
 | POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/discard` | только окно | `discard_sandbox()` |  |
 
 ### conversations
@@ -456,7 +456,7 @@
 | GET | `/v1/runs` | только окно | `list_runs()` | `?limit: int = 50` |
 | GET | `/v1/runs/{run_id}` | только окно | `get_run()` |  |
 | GET | `/v1/runs/{run_id}/tasks` | только окно | A coordinator's board (16.1, D50): the tasks of its batches in the order it wrote them - the agent, what it waits for, the status, the run that did it and its answer. |  |
-| POST | `/v1/runs/{run_id}/tasks/apply` | только окно | «Применить всё» (16.2, D50): the done tasks' sandboxes onto the projects, in the order the tasks ran; the files that met the project's own changes at the same place carry conflict marks (`conflicts`). |  |
+| POST | `/v1/runs/{run_id}/tasks/apply` | только окно | «Применить всё» (16.2, D50): the done tasks' sandboxes onto the projects, in the order the tasks ran; the files that met the project's own changes at the same place carry conflict marks (`conflicts`). With `files` («Применить выбранные», 17.1, D51): only those, per task and project; the rest stays in the tasks' sandboxes (`kept`). A file a task does not have stops it all before anything is written (409). | тело `TaskFiles \| None` |
 | POST | `/v1/runs/{run_id}/tasks/discard` | только окно | «Отбросить всё» (16.2, D50): every task's sandbox goes; the projects stay as they are. |  |
 | POST | `/v1/runs/{run_id}/cancel` | только окно | `cancel_run()` |  |
 | POST | `/v1/runs/autonomous` | только окно | `start_autonomous()` | тело `{goal: str, done_when: str = '', profile_id: str \| None = None, model_id: str \| None = None, planner_model_id: str \| None = None, project_ids: list[str] \| None = None, autonomy: str = 'plan', max_steps: int = 100, max_minutes: int = 60, max_replans: int = 3, budget_usd: float \| None = 1.0, network: bool = False, refusal_vector: bool \| None = None}` |

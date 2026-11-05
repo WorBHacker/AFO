@@ -15,6 +15,11 @@ addition; every file is worked out first, and only then is anything written - on
 the project untouched.
 A file changed on both sides at the same place gets conflict marks the user resolves. The worktree, its branch and
 its ref go then, as on «Отбросить» - and with the chat, and at the hub's start when the chat is gone.
+
+The user may apply only the files ticked (17.1, D51): those go the same way, the others stay in the sandbox, and its
+base moves past what went (a commit of the hub's own: the base with those files as the sandbox has them) - so the
+sandbox's diff from then on is only what is still to go, and a file applied and changed again brings only its new
+change.
 """
 
 from __future__ import annotations
@@ -44,12 +49,13 @@ class SandboxError(Exception):
     """What the model or the window reads."""
 
 
-def _run(cwd: Path, *args: str, stdin: bytes | None = None, retry: bool = False) -> bytes:
+def _run(cwd: Path, *args: str, stdin: bytes | None = None, retry: bool = False,
+         env: dict[str, str] | None = None) -> bytes:  # fmt: skip
     """git in `cwd` (projects.git: no prompts, paths as they are); `retry`: a write into the user's repository - a
     lock held by the user's own git is waited out a little."""
     for wait in (*LOCK_WAITS, None) if retry else (None,):
         try:
-            done = projects.git(cwd, *args, input=stdin, timeout=GIT_TIMEOUT)
+            done = projects.git(cwd, *args, input=stdin, timeout=GIT_TIMEOUT, env=env)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SandboxError(f"git did not run: {exc}") from exc
         if done.returncode == 0:
@@ -61,8 +67,9 @@ def _run(cwd: Path, *args: str, stdin: bytes | None = None, retry: bool = False)
     raise AssertionError("unreachable")
 
 
-def _git(cwd: Path, *args: str, stdin: bytes | None = None, retry: bool = False) -> str:
-    return _run(cwd, *args, stdin=stdin, retry=retry).decode("utf-8", "replace")
+def _git(cwd: Path, *args: str, stdin: bytes | None = None, retry: bool = False,
+         env: dict[str, str] | None = None) -> str:  # fmt: skip
+    return _run(cwd, *args, stdin=stdin, retry=retry, env=env).decode("utf-8", "replace")
 
 
 STATUS = {"A": "added", "D": "deleted"}
@@ -170,25 +177,61 @@ def changes(folder: Path, conversation_id: str, project: Project) -> dict[str, A
             "files": files, "diff": diff[:DIFF_MAX], "diff_chars": len(diff), "exists": True}  # fmt: skip
 
 
-def apply(folder: Path, conversation_id: str, project: Project) -> dict[str, Any]:
-    """The sandbox's changes onto the project's working tree; then the sandbox goes."""
+def chosen(files: list[dict[str, Any]], only: list[str]) -> list[dict[str, Any]]:
+    """The sandbox's files the user ticked (17.1): at least one, and each of them there."""
+    if not only:
+        raise SandboxError("no file chosen")
+    there = {f["path"] for f in files}
+    if missing := [name for name in only if name not in there]:
+        raise SandboxError("not in the sandbox: " + ", ".join(missing))
+    return [f for f in files if f["path"] in set(only)]
+
+
+def apply(folder: Path, conversation_id: str, project: Project, only: list[str] | None = None) -> dict[str, Any]:
+    """The sandbox's changes onto the project's working tree - all, or `only` the files ticked (17.1, D51). What is
+    left (`kept`) stays in the sandbox, past its moved base; with nothing left, the sandbox goes."""
     found = changes(folder, conversation_id, project)
-    if not found["exists"] or not found["files"]:
+    files = found["files"] if only is None else chosen(found["files"], only)
+    if not found["exists"] or not files:
         discard(folder, conversation_id, project)
-        return {"applied": [], "conflicts": []}
+        return {"applied": [], "conflicts": [], "kept": []}
     path = place(folder, conversation_id, project)
     base = _base(path, conversation_id)
     # every file worked out first: one git cannot read stops it all before the project is touched
-    planned = [(f["path"], *_merge_one(project.root, path, base, f["path"], f["status"])) for f in found["files"]]
+    planned = [(f["path"], *_merge_one(project.root, path, base, f["path"], f["status"])) for f in files]
     for name, data, _clean in planned:
         target = projects.resolve_inside(project.root, name)
         if data is None:
             target.unlink(missing_ok=True)
         else:
             write_atomic(target, data)  # the whole file or nothing (D46)
-    discard(folder, conversation_id, project)
+    kept = [f["path"] for f in found["files"] if f not in files]
+    if kept:
+        _advance(project, path, conversation_id, base, [f["path"] for f in files])
+    else:
+        discard(folder, conversation_id, project)
     return {"applied": [name for name, _data, _clean in planned],
-            "conflicts": [name for name, _data, clean in planned if not clean]}  # fmt: skip
+            "conflicts": [name for name, _data, clean in planned if not clean], "kept": kept}  # fmt: skip
+
+
+def _advance(project: Project, path: Path, conversation_id: str, base: str, names: list[str]) -> None:
+    """The sandbox's base, moved past the files that went onto the project: the commit it began from, with those
+    files as the sandbox's index has them (changes() put everything there) - built in an index of its own, so the
+    sandbox's index, the user's and their branches stay as they are."""
+    staged = {}
+    for entry in _git(path, "ls-files", "-s", "-z").split("\0"):
+        if entry:
+            info, name = entry.split("\t", 1)
+            staged[name] = info.split()  # mode, object, stage
+    gone = "0" * len(base)  # mode 0 takes a path out of the index
+    lines = [f"{staged[n][0]} {staged[n][1]}\t{n}" if n in staged else f"0 {gone}\t{n}" for n in names]
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        _git(path, "read-tree", base, env=env)
+        _git(path, "update-index", "-z", "--index-info", stdin="\0".join([*lines, ""]).encode("utf-8"), env=env)
+        tree = _git(path, "write-tree", env=env).strip()
+    commit = _git(path, *IDENTITY, "commit-tree", tree, "-p", base, "-m", "AFO: applied to the project").strip()
+    _git(project.root, "update-ref", base_ref(conversation_id), commit, retry=True)
 
 
 def _clean(root: Path, name: str, data: bytes) -> bytes:

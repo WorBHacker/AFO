@@ -450,6 +450,33 @@ def test_writing_tasks_work_in_sandboxes_and_the_user_applies_them_all(hub, repo
     assert hub.post(f"/v1/runs/{run_id}/tasks/apply").json()["applied"] == []
 
 
+def test_the_user_applies_only_the_tasks_files_ticked(hub, repo):  # noqa: F811
+    """17.1 (D51): «Применить выбранные» at a coordinator - per task and project, the files ticked; what is not
+    ticked stays in its task's sandbox. A file a task does not have stops it all before anything is written."""
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "second")  # the project's own new line is not next to a's edit then
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    plug(hub, ByTask("fake", "local", {"Сделай": [[batch(("a", "Правщик", "Правь a"), ("c", "Правщик", "Правь c"))]]},
+                     pause=0.05, edits={"Правь a": edit(old="print('hi')", new="print('a')"),
+                                        "Правь c": edit(path="README.md", old="# Проект", new="# C")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    url = f"/v1/runs/{run_id}/tasks/apply"
+    wrong = hub.post(url, json={"files": {"a": {pid: ["src/app.py"]}, "c": {pid: ["nope.md"]}}})
+    assert wrong.status_code == 409 and "nope.md" in wrong.json()["detail"]
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")  # a did not go either
+    applied = hub.post(url, json={"files": {"a": {pid: ["src/app.py"]}}}).json()["applied"]
+    assert [(x["task_id"], x["files"], x["kept"]) for x in applied] == [("a", ["src/app.py"], [])]
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('a')")
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"
+    waiting = hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"]
+    assert [t["task_id"] for t in waiting] == ["c"]  # c's file waits in its copy
+    assert [x["task_id"] for x in hub.post(url).json()["applied"]] == ["c"]
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# C\n"
+
+
 def test_a_reading_task_after_a_writing_one_reads_its_result(hub, repo):  # noqa: F811
     """Live on 2026-11-05 (16.5) a reviewer that waited for two writers read the project as it was - their changes
     were in their copies - and said nothing was done. A read-only task that waits for writing ones gets a copy that

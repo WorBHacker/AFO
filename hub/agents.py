@@ -33,6 +33,7 @@ import logging
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
@@ -348,6 +349,22 @@ def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = N
     ).fetchall()
     return [_task(r) | {"sandbox": bool(r["sandbox"]), "waiting": bool(r["waiting"]), "steps": r["steps"] or 0,
                         "cost_usd": r["cost_usd"] or 0.0} for r in rows]  # fmt: skip
+
+
+def _check_ticked(folder: Path, sandboxed: list[tuple[dict[str, Any], list]],
+                  files: dict[str, dict[str, list[str]]]) -> None:  # fmt: skip
+    """The files ticked at a coordinator (17.1): each task, project and file there - or SandboxError, before any is
+    applied."""
+    by_task = {t["task_id"]: (t, projects) for t, projects in sandboxed}
+    for task_id, ticked in files.items():
+        if task_id not in by_task:
+            raise sandbox.SandboxError(f"no task {task_id!r} with a sandbox")
+        task, projects = by_task[task_id]
+        for project_id, only in ticked.items():
+            project = next((p for p in projects if p.id == project_id), None)
+            if project is None:
+                raise sandbox.SandboxError(f"task {task_id!r} has no sandbox of project {project_id!r}")
+            sandbox.chosen(sandbox.changes(folder, task["run_id"], project)["files"], only)
 
 
 def applying_order(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -907,22 +924,30 @@ class AgentRunner:
     def busy_tasks(self, coordinator: str, tasks: list[dict[str, Any]]) -> bool:
         return any(r in self._chat.busy for r in [coordinator, *(t["run_id"] for t in tasks if t["run_id"])])
 
-    async def apply_tasks(self, coordinator: str) -> dict[str, Any]:
+    async def apply_tasks(self, coordinator: str, files: dict[str, dict[str, list[str]]] | None = None) -> dict:
         """«Применить всё» (16.2): every done task's sandboxes onto the projects, in the order the tasks ran - each
         task's diff begins where the tasks before it ended, so one after another they do not clash. A task that did
-        not end done keeps its sandbox (`kept`). Only the user does this (the window)."""
+        not end done keeps its sandbox (`kept`). Only the user does this (the window). With `files` («Применить
+        выбранные», 17.1, D51): per task and project, only the files ticked - all checked before anything is
+        written; what is not ticked stays in the tasks' sandboxes."""
         folder = self._chat.sandboxes
+        sandboxed = await self._sandboxed_tasks(coordinator)
+        if files is not None:
+            await asyncio.to_thread(_check_ticked, folder, sandboxed, files)
         applied, kept = [], []
-        for task, projects in await self._sandboxed_tasks(coordinator):
+        for task, projects in sandboxed:
             if task["status"] != "done":
                 kept.append(task["task_id"])
                 continue
             for project in projects:
-                done = await asyncio.to_thread(sandbox.apply, folder, task["run_id"], project)
+                only = None if files is None else files.get(task["task_id"], {}).get(project.id)
+                if files is not None and only is None:
+                    continue  # nothing of it ticked
+                done = await asyncio.to_thread(sandbox.apply, folder, task["run_id"], project, only)
                 if done["applied"]:
                     applied.append({"task_id": task["task_id"], "agent": task["agent"], "project_id": project.id,
                                     "project": project.name, "files": done["applied"],
-                                    "conflicts": done["conflicts"]})  # fmt: skip
+                                    "conflicts": done["conflicts"], "kept": done["kept"]})  # fmt: skip
                     await self._bus.publish("sandbox.applied", {"conversation_id": coordinator,
                                                                 "task_id": task["task_id"], "project_id": project.id,
                                                                 **done}, project_id=project.id)  # fmt: skip

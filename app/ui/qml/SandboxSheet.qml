@@ -35,8 +35,8 @@ Sheet {
                 objectName: "sandboxApply_" + entry.modelData.id
                 kind: "primary"
                 iconName: "check"
-                text: qsTr("Применить")
-                enabled: !Sandbox.busy
+                text: entry.modelData.applyText
+                enabled: !Sandbox.busy && entry.modelData.ticked > 0
                 onClicked: Sandbox.apply(entry.modelData.id)
             }
             PlainButton {
@@ -57,14 +57,49 @@ Sheet {
             font.family: Theme.uiFont
             font.pixelSize: 12
         }
+        // a tick per file (17.1): an unticked one stays in the sandbox
         Repeater {
             model: entry.modelData.files
-            delegate: Text {
+            delegate: AbstractButton {
+                id: tick
                 required property var modelData
-                text: "• " + modelData
-                color: Theme.p.text_soft
-                font.family: Theme.monoFont
-                font.pixelSize: 12
+                objectName: "sandboxFile_" + modelData.path
+                implicitHeight: 24
+                implicitWidth: tickLabel.implicitWidth + 30
+                hoverEnabled: true
+                enabled: !Sandbox.busy
+                onClicked: Sandbox.tick(modelData.key)
+                background: Rectangle {
+                    radius: 4
+                    color: tick.hovered ? Theme.p.item_hover : "transparent"
+                }
+                contentItem: Item {
+                    Rectangle {
+                        x: 4
+                        width: 15
+                        height: 15
+                        radius: 3
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: tick.modelData.ticked ? Theme.p.item_selected : "transparent"
+                        border.color: tick.modelData.ticked ? Theme.p.accent : Theme.p.hairline_strong
+                        Icon {
+                            anchors.centerIn: parent
+                            visible: tick.modelData.ticked
+                            name: "check"
+                            size: 11
+                            tint: Theme.p.accent
+                        }
+                    }
+                    Text {
+                        id: tickLabel
+                        x: 26
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: tick.modelData.label
+                        color: tick.modelData.ticked ? Theme.p.text_soft : Theme.p.faint
+                        font.family: Theme.monoFont
+                        font.pixelSize: 12
+                    }
+                }
             }
         }
         Rectangle {
@@ -116,6 +151,15 @@ Sheet {
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
+    Text {
+        visible: Sandbox.count + Sandbox.taskCount > 0
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: qsTr("Снимите галочку с файла — он останется в песочнице, остальные перенесутся в проект.")
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
     Row {
         visible: Sandbox.taskCount > 0
         spacing: 8
@@ -123,8 +167,8 @@ Sheet {
             objectName: "sandboxApplyAll"
             kind: "primary"
             iconName: "check"
-            text: qsTr("Применить всё")
-            enabled: !Sandbox.busy
+            text: Sandbox.taskApplyText
+            enabled: !Sandbox.busy && Sandbox.taskTicked > 0
             onClicked: Sandbox.applyAll()
         }
         PlainButton {

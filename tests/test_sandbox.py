@@ -30,7 +30,7 @@ def test_a_worktree_its_diff_and_applying_it(repo, tmp_path):
     assert "+Описание." in found["diff"] and found["branch"] == "localchat/sandbox-conv1"
     assert sb.ensure(folder, "conv-1", project).root == inside.root  # the same sandbox the next time
     done = sb.apply(folder, "conv-1", project)
-    assert done == {"applied": ["README.md", "docs.md"], "conflicts": []}
+    assert done == {"applied": ["README.md", "docs.md"], "conflicts": [], "kept": []}
     assert (repo / "docs.md").exists() and (repo / "notes.txt").exists()  # the project's own changes stay
     assert (repo / "README.md").read_text(encoding="utf-8").endswith("Описание.\n")
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").endswith("print('new line')\n")
@@ -79,6 +79,26 @@ def test_a_sandbox_chat(hub, repo):  # noqa: F811
     feed = [e["type"] for e in hub.get("/v1/feed", params={"types": "sandbox.*"}).json()["events"]]
     assert feed == ["sandbox.applied", "sandbox.changed"]
     assert hub.post(f"/v1/conversations/{conv}/sandbox/nope/discard").status_code == 404
+
+
+def test_a_sandbox_chat_applies_the_files_ticked(hub, repo):  # noqa: F811
+    """17.1 (D51): «Применить выбранные» - the window sends the files; a file that is not there is refused (409)."""
+    other = {"id": "w2", "name": "write_file", "input": {"project": "proj", "path": "docs/new.md", "content": "# Н\n"}}
+    pid, conv, _provider = setup_chat(hub, repo, [[{"id": "w1", "name": "edit_file", "input": edit()}, other]],
+                                     mode="sandbox")  # fmt: skip
+    say(hub, conv)
+    finished(hub, conv)
+    url = f"/v1/conversations/{conv}/sandbox/{pid}/apply"
+    assert hub.post(url, json={"files": ["nope.md"]}).status_code == 409
+    done = hub.post(url, json={"files": ["docs/new.md"]}).json()
+    assert done == {"applied": ["docs/new.md"], "conflicts": [], "kept": ["src/app.py"]}
+    assert (repo / "docs" / "new.md").exists() and (repo / "src" / "app.py").read_text(encoding="utf-8").startswith(
+        "print('hi')")  # fmt: skip
+    shown = hub.get(f"/v1/conversations/{conv}/sandbox").json()["projects"][0]
+    assert shown["files"] == [{"path": "src/app.py", "status": "changed"}]
+    event = hub.get("/v1/feed", params={"types": "sandbox.applied"}).json()["events"][0]
+    assert event["payload"]["kept"] == ["src/app.py"]
+    assert hub.post(url).json()["applied"] == ["src/app.py"]  # no body: everything left
 
 
 def test_a_sandbox_without_git(hub, tmp_path):  # noqa: F811
@@ -166,6 +186,58 @@ def test_nothing_is_written_until_every_file_is_worked_out(repo, tmp_path, monke
         sb.apply(folder, "conv-6", project)
     assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"  # the first file was not written either
     assert inside.root.exists()  # the sandbox stays: the user may try again
+
+
+def refs(repo):
+    return subprocess.run(["git", "-C", str(repo), "for-each-ref", "refs/localchat"], capture_output=True,
+                          text=True).stdout  # fmt: skip
+
+
+def test_only_the_files_chosen_go_and_the_rest_stay_in_the_sandbox(repo, tmp_path):
+    """17.1 (D51): the user ticks the files to apply; those go onto the project, the others stay in the sandbox for
+    later - and the sandbox's diff from then on is only what is still to go, so a file applied and then changed again
+    by the model brings only its new change."""
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-7", project)
+    write(inside.root, "README.md", "# Проект\n\nОписание.\n")
+    (inside.root / "доки").mkdir()
+    write(inside.root, "доки/план за год.md", "# План\n")
+    (inside.root / ".gitignore").unlink()
+    with pytest.raises(sb.SandboxError, match=r"not in the sandbox: nope\.txt"):
+        sb.apply(folder, "conv-7", project, only=["README.md", "nope.txt"])
+    with pytest.raises(sb.SandboxError, match="no file chosen"):
+        sb.apply(folder, "conv-7", project, only=[])
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"  # neither touched the project
+
+    done = sb.apply(folder, "conv-7", project, only=["README.md", ".gitignore"])
+    assert done == {"applied": [".gitignore", "README.md"], "conflicts": [], "kept": ["доки/план за год.md"]}
+    assert (repo / "README.md").read_text(encoding="utf-8").endswith("Описание.\n")
+    assert not (repo / ".gitignore").exists()
+    assert not (repo / "доки").exists() and inside.root.exists()  # the rest waits in the sandbox
+    assert sb.changes(folder, "conv-7", project)["files"] == [{"path": "доки/план за год.md", "status": "added"}]
+
+    write(inside.root, "README.md", "# Проект\n\nОписание.\n\nЕщё абзац.\n")  # the model goes on with an applied file
+    write(repo, "README.md", "# Проект, правка человека\n\nОписание.\n")  # and the user with the project's
+    found = sb.changes(folder, "conv-7", project)
+    assert [f["path"] for f in found["files"]] == ["README.md", "доки/план за год.md"]
+    assert "+Ещё абзац." in found["diff"] and "+Описание." not in found["diff"]  # only what is new since
+    done = sb.apply(folder, "conv-7", project)
+    assert done["conflicts"] == [] and done["kept"] == []
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект, правка человека\n\nОписание.\n\nЕщё абзац.\n"
+    assert (repo / "доки" / "план за год.md").exists() and not inside.root.exists() and refs(repo) == ""
+
+
+def test_applying_the_last_files_chosen_takes_the_sandbox_away(repo, tmp_path):
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-8", project)
+    write(inside.root, "README.md", "# Новое\n")
+    run_git(inside.root, "add", "-A")
+    run_git(inside.root, "commit", "-q", "-m", "the model committed")  # its commit does not hide the change
+    assert sb.apply(folder, "conv-8", project, only=["README.md"]) == {"applied": ["README.md"], "conflicts": [],
+                                                                       "kept": []}  # fmt: skip
+    assert not inside.root.exists() and refs(repo) == ""
 
 
 def test_sandboxes_of_chats_that_are_gone_are_swept(repo, tmp_path):

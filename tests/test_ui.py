@@ -752,8 +752,8 @@ class FakeClient:
             raise HubError(f"no such run: {run_id}")
         return {"tasks": [dict(t) for t in self.boards[run_id]]}
 
-    def apply_tasks(self, run_id):
-        self.sandbox_calls.append(("apply all", run_id))
+    def apply_tasks(self, run_id, files=None):
+        self.sandbox_calls.append(("apply all", run_id) if files is None else ("apply all", run_id, files))
         self.task_sandboxes = []
         return {"applied": [{"task_id": "a", "project": "proj", "files": ["src/app.py"], "conflicts": []},
                             {"task_id": "b", "project": "proj", "files": ["src/app.py", "x.py"], "conflicts": []}],
@@ -764,10 +764,10 @@ class FakeClient:
         self.task_sandboxes = []
         return {"discarded": ["a"]}
 
-    def apply_sandbox(self, conversation_id, project_id):
-        self.sandbox_calls.append(("apply", conversation_id, project_id))
+    def apply_sandbox(self, conversation_id, project_id, files=None):
+        self.sandbox_calls.append(("apply", conversation_id, project_id, files))
         self.sandboxed = []
-        return {"applied": ["src/app.py"], "conflicts": ["README.md"]}
+        return {"applied": ["src/app.py"], "conflicts": ["README.md"], "kept": ["docs.md"] if files else []}
 
     def discard_sandbox(self, conversation_id, project_id):
         self.sandbox_calls.append(("discard", conversation_id, project_id))
@@ -5411,16 +5411,29 @@ def test_a_sandbox_chat_in_the_window(qapp):
         wait_until(lambda: not app.bg.busy and view.count == 2)
         assert view.active and bar.property("visible") and view.summary.startswith("Песочница: изменено 2 файла")
         row = view.projects[0]
-        assert row["files"] == ["src/app.py — изменён", "docs.md — новый"]
+        assert [f["label"] for f in row["files"]] == ["src/app.py — изменён", "docs.md — новый"]
+        assert all(f["ticked"] for f in row["files"]) and row["applyText"] == "Применить"
         assert [line["mark"] for line in row["lines"]] == ["file", "file", "hunk", "del", "add"]
+        # 17.1 (D51): a file unticked stays in the sandbox
+        view.tick(row["files"][1]["key"])
+        row = view.projects[0]
+        assert [f["ticked"] for f in row["files"]] == [True, False]
+        assert row["applyText"] == "Применить выбранные (1 из 2)"
+        view.tick(row["files"][0]["key"])
+        assert view.projects[0]["ticked"] == 0  # nothing ticked: the button is off
+        view.apply("p1")
+        assert client.sandbox_calls == []
+        view.tick(row["files"][0]["key"])
         view.apply("p1")
         wait_until(lambda: not app.bg.busy and view.count == 0)
-        assert client.sandbox_calls == [("apply", "c1", "p1")]
+        assert client.sandbox_calls == [("apply", "c1", "p1", ["src/app.py"])]
         assert app.flashText.startswith("Применено, но с конфликтами: README.md")
+        assert app.flashText.endswith("Остальные файлы (1) ждут в песочнице.")
         client.sandboxed = [{"project_id": "p1", "name": "LocalChat", "files": [{"path": "a", "status": "added"}],
                              "diff": "", "exists": True}]  # fmt: skip
         app.on_event({"type": "sandbox.changed", "payload": {"conversation_id": "c1", "project_id": "p1"}})
         wait_until(lambda: not app.bg.busy and view.count == 1)
+        assert view.projects[0]["files"][0]["ticked"]  # what was left over comes back ticked
         view.discard("p1")
         assert app.question["title"] == "Отбросить правки в «LocalChat»?"
         app.answer(True)
@@ -5440,11 +5453,24 @@ def test_a_sandbox_chat_in_the_window(qapp):
         assert view.active and bar.property("visible") and view.count == 0  # not «Песочница» itself
         assert view.summary == "Подзадачи: изменено 3 файла в 2 песочницах — посмотрите и примените или отбросьте"
         assert [r["name"] for r in view.tasks] == ["[a] «Правщик» · proj", "[b] «Правщик» · proj"]
-        assert view.tasks[1]["files"] == ["src/app.py — изменён", "x.py — новый"]
+        assert [f["label"] for f in view.tasks[1]["files"]] == ["src/app.py — изменён", "x.py — новый"]
+        assert view.taskApplyText == "Применить всё" and view.taskTicked == 3
+        view.tick(view.tasks[1]["files"][1]["key"])  # b's x.py stays in its copy
+        assert view.taskApplyText == "Применить выбранные (2 из 3)" and view.taskTicked == 2
         view.applyAll()
         wait_until(lambda: not app.bg.busy and view.taskCount == 0)
-        assert client.sandbox_calls[-1] == ("apply all", "c1") and not view.active
+        ticked = {"a": {"p1": ["src/app.py"]}, "b": {"p1": ["src/app.py"]}}
+        assert client.sandbox_calls[-1] == ("apply all", "c1", ticked)
+        assert not view.active
         assert app.flashText == "Применено к проекту: 3 файлов Не применены (подзадача не закончилась): c"
+        client.task_sandboxes = [{"task_id": "a", "agent": "Правщик", "status": "done", "run_id": "r1",
+                                  "projects": [changed]}]  # fmt: skip
+        app.on_event({"type": "sandbox.changed", "payload": {"conversation_id": "c1"}})
+        wait_until(lambda: not app.bg.busy and view.taskCount == 1)
+        assert view.taskTicked == 1
+        view.applyAll()
+        wait_until(lambda: not app.bg.busy and view.taskCount == 0)
+        assert client.sandbox_calls[-1] == ("apply all", "c1")  # all ticked: no list - every file
         client.task_sandboxes = [{"task_id": "a", "agent": "Правщик", "status": "done", "run_id": "r1",
                                   "projects": [changed]}]  # fmt: skip
         app.on_event({"type": "sandbox.changed", "payload": {"conversation_id": "c1"}})

@@ -149,14 +149,21 @@ async def _tasks_settled(request: Request, run_id: str) -> None:
         raise HTTPException(status_code=409, detail="the tasks are still working: wait for them to end")
 
 
+class TaskFiles(BaseModel):
+    files: dict[str, dict[str, list[str]]] | None = None  # task_id -> project id -> the files ticked (17.1)
+
+
 @router.post("/runs/{run_id}/tasks/apply")
-async def apply_tasks(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+async def apply_tasks(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)],
+                      body: TaskFiles | None = None) -> dict:  # fmt: skip
     """«Применить всё» (16.2, D50): the done tasks' sandboxes onto the projects, in the order the tasks ran; the
-    files that met the project's own changes at the same place carry conflict marks (`conflicts`)."""
+    files that met the project's own changes at the same place carry conflict marks (`conflicts`). With `files`
+    («Применить выбранные», 17.1, D51): only those, per task and project; the rest stays in the tasks' sandboxes
+    (`kept`). A file a task does not have stops it all before anything is written (409)."""
     _app_only(client)
     await _tasks_settled(request, run_id)
     try:
-        return await request.app.state.agents.apply_tasks(run_id)
+        return await request.app.state.agents.apply_tasks(run_id, body.files if body else None)
     except SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

@@ -289,8 +289,10 @@ class HubClient:
     def sandbox(self, conversation_id: str) -> dict:
         return self._call("GET", f"/v1/conversations/{conversation_id}/sandbox")
 
-    def apply_sandbox(self, conversation_id: str, project_id: str) -> dict:
-        return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/apply")
+    def apply_sandbox(self, conversation_id: str, project_id: str, files: list[str] | None = None) -> dict:
+        """All the sandbox's files, or only those ticked (17.1)."""
+        return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/apply",
+                          None if files is None else {"files": files})  # fmt: skip
 
     def discard_sandbox(self, conversation_id: str, project_id: str) -> dict:
         return self._call("POST", f"/v1/conversations/{conversation_id}/sandbox/{project_id}/discard")
@@ -298,8 +300,9 @@ class HubClient:
     def run_tasks(self, run_id: str) -> dict:  # a coordinator's board (16.4)
         return self._call("GET", f"/v1/runs/{run_id}/tasks")
 
-    def apply_tasks(self, run_id: str) -> dict:  # a coordinator's tasks' sandboxes, all (16.2)
-        return self._call("POST", f"/v1/runs/{run_id}/tasks/apply")
+    def apply_tasks(self, run_id: str, files: dict | None = None) -> dict:
+        """A coordinator's tasks' sandboxes (16.2): all, or per task and project the files ticked (17.1)."""
+        return self._call("POST", f"/v1/runs/{run_id}/tasks/apply", None if files is None else {"files": files})
 
     def discard_tasks(self, run_id: str) -> dict:
         return self._call("POST", f"/v1/runs/{run_id}/tasks/discard")
