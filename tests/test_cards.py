@@ -38,6 +38,50 @@ def test_what_a_draft_is_made_from(repo):
     assert prompt[0]["role"] == "system" and "Назначение" in prompt[0]["content"]
 
 
+def code_of(repo):
+    (repo / "auth.py").write_text("class AccessGuard:\n    def check(self, user):\n        return user.admin\n\n"
+                                  "    def deny(self):\n        raise PermissionError\n\n\n"
+                                  "def require_permission(user):\n    return AccessGuard().check(user)\n",
+                                  encoding="utf-8")  # fmt: skip
+    (repo / "settings.py").write_text("TIMEOUT = 5\nRETRIES = 3\n", encoding="utf-8")  # constants only: nothing to say
+    (repo / "tests").mkdir(exist_ok=True)
+    (repo / "tests" / "test_auth.py").write_text("def test_guard():\n    assert True\n", encoding="utf-8")
+
+
+def test_a_card_says_its_mechanisms_from_the_codes_definitions(repo):
+    """18.2 (D52): «Ключевые механизмы и где они» - a model writes it from the code's definitions (the symbol index:
+    each file with what it defines, a class with its methods, tests left out), not from a guess at the tree."""
+    from hub.symbols import SymbolIndex
+
+    code_of(repo)
+    p, index = project(repo.resolve()), SymbolIndex()
+    said = cards.overview(index, p)
+    assert "auth.py: AccessGuard(check, deny), require_permission" in said
+    assert "test_auth" not in said and "settings.py" not in said
+    material = cards.gather(p, index)
+    assert "## Определения в коде" in material and material.index("## Определения в коде") < material.index("## README")
+    assert "## Определения в коде" not in cards.gather(p)  # no index: as before
+    system = cards.prompt(p, index)[0]["content"]
+    assert "Ключевые механизмы и где они" in system and "Определения в коде" in system
+
+
+def test_an_older_card_gets_its_mechanisms_on_an_update(repo):
+    """A card confirmed before the section was in the template lacks it: the window says so, and an update writes it
+    from the code's definitions along with what changed."""
+    from hub.symbols import SymbolIndex
+
+    code_of(repo)
+    p, index = project(repo.resolve()), SymbolIndex()
+    assert cards.missing_sections(CARD) == ["Ключевые механизмы и где они"]
+    full = CARD + "\n## Ключевые механизмы и где они\n- права: `auth.py`, `require_permission`"
+    assert cards.missing_sections(full) == []
+    then = cards.snapshot(p)
+    system, asked = (m["content"] for m in cards.update_prompt(p, CARD, then, index))
+    assert "Ключевые механизмы и где они" in system and "auth.py: AccessGuard" in asked
+    system, asked = (m["content"] for m in cards.update_prompt(p, full, then, index))
+    assert "Ключевые механизмы и где они" not in system and "auth.py: AccessGuard" not in asked
+
+
 def test_what_changed_since_the_card(repo):
     p = project(repo.resolve())
     (repo / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
@@ -168,7 +212,7 @@ def test_the_card_api(hub, repo):
     hub.portal.call(hub.app.state.gateway.sync_catalog)
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
     assert hub.get(f"/v1/projects/{pid}/card").json() == {"confirmed": None, "draft": None, "versions": [],
-                                                         "missing": [], "changes": None,
+                                                         "missing": [], "changes": None, "sections": [],
                                                          "drafting": False}  # fmt: skip
     cline = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     other = {"Authorization": f"Bearer {cline}"}
@@ -184,6 +228,7 @@ def test_the_card_api(hub, repo):
     confirmed = hub.put(f"/v1/projects/{pid}/card", json={"text": CARD + "\n- правка"}).json()
     assert confirmed["confirmed"]["version"] == 1 and confirmed["draft"] is None
     assert confirmed["missing"] == ["lib/old.py"]
+    assert confirmed["sections"] == ["Ключевые механизмы и где они"]  # 18.2: a card older than the section
     unchanged = {"commits": 0, "new_folders": [], "gone_folders": [], "dependencies": [], "significant": False}
     assert confirmed["changes"] == unchanged  # nothing has moved since
 

@@ -13,6 +13,10 @@ commits or more; a top-level folder came or went (as git shows the tree: an igno
 dependency or build file, what a card speaks of changed (`facts`: which packages - not their versions -, which
 commands and entry points; in a Dockerfile, a compose file or a Makefile, anything but blank lines and comments).
 
+«Ключевые механизмы и где они» (18.2, D52) is written from the code's definitions - the symbol index's, file by file
+(`overview`) - so a model names real files and functions, not a guess from the tree. A card confirmed before the
+section was in the template lacks it (`missing_sections`): the window says so, and an update writes it.
+
 Cards live in the hub; nothing is written into the project (D23 - an export comes later, on request).
 """
 
@@ -26,11 +30,15 @@ import re
 import sqlite3
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import projects
 from .projects import NOISE, Project, ProjectError
 from .secret_filter import clean, is_secret_file
+from .symbols import CONTAINER_KINDS
+
+if TYPE_CHECKING:
+    from .symbols import SymbolIndex
 
 SOURCE_BUDGET_CHARS = 24_000  # ~6K tokens of material for the draft
 DEPENDENCY_FILES = (
@@ -40,17 +48,31 @@ DEPENDENCY_FILES = (
 )  # fmt: skip
 NOTES = ("README.md", "README.rst", "README.txt", "README", "CLAUDE.md", "AGENTS.md", ".clinerules", "CONTRIBUTING.md")
 # the texts a model is given (the card's material, its instructions) stay as written whatever the window's language
+MECHANISMS = "Ключевые механизмы и где они"  # i18n: keep
 SECTIONS = (
-    "Назначение", "Устройство", "Ключевые папки и файлы", "Как запускать, тестировать, собирать",  # i18n: keep
-    "Соглашения", "Известные проблемы",  # i18n: keep
+    "Назначение", "Устройство", "Ключевые папки и файлы", MECHANISMS,  # i18n: keep
+    "Как запускать, тестировать, собирать", "Соглашения", "Известные проблемы",  # i18n: keep
 )  # fmt: skip
+NEW_SECTIONS = (MECHANISMS,)  # added to the template after cards were written: an older card is worth an update
+OVERVIEW = "## Определения в коде (файл: что в нём определено, из индекса символов)"  # i18n: keep
+OVERVIEW_CHARS = 4_000  # of the material's SOURCE_BUDGET_CHARS
+OVERVIEW_LINE_CHARS = 160
+OVERVIEW_METHODS = 8
+OVERVIEW_KINDS = {"function", "method", *CONTAINER_KINDS}  # what says what a file does (not «TIMEOUT = 5»)
+TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$", re.I)
+MECHANISMS_SAY = (
+    f"В разделе «{MECHANISMS}» - 4-8 строк «что: `файл`, `имя`» (точка входа, хранение данных, права и проверки, "
+    "обработка ошибок, фоновые задачи - что из этого есть в проекте), только по разделу «Определения в коде»; если "
+    "его нет, так и напиши."  # i18n: keep
+)
 INSTRUCTIONS = (
     "Ты пишешь карточку проекта для других моделей: короткое, точное описание, которое они получат перед работой с "
     "проектом. Пиши по-русски, в Markdown, только по фактам из материалов ниже - ничего не выдумывай; где данных нет, "
     "так и напиши. Разделы (заголовки ##): "  # i18n: keep
     + "; ".join(SECTIONS)
-    + ". Пути к файлам и папкам - в `обратных кавычках`, как в проекте. До 600 слов. Выведи только карточку, "
-    "без вступления."  # i18n: keep
+    + ". Пути к файлам и папкам - в `обратных кавычках`, как в проекте. "  # i18n: keep
+    + MECHANISMS_SAY
+    + " До 700 слов. Выведи только карточку, без вступления."  # i18n: keep
 )
 NO_CHANGES = "БЕЗ ИЗМЕНЕНИЙ"  # i18n: keep
 UPDATE_INSTRUCTIONS = (
@@ -101,8 +123,62 @@ def _tree(root, folder: str = "", depth: int = 0, max_depth: int = 3, out: list[
     return out
 
 
-def gather(project: Project) -> str:
-    """The material for a draft card, secret-filtered and within SOURCE_BUDGET_CHARS."""
+def _a_test(path: str) -> bool:
+    return bool(TEST_PATH.search(path))
+
+
+def _spread(files: list[tuple[str, list]]) -> list[tuple[str, list]]:
+    """The files folder by folder in turn - by a folder's first two levels (`hub/api`; all of `hub/proving_tasks/...`
+    one), each one's that define the most first - so a few big folders do not take all the room (AFO's own window
+    files did, and its hub's approvals and sandbox were left out), nor many small nested ones."""
+    folders: dict[str, list[tuple[str, list]]] = {}
+    for path, defs in sorted(files, key=lambda item: (-len(item[1]), item[0])):
+        folders.setdefault("/".join(path.split("/")[:-1][:2]), []).append((path, defs))
+    queues = sorted(folders.values(), key=lambda q: (-len(q[0][1]), q[0][0]))
+    out = []
+    while queues:
+        out += [q.pop(0) for q in queues]
+        queues = [q for q in queues if q]
+    return out
+
+
+def overview(symbols: SymbolIndex, project: Project) -> str:
+    """The code's definitions, a file a line - what «Ключевые механизмы» is written from (18.2): folders in turn,
+    tests and private names (_x, __init__) left out, a class with its methods; within OVERVIEW_CHARS."""
+    files = [(path, [d for d in defs if d.kind in OVERVIEW_KINDS and not d.name.startswith("_")])
+             for path, defs in symbols.definitions(project).items() if not _a_test(path)]  # fmt: skip
+    lines, used = [], 0
+    for path, defs in _spread([(path, defs) for path, defs in files if defs]):
+        named = []
+        for d in defs:
+            if d.container:
+                continue
+            methods = []
+            if d.kind in CONTAINER_KINDS:
+                methods = [m.name for m in defs if m.container == d.name][:OVERVIEW_METHODS]
+            named.append(f"{d.name}({', '.join(methods)})" if methods else d.name)
+        if not named:
+            continue
+        line = f"{path}: {', '.join(named)}"
+        line = line if len(line) <= OVERVIEW_LINE_CHARS else line[: OVERVIEW_LINE_CHARS - 1] + "…"
+        if used + len(line) > OVERVIEW_CHARS:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
+def missing_sections(card: str) -> list[str]:
+    """The template's newer sections (NEW_SECTIONS) a confirmed card lacks - worth an update (18.2)."""
+    titles = [line[3:].strip().casefold() for line in card.replace("\r\n", "\n").split("\n") if line.startswith("## ")]
+    return [name for name in NEW_SECTIONS
+            if not any(t == name.casefold() or difflib.SequenceMatcher(None, t, name.casefold()).ratio() >= 0.75
+                       for t in titles)]  # fmt: skip
+
+
+def gather(project: Project, symbols: SymbolIndex | None = None) -> str:
+    """The material for a draft card, secret-filtered and within SOURCE_BUDGET_CHARS; with the symbol index, the
+    code's definitions too (18.2) - early, before the notes, so a long README does not crowd them out."""
     root = project.root
     if not root.is_dir():
         raise CardError(f"the project's folder is missing: {project.path}")
@@ -114,6 +190,8 @@ def gather(project: Project) -> str:
     tree = _tree(root)
     if tree:
         parts.append("## Дерево папок (как его показывает git)\n" + "\n".join(tree))  # i18n: keep
+    if symbols is not None and (code := overview(symbols, project)):
+        parts.append(f"{OVERVIEW}\n{code}")
     names = {e["name"] for e in projects.tree(root)}
     for name in NOTES:
         if name in names:
@@ -131,10 +209,10 @@ def gather(project: Project) -> str:
     return text[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"  # i18n: keep
 
 
-def prompt(project: Project) -> list[dict[str, Any]]:
+def prompt(project: Project, symbols: SymbolIndex | None = None) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": INSTRUCTIONS},
-        {"role": "user", "content": gather(project)},
+        {"role": "user", "content": gather(project, symbols)},
     ]
 
 
@@ -251,15 +329,18 @@ def changes_since(project: Project, baseline: dict[str, Any] | None) -> dict[str
     return found
 
 
-def update_prompt(project: Project, card: str, baseline: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """For a draft that brings a confirmed card up to date: the card, what changed, and the material it touches."""
+def update_prompt(project: Project, card: str, baseline: dict[str, Any] | None,
+                  symbols: SymbolIndex | None = None) -> list[dict[str, Any]]:  # fmt: skip
+    """For a draft that brings a confirmed card up to date: the card, what changed, and the material it touches -
+    and, when the card lacks the newer sections (18.2), the code's definitions to write them from."""
     root = project.root
     if not root.is_dir():
         raise CardError(f"the project's folder is missing: {project.path}")
     changes = changes_since(project, baseline)
+    lacking = missing_sections(card)
     parts = []
     if changes is None:  # no baseline: what the project is now, in full
-        parts.append("## Проект сейчас\n" + gather(project))  # i18n: keep
+        parts.append("## Проект сейчас\n" + gather(project, symbols if lacking else None))  # i18n: keep
     else:
         said = []
         if changes["commits"]:
@@ -283,13 +364,19 @@ def update_prompt(project: Project, card: str, baseline: dict[str, Any] | None) 
         for name in changes["dependencies"]:
             if (root / name).is_file() and not is_secret_file(name):
                 parts.append(f"## {name} (сейчас)\n{_file_head(root, name, 6_000)}")  # i18n: keep
+        if lacking and symbols is not None and (code := overview(symbols, project)):
+            parts.append(f"{OVERVIEW}\n{code}")
     material = clean("\n\n".join(parts))
     if len(material) > SOURCE_BUDGET_CHARS:
         material = material[:SOURCE_BUDGET_CHARS] + "\n[... материалы обрезаны]"  # i18n: keep
     # the card last, in its own tag: a model copies what it has just read more faithfully, and does not take the
     # material for a part of the card (a local model did, with both under ## headings)
     text = f'<changes project="{project.name}">\n{material}\n</changes>\n\n<card>\n{clean(card)}\n</card>'
-    return [{"role": "system", "content": UPDATE_INSTRUCTIONS}, {"role": "user", "content": text}]
+    system = UPDATE_INSTRUCTIONS
+    if MECHANISMS in lacking:  # a card older than the section: write it too, from the code's definitions
+        said = MECHANISMS_SAY.replace("«Определения в коде»", "«Определения в коде» из <changes>")  # i18n: keep
+        system += f" В карточке нет раздела «{MECHANISMS}»: выведи и его, с этим заголовком ##. {said}"  # i18n: keep
+    return [{"role": "system", "content": system}, {"role": "user", "content": text}]
 
 
 def tidy_update(text: str) -> str:

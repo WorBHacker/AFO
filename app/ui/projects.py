@@ -192,7 +192,7 @@ class Projects(QObject):
             "draft": draft["text"] if draft else "",
             "draftModel": models.get(draft["model_id"], draft["model_id"] or "") if draft else "",
             "missing": c.get("missing", []),
-            "changes": project_rows.card_changes(c.get("changes")),  # D24: worth an update?
+            "changes": project_rows.card_changes(c.get("changes"), c.get("sections")),  # D24: worth an update?
             "changedSections": project_rows.changed_sections(confirmed["text"], draft["text"])
             if confirmed and draft
             else [],

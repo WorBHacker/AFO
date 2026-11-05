@@ -275,6 +275,11 @@ class SymbolIndex:
         return {"symbols": found, "total": len(ranked), "complete": state.complete and not state.left_out,
                 "left_out": state.left_out}  # fmt: skip
 
+    def definitions(self, project: Project) -> dict[str, list[Symbol]]:
+        """Every file the index reads, with its definitions (18.2: what a card's mechanisms are written from)."""
+        state = self.refresh(project)
+        return {path: list(file.symbols) for path, file in list(state.files.items())}
+
     def outline(self, project: Project, rel: str) -> list[dict[str, Any]] | None:
         """The definitions of one file in order; None when it is not code the index reads."""
         rel = rel.replace("\\", "/").strip("/")

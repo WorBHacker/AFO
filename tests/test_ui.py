@@ -3360,6 +3360,11 @@ def test_project_cards(app):
         "А", "В", "Б (убран)"
     ]  # fmt: skip
     assert project_rows.card_changes({"commits": 2, "significant": False}) == ""
+    lacks = ["Ключевые механизмы и где они"]  # 18.2: a card older than the section is worth an update too
+    assert project_rows.card_changes({"commits": 2, "significant": False}, lacks) == (
+        "В карточке нет раздела «Ключевые механизмы и где они»")  # fmt: skip
+    assert project_rows.card_changes({"commits": 25, "significant": True}, lacks) == (
+        "С подтверждения карточки: 25 коммитов; в карточке нет раздела «Ключевые механизмы и где они»")  # fmt: skip
     from datetime import UTC, datetime
 
     utc = datetime(2026, 10, 27, 0, 3, tzinfo=UTC)

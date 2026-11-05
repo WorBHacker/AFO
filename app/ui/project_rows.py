@@ -480,10 +480,12 @@ def _lead(text: str, ranges: list[list[int]]) -> tuple[str, list[list[int]]]:
     return "…" + text[cut:], [[a - cut + 1, b - cut + 1] for a, b in ranges if a >= cut]
 
 
-def card_changes(changes: dict[str, Any] | None) -> str:
-    """What changed since the card was confirmed, in a line - or "" when nothing worth saying (D24)."""
+def card_changes(changes: dict[str, Any] | None, sections: list[str] | None = None) -> str:
+    """What changed since the card was confirmed, in a line - or "" when nothing worth saying (D24); `sections`: the
+    template's newer ones the card lacks (18.2) - an update writes them."""
+    lacks = tr("нет раздела {names}", names=", ".join(f"«{s}»" for s in sections)) if sections else ""
     if not changes or not changes.get("significant"):
-        return ""
+        return tr("В карточке {lacks}", lacks=lacks) if lacks else ""
     said = []
     commits = changes.get("commits") or 0
     if commits:
@@ -494,6 +496,8 @@ def card_changes(changes: dict[str, Any] | None) -> str:
         said.append(tr("новые папки: {folders}", folders=", ".join(f"{f}/" for f in changes["new_folders"])))
     if changes.get("gone_folders"):
         said.append(tr("исчезли папки: {folders}", folders=", ".join(f"{f}/" for f in changes["gone_folders"])))
+    if lacks:
+        said.append(tr("в карточке {lacks}", lacks=lacks))
     return tr("С подтверждения карточки: {changes}", changes="; ".join(said))
 
 

@@ -82,7 +82,9 @@ async def _state(request: Request, project: projects.Project) -> dict:
     if confirmed:
         baseline = await request.app.state.db.acall(lambda conn: cards.baseline(conn, project.id))
         changes = await asyncio.to_thread(cards.changes_since, project, baseline)
-    return {**state, "missing": missing, "changes": changes, "drafting": project.id in _drafting(request)}
+    sections = cards.missing_sections(confirmed["text"]) if confirmed else []  # the template's newer ones (18.2)
+    return {**state, "missing": missing, "changes": changes, "sections": sections,
+            "drafting": project.id in _drafting(request)}  # fmt: skip
 
 
 @router.get("/projects/{project_id}/card")
@@ -171,10 +173,11 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
     """`current`: (the confirmed card, its baseline) for an update; None for a card written anew."""
     bus, db = app.state.bus, app.state.db
     try:
+        symbols = getattr(app.state, "symbols", None)  # the code's definitions for «Ключевые механизмы» (18.2)
         if current is None:
-            messages = await asyncio.to_thread(cards.prompt, project)
+            messages = await asyncio.to_thread(cards.prompt, project, symbols)
         else:
-            messages = await asyncio.to_thread(cards.update_prompt, project, *current)
+            messages = await asyncio.to_thread(cards.update_prompt, project, *current, symbols)
         provider, model_ref = app.state.gateway.resolve(model["id"])
         # the answer's parameters the user set for this model (D39) - temperature, thinking, Strata's refusal vector
         own = (await db.acall(lambda conn: model_settings.current(conn, model["id"])))[1]
