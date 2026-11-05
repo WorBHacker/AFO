@@ -37,7 +37,20 @@ from typing import Any
 
 from common.i18n import tr
 
-from . import agent_tools, autonomous, budgets, compact, computer, goals, judge, mail, memory, sandbox, store
+from . import (
+    agent_tools,
+    approvals,
+    autonomous,
+    budgets,
+    compact,
+    computer,
+    goals,
+    judge,
+    mail,
+    memory,
+    sandbox,
+    store,  # fmt: skip
+)
 from .approvals import trusted_skips
 from .autonomous import NOTE
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
@@ -62,6 +75,8 @@ DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in COORDINATING]  # "all": a coo
 CLOUD_AT_ONCE = 4  # a batch's cloud tasks running together: the providers' request limits
 ANSWER_CHARS = 6000  # of each answer on the coordinator's board
 CHANGED_SHOWN = 12  # files named per project on the board
+# the coordinator cannot put them there - live on 2026-11-05 it offered to (16.5)
+WAITING_CHANGES = "\nIts changes wait in a sandbox, not in the project yet - only the user puts them there: "
 RESERVE_USD = 0.5  # what a batch keeps for a paid task whose agent has no budget of its own (16.4)
 CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
               "the same place - mend them first: ")  # fmt: skip
@@ -394,7 +409,7 @@ def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[s
                  + (f" and {len(paths) - CHANGED_SHOWN} more" if len(paths) > CHANGED_SHOWN else "")
                  for name, paths in (changed or {}).get(t["task_id"], [])]  # fmt: skip
         if files:
-            entry += "\nIts changes wait in a sandbox, not in the project yet: " + "; ".join(files)
+            entry += WAITING_CHANGES + "; ".join(files)
         lines.append(entry)
     return "\n\n".join(lines)
 
@@ -690,8 +705,15 @@ class AgentRunner:
                 except (AgentError, ProjectError) as exc:
                     _mark(conn, parent_id, task_id, status="failed", detail=str(exc), ended_at=utc_now())
                     return None
-                if profile["mode"] != "read_only" and profile["project_ids"]:  # it may write: a copy of its own
+                writes = profile["mode"] != "read_only" and bool(profile["project_ids"])
+                sees = bool(profile["project_ids"]) and any(rows[d]["sandbox"] for d in task["dependencies"])
+                if writes or sees:  # a copy of its own: to write into, or to read what those it waited for left
                     store.set_context_settings(conn, run_id, mode="sandbox")
+                if sees and not writes:  # it only reads: nothing that writes or runs, whatever its profile has
+                    tools = json.loads(conn.execute("SELECT tools FROM conversations WHERE id = ?",
+                                                    (run_id,)).fetchone()[0] or "[]")  # fmt: skip
+                    kept = [t for t in tools if approvals.kind(t["name"]) not in ("write", "command")]
+                    conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(kept), run_id))
                 _mark(conn, parent_id, task_id, status="running", run_id=run_id, started_at=utc_now())
                 return run_id
 

@@ -42,6 +42,11 @@ offers a first model for chat, code and images. Open it again with Settings → 
   payments. A frame and a “Stop” bar surround the window while it acts; Ctrl+Alt+End stops it from anywhere. Tasks can
   run on a timer or on an event (a new file in a folder, a message to your Telegram bot); nothing starts in the quiet
   hours.
+- **A coordinator and its workers**: an agent whose profile may “give batches of tasks, in parallel” hands parts of a
+  task to other agents at once — cloud ones together, local ones one at a time (one graphics card); a task that waits
+  for others starts from their result. Each writing agent edits its own copy of the project, and a task may carry
+  criteria the Goal mode's judge checks, up to three rounds. A coordinator's run shows a Tasks bar and a board; only
+  your “Apply all” puts the changes into the project.
 - **Mail for the agent** (any IMAP/SMTP mailbox; it sends only after your “yes”) and **API keys for the agent** (a key
   goes only to its own site; the model never sees it).
 - **Transfer settings**: all settings in one file to load on another computer — no keys, passwords or chats in it.

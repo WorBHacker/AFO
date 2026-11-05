@@ -438,7 +438,7 @@ def test_writing_tasks_work_in_sandboxes_and_the_user_applies_them_all(hub, repo
     assert "-print('a')" in own["diff"] and "+print('b')" in own["diff"]  # b's diff is only its own
     (said,) = outputs(hub, run_id)
     assert "[b] «Правщик» — done." in said["output"]
-    assert "Its changes wait in a sandbox, not in the project yet: «proj»: src/app.py" in said["output"]
+    assert agents.WAITING_CHANGES + "«proj»: src/app.py" in said["output"]
     waiting = hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"]
     assert [(t["task_id"], [f["path"] for p in t["projects"] for f in p["files"]]) for t in waiting] == [
         ("a", ["src/app.py"]), ("b", ["src/app.py"])]  # fmt: skip
@@ -448,6 +448,34 @@ def test_writing_tasks_work_in_sandboxes_and_the_user_applies_them_all(hub, repo
     assert (repo / "src" / "app.py").read_text(encoding="utf-8") == "print('b')\nprint('new line')\n"
     assert hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"] == []  # the copies went
     assert hub.post(f"/v1/runs/{run_id}/tasks/apply").json()["applied"] == []
+
+
+def test_a_reading_task_after_a_writing_one_reads_its_result(hub, repo):  # noqa: F811
+    """Live on 2026-11-05 (16.5) a reviewer that waited for two writers read the project as it was - their changes
+    were in their copies - and said nothing was done. A read-only task that waits for writing ones gets a copy that
+    starts from what they left, and no tool that writes or runs (even if its profile has one)."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    look = {"name": "read_file", "input": {"project": "proj", "path": "src/app.py"}}
+    tasks = batch(("a", "Правщик", "Поправь a"), ("r", "Читатель", "Посмотри", ["a"]))
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.02, work={
+        "Поправь a": [{"name": "edit_file", "input": edit(old="print('hi')", new="print('a')")}],
+        "Посмотри": [look]}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file", "edit_file", "run_command"], project_ids=[pid],
+            mode="read_only")  # fmt: skip
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert board["r"]["status"] == "done" and board["r"]["sandbox"] is True
+    reader = [c for c in provider.calls if _first_text(c[1]).startswith("Посмотри")]
+    assert [t["name"] for t in reader[0][2]] == ["read_file"]  # it reads, and only reads
+    seen = [m for m in reader[-1][1] if m["role"] == "tool"][-1]["content"]
+    assert "print('a')" in seen  # a's result, not the project as it was
+    assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")  # untouched so far
+    waiting = hub.get(f"/v1/conversations/{run_id}/sandbox").json()["tasks"]
+    assert [t["task_id"] for t in waiting] == ["a"]  # the reader left nothing to apply
+    assert [x["task_id"] for x in hub.post(f"/v1/runs/{run_id}/tasks/apply").json()["applied"]] == ["a"]
 
 
 def test_a_task_after_two_that_clashed_is_told_of_the_conflict(hub, repo):  # noqa: F811
