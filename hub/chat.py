@@ -63,6 +63,7 @@ from . import (
     computer,
     context,
     fit,
+    guard,
     limits,
     links,
     mail,
@@ -149,6 +150,7 @@ class ChatService:
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
+        self.guards: dict[str, guard.TurnGuard] = {}  # a goal's turn: its constraints, an investigation (11.4)
         # chats whose Claude Code went to read the web (D19): known at once, before its results are stored
         self.outside: set[str] = set()
         # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
@@ -787,6 +789,8 @@ class ChatService:
                 output, error = autonomous.PLAN_FIRST, True  # an autonomous run acts only after its plan (D40)
             elif call["name"] == autonomous.ASK_USER["name"] and conversation_id in self.proving:
                 output, error = PROVING_ASKED, False  # nobody answers on the proving ground (D45)
+            elif (refused := self._guarded(conversation_id, call, acting)) is not None:
+                output, error = refused, True  # a goal's turn: its constraints, an investigation (11.4)
             elif call["name"] in changes.WRITE_TOOL_NAMES:
                 output, error = await self._write_file(conversation_id, call, ctx, cancel)
             elif call["name"] == commands.RUN_COMMAND["name"]:
@@ -836,6 +840,26 @@ class ChatService:
                 await self.autonomy.acted(conversation_id, call["name"])
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "tool", results))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+
+    def _guarded(self, conversation_id: str, call: dict, acting: bool) -> str | None:
+        """A goal's turn (11.4, hub/guard.py): an investigation refuses writing and commands (reading the web is
+        reading); a constraint the hub checks refuses a write or a command - before anything is asked."""
+        turn = self.guards.get(conversation_id)
+        if turn is None:
+            return None
+        name = call["name"]
+        if turn.investigating and acting and name not in (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"]):
+            return guard.INVESTIGATING
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        if name in changes.WRITE_TOOL_NAMES:
+            said = guard.refusal(turn.rules, "write", str(args.get("path") or ""))
+        elif name == commands.RUN_COMMAND["name"]:
+            said = guard.refusal(turn.rules, "command", str(args.get("command") or ""))
+        else:
+            return None
+        if said:
+            turn.refused.append(said)
+        return said
 
     async def _write_file(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A write the model proposes: checked, asked (unless the chat is trusted or an answer covers it), done if

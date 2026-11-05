@@ -11,6 +11,9 @@ the chat ends (hub/chat.py calls turn_ended) it counts what the goal used, runs 
                 the criteria in words, or tests were lost twice in a row;
     budget    - a limit is near: from soft_ratio of one on the worker gets its last turn (leave the files working,
                 write down what is done and what is left); after it the goal is parked.
+Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file written again and again -
+the next turn investigates (writing and commands refused, the root cause asked for); after that, the human. The
+contract's constraints in the forms the hub can check are refused at the call; three tries in a turn - the human.
 The user may pause it (the running turn finishes, no next one starts), resume it (a parked one with higher limits),
 clear it, and write to it while it works: steering, read at the start of the next turn. Active goals go on after a
 hub restart (D16).
@@ -39,7 +42,7 @@ from typing import Any
 
 from common.i18n import N_, tr
 
-from . import approvals, commands, judge, store
+from . import approvals, commands, guard, judge, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -316,7 +319,7 @@ def criteria_text(goal: dict[str, Any]) -> str:
 
 def start_note(goal: dict[str, Any], *, head: str = "", said: list[str] | None = None) -> str:
     """The first turn's word: the contract and how the work goes (`head`: why it starts again - a restart)."""
-    rules = "\n".join(f"- {c}" for c in goal["constraints"])
+    rules = "\n".join(f"- {c}" + (" (the hub refuses it)" if guard.checkable(c) else "") for c in goal["constraints"])
     words = "\n".join(said or [])
     return (
         f'{NOTE} <goal_loop type="start">\n'
@@ -375,6 +378,25 @@ def continue_note(goal: dict[str, Any], found: dict[str, Any], said: list[str], 
     )
 
 
+INVESTIGATED = ("INVESTIGATION DONE: your tools are back. Make the fix you found - at the root cause, not another "
+                "guess.")  # fmt: skip
+
+
+def investigation_note(goal: dict[str, Any], found: dict[str, Any], why: str) -> str:
+    """The investigator's turn (the user's plan, idea 3): no writing, no commands - find the root cause."""
+    return (
+        f'{NOTE} <goal_loop type="investigation">\n'
+        f"The hub's loop guard: {why}. So for this one turn writing and commands are refused.\n"
+        f"GOAL: {goal['objective']}\n"
+        + check_text(found)
+        + "Find the root cause: read the code around the failure, follow the calls, compare with what the criteria "
+        "expect. End this turn with two things: the root cause you found, and the exact fix you will make next turn "
+        "(the file and what changes). Your tools for writing and commands come back next turn.\n"
+        f"{usage_line(goal)}\n"
+        "</goal_loop>"
+    )
+
+
 def last_turn_note(goal: dict[str, Any], found: dict[str, Any], said: list[str]) -> str:
     """The last turn before the limit (the user's plan 4.2): stop experimenting, leave it working, hand it over."""
     words = "\n".join(said)
@@ -401,11 +423,15 @@ turn in the user's projects; after each turn the hub checks the contract's crite
 Make it measurable. Prefer criteria the hub can run: one PowerShell command line in an attached project and the exit \
 code that means done - the project's tests, a build, a check such as `if (Test-Path done.txt) { exit 0 } else { exit \
 1 }`. Add a criterion in words only for what no command can check. A command only looks: never install, download, \
-push or delete. Add the hard constraints the wish implies (what must not be touched). Suggest limits: turns (5 to 40) \
-and minutes. Write the objective, the rules and the constraints in the user's language.
+push or delete. Add the hard constraints the wish implies (what must not be touched). The hub refuses breaking three \
+forms of them itself - write a constraint so when it fits: «не трогать: path, ...» (no writing there; a folder ends \
+with /, a pattern like *.lock), «только: path, ...» (writing only there), «не запускать: command, ...» (such commands \
+refused) - in English «don't touch:», «only:», «never run:». Suggest limits: turns (5 to 40) and minutes. Write the \
+objective, the rules and the constraints in the user's language.
 Answer with JSON only:
 {"objective": "...", "criteria": [{"command": "...", "project": "<an attached project's name>", \
-"expected_exit_code": 0}, {"rule": "..."}], "constraints": ["..."], "limits": {"max_turns": 20, "max_minutes": 60}}"""
+"expected_exit_code": 0}, {"rule": "..."}], "constraints": ["..."], \
+"limits": {"max_turns": 20, "max_minutes": 60}}"""  # i18n: keep
 DRAFT_FORM = '{"objective": ..., "criteria": [...], "constraints": [...], "limits": {...}}'
 MANIFESTS = ("package.json", "pyproject.toml", "pytest.ini", "setup.cfg", "Cargo.toml", "go.mod", "Makefile",
              "CMakeLists.txt", "build.gradle", "pom.xml")  # fmt: skip
@@ -666,6 +692,7 @@ class Goals:
             goal = await self._db.acall(lambda conn: goal_of(conn, conversation_id))
             mine = conversation_id in self._counted
             self._counted.discard(conversation_id)
+            turn = self._chat.guards.pop(conversation_id, None) if mine else None  # its tries at the constraints
             if goal is None and mine:  # cleared while its turn ran: the turn still counts
                 goal = await self._db.acall(lambda conn: latest_goal(conn, conversation_id))
             if goal is None or not (goal["status"] == "active" or mine):
@@ -678,6 +705,19 @@ class Goals:
                 return
             if outcome.status == "error" and not outcome.limited:
                 await self._checked(goal, "blocked", None, {}, tr("ход не удался: {error}", error=outcome.detail))
+                return
+            if goal["investigating"]:  # the investigator's turn (11.4): nothing could change, nothing is run
+                await self._db.acall(lambda conn: conn.execute("UPDATE goals SET investigating = 0 WHERE id = ?",
+                                                               (goal["id"],)))  # fmt: skip
+                last = await self._db.acall(lambda conn: checks(conn, goal["id"], 1))
+                found = _found_of(last[0]) if last else {"results": [], "verdict": None}
+                await self._go_on({**goal, "investigating": 0}, None, found, head=INVESTIGATED, route="investigated",
+                                  detail=tr("причину искали — дальше правка"), kept={})  # fmt: skip
+                return
+            if turn is not None and len(turn.refused) >= guard.TRIES:
+                tried = "; ".join(dict.fromkeys(r.split("«", 1)[-1].split("»", 1)[0] for r in turn.refused))
+                said = tr("{n} попытки нарушить ограничения за ход: {rules}", n=len(turn.refused), rules=tried)
+                await self._checked(goal, "blocked", None, {}, said + tr(ASK_PERSON))
                 return
             await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
                                     persist=False)  # fmt: skip
@@ -694,20 +734,69 @@ class Goals:
             if verdict == "REGRESSED" and await self._regressed_before(goal):
                 await self._checked(goal, "blocked", verdict, found, tr(REGRESSED_AGAIN) + tr(ASK_PERSON))
                 return
-            share = used(goal)
-            if goal["last_turn"] or share >= 1.0:
-                await self._checked(goal, "budget", verdict, found, tr("предел: {limit}", limit=_limit_words(goal)))
+            # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
+            said_by_judge = set((found.get("judge") or {}).get("missing") or [])
+            extra = [x for x in found.get("extra") or [] if x not in said_by_judge]
+            mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
+            history = await self._history(goal)
+            edited, edits = await self._edits(goal, history, mark[1])
+            loop = guard.signal(history, mark[0], mark[1], edits, edited)
+            if loop is not None and loop[0] == "blocked":
+                await self._checked(goal, "blocked", verdict, found, loop[1] + tr(ASK_PERSON), mark)
                 return
-            said = await self._take_steering(goal)
-            if share >= goal["soft_ratio"]:
-                await self._db.acall(lambda conn: conn.execute("UPDATE goals SET last_turn = 1 WHERE id = ?",
-                                                               (goal["id"],)))  # fmt: skip
-                await self._checked(goal, "last_turn", verdict, found,
-                                    tr("последний ход: {limit}", limit=_limit_words(goal)))  # fmt: skip
-                await self._turn(goal, last_turn_note(goal, found, said))
-                return
-            await self._checked(goal, "continue", verdict, found, "")
-            await self._turn(goal, continue_note(goal, found, said))
+            await self._go_on(goal, verdict, found, mark=mark, investigate=loop[1] if loop else "")
+
+    async def _go_on(self, goal: dict[str, Any], verdict: str | None, found: dict[str, Any], *,
+                     mark: tuple[str | None, int] = (None, 0), investigate: str = "", head: str = "",
+                     route: str = "continue", detail: str = "",
+                     kept: dict[str, Any] | None = None) -> None:  # fmt: skip
+        """The way on when the goal is not met and nothing stops it: parked at the limit, the last turn, an
+        investigation (11.4: `investigate` - why), or the next turn - its check kept as `route` with `detail` (after
+        an investigation: «investigated», what it keeps - `kept` - empty: nothing was checked)."""
+        share = used(goal)
+        if goal["last_turn"] or share >= 1.0:
+            await self._checked(goal, "budget", verdict, found, tr("предел: {limit}", limit=_limit_words(goal)), mark)
+            return
+        said = await self._take_steering(goal)
+        if share >= goal["soft_ratio"]:
+            await self._db.acall(lambda conn: conn.execute("UPDATE goals SET last_turn = 1 WHERE id = ?",
+                                                           (goal["id"],)))  # fmt: skip
+            await self._checked(goal, "last_turn", verdict, found,
+                                tr("последний ход: {limit}", limit=_limit_words(goal)), mark)  # fmt: skip
+            await self._turn(goal, last_turn_note(goal, found, said))
+            return
+        if investigate:
+            await self._db.acall(lambda conn: conn.execute("UPDATE goals SET investigating = 1 WHERE id = ?",
+                                                           (goal["id"],)))  # fmt: skip
+            await self._checked(goal, "investigate", verdict, found, investigate, mark)
+            if said:  # what the user wrote waits for the turn after the investigation
+                await self._db.acall(lambda conn: conn.executemany(
+                    "INSERT INTO goal_steering (goal_id, text, by) VALUES (?, ?, 'hub')",
+                    [(goal["id"], text) for text in said]))  # fmt: skip
+            await self._turn({**goal, "investigating": 1}, investigation_note(goal, found, investigate))
+            return
+        await self._checked(goal, route, verdict, found if kept is None else kept, detail, mark)
+        await self._turn(goal, continue_note(goal, found, said, head=head))
+
+    async def _history(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
+        """The checks since the goal last stopped (a block, a limit, a pause: resumed, it starts afresh), oldest
+        first - what the loop guard reads (11.4)."""
+        found = await self._db.acall(lambda conn: checks(conn, goal["id"], 50))
+        stops = [i for i, c in enumerate(found) if c["route"] in guard.STOPS]
+        return found[stops[-1] + 1 :] if stops else found
+
+    async def _edits(self, goal: dict[str, Any], history: list[dict[str, Any]], now: int) -> tuple[str, int]:
+        """The file written most since what fails last got fewer (the goal's start, or since it last stopped), and
+        how many times - the third signal (11.4). The hub's own writes; a sandbox's are not counted."""
+        since = guard.no_progress_since(history, now)
+        if since is None:
+            return "", 0
+        since = since or (history[0]["created_at"] if history else goal["created_at"])
+        since = max(since, goal["created_at"])
+        row = await self._db.acall(lambda conn: conn.execute(
+            "SELECT path, count(*) FROM file_changes WHERE conversation_id = ? AND created_at > ? GROUP BY project_id,"
+            " path ORDER BY 2 DESC LIMIT 1", (goal["conversation_id"], since)).fetchone())  # fmt: skip
+        return (row[0], row[1]) if row else ("", 0)
 
     async def contour(self, goal: dict[str, Any], results: list[dict[str, Any]],
                       bases: dict[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
@@ -841,7 +930,7 @@ class Goals:
         return results
 
     async def _checked(self, goal: dict[str, Any], route: str, verdict: str | None, found: dict[str, Any],
-                       detail: str) -> None:  # fmt: skip
+                       detail: str, mark: tuple[str | None, int] = (None, 0)) -> None:  # fmt: skip
         """The check is appended (D14), and the goal takes the way it found. `found` (from contour): the criteria's
         results, what else is missing, the judge's word, what changed - kept with the check."""
         criteria = found.get("results") or []
@@ -856,10 +945,10 @@ class Goals:
 
         def write(conn):
             cur = conn.execute(
-                "INSERT INTO goal_checks (goal_id, turn, route, verdict, results, missing, detail)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO goal_checks (goal_id, turn, route, verdict, results, missing, detail, fingerprint,"
+                " failing) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (goal["id"], goal["turns_used"], route, verdict, json.dumps(results, ensure_ascii=False),
-                 json.dumps(missing, ensure_ascii=False), detail),
+                 json.dumps(missing, ensure_ascii=False), detail, *mark),
             )  # fmt: skip
             return checks(conn, goal["id"], 1)[0] if cur.lastrowid else None
 
@@ -885,6 +974,8 @@ class Goals:
         said = await self._take_steering(goal)
         if not goal["turns_used"]:  # it never got through a turn: the contract again
             note = start_note(goal, head=head, said=said)
+        elif goal["investigating"] and last:  # it was to investigate (11.4): it still is
+            note = investigation_note(goal, _found_of(last[0]), last[0]["detail"])
         else:
             note = continue_note(goal, _found_of(last[0]) if last else {"results": []}, said, head=head)
         await self._turn(goal, note)
@@ -896,10 +987,14 @@ class Goals:
             return
         try:
             self._counted.add(conversation_id)
+            # what the chat asks at each tool call of this turn (11.4): the constraints, whether it investigates
+            self._chat.guards[conversation_id] = guard.TurnGuard(guard.rules(goal["constraints"]),
+                                                                 bool(goal["investigating"]))  # fmt: skip
             await self._chat.go_on(conversation_id, goal["model_id"], note, effort=goal["effort"],
                                    limits=Limits(max_steps=TURN_STEPS))  # fmt: skip
         except GatewayError as exc:
             self._counted.discard(conversation_id)
+            self._chat.guards.pop(conversation_id, None)
             if conversation_id in self._chat.busy:
                 return
             current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))

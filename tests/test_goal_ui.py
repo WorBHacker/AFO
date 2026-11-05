@@ -72,6 +72,11 @@ def test_what_the_goal_says_in_words():
     assert goal_view.thousands(1_500_000) == "1,5 млн" and goal_view.thousands(512) == "512"
     assert goal_view.check_text(CHECK) == "проверка после хода 3: не выполнено — 1 пункт"
     assert goal_view.check_text(None) == "проверка — после первого хода"
+    looked = {**CHECK, "route": "investigate"}  # 11.4: the next turn looks for the cause
+    assert goal_view.check_text(looked) == ("проверка после хода 3: не выполнено — 1 пункт · следующий ход — поиск "
+                                            "причины, без записи")  # fmt: skip
+    assert goal_view.check_text({**CHECK, "route": "investigated", "verdict": None, "missing": []}) == (
+        "проверка после хода 3: причину искали — дальше правка")  # fmt: skip
     assert goal_view.criteria_rows(GOAL) == [
         {"text": "`pytest -q` в «LocalChat» → код 0", "met": False, "words": False},
         {"text": "README описывает запуск", "met": False, "words": True}]  # fmt: skip

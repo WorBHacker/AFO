@@ -30,7 +30,8 @@ NOTICES = {"achieved": N_("Цель достигнута"), "blocked": N_("Це�
 VERDICTS = {"ACHIEVED": N_("выполнено"), "INCOMPLETE": N_("не выполнено"), "REGRESSED": N_("потеряно то, что работало")}
 DEFAULT_LIMITS = {"turns": "25", "tokens": "500", "minutes": "60"}  # tokens in thousands (Q26)
 ROUTES = {"continue": N_("дальше"), "last_turn": N_("последний ход"), "achieved": N_("достигнута"),
-          "blocked": N_("ждёт вас"), "budget": N_("предел"), "paused": N_("пауза")}  # fmt: skip
+          "blocked": N_("ждёт вас"), "budget": N_("предел"), "paused": N_("пауза"),
+          "investigated": N_("причину искали — дальше правка")}  # fmt: skip
 
 
 def thousands(n: int | float) -> str:
@@ -62,6 +63,8 @@ def check_text(check: dict[str, Any] | None) -> str:
     said = tr("проверка после хода {turn}: {found}", turn=check["turn"], found=found)
     if missing and check.get("verdict") != "ACHIEVED":
         said += f" — {missing} {plural(missing, 'пункт', 'пункта', 'пунктов')}"
+    if check["route"] == "investigate":  # 11.4: the loop guard - the next turn looks for the cause
+        said += " · " + tr("следующий ход — поиск причины, без записи")
     return said
 
 

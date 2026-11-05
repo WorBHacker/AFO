@@ -130,6 +130,75 @@ def test_the_last_turn_comes_at_the_soft_limit_and_then_the_goal_is_parked(hub, 
     assert done["goal"]["turns_used"] == 4 and "The user resumed the goal (app)." in hub_note(worker.prompts[2])
 
 
+def tool_outputs(hub, conv):  # noqa: F811
+    messages = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    return [b["output"] for m in messages if m["role"] == "tool" for b in m["content"]]
+
+
+def test_the_same_failure_twice_sends_an_investigator_and_a_third_time_the_human(hub, repo):  # noqa: F811
+    """11.4 (the user's plan 6, idea 3): the same failure after two turns - the next turn investigates (writing and
+    commands refused, the hub asks for the root cause); after it, the same failure a third time stops the goal."""
+    worker = use(hub, Gated("agent", ["Пробую.", "Ещё раз пробую.", WRITE, "Гипотеза: done.txt никто не создаёт.",
+                                      "Снова пробую."]))  # fmt: skip
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv)
+    blocked = settled(hub, conv, "blocked")
+    routes = [(c["route"], c["verdict"]) for c in blocked["checks"]]
+    assert routes == [("continue", "INCOMPLETE"), ("investigate", "INCOMPLETE"), ("investigated", None),
+                      ("blocked", "INCOMPLETE")]  # fmt: skip
+    first, second, _, last = blocked["checks"]
+    assert first["fingerprint"] and first["fingerprint"] == second["fingerprint"] == last["fingerprint"]
+    assert "одна и та же ошибка два хода подряд" in second["detail"]
+    assert blocked["goal"]["detail"].startswith("одна и та же ошибка 3 хода подряд")
+    assert not (repo / "done.txt").exists()  # the investigator could not write
+    looked = hub_note(worker.prompts[2])
+    assert 'type="investigation"' in looked and "writing and commands are refused" in looked
+    assert any("investigation turn" in out for out in tool_outputs(hub, conv))
+    after = hub_note(worker.prompts[4])
+    assert 'type="continuation"' in after and "INVESTIGATION DONE" in after and blocked["goal"]["investigating"] == 0
+
+
+def test_the_constraints_the_hub_can_check_are_refused_at_the_call(hub, repo):  # noqa: F811
+    """11.4: «не трогать: …», «только: …», «не запускать: …» - the hub refuses such a write or command itself (in
+    «Доверенном» too: before anything is asked); other constraints are the judge's."""
+    breaking = [("write_file", {"project": "proj", "path": "README.md", "content": "# Чужое\n"}),
+                ("run_command", {"project": "proj", "command": "git push origin main"})]  # fmt: skip
+    worker = use(hub, Gated("agent", [breaking, WRITE, "Создал done.txt, README не тронул."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, constraints=["не трогать: README.md", "не запускать: git push", "Пиши понятно"])
+    settled(hub, conv, "achieved")
+    said = tool_outputs(hub, conv)
+    assert "the goal's constraint «не трогать: README.md»" in said[0] and "git push" in said[1]
+    assert (repo / "README.md").read_text(encoding="utf-8") == "# Проект\n"
+    start = hub_note(worker.prompts[0])
+    assert "- не трогать: README.md (the hub refuses it)" in start and "- Пиши понятно\n" in start
+    assert hub.get("/v1/approvals").json()["approvals"] == []  # the push was refused before it was asked
+
+
+def test_three_tries_at_a_constraint_in_a_turn_stop_the_goal(hub, repo):  # noqa: F811
+    tries = [("write_file", {"project": "proj", "path": f"migrations/{n}.sql", "content": "x\n"}) for n in range(3)]
+    worker = use(hub, Gated("agent", [tries, "Не вышло."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, constraints=["не трогать: migrations/"])
+    blocked = settled(hub, conv, "blocked")
+    assert blocked["goal"]["detail"].startswith("3 попытки нарушить ограничения за ход")
+    assert not (repo / "migrations").exists()
+
+
+def test_one_file_edited_again_and_again_without_progress_sends_an_investigator(hub, repo):  # noqa: F811
+    """The third signal: a file written five times while what fails does not get fewer - even when the failure's
+    words change each time (the check shows the file)."""
+    read = [("read_file", {"project": "proj", "path": "notes.txt"})]
+    again = [("write_file", {"project": "proj", "path": "notes.txt", "content": f"версия {n}\n"}) for n in range(5)]
+    worker = use(hub, Gated("agent", [read, again, "Переписал заметки.", "Гипотеза: заметки ни при чём.", WRITE,
+                                      "Готово."]))  # fmt: skip
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, criteria=[{"command": "Get-Content notes.txt; " + DONE}])
+    done = settled(hub, conv, "achieved")
+    assert [c["route"] for c in done["checks"]] == ["investigate", "investigated", "achieved"]
+    assert "notes.txt" in done["checks"][0]["detail"] and "5" in done["checks"][0]["detail"]
+
+
 def test_a_check_that_asks_is_stopped_and_says_so(hub, repo, monkeypatch):  # noqa: F811
     """A check command waiting for an answer is stopped like the model's commands (D46, step 13.8), and the worker
     reads why it is not met - not «ended with exit code None»."""
@@ -311,6 +380,7 @@ def test_a_model_drafts_the_contract_from_the_wish(hub, repo):  # noqa: F811
     assert '<project name="proj">' in asked and "TOP LEVEL:" in asked and "pyproject.toml:\n[tool.pytest" in asked
     assert "<wish>\nсделай, чтобы тесты проходили\n</wish>" in asked
     assert worker.prompts[0][0]["content"].startswith("You turn what a user wants into a goal contract")
+    assert "«не трогать: path, ...»" in worker.prompts[0][0]["content"]  # 11.4: the forms the hub checks itself
     referee = use(hub, Scripted("judge", ["не JSON", "опять не JSON"]))
     hub.put("/v1/model_settings", json={"model_id": "", "settings": {"roles": {"judge": "judge/m"}}})
     failed = hub.post(url, json={"text": "ещё раз", "model_id": "agent/m"})
