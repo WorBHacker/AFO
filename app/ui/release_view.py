@@ -20,7 +20,7 @@ def status_text(state: dict[str, Any], size: str) -> str:
     """The line under the version in Settings."""
     job = state.get("job") or {}
     status, current, latest = job.get("status"), state.get("current", ""), state.get("latest", "")
-    if status == "updated":
+    if status == "updated" and not state.get("newer"):  # a newer one out already says itself (below)
         return tr("AFO обновлена до {version}", version=job.get("version", current))
     if status == "failed":
         return job.get("error", "")
@@ -75,7 +75,7 @@ class ReleaseView(QObject):
     @Property(bool, notify=changed)
     def canDownload(self) -> bool:
         return bool(self._state.get("newer") and self._state.get("installed")) and self._status() in (
-            "idle", "failed", "cancelled")  # fmt: skip
+            "idle", "failed", "cancelled", "updated")  # updated: to the version before this newer one  # fmt: skip
 
     @Property(bool, notify=changed)
     def canInstall(self) -> bool:

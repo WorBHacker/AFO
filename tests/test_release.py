@@ -209,6 +209,22 @@ def test_after_an_update_the_hub_says_how_it_went(tmp_path):
     assert not (folder / release.PENDING).exists()
 
 
+def test_a_version_newer_than_the_update_just_made_can_be_taken(hub, github):  # noqa: F811
+    """Live on 2026-11-05: AFO updated itself to 0.1.2, and 0.1.3 came out the same day - the hub found it, but its
+    «updated» kept the window from offering it until the hub restarted. A version newer than the one just put in
+    makes that update the past; one that is not newer leaves its word."""
+    keeper = hub.app.state.releases
+    keeper.job = {"status": "updated", "version": __version__, "from": "0.0.9"}
+    published(tag=f"v{__version__}", name=f"AFO-Setup-{__version__}.exe")  # the version just put in: nothing newer
+    found = hub.post("/v1/release/check").json()
+    assert not found["newer"] and found["job"]["status"] == "updated"
+    published()
+    found = hub.post("/v1/release/check").json()
+    assert found["newer"] and found["job"] == {"status": "idle"}
+    assert hub.post("/v1/release/download").json()["job"]["status"] == "downloading"
+    assert wait_for(hub, "ready")["job"]["version"] == "0.2.0"
+
+
 def test_the_wizard_opens_the_window_again_after_a_silent_update():
     """A silent install shows nothing and starts nothing - except an update AFO started (`/UPDATE=1`): then the
     window opens again on the new version (and starts the hub)."""

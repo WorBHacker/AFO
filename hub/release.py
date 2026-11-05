@@ -220,6 +220,8 @@ class Releases:
         self.checked = utc_now()
         if self.found and newer(self.found["version"], __version__):
             log.info("AFO %s is out (this is %s)", self.found["version"], __version__)
+            if self.job.get("status") == "updated":  # the update just made is the past now: the newer one may come
+                self.job = {"status": "idle"}  # (live on 2026-11-05 «updated» kept 0.1.3 from being offered)
         await self._publish()
         return await self.state()
 

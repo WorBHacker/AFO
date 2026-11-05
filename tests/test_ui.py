@@ -1936,6 +1936,11 @@ def test_afos_own_update_from_the_settings(app):
     wait_until(lambda: "install" in app.client.release_calls)
     view.setAuto(False)
     wait_until(lambda: ("auto", False) in app.client.release_calls)
+    # just updated, and a newer one already out (live on 2026-11-05: «AFO обновлена до 0.1.2» hid 0.1.3)
+    app.client.release_state["job"] = {"status": "updated", "version": "0.1.0", "from": "0.0.9"}
+    view.load()
+    wait_until(lambda: view.canDownload)
+    assert view.text == "Есть AFO 0.2.0 (84,2 МБ) — у вас 0.1.0"
     # a checkout: the newer version is said, the installer is not offered
     app.client.release_state.update(installed=False, job={"status": "idle"})
     view.load()
