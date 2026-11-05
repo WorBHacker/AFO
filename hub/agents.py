@@ -16,11 +16,18 @@ A coordinator (D20) is an agent with the tool delegate_task: it gives a part of 
 sub-run, linked to it - waits, and gets the sub-agent's final answer as the tool's result. While it waits it gives up
 the GPU (the sub-agent may need it), and takes it back after. One level only: a sub-run cannot delegate further.
 Stopping the coordinator stops its sub-runs.
+
+With delegate_tasks (16.1, D50) it gives a batch: each task a row of `delegated_tasks` - the board it and the window
+read. Tasks that do not wait for each other run at once: cloud ones together (CLOUD_AT_ONCE of a batch at a time),
+local ones one after another through the same GPU queue, in the batch's order grouped by model (hub/delegate.py). A
+task with dependencies starts when they are done, with their answers after its prompt; one whose dependency did not
+end done is skipped. The coordinator waits for the whole batch and gets the board back.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 import sqlite3
@@ -34,7 +41,7 @@ from . import agent_tools, autonomous, compact, computer, mail, memory, store
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
-from .delegate import DELEGATE
+from .delegate import DELEGATE, DELEGATE_MANY, BatchError, check_batch, order
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
@@ -46,9 +53,14 @@ STEPS = (1, 200)
 MINUTES = (1, 24 * 60)
 NAME_CHARS = 60
 INSTRUCTIONS_CHARS = 8000
-AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE]  # what a profile may choose from
+AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE, DELEGATE_MANY]  # what a profile may choose from
 TOOL_NAMES = [t["name"] for t in AGENT_TOOLS]
-DEFAULT_TOOLS = [n for n in TOOL_NAMES if n != DELEGATE["name"]]  # "all": a coordinator is chosen, not by default
+COORDINATING = (DELEGATE["name"], DELEGATE_MANY["name"])
+DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in COORDINATING]  # "all": a coordinator is chosen, not by default
+CLOUD_AT_ONCE = 4  # a batch's cloud tasks running together: the providers' request limits
+ANSWER_CHARS = 6000  # of each answer on the coordinator's board
+ONE_LEVEL = "you are a sub-agent yourself: you cannot give tasks further (one level, D20)"
+ENDED = {"done": "done", "error": "failed", "cancelled": "cancelled"}  # a run's end -> its task's
 RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
 
@@ -286,6 +298,73 @@ def autonomous_profile(conn: sqlite3.Connection, model_id: str) -> dict[str, Any
                                "instructions": "", "max_steps": 100, "max_minutes": 60})  # fmt: skip
 
 
+# --- a coordinator's batches (16.1, D50) ---
+
+
+def _task(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row) | {"dependencies": json.loads(row["dependencies"])}
+
+
+def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
+    """The coordinator's board: the tasks of its batches (or of one), in the order it wrote them."""
+    rows = conn.execute(
+        "SELECT * FROM delegated_tasks WHERE coordinator = ? AND (? IS NULL OR batch = ?) ORDER BY batch, position",
+        (coordinator, batch, batch),
+    ).fetchall()
+    return [_task(r) for r in rows]
+
+
+def save_batch(conn: sqlite3.Connection, coordinator: str, tasks: list[dict[str, Any]]) -> int:
+    """The batch's rows, pending; its number. A task_id names one task of the coordinator's for good."""
+    used = {r[0] for r in conn.execute("SELECT task_id FROM delegated_tasks WHERE coordinator = ?", (coordinator,))}
+    again = next((t["task_id"] for t in tasks if t["task_id"] in used), None)
+    if again is not None:
+        raise AgentError(f"task_id {again!r} was used in an earlier batch of yours")
+    number = conn.execute("SELECT COALESCE(MAX(batch), 0) + 1 FROM delegated_tasks WHERE coordinator = ?",
+                          (coordinator,)).fetchone()[0]  # fmt: skip
+    conn.executemany(
+        "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(coordinator, t["task_id"], number, n, t["agent_profile"], t["prompt"], json.dumps(t["dependencies"]))
+         for n, t in enumerate(tasks)],
+    )  # fmt: skip
+    return number
+
+
+def _mark(conn: sqlite3.Connection, coordinator: str, task_id: str, **fields: Any) -> None:
+    conn.execute(
+        f"UPDATE delegated_tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE coordinator = ? AND task_id = ?",
+        (*fields.values(), coordinator, task_id),
+    )
+
+
+def board(tasks: list[dict[str, Any]]) -> str:
+    """What the coordinator gets back: how many ended how, then each task with the agent's answer."""
+    counts = collections.Counter(t["status"] for t in tasks)
+    told = [f"{counts[s]} {s}" for s in ("done", "failed", "cancelled", "skipped", "running", "pending") if counts[s]]
+    lines = [f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}: {', '.join(told)}."]
+    for t in tasks:
+        head = f"[{t['task_id']}] «{t['agent']}» — {t['status']}"
+        if t["status"] == "skipped":
+            lines.append(f"{head}: {t['detail']}")
+            continue
+        head += f" ({t['detail']})" if t["detail"] and t["status"] != "done" else ""
+        answer = t["answer"] or ""
+        if len(answer) > ANSWER_CHARS:
+            answer = answer[:ANSWER_CHARS] + "\n… (cut here; the whole answer is in the agent's run)"
+        lines.append(f"{head}. Answer:\n{answer}" if answer else f"{head}.")
+    return "\n\n".join(lines)
+
+
+async def _either(first: asyncio.Event, second: asyncio.Event) -> None:
+    waits = [asyncio.create_task(first.wait()), asyncio.create_task(second.wait())]
+    try:
+        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for w in waits:
+            w.cancel()
+
+
 class AgentRunner:
     """Starts runs, keeps the GPU queue (local models one at a time), records how they end, resumes them."""
 
@@ -299,12 +378,17 @@ class AgentRunner:
         self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
 
     async def start(self) -> list[str]:
-        """Runs the hub was running (or had queued) when it stopped go on now."""
-        unfinished = await self._db.acall(
-            lambda conn: [r["conversation_id"] for r in conn.execute(
+        """Runs the hub was running (or had queued) when it stopped go on now; a batch's tasks that had not begun
+        will not (nobody waits for them now); those running end as their runs do."""
+
+        def unfinished_runs(conn) -> list[str]:
+            conn.execute("UPDATE delegated_tasks SET status = 'cancelled', detail = ?, ended_at = ?"
+                         " WHERE status = 'pending'", ("the hub restarted before it began", utc_now()))  # fmt: skip
+            return [r["conversation_id"] for r in conn.execute(
                 "SELECT conversation_id FROM agent_runs WHERE status IN ('queued', 'running') ORDER BY created_at"
-            ).fetchall()]
-        )  # fmt: skip
+            ).fetchall()]  # fmt: skip
+
+        unfinished = await self._db.acall(unfinished_runs)
         for run_id in unfinished:
             await self._launch(run_id, resume=True)
         return unfinished
@@ -365,7 +449,7 @@ class AgentRunner:
 
         def create(conn) -> str:
             if get_run(conn, parent_id)["parent_run"]:
-                raise AgentError("you are a sub-agent yourself: you cannot give tasks further (one level, D20)")
+                raise AgentError(ONE_LEVEL)
             found = next((p for p in list_profiles(conn) if p["name"].casefold() == name.casefold()), None)
             if found is None:
                 names = ", ".join(p["name"] for p in list_profiles(conn)) or "none"
@@ -400,6 +484,115 @@ class AgentRunner:
         how = {"done": "finished", "error": "failed", "cancelled": "was stopped"}.get(run["status"], run["status"])
         head = f"agent «{run['profile_name']}» {how}" + (f" ({run['detail']})" if run.get("detail") else "")
         return f"{head}. Its answer:\n{answer}" if answer else head, run["status"] != "done"
+
+    async def delegate_many(self, parent_id: str, args: dict[str, Any], cancel: asyncio.Event) -> tuple[str, bool]:
+        """A coordinator's delegate_tasks (16.1, D50): the batch checked whole, then run by its dependencies - cloud
+        tasks at once, local ones one after another; the board when every task has ended."""
+        try:
+            tasks = check_batch(args)
+        except BatchError as exc:
+            return str(exc), True
+
+        def prepare(conn):
+            if get_run(conn, parent_id)["parent_run"]:
+                raise AgentError(ONE_LEVEL)
+            profiles = list_profiles(conn)
+            by_name = {p["name"].casefold(): p for p in profiles}
+            for task in tasks:
+                if task["agent_profile"].casefold() not in by_name:
+                    names = ", ".join(p["name"] for p in profiles) or "none"
+                    raise AgentError(f"no agent {task['agent_profile']!r}; the agents are: {names}")
+            found = {t["task_id"]: by_name[t["agent_profile"].casefold()] for t in tasks}
+            for task in tasks:  # the board says the agent's own name
+                task["agent_profile"] = found[task["task_id"]]["name"]
+            local = {}
+            for task_id, profile in found.items():
+                model = store.get_model(conn, profile["model_id"])
+                local[task_id] = model["id"] if model is not None and model["locality"] == "local" else None
+            return found, local, save_batch(conn, parent_id, tasks)
+
+        try:
+            profiles, local, number = await self._db.acall(prepare)
+        except AgentError as exc:
+            return str(exc), True
+        ordered = order(tasks, lambda t: local[t["task_id"]])
+        ends = {t["task_id"]: asyncio.Event() for t in tasks}
+        before: dict[str, str | None] = {}  # a local task: the local task before it (the GPU, one after another)
+        last = None
+        for task in ordered:
+            if local[task["task_id"]] is not None:
+                before[task["task_id"]], last = last, task["task_id"]
+        cloud = asyncio.Semaphore(CLOUD_AT_ONCE)
+        gave_up = parent_id in self._held  # the GPU goes to the batch while the coordinator waits
+        if gave_up:
+            self._held.discard(parent_id)
+            self._gpu.release()
+        try:
+            await asyncio.gather(*(
+                self._batch_task(parent_id, t, profiles[t["task_id"]], ends, before.get(t["task_id"]),
+                                 None if local[t["task_id"]] else cloud, cancel)
+                for t in ordered))  # fmt: skip
+        finally:
+            if gave_up:
+                await self._gpu.acquire()
+                self._held.add(parent_id)
+        ended = await self._db.acall(lambda conn: list_tasks(conn, parent_id, number))
+        return board(ended), any(t["status"] != "done" for t in ended)
+
+    async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any],
+                          ends: dict[str, asyncio.Event], before: str | None, cloud: asyncio.Semaphore | None,
+                          cancel: asyncio.Event) -> None:  # fmt: skip
+        """One task of a batch: waits for its dependencies (and a local one for the local task before it), then runs
+        as a sub-run of the coordinator; its row says how it went (`_finish` writes a run's end)."""
+        task_id = task["task_id"]
+        child_id = None
+        try:
+            for waited in [*task["dependencies"], *([before] if before else [])]:
+                await _either(ends[waited], cancel)
+            if cancel.is_set():
+                await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
+                                                        ended_at=utc_now()))  # fmt: skip
+                return
+
+            def start(conn) -> str | None:
+                rows = {t["task_id"]: t for t in list_tasks(conn, parent_id)}
+                words = {"failed": "failed", "skipped": "was skipped", "cancelled": "was cancelled"}
+                missed = [f"{d} {words.get(rows[d]['status'], rows[d]['status'])}" for d in task["dependencies"]
+                          if rows[d]["status"] != "done"]  # fmt: skip
+                if missed:
+                    _mark(conn, parent_id, task_id, status="skipped", detail="; ".join(missed), ended_at=utc_now())
+                    return None
+                found = [f"[{d}] «{rows[d]['agent']}»:\n{rows[d]['answer'] or '(no answer)'}"
+                         for d in task["dependencies"]]  # fmt: skip
+                prompt = task["prompt"] + ("\n\nWhat the tasks this one waited for found:\n\n" + "\n\n".join(found)
+                                           if found else "")  # fmt: skip
+                try:
+                    run_id = create_run(conn, profile, prompt, profile["project_ids"], parent_run=parent_id)
+                except (AgentError, ProjectError) as exc:
+                    _mark(conn, parent_id, task_id, status="failed", detail=str(exc), ended_at=utc_now())
+                    return None
+                _mark(conn, parent_id, task_id, status="running", run_id=run_id, started_at=utc_now())
+                return run_id
+
+            if cloud is not None:
+                await cloud.acquire()
+            try:
+                child_id = await self._db.acall(start)
+                if child_id is None:
+                    return
+                ended = self._ended[child_id] = asyncio.Event()
+                await self._launch(child_id, resume=False)
+                await _either(ended, cancel)
+                if not ended.is_set():  # the coordinator was stopped: so is this task
+                    await self.cancel(child_id)
+                    await ended.wait()
+            finally:
+                if cloud is not None:
+                    cloud.release()
+        finally:
+            if child_id is not None:
+                self._ended.pop(child_id, None)
+            ends[task_id].set()
 
     async def cancel(self, run_id: str) -> bool:
         queued = self._waiting.pop(run_id, None)
@@ -470,6 +663,10 @@ class AgentRunner:
                 (status, outcome.detail or None, totals.steps if totals else 0, totals.cost if totals else 0.0,
                  utc_now(), run_id),
             )  # fmt: skip
+            conn.execute(  # a batch's task: the board says how it ended (16.1)
+                "UPDATE delegated_tasks SET status = ?, answer = ?, detail = ?, ended_at = ? WHERE run_id = ?",
+                (ENDED[status], _last_answer(conn, run_id) or None, outcome.detail or None, utc_now(), run_id),
+            )
             return get_run(conn, run_id)
 
         run = await self._db.acall(write)

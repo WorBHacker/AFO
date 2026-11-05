@@ -197,6 +197,7 @@ TOOL_ICONS = {
     "run_command": "terminal",
     "web_fetch": "cloud",
     "delegate_task": "agent",
+    "delegate_tasks": "agent",
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -295,6 +296,12 @@ def tool_label(name: str, args: Any) -> str:
         case "delegate_task":
             return tr("Поручаю агенту «{agent}»: {task}", agent=a.get("agent", ""),
                       task=" ".join(str(a.get("task", "")).split())[:80])  # fmt: skip
+        case "delegate_tasks":  # a batch (16.1, D50)
+            given = [t for t in a.get("tasks") or [] if isinstance(t, dict)]
+            names = ", ".join(f"«{n}»" for n in dict.fromkeys(str(t.get("agent_profile", "")) for t in given))
+            head = tr("Поручаю {count} {tasks}", count=len(given),
+                      tasks=presenter.plural(len(given), "задачу", "задачи", "задач"))  # fmt: skip
+            return f"{head}: {names}" if names else head
         case "Task" | "Agent":
             return tr("Поручаю подагенту: {task}", task=a.get("description", ""))
         case "edit_file":

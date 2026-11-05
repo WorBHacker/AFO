@@ -125,6 +125,18 @@ async def get_run(run_id: str, request: Request, client: Annotated[Client, Depen
     return await _db(request, lambda conn: agents.get_run(conn, run_id))
 
 
+@router.get("/runs/{run_id}/tasks")
+async def run_tasks(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """A coordinator's board (16.1, D50): the tasks of its batches in the order it wrote them - the agent, what it
+    waits for, the status, the run that did it and its answer."""
+
+    def read(conn):
+        agents.get_run(conn, run_id)
+        return agents.list_tasks(conn, run_id)
+
+    return {"tasks": await _db(request, read)}
+
+
 @router.post("/runs/{run_id}/cancel", status_code=202)
 async def cancel_run(run_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     _app_only(client)

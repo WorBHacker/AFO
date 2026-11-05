@@ -3115,6 +3115,14 @@ def test_tool_rows():
     assert rows.tool_label("list_files", {}) == "Смотрю файлы проекта"
     assert rows.tool_label("terminal_output", {"terminal": "dev"}) == "Читаю терминал «dev»"
     assert rows.tool_label("mystery", None) == "mystery"
+    batch = {"tasks": [{"task_id": "a", "agent_profile": "Писатель", "prompt": "x"},
+                       {"task_id": "b", "agent_profile": "Тестер", "prompt": "y", "dependencies": ["a"]},
+                       {"task_id": "c", "agent_profile": "Писатель", "prompt": "z"}]}  # fmt: skip
+    assert rows.tool_label("delegate_tasks", batch) == "Поручаю 3 задачи: «Писатель», «Тестер»"  # 16.1, D50
+    assert rows.tool_label("delegate_tasks", {}) == "Поручаю 0 задач"
+    from app.ui import agents as agent_view
+
+    assert agent_view.TOOL_LABELS["delegate_tasks"] == "давать задачи пачкой, параллельно (координатор)"
     built = rows.rows_for(TOOL_HISTORY["messages"], {m["id"]: m for m in MODELS})
     assert [r["role"] for r in built] == ["user", "assistant", "assistant"]  # the results are not rows
     first, second = built[1]["tools"]

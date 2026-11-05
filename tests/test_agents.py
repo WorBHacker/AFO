@@ -6,7 +6,7 @@ import time
 
 from hub import agents
 from hub.chat import Limits
-from hub.gateway.base import Model
+from hub.gateway.base import Model, StreamEvent
 from tests.test_changes import edit, wait
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 
@@ -212,7 +212,7 @@ def test_all_tools_by_default_means_no_delegation(hub):  # noqa: F811
     plain = profile(hub, name="Обычный", tools=[])
     ended(hub, hub.post(f"/v1/agents/{plain['id']}/runs", json={"task": "x"}).json()["id"])
     names = [t["name"] for t in provider.calls[0][1]]
-    assert "delegate_task" not in names and "web_fetch" in names
+    assert "delegate_task" not in names and "delegate_tasks" not in names and "web_fetch" in names
     assert "run_command" not in names and "read_file" not in names  # no projects: no project tools (2026-10-28)
     assert len(names) == len(set(names))  # one definition per name
 
@@ -232,3 +232,190 @@ def test_stopping_the_coordinator_stops_its_sub_run(hub, repo):  # noqa: F811
     assert ended(hub, child["id"])["status"] == "cancelled"
     assert ended(hub, run_id)["status"] == "cancelled"
     assert hub.get("/v1/approvals").json()["approvals"] == []
+
+
+# --- a coordinator's batch (stage 16.1, D50) ---
+
+
+def _first_text(messages):
+    content = messages[0]["content"]
+    return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+
+
+class ByTask:
+    """Answers by the run's task, its first message: the coordinator's asks for tools as scripted; any other is a
+    worker's - it works for `pause` seconds (stopping when asked) and answers; «зациклись» calls a tool forever. Who
+    worked when is recorded."""
+
+    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",)):
+        self.name = name
+        self.scripts = {task: list(steps) for task, steps in scripts.items()}
+        self.pause = pause
+        self.calls = []  # (model_ref, messages, tools) per request
+        self.active = self.peak = 0
+        self.started = []  # (model_ref, task) in the order the workers began
+        self.models = [Model(f"{name}/{ref}", name, ref, ref.title(), locality, {}, {}) for ref in refs]
+
+    async def list_models(self):
+        return self.models
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        task = _first_text(messages)
+        self.calls.append((model_ref, messages, tools))
+        usage = {"input_tokens": 10, "output_tokens": 2}
+        steps = self.scripts.get(task)
+        if steps:
+            yield StreamEvent("content", "Делю. ")
+            yield StreamEvent("end", usage=usage, stop_reason="tool_use", tool_calls=steps.pop(0))
+            return
+        if steps is None and "зациклись" in task:
+            yield StreamEvent("end", usage=usage, stop_reason="tool_use",
+                              tool_calls=[{"id": f"n{len(self.calls)}", "name": "nothing", "input": {}}])  # fmt: skip
+            return
+        if steps is None:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            self.started.append((model_ref, task))
+            try:
+                until = time.monotonic() + self.pause
+                while time.monotonic() < until and not cancel.is_set():
+                    await asyncio.sleep(0.02)
+            finally:
+                self.active -= 1
+        yield StreamEvent("content", f"ответ: {task.splitlines()[0][:40]}" if steps is None else "Итог готов")
+        yield StreamEvent("end", usage=usage, stop_reason="end_turn")
+
+
+def plug(hub, provider):  # noqa: F811
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    return provider
+
+
+def batch(*tasks, call_id="b1"):
+    return {"id": call_id, "name": "delegate_tasks", "input": {"tasks": [
+        {"task_id": t[0], "agent_profile": t[1], "prompt": t[2], **({"dependencies": t[3]} if len(t) > 3 else {})}
+        for t in tasks]}}  # fmt: skip
+
+
+def outputs(hub, run_id):  # noqa: F811
+    return [b for m in hub.get(f"/v1/conversations/{run_id}").json()["messages"] if m["role"] == "tool"
+            for b in m["content"]]  # fmt: skip
+
+
+def test_a_batch_runs_cloud_tasks_at_once_and_a_dependent_after_them(hub):  # noqa: F811
+    provider = plug(hub, ByTask("cloudy", "cloud", {"Сделай дело": [[batch(
+        ("a", "Писатель", "Напиши введение"), ("b", "Читатель", "Прочти план"),
+        ("c", "Ревьюер", "Сведи всё", ["a", "b"]))]]}))  # fmt: skip
+    for name in ("Писатель", "Читатель", "Ревьюер"):
+        profile(hub, name=name, instructions=f"{name} делает своё.", model_id="cloudy/echo", tools=[])
+    boss = profile(hub, name="Координатор", model_id="cloudy/echo", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    role = provider.calls[0][1][1]["content"]
+    assert "Agents you can give tasks to with delegate_tasks:\n" in role and "- Ревьюер: Ревьюер делает" in role
+    assert provider.peak == 2  # a and b at once (cloud), c after both
+    assert sorted(t for _, t in provider.started[:2]) == ["Напиши введение", "Прочти план"]
+    reviewer = provider.started[2][1]
+    assert reviewer.startswith("Сведи всё\n\n") and "[a] «Писатель»:\nответ: Напиши введение" in reviewer
+    assert "[b] «Читатель»:\nответ: Прочти план" in reviewer  # what the tasks it waited for found
+    (board,) = outputs(hub, run_id)
+    assert board["error"] is False and board["output"].startswith("3 tasks: 3 done.")
+    assert "[c] «Ревьюер» — done. Answer:\nответ: Сведи всё" in board["output"]
+    tasks = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]
+    assert [(t["task_id"], t["agent"], t["status"], t["dependencies"]) for t in tasks] == [
+        ("a", "Писатель", "done", []), ("b", "Читатель", "done", []), ("c", "Ревьюер", "done", ["a", "b"])]  # fmt: skip
+    children = {r["id"]: r for r in hub.get("/v1/runs").json()["runs"] if r["parent_run"] == run_id}
+    assert {t["run_id"] for t in tasks} == set(children) and tasks[0]["answer"] == "ответ: Напиши введение"
+
+
+def test_a_batch_is_checked_before_anything_starts(hub):  # noqa: F811
+    nine = [(f"t{n}", "Писатель", "x") for n in range(9)]
+    wrong = [
+        (batch(), "`tasks`: a list of 1 to 8 tasks"),
+        (batch(*nine), "`tasks`: a list of 1 to 8 tasks"),
+        (batch(("a b", "Писатель", "x")), "task_id 'a b': 1 to 40 letters, digits, - or _"),
+        (batch(("a", "Писатель", " ")), "task 'a' needs `agent_profile` and `prompt`"),
+        (batch(("a", "Писатель", "x"), ("a", "Писатель", "y")), "task_id 'a' is used twice"),
+        (batch(("a", "Писатель", "x", ["z"])), "task 'a' depends on 'z', which is not in this batch"),
+        (batch(("a", "Писатель", "x", ["b"]), ("b", "Писатель", "y", ["a"])),
+         "the tasks wait for each other in a circle: a, b"),
+        (batch(("a", "Писатель", "x", ["a"])), "the tasks wait for each other in a circle: a"),
+        (batch(("a", "Никто", "x")), "no agent 'Никто'; the agents are: Координатор, Писатель"),
+    ]  # fmt: skip
+    plug(hub, ByTask("fake", "local", {"Сделай": [[dict(call, id=f"c{n}")] for n, (call, _) in enumerate(wrong)]}))
+    profile(hub, name="Писатель", tools=[])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    said = outputs(hub, run_id)
+    assert [(b["output"], b["error"]) for b in said] == [(error, True) for _, error in wrong]
+    assert [r for r in hub.get("/v1/runs").json()["runs"] if r["parent_run"] == run_id] == []  # nothing began
+    assert hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"] == []
+
+
+def test_a_failed_task_skips_the_tasks_after_it(hub):  # noqa: F811
+    tasks = batch(("a", "Зацикленный", "зациклись"), ("b", "Писатель", "Напиши"), ("c", "Ревьюер", "Сведи", ["a"]))
+    plug(hub, ByTask("cloudy", "cloud", {"Сделай дело": [[tasks]]}))
+    profile(hub, name="Зацикленный", model_id="cloudy/echo", tools=[], max_steps=1)
+    for name in ("Писатель", "Ревьюер"):
+        profile(hub, name=name, model_id="cloudy/echo", tools=[])
+    boss = profile(hub, name="Координатор", model_id="cloudy/echo", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert (tasks["a"]["status"], tasks["a"]["detail"]) == ("failed", "the step limit (1) was reached")
+    assert tasks["b"]["status"] == "done"  # it did not wait for a
+    assert (tasks["c"]["status"], tasks["c"]["detail"], tasks["c"]["run_id"]) == ("skipped", "a failed", None)
+    (board,) = outputs(hub, run_id)
+    assert board["error"] is True and board["output"].startswith("3 tasks: 1 done, 1 failed, 1 skipped.")
+    assert "[c] «Ревьюер» — skipped: a failed" in board["output"]
+
+
+def test_local_tasks_take_the_gpu_one_at_a_time_grouped_by_model(hub):  # noqa: F811
+    tasks = batch(("x", "Первый", "x"), ("y", "Второй", "y"), ("z", "Третий", "z"))
+    provider = plug(hub, ByTask("fake", "local", {"Сделай дело": [[tasks]]}, pause=0.1, refs=("echo", "other")))
+    profile(hub, name="Первый", tools=[])
+    profile(hub, name="Второй", model_id="fake/other", tools=[])
+    profile(hub, name="Третий", tools=[])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])  # local too: it gives up the GPU meanwhile
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    assert provider.peak == 1  # one model on the GPU at a time
+    assert provider.started == [("echo", "x"), ("echo", "z"), ("other", "y")]  # llama-swap loads «other» once
+
+
+def test_stopping_the_coordinator_stops_the_whole_batch(hub):  # noqa: F811
+    provider = plug(hub, ByTask("cloudy", "cloud", {"Сделай дело": [[batch(
+        ("a", "Писатель", "долго"), ("b", "Ревьюер", "потом", ["a"]))]]}, pause=30))  # fmt: skip
+    for name in ("Писатель", "Ревьюер"):
+        profile(hub, name=name, model_id="cloudy/echo", tools=[])
+    boss = profile(hub, name="Координатор", model_id="cloudy/echo", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай дело"}).json()["id"]
+    wait(lambda: provider.active == 1)
+    hub.post(f"/v1/runs/{run_id}/cancel")
+    assert ended(hub, run_id)["status"] == "cancelled"
+    tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert tasks["a"]["status"] == "cancelled" and ended(hub, tasks["a"]["run_id"])["status"] == "cancelled"
+    assert (tasks["b"]["status"], tasks["b"]["run_id"]) == ("cancelled", None)  # it never began
+
+
+def test_tasks_not_begun_when_the_hub_stopped_are_cancelled(hub):  # noqa: F811
+    plug(hub, ByTask("fake", "local", {}))
+    made = profile(hub, name="Координатор", tools=["delegate_tasks"])
+
+    def interrupted(conn):  # a batch whose second task had not begun when the hub stopped
+        run_id = agents.create_run(conn, agents.get_profile(conn, made["id"]), "Сделай", [])
+        conn.execute("UPDATE agent_runs SET status = 'done' WHERE conversation_id = ?", (run_id,))
+        agents.save_batch(conn, run_id, [
+            {"task_id": "a", "agent_profile": "Координатор", "prompt": "x", "dependencies": []},
+            {"task_id": "b", "agent_profile": "Координатор", "prompt": "y", "dependencies": ["a"]}])  # fmt: skip
+        conn.execute("UPDATE delegated_tasks SET status = 'done', answer = 'ok' WHERE task_id = 'a'")
+        return run_id
+
+    run_id = hub.app.state.db.call(interrupted)
+    hub.portal.call(hub.app.state.agents.start)
+    tasks = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]
+    assert [(t["task_id"], t["status"], t["detail"]) for t in tasks] == [
+        ("a", "done", None), ("b", "cancelled", "the hub restarted before it began")]  # fmt: skip
+    assert hub.get("/v1/runs/nope/tasks").status_code == 404

@@ -455,6 +455,7 @@
 | POST | `/v1/agents/{agent_id}/runs` | только окно | `start_run()` | тело `{task: str, project_ids: list[str] \| None = None}` |
 | GET | `/v1/runs` | только окно | `list_runs()` | `?limit: int = 50` |
 | GET | `/v1/runs/{run_id}` | только окно | `get_run()` |  |
+| GET | `/v1/runs/{run_id}/tasks` | только окно | A coordinator's board (16.1, D50): the tasks of its batches in the order it wrote them - the agent, what it waits for, the status, the run that did it and its answer. |  |
 | POST | `/v1/runs/{run_id}/cancel` | только окно | `cancel_run()` |  |
 | POST | `/v1/runs/autonomous` | только окно | `start_autonomous()` | тело `{goal: str, done_when: str = '', profile_id: str \| None = None, model_id: str \| None = None, planner_model_id: str \| None = None, project_ids: list[str] \| None = None, autonomy: str = 'plan', max_steps: int = 100, max_minutes: int = 60, max_replans: int = 3, budget_usd: float \| None = 1.0, network: bool = False, refusal_vector: bool \| None = None}` |
 | GET | `/v1/runs/{run_id}/plan` | только окно | An autonomous run's goal, every version of its plan with the steps, its questions, its report. |  |

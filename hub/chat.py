@@ -822,12 +822,13 @@ class ChatService:
                 output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
-            elif call["name"] == "delegate_task":  # a coordinator's (D20)
+            elif call["name"] in ("delegate_task", "delegate_tasks"):  # a coordinator's (D20; a batch - D50)
                 if self.agents is None:
                     output, error = "agents are not available here", True
                 else:
                     args = call["input"] if isinstance(call["input"], dict) else {}
-                    output, error = await self.agents.delegate(conversation_id, args, cancel)
+                    give = self.agents.delegate if call["name"] == "delegate_task" else self.agents.delegate_many
+                    output, error = await give(conversation_id, args, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
             results.append(tool_result_block(call["id"], call["name"], output, error))
@@ -1314,12 +1315,13 @@ def _instructions(conn, conversation_id: str) -> str:
         text += f"\nDone means: {row['done_when']}" if row["done_when"] else ""
         text += f"\nAutonomy: {level}."
         text += f"\n\n{hint}" if hint else ""
-    if '"delegate_task"' in (row["tools"] or ""):  # a coordinator: who it may give tasks to (D20)
+    giving = [n for n in ("delegate_task", "delegate_tasks") if f'"{n}"' in (row["tools"] or "")]
+    if giving:  # a coordinator: who it may give tasks to (D20, D50)
         others = conn.execute(
             "SELECT name, instructions FROM agent_profiles WHERE id IS NOT ? ORDER BY name", (row["profile_id"],)
         ).fetchall()
         lines = [f"- {o['name']}: {(o['instructions'].splitlines() or [''])[0][:200]}" for o in others]
-        text += "\n\nAgents you can give tasks to with delegate_task:\n" + ("\n".join(lines) or "- none yet")
+        text += f"\n\nAgents you can give tasks to with {' or '.join(giving)}:\n" + ("\n".join(lines) or "- none yet")
     return text
 
 
