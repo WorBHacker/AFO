@@ -471,7 +471,6 @@ Item {
                 Chip {
                     id: goalChip
                     objectName: "goalChip"
-                    visible: Goal.available || Goal.shown
                     iconName: "target"
                     menu: false
                     active: Goal.shown

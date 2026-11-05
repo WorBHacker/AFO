@@ -296,6 +296,10 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
         if mode == "read_only" and tool_name in CHANGES:  # the chat's rights (D17) hold for Claude Code too
             return json.dumps({"behavior": "deny", "message": "This chat is read-only: say the change in words, the "
                                                               "user makes it."})  # fmt: skip
+        # a goal's turn (11.7): its investigation and the constraints the hub checks - in «Доверенном» too
+        if turn is not None and (said := app.state.chat.claude_guarded(turn.conversation_id, tool_name, input,
+                                                                         turn.root)):  # fmt: skip
+            return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         reads = tool_name in ("WebFetch", "WebSearch")
         tainted = False  # it has read the web: its writes and commands are asked every time, trusted or not (D19)
         if turn is not None:

@@ -10,10 +10,12 @@ import threading
 
 from hub import goals
 from hub.auth import create_client
+from hub.claude_code import ClaudeCodeProvider
 from hub.gateway import ProviderError
-from hub.gateway.base import StreamEvent
+from hub.gateway.base import Model, StreamEvent
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
+from tests.test_claude_code import FAKE
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 DONE = "if (Test-Path done.txt) { exit 0 } else { exit 1 }"
@@ -226,8 +228,8 @@ def test_a_goal_in_stages_keeps_one_line_for_a_stage_done(hub, repo):  # noqa: F
     assert any(m["role"] == "user" and 'type="start"' in str(m["content"]) for m in sent)  # the contract stays
     stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
     assert sum(1 for m in stored if m["role"] == "tool") == 2  # the conversation itself keeps every call (D14)
-    names = goal_refs(repo, done["goal"]["id"])
-    assert names == ["start", "stage-1", "stage-2"]  # 11.6: the start and each stage done are checkpoints
+    names = goal_refs(repo, done["goal"]["id"])  # in a second's time their commits may tie: the names are enough
+    assert sorted(names) == ["stage-1", "stage-2", "start"]  # 11.6: the start and each stage done are checkpoints
 
 
 def goal_refs(repo, goal_id):
@@ -594,3 +596,71 @@ def test_a_goal_cut_off_in_its_first_turn_gets_its_contract_again(hub, repo):  #
     note = hub_note(worker.prompts[0])
     assert note.startswith('[AFO hub] <goal_loop type="start">\nThe hub restarted')
     assert "GOAL: Создать done.txt" in note and "THE USER ADDED:\nФайл — в корне" in note
+
+
+class Cloudy(Gated):
+    """Gated, as a cloud model."""
+
+    def __init__(self, name, script):
+        super().__init__(name, script)
+        self.models = [Model(f"{name}/m", name, "m", name.title(), "cloud", {}, {})]
+
+
+def test_a_strong_model_takes_the_plan_and_the_hard_places(hub, repo):  # noqa: F811
+    """11.7 (the user's plan, idea 5; D44: only when the contract says so): the strong model takes the first turn -
+    the plan -, the investigation and the fix after it; the other turns are the worker's. Each note says who works
+    the turn and why, and the window shows it on the note's line (D11)."""
+    strong = use(hub, Gated("strong", ["План: создать done.txt.", "Гипотеза: done.txt никто не создаёт.", WRITE,
+                                       "Записал done.txt."]))  # fmt: skip
+    worker = use(hub, Gated("agent", ["Пробую."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    assert set_goal(hub, conv, strong_model_id="strong/m")["strong_model_id"] == "strong/m"
+    done = settled(hub, conv, "achieved")
+    assert [c["route"] for c in done["checks"]] == ["continue", "investigate", "investigated", "achieved"]
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    marks = [(m["content"][0]["worker"]["model_id"], m["content"][0]["worker"]["why"]) for m in stored
+             if m["role"] == "user" and m["content"][0].get("hub")]  # fmt: skip
+    assert marks == [("strong/m", "plan"), ("agent/m", ""), ("strong/m", "investigate"), ("strong/m", "fix")]
+    answered = [m["model_id"] for m in stored if m["role"] == "assistant"]
+    assert answered == ["strong/m", "agent/m", "strong/m", "strong/m", "strong/m"]
+    assert len(strong.prompts) == 4 and len(worker.prompts) == 1
+    assert "lay out the plan" in hub_note(strong.prompts[0]) and "lay out the plan" not in hub_note(worker.prompts[0])
+    assert "Гипотеза" in str(strong.prompts[2])  # the fix knows what the investigation found
+    assert (repo / "done.txt").exists()
+
+
+def test_one_model_marks_no_turn(hub, repo):  # noqa: F811
+    worker = use(hub, Gated("agent", [WRITE, "Готово."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    assert set_goal(hub, conv, strong_model_id="agent/m")["strong_model_id"] is None  # the same model: no switch
+    settled(hub, conv, "achieved")
+    stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    assert not any("worker" in m["content"][0] for m in stored if m["role"] == "user")
+
+
+def test_what_a_goal_with_two_models_or_claude_code_refuses(hub, repo):  # noqa: F811
+    """11.7: a strong model only offered and only where it may see the chat (D10: with two models each of them
+    does); Claude Code works alone, never in «Песочница» (it works in the project itself), and - a cloud model, as
+    any cloud worker - not on criteria in a project only local models may see: their output goes to the worker."""
+    worker = use(hub, Gated("agent", []))
+    use(hub, Cloudy("cloud", []))
+    use(hub, ClaudeCodeProvider(lambda: FAKE))
+    pid, conv = chat_with_project(hub, repo, worker)  # the project: only local models (D10's default)
+    url = f"/v1/conversations/{conv}/goal"
+    base = {"objective": "x", "model_id": "agent/m", "criteria": [{"command": "exit 0"}]}
+
+    def refused(body):
+        response = hub.put(url, json={**base, **body})
+        assert response.status_code == 422, response.text
+        return str(response.json()["detail"])
+
+    assert "not available" in refused({"strong_model_id": "nope/x"})
+    assert "only local models may see" in refused({"strong_model_id": "cloud/m"})
+    assert "only local models may see" in refused({"model_id": "cloud/m", "strong_model_id": "agent/m"})
+    assert "only local models may see" in refused({"model_id": "cloud/m"})  # its criterion's output goes to it
+    assert "only local models may see" in refused({"model_id": "claude-code/default"})
+    assert "alone" in refused({"model_id": "claude-code/default", "strong_model_id": "agent/m"})
+    assert "alone" in refused({"strong_model_id": "claude-code/default"})
+    assert hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True}).status_code == 200
+    assert hub.put(f"/v1/conversations/{conv}/context", json={"mode": "sandbox"}).status_code == 200
+    assert "«Песочница»" in refused({"model_id": "claude-code/default"})

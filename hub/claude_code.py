@@ -19,6 +19,9 @@ A chat with no project (2026-10-28, the user's word) works too: Claude Code star
 own (`<data>/claude-code/chats/<chat>`), the user's files elsewhere. The chat's rights apply to what it asks (D17):
 «Только чтение» refuses its edits and commands, «Доверенный» lets its edits through without a card; its own questions
 (AskUserQuestion) come to the chat with their options to pick (`autonomous.Autonomy.ask_question`).
+
+It may work on a chat's goal (11.7, D44): the hub starts each turn with its note, within `--max-turns`, and hears how
+the turn ended; a goal's investigation and its constraints refuse its permission requests (hub/guard.py).
 """
 
 from __future__ import annotations
@@ -385,7 +388,7 @@ class ClaudeCodeRunner:
         return found
 
     def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path],
-                project: bool = True) -> list[str]:  # fmt: skip
+                project: bool = True, max_turns: int | None = None) -> list[str]:  # fmt: skip
         prompt = APPEND_PROMPT + ("" if project else NO_PROJECT_PROMPT)
         argv = [*self.cli(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--include-partial-messages", "--mcp-config", str(config), "--permission-prompt-tool",
@@ -396,6 +399,8 @@ class ClaudeCodeRunner:
             argv += ["--resume", resume]
         for folder in extra_dirs:
             argv += ["--add-dir", str(folder)]
+        if max_turns:  # a goal's turn (11.7): its tool steps, as the hub's own loop has (print mode only)
+            argv += ["--max-turns", str(max_turns)]
         if rules := private_rules():
             argv += ["--disallowedTools", *rules]  # last: the flag takes the rules that follow it
         return argv
@@ -414,7 +419,10 @@ class ClaudeCodeRunner:
         projects: list[Project],
         cancel: asyncio.Event,
         client_id: str | None,
-    ) -> None:
+        *,
+        max_turns: int | None = None,
+    ) -> dict[str, Any]:
+        """One turn; how it ended: {usage, error ("" - none), limited (it stopped at `max_turns`), cancelled}."""
         project = projects[0] if projects else None
         folder = project.root if project else self.chat_folder(conversation_id)
         session, earlier = await self._db.acall(lambda conn: _session_and_history(conn, conversation_id))
@@ -423,12 +431,12 @@ class ClaudeCodeRunner:
             text = f"<earlier_in_this_chat>\n{earlier}\n</earlier_in_this_chat>\n\n{text}"
         config = await asyncio.to_thread(self.mcp_config, conversation_id, conversation_id)
         argv = await asyncio.to_thread(self.command, model["model_ref"], config, resume=resume,
-                                       extra_dirs=[p.root for p in projects[1:]],
-                                       project=project is not None)  # fmt: skip
+                                       extra_dirs=[p.root for p in projects[1:]], project=project is not None,
+                                       max_turns=max_turns)  # fmt: skip
         turn = Turn(conversation_id, project, folder)
         self.turns[conversation_id] = turn
         try:
-            await self._turn(turn, argv, model, text, cancel, client_id)
+            return await self._turn(turn, argv, model, text, cancel, client_id)
         finally:
             self.turns.pop(conversation_id, None)
             with contextlib.suppress(OSError):
@@ -440,7 +448,7 @@ class ClaudeCodeRunner:
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    async def _turn(self, turn, argv, model, text, cancel, client_id) -> None:
+    async def _turn(self, turn, argv, model, text, cancel, client_id) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         lines: asyncio.Queue[bytes | None] = asyncio.Queue()
         errors: collections.deque[str] = collections.deque(maxlen=STDERR_LINES)
@@ -488,8 +496,8 @@ class ClaudeCodeRunner:
         finally:
             stopper.cancel()
             await asyncio.to_thread(_wind_down, process)
-        await self._finish(turn.conversation_id, model, result, last_id, cancel.is_set(), errors, client_id,
-                           process.returncode)  # fmt: skip
+        return await self._finish(turn.conversation_id, model, result, last_id, cancel.is_set(), errors, client_id,
+                                  process.returncode)  # fmt: skip
 
     async def _apply(self, turn: Turn, model: dict, step: Step) -> int | None:
         conversation_id = turn.conversation_id
@@ -514,7 +522,7 @@ class ClaudeCodeRunner:
             await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id if turn.project else None)
         return None
 
-    async def _finish(self, conversation_id, model, result, last_id, cancelled, errors, client_id, code) -> None:
+    async def _finish(self, conversation_id, model, result, last_id, cancelled, errors, client_id, code) -> dict:
         if result is None and not cancelled:
             detail = "\n".join(errors) or f"Claude Code ended (code {code}) without an answer"
             raise GatewayError(f"Claude Code: {detail[-1500:]}")
@@ -528,16 +536,19 @@ class ClaudeCodeRunner:
             await self._db.acall(lambda conn: store.record_usage(
                 conn, client_id=client_id, conversation_id=conversation_id, message_id=last_id, model_id=model["id"],
                 usage=usage, cost_usd=0.0, estimated=True, meta=meta))  # fmt: skip
-        if result and result.get("is_error") and not cancelled:
+        limited = bool(result) and result.get("subtype") == "error_max_turns"  # --max-turns: a goal's turn ends
+        if result and result.get("is_error") and not cancelled and not limited:
             detail = f"Claude Code: {error_text(result)}"
             payload = {"conversation_id": conversation_id, "detail": detail, "usage": usage, "cost_usd": 0}
             await self._bus.publish("chat.error", payload)
-            return
+            return {"usage": usage, "error": detail, "limited": False, "cancelled": False}
         await self._bus.publish("chat.done", {
             "conversation_id": conversation_id, "message_id": last_id, "usage": usage, "stats": stats, "cost_usd": 0.0,
             "steps": (result or {}).get("num_turns") or 0, "stop_reason": (result or {}).get("subtype"),
             "cancelled": cancelled,
         })  # fmt: skip
+        said = f"Claude Code stopped at its limit of {(result or {}).get('num_turns')} turns" if limited else ""
+        return {"usage": usage, "error": said, "limited": limited, "cancelled": cancelled}
 
     async def stop(self) -> None:
         """The hub stops: so do the turns it started."""

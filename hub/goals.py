@@ -23,6 +23,11 @@ the user's); refused, the goal waits for the human as before.
 Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file written again and again -
 the next turn investigates (writing and commands refused, the root cause asked for); after that, the human. The
 contract's constraints in the forms the hub can check are refused at the call; three tries in a turn - the human.
+Two models (11.7, the user's plan, idea 5) only when the contract names a strong one: it takes the first turn (the
+plan), an investigation and the fix after it, and the turn after going back to a checkpoint; the other turns are
+the worker's. Each note says who works the turn and why - the window shows it on the note's line (D11). Claude Code
+may be the worker, alone: the hub starts its turns the same way, and its guard is a denial of its permission
+requests (hub/mcp_server.py).
 The user may pause it (the running turn finishes, no next one starts), resume it (a parked one with higher limits),
 clear it, and write to it while it works: steering, read at the start of the next turn. Active goals go on after a
 hub restart (D16).
@@ -83,6 +88,9 @@ TITLE_CHARS = 48
 NO_JUDGE = "none"  # `judge_model_id` that says: no judge, not even the role's (the proving ground's exams, D45)
 REGRESSED_AGAIN = N_("второй раз подряд потеряно то, что работало (тесты или ограничения)")
 ASK_PERSON = N_(": решите, как быть, и продолжите или снимите цель")  # left out of an exam's table (D45)
+HARD = ("plan", "investigate", "fix", "another_way")  # the turns a goal's strong model takes (11.7)
+PLAN_LINE = ("THIS TURN IS THE STRONG MODEL'S (the contract's choice): lay out the plan and do its hardest part. A "
+             "lighter model takes the next turns - write the plan down in your answer, step by step.")  # fmt: skip
 
 
 class GoalError(ValueError):
@@ -162,8 +170,15 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
         raise GoalError("choose the model that works on the goal (`model_id`)")
     if not model["enabled"]:
         raise GoalError(f"model {model_id!r} is not available now")
-    if model["provider"] == CLAUDE_CODE:
-        raise GoalError("Claude Code carries no goal yet (stage 11.7): choose another model")
+    strong_id = str(data.get("strong_model_id") or "") or None
+    strong = None
+    if strong_id == model_id:
+        strong_id = None  # the same model: nothing to switch to
+    if strong_id:
+        strong = store.get_model(conn, strong_id)
+        if strong is None or not strong["enabled"]:
+            raise GoalError(f"the strong model {strong_id!r} is not available now")
+    _check_workers(conn, conversation_id, model, strong, criteria)
     effort = str(data.get("effort") or "medium")
     if effort not in EFFORTS:
         raise GoalError(f"effort: one of {', '.join(EFFORTS)}")
@@ -177,7 +192,44 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
         except judge.JudgeError as exc:
             raise GoalError(str(exc)) from None
     return {"objective": objective, "criteria": criteria, "constraints": constraints, "model_id": model_id,
-            "effort": effort, "judge_model_id": named, "milestones": milestones, **limits}  # fmt: skip
+            "strong_model_id": strong_id, "effort": effort, "judge_model_id": named, "milestones": milestones,
+            **limits}  # fmt: skip
+
+
+def _check_workers(conn: sqlite3.Connection, conversation_id: str, model: dict, strong: dict | None,
+                   criteria: list[dict[str, Any]]) -> None:  # fmt: skip
+    """Who may work on the goal (11.7). Claude Code alone, and not in «Песочница»: it works in the project itself
+    (hub/claude_code.py). A cloud worker not on a criterion in a project only local models may see: the check's
+    output goes to it in the notes (D10). With two models each sees the whole chat: a cloud one only where every
+    project allows the cloud."""
+    pair = [m for m in (model, strong) if m is not None]
+    if strong is not None and any(m["provider"] == CLAUDE_CODE for m in pair):
+        raise GoalError("Claude Code works on a goal alone: no strong model with it, and not as one")
+    if model["provider"] == CLAUDE_CODE and store.context_settings(conn, conversation_id)["mode"] == "sandbox":
+        raise GoalError("Claude Code works in the project itself, not in «Песочница»: "  # i18n: keep
+                        "choose other rights for the chat, or another model")  # fmt: skip
+    local_only = [p for p in _attached(conn, conversation_id) if not p.cloud_ok]
+    names = ", ".join(f"«{p.name}»" for p in local_only)
+    cloud = [m for m in pair if m["locality"] == "cloud"]
+    if strong is not None and cloud and local_only:
+        raise GoalError(f"«{cloud[0]['name']}» is a cloud model, and {names} only local models may see (D10): with "
+                        "two models both see the whole chat - choose local ones, or allow the cloud in the "
+                        "project's settings")  # fmt: skip
+    if model["locality"] != "cloud":
+        return
+    for n, c in enumerate(criteria, 1):
+        found = next((p for p in local_only if p.id == c.get("project_id")), None)
+        if found is not None:
+            raise GoalError(f"criterion {n}: «{found.name}» only local models may see (D10), and «{model['name']}» "
+                            "is a cloud model - the check's output would go to it")  # fmt: skip
+
+
+def worker(goal: dict[str, Any], hard: str) -> tuple[str, str]:
+    """The model of the goal's next turn and why it is the strong one (11.7): `hard` - the kind of turn (HARD), ""
+    for the worker's own; the strong model only when the contract names one."""
+    if goal.get("strong_model_id") and hard:
+        return goal["strong_model_id"], hard
+    return goal["model_id"], ""
 
 
 def check_milestones(raw: Any, done: int = 0) -> list[str]:
@@ -241,10 +293,12 @@ def create_goal(conn: sqlite3.Connection, conversation_id: str, contract: dict[s
     goal_id = uuid.uuid4().hex[:12]
     conn.execute(
         "INSERT INTO goals (id, conversation_id, objective, constraints, model_id, effort, max_turns, max_tokens,"
-        " max_seconds, soft_ratio, created_by, judge_model_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " max_seconds, soft_ratio, created_by, judge_model_id, strong_model_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (goal_id, conversation_id, contract["objective"], json.dumps(contract["constraints"], ensure_ascii=False),
          contract["model_id"], contract["effort"], contract["max_turns"], contract["max_tokens"],
-         contract["max_minutes"] * 60, contract["soft_ratio"], by, contract.get("judge_model_id")),
+         contract["max_minutes"] * 60, contract["soft_ratio"], by, contract.get("judge_model_id"),
+         contract.get("strong_model_id")),
     )  # fmt: skip
     for n, c in enumerate(contract["criteria"], 1):
         conn.execute(
@@ -697,7 +751,7 @@ class Goals:
             raise GoalConflict("the chat has a goal already: clear it first") from None
         await self._baselines(goal)
         await self._bus.publish("goal.set", {"conversation_id": conversation_id, "goal": goal})
-        await self._turn(goal, start_note(goal))
+        await self._turn(goal, start_note(goal), hard="plan")
         return await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
 
     async def draft(self, conversation_id: str, text: str, model_id: str) -> dict[str, Any]:
@@ -1027,7 +1081,7 @@ class Goals:
         detail = tr("файлы возвращены к точке «{point}»: {files}", point=label, files=files)
         await self._checked(goal, "rolled_back", verdict, found or {}, detail, mark)
         current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
-        await self._turn(current, rolled_back_note(current, said, why, files.replace("\n", "; ")))
+        await self._turn(current, rolled_back_note(current, said, why, files.replace("\n", "; ")), hard="another_way")
 
     async def set_milestones(self, conversation_id: str, titles: list[str], *, by: str) -> dict[str, Any]:
         """The user's stages in place of those not done yet (11.5); the next note tells the worker."""
@@ -1093,10 +1147,12 @@ class Goals:
                 await self._db.acall(lambda conn: conn.executemany(
                     "INSERT INTO goal_steering (goal_id, text, by) VALUES (?, ?, 'hub')",
                     [(goal["id"], text) for text in said]))  # fmt: skip
-            await self._turn({**goal, "investigating": 1}, investigation_note(goal, found, investigate))
+            await self._turn({**goal, "investigating": 1}, investigation_note(goal, found, investigate),
+                             hard="investigate")  # fmt: skip
             return
         await self._checked(goal, route, verdict, found if kept is None else kept, detail, mark)
-        await self._turn(goal, continue_note(goal, found, said, head=head))
+        hard = "fix" if route == "investigated" else ""  # what the investigation found: the strong model fixes it
+        await self._turn(goal, continue_note(goal, found, said, head=head), hard=hard)
 
     async def _history(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
         """The checks since the goal last stopped (a block, a limit, a pause: resumed, it starts afresh), oldest
@@ -1295,25 +1351,32 @@ class Goals:
         last = await self._db.acall(lambda conn: checks(conn, goal["id"], 1))
         said = await self._take_steering(goal)
         if not goal["turns_used"]:  # it never got through a turn: the contract again
-            note = start_note(goal, head=head, said=said)
+            note, hard = start_note(goal, head=head, said=said), "plan"
         elif goal["investigating"] and last:  # it was to investigate (11.4): it still is
-            note = investigation_note(goal, _found_of(last[0]), last[0]["detail"])
-        else:
+            note, hard = investigation_note(goal, _found_of(last[0]), last[0]["detail"]), "investigate"
+        else:  # the fix after an investigation, another way after going back: still the strong model's (11.7)
             note = continue_note(goal, _found_of(last[0]) if last else {"results": []}, said, head=head)
-        await self._turn(goal, note)
+            hard = {"investigated": "fix", "rolled_back": "another_way"}.get(last[0]["route"] if last else "", "")
+        await self._turn(goal, note, hard=hard)
 
-    async def _turn(self, goal: dict[str, Any], note: str) -> None:
-        """Starts the goal's next turn; one that cannot start stops the goal for the human (why - in its detail)."""
+    async def _turn(self, goal: dict[str, Any], note: str, *, hard: str = "") -> None:
+        """Starts the goal's next turn - the strong model's when it is a `hard` one and the contract names one
+        (11.7); one that cannot start stops the goal for the human (why - in its detail)."""
         conversation_id = goal["conversation_id"]
         if conversation_id in self._chat.busy:  # the user is chatting: their turn hands over when it ends
             return
+        model_id, why = worker(goal, hard)
+        if why == "plan":
+            end = note.rfind("</goal_loop>")
+            note = f"{note[:end]}{PLAN_LINE}\n{note[end:]}"
+        mark = {"model_id": model_id, "why": why} if goal.get("strong_model_id") else None  # seen in the feed (D11)
         try:
             self._counted.add(conversation_id)
             # what the chat asks at each tool call of this turn (11.4): the constraints, whether it investigates
             self._chat.guards[conversation_id] = guard.TurnGuard(guard.rules(goal["constraints"]),
                                                                  bool(goal["investigating"]))  # fmt: skip
-            await self._chat.go_on(conversation_id, goal["model_id"], note, effort=goal["effort"],
-                                   limits=Limits(max_steps=TURN_STEPS))  # fmt: skip
+            await self._chat.go_on(conversation_id, model_id, note, effort=goal["effort"],
+                                   limits=Limits(max_steps=TURN_STEPS), mark=mark)  # fmt: skip
         except GatewayError as exc:
             self._counted.discard(conversation_id)
             self._chat.guards.pop(conversation_id, None)

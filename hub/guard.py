@@ -19,10 +19,12 @@ diff.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import hashlib
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
@@ -177,6 +179,26 @@ def _matches(path: str, item: str) -> bool:
 def _runs(command: str, item: str) -> bool:
     wanted = item.casefold().split()
     return any(seg.casefold().split()[: len(wanted)] == wanted for seg in SEGMENTS.split(command) if seg.strip())
+
+
+CLAUDE_WRITES = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
+CLAUDE_SHELLS = ("Bash", "PowerShell")  # PowerShell: its shell on Windows
+
+
+def claude_call(tool_name: str, data: dict[str, Any], root: Path | None) -> tuple[str, str] | None:
+    """Claude Code's call as the guard sees it (11.7): ("write", the path - from the project's root when it is
+    inside) or ("command", its text); None - neither (its reads, the web, its questions)."""
+    if tool_name in CLAUDE_SHELLS:
+        return "command", str(data.get("command") or "")
+    key = CLAUDE_WRITES.get(tool_name)
+    if key is None:
+        return None
+    path = str(data.get(key) or "")
+    if root is not None and path:
+        full = Path(path) if Path(path).is_absolute() else Path(root) / path
+        with contextlib.suppress(ValueError, OSError):
+            return "write", full.resolve().relative_to(Path(root).resolve()).as_posix()
+    return "write", path
 
 
 def refusal(found: list[Rule], what: str, target: str) -> str | None:

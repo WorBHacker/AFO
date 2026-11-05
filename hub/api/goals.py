@@ -45,6 +45,7 @@ class GoalBody(BaseModel):
     limits: Limits = Field(default_factory=Limits)
     judge_model_id: str | None = None  # the model that checks it (11.2); left out - the role «Проверка цели»
     milestones: list[str] = Field(default_factory=list)  # its stages, in order (11.5)
+    strong_model_id: str | None = None  # the plan and the hard places (11.7); left out - one model works every turn
 
 
 class Stages(BaseModel):

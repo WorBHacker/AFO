@@ -217,6 +217,20 @@ Sheet {
         }
         Hint { text: qsTr("Работает «%1» с правами этого чата. Проверяющая модель только читает: сверяет сделанное с договором и словам работающей не верит.").arg(Goal.workerName) }
 
+        SectionTitle { visible: Goal.strongShown; text: qsTr("Сильная модель") }
+        Chip {
+            id: strongChip
+            objectName: "goalStrong"
+            visible: Goal.strongShown
+            iconName: "bolt"
+            text: Goal.strongName
+            onClicked: { strongMenu.anchor = strongChip; strongMenu.open() }
+        }
+        Hint {
+            visible: Goal.strongShown
+            text: qsTr("Берёт первый ход (план), поиск причины и правку после него, ход после отката к точке сохранения. Остальные ходы ведёт «%1». Кто ведёт ход, видно в ленте.").arg(Goal.workerName)
+        }
+
         Text {
             visible: (sheet.ed.notes || []).length > 0
             width: parent.width
@@ -263,6 +277,13 @@ Sheet {
         wrapNotes: true
         items: Goal.judgeItems
         onChosen: (id) => Goal.setField("judge", id)
+    }
+
+    MenuPopup {
+        id: strongMenu
+        menuWidth: 380
+        items: Goal.strongItems
+        onChosen: (id) => Goal.setField("strong", id)
     }
 
     Connections {

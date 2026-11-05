@@ -123,9 +123,12 @@ def user_row(message: dict[str, Any]) -> dict[str, Any]:
 HUB_NOTES = {"start": N_("договор цели"), "continuation": N_("продолжение цели"),
              "budget_limit": N_("последний ход цели")}  # fmt: skip
 GOAL_LOOP = re.compile(r'<goal_loop type="(\w+)">')
+# why the strong model works a goal's turn (11.7)
+WORKER_WHY = {"plan": N_("план"), "investigate": N_("поиск причины"), "fix": N_("правка после поиска причины"),
+              "another_way": N_("другой путь после отката")}  # fmt: skip
 
 
-def hub_row(message: dict[str, Any]) -> dict[str, Any]:
+def hub_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, Any]:
     text, _ = presenter.split_blocks(message["content"])
     found = GOAL_LOOP.search(text)
     what = tr(HUB_NOTES.get(found.group(1), N_("цель"))) if found else tr("напоминание")
@@ -138,6 +141,11 @@ def hub_row(message: dict[str, Any]) -> dict[str, Any]:
             notes.append(tr("слово проверяющей модели"))
         if "THE USER ADDED" in text:
             notes.append(tr("ваше уточнение"))
+    worker = next((b["worker"] for b in message["content"] if b.get("worker")), None)
+    if worker:  # a goal with two models (11.7): who works this turn, and why the strong one (D11)
+        why = WORKER_WHY.get(worker.get("why") or "")
+        notes.append(tr("ход ведёт «{name}»", name=model_name(models, worker.get("model_id")))
+                     + (f" — {tr(why)}" if why else ""))  # fmt: skip
     return {"key": f"m{message['id']}", "role": "hub", "text": text, "html": "",
             "title": tr("Хаб → модели: {what}", what=what), "note": " · ".join(notes), "goal": bool(found)}  # fmt: skip
 
@@ -505,7 +513,7 @@ def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[di
 def message_row(message: dict[str, Any], models: dict[str, dict]) -> dict[str, Any]:
     """A stored user or assistant message as its row; the hub's notes to the model are rows of their own."""
     if message["role"] == "user":
-        return hub_row(message) if any(b.get("hub") for b in message["content"]) else user_row(message)
+        return hub_row(message, models) if any(b.get("hub") for b in message["content"]) else user_row(message)
     return assistant_row(message, models)
 
 

@@ -13,7 +13,7 @@ import pytest
 import uvicorn
 
 from common.paths import data_paths
-from hub import store
+from hub import guard, store
 from hub.chat import _to_prompt
 from hub.claude_code import (
     CONVERSATION_HEADER,
@@ -446,3 +446,68 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     assert asked["tool"] == "Edit" and asked["unsaved"] is True and asked["conversation_id"] == trusted
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "там мои правки"})
     assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Не стал править: там мои правки"
+
+
+# --- a goal's worker (11.7, D44) ---
+
+X_IS_2 = "if ((Get-Content conf.py -Raw) -match 'x = 2') { exit 0 } else { exit 1 }"
+
+
+def goal_settled(hub, cid, *statuses, timeout=90):
+    deadline = time.monotonic() + timeout
+    while True:
+        found = hub.http.get(f"/v1/conversations/{cid}/goal").json()
+        busy = cid in hub.http.get("/v1/conversations").json()["busy"]
+        if found["goal"] and found["goal"]["status"] in statuses and not found["checking"] and not busy:
+            return found
+        assert time.monotonic() < deadline, f"the goal did not settle: {found['goal'] and found['goal']['status']}"
+        time.sleep(0.1)
+
+
+def set_goal(hub, cid, **fields):
+    body = {"objective": "edit every x in conf.py", "criteria": [{"command": X_IS_2}],
+            "model_id": "claude-code/default", **fields}  # fmt: skip
+    response = hub.http.put(f"/v1/conversations/{cid}/goal", json=body)
+    assert response.status_code == 201, response.text
+    return response.json()["goal"]
+
+
+def test_claude_code_works_on_a_goal(hub):
+    """11.7 (D44): Claude Code as a goal's worker - the hub starts its turn with the note on stdin, within
+    --max-turns, and checks the goal when the turn ends, as any worker's; its tokens count, its money does not
+    (the subscription pays, D12)."""
+    (hub.repo / "conf.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    cid = chat_with_project(hub)
+    assert hub.http.put(f"/v1/conversations/{cid}/context", json={"mode": "trusted"}).status_code == 200
+    set_goal(hub, cid)
+    done = goal_settled(hub, cid, "achieved")
+    assert done["goal"]["turns_used"] == 1 and done["goal"]["tokens_used"] == 60  # 130 in - 100 from the cache + 30
+    assert done["goal"]["cost_usd"] == 0 and [c["route"] for c in done["checks"]] == ["achieved"]
+    (run,) = runs(hub)
+    assert run["text"].startswith('[AFO hub] <goal_loop type="start">')
+    assert "GOAL: edit every x in conf.py" in run["text"]
+    assert run["argv"][run["argv"].index("--max-turns") + 1] == "30"
+    assert (hub.repo / "conf.py").read_text(encoding="utf-8") == "x = 2\n"
+
+
+def test_a_goals_constraints_and_its_investigation_hold_for_claude_code(hub):
+    """11.7: Claude Code asks for its edits and commands through the hub's permission tool, and in a goal's turn the
+    hub refuses there what a constraint forbids - in «Доверенном» too, before anything is asked; an investigation
+    turn refuses every edit and command (D44: «the investigator is a denial of the permission request»)."""
+    (hub.repo / "conf.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    cid = chat_with_project(hub)
+    hub.http.put(f"/v1/conversations/{cid}/context", json={"mode": "trusted"})
+    set_goal(hub, cid, constraints=["не трогать: conf.py"], limits={"max_turns": 1})
+    parked = goal_settled(hub, cid, "budget")
+    assert [c["route"] for c in parked["checks"]] == ["budget"]
+    chat = hub.http.get(f"/v1/conversations/{cid}").json()
+    refused = [b for m in chat["messages"] if m["role"] == "tool" for b in m["content"]]
+    assert refused[0]["error"] is True and "«не трогать: conf.py» forbids writing conf.py" in refused[0]["output"]
+    assert (hub.repo / "conf.py").read_text(encoding="utf-8") == "x = 1\n"
+    assert hub.http.get("/v1/approvals").json()["approvals"] == []
+
+    hub.app.state.chat.guards[cid] = guard.TurnGuard([], investigating=True)  # as a goal's investigation sets it
+    send(hub, cid, "edit every x")
+    chat = hub.wait_idle(cid)
+    assert chat["messages"][-1]["content"][0]["text"].startswith("Не стал править: not done: this is an investigation")
+    assert (hub.repo / "conf.py").read_text(encoding="utf-8") == "x = 1\n"

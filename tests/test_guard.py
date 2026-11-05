@@ -72,3 +72,18 @@ def test_the_constraints_the_hub_can_check():
     assert guard.refusal(rules, "command", "rm -r out") is not None
     assert guard.refusal(rules, "command", "rmdir x") is None
     assert guard.refusal(guard.rules(["Пиши понятно"]), "write", "anything.py") is None
+
+
+def test_claude_codes_calls_as_the_guard_sees_them(tmp_path):
+    """11.7: Claude Code asks for its edits and commands through the hub's permission tool - a goal's guard reads
+    them there: a write with the path inside the project, a command with its text; the rest is not its business."""
+    root = tmp_path / "proj"
+    assert guard.claude_call("Edit", {"file_path": str(root / "src" / "a.py")}, root) == ("write", "src/a.py")
+    assert guard.claude_call("Write", {"file_path": "notes.txt"}, root) == ("write", "notes.txt")
+    assert guard.claude_call("NotebookEdit", {"notebook_path": str(root / "n.ipynb")}, root) == ("write", "n.ipynb")
+    outside = guard.claude_call("Edit", {"file_path": str(tmp_path / "other.txt")}, root)
+    assert outside[0] == "write" and outside[1].endswith("other.txt")  # «только: …» refuses it
+    assert guard.claude_call("Bash", {"command": "git push"}, root) == ("command", "git push")
+    assert guard.claude_call("PowerShell", {"command": "rm x"}, None) == ("command", "rm x")
+    assert guard.claude_call("Read", {"file_path": "a.py"}, root) is None
+    assert guard.claude_call("WebFetch", {"url": "https://example.com"}, root) is None

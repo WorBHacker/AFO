@@ -6,8 +6,9 @@ met (hub/goals.py).
   word unfold below it; «Пауза», «Продолжить» (a goal at its limit - with higher limits), «Снять».
 - the contract card (a sheet): the wish in the user's words, «Составить договор» - a model drafts the contract (the
   plan's goal compiler) -, then the objective, the criteria (a command in a project and its exit code, or a rule in
-  words), the constraints, the limits with a guess of the price, who checks; «Подтвердить и запустить» sets the goal
-  and approves its commands. «/цель …» in the composer and its «Цель» chip open it.
+  words), the constraints, the limits with a guess of the price, who checks, a strong model for the plan and the
+  hard places (11.7); «Подтвердить и запустить» sets the goal and approves its commands. «/цель …» in the composer
+  and its «Цель» chip open it.
 - while the goal works the composer's Enter writes to it (steering): read at the start of the next turn.
 - a goal met, waiting for the user or at its limit: a Windows notice when the window is not in front (D21).
 """
@@ -107,8 +108,29 @@ def lines_of(text: str) -> list[str]:
 
 
 def blank_editor() -> dict[str, Any]:
-    return {"wish": "", "objective": "", "criteria": [], "constraints": "", "milestones": "", "judge": "", "notes": [],
-            "drafted": False, **DEFAULT_LIMITS}  # fmt: skip
+    return {"wish": "", "objective": "", "criteria": [], "constraints": "", "milestones": "", "judge": "", "strong": "",
+            "notes": [], "drafted": False, **DEFAULT_LIMITS}  # fmt: skip
+
+
+def strong_items(models: dict[str, dict], worker_id: str, chosen: str) -> list[dict[str, Any]]:
+    """The strong model's menu (11.7): none - the worker does every turn -, or another offered model (not Claude
+    Code: it works alone)."""
+    worker = (models.get(worker_id) or {}).get("name") or worker_id
+    items = [{"id": "", "name": tr("Нет — все ходы ведёт «{name}»", name=worker), "icon": "check",
+              "selected": not chosen}]  # fmt: skip
+    for model_id, model in models.items():
+        if model_id == worker_id or model.get("provider") == "claude-code" or not model.get("enabled", True):
+            continue
+        items.append({"id": model_id, "name": model.get("name") or model_id,
+                      "icon": "cloud" if model.get("locality") == "cloud" else "cpu",
+                      "selected": chosen == model_id})  # fmt: skip
+    return items
+
+
+def strong_name(models: dict[str, dict], worker_id: str, chosen: str) -> str:
+    if not chosen or chosen == worker_id:
+        return tr("нет")
+    return (models.get(chosen) or {}).get("name") or chosen
 
 
 def editor_of_draft(editor: dict[str, Any], found: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +184,8 @@ def contract_of(editor: dict[str, Any], model_id: str, effort: str) -> tuple[dic
         contract["milestones"] = stages
     if editor.get("judge"):
         contract["judge_model_id"] = editor["judge"]
+    if editor.get("strong"):  # 11.7
+        contract["strong_model_id"] = editor["strong"]
     return contract, ""
 
 
@@ -423,6 +447,19 @@ class GoalView(QObject):
                           "selected": chosen == model_id})  # fmt: skip
         return items
 
+    @Property(list, notify=editorChanged)
+    def strongItems(self) -> list:
+        return strong_items(self.app.models, self.app._model_id, self._editor.get("strong", ""))
+
+    @Property(str, notify=editorChanged)
+    def strongName(self) -> str:
+        return strong_name(self.app.models, self.app._model_id, self._editor.get("strong", ""))
+
+    @Property(bool, notify=editorChanged)
+    def strongShown(self) -> bool:
+        """Claude Code works on a goal alone (11.7): no strong model with it."""
+        return (self.app.models.get(self.app._model_id) or {}).get("provider") != "claude-code"
+
     @Property(str, notify=editorChanged)
     def judgeName(self) -> str:
         chosen = self._editor.get("judge", "")
@@ -445,11 +482,6 @@ class GoalView(QObject):
         self.editorChanged.emit()
         self.openRequested.emit()
 
-    @Property(bool, notify=editorChanged)
-    def available(self) -> bool:
-        """A goal needs a model of the hub's own loop: Claude Code carries none yet (11.7)."""
-        return (self.app.models.get(self.app._model_id) or {}).get("provider") != "claude-code"
-
     @Property(str, notify=editorChanged)
     def drafterName(self) -> str:
         """Who drafts the contract: the model of «Проверка цели», else the chat's own."""
@@ -458,7 +490,7 @@ class GoalView(QObject):
 
     @Slot(str, str)
     def setField(self, name: str, value: str) -> None:
-        if name in ("wish", "objective", "constraints", "milestones", "turns", "tokens", "minutes", "judge"):
+        if name in ("wish", "objective", "constraints", "milestones", "turns", "tokens", "minutes", "judge", "strong"):
             self._edit(**{name: value})
 
     @Slot(int, str, str)

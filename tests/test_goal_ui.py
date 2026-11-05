@@ -129,6 +129,17 @@ def test_what_the_goal_says_in_words():
     bad = {**editor, "criteria": [{**editor["criteria"][0], "code": "ноль"}]}
     assert goal_view.contract_of(bad, "m", "low")[1] == "Критерий 1: код выхода — целое число"
     assert goal_view.contract_of({**editor, "judge": "j/1"}, "m", "low")[0]["judge_model_id"] == "j/1"
+    assert goal_view.contract_of({**editor, "strong": "s/1"}, "m", "low")[0]["strong_model_id"] == "s/1"  # 11.7
+    assert "strong_model_id" not in goal_view.contract_of(editor, "m", "low")[0]
+    models = {"m/1": {"name": "Рабочая"}, "s/1": {"name": "Сильная", "locality": "cloud"},
+              "claude-code/default": {"name": "Claude Code", "provider": "claude-code"},
+              "off/1": {"name": "Выключена", "enabled": False}}  # fmt: skip
+    items = goal_view.strong_items(models, "m/1", "s/1")
+    assert [(i["id"], i["name"], i["selected"]) for i in items] == [("", "Нет — все ходы ведёт «Рабочая»", False),
+                                                                    ("s/1", "Сильная", True)]  # fmt: skip
+    assert items[1]["icon"] == "cloud"
+    assert goal_view.strong_name(models, "m/1", "") == "нет"
+    assert goal_view.strong_name(models, "m/1", "s/1") == "Сильная"
     assert goal_view.cost_text({"prices": {}}, "500") == "Цена: бесплатно — модель локальная"
     assert goal_view.cost_text({"prices": {"input": 4.0, "output": 20.0}}, "500").startswith("Цена: до ≈ $3,20")
 
@@ -140,8 +151,14 @@ def test_the_hubs_notes_are_quiet_lines():
             "только src\n"}]}  # fmt: skip
     nudge = {"id": 8, "role": "user", "content": [{"type": "text", "hub": True, "text": "[AFO hub] Go on."}]}
     mine = {"id": 9, "role": "user", "content": [{"type": "text", "text": "привет"}]}
-    found = rows.rows_for([note, nudge, mine], {})
-    assert [r["role"] for r in found] == ["hub", "hub", "user"]
+    start = '[AFO hub] <goal_loop type="start">\nGOAL: x\n'
+    planned = {"id": 10, "role": "user", "content": [{"type": "text", "hub": True, "text": start,
+                                                      "worker": {"model_id": "s/1", "why": "plan"}}]}  # fmt: skip
+    plain = {"id": 11, "role": "user", "content": [{**planned["content"][0], "worker": {"model_id": "m/1", "why": ""}}]}
+    models = {"s/1": {"name": "Сильная"}, "m/1": {"name": "Рабочая"}}
+    found = rows.rows_for([note, nudge, mine, planned, plain], models)
+    assert [r["role"] for r in found] == ["hub", "hub", "user", "hub", "hub"]
+    assert found[3]["note"] == "ход ведёт «Сильная» — план" and found[4]["note"] == "ход ведёт «Рабочая»"  # 11.7
     assert found[0]["title"] == "Хаб → модели: продолжение цели" and found[0]["goal"] is True
     assert found[0]["note"] == "не выполнено: 2 · слово проверяющей модели · ваше уточнение"
     assert found[1]["title"] == "Хаб → модели: напоминание" and rows.restyled(found[0]) == found[0]
@@ -235,11 +252,15 @@ def test_the_goal_in_the_window(qapp):  # noqa: F811
         view.setCriterion(2, "rule", "сборка без предупреждений")
         view.setField("tokens", "200")
         view.setField("milestones", "Тесты\nREADME")
+        strong = next(i for i in view.strongItems if i["id"])  # 11.7: another model for the plan and the hard places
+        assert quick.window.findChild(QObject, "goalStrong").property("visible") and view.strongName == "нет"
+        view.setField("strong", strong["id"])
+        assert view.strongName == strong["name"] and strong["id"] != app.modelId
         view.start()
         wait_until(lambda: not app.bg.busy and not sheet.property("opened"))
         _kind, cid, contract = client.goal_calls[-1]
         assert cid == "c1" and contract["model_id"] == app.modelId and contract["limits"]["max_tokens"] == 200_000
-        assert contract["milestones"] == ["Тесты", "README"]
+        assert contract["milestones"] == ["Тесты", "README"] and contract["strong_model_id"] == strong["id"]
         rules = [c.get("rule") for c in contract["criteria"]][1:]
         assert rules == ["README описывает запуск", "сборка без предупреждений"]
         wait_until(lambda: view.shown and view.status == "active")

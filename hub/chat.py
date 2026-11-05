@@ -313,10 +313,13 @@ class ChatService:
         limits: Limits,
         effort: str = DEFAULT_EFFORT,
         client_id: str | None = None,
+        mark: dict[str, Any] | None = None,
     ) -> None:
         """A turn the hub starts itself in a chat - a goal's next one (D44): its word to the model (a hub note, not
-        the user's), then the chat's loop; the goal hears how the turn ended, like any turn of that chat. Raises
-        GatewayError when it cannot start (busy, the model gone, the cloud or a budget says no)."""
+        the user's; `mark` - who works the turn and why, when the goal has two models, 11.7), then the chat's loop -
+        or Claude Code's turn, within `limits.max_steps` of its own (11.7); the goal hears how the turn ended, like
+        any turn of that chat. Raises GatewayError when it cannot start (busy, the model gone, the cloud or a budget
+        says no)."""
         if conversation_id in self._runs:
             raise GatewayError("this conversation already has a run in progress")
         cancel = self._runs[conversation_id] = asyncio.Event()  # taken at once: nothing starts in between
@@ -324,19 +327,26 @@ class ChatService:
             model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
             if model is None or not model["enabled"]:
                 raise GatewayError(f"model {model_id!r} is not available now")
-            if model["provider"] == CLAUDE_CODE:
-                raise GatewayError("Claude Code carries no goal yet (stage 11.7)")
+            agent = model["provider"] == CLAUDE_CODE
+            mode = (await self._db.acall(lambda conn: store.context_settings(conn, conversation_id)))["mode"]
+            if agent and mode == "sandbox":  # it would work in the project, the checks in the copy
+                raise GatewayError("Claude Code works in the project itself, not in «Песочница»")  # i18n: keep
             if model["locality"] == "cloud":
                 await self._check_cloud(conversation_id)
             if model["prices"]:
                 await self._check_budgets(model_id, False, client_id)
-            await self._hub_note(conversation_id, note)
-            await self._use_limits(model_id)
-            await self._store_context(conversation_id)
+            await self._hub_note(conversation_id, note, mark)
+            if not agent:
+                await self._use_limits(model_id)
+                await self._store_context(conversation_id)
         except BaseException:
             self._runs.pop(conversation_id, None)
             raise
-        task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
+        if agent:
+            task = asyncio.create_task(self._run_agent(conversation_id, model, note, cancel, client_id,
+                                                       max_turns=limits.max_steps))  # fmt: skip
+        else:
+            task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
     async def tool_projects(self, conversation_id: str) -> list:
@@ -392,9 +402,13 @@ class ChatService:
                 except Exception:
                     log.exception("the goal of %s did not take the turn's end", conversation_id)
 
-    async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id):
+    async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id, *,
+                         max_turns: int | None = None):  # fmt: skip
         """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10) - or, with none
-        attached, in a folder of the chat's own."""
+        attached, in a folder of the chat's own; a goal's turn within `max_turns` of its own. Its end goes to the
+        chat's goal as any turn's (11.7)."""
+        outcome = Outcome()
+        began = time.monotonic()
         try:
             if self.claude_code is None:
                 raise GatewayError("Claude Code is not set up in this hub")
@@ -409,20 +423,33 @@ class ChatService:
             await self._bus.publish(
                 "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
             )
-            await self.claude_code.run(conversation_id, model, text, usable, cancel, client_id)
+            ended = await self.claude_code.run(conversation_id, model, text, usable, cancel, client_id,
+                                               max_turns=max_turns)  # fmt: skip
+            outcome.totals = RunTotals()
+            outcome.totals.add(ended["usage"], 0.0)  # the subscription pays (D12)
+            outcome.status = "cancelled" if ended["cancelled"] else "error" if ended["error"] else "done"
+            outcome.detail, outcome.limited = ended["error"], ended["limited"]
         except GatewayError as exc:
+            outcome.status, outcome.detail = "error", str(exc)
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc),
                                                    "model_id": model["id"]})  # fmt: skip
         except Exception:
             log.exception("claude code turn for %s crashed", conversation_id)
+            outcome.status, outcome.detail = "error", "internal error"
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error",
                                                    "model_id": model["id"]})  # fmt: skip
         finally:
             self._runs.pop(conversation_id, None)
+            outcome.seconds = time.monotonic() - began
             if self.approvals is not None:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
             if self.autonomy is not None:
                 await self.autonomy.expire_all(conversation_id)
+            if self.goals is not None and not _stopping():  # its goal checks the turn, as any (11.7)
+                try:
+                    await self.goals.turn_ended(conversation_id, outcome)
+                except Exception:
+                    log.exception("the goal of %s did not take the turn's end", conversation_id)
 
     async def _steps(self, conversation_id, model: dict, effort: str, cancel, client_id, limits: Limits, outcome):
         attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
@@ -575,11 +602,11 @@ class ChatService:
                 if over:
                     raise GatewayError("the budget ran out while the model was working; send again to go on")
 
-    async def _hub_note(self, conversation_id: str, text: str) -> None:
-        """A word from the hub to the model between its steps (D40): stored as a user turn, marked as the hub's."""
-        message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "user",
-                                                                       [{"type": "text", "text": text,
-                                                                         "hub": True}]))  # fmt: skip
+    async def _hub_note(self, conversation_id: str, text: str, mark: dict[str, Any] | None = None) -> None:
+        """A word from the hub to the model between its steps (D40): stored as a user turn, marked as the hub's
+        (`mark`: which model works the goal's turn, and why - 11.7; the window shows it, the model does not)."""
+        block = {"type": "text", "text": text, "hub": True, **({"worker": mark} if mark else {})}
+        message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "user", [block]))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
 
     async def _use_limits(self, model_id: str) -> None:
@@ -843,6 +870,20 @@ class ChatService:
                 await self.autonomy.acted(conversation_id, call["name"])
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "tool", results))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+
+    def claude_guarded(self, conversation_id: str, tool_name: str, data: dict, root: Path | None) -> str | None:
+        """Claude Code's edit or command in a goal's turn (11.7), asked through its permission tool: the guard of
+        the hub's own tools - an investigation refuses it, and so does a constraint the hub checks."""
+        turn = self.guards.get(conversation_id)
+        found = guard.claude_call(tool_name, data if isinstance(data, dict) else {}, root) if turn else None
+        if turn is None or found is None:
+            return None
+        if turn.investigating:
+            return guard.INVESTIGATING
+        said = guard.refusal(turn.rules, *found)
+        if said:
+            turn.refused.append(said)
+        return said
 
     def _guarded(self, conversation_id: str, call: dict, acting: bool) -> str | None:
         """A goal's turn (11.4, hub/guard.py): an investigation refuses writing and commands (reading the web is
