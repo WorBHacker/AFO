@@ -23,6 +23,7 @@ from typing import Any
 
 from common.i18n import tr
 
+from . import checkpoints
 from .db import Database, utc_now
 from .terminals import prune_logs
 
@@ -176,6 +177,16 @@ def prune_all(conn: sqlite3.Connection, root: Path, now: float | None = None) ->
     }
 
 
+def goals_kept(conn: sqlite3.Connection, now: float | None = None) -> tuple[list[Path], set[str]]:
+    """The projects' folders, and the goals whose checkpoints' refs stay (11.6): open ones, and those ended within
+    D30's term; the others' refs go - and those of goals gone with their chat."""
+    days = int(current(conn)["days"])
+    cutoff = datetime.fromtimestamp((now if now is not None else time.time()) - days * 86400, UTC)
+    since = cutoff.strftime("%Y-%m-%dT%H:%M:%S")
+    live = {r[0] for r in conn.execute("SELECT id FROM goals WHERE ended_at IS NULL OR ended_at > ?", (since,))}
+    return [Path(r[0]) for r in conn.execute("SELECT DISTINCT path FROM projects")], live
+
+
 class Keeper:
     """Prunes at the hub's start and every PRUNE_EVERY_S after."""
 
@@ -194,7 +205,11 @@ class Keeper:
                 await self._task
 
     async def prune(self) -> dict[str, int]:
-        return await self._db.acall(lambda conn: prune_all(conn, self._root))
+        removed = await self._db.acall(lambda conn: prune_all(conn, self._root))
+        roots, live = await self._db.acall(goals_kept)
+        removed["goal_refs"] = await asyncio.to_thread(
+            lambda: sum(len(checkpoints.prune(root, live)) for root in roots))  # fmt: skip
+        return removed
 
     async def _loop(self) -> None:
         while True:

@@ -111,4 +111,4 @@ def test_the_api_reads_sets_and_prunes(hub):  # noqa: F811
     saved = hub.put("/v1/support/retention", json={"days": 30, "max_gb": 0.5}).json()
     assert (saved["days"], saved["max_gb"]) == (30, 0.5)
     pruned = hub.post("/v1/support/retention/prune").json()
-    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals", "files", "copies"}
+    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals", "files", "copies", "goal_refs"}

@@ -31,7 +31,7 @@ FINGERPRINT_CHARS = 16
 TWICE, THRICE, SWING = 2, 3, 4  # checks in a row
 THRASH_EDITS = 5  # writes of one file with no fewer failures
 TRIES = 3  # refused tries at a constraint in one turn that stop the goal
-STOPS = ("blocked", "budget", "paused")  # a check where the goal stopped: what comes after it starts afresh
+STOPS = ("blocked", "budget", "paused", "rolled_back")  # the goal stopped or went back: after it, afresh
 INVESTIGATING = ("not done: this is an investigation turn (the goal's loop guard) - writing and commands are refused "
                  "for this turn. Read the code, find the root cause; your tools come back next turn.")  # fmt: skip
 # what changes between two runs of the same failure

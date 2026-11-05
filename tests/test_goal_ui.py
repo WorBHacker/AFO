@@ -107,6 +107,8 @@ def test_what_the_goal_says_in_words():
                                             "причины, без записи")  # fmt: skip
     assert goal_view.check_text({**CHECK, "route": "investigated", "verdict": None, "missing": []}) == (
         "проверка после хода 3: причину искали — дальше правка")  # fmt: skip
+    assert goal_view.check_text({**CHECK, "route": "rolled_back", "verdict": None, "missing": []}) == (
+        "проверка после хода 3: файлы возвращены к точке сохранения")  # fmt: skip
     assert goal_view.criteria_rows(GOAL) == [
         {"text": "`pytest -q` в «LocalChat» → код 0", "met": False, "words": False},
         {"text": "README описывает запуск", "met": False, "words": True}]  # fmt: skip

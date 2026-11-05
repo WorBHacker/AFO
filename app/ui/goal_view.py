@@ -31,7 +31,8 @@ VERDICTS = {"ACHIEVED": N_("выполнено"), "INCOMPLETE": N_("не вып�
 DEFAULT_LIMITS = {"turns": "25", "tokens": "500", "minutes": "60"}  # tokens in thousands (Q26)
 ROUTES = {"continue": N_("дальше"), "last_turn": N_("последний ход"), "achieved": N_("достигнута"),
           "blocked": N_("ждёт вас"), "budget": N_("предел"), "paused": N_("пауза"),
-          "investigated": N_("причину искали — дальше правка")}  # fmt: skip
+          "investigated": N_("причину искали — дальше правка"),
+          "rolled_back": N_("файлы возвращены к точке сохранения")}  # fmt: skip
 
 
 def thousands(n: int | float) -> str:

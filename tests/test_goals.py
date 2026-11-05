@@ -5,6 +5,7 @@ wait for the judge; what a goal refuses; an active goal going on after a hub res
 
 import asyncio
 import json
+import subprocess
 import threading
 
 from hub import goals
@@ -225,6 +226,55 @@ def test_a_goal_in_stages_keeps_one_line_for_a_stage_done(hub, repo):  # noqa: F
     assert any(m["role"] == "user" and 'type="start"' in str(m["content"]) for m in sent)  # the contract stays
     stored = hub.get(f"/v1/conversations/{conv}").json()["messages"]
     assert sum(1 for m in stored if m["role"] == "tool") == 2  # the conversation itself keeps every call (D14)
+    names = goal_refs(repo, done["goal"]["id"])
+    assert names == ["start", "stage-1", "stage-2"]  # 11.6: the start and each stage done are checkpoints
+
+
+def goal_refs(repo, goal_id):
+    found = subprocess.run(["git", "-C", str(repo), "for-each-ref", "--sort=committerdate", "--format=%(refname)",
+                            f"refs/localchat/goals/{goal_id}"], capture_output=True, text=True).stdout  # fmt: skip
+    return [line.rsplit("/", 1)[1] for line in found.splitlines()]
+
+
+DEAD_END = ["Пробую.", "Ещё раз.", "Гипотеза: done.txt никто не создаёт.", "Снова пробую."]  # the guard: the human
+
+
+def test_a_dead_end_in_the_sandbox_goes_back_to_the_last_checkpoint(hub, repo):  # noqa: F811
+    """11.6 (the user's plan, idea 2): where the loop guard would stop the goal, a sandbox goes back to the last
+    checkpoint at once - the files as they were - and the worker hears to take another way."""
+    junk = [("write_file", {"project": "proj", "path": "junk.txt", "content": "мусор\n"})]
+    worker = use(hub, Gated("agent", [junk, *DEAD_END, WRITE, "Готово."]))
+    pid, conv = chat_with_project(hub, repo, worker, mode="sandbox")
+    set_goal(hub, conv)
+    done = settled(hub, conv, "achieved")
+    assert [c["route"] for c in done["checks"]] == ["continue", "investigate", "investigated", "rolled_back",
+                                                    "achieved"]  # fmt: skip
+    assert "«начало цели»" in done["checks"][3]["detail"] and "junk.txt" in done["checks"][3]["detail"]
+    copy = hub.app.state.chat.sandboxes / conv / pid
+    assert not (copy / "junk.txt").exists() and (copy / "done.txt").exists()
+    back = hub_note(worker.prompts[5])
+    assert "ROLLED BACK" in back and "the goal's start" in back and "another way" in back
+    assert hub.get("/v1/approvals").json()["approvals"] == []  # the sandbox's own files: nothing asked
+
+
+def test_a_dead_end_in_the_project_asks_before_going_back(hub, repo):  # noqa: F811
+    """In the project itself the files are the user's: the goal waits, and a card asks to go back to the checkpoint
+    - destructive, asked each time; allowed, the files go back and the goal goes on."""
+    junk = [("write_file", {"project": "proj", "path": "junk.txt", "content": "мусор\n"})]
+    worker = use(hub, Gated("agent", [junk, *DEAD_END, WRITE, "Готово."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv)
+    blocked = settled(hub, conv, "blocked")
+    assert "откатить файлы к точке «начало цели»" in blocked["goal"]["detail"]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "goal_rollback" and asked["destructive"] and asked["kind"] == "write"
+    assert "junk.txt" in asked["preview"]["text"] and asked["preview"]["note"] == "начало цели"
+    assert (repo / "junk.txt").exists()  # nothing goes back before the answer
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
+    done = settled(hub, conv, "achieved")
+    assert [c["route"] for c in done["checks"]][-2:] == ["rolled_back", "achieved"]
+    assert not (repo / "junk.txt").exists() and (repo / "done.txt").exists()
+    assert "ROLLED BACK" in hub_note(worker.prompts[5])
 
 
 def test_a_stage_said_done_with_a_broken_file_is_not_accepted(hub, repo):  # noqa: F811

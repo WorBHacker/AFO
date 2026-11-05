@@ -75,6 +75,8 @@ def title(tool: str, data: dict[str, Any], roots: list[str]) -> str:
             return tr("Запомнить личные данные")
         case "run_python":
             return tr("Запустить скрипт Python")
+        case "goal_rollback":  # a goal's dead end (11.6)
+            return tr("Вернуть файлы к точке «{checkpoint}»", checkpoint=data.get("checkpoint", ""))
         case "mail_send":  # a letter from the user's address (9.4b)
             return tr("Отправить письмо: {subject}", subject=data.get("subject", ""))
         case "http_request":

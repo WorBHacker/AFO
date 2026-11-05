@@ -37,7 +37,7 @@ from .db import Database, utc_now
 from .events import EventBus
 
 COMMAND_TOOLS = {"Bash", "PowerShell", "run_command"}
-WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file"}
+WRITE_TOOLS = {"Edit", "MultiEdit", "Write", "NotebookEdit", "write_file", "edit_file", "goal_rollback"}
 NETWORK_TOOLS = {"WebFetch", "WebSearch", "web_fetch", "web_search", "http_request", "mail_send"}
 SCREEN_TOOLS = {"screen_act", "screen_send"}  # the autonomous agent at the desktop (9.6, D41)
 # read-only commands asked of no one (Q2's first list): they show, they never change
@@ -201,7 +201,7 @@ def opaque(tool: str, data: dict[str, Any]) -> bool:
 
 
 def destructive(tool: str, data: dict[str, Any]) -> bool:
-    if CLASSED.get(tool) == "destructive":
+    if CLASSED.get(tool) == "destructive" or tool == "goal_rollback":  # a goal's files put back (11.6): the user's
         return True
     if tool not in COMMAND_TOOLS:
         return False
@@ -330,6 +330,9 @@ def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, An
         tool = HUB_WRITES[tool]
     if tool in COMMAND_TOOLS:
         return {"kind": "command", "text": str(data.get("command", "")), "note": str(data.get("description", ""))}
+    if tool == "goal_rollback":  # a goal back at its checkpoint (11.6): which files, and why
+        return {"kind": "text", "text": f"{data.get('files', '')}\n\n{data.get('why', '')}".strip(),
+                "note": str(data.get("checkpoint", ""))}  # fmt: skip
     if tool in ("Edit", "MultiEdit", "Write"):
         return {"kind": "diff", "text": _diff(tool, data, root), "note": str(data.get("file_path", ""))}
     if tool in ("WebFetch", "web_fetch"):

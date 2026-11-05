@@ -4002,6 +4002,8 @@ def test_approval_rows():
     mine, found = approval_rows([own, search], projects=projects, chats={}, speakers={"c1": "Coder"})
     assert (mine["who"], mine["title"]) == ("Coder", "Править a.txt")
     assert (found["who"], found["title"]) == ("Агент", "Искать в сети «qt 6.12»")  # an unknown chat's model
+    back = {**own, "id": "ap8", "tool": "goal_rollback", "input": {"checkpoint": "этап 1"}}
+    assert approval_rows([back], projects=projects, chats={})[0]["title"] == "Вернуть файлы к точке «этап 1»"
     assert edit["hunks"] == [] and edit["allowText"] == "Разрешить"  # one hunk: nothing to choose
     # a write of several hunks (17.3, D51): each with its tick, its lines marked; unticked - the button says so
     parted = {**APPROVAL, "id": "ap7", "preview": PARTED}

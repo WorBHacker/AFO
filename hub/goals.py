@@ -16,6 +16,10 @@ turn with «STAGE DONE: …» when the stage at work is done; the hub accepts it
 (files parse, no test lost), and from then on that stage's turns go to the model as one line (`compact`) - the
 contract's note, the first of the goal, stays where it is, and the stored conversation stays whole (D14). The user may
 change the stages not done yet.
+Checkpoints (11.6, hub/checkpoints.py): each git project's files at the goal's start and at each stage done, kept
+by refs of the hub's own. Where the loop guard would stop the goal, it goes back to the last checkpoint instead (once
+each) and the worker hears to take another way - in «Песочница» at once, in the project after a card (the files are
+the user's); refused, the goal waits for the human as before.
 Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file written again and again -
 the next turn investigates (writing and commands refused, the root cause asked for); after that, the human. The
 contract's constraints in the forms the hub can check are refused at the call; three tries in a turn - the human.
@@ -48,7 +52,7 @@ from typing import Any
 
 from common.i18n import N_, tr
 
-from . import approvals, commands, guard, judge, store
+from . import approvals, checkpoints, commands, guard, judge, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -434,6 +438,29 @@ def continue_note(goal: dict[str, Any], found: dict[str, Any], said: list[str], 
     )
 
 
+ROLLBACK = "goal_rollback"  # the card that asks to put a project's files back (11.6)
+POINTS = {"start": (N_("начало цели"), "the goal's start")}  # a checkpoint's name: in the user's words, for the model
+
+
+def point_words(name: str) -> tuple[str, str]:
+    """A checkpoint's label: (the window's, the worker's) - «начало цели» / «этап 2»."""
+    if name in POINTS:
+        return tr(POINTS[name][0]), POINTS[name][1]
+    n = name.removeprefix("stage-")
+    return tr("этап {n}", n=n), f"stage {n} done"
+
+
+def rolled_back_note(goal: dict[str, Any], label: str, why: str, files: str) -> str:
+    """After going back to a checkpoint (11.6, the user's plan, idea 2): the approach was a dead end - another way."""
+    return (
+        f'{NOTE} <goal_loop type="rolled_back">\n'
+        f"ROLLED BACK: the hub's loop guard found a dead end ({why}), so the files are back as they were at {label} "
+        f"({files}). Your last approach did not work: do the work another way, from there.\n"
+        f"GOAL: {goal['objective']}\n" + stages_text(goal) + f"{usage_line(goal)}\n"
+        "</goal_loop>"
+    )
+
+
 INVESTIGATED = ("INVESTIGATION DONE: your tools are back. Make the fix you found - at the root cause, not another "
                 "guess.")  # fmt: skip
 
@@ -627,6 +654,7 @@ class Goals:
         self._chat = chat
         self._judge = judging  # what changed and the judge's verdict (11.2)
         chat.compact = self.compact  # a stage done goes to the model as one line (11.5)
+        self._offers: dict[str, asyncio.Task] = {}  # a card asking to go back to a checkpoint, by goal (11.6)
         self._locks: dict[str, asyncio.Lock] = {}  # one check at a time per chat
         self._counted: set[str] = set()  # chats whose running turn is the goal's: it counts even if paused meanwhile
 
@@ -718,6 +746,24 @@ class Goals:
             await self._db.acall(lambda conn, p=project.id, t=tree: conn.execute(
                 "INSERT OR REPLACE INTO goal_baselines (goal_id, project_id, tree) VALUES (?, ?, ?)",
                 (goal["id"], p, t)))  # fmt: skip
+            await self._keep(goal, project, "start", tree)  # the first checkpoint (11.6)
+
+    async def _keep(self, goal: dict[str, Any], project, name: str, tree: str | None = None) -> None:
+        """A checkpoint of one git project's files (11.6): its commit and ref, and its row."""
+        try:
+            saved = await asyncio.to_thread(checkpoints.save, project.root, goal["id"], name, tree)
+        except judge.JudgeError as exc:
+            log.warning("goal %s: no checkpoint %s of %s: %s", goal["id"], name, project.name, exc)
+            return
+        await self._db.acall(lambda conn: conn.execute(
+            "INSERT OR REPLACE INTO goal_checkpoints (goal_id, name, project_id, commit_id, tree, turn)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (goal["id"], name, project.id, saved["commit"], saved["tree"], goal["turns_used"])))  # fmt: skip
+
+    async def _checkpoint(self, goal: dict[str, Any], name: str) -> None:
+        for project in await self._chat.tool_projects(goal["conversation_id"]):
+            if judge.is_git(project.root):
+                await self._keep(goal, project, name)
 
     async def pause(self, conversation_id: str, *, by: str) -> dict[str, Any]:
         """No next turn starts; a turn running now finishes (and counts)."""
@@ -744,6 +790,8 @@ class Goals:
                 raise GoalConflict("its limits are used up: raise them to resume it")
             await self._db.acall(lambda conn: conn.execute("UPDATE goals SET last_turn = 0 WHERE id = ?",
                                                            (goal["id"],)))  # fmt: skip
+        if (offer := self._offers.pop(goal["id"], None)) is not None:
+            offer.cancel()  # resumed as it is: the card to go back closes unanswered
         goal = await self._status(goal, "active", "")
         if conversation_id not in self._chat.busy:  # else the turn that runs now hands over when it ends
             await self._next(goal, head=f"The user resumed the goal ({by}).")
@@ -752,6 +800,8 @@ class Goals:
     async def clear(self, conversation_id: str, *, by: str) -> dict[str, Any]:
         """The goal is given up: no next turn (a turn running now finishes)."""
         goal = await self._open(conversation_id)
+        if (offer := self._offers.pop(goal["id"], None)) is not None:
+            offer.cancel()
         return await self._status(goal, "cleared", tr("снята ({by})", by=by), ended=True)
 
     async def steer(self, conversation_id: str, text: str, *, by: str) -> dict[str, Any]:
@@ -850,6 +900,8 @@ class Goals:
             edited, edits = await self._edits(goal, history, mark[1])
             loop = guard.signal(history, mark[0], mark[1], edits, edited)
             if loop is not None and loop[0] == "blocked":
+                if await self._back(goal, verdict, found, mark, loop[1]):  # a dead end: a checkpoint (11.6)
+                    return
                 await self._checked(goal, "blocked", verdict, found, loop[1] + tr(ASK_PERSON), mark)
                 return
             await self._go_on(goal, verdict, found, mark=mark, investigate=loop[1] if loop else "")
@@ -886,7 +938,96 @@ class Goals:
             "UPDATE goal_milestones SET status = 'done', summary = ?, turn = ?, closed_seq = ?, done_at = ?"
             " WHERE goal_id = ? AND n = ?",
             (summary, goal["turns_used"], claim[1], utc_now(), goal["id"], current["n"])))  # fmt: skip
+        await self._checkpoint(goal, f"stage-{current['n']}")  # where it stands: a checkpoint (11.6)
         return {"kind": "stage", "n": current["n"], "accepted": True, "why": ""}
+
+    async def _point(self, goal: dict[str, Any]) -> tuple[str, list[tuple[Any, str, dict]]] | None:
+        """The last checkpoint not gone back to yet, and what going back would do in each of its projects - None when
+        there is none, or nothing would change."""
+        rows = await self._db.acall(lambda conn: conn.execute(
+            "SELECT name, project_id, tree FROM goal_checkpoints WHERE goal_id = ? AND rolled_back = 0"
+            " ORDER BY rowid DESC", (goal["id"],)).fetchall())  # fmt: skip
+        if not rows:
+            return None
+        name = rows[0]["name"]
+        roots = {p.id: p for p in await self._chat.tool_projects(goal["conversation_id"])}
+        found = []
+        for row in rows:
+            if row["name"] == name and row["project_id"] in roots:
+                project = roots[row["project_id"]]
+                try:
+                    planned = await asyncio.to_thread(checkpoints.plan, project.root, row["tree"])
+                except judge.JudgeError as exc:
+                    log.warning("goal %s: no way back to %s in %s: %s", goal["id"], name, project.name, exc)
+                    continue
+                if planned["restore"] or planned["delete"]:
+                    found.append((project, row["tree"], planned))
+        return (name, found) if found else None
+
+    @staticmethod
+    def _files(found: list[tuple[Any, str, dict]]) -> str:
+        """What going back does, in a line: «proj: a.py, b.py - back; c.txt - removed»."""
+        parts = []
+        for project, _tree, planned in found:
+            said = []
+            if planned["restore"]:
+                said.append(", ".join(planned["restore"][:10]) + (" …" if len(planned["restore"]) > 10 else "")
+                            + " — " + tr("как были"))  # fmt: skip
+            if planned["delete"]:
+                said.append(", ".join(planned["delete"][:10]) + (" …" if len(planned["delete"]) > 10 else "")
+                            + " — " + tr("удалить"))  # fmt: skip
+            parts.append(f"{project.name}: " + "; ".join(said))
+        return "\n".join(parts)
+
+    async def _back(self, goal: dict[str, Any], verdict: str | None, found: dict[str, Any],
+                    mark: tuple[str | None, int], why: str) -> bool:  # fmt: skip
+        """A dead end (11.6): back to the last checkpoint - in «Песочница» at once, in the project after a card (the
+        goal waits meanwhile). False when there is none to go back to: the goal waits for the human as before."""
+        point = await self._point(goal)
+        if point is None:
+            return False
+        name, plans = point
+        label = point_words(name)[0]
+        mode = (await self._db.acall(lambda conn: store.context_settings(conn, goal["conversation_id"])))["mode"]
+        if mode == "sandbox":  # the sandbox's own files: nobody's work is lost
+            await self._go_back(goal, name, plans, why, verdict=verdict, found=found, mark=mark)
+            return True
+        offer = tr(" — или откатить файлы к точке «{point}»: ответ — в карточке подтверждения", point=label)
+        await self._checked(goal, "blocked", verdict, found, why + offer, mark)
+        data = {"checkpoint": label, "goal": goal["objective"], "files": self._files(plans), "why": why}
+
+        async def ask() -> None:
+            decision = await self._chat.approvals.ask(ROLLBACK, data, conversation_id=goal["conversation_id"],
+                                                      cover=False)  # fmt: skip
+            current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
+            if decision.allow and current["status"] == "blocked":
+                await self._status(current, "active", "")
+                await self._go_back(current, name, plans, why)
+
+        if self._chat.approvals is not None:
+            self._offers[goal["id"]] = asyncio.create_task(ask())
+            self._offers[goal["id"]].add_done_callback(lambda t, g=goal["id"]: self._offers.pop(g, None))
+        return True
+
+    async def _go_back(self, goal: dict[str, Any], name: str, plans: list[tuple[Any, str, dict]], why: str, *,
+                       verdict: str | None = None, found: dict[str, Any] | None = None,
+                       mark: tuple[str | None, int] = (None, 0)) -> None:  # fmt: skip
+        """The files back at checkpoint `name` (once), the check kept, and the next turn told to go another way."""
+        done = []
+        for project, tree, _planned in plans:
+            try:
+                done.append((project, tree, await asyncio.to_thread(checkpoints.restore, project.root, tree)))
+            except (judge.JudgeError, OSError) as exc:
+                log.warning("goal %s: going back to %s in %s failed: %s", goal["id"], name, project.name, exc)
+        await self._db.acall(lambda conn: conn.execute(
+            "UPDATE goal_checkpoints SET rolled_back = 1 WHERE goal_id = ? AND name = ?",
+            (goal["id"], name)))  # fmt: skip
+        label, said = point_words(name)
+        files = self._files(done)
+        detail = tr("файлы возвращены к точке «{point}»: {files}", point=label, files=files)
+        await self._checked(goal, "rolled_back", verdict, found or {}, detail, mark)
+        current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
+        await self._turn(current, rolled_back_note(current, said, why, files.replace("\n", "; ")))
 
     async def set_milestones(self, conversation_id: str, titles: list[str], *, by: str) -> dict[str, Any]:
         """The user's stages in place of those not done yet (11.5); the next note tells the worker."""
