@@ -182,11 +182,12 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
     @server.tool(annotations=READ_ONLY, structured_output=False)
     async def find_symbol(
         project: ProjectName,
-        name: Annotated[str, Field(description="A name or part of it; Class.method for a method.")],
+        name: Annotated[str, Field(description="A name or part of it; Class.method; or words of what it does.")],
         ctx: Context,
         kind: Annotated[str, Field(description="Only this kind: function, method, class, interface, type...")] = "",
     ) -> str:
-        """Where a function, class, method, interface or type is defined (the hub's tree-sitter index)."""
+        """Where a function, class, method, interface or type is defined (the hub's tree-sitter index) - by name,
+        or by several English words of what it does: its name as words, comments and docstring, best first."""
         return await run("find_symbol", {"project": project, "name": name, "kind": kind or None}, ctx)
 
     @server.tool(annotations=READ_ONLY, structured_output=False)

@@ -8,7 +8,8 @@ one in a big project is slow - and it stops after a time budget, saying the inde
 processor, no embeddings (D26).
 
 A symbol: name, kind, its lines, its container ("ChatService" for the class's methods) and its first line as the
-signature.
+signature. Each one also gets a row in the meaning index (hub/meaning.py, 18.3, D52): its name as words and what is
+said around it - so several words find a definition by what it does.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import search
+from .meaning import FILE, VALUE_KINDS, MeaningIndex, a_test, about, notes
 from .projects import Project, linked_secret, private, private_part
 from .secret_filter import is_secret_file
 
@@ -192,6 +194,7 @@ class SymbolIndex:
         self._guard = threading.Lock()
         self._budget_s = budget_s
         self._fresh_s = fresh_s
+        self.meaning = MeaningIndex()  # what each definition says of itself, for several words (18.3)
 
     def _state(self, project_id: str) -> _Project:
         with self._guard:
@@ -200,6 +203,7 @@ class SymbolIndex:
     def forget(self, project_id: str) -> None:
         with self._guard:
             self._projects.pop(project_id, None)
+        self.meaning.drop(project_id)
 
     def refresh(self, project: Project) -> _Project:
         """Compares the files with the disk and parses the new and changed ones (within the time budget)."""
@@ -235,9 +239,12 @@ class SymbolIndex:
                     source = (root / rel).read_bytes()
                 except OSError:
                     continue
-                state.files[rel] = _File(st.st_size, st.st_mtime_ns, parse(source, language))
+                found = parse(source, language)
+                state.files[rel] = _File(st.st_size, st.st_mtime_ns, found)
+                self.meaning.put(project.id, rel, found, notes(source, found, language), about(source, language))
             for rel in set(state.files) - present:
                 del state.files[rel]
+                self.meaning.drop(project.id, rel)
             state.checked = time.monotonic()
             state.complete = complete
             return state
@@ -245,7 +252,10 @@ class SymbolIndex:
     def find(self, project: Project, query: str, kind: str = "", limit: int = FIND_LIMIT) -> dict[str, Any]:
         """Definitions whose name matches: exact first, then by prefix, then containing it. `Class.method` matches
         a method of that class. {symbols: [... with path], total, complete, left_out}: `left_out` files of a project
-        bigger than MAX_FILES are never read."""
+        bigger than MAX_FILES are never read. Several words (18.3): definitions by what they say of themselves -
+        their names as words, comments, docstrings (hub/meaning.py), best first, each with `why`; `by`: "meaning"."""
+        if len(query.split()) > 1:
+            return self._by_meaning(project, query, kind, limit)
         state = self.refresh(project)
         query = query.strip()
         container_part, _, name_part = query.rpartition(".")
@@ -274,6 +284,30 @@ class SymbolIndex:
         found = [{**symbol._asdict(), "path": path} for _r, _n, path, _l, symbol in ranked[:limit]]
         return {"symbols": found, "total": len(ranked), "complete": state.complete and not state.left_out,
                 "left_out": state.left_out}  # fmt: skip
+
+    def _by_meaning(self, project: Project, query: str, kind: str, limit: int) -> dict[str, Any]:
+        state = self.refresh(project)
+        found = []
+        rows, total = self.meaning.search(project.id, query, FIND_LIMIT * 4)
+        for path, n, why in rows:
+            file = state.files.get(path)
+            if n == FILE and file is not None and not kind:  # the file's own words
+                name = path.rsplit("/", 1)[-1]
+                found.append({"name": name, "kind": "file", "line": 1, "end_line": 1, "container": "",
+                              "signature": "", "path": path, "why": why})  # fmt: skip
+                continue
+            if file is None or not 0 <= n < len(file.symbols) or (kind and file.symbols[n].kind != kind):
+                continue
+            found.append({**file.symbols[n]._asdict(), "path": path, "why": why})
+        # by the words first; then what does something before values, tests last (stable: words order each group)
+        found.sort(key=lambda s: (a_test(s["path"]), s["kind"] in VALUE_KINDS))
+        return {
+            "symbols": found[:limit],
+            "total": total if not kind else len(found),
+            "complete": state.complete and not state.left_out,
+            "left_out": state.left_out,
+            "by": "meaning",
+        }
 
     def definitions(self, project: Project) -> dict[str, list[Symbol]]:
         """Every file the index reads, with its definitions (18.2: what a card's mechanisms are written from)."""

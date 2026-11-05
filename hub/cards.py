@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import projects
+from .meaning import a_test
 from .projects import NOISE, Project, ProjectError
 from .secret_filter import clean, is_secret_file
 from .symbols import CONTAINER_KINDS
@@ -59,7 +60,6 @@ OVERVIEW_CHARS = 4_000  # of the material's SOURCE_BUDGET_CHARS
 OVERVIEW_LINE_CHARS = 160
 OVERVIEW_METHODS = 8
 OVERVIEW_KINDS = {"function", "method", *CONTAINER_KINDS}  # what says what a file does (not «TIMEOUT = 5»)
-TEST_PATH = re.compile(r"(^|/)(tests?|__tests__|specs?)/|(^|/)test_[^/]*$|_test\.[^/]+$|\.(test|spec)\.[^/]+$", re.I)
 MECHANISMS_SAY = (
     f"В разделе «{MECHANISMS}» - 4-8 строк «что: `файл`, `имя`» (точка входа, хранение данных, права и проверки, "
     "обработка ошибок, фоновые задачи - что из этого есть в проекте), только по разделу «Определения в коде»; если "
@@ -123,10 +123,6 @@ def _tree(root, folder: str = "", depth: int = 0, max_depth: int = 3, out: list[
     return out
 
 
-def _a_test(path: str) -> bool:
-    return bool(TEST_PATH.search(path))
-
-
 def _spread(files: list[tuple[str, list]]) -> list[tuple[str, list]]:
     """The files folder by folder in turn - by a folder's first two levels (`hub/api`; all of `hub/proving_tasks/...`
     one), each one's that define the most first - so a few big folders do not take all the room (AFO's own window
@@ -146,7 +142,7 @@ def overview(symbols: SymbolIndex, project: Project) -> str:
     """The code's definitions, a file a line - what «Ключевые механизмы» is written from (18.2): folders in turn,
     tests and private names (_x, __init__) left out, a class with its methods; within OVERVIEW_CHARS."""
     files = [(path, [d for d in defs if d.kind in OVERVIEW_KINDS and not d.name.startswith("_")])
-             for path, defs in symbols.definitions(project).items() if not _a_test(path)]  # fmt: skip
+             for path, defs in symbols.definitions(project).items() if not a_test(path)]  # fmt: skip
     lines, used = [], 0
     for path, defs in _spread([(path, defs) for path, defs in files if defs]):
         named = []

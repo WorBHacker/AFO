@@ -149,13 +149,14 @@ TOOLS: list[dict[str, Any]] = [
         "of this chat's projects), by name: "
         "exact matches first, then names that start with it or contain it; Class.method finds a method of that "
         f"class. Up to {SYMBOL_MATCHES} definitions with file, lines, kind and first line. Quicker and more exact "
-        "than search_code for finding a definition. Knows Python, JavaScript, TypeScript, Go, Rust, Java, C#, C, "
-        "C++.",
+        "than search_code for finding a definition. Several English words of what it does (check user permission) "
+        "find definitions whose name, comments or docstring say them, best first, with what matched. Knows Python, "
+        "JavaScript, TypeScript, Go, Rust, Java, C#, C, C++.",
         "parameters": {
             "type": "object",
             "properties": {
                 "project": ANY_PROJECT,
-                "name": {"type": "string", "description": "The name, or a part of it."},
+                "name": {"type": "string", "description": "The name, a part of it, or words of what it does."},
                 "kind": {
                     "type": "string",
                     "description": f"Only definitions of this kind (optional): {', '.join(SYMBOL_KINDS)}.",
@@ -377,6 +378,9 @@ def _search(args: dict[str, Any], ctx: ToolContext) -> str:
     return f"{head}:\n" + "\n".join(lines) + note + more
 
 
+MEANING_SHOWN = 15  # definitions shown by meaning (18.3): each line carries its why
+
+
 def _symbol_line(symbol: dict[str, Any], *, path: str = "", indent: str = "") -> str:
     where = f"{path}:" if path else ""
     lines = f"{symbol['line']}" if symbol["end_line"] == symbol["line"] else f"{symbol['line']}-{symbol['end_line']}"
@@ -393,9 +397,11 @@ def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
     if kind and kind not in SYMBOL_KINDS:
         raise ToolError(f"`kind` must be one of {', '.join(SYMBOL_KINDS)}")
     many = len(targets) > 1
-    groups, total, partial = [], 0, ""
+    groups, total, partial, by_meaning = [], 0, "", False
     for project in targets:
         found = ctx.symbols.find(project, name, kind=kind, limit=SYMBOL_MATCHES)
+        if found.get("by") == "meaning":  # each line says why too: fewer of them (the measurement: hits are early)
+            found["symbols"] = found["symbols"][:MEANING_SHOWN]
         total += found["total"]
         which = f" ({project.name})" if many else ""
         if found.get("left_out"):
@@ -404,13 +410,22 @@ def _find_symbol(args: dict[str, Any], ctx: ToolContext) -> str:
         elif not found["complete"]:
             partial += f"\n[the index of this project{which} is not complete yet: ask again for the rest]"
         mark = f"[{project.name}] " if many else ""
-        groups.append([mark + _symbol_line(s, path=s["path"]) for s in found["symbols"]])
-    lines = [line for rows in _shared(groups, SYMBOL_MATCHES) for line in rows]
+        groups.append([mark + (f"{s['path']} (the file)" if s["kind"] == "file" else _symbol_line(s, path=s["path"]))
+                       + (f" — {s['why']}" if s.get("why") else "") for s in found["symbols"]])  # fmt: skip
+        by_meaning = found.get("by") == "meaning"
+    shown = MEANING_SHOWN if by_meaning else SYMBOL_MATCHES
+    lines = [line for rows in _shared(groups, shown) for line in rows]
     where = ", ".join(p.name for p in targets)
+    if not lines and by_meaning:
+        return f"no definitions about {name!r} in {where} - try other words the code would use (English){partial}"
     if not lines:
         return f"no definitions named like {name!r} in {where}{partial}"
-    head = f"{total} definitions match {name!r} in " + (f"{len(targets)} projects ({where})" if many else where)
-    head += f", the first {SYMBOL_MATCHES}:" if total > SYMBOL_MATCHES else ":"
+    if by_meaning:  # 18.3: several words - by what the definitions say of themselves
+        head = f"{total} definitions about {name!r} in " + (f"{len(targets)} projects ({where})" if many else where)
+        head += " - by their names, comments and docstrings, best first"
+    else:
+        head = f"{total} definitions match {name!r} in " + (f"{len(targets)} projects ({where})" if many else where)
+    head += f", the first {len(lines)}:" if total > len(lines) else ":"
     return f"{head}\n" + "\n".join(lines) + partial
 
 
