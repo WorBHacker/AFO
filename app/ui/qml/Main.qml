@@ -230,6 +230,14 @@ Window {
     CommandPalette { id: palette }
     BudgetsSheet { id: budgetsSheet }
     SettingsSheet { id: settingsSheet }
+    // the settings' categories: each a sheet of its own, its arrow back to the list (2026-11-05)
+    SettingsLookSheet { id: settingsLook; backTo: settingsSheet }
+    SettingsModelsSheet { id: settingsModels; backTo: settingsSheet }
+    SettingsAgentSheet { id: settingsAgent; backTo: settingsSheet }
+    SettingsStartupSheet { id: settingsStartup; backTo: settingsSheet }
+    SettingsHubSheet { id: settingsHub; backTo: settingsSheet }
+    SettingsTransferSheet { id: settingsTransfer; backTo: settingsSheet }
+    SettingsAboutSheet { id: settingsAbout; backTo: settingsSheet }
     FeedSheet { id: feedSheet }
     WaitingPopup { id: waitingPopup }
     AgentsSheet { id: agentsSheet }
@@ -276,6 +284,13 @@ Window {
         function onUiRequested(what) {
             if (what === "budgets") budgetsSheet.open()
             else if (what === "settings") settingsSheet.open()
+            else if (what === "settings-look") settingsLook.open()
+            else if (what === "settings-models") settingsModels.open()
+            else if (what === "settings-agent") settingsAgent.open()
+            else if (what === "settings-startup") settingsStartup.open()
+            else if (what === "settings-hub") settingsHub.open()
+            else if (what === "settings-transfer") settingsTransfer.open()
+            else if (what === "settings-about") settingsAbout.open()
             else if (what === "feed") feedSheet.open()
             else if (what === "approvals") waitingPopup.open()
             else if (what === "agents") agentsSheet.open()

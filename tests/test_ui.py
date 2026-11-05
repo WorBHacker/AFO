@@ -2355,6 +2355,13 @@ def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
             "palette",
             "budgetsSheet",
             "settingsSheet",
+            "settingsLook",
+            "settingsModels",
+            "settingsAgent",
+            "settingsStartup",
+            "settingsHub",
+            "settingsTransfer",
+            "settingsAbout",
             "renameDialog",
             "approvalsList",
             "agentsSheet",
@@ -5122,6 +5129,54 @@ def test_a_coordinators_board_in_the_window(qapp):
         drawn(lambda: sheet.property("opened") and item_named(sheet.property("contentItem"), "taskRow_d"))
         app.openChat("c0")  # another chat: no board
         wait_until(lambda: not app.bg.busy and not view.shown)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_settings_are_a_button_and_a_sheet_for_each_category(qapp):
+    """2026-11-05 (the user's word: «сделай кнопку и отдельную окну для каждого категории»): «Настройки» lists the
+    categories, each with how it stands now; a category opens a sheet of its own, whose arrow goes back to the list."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.started.update(llama_swap_config="D:/swap/config.yaml", llama_swap_config_found=False,
+                              llama_swap_config_source="chosen", llama_swap_script_source="default")  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.autostart.get("llama_swap_config"))
+        app.openUi("settings")
+        menu = quick.window.findChild(QObject, "settingsSheet")
+        wait_until(lambda: menu.property("opened"))
+        names = ("look", "models", "connections", "agent", "startup", "hub", "transfer", "about")
+        found = {name: item_named(menu.property("contentItem"), f"settings_{name}") for name in names}
+        assert all(found.values()), found
+        assert found["look"].property("summary") == "Русский · Как в системе"
+        assert found["models"].property("summary").startswith("Подбор: Баланс")
+        assert found["agent"].property("summary").endswith("тихие часы 23:00–08:00")
+        startup = found["startup"]
+        assert startup.property("warn") and startup.property("summary") == "llama-swap: файла нет — укажите, где он"
+        from common import __version__
+
+        assert found["about"].property("summary") == f"AFO {__version__} · обновления"
+        found["about"].clicked.emit()  # a category: the list goes, its own sheet comes
+        about = quick.window.findChild(QObject, "settingsAbout")
+        wait_until(lambda: about.property("opened") and not menu.property("visible"))
+        assert item_named(about.property("contentItem"), "releaseCheck") is not None
+        back = item_named(about.property("contentItem"), "sheetBack")
+        assert back.property("visible")
+        back.clicked.emit()
+        wait_until(lambda: menu.property("opened") and not about.property("visible"))
+        assert not item_named(menu.property("contentItem"), "sheetBack").property("visible")  # the list: no arrow
+        found["connections"].clicked.emit()  # this one is the connections' own sheet
+        wait_until(lambda: quick.window.findChild(QObject, "connectionsSheet").property("opened"))
+        QMetaObject.invokeMethod(quick.window.findChild(QObject, "connectionsSheet"), "close")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

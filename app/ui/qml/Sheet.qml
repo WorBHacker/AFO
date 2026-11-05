@@ -2,10 +2,12 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // A panel that slides in from the right over a dimmed window, for budgets and settings. Its content is a column.
+// `backTo`: the sheet it was opened from (a category of the settings - their list): an arrow by the title goes back.
 Drawer {
     id: sheet
     property string title
     property string iconName
+    property var backTo: null
     default property alias content: body.data
 
     // scrolls the panel so that one of its items shows at the top
@@ -31,9 +33,17 @@ Drawer {
             width: parent.width
             height: 60
             Row {
-                x: 24
+                x: sheet.backTo ? 10 : 24
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 10
+                IconButton {
+                    objectName: "sheetBack"
+                    visible: !!sheet.backTo
+                    iconName: "back"
+                    tip: qsTr("Назад: %1").arg(sheet.backTo ? sheet.backTo.title : "")
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: { const back = sheet.backTo; sheet.close(); back.open() }
+                }
                 Icon { name: sheet.iconName; size: 18; tint: Theme.p.text; anchors.verticalCenter: parent.verticalCenter }
                 Text {
                     text: sheet.title
