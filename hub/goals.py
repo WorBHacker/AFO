@@ -109,9 +109,8 @@ def _attached(conn: sqlite3.Connection, conversation_id: str) -> list:
     return attached
 
 
-def _project_of(conn: sqlite3.Connection, conversation_id: str, ref: Any, n: int) -> str:
+def _project_of(attached: list, ref: Any, n: int) -> str:
     """The chat's attached project a criterion runs in: by id or by name; the only one when it says none."""
-    attached = _attached(conn, conversation_id)
     ref = str(ref or "").strip()
     if not ref and len(attached) == 1:
         return attached[0].id
@@ -131,7 +130,40 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
     objective = " ".join(str(data.get("objective") or "").split())[:4000]
     if not objective:
         raise GoalError("say what the goal is (`objective`)")
-    raw = data.get("criteria")
+    criteria = check_criteria(data.get("criteria"), _attached(conn, conversation_id))
+    constraints = data.get("constraints") or []
+    if not isinstance(constraints, list):
+        raise GoalError("`constraints` is a list of rules")
+    constraints = [" ".join(str(c).split())[:500] for c in constraints if str(c).strip()]
+    if len(constraints) > MAX_CONSTRAINTS:
+        raise GoalError(f"at most {MAX_CONSTRAINTS} constraints")
+    model_id = str(data.get("model_id") or "")
+    model = store.get_model(conn, model_id) if model_id else None
+    if model is None:
+        raise GoalError("choose the model that works on the goal (`model_id`)")
+    if not model["enabled"]:
+        raise GoalError(f"model {model_id!r} is not available now")
+    if model["provider"] == CLAUDE_CODE:
+        raise GoalError("Claude Code carries no goal yet (stage 11.7): choose another model")
+    effort = str(data.get("effort") or "medium")
+    if effort not in EFFORTS:
+        raise GoalError(f"effort: one of {', '.join(EFFORTS)}")
+    limits = _limits(data.get("limits"), DEFAULTS)
+    # the judge (11.2): the one named, else the role «Проверка цели» (read again at each check while none is named)
+    named = str(data.get("judge_model_id") or "") or None
+    judge_id = None if named == NO_JUDGE else named or judge.role_model(conn)
+    if judge_id:  # said now, not after the first turn
+        try:
+            judge.check_model(conn, judge_id, _attached(conn, conversation_id))
+        except judge.JudgeError as exc:
+            raise GoalError(str(exc)) from None
+    return {"objective": objective, "criteria": criteria, "constraints": constraints, "model_id": model_id,
+            "effort": effort, "judge_model_id": named, **limits}  # fmt: skip
+
+
+def check_criteria(raw: Any, attached: list) -> list[dict[str, Any]]:
+    """A goal's criteria - or a coordinator's task's (16.3, D50) - checked: each a command that only looks at a
+    project (`attached`: where it may run) with the exit code it must end with, or a rule in words for the judge."""
     if not isinstance(raw, list) or not raw:
         raise GoalError("a goal needs at least one criterion: a command and its exit code, or a rule in words")
     if len(raw) > MAX_CRITERIA:
@@ -166,37 +198,10 @@ def check_contract(conn: sqlite3.Connection, conversation_id: str, data: dict[st
         path = item.get("path") or ""
         if not isinstance(path, str):
             raise GoalError(f"criterion {n}: `path` is a folder inside the project")
-        criteria.append({"kind": "command", "project_id": _project_of(conn, conversation_id, item.get("project"), n),
+        criteria.append({"kind": "command", "project_id": _project_of(attached, item.get("project"), n),
                          "command": command, "path": path.strip(), "expected_exit_code": expected,
                          "timeout_s": max(1, min(timeout, commands.MAX_TIMEOUT_S))})  # fmt: skip
-    constraints = data.get("constraints") or []
-    if not isinstance(constraints, list):
-        raise GoalError("`constraints` is a list of rules")
-    constraints = [" ".join(str(c).split())[:500] for c in constraints if str(c).strip()]
-    if len(constraints) > MAX_CONSTRAINTS:
-        raise GoalError(f"at most {MAX_CONSTRAINTS} constraints")
-    model_id = str(data.get("model_id") or "")
-    model = store.get_model(conn, model_id) if model_id else None
-    if model is None:
-        raise GoalError("choose the model that works on the goal (`model_id`)")
-    if not model["enabled"]:
-        raise GoalError(f"model {model_id!r} is not available now")
-    if model["provider"] == CLAUDE_CODE:
-        raise GoalError("Claude Code carries no goal yet (stage 11.7): choose another model")
-    effort = str(data.get("effort") or "medium")
-    if effort not in EFFORTS:
-        raise GoalError(f"effort: one of {', '.join(EFFORTS)}")
-    limits = _limits(data.get("limits"), DEFAULTS)
-    # the judge (11.2): the one named, else the role «Проверка цели» (read again at each check while none is named)
-    named = str(data.get("judge_model_id") or "") or None
-    judge_id = None if named == NO_JUDGE else named or judge.role_model(conn)
-    if judge_id:  # said now, not after the first turn
-        try:
-            judge.check_model(conn, judge_id, _attached(conn, conversation_id))
-        except judge.JudgeError as exc:
-            raise GoalError(str(exc)) from None
-    return {"objective": objective, "criteria": criteria, "constraints": constraints, "model_id": model_id,
-            "effort": effort, "judge_model_id": named, **limits}  # fmt: skip
+    return criteria
 
 
 def create_goal(conn: sqlite3.Connection, conversation_id: str, contract: dict[str, Any], *, by: str) -> str:
@@ -330,7 +335,7 @@ def start_note(goal: dict[str, Any], *, head: str = "", said: list[str] | None =
     )
 
 
-def _missing_text(results: list[dict[str, Any]], extra: list[str] | None = None) -> str:
+def missing_text(results: list[dict[str, Any]], extra: list[str] | None = None) -> str:
     """What a check found missing, as lines: the criteria not met, then what else the check found (`extra`: files
     that do not parse, tests lost, the judge's items)."""
     out = []
@@ -345,8 +350,8 @@ def _missing_text(results: list[dict[str, Any]], extra: list[str] | None = None)
     return "\n".join([*out, *(f"- {item}" for item in extra or [])])
 
 
-def _check_text(found: dict[str, Any]) -> str:
-    missing = _missing_text(found["results"], found.get("extra") or [])
+def check_text(found: dict[str, Any]) -> str:
+    missing = missing_text(found["results"], found.get("extra") or [])
     verdict = found.get("verdict") or "INCOMPLETE"
     head = {"REGRESSED": "REGRESSED - something that worked was lost (see below); put it back first",
             "INCOMPLETE": "not met"}.get(verdict, "not met")  # fmt: skip
@@ -362,7 +367,7 @@ def continue_note(goal: dict[str, Any], found: dict[str, Any], said: list[str], 
         + (f"{head}\n" if head else "")
         + "The work on the goal goes on. No greetings, no report to the user - go straight to your tools.\n"
         f"GOAL: {goal['objective']}\n"
-        + _check_text(found)
+        + check_text(found)
         + (f"THE USER ADDED WHILE YOU WORKED - it comes first in this step:\n{words}\n" if words else "")
         + f"{usage_line(goal)}\n"
         "Do the next step toward the goal.\n"
@@ -383,7 +388,7 @@ def last_turn_note(goal: dict[str, Any], found: dict[str, Any], said: list[str])
         "2. Leave every file you changed in a working state - no half-written code.\n"
         "3. End with a handover report: what is done and checked; where the work stopped (the file and the line); "
         "what to do when the goal is resumed.\n"
-        + _check_text(found)
+        + check_text(found)
         + (f"THE USER ADDED WHILE YOU WORKED:\n{words}\n" if words else "")
         + "</goal_loop>"
     )
@@ -676,8 +681,8 @@ class Goals:
                 return
             await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
                                     persist=False)  # fmt: skip
-            results = await self._run_checks(goal)
-            found = await self._contour(goal, results)
+            results = await self.run_checks(goal)
+            found = await self.contour(goal, results)
             goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
             verdict = found["verdict"]
             if verdict == "ACHIEVED":
@@ -704,14 +709,17 @@ class Goals:
             await self._checked(goal, "continue", verdict, found, "")
             await self._turn(goal, continue_note(goal, found, said))
 
-    async def _contour(self, goal: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    async def contour(self, goal: dict[str, Any], results: list[dict[str, Any]],
+                      bases: dict[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
         """The check after the commands (Q26): what changed since the goal began, the hub's own look at it (syntax,
         tests lost), then - when that is clean - the judge. {verdict, results, extra, feedback, evidence, judge?,
-        detail? (achieved), blocked? (why the human is needed)}."""
+        detail? (achieved), blocked? (why the human is needed)}. `bases`: where each git project's files stood at the
+        start, when the caller keeps them (a coordinator's task, 16.3) - else the goal's own, from the database."""
         conversation_id = goal["conversation_id"]
         projects = await self._chat.tool_projects(conversation_id)
-        bases = await self._db.acall(lambda conn: {r[0]: r[1] for r in conn.execute(
-            "SELECT project_id, tree FROM goal_baselines WHERE goal_id = ?", (goal["id"],))})  # fmt: skip
+        if bases is None:
+            bases = await self._db.acall(lambda conn: {r[0]: r[1] for r in conn.execute(
+                "SELECT project_id, tree FROM goal_baselines WHERE goal_id = ?", (goal["id"],))})  # fmt: skip
         try:
             evidence = await self._judge.evidence(conversation_id, projects, bases, goal["created_at"])
         except Exception as exc:  # what changed is unknown: the commands still count
@@ -790,7 +798,7 @@ class Goals:
 
         return await self._db.acall(write)
 
-    async def _run_checks(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
+    async def run_checks(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
         """The first contour: each command criterion, run in a terminal of its project; met - its exit code."""
         projects = {p.id: p for p in await self._chat.tool_projects(goal["conversation_id"])}
         results = []
@@ -834,10 +842,10 @@ class Goals:
 
     async def _checked(self, goal: dict[str, Any], route: str, verdict: str | None, found: dict[str, Any],
                        detail: str) -> None:  # fmt: skip
-        """The check is appended (D14), and the goal takes the way it found. `found` (from _contour): the criteria's
+        """The check is appended (D14), and the goal takes the way it found. `found` (from contour): the criteria's
         results, what else is missing, the judge's word, what changed - kept with the check."""
         criteria = found.get("results") or []
-        missing = [line[2:] for line in _missing_text(criteria, found.get("extra")).splitlines()
+        missing = [line[2:] for line in missing_text(criteria, found.get("extra")).splitlines()
                    if line.startswith("- ")]  # fmt: skip
         results = [*criteria, {"kind": "found", "extra": found.get("extra") or [], "feedback": found.get("feedback")
                                or ""}]  # fmt: skip

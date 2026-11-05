@@ -160,6 +160,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.chat.agents = app.state.agents  # a coordinator gives tasks to other agents (D20)
         app.state.judge = Judge(db, bus, gateway, paths.snapshots)  # checks goals and agents' reports (D44, 11.2)
         app.state.goals = app.state.chat.goals = Goals(db, bus, app.state.chat, app.state.judge)  # D44, 11.1
+        app.state.agents.goals = app.state.goals  # a coordinator's tasks are checked as goals are (16.3, D50)
         app.state.proving = ProvingGround(db, bus, app.state.chat, app.state.goals, paths.root / "proving")  # D45
         app.state.autonomy.judge = app.state.judge
         # approvals from the phone (D21): talks to Telegram only once the user has set the bot's token

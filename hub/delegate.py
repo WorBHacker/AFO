@@ -11,6 +11,7 @@ from typing import Any
 
 MAX_TASKS = 8
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+ROUNDS = 3  # a task with criteria: its work, then rounds after checks that found it short - in all (16.3)
 
 DELEGATE: dict[str, Any] = {
     "name": "delegate_task",
@@ -56,6 +57,15 @@ DELEGATE_MANY: dict[str, Any] = {
                             "items": {"type": "string"},
                             "description": "task_ids of this batch that must be done first.",
                         },
+                        "criteria": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "How the hub checks the task when the agent ends - the agent cannot "
+                            "declare it done: {command, project?, expected_exit_code?, path?} - a command that only "
+                            "looks (tests, a build), run in the task's copy of the project; or {rule} - in words, "
+                            f"for the judge model. Not met: the agent works on with what the check found, up to "
+                            f"{ROUNDS} rounds in all; then the task needs a person. The user allows the commands.",
+                        },
                     },
                     "required": ["task_id", "agent_profile", "prompt"],
                 },
@@ -89,7 +99,9 @@ def check_batch(args: dict[str, Any]) -> list[dict[str, Any]]:
             raise BatchError(f"task_id {task_id!r} is used twice")
         deps = item.get("dependencies") or []
         deps = list(dict.fromkeys(str(d) for d in deps)) if isinstance(deps, list) else [str(deps)]
-        tasks.append({"task_id": task_id, "agent_profile": agent, "prompt": prompt, "dependencies": deps})
+        criteria = item.get("criteria") or None  # checked against the agent's projects (hub/agents.py)
+        tasks.append({"task_id": task_id, "agent_profile": agent, "prompt": prompt, "dependencies": deps,
+                      "criteria": criteria})  # fmt: skip
     ids = {t["task_id"] for t in tasks}
     for task in tasks:
         for dep in task["dependencies"]:

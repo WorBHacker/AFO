@@ -8,9 +8,7 @@ A local AI ecosystem for Windows: a **hub** that knows your projects, processes,
 window** on Qt Quick (QML, drawn by the CPU — the graphics card stays with the models). VS Code, Claude Code and agents
 connect to the hub. The window speaks English and Russian (Settings → Язык · Language).
 
-Until 2026-11-04 the program was called LocalChat (its working name); the project folder and the internal names keep
-it: the packages (`python -m hub`), the `LOCALCHAT_*` variables, headers and file formats. Every decision and stage is
-in [ARCHITECTURE.md](ARCHITECTURE.md) (in Russian).
+Every decision and stage is in [ARCHITECTURE.md](ARCHITECTURE.md) (in Russian).
 
 ## Install
 

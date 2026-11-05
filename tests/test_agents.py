@@ -248,12 +248,14 @@ def _first_text(messages):
 class ByTask:
     """Answers by the run's task, its first message: the coordinator's asks for tools as scripted; any other is a
     worker's - it works for `pause` seconds (stopping when asked) and answers; «зациклись» calls a tool forever. Who
-    worked when is recorded."""
+    worked when is recorded. `edits` / `work`: what a worker's task (its first line) does with a tool at the start of
+    each round - the first message, then each word of the hub after a check (16.3)."""
 
-    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",), edits=None):
+    def __init__(self, name, locality, scripts, pause=0.3, refs=("echo",), edits=None, work=None):
         self.name = name
         self.scripts = {task: list(steps) for task, steps in scripts.items()}
-        self.edits = dict(edits or {})  # a worker's task (its first line) -> the edit_file it makes first
+        self.work = {k: [{"name": "edit_file", "input": v}] for k, v in (edits or {}).items()}
+        self.work |= {k: list(v) for k, v in (work or {}).items()}
         self.pause = pause
         self.calls = []  # (model_ref, messages, tools) per request
         self.active = self.peak = 0
@@ -276,9 +278,10 @@ class ByTask:
             yield StreamEvent("end", usage=usage, stop_reason="tool_use",
                               tool_calls=[{"id": f"n{len(self.calls)}", "name": "nothing", "input": {}}])  # fmt: skip
             return
-        change = self.edits.pop(task.splitlines()[0], None)
-        if steps is None and change is not None:
-            call = {"id": f"e{len(self.calls)}", "name": "edit_file", "input": change}
+        planned = self.work.get(task.splitlines()[0])
+        fresh = [m for m in messages if m["role"] != "system"][-1]["role"] == "user"  # a round begins
+        if steps is None and planned and fresh:
+            call = {"id": f"e{len(self.calls)}", **planned.pop(0)}
             yield StreamEvent("end", usage=usage, stop_reason="tool_use", tool_calls=[call])
             return
         if steps is None:
@@ -302,9 +305,10 @@ def plug(hub, provider):  # noqa: F811
 
 
 def batch(*tasks, call_id="b1"):
+    """(task_id, agent, prompt[, dependencies[, criteria]]) each."""
     return {"id": call_id, "name": "delegate_tasks", "input": {"tasks": [
-        {"task_id": t[0], "agent_profile": t[1], "prompt": t[2], **({"dependencies": t[3]} if len(t) > 3 else {})}
-        for t in tasks]}}  # fmt: skip
+        {"task_id": t[0], "agent_profile": t[1], "prompt": t[2], **({"dependencies": t[3]} if len(t) > 3 else {}),
+         **({"criteria": t[4]} if len(t) > 4 else {})} for t in tasks]}}  # fmt: skip
 
 
 def outputs(hub, run_id):  # noqa: F811
@@ -479,22 +483,109 @@ def test_the_user_throws_the_tasks_changes_away(hub, repo):  # noqa: F811
     assert (repo / "src" / "app.py").read_text(encoding="utf-8") == before
 
 
+# --- a task checked before the coordinator gets it (stage 16.3, D50) ---
+
+DONE = "if (Test-Path done.txt) { exit 0 } else { exit 1 }"
+WRITE_DONE = {"name": "write_file", "input": {"project": "proj", "path": "done.txt", "content": "ok\n"}}
+
+
+def allow_checks(hub):  # noqa: F811
+    """The batch's check commands are the user's to allow (the coordinator wrote them): one card, then go."""
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True})
+    return asked
+
+
+def test_a_task_goes_round_after_round_until_its_check_passes(hub, repo):  # noqa: F811
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "second")
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    tasks = batch(("a", "Правщик", "Сделай done.txt", [], [{"command": DONE}]), ("b", "Читатель", "Потом", ["a"]))
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.05, work={"Сделай done.txt": [
+        {"name": "edit_file", "input": edit(old="print('hi')", new="print('a')")}, WRITE_DONE]}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file", "write_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = allow_checks(hub)
+    assert asked["conversation_id"] == run_id and DONE in asked["input"]["command"]  # before anything starts
+    assert ended(hub, run_id)["status"] == "done"
+    board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    a = board["a"]
+    assert (a["status"], a["rounds"], a["verdict"]) == ("done", 2, "ACHIEVED")  # the first round fell short
+    assert board["b"]["status"] == "done"  # it waited for a checked a
+    told = [m for m in provider.calls if _first_text(m[1]).startswith("Сделай done.txt")]
+    first = _first_text(told[0][1])
+    assert "DONE WHEN (the hub checks it when you end; you cannot declare it done):" in first and DONE in first
+    note = [m for m in told[-1][1] if m["role"] == "user"][-1]["content"]
+    assert "round 2 of 3" in note and "CHECK OF YOUR LAST TURN: not met." in note
+    assert f"`{DONE}` ended with exit code 1 (expected 0)" in note
+    assert not (repo / "done.txt").exists()  # the check ran in the task's copy, not in the project
+    (said,) = outputs(hub, run_id)
+    assert "[a] «Правщик» — done (checked: цель достигнута: все критерии выполнены)." in said["output"]
+
+
+def test_a_task_that_never_passes_needs_a_person(hub, repo):  # noqa: F811
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    tasks = batch(("a", "Правщик", "Не делай", [], [{"command": DONE}]), ("b", "Читатель", "Потом", ["a"]),
+                  ("w", "Правщик", "Словами", [], [{"rule": "В README есть раздел «Запуск»"}]))  # fmt: skip
+    plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.02))
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    allow_checks(hub)
+    assert ended(hub, run_id, timeout=60)["status"] == "done"
+    board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    a = board["a"]
+    assert (a["status"], a["rounds"], a["verdict"]) == ("escalated", 3, "INCOMPLETE")
+    assert a["detail"].startswith("not passed after 3 rounds: criterion 1:")
+    assert (board["b"]["status"], board["b"]["detail"]) == ("skipped", "a needs a person")
+    w = board["w"]  # words, and no model chosen to judge them: a person decides, at once
+    assert (w["status"], w["rounds"]) == ("escalated", 1) and "проверить некому" in w["detail"]
+    (said,) = outputs(hub, run_id)
+    assert said["output"].startswith("3 tasks: 2 escalated, 1 skipped.") and said["error"] is True
+
+
+def test_the_checks_of_a_batch_are_the_users_to_allow(hub, repo):  # noqa: F811
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    wrong = batch(("a", "Правщик", "x", [], [{"command": "git push origin main"}]), call_id="b0")
+    tasks = batch(("a", "Правщик", "x", [], [{"command": DONE}]))
+    plug(hub, ByTask("fake", "local", {"Сделай": [[wrong], [tasks]]}, pause=0.02))
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не сейчас"})
+    assert ended(hub, run_id)["status"] == "done"
+    first, second = outputs(hub, run_id)
+    assert first["output"].startswith("task 'a': criterion 1: «git push origin main» changes things")
+    assert second["output"].startswith("nothing started: the checks' commands were not allowed") and second["error"]
+    assert "не сейчас" in second["output"]
+    assert hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"] == []  # nothing began
+
+
 def test_tasks_not_begun_when_the_hub_stopped_are_cancelled(hub):  # noqa: F811
     plug(hub, ByTask("fake", "local", {}))
     made = profile(hub, name="Координатор", tools=["delegate_tasks"])
 
-    def interrupted(conn):  # a batch whose second task had not begun when the hub stopped
+    def interrupted(conn):  # a batch whose second task had not begun when the hub stopped, its third was checked
         run_id = agents.create_run(conn, agents.get_profile(conn, made["id"]), "Сделай", [])
         conn.execute("UPDATE agent_runs SET status = 'done' WHERE conversation_id = ?", (run_id,))
         agents.save_batch(conn, run_id, [
             {"task_id": "a", "agent_profile": "Координатор", "prompt": "x", "dependencies": []},
-            {"task_id": "b", "agent_profile": "Координатор", "prompt": "y", "dependencies": ["a"]}])  # fmt: skip
+            {"task_id": "b", "agent_profile": "Координатор", "prompt": "y", "dependencies": ["a"]},
+            {"task_id": "c", "agent_profile": "Координатор", "prompt": "z", "dependencies": [],
+             "criteria": [{"kind": "semantic", "rule": "готово", "n": 1}]}])  # fmt: skip
         conn.execute("UPDATE delegated_tasks SET status = 'done', answer = 'ok' WHERE task_id = 'a'")
+        conn.execute("UPDATE delegated_tasks SET status = 'checking' WHERE task_id = 'c'")
         return run_id
 
     run_id = hub.app.state.db.call(interrupted)
     hub.portal.call(hub.app.state.agents.start)
     tasks = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]
     assert [(t["task_id"], t["status"], t["detail"]) for t in tasks] == [
-        ("a", "done", None), ("b", "cancelled", "the hub restarted before it began")]  # fmt: skip
+        ("a", "done", None), ("b", "cancelled", "the hub restarted before it began"),
+        ("c", "escalated", agents.UNCHECKED)]  # nobody checks it now: a person looks  # fmt: skip
+    assert tasks[2]["criteria"] == [{"kind": "semantic", "rule": "готово", "n": 1}]
     assert hub.get("/v1/runs/nope/tasks").status_code == 404

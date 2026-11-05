@@ -37,11 +37,13 @@ from typing import Any
 
 from common.i18n import tr
 
-from . import agent_tools, autonomous, compact, computer, mail, memory, sandbox, store
+from . import agent_tools, autonomous, compact, computer, goals, judge, mail, memory, sandbox, store
+from .approvals import trusted_skips
+from .autonomous import NOTE
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
-from .delegate import DELEGATE, DELEGATE_MANY, BatchError, check_batch, order
+from .delegate import DELEGATE, DELEGATE_MANY, ROUNDS, BatchError, check_batch, order
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
@@ -64,6 +66,12 @@ CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks wh
               "the same place - mend them first: ")  # fmt: skip
 ONE_LEVEL = "you are a sub-agent yourself: you cannot give tasks further (one level, D20)"
 ENDED = {"done": "done", "error": "failed", "cancelled": "cancelled"}  # a run's end -> its task's
+# a task's statuses, as the board counts them: checking - its run is done, the hub checks it; escalated - its check
+# did not pass in ROUNDS rounds, or cannot be made: a person is needed (16.3)
+STATUSES = ("done", "escalated", "failed", "cancelled", "skipped", "checking", "running", "pending")
+MISSED = {"failed": "failed", "skipped": "was skipped", "cancelled": "was cancelled", "escalated": "needs a person"}
+DONE_WHEN = "\n\nDONE WHEN (the hub checks it when you end; you cannot declare it done):\n"
+UNCHECKED = "the hub restarted before the task was checked: nobody checks it now"
 RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
 
@@ -305,7 +313,8 @@ def autonomous_profile(conn: sqlite3.Connection, model_id: str) -> dict[str, Any
 
 
 def _task(row: sqlite3.Row) -> dict[str, Any]:
-    return dict(row) | {"dependencies": json.loads(row["dependencies"])}
+    return dict(row) | {"dependencies": json.loads(row["dependencies"]),
+                        "criteria": json.loads(row["criteria"]) if row["criteria"] else []}  # fmt: skip
 
 
 def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
@@ -338,9 +347,10 @@ def save_batch(conn: sqlite3.Connection, coordinator: str, tasks: list[dict[str,
     number = conn.execute("SELECT COALESCE(MAX(batch), 0) + 1 FROM delegated_tasks WHERE coordinator = ?",
                           (coordinator,)).fetchone()[0]  # fmt: skip
     conn.executemany(
-        "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [(coordinator, t["task_id"], number, n, t["agent_profile"], t["prompt"], json.dumps(t["dependencies"]))
+        "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies, criteria)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [(coordinator, t["task_id"], number, n, t["agent_profile"], t["prompt"], json.dumps(t["dependencies"]),
+          json.dumps(t["criteria"], ensure_ascii=False) if t.get("criteria") else None)
          for n, t in enumerate(tasks)],
     )  # fmt: skip
     return number
@@ -357,14 +367,19 @@ def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[s
     """What the coordinator gets back: how many ended how, then each task with the agent's answer and, for one that
     wrote into a sandbox, the files it changed there - per project (16.2)."""
     counts = collections.Counter(t["status"] for t in tasks)
-    told = [f"{counts[s]} {s}" for s in ("done", "failed", "cancelled", "skipped", "running", "pending") if counts[s]]
+    told = [f"{counts[s]} {s}" for s in STATUSES if counts[s]]
     lines = [f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}: {', '.join(told)}."]
     for t in tasks:
         head = f"[{t['task_id']}] «{t['agent']}» — {t['status']}"
         if t["status"] == "skipped":
             lines.append(f"{head}: {t['detail']}")
             continue
-        head += f" ({t['detail']})" if t["detail"] and t["status"] != "done" else ""
+        if t["status"] == "done" and t.get("verdict"):  # its check passed (16.3)
+            head += f" (checked: {t['detail']})"
+        elif t["detail"] and t["status"] != "done":
+            head += f" ({t['detail']})"
+        if t["status"] == "escalated" and t.get("feedback"):
+            head += f". The judge's last word: {t['feedback']}"
         answer = t["answer"] or ""
         if len(answer) > ANSWER_CHARS:
             answer = answer[:ANSWER_CHARS] + "\n… (cut here; the whole answer is in the agent's run)"
@@ -376,6 +391,32 @@ def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[s
             entry += "\nIts changes wait in a sandbox, not in the project yet: " + "; ".join(files)
         lines.append(entry)
     return "\n\n".join(lines)
+
+
+def _criteria(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """A task's criteria checked as a goal's are (hub/goals.py), against the agent's projects; numbered, with the
+    project's name - as the worker's word and the judge read them."""
+    attached = []
+    for pid in profile["project_ids"]:
+        try:
+            attached.append(get_project(conn, pid))
+        except ProjectError:
+            continue
+    try:
+        checked = goals.check_criteria(task["criteria"], attached)
+    except goals.GoalError as exc:
+        raise AgentError(f"task {task['task_id']!r}: {exc}") from None
+    names = {p.id: p.name for p in attached}
+    return [c | {"n": n, "project_name": names.get(c.get("project_id"), ""), "path": c.get("path", "")}
+            for n, c in enumerate(checked, 1)]  # fmt: skip
+
+
+def round_note(task: dict[str, Any], found: dict[str, Any], round_no: int) -> str:
+    """The worker's word after a check that found its task short (16.3): what is missing, the judge's word."""
+    return (f'{NOTE} <task_check round="{round_no}" of="{ROUNDS}">\n'
+            f"The hub checked your task: not done yet - this is round {round_no} of {ROUNDS}. Fix what is missing; "
+            "the check runs again when you end. After the last round a person looks at it.\n"
+            f"YOUR TASK: {task['prompt'][:2000]}\n" + goals.check_text(found) + "</task_check>")  # fmt: skip
 
 
 async def _either(first: asyncio.Event, second: asyncio.Event) -> None:
@@ -398,6 +439,7 @@ class AgentRunner:
         self._held: set[str] = set()  # runs holding the GPU now
         self._waiting: dict[str, asyncio.Task] = {}  # runs queued for the GPU
         self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
+        self.goals = None  # set by the server: the goals' checks check a batch's tasks too (16.3)
 
     async def start(self) -> list[str]:
         """Runs the hub was running (or had queued) when it stopped go on now; a batch's tasks that had not begun
@@ -406,6 +448,9 @@ class AgentRunner:
         def unfinished_runs(conn) -> list[str]:
             conn.execute("UPDATE delegated_tasks SET status = 'cancelled', detail = ?, ended_at = ?"
                          " WHERE status = 'pending'", ("the hub restarted before it began", utc_now()))  # fmt: skip
+            conn.execute("UPDATE delegated_tasks SET status = 'escalated', detail = ?, ended_at = ? WHERE status ="
+                         " 'checking' OR (status = 'running' AND criteria IS NOT NULL)",
+                         (UNCHECKED, utc_now()))  # fmt: skip
             return [r["conversation_id"] for r in conn.execute(
                 "SELECT conversation_id FROM agent_runs WHERE status IN ('queued', 'running') ORDER BY created_at"
             ).fetchall()]  # fmt: skip
@@ -531,10 +576,22 @@ class AgentRunner:
             for task_id, profile in found.items():
                 model = store.get_model(conn, profile["model_id"])
                 local[task_id] = model["id"] if model is not None and model["locality"] == "local" else None
-            return found, local, save_batch(conn, parent_id, tasks)
+            for task in tasks:  # how the hub checks each (16.3): against the agent's own projects
+                if task["criteria"]:
+                    task["criteria"] = _criteria(conn, task, found[task["task_id"]])
+            return found, local, store.context_settings(conn, parent_id)["mode"]
 
+        if any(t["criteria"] for t in tasks) and self.goals is None:
+            return "the hub cannot check tasks here: give the batch without `criteria`", True
         try:
-            profiles, local, number = await self._db.acall(prepare)
+            profiles, local, mode = await self._db.acall(prepare)
+        except AgentError as exc:
+            return str(exc), True
+        refused = await self._allow_checks(parent_id, tasks, mode, cancel)
+        if refused:
+            return f"nothing started: the checks' commands were not allowed ({refused})", True
+        try:
+            number = await self._db.acall(lambda conn: save_batch(conn, parent_id, tasks))
         except AgentError as exc:
             return str(exc), True
         ordered = order(tasks, lambda t: local[t["task_id"]])
@@ -580,8 +637,7 @@ class AgentRunner:
 
             def start(conn) -> str | None:
                 rows = {t["task_id"]: t for t in list_tasks(conn, parent_id)}
-                words = {"failed": "failed", "skipped": "was skipped", "cancelled": "was cancelled"}
-                missed = [f"{d} {words.get(rows[d]['status'], rows[d]['status'])}" for d in task["dependencies"]
+                missed = [f"{d} {MISSED.get(rows[d]['status'], rows[d]['status'])}" for d in task["dependencies"]
                           if rows[d]["status"] != "done"]  # fmt: skip
                 if missed:
                     _mark(conn, parent_id, task_id, status="skipped", detail="; ".join(missed), ended_at=utc_now())
@@ -590,6 +646,8 @@ class AgentRunner:
                          for d in task["dependencies"]]  # fmt: skip
                 prompt = task["prompt"] + ("\n\nWhat the tasks this one waited for found:\n\n" + "\n\n".join(found)
                                            if found else "")  # fmt: skip
+                if task["criteria"]:  # it works knowing how it is checked (16.3)
+                    prompt += DONE_WHEN + goals.criteria_text({"criteria": task["criteria"]})
                 try:
                     run_id = create_run(conn, profile, prompt, profile["project_ids"], parent_run=parent_id)
                 except (AgentError, ProjectError) as exc:
@@ -617,11 +675,26 @@ class AgentRunner:
                     await self._db.acall(lambda conn: conn.execute(
                         "UPDATE agent_runs SET task = task || ? WHERE conversation_id = ?",
                         (CONFLICTED + ", ".join(clashed), child_id)))  # fmt: skip
-                await self._launch(child_id, resume=False)
-                await _either(ended, cancel)
-                if not ended.is_set():  # the coordinator was stopped: so is this task
-                    await self.cancel(child_id)
-                    await ended.wait()
+                bases = await self._bases(child_id) if task["criteria"] else {}
+                since = utc_now()
+                note = None
+                for round_no in range(1, ROUNDS + 1):  # one round without criteria (16.3)
+                    await self._launch(child_id, resume=False, text=note)
+                    await _either(ended, cancel)
+                    if not ended.is_set():  # the coordinator was stopped: so is this task
+                        await self.cancel(child_id)
+                        await ended.wait()
+                        return
+                    if not task["criteria"]:
+                        return
+                    note = await self._check(parent_id, task, child_id, round_no, bases, since)
+                    if note is None:
+                        return
+                    if cancel.is_set():
+                        await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
+                                                                ended_at=utc_now()))  # fmt: skip
+                        return
+                    ended = self._ended[child_id] = asyncio.Event()
             finally:
                 if cloud is not None:
                     cloud.release()
@@ -629,6 +702,83 @@ class AgentRunner:
             if child_id is not None:
                 self._ended.pop(child_id, None)
             ends[task_id].set()
+
+    async def _allow_checks(self, parent_id: str, tasks: list[dict[str, Any]], mode: str,
+                            cancel: asyncio.Event) -> str | None:  # fmt: skip
+        """The check commands of the batch are the coordinator model's: the user allows them, one card per project
+        (a goal's are allowed by setting it - D44); a «Доверенный» coordinator does not ask for those its rights let
+        through (D17), not after reading the web (D19). None - allowed; else why not."""
+        by_project: dict[str, list[str]] = {}
+        for task in tasks:
+            for c in task["criteria"] or []:
+                if c["kind"] == "command":
+                    by_project.setdefault(c["project_id"], [])
+                    if c["command"] not in by_project[c["project_id"]]:
+                        by_project[c["project_id"]].append(c["command"])
+        if not by_project:
+            return None
+        tainted = await self._chat.read_the_web(parent_id)
+        for project_id, commands in by_project.items():
+            project = await self._db.acall(lambda conn, p=project_id: get_project(conn, p))
+            if mode == "trusted" and not tainted and all(
+                    trusted_skips("run_command", {"command": c}, project.root) for c in commands):  # fmt: skip
+                continue
+            asked = {
+                "project": project.name,
+                "command": "\n".join(commands),
+                "purpose": "the checks of the coordinator's tasks: each runs in a task's copy when it ends",
+            }
+            allowed, why = await self._chat._ask_user(parent_id, "run_command", asked, project, cancel, cover=False)
+            if not allowed:
+                return why or "not allowed"
+        return None
+
+    async def _bases(self, run_id: str) -> dict[str, str]:
+        """Where each git project's files stand as the task begins (in its copy): the judge's diff runs from there."""
+        out = {}
+        for project in await self._chat.tool_projects(run_id):
+            if judge.is_git(project.root):
+                try:
+                    out[project.id] = await asyncio.to_thread(judge.snapshot, project.root)
+                except judge.JudgeError as exc:
+                    log.warning("task run %s: no starting point for %s: %s", run_id, project.name, exc)
+        return out
+
+    async def _check(self, parent_id: str, task: dict[str, Any], run_id: str, round_no: int, bases: dict[str, str],
+                     since: str) -> str | None:  # fmt: skip
+        """A task's check after its round (16.3): the goal's two contours - the criteria's commands in the task's
+        copy, then the hub's look and the judge. Passed - the task is done; short with rounds left - the worker's
+        word for the next one; short after the last, or a check nobody can make - a person is needed (None)."""
+        task_id = task["task_id"]
+        await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="checking", rounds=round_no))
+        goal = {
+            "id": f"task:{parent_id}:{task_id}",
+            "conversation_id": run_id,
+            "objective": task["prompt"],
+            "criteria": task["criteria"],
+            "constraints": [],
+            "judge_model_id": None,
+            "created_at": since,
+        }
+        results = await self.goals.run_checks(goal)
+        found = await self.goals.contour(goal, results, bases=bases)
+        verdict, feedback = found.get("verdict"), found.get("feedback") or None
+        missing = [line[2:] for line in goals.missing_text(found["results"], found.get("extra")).splitlines()
+                   if line.startswith("- ")]  # fmt: skip
+        if verdict == "ACHIEVED":
+            fields = {"status": "done", "detail": found.get("detail")}
+        elif found.get("blocked"):
+            fields = {"status": "escalated", "detail": found["blocked"]}
+        elif round_no >= ROUNDS:
+            short = "; ".join(missing) or verdict or "the check did not pass"
+            fields = {"status": "escalated", "detail": f"not passed after {ROUNDS} rounds: {short}"[:1000]}
+        else:
+            await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="running", verdict=verdict,
+                                                    feedback=feedback))  # fmt: skip
+            return round_note(task, found, round_no + 1)
+        await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, verdict=verdict, feedback=feedback,
+                                                ended_at=utc_now(), **fields))  # fmt: skip
+        return None
 
     async def _seed(self, parent_id: str, task: dict[str, Any], run_id: str) -> list[str]:
         """A sandboxed task's copies of its projects start from what the tasks it waited for left there (16.2), not
@@ -733,16 +883,17 @@ class AgentRunner:
             return True
         return self._chat.cancel(run_id)
 
-    async def _launch(self, run_id: str, *, resume: bool) -> None:
+    async def _launch(self, run_id: str, *, resume: bool, text: str | None = None) -> None:
+        """The run starts (or goes on: `text` - the hub's word for its next round, 16.3)."""
         run = await self._db.acall(lambda conn: get_run(conn, run_id))
         model = await self._db.acall(lambda conn: store.get_model(conn, run["model_id"]))
         local = model is not None and model["locality"] == "local"
-        task = asyncio.create_task(self._go(run, local=local, resume=resume))
+        task = asyncio.create_task(self._go(run, local=local, resume=resume, text=text))
         if local:
             self._waiting[run_id] = task
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
 
-    async def _go(self, run: dict[str, Any], *, local: bool, resume: bool) -> None:
+    async def _go(self, run: dict[str, Any], *, local: bool, resume: bool, text: str | None = None) -> None:
         run_id = run["conversation_id"]
         await self._status(run_id, "queued")
         if local:
@@ -761,7 +912,7 @@ class AgentRunner:
             (utc_now(), run_id)))  # fmt: skip
         current = await self._db.acall(lambda conn: get_run(conn, run_id))
         await self._bus.publish("run.started", {"run": current, "resumed": resume})
-        text = RESUMED if resume else run["task"]
+        text = RESUMED if resume else text or run["task"]
         try:
             await self._chat.start(run_id, model_id, text, limits=limits,
                                    on_end=lambda outcome: self._finish(run_id, outcome))  # fmt: skip
@@ -794,10 +945,13 @@ class AgentRunner:
                 (status, outcome.detail or None, totals.steps if totals else 0, totals.cost if totals else 0.0,
                  utc_now(), run_id),
             )  # fmt: skip
-            conn.execute(  # a batch's task: the board says how it ended (16.1)
-                "UPDATE delegated_tasks SET status = ?, answer = ?, detail = ?, ended_at = ? WHERE run_id = ?",
-                (ENDED[status], _last_answer(conn, run_id) or None, outcome.detail or None, utc_now(), run_id),
-            )
+            conn.execute(  # a batch's task: the board says how it ended (16.1); one with criteria - checked next (16.3)
+                "UPDATE delegated_tasks SET status = CASE WHEN ? = 'done' AND criteria IS NOT NULL THEN 'checking'"
+                " ELSE ? END, answer = ?, detail = ?, ended_at = ? WHERE run_id = ? AND status IN ('running',"
+                " 'checking')",
+                (ENDED[status], ENDED[status], _last_answer(conn, run_id) or None, outcome.detail or None, utc_now(),
+                 run_id),
+            )  # fmt: skip
             return get_run(conn, run_id)
 
         run = await self._db.acall(write)
