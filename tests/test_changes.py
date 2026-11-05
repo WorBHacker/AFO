@@ -92,6 +92,47 @@ def test_a_change_is_kept_and_can_be_undone(repo, tmp_path):
         changes.revert({**made, "reverted_at": "x"}, p, folder)
 
 
+# --- a write allowed in part: its hunks (stage 17.2, D51) ---
+
+
+def test_hunks_and_a_file_rebuilt_from_some_of_them(repo):
+    """The hunks of a write are those its unified diff shows, in that order; the file rebuilt from some of them has
+    the model's lines in those and its own in the rest - with its byte order mark and Windows line ends."""
+    old = "\ufeff" + "".join(f"строка {n}\r\n" for n in range(1, 41))
+    (repo / "long.txt").write_bytes(old.encode("utf-8"))
+    model = "".join(f"строка {n}\n" for n in range(1, 41))
+    model = model.replace("строка 10\n", "строка 10, правка\n").replace("строка 20\n", "")
+    model = model.replace("строка 38\n", "строка 38\nновая\n")  # a change, a deletion, an addition
+    planned = changes.plan("write_file", project(repo), {"project": "proj", "path": "long.txt", "content": model})
+    found = changes.hunks(planned)
+    shown = changes.diff(planned.path, planned.before, planned.after)
+    assert [h["header"] for h in found] == [line for line in shown.splitlines() if line.startswith("@@")]
+    assert [h["index"] for h in found] == [0, 1, 2] and "-строка 20\r\n" in found[1]["text"]
+    assert changes.hunks_diff(planned, found) == shown  # the card's diff, made of the hunks
+
+    part = changes.compose(planned, {0, 2})
+    text = part.after.decode("utf-8")
+    assert part.after.startswith(b"\xef\xbb\xbf") and "\n" not in text.replace("\r\n", "")  # its mark, its line ends
+    assert "строка 10, правка\r\n" in text and "строка 20\r\n" in text and "строка 38\r\nновая\r\n" in text
+    assert text.startswith("\ufeffстрока 1\r\nстрока 2\r\n")  # all of the start, before the first hunk's context
+    assert (part.before, part.target) == (planned.before, planned.target)
+    assert changes.compose(planned, {0, 1, 2}).after == planned.after
+    assert changes.compose(planned, set()).after == planned.before
+
+
+def test_what_the_model_is_told_of_the_hunks_left_out(repo):
+    code = "def first():\n    a = 1\n    return a\n" + "\n" * 8 + "class Box:\n    def second(self):\n        b = 1\n"
+    (repo / "two.py").write_text(code, encoding="utf-8", newline="\n")
+    args = {"project": "proj", "path": "two.py", "old_text": "= 1", "new_text": "= 2", "replace_all": True}
+    planned = changes.plan("edit_file", project(repo), args)
+    assert len(changes.hunks(planned)) == 2
+    assert changes.left_out(planned, {0}) == ["line 14 (in Box.second)"]
+    assert changes.left_out(planned, {1}) == ["line 2 (in first)"]
+    added = changes.plan("write_file", project(repo), {"project": "proj", "path": "two.py",
+                                                       "content": "# top\n" + code + "x = 0\ny = 0\n"})  # fmt: skip
+    assert changes.left_out(added, set()) == ["before line 1", "after line 14"]
+
+
 # --- through a chat ---
 
 
@@ -169,6 +210,40 @@ def test_a_denial_reaches_the_model_and_nothing_changes(hub, repo):  # noqa: F81
     assert result["error"] is True and result["output"] == "not done: the user said no - не трогай app.py"
     assert (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('hi')")
     assert hub.get(f"/v1/projects/{pid}/changes").json()["changes"] == []
+
+
+def test_a_write_allowed_in_part(hub, repo):  # noqa: F811
+    """17.2 (D51): the card's request carries the write's hunks; the user allows some of them, this once. The file
+    gets those; the model is told what was left out and why, and may not write the whole file again before it
+    reads it: the hub does not count it as knowing the result."""
+    (repo / "conf.py").write_text("".join("x = 1\n" if n in (1, 20, 40) else f"# {n}\n" for n in range(1, 41)),
+                                  encoding="utf-8", newline="\n")  # fmt: skip
+    read = {"id": "r1", "name": "read_file", "input": {"project": "proj", "path": "conf.py"}}
+    every = {"id": "w1", "name": "edit_file", "input": edit(path="conf.py", old="x = 1", new="x = 2", replace_all=True)}
+    whole = {"id": "w2", "name": "write_file", "input": {"project": "proj", "path": "conf.py", "content": "x = 3\n"}}
+    pid, conv, _ = setup_chat(hub, repo, [[read], [every], [whole]])
+    say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    hunks = asked["preview"]["hunks"]
+    assert [h["index"] for h in hunks] == [0, 1, 2] and all(h["header"] in asked["preview"]["text"] for h in hunks)
+    url = f"/v1/approvals/{asked['id']}"
+    assert hub.post(url, json={"allow": True, "hunks": []}).status_code == 409  # none: that is a «no»
+    assert hub.post(url, json={"allow": True, "hunks": [0, 3]}).status_code == 409  # no hunk 3
+    assert hub.post(url, json={"allow": True, "hunks": [0], "scope": "chat"}).status_code == 409  # a part: once
+    assert hub.post(url, json={"allow": False, "hunks": [0]}).status_code == 409
+    decided = hub.post(url, json={"allow": True, "hunks": [2, 0], "comment": "x на 20-й строке не трогай"})
+    assert decided.status_code == 200 and decided.json()["hunks"] == [0, 2]
+    results = [m["content"][0] for m in finished(hub, conv) if m["role"] == "tool"]
+    said = results[1]["output"]
+    assert results[1]["error"] is False and said.startswith("conf.py: 2 of 3 hunks applied, as the user chose")
+    assert "left out - the file keeps its own text there: line 20." in said and "x на 20-й строке не трогай" in said
+    lines = (repo / "conf.py").read_text(encoding="utf-8").splitlines()
+    assert (lines[0], lines[19], lines[39]) == ("x = 2", "x = 1", "x = 2")
+    assert results[2]["error"] is True and "has changed since you read it" in results[2]["output"]
+    (change,) = hub.get(f"/v1/projects/{pid}/changes").json()["changes"]
+    assert change["approval_id"] == asked["id"]  # kept like any change: it can be undone
+    assert hub.post(f"/v1/changes/{change['id']}/revert", json={}).status_code == 200
+    assert (repo / "conf.py").read_text(encoding="utf-8").count("x = 1") == 3
 
 
 def test_the_chats_mode(hub, repo):  # noqa: F811

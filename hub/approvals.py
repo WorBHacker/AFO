@@ -8,6 +8,7 @@ tool, or for a command the same command - except destructive commands (git push,
 asked every time (D17). Each request is a row in `approvals` with who asked, what, and who answered how; nothing is
 forgotten. The hub's own models ask here too, before they write a file (write_file, edit_file). A write into a file
 the window's editor holds with unsaved edits (`Unsaved`, D47) is asked in every mode, and no answer covers it.
+Such a write's request shows its hunks too (17.2, D51), and the user may allow only some of them - this once.
 
 Events: approval.requested {approval}, approval.decided {approval} - both in the feed. A request still open when
 its run ends (or the hub stops) is closed as expired: nobody waits for that answer any more.
@@ -31,7 +32,7 @@ from urllib.parse import urlsplit
 from common import invisible
 from common.i18n import N_, tr
 
-from . import projects
+from . import changes, projects
 from .db import Database, utc_now
 from .events import EventBus
 
@@ -142,6 +143,7 @@ class Decision:
     allow: bool
     comment: str = ""
     approval_id: str | None = None
+    hunks: tuple[int, ...] | None = None  # a write allowed in part (17.2): the hunks chosen; None - the whole
 
 
 def kind(tool: str) -> str:
@@ -300,17 +302,22 @@ def grant_key(tool: str, data: dict[str, Any], root: Path | None = None) -> str 
     return tool
 
 
-def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str]:
+def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, Any]:
     """What the user should see to decide: a command, a diff of the file as it would become, a URL, or the input.
     Characters a person cannot see (bidi, zero-width - «Trojan Source», D46) are shown as ⟦U+202E⟧, with a warning
     in `hidden`."""
     shown = _preview(tool, data, root)
     if hidden := invisible.warning(shown.get("text", "")):
         shown = {**shown, "text": invisible.reveal(shown["text"]), "hidden": hidden}
+        if "hunks" in shown:
+            shown["hunks"] = [h | {"text": invisible.reveal(h["text"])} for h in shown["hunks"]]
     return shown
 
 
-def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, str]:
+def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, Any]:
+    if tool in HUB_WRITES and root is not None and (planned := _planned(tool, data, root)) is not None:
+        found = changes.hunks(planned)
+        return {"kind": "diff", "text": _cut(changes.hunks_diff(planned, found)), "note": planned.path, "hunks": found}
     if tool in HUB_WRITES:
         data = {
             "file_path": data.get("path", ""),
@@ -396,6 +403,16 @@ def _preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, st
     return {"kind": "text", "text": _cut(json.dumps(data, ensure_ascii=False, indent=2)), "note": ""}
 
 
+def _planned(tool: str, data: dict[str, Any], root: Path) -> changes.Planned | None:
+    """The hub's own write as it would be done (17.2): the diff and its hunks from the very bytes the write would
+    put - so the hunks the user chooses are the ones it rebuilds the file from. None when it cannot be worked out
+    (the file changed meanwhile, say): the card shows the request as it was asked."""
+    try:
+        return changes.plan_at(root, tool, data)
+    except changes.WriteError, OSError:
+        return None
+
+
 def _diff(tool: str, data: dict[str, Any], root: Path | None) -> str:
     name = str(data.get("file_path", ""))
     path = Path(name)
@@ -446,7 +463,8 @@ def _cut(text: str) -> str:
 
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     data = json.loads(row["input"])
-    return dict(row) | {"input": data, "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
+    return dict(row) | {"input": data, "hunks": json.loads(row["hunks"]) if row["hunks"] else None,
+                        "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
                         "opaque": opaque(row["tool"], data), "network": network(row["tool"], data),
                         "class": CLASSED.get(row["tool"], "")}  # fmt: skip
 
@@ -540,11 +558,30 @@ class ApprovalQueue:
         finally:
             self._waiting.pop(approval_id, None)
 
-    async def decide(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "", by: str) -> dict:
+    async def decide(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "", by: str,
+                     hunks: list[int] | None = None) -> dict:  # fmt: skip
+        """The user's answer; `hunks` - a write allowed in part (17.2, D51): some hunks of its diff, this once."""
         if allow and scope not in SCOPES:
             raise ApprovalError(f"unknown scope {scope!r}: {', '.join(SCOPES)}")
+        chosen = None if hunks is None else await self._chosen(approval_id, allow, scope, hunks)
         return await self._close(approval_id, "allowed" if allow else "denied", scope if allow else None,
-                                 comment.strip(), by)  # fmt: skip
+                                 comment.strip(), by, chosen)  # fmt: skip
+
+    async def _chosen(self, approval_id: str, allow: bool, scope: str, hunks: list[int]) -> list[int] | None:
+        """The hunks of a write the user allows (17.2): at least one, each of them there; all of them - the whole."""
+        if not allow:
+            raise ApprovalError("hunks are chosen when allowing; to refuse all of it, deny")
+        if scope != "once":
+            raise ApprovalError("a part of a write is allowed this once only")
+        shown = (await self.get(approval_id))["preview"].get("hunks")
+        if not shown:
+            raise ApprovalError("this request has no hunks to choose")
+        chosen = sorted(set(hunks))
+        if not chosen:
+            raise ApprovalError("no hunk chosen: to refuse all of it, deny")
+        if outside := [n for n in chosen if not 0 <= n < len(shown)]:
+            raise ApprovalError(f"this write has {len(shown)} hunks, numbered from 0: there is no hunk {outside[0]}")
+        return None if len(chosen) == len(shown) else chosen
 
     async def expire(self, conversation_id: str) -> int:
         """The run of this chat ended: its open requests close, and whoever still waits gets a denial."""
@@ -581,15 +618,18 @@ class ApprovalQueue:
                       "hub_data": hub_data(row["tool"], row["input"], root),
                       "unsaved": self.unsaved.holds(row["tool"], row["input"], root)}  # fmt: skip
 
-    async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str) -> dict:
+    async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str,
+                     hunks: list[int] | None = None) -> dict:  # fmt: skip
+        part = json.dumps(hunks) if hunks else None
+
         def write(conn: sqlite3.Connection) -> sqlite3.Row | None:
             # a destructive command has no grant key, a request without a project no project: an answer "for the
             # chat" or "for the project" then allows this once only (D17)
             updated = conn.execute(
                 "UPDATE approvals SET status = ?, scope = CASE WHEN ? IN ('chat', 'project') AND (grant_key IS NULL"
-                " OR (? = 'project' AND project_id IS NULL)) THEN 'once' ELSE ? END, comment = ?, decided_at = ?,"
-                " decided_by = ? WHERE id = ? AND status = 'pending'",
-                (status, scope, scope, scope, comment or None, utc_now(), by, approval_id),
+                " OR (? = 'project' AND project_id IS NULL)) THEN 'once' ELSE ? END, comment = ?, hunks = ?,"
+                " decided_at = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
+                (status, scope, scope, scope, comment or None, part, utc_now(), by, approval_id),
             ).rowcount
             if not updated:
                 return None
@@ -609,7 +649,8 @@ class ApprovalQueue:
         future = self._waiting.get(approval_id)
         if future is not None and not future.done():
             allowed = status == "allowed"
-            future.set_result(Decision(allowed, "" if allowed else comment or DENIED, approval_id))
+            future.set_result(Decision(allowed, comment if allowed else comment or DENIED, approval_id,
+                                       tuple(hunks) if hunks else None))  # fmt: skip
         return row
 
 

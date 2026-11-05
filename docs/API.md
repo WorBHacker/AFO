@@ -417,7 +417,7 @@
 |---|---|---|---|---|
 | GET | `/v1/approvals` | только окно | `pending()` |  |
 | GET | `/v1/approvals/{approval_id}` | только окно | `get_approval()` |  |
-| POST | `/v1/approvals/{approval_id}` | только окно | `answer()` | тело `{allow: bool, scope: Literal['once', 'chat', 'project'] = 'once', comment: str = ''}` |
+| POST | `/v1/approvals/{approval_id}` | только окно | `answer()` | тело `{allow: bool, scope: Literal['once', 'chat', 'project'] = 'once', comment: str = '', hunks: list[int] \| None = None}` |
 
 ### claude_code
 

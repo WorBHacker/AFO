@@ -75,7 +75,7 @@ from . import (
     web,
     websearch,
 )
-from .approvals import trusted_skips
+from .approvals import Decision, trusted_skips
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -860,15 +860,18 @@ class ChatService:
             if not done[1]:
                 seen[key] = changes.digest(planned.after)  # it knows its own write
             return done
-        approval_id = None
+        approval_id, chosen, comment = None, None, ""
         tainted = await self.read_the_web(conversation_id)
         unsaved = self.approvals is not None and self.approvals.unsaved.holds(call["name"], args, project.root)
         if settings["mode"] != "trusted" or tainted or unsaved:  # trust does not count after reading the web (D19),
             # nor over the user's edits not saved yet in the window's editor (D47)
-            allowed, approval_id = await self._ask_user(conversation_id, call["name"], args, project, cancel,
-                                                        cover=not tainted)  # fmt: skip
-            if not allowed:
-                return approval_id, True
+            decision = await self._decision(conversation_id, call["name"], args, project, cancel, cover=not tainted)
+            if isinstance(decision, str):
+                return decision, True
+            approval_id, chosen, comment = decision.approval_id, decision.hunks, decision.comment
+        whole = planned
+        if chosen is not None:  # allowed in part (17.2): the file rebuilt with the hunks chosen
+            planned = await asyncio.to_thread(changes.compose, planned, set(chosen))
         if self.snapshots is None:
             return "not done: the hub keeps no snapshots here, so the change could not be undone", True
         try:
@@ -877,10 +880,13 @@ class ChatService:
             return str(exc), True
         except OSError as exc:
             return f"could not write {planned.path}: {exc.strerror or exc}", True
-        seen[key] = hashes[1]  # it knows its own write
+        if chosen is None:
+            seen[key] = hashes[1]  # it knows its own write - not one done in part: it reads the file first
         change = await self._db.acall(lambda conn: changes.record(conn, project.id, planned, hashes, call["name"],
                                                                    conversation_id, approval_id))  # fmt: skip
         await self._bus.publish("file.changed", {"change": change, "project_id": project.id}, project_id=project.id)
+        if chosen is not None:
+            return await asyncio.to_thread(changes.partly, whole, set(chosen), change["id"], comment), False
         return f"{changes.summary(planned)} (change {change['id']}; the user can undo it)", False
 
     async def _sandbox_write(self, conversation_id: str, project, planned) -> tuple[str, bool]:
@@ -1040,10 +1046,20 @@ class ChatService:
     ) -> tuple[bool, str | None]:
         """Asks in the approval queue and waits - or stops waiting when the user stops the run. (True, approval id)
         when allowed; (False, what the model should read) otherwise."""
+        decision = await self._decision(conversation_id, tool, args, project, cancel, cover=cover)
+        if isinstance(decision, str):
+            return False, decision
+        return True, decision.approval_id
+
+    async def _decision(
+        self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
+    ) -> Decision | str:
+        """_ask_user's answer as it is - a write may be allowed in part (17.2): the hunks chosen, and the user's
+        word with them; or what the model should read when there is no «yes»."""
         if conversation_id in self.proving:  # nobody watches a run of the proving ground to say yes (D45)
-            return False, PROVING_NO
+            return PROVING_NO
         if self.approvals is None:
-            return False, "not done: the hub has no approval queue to ask the user"
+            return "not done: the hub has no approval queue to ask the user"
         asking = asyncio.create_task(self.approvals.ask(
             tool, args, conversation_id=conversation_id, project_id=project.id if project else None,
             root=project.root if project else None, cover=cover))  # fmt: skip
@@ -1054,11 +1070,11 @@ class ChatService:
             asking.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await asking
-            return False, NOT_RUN
+            return NOT_RUN
         decision = asking.result()
         if not decision.allow:
-            return False, f"not done: the user said no - {decision.comment}"
-        return True, decision.approval_id
+            return f"not done: the user said no - {decision.comment}"
+        return decision
 
     async def _consume(
         self, conversation_id, provider, model_ref, prompt, effort, cancel, tools=None, params=None

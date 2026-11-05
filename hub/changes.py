@@ -7,6 +7,10 @@ still as the change left it (or forced). Only inside the chat's projects, never 
 UTF-8 text only. A write is whole or not at all (beside the file, then in its place), and an existing file keeps
 its byte order mark and its line ends (D46). Events: file.changed, file.reverted - both in the feed.
 
+The user may allow a write in part (17.2, D51): its hunks are the ones its unified diff shows, and the file is rebuilt
+along the diff - a chosen hunk's lines as the model wrote them, the others as the file has them; the model is told
+where the rest are (`left_out`).
+
 The user's own saves from the window's editor take the same way (D47, step 14.1; D29: one way of writing): checked
 against the version the editing began from, written in the file's encoding (cp1251 and UTF-16 too), kept as a
 change of the tool `save` - «вы» in «Изменения» - and undone like a model's; a secret file's content is not kept.
@@ -14,6 +18,7 @@ change of the tool `save` - «вы» in «Изменения» - and undone like
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import hashlib
 import os
@@ -30,9 +35,12 @@ from common.i18n import tr
 from .db import utc_now
 from .projects import Project, ProjectError, linked_secret, resolve_inside
 from .secret_filter import is_secret_file
+from .symbols import CONTAINER_KINDS, language_of, parse
 
 MAX_BYTES = 2 * 1024 * 1024
 DIFF_LINES = 400
+CONTEXT = 3  # unchanged lines around a change in a hunk, as a unified diff has them (difflib's own default)
+ENCLOSING = {"function", "method", *CONTAINER_KINDS}  # definitions that name where a hunk is (not «x = 1»)
 SAVE_ENCODINGS = ("utf-8", "utf-8 BOM", "cp1251", "utf-16")  # as projects.read_file names them
 SAVE_TOOL = "save"  # a change the user made in the window's editor (D47): «вы» in «Изменения»
 
@@ -109,15 +117,15 @@ def load(folder: Path, name: str) -> bytes:
         raise WriteError(f"the kept version {name[:12]} is gone from data/snapshots") from exc
 
 
-def _target(project: Project, args: dict[str, Any]) -> tuple[str, Path]:
+def _target(root: Path, args: dict[str, Any]) -> tuple[str, Path]:
     rel = args.get("path")
     if not isinstance(rel, str) or not rel.strip():
         raise WriteError("`path` must be a file's path inside the project")
     try:
-        target = resolve_inside(project.root, rel)
+        target = resolve_inside(root, rel)
     except ProjectError as exc:
         raise WriteError(str(exc)) from exc
-    shown = target.relative_to(project.root).as_posix()
+    shown = target.relative_to(root).as_posix()
     if not shown or target.is_dir():
         raise WriteError(f"{rel} is a folder, not a file")
     if is_secret_file(shown) or is_secret_file(rel) or linked_secret(target):  # what it is, as asked, its links
@@ -270,7 +278,12 @@ def save(planned: Planned, folder: Path) -> tuple[str | None, str] | None:
 
 def plan(tool: str, project: Project, args: dict[str, Any]) -> Planned:
     """What a write would do, checked: the model's mistakes come back as WriteError for it to read."""
-    rel, target = _target(project, args)
+    return plan_at(project.root, tool, args)
+
+
+def plan_at(root: Path, tool: str, args: dict[str, Any]) -> Planned:
+    """plan() in the project at `root` - also what the approval card shows (hub/approvals.py, 17.2)."""
+    rel, target = _target(root, args)
     before = _current(target)
     if tool == "write_file":
         content = args.get("content")
@@ -330,6 +343,99 @@ def diff(path: str, before: bytes | None, after: bytes | None) -> str:
     ))  # fmt: skip
     text = "".join(line if line.endswith("\n") else line + "\n" for line in lines[:DIFF_LINES])
     return text + (tr("… ещё {count} строк", count=len(lines) - DIFF_LINES) + "\n" if len(lines) > DIFF_LINES else "")
+
+
+def _lines(data: bytes | None) -> list[str]:
+    return (data or b"").decode("utf-8", "replace").splitlines(keepends=True)
+
+
+def _diffed(planned: Planned) -> tuple[list[tuple], list[list[tuple]]]:
+    """The write's opcodes, all of them, and its hunks as difflib groups them for a unified diff (diff(), the card's
+    diff) - those with a change. All are read first: grouping trims the first and last opcodes in difflib's own list."""
+    matcher = difflib.SequenceMatcher(None, _lines(planned.before), _lines(planned.after))
+    ops = list(matcher.get_opcodes())
+    return ops, [g for g in matcher.get_grouped_opcodes(CONTEXT) if any(op[0] != "equal" for op in g)]
+
+
+def _range(start: int, stop: int) -> str:
+    """One side of a hunk's @@ line, as difflib writes it."""
+    if stop - start == 1:
+        return str(start + 1)
+    return f"{start if stop == start else start + 1},{stop - start}"
+
+
+def hunks(planned: Planned) -> list[dict[str, Any]]:
+    """The write's hunks (17.2, D51): those its unified diff shows, in that order - the index, the @@ line, the
+    lines (context, removed, added)."""
+    old, new = _lines(planned.before), _lines(planned.after)
+    out = []
+    for index, group in enumerate(_diffed(planned)[1]):
+        first, last = group[0], group[-1]
+        lines = []
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                lines += [" " + line for line in old[i1:i2]]
+            else:
+                lines += ["-" + line for line in old[i1:i2]] + ["+" + line for line in new[j1:j2]]
+        out.append({"index": index, "header": f"@@ -{_range(first[1], last[2])} +{_range(first[3], last[4])} @@",
+                    "text": "".join(line if line.endswith("\n") else line + "\n" for line in lines)})  # fmt: skip
+    return out
+
+
+def hunks_diff(planned: Planned, found: list[dict[str, Any]]) -> str:
+    """The unified diff of the write made of its hunks - what diff() gives, without comparing the file again."""
+    if not found:
+        return ""
+    head = f"--- {'a/' + planned.path if planned.before is not None else '/dev/null'}\n+++ b/{planned.path}\n"
+    return head + "".join(f"{h['header']}\n{h['text']}" for h in found)
+
+
+def compose(planned: Planned, chosen: set[int]) -> Planned:
+    """The write with only the hunks `chosen` (17.2): the file rebuilt along the diff - in a chosen hunk the lines
+    as the model wrote them, elsewhere as the file has them. Nothing is shifted or patched, so nothing lands in the
+    wrong place; the file's mark and line ends are in both versions already (D46)."""
+    ops, groups = _diffed(planned)
+    taken = {op for index, group in enumerate(groups) if index in chosen for op in group if op[0] != "equal"}
+    old, new = _lines(planned.before), _lines(planned.after)
+    out: list[str] = []
+    for op in ops:
+        _tag, i1, i2, j1, j2 = op
+        out += new[j1:j2] if op in taken else old[i1:i2]
+    return dataclasses.replace(planned, after="".join(out).encode("utf-8"))
+
+
+def left_out(planned: Planned, chosen: set[int]) -> list[str]:
+    """Where the hunks not chosen are, in the file as it was - what the model reads (17.2): «line 14 (in
+    Box.second)», «lines 3-5», «after line 14»; the definition by the symbol index's parser when the file is code."""
+    language = language_of(planned.path)
+    defs = [d for d in (parse(planned.before, language) if language and planned.before else []) if d.kind in ENCLOSING]
+    out = []
+    for index, group in enumerate(_diffed(planned)[1]):
+        if index in chosen:
+            continue
+        changed = [op for op in group if op[0] != "equal"]
+        start, end = changed[0][1], changed[-1][2]  # in the old file: 0-based, the end not counted
+        if start == end:  # only added: between two lines
+            where = f"after line {start}" if start else "before line 1"
+            inside = [d for d in defs if d.line <= start and d.end_line >= start + 1]
+        else:
+            where = f"line {start + 1}" if end - start == 1 else f"lines {start + 1}-{end}"
+            inside = [d for d in defs if d.line <= start + 1 <= d.end_line]
+        if inside:
+            d = max(inside, key=lambda d: d.line)  # the innermost
+            where += f" (in {d.container + '.' if d.container else ''}{d.name})"
+        out.append(where)
+    return out
+
+
+def partly(whole: Planned, chosen: set[int], change_id: int, comment: str) -> str:
+    """What the model reads after a write allowed in part (17.2): what went, where the rest is, what the user said -
+    and that it reads the file before changing it again."""
+    total = len(hunks(whole))
+    said = f" The user said: {comment}." if comment else ""
+    return (f"{whole.path}: {len(chosen)} of {total} hunks applied, as the user chose (change {change_id}; the user "
+            f"can undo it); left out - the file keeps its own text there: {'; '.join(left_out(whole, chosen))}.{said} "
+            "The file is not what you proposed: read it again before you change it.")  # fmt: skip
 
 
 def summary(planned: Planned) -> str:

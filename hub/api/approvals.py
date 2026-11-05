@@ -22,6 +22,7 @@ class Answer(BaseModel):
     allow: bool
     scope: Literal["once", "chat", "project"] = "once"  # allowed: this time, for the chat, or always in the project
     comment: str = Field(default="", max_length=2000)  # a denial's reason: the agent reads it
+    hunks: list[int] | None = None  # a write allowed in part (17.2, D51): the hunks of its preview, this once
 
 
 def _app_only(client: Client) -> None:
@@ -57,6 +58,7 @@ async def answer(
     queue = request.app.state.approvals
     try:
         await queue.get(approval_id)
-        return await queue.decide(approval_id, allow=body.allow, scope=body.scope, comment=body.comment, by=client.name)
+        return await queue.decide(approval_id, allow=body.allow, scope=body.scope, comment=body.comment, by=client.name,
+                                  hunks=body.hunks)  # fmt: skip
     except ApprovalError as exc:
         raise _error(exc) from exc
