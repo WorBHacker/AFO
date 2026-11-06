@@ -22,6 +22,9 @@ own (`<data>/claude-code/chats/<chat>`), the user's files elsewhere. The chat's 
 
 It may work on a chat's goal (11.7, D44): the hub starts each turn with its note, within `--max-turns`, and hears how
 the turn ended; a goal's investigation and its constraints refuse its permission requests (hub/guard.py).
+
+The chat's depth goes as `--effort` (21.2) - the goal's, on a goal's turn - except to a session whose model has no
+effort levels; the user's CLAUDE_CODE_EFFORT_LEVEL, which would win over the flag, is then not passed on.
 """
 
 from __future__ import annotations
@@ -72,6 +75,10 @@ AFTER_RESULT_S = 10.0  # Claude Code may finish background work after its answer
 WAIT_MS = 24 * 3600 * 1000  # an MCP call may wait this long: the user answers a permission request when they can
 NOT_PASSED = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
               "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "CLAUDE_CODE_SIMPLE"}  # fmt: skip
+EFFORT_ENV = "CLAUDE_CODE_EFFORT_LEVEL"  # wins over --effort: not passed when the hub gives the chat's depth (21.2)
+# models with no effort levels (its documentation: Opus 4.6 and later, Sonnet 4.6, Haiku 5.5 and the 5.x models have
+# them): Claude 3, the 4.0-4.5 ones and Haiku 4.x - as the CLI names the model of a session
+NO_EFFORT = re.compile(r"^claude-(?:\d|(?:opus|sonnet|haiku)-(?:[0-3]|4-[0-5]|4-\d{8})(?:\D|$)|haiku-4)")
 APPEND_PROMPT = (
     "You work under AFO, a hub on the user's computer that knows all their projects. Its MCP tools "
     "(mcp__localchat__*) give the map of the projects and their links (get_ecosystem_map), a project's card "
@@ -275,12 +282,14 @@ def user_line(text: str) -> bytes:
     return json.dumps(message, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
-def child_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+def child_env(environ: dict[str, str] | None = None, *, effort: bool = False) -> dict[str, str]:
     """Claude Code's environment: the user's, without what would make it bill an API key or another provider
     instead of the subscription (D8: in -p mode an ANTHROPIC_API_KEY in the environment always wins), and with MCP
     time limits that let a permission request wait for the user (by default an HTTP call ends after 60 s, an idle
-    one after 5 min, and a long one is moved to the background)."""
-    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k.upper() not in NOT_PASSED}
+    one after 5 min, and a long one is moved to the background). `effort`: the hub gives the depth (--effort), so
+    the user's CLAUDE_CODE_EFFORT_LEVEL, which would win over it, stays out (21.2)."""
+    dropped = NOT_PASSED | ({EFFORT_ENV} if effort else set())
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k.upper() not in dropped}
     return env | {"MCP_TOOL_TIMEOUT": str(WAIT_MS), "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT": "0",
                   "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"}  # fmt: skip
 
@@ -297,6 +306,14 @@ def private_rules() -> list[str]:
     drive, colon, rest = path.partition(":")
     where = f"//{drive.lower()}{rest}" if colon and len(drive) == 1 else f"/{path}"
     return [f"Read({where}/**)", f"Edit({where}/**)"]
+
+
+def effort_for(effort: str | None, session_model: str | None) -> str | None:
+    """The chat's depth for --effort (21.2): None when the session's model, as the CLI named it, has no effort levels.
+    A level the model lacks (xhigh on Opus 4.6) the CLI itself takes down to the nearest it has."""
+    if not effort or (session_model and NO_EFFORT.match(session_model)):
+        return None
+    return effort
 
 
 def error_text(result: dict[str, Any]) -> str:
@@ -328,6 +345,7 @@ class Turn:
     project: Project | None  # None: a chat with no project - Claude Code works in `root`, a folder of the chat's own
     root: Path
     process: subprocess.Popen | None = None
+    effort: bool = False  # the hub gives the depth (21.2)
 
 
 class ClaudeCodeRunner:
@@ -388,13 +406,16 @@ class ClaudeCodeRunner:
         return found
 
     def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path],
-                project: bool = True, max_turns: int | None = None) -> list[str]:  # fmt: skip
+                project: bool = True, max_turns: int | None = None,
+                effort: str | None = None) -> list[str]:  # fmt: skip
         prompt = APPEND_PROMPT + ("" if project else NO_PROJECT_PROMPT)
         argv = [*self.cli(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--include-partial-messages", "--mcp-config", str(config), "--permission-prompt-tool",
                 PERMISSION_TOOL, "--append-system-prompt", prompt]  # fmt: skip
         if model_ref != "default":
             argv += ["--model", model_ref]
+        if effort:  # the chat's depth (21.2)
+            argv += ["--effort", effort]
         if resume:
             argv += ["--resume", resume]
         for folder in extra_dirs:
@@ -421,19 +442,22 @@ class ClaudeCodeRunner:
         client_id: str | None,
         *,
         max_turns: int | None = None,
+        effort: str | None = None,
     ) -> dict[str, Any]:
-        """One turn; how it ended: {usage, error ("" - none), limited (it stopped at `max_turns`), cancelled}."""
+        """One turn at the chat's depth (`effort`); how it ended: {usage, error ("" - none), limited (it stopped at
+        `max_turns`), cancelled}."""
         project = projects[0] if projects else None
         folder = project.root if project else self.chat_folder(conversation_id)
         session, earlier = await self._db.acall(lambda conn: _session_and_history(conn, conversation_id))
         resume = session.get("id") if session.get("cwd") == str(folder) else None  # a session lives in its folder
         if not resume and earlier:
             text = f"<earlier_in_this_chat>\n{earlier}\n</earlier_in_this_chat>\n\n{text}"
+        effort = effort_for(effort, session.get("model"))
         config = await asyncio.to_thread(self.mcp_config, conversation_id, conversation_id)
         argv = await asyncio.to_thread(self.command, model["model_ref"], config, resume=resume,
                                        extra_dirs=[p.root for p in projects[1:]], project=project is not None,
-                                       max_turns=max_turns)  # fmt: skip
-        turn = Turn(conversation_id, project, folder)
+                                       max_turns=max_turns, effort=effort)  # fmt: skip
+        turn = Turn(conversation_id, project, folder, effort=effort is not None)
         self.turns[conversation_id] = turn
         try:
             return await self._turn(turn, argv, model, text, cancel, client_id)
@@ -453,7 +477,7 @@ class ClaudeCodeRunner:
         lines: asyncio.Queue[bytes | None] = asyncio.Queue()
         errors: collections.deque[str] = collections.deque(maxlen=STDERR_LINES)
         try:
-            process = await asyncio.to_thread(_start, argv, turn.root)
+            process = await asyncio.to_thread(_start, argv, turn.root, turn.effort)
         except OSError as exc:
             raise GatewayError(f"Claude Code did not start: {exc}") from exc
         turn.process = process
@@ -557,10 +581,10 @@ class ClaudeCodeRunner:
                 await asyncio.to_thread(stop_tree, turn.process.pid, STOP_WAIT_S)
 
 
-def _start(argv: list[str], cwd: Path) -> subprocess.Popen:
+def _start(argv: list[str], cwd: Path, effort: bool = False) -> subprocess.Popen:
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=child_env(), creationflags=flags)  # fmt: skip
+                            env=child_env(effort=effort), creationflags=flags)  # fmt: skip
 
 
 def _wind_down(process: subprocess.Popen) -> None:

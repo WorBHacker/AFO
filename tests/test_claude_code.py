@@ -22,6 +22,7 @@ from hub.claude_code import (
     Translator,
     child_env,
     earlier_text,
+    effort_for,
     error_text,
     find_cli,
     usage_of,
@@ -115,6 +116,20 @@ def test_usage_errors_input_and_environment():
     env = child_env({"PATH": "x", **billing})
     assert env["PATH"] == "x" and not set(billing) & set(env)
     assert int(env["MCP_TOOL_TIMEOUT"]) >= 3600_000 and env["CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] == "0"
+
+
+def test_the_chats_depth_and_the_models_that_have_none():
+    """21.2: the chat's depth goes as --effort - not to a session whose model has no effort levels (as the CLI
+    named it); the user's CLAUDE_CODE_EFFORT_LEVEL would win over the flag, so it stays out when the hub gives one."""
+    assert effort_for("high", None) == "high" and effort_for("xhigh", "claude-opus-4-6") == "xhigh"
+    assert effort_for("max", "claude-opus-5-5") == "max" and effort_for("low", "claude-haiku-5-5") == "low"
+    for old in ("claude-3-5-sonnet-20241022", "claude-opus-4-5-20251101", "claude-sonnet-4-20250514",
+                "claude-haiku-4-5-20251001", "claude-opus-4-1-20250805"):  # fmt: skip
+        assert effort_for("high", old) is None, old
+    assert effort_for("high", "claude-opus-4-8[1m]") == "high" and effort_for("", "claude-opus-5-5") is None
+    env = {"PATH": "x", "CLAUDE_CODE_EFFORT_LEVEL": "low"}
+    assert child_env(env)["CLAUDE_CODE_EFFORT_LEVEL"] == "low"  # no depth from the hub: the user's own stands
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in child_env(env, effort=True)
 
 
 def message(seq, role, content, model_id=None):
@@ -262,6 +277,20 @@ def test_a_turn_asks_the_user_and_edits_when_allowed(hub):
     second = runs(hub)[1]
     assert second["argv"][second["argv"].index("--resume") + 1]  # the same Claude Code session goes on
     assert chat["messages"][-1]["content"][0]["text"].startswith("Ответ на:")
+
+
+def test_the_chats_depth_reaches_claude_code(hub, monkeypatch):
+    """21.2: the depth the chat sends goes as --effort, and the user's CLAUDE_CODE_EFFORT_LEVEL - which would win
+    over it - does not reach the CLI then."""
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+    cid = chat_with_project(hub)
+    body = {"content": "hello", "model_id": "claude-code/default", "effort": "xhigh"}
+    assert hub.http.post(f"/v1/conversations/{cid}/messages", json=body).status_code == 202
+    hub.wait_idle(cid)
+    (run,) = runs(hub)
+    assert run["argv"][run["argv"].index("--effort") + 1] == "xhigh"
+    assert run["env"]["CLAUDE_CODE_EFFORT_LEVEL"] is None
+    assert run["argv"][-3] == "--disallowedTools"  # still the last flag: the rules follow it
 
 
 def test_a_denial_with_a_comment_reaches_claude_code(hub):

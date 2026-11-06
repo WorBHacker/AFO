@@ -216,7 +216,7 @@ class ChatService:
         if agent:
             if sent:  # Claude Code reads the files itself, from where they are put for it
                 text = await asyncio.to_thread(self._files_for_agent, conversation_id, user_msg.id, text, sent)
-            task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id))
+            task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
         task.add_done_callback(lambda t: t.cancelled() or t.exception())  # surface a crash to the loop's handler
@@ -346,7 +346,7 @@ class ChatService:
             raise
         if agent:
             task = asyncio.create_task(self._run_agent(conversation_id, model, note, cancel, client_id,
-                                                       max_turns=limits.max_steps))  # fmt: skip
+                                                       max_turns=limits.max_steps, effort=effort))  # fmt: skip
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
         task.add_done_callback(lambda t: t.cancelled() or t.exception())
@@ -416,10 +416,10 @@ class ChatService:
                     log.exception("what waited for the turn of %s failed", conversation_id)
 
     async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id, *,
-                         max_turns: int | None = None):  # fmt: skip
+                         max_turns: int | None = None, effort: str | None = None):  # fmt: skip
         """A turn of Claude Code in the chat's projects - those a cloud model may reach (D10) - or, with none
-        attached, in a folder of the chat's own; a goal's turn within `max_turns` of its own. Its end goes to the
-        chat's goal as any turn's (11.7)."""
+        attached, in a folder of the chat's own; a goal's turn within `max_turns` of its own; at the chat's depth
+        (`effort`, 21.2). Its end goes to the chat's goal as any turn's (11.7)."""
         outcome = Outcome()
         began = time.monotonic()
         try:
@@ -437,7 +437,7 @@ class ChatService:
                 "chat.run_started", {"conversation_id": conversation_id, "model_id": model["id"]}, persist=False
             )
             ended = await self.claude_code.run(conversation_id, model, text, usable, cancel, client_id,
-                                               max_turns=max_turns)  # fmt: skip
+                                               max_turns=max_turns, effort=effort)  # fmt: skip
             outcome.totals = RunTotals()
             outcome.totals.add(ended["usage"], 0.0)  # the subscription pays (D12)
             outcome.status = "cancelled" if ended["cancelled"] else "error" if ended["error"] else "done"

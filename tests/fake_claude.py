@@ -56,7 +56,8 @@ def main() -> int:
     text = message["message"]["content"]
     if log := os.environ.get("FAKE_CLAUDE_LOG"):
         env = {k: os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "MCP_TOOL_TIMEOUT",
-                                              "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT")}  # fmt: skip
+                                              "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT",
+                                              "CLAUDE_CODE_EFFORT_LEVEL")}  # fmt: skip
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"argv": argv, "env": env, "text": text, "cwd": os.getcwd()}, ensure_ascii=False) + "\n")
     session = option(argv, "--resume") or str(uuid.uuid4())
