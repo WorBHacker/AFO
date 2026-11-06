@@ -642,6 +642,48 @@ def add_manual(conn, path: str, name: str, now: str) -> tuple[dict[str, Any], bo
     return get_program(conn, pid), True
 
 
+def decided(conn) -> list[dict[str, Any]]:
+    """The user's decisions, for the settings' file (25.4): each decided program as this catalog knows it - not the
+    list the hub found (another computer has its own look)."""
+    rows = conn.execute("SELECT key, name, kind, exe, folder, aumid, decision FROM programs WHERE decision IS NOT NULL"
+                        " ORDER BY name COLLATE NOCASE").fetchall()  # fmt: skip
+    return [dict(row) for row in rows]
+
+
+def same_program(conn, entry: dict[str, Any]) -> dict[str, Any] | None:
+    """The program of this catalog another's entry names: the same key, else the same id its windows carry, else the
+    same name and .exe file's name (an install folder of another user)."""
+    key = str(entry.get("key") or "")
+    row = conn.execute("SELECT * FROM programs WHERE key = ?", (key,)).fetchone() if key else None
+    aumid = str(entry.get("aumid") or "").lower()
+    if row is None and aumid:
+        row = conn.execute("SELECT * FROM programs WHERE lower(aumid) = ? ORDER BY removed_at IS NOT NULL",
+                           (aumid,)).fetchone()  # fmt: skip
+    exe, name = os.path.basename(norm(str(entry.get("exe") or ""))), str(entry.get("name") or "").casefold()
+    if row is None and exe and name:
+        row = next((r for r in conn.execute("SELECT * FROM programs WHERE exe != '' ORDER BY removed_at IS NOT NULL")
+                    if r["name"].casefold() == name and os.path.basename(norm(r["exe"])) == exe), None)  # fmt: skip
+    return program_json(row) if row else None
+
+
+def awaiting(conn, entry: dict[str, Any], decision: str, by: str, now: str) -> dict[str, Any]:
+    """A decision for a program this computer's look has not found: kept on a row of its own, as a program that is
+    gone keeps its decision - the look that finds it brings it back decided. Not allowed till then."""
+    key, kind = str(entry.get("key") or ""), str(entry.get("kind") or "")
+    if not key.startswith(("exe:", "aumid:", "steam:")) or kind not in ("desktop", "store", "game", "window"):
+        raise ValueError(f"not a program of the catalog: {key!r}")
+    if decision not in DECISIONS:
+        raise ValueError(f"decision must be one of {DECISIONS}")
+    pid = program_id(key)
+    conn.execute(
+        "INSERT INTO programs (id, key, name, kind, exe, folder, aumid, decision, decided_by, decided_at, fresh,"
+        " first_seen, last_seen, removed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        (pid, key, str(entry.get("name") or key), kind, str(entry.get("exe") or ""), str(entry.get("folder") or ""),
+         str(entry.get("aumid") or ""), decision, by, now, now, now, now),
+    )  # fmt: skip
+    return get_program(conn, pid)
+
+
 def remove_manual(conn, pid: str) -> bool:
     return conn.execute("DELETE FROM programs WHERE id = ? AND kind = 'manual'", (pid,)).rowcount > 0
 

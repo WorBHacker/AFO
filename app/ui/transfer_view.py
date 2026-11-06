@@ -1,8 +1,9 @@
 """«Перенос настроек» in the window (D46, step 13.10): every setting into one JSON file, and a file back after a look
 at what it would do - part by part, each line marked «добавится», «изменится», «без изменений» or «пропущено», with
 a warning where a part gives more rights. The hub's parts are the hub's (hub/portable.py); the window adds its own:
-the theme and what a new chat or task starts with (app.ini). The parts behind the connections' password ask for it
-here; the ticket lives while the sheet is open, as in Connections.
+the theme, what a new chat or task starts with and, since 25.4, the layout - the panels' sizes, the terminals'
+panel open, the window maximized; not where the window stands (another computer has other screens) (app.ini). The
+parts behind the connections' password ask for it here; the ticket lives while the sheet is open, as in Connections.
 """
 
 from __future__ import annotations
@@ -28,8 +29,23 @@ PRIORITIES = {"balanced": N_("баланс"), "quality": N_("качество"),
 WINDOW_KEYS = {"ui/theme": N_("тема"), "chat/priority": N_("подбор модели: что важнее"),
                "chat/model": N_("модель нового чата"), "chat/effort": N_("глубина размышлений"),
                LEVEL_KEY: N_("режим новой задачи агента")}  # fmt: skip
+LAYOUT_KEYS = {"ui/sidebarWidth": N_("ширина боковой панели"), "projects/chatsHeight": N_("высота «Чаты проекта»"),
+               "terminals/height": N_("высота панели терминалов"), "terminals/open": N_("панель терминалов открыта"),
+               "quick/maximized": N_("окно во весь экран")}  # fmt: skip
+FLAGS = ("terminals/open", "quick/maximized")
 ACTIONS = {"add": (N_("добавится"), "ok"), "change": (N_("изменится"), "accent"),
            "same": (N_("без изменений"), "faint"), "skip": (N_("пропущено"), "warn")}  # fmt: skip
+
+
+def layout_value(key: str, value: Any) -> tuple[str, str] | None:
+    """A layout key's value as app.ini keeps it, and as a person reads it; None - not one it may be (a size is
+    held in its bounds where it is set)."""
+    text = str(value).strip().lower()
+    if key in FLAGS:
+        return (text, tr("да") if text == "true" else tr("нет")) if text in ("true", "false") else None
+    if not text.isdigit():
+        return None
+    return text, tr("по размеру чатов") if key == "projects/chatsHeight" and text == "0" else text
 
 
 def window_values(models: dict[str, Any]) -> dict[str, dict[str, str]]:
@@ -57,7 +73,18 @@ def window_part(saved: dict[str, Any], now: dict[str, str], models: dict[str, An
             continue
         action = "same" if now.get(key) == value else "change"
         items.append({"key": key, "what": tr(what), "action": action, "detail": known[key][value], "warn": ""})
-    return {"id": WINDOW, "title": tr("Окно: тема и что выбрано для новых чатов"), "locked": False, "items": items}
+    for key, what in LAYOUT_KEYS.items():
+        if key not in saved:
+            continue
+        found = layout_value(key, saved[key])
+        if found is None:
+            items.append({"key": key, "what": tr(what), "action": "skip", "warn": "",
+                          "detail": tr("неизвестное значение «{value}»", value=saved[key])})  # fmt: skip
+            continue
+        action = "same" if now.get(key) == found[0] else "change"
+        items.append({"key": key, "what": tr(what), "action": action, "detail": found[1], "warn": ""})
+    return {"id": WINDOW, "title": tr("Окно: тема, раскладка и что выбрано для новых чатов"), "locked": False,
+            "items": items}  # fmt: skip
 
 
 def part_rows(parts: list[dict[str, Any]], chosen: set[str]) -> list[dict[str, Any]]:
@@ -102,7 +129,19 @@ class TransferView(QObject):
 
     def _window_now(self) -> dict[str, str]:
         found = {key: self.app.settings.value(key) for key in WINDOW_KEYS}
-        return {key: str(value) for key, value in found.items() if value not in (None, "")}
+        now = {key: str(value) for key, value in found.items() if value not in (None, "")}
+        terminals = self.app.terminals
+        layout = {
+            "ui/sidebarWidth": self.app.sidebarWidth,
+            "projects/chatsHeight": self.app.projectChatsHeight,
+            "terminals/height": terminals.panelHeight,
+            "terminals/open": terminals.panelOpen,
+            "quick/maximized": self.app.settings.value("quick/maximized", False),
+        }  # as the window has it now
+        for key, value in layout.items():
+            if (shown := layout_value(key, value)) is not None:
+                now[key] = shown[0]
+        return now
 
     @Slot(str)
     def exportTo(self, url: str) -> None:
@@ -247,11 +286,19 @@ class TransferView(QObject):
 
     def _apply_window(self, saved: dict[str, Any], part: dict[str, Any]) -> None:
         loaded = {i["key"] for i in part["items"] if i["action"] == "change"}
-        for key in WINDOW_KEYS:
+        for key in (*WINDOW_KEYS, *LAYOUT_KEYS):
             if key not in loaded:
                 continue
-            value = str(saved[key])
-            if key == "ui/theme":
+            value = str(saved[key]) if key in WINDOW_KEYS else layout_value(key, saved[key])[0]
+            if key == "ui/sidebarWidth":
+                self.app.setSidebarWidth(int(value))
+            elif key == "projects/chatsHeight":
+                self.app.setProjectChatsHeight(int(value))
+            elif key == "terminals/height":
+                self.app.terminals.setPanelHeight(int(value))
+            elif key == "terminals/open":
+                self.app.terminals.setPanelOpen(value == "true")
+            elif key == "ui/theme":
                 self.app.setTheme(value)
             elif key == "chat/priority":
                 self.app.setPriority(value)

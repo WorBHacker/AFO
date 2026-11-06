@@ -4891,7 +4891,11 @@ def test_all_the_settings_into_a_file_and_back_after_a_look(app, tmp_path):
     wait_until(lambda: not app.bg.busy and target.exists())
     saved = json.loads(target.read_text(encoding="utf-8"))
     assert saved["window"]["ui/theme"] == "dark" and "похожее на ключи вырезано: 1" in app.flashText
-    saved["window"] = {"ui/theme": "light", "chat/priority": "speed", "chat/model": "nope/x"}
+    assert saved["window"]["terminals/open"] == "false" and "quick/geometry" not in saved["window"]  # 25.4: the
+    # layout goes, as the window has it, not where the window stood
+    saved["window"] = {"ui/theme": "light", "chat/priority": "speed", "chat/model": "nope/x", "ui/sidebarWidth": 380,
+                       "projects/chatsHeight": "0", "terminals/height": "450", "terminals/open": "true",
+                       "quick/maximized": "maybe"}  # fmt: skip
     target.write_text(json.dumps(saved), encoding="utf-8")
 
     assert transfer.openFile(target.as_uri()) and transfer.fileName == "all.json"
@@ -4902,7 +4906,12 @@ def test_all_the_settings_into_a_file_and_back_after_a_look(app, tmp_path):
     assert "придёт выключенным" in parts["mcp"]["items"][0]["warn"]
     window = {i["what"]: (i["actionText"], i["detail"]) for i in parts["window"]["items"]}
     assert window == {"тема": ("изменится", "светлая"), "подбор модели: что важнее": ("изменится", "скорость"),
-                      "модель нового чата": ("пропущено", "такой модели нет в этом хабе")}  # fmt: skip
+                      "модель нового чата": ("пропущено", "такой модели нет в этом хабе"),
+                      "ширина боковой панели": ("изменится", "380"),
+                      "высота «Чаты проекта»": ("без изменений", "по размеру чатов"),
+                      "высота панели терминалов": ("изменится", "450"),
+                      "панель терминалов открыта": ("изменится", "да"),
+                      "окно во весь экран": ("пропущено", "неизвестное значение «maybe»")}  # fmt: skip
     transfer.toggle("projects")
     wait_until(lambda: not transfer.busy and app.client.settings_calls[-1] == ("preview", ["mcp"], ""))
     assert {p["id"]: (p["chosen"], p["counts"]) for p in transfer.parts}["projects"] == (False, "не загружается")
@@ -4922,7 +4931,8 @@ def test_all_the_settings_into_a_file_and_back_after_a_look(app, tmp_path):
     wait_until(lambda: finished and not app.bg.busy)
     assert app.client.settings_calls[-1] == ("import", ["mcp", "projects"], "ticket-1")
     assert app.settings.value("ui/theme") == "light" and app.priority == "speed"
-    assert "Настройки загружены: добавлено 2, изменено 2, пропущено 1" in app.flashText
+    assert (app.sidebarWidth, app.terminals.panelHeight, app.terminals.panelOpen) == (380, 450, True)
+    assert "Настройки загружены: добавлено 2, изменено 5, пропущено 2" in app.flashText
     assert ("lock", "ticket-1") in app.client.secret_calls and transfer.fileName == "" and not transfer.parts
 
     (tmp_path / "models.json").write_text(json.dumps({"kind": "localchat-model-settings"}), encoding="utf-8")

@@ -3,7 +3,8 @@ to another computer.
 
 Nothing secret goes in. API keys, passwords, tokens and MCP servers' environments stay in the secret store (D13), and
 any text in the file that looks like a key is cut out (`redacted` says how many). What the hub found or did, rather
-than was told, stays too: conversations, memory, cards, the programs it found, Telegram's link.
+than was told, stays too: conversations, memory, cards, the programs it found (the user's decisions on them go,
+25.4), Telegram's link.
 
 Projects travel by folder, agents by name: ids differ on each hub. Loading is seen before it is done -
 `load(apply=False)` loads it all in a transaction and takes it back, so the preview is the loading itself, line by
@@ -34,6 +35,7 @@ from . import (
     mail,
     mcp_client,
     model_settings,
+    programs,
     retention,
     schedule,
     store,
@@ -396,6 +398,43 @@ def _access_in(conn: sqlite3.Connection, value: dict[str, Any], loading: _Loadin
     return items
 
 
+# ---------------------------------------------------------------- which programs the agent may control (25.4)
+
+
+def _programs_out(conn: sqlite3.Connection, paths: dict[str, str]) -> list[dict[str, Any]]:
+    return programs.decided(conn)
+
+
+def _programs_in(conn: sqlite3.Connection, value: list[dict[str, Any]], loading: _Loading) -> list[dict[str, str]]:
+    items = []
+    for entry in value:
+        name, decision = str(entry.get("name") or entry.get("key") or ""), entry.get("decision")
+        if decision not in programs.DECISIONS:
+            items.append(_item(name, "skip", tr("неизвестное решение «{value}»", value=decision)))
+            continue
+        said = tr("разрешена") if decision == "allow" else tr("запрещена")
+        warn = tr("агент сможет управлять этой программой") if decision == "allow" else ""
+        now = utc_now()
+        found = programs.same_program(conn, entry)
+        if found is None and entry.get("kind") == "manual":  # the user's own pick: here when its file is
+            exe = str(entry.get("exe") or "")
+            if not exe.lower().endswith(".exe") or not Path(exe).is_file():
+                items.append(_item(name, "skip", tr("файла {path} на этом компьютере нет", path=exe)))
+                continue
+            found, _new = programs.add_manual(conn, exe, name, now)
+        if found is None:
+            programs.awaiting(conn, entry, decision, loading.by, now)
+            items.append(_item(name, "add", tr("{decision} — когда обзор найдёт её на этом компьютере",
+                                               decision=said), warn))  # fmt: skip
+            continue
+        if found["decision"] == decision:
+            items.append(_item(found["name"], "same", said))
+            continue
+        programs.decide(conn, found["id"], decision, loading.by, now)
+        items.append(_item(found["name"], "change" if found["decision"] else "add", said, warn))
+    return items
+
+
 # ---------------------------------------------------------------- the hub itself
 
 
@@ -554,6 +593,7 @@ PARTS = (  # in the order of loading: what a later part names comes first
     Part("agents", N_("Агенты"), _agents_out, _agents_in),
     Part("schedules", N_("Расписания"), _schedules_out, _schedules_in),
     Part("access", N_("Папки и сайты для агента"), _access_out, _access_in),
+    Part("programs", N_("Программы для агента: что разрешено, что нет"), _programs_out, _programs_in),
     Part("hub", N_("Хаб: тихие часы, хранение, llama-swap"), _hub_out, _hub_in),
     Part("connections", N_("Подключения: адреса, выбранные модели, почта"), _connections_out, _connections_in, True),
     Part("mcp", N_("MCP-серверы"), _mcp_out, _mcp_in, True),
