@@ -40,6 +40,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,8 @@ SUB_TEXT_CHARS = 2_000  # of a subagent's text, or of a result it got
 SUB_INPUT_CHARS = 200  # of a value in a subagent call's input
 FORWARD_SUBAGENT_TEXT = (2, 1, 211)  # the CLI that knows --forward-subagent-text: a subagent's texts come too
 VERSION_TIMEOUT_S = 15
+LIMITS_KEY = "claude_code.limits"  # the subscription's limits as last told, per window (20.3)
+LIMIT_RETRY_S = 600  # a reached limit with no reset said: tried again after this
 EARLIER_CHARS = 6_000  # of the chat before Claude Code joined it, given with its first message
 STDERR_LINES = 30
 STOP_WAIT_S = 3.0
@@ -309,6 +312,27 @@ def _text_of(content: Any) -> str:
     return "" if content is None else json.dumps(content, ensure_ascii=False)
 
 
+def read_limit(info: dict[str, Any]) -> dict[str, Any]:
+    """A rate_limit_event's info as the hub keeps it (20.3): {status, window, used (0-1, None - not said), resets_at
+    (seconds since the epoch, None - not said)}. Its documentation spells the fields two ways (resetsAt / resets_at,
+    rateLimitType / rate_limit_type) and does not say seconds or milliseconds: both are read."""
+
+    def pick(*names: str) -> Any:
+        return next((info[n] for n in names if info.get(n) is not None), None)
+
+    def number(value: Any) -> float | None:
+        return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+    resets = number(pick("resetsAt", "resets_at"))
+    if resets is not None:
+        resets = resets / 1000 if resets > 10**11 else resets
+    used = number(pick("utilization"))
+    if used is not None and used > 1:
+        used /= 100  # a percentage
+    return {"status": str(info.get("status") or ""), "window": str(pick("rateLimitType", "rate_limit_type") or ""),
+            "used": used, "resets_at": resets if resets and resets > 0 else None}  # fmt: skip
+
+
 def usage_of(result: dict[str, Any]) -> dict[str, int]:
     """Claude Code's usage in the hub's terms: input_tokens is the whole prompt, cache reads and writes inside it."""
     usage = result.get("usage") or {}
@@ -392,6 +416,7 @@ class Turn:
     root: Path
     process: subprocess.Popen | None = None
     effort: bool = False  # the hub gives the depth (21.2)
+    rejected: float | None = None  # the subscription's limit was reached: when it resets (0 - not said), 20.3
 
 
 class ClaudeCodeRunner:
@@ -509,7 +534,8 @@ class ClaudeCodeRunner:
         effort: str | None = None,
     ) -> dict[str, Any]:
         """One turn at the chat's depth (`effort`); how it ended: {usage, error ("" - none), limited (it stopped at
-        `max_turns`), cancelled}."""
+        `max_turns`), cancelled, rejected (the subscription's limit was reached: when it resets, 0 - not said; else
+        None)}."""
         project = projects[0] if projects else None
         folder = project.root if project else self.chat_folder(conversation_id)
         session, earlier = await self._db.acall(lambda conn: _session_and_history(conn, conversation_id))
@@ -584,8 +610,9 @@ class ClaudeCodeRunner:
         finally:
             stopper.cancel()
             await asyncio.to_thread(_wind_down, process)
-        return await self._finish(turn.conversation_id, model, result, last_id, cancel.is_set(), errors, client_id,
-                                  process.returncode)  # fmt: skip
+        ended = await self._finish(turn.conversation_id, model, result, last_id, cancel.is_set(), errors, client_id,
+                                   process.returncode)  # fmt: skip
+        return {**ended, "rejected": turn.rejected}
 
     async def _apply(self, turn: Turn, model: dict, step: Step) -> int | None:
         conversation_id = turn.conversation_id
@@ -606,11 +633,36 @@ class ClaudeCodeRunner:
             return message.id if step.role == "assistant" else None
         elif step.kind == "sub":  # a subagent's step, under its call in the window (21.3); kept with its result
             await self._bus.publish("chat.subagent", {"conversation_id": conversation_id, **step.data}, persist=False)
-        elif step.kind == "limit" and step.data.get("status") not in (None, "allowed"):
-            # the subscription's limits (D12): near ("allowed_warning") or reached ("rejected") - into the feed
-            payload = {"conversation_id": conversation_id, "info": step.data}
-            await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id if turn.project else None)
+        elif step.kind == "limit":
+            await self._limit(turn, step.data)
         return None
+
+    # --- the subscription's limits (D12, 20.3) ---
+
+    async def _limit(self, turn: Turn, info: dict[str, Any]) -> None:
+        """A limit's state: kept per window (and across restarts), told to the window; near ("allowed_warning") or
+        reached ("rejected") - into the feed as well, and a reached one ends the turn as the limit's (the goal waits
+        for it to reset instead of failing)."""
+        state = read_limit(info) | {"seen_at": time.time()}
+        known = await self._db.acall(_saved_limits)
+        known[state["window"]] = state
+        await self._db.acall(lambda conn: _save_limits(conn, known))
+        await self._bus.publish("claude_code.limits", {"limits": current_limits(known)}, persist=False)
+        if state["status"] == "rejected":
+            turn.rejected = state["resets_at"] or 0.0
+        if state["status"] not in ("", "allowed"):
+            payload = {"conversation_id": turn.conversation_id, "info": info, "limit": state}
+            await self._bus.publish("claude_code.limit", payload, project_id=turn.project.id if turn.project else None)
+
+    async def limits(self) -> list[dict[str, Any]]:
+        """The subscription's limits as last told, per window - those not reset yet."""
+        return current_limits(await self._db.acall(_saved_limits))
+
+    async def limited_until(self) -> float | None:
+        """When a reached limit resets (one not said: LIMIT_RETRY_S after it was told); None - none is reached."""
+        found = [s["resets_at"] or s["seen_at"] + LIMIT_RETRY_S for s in await self.limits()
+                 if s["status"] == "rejected"]  # fmt: skip
+        return max(found) if found else None
 
     async def _finish(self, conversation_id, model, result, last_id, cancelled, errors, client_id, code) -> dict:
         if result is None and not cancelled:
@@ -682,6 +734,23 @@ def _pipe_thread(pipe, deliver: Callable[[bytes | None], Any]) -> None:
             deliver(None)
 
     threading.Thread(target=pump, name="claude-code-pipe", daemon=True).start()
+
+
+def current_limits(known: dict[str, dict[str, Any]], now: float | None = None) -> list[dict[str, Any]]:
+    """The windows whose state still holds: not past their reset (one with no reset said - for LIMIT_RETRY_S)."""
+    now = time.time() if now is None else now
+    return [s for _w, s in sorted(known.items())
+            if (s.get("resets_at") or s.get("seen_at", 0) + LIMIT_RETRY_S) > now]  # fmt: skip
+
+
+def _saved_limits(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (LIMITS_KEY,)).fetchone()
+    return json.loads(row["value"]) if row else {}
+
+
+def _save_limits(conn: sqlite3.Connection, known: dict[str, dict[str, Any]]) -> None:
+    conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET"
+                 " value = excluded.value", (LIMITS_KEY, json.dumps(known)))  # fmt: skip
 
 
 def _session_and_history(conn: sqlite3.Connection, conversation_id: str) -> tuple[dict, str]:

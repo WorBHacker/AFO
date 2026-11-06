@@ -442,6 +442,7 @@ class ChatService:
             outcome.totals.add(ended["usage"], 0.0)  # the subscription pays (D12)
             outcome.status = "cancelled" if ended["cancelled"] else "error" if ended["error"] else "done"
             outcome.detail, outcome.limited = ended["error"], ended["limited"]
+            outcome.subscription = ended.get("rejected")
         except GatewayError as exc:
             outcome.status, outcome.detail = "error", str(exc)
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": str(exc),
@@ -1358,6 +1359,7 @@ class Outcome:
     totals: RunTotals | None = None
     seconds: float = 0.0  # how long the run took
     limited: bool = False  # it ended at its step limit (an error for a chat, a turn's end for a goal)
+    subscription: float | None = None  # Claude Code's subscription limit was reached: when it resets (0 - unsaid)
 
 
 class RunTotals:

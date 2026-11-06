@@ -852,6 +852,10 @@ class HubClient:
         """{installed, command, detail, running}: is the user's Claude Code CLI there."""
         return self._call("GET", "/v1/claude-code")
 
+    def claude_code_limits(self) -> dict:
+        """{limits, limited_until}: the subscription's limits as Claude Code last told them (20.3)."""
+        return self._call("GET", "/v1/claude-code/limits")
+
     def claude_code_terminal(self, project_id: str, cols: int = 120, rows: int = 30) -> dict:
         return self._call("POST", f"/v1/projects/{project_id}/claude-code/terminal", {"cols": cols, "rows": rows})
 

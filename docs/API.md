@@ -427,6 +427,7 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/claude-code` | только окно | `status()` |  |
+| GET | `/v1/claude-code/limits` | только окно | The subscription's limits as Claude Code last told them (20.3), per window, those not reset yet: {status, window, used (0-1 or null), resets_at (seconds since the epoch or null), seen_at}; `limited_until` - when a reached one resets (null: none is reached). The event `claude_code.limits` says the same when it changes. |  |
 | POST | `/v1/projects/{project_id}/claude-code/terminal` | только окно | `open_terminal()` | тело `{cols: int = 120, rows: int = 30}` |
 
 ### changes
@@ -555,6 +556,7 @@ conversation's text, an approval or a terminal's output.
 | `chat.titled` | да | `conversation_id`, `title` | hub/api/conversations.py, hub/chat.py |
 | `chat.tool` | нет | `conversation_id`, `name`, `input` | hub/chat.py |
 | `claude_code.limit` | да | — | hub/claude_code.py |
+| `claude_code.limits` | нет | `limits` | hub/claude_code.py |
 | `computer.control` | нет | `run_id`, `window`, `program`, `action` | hub/computer.py |
 | `computer.paused` | да | `run_id`, `why` | hub/computer.py |
 | `computer.released` | нет | `run_id` | hub/computer.py |
@@ -570,7 +572,7 @@ conversation's text, an approval or a terminal's output.
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
 | `goal.judging` | нет | `conversation_id`, `goal_id`, `model_id` | hub/goals.py |
 | `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
-| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving`, `by` | hub/goals.py |
+| `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving`, `subscription`, `by` | hub/goals.py |
 | `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
 | `hub.shutdown_requested` | да | `by` | hub/api/system.py |
 | `hub.started` | да | `version`, `migrations_applied` | hub/server.py |

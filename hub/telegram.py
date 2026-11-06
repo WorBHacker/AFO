@@ -48,6 +48,7 @@ PREVIEW_LINES = 30
 DECIDED = {"allowed": N_("✅ Разрешено"), "denied": N_("⛔ Отклонено"), "expired": N_("⌛ Не дождался ответа")}
 GOAL_WORDS = {"achieved": N_("🎯 Цель достигнута"), "blocked": N_("✋ Цель ждёт вас (решение — в окне AFO)"),
               "budget": N_("⏳ Цель дошла до предела (продолжить можно в окне)")}  # fmt: skip
+GOAL_LIMIT = N_("⏸ Цель на паузе: лимит подписки Claude Code (продолжить — в окне, когда он сбросится)")
 
 
 # --- linking a chat ---
@@ -280,6 +281,8 @@ class TelegramBot:
         if kind == "goal.status":  # a chat's goal met, or waiting for the human (D44): what to do is in the window
             status = payload.get("status") or ""
             head = tr(GOAL_WORDS[status]) if status in GOAL_WORDS else None
+            if status == "paused" and payload.get("subscription") is not None:  # Claude Code's limit (20.3)
+                head = tr(GOAL_LIMIT)
             if head and not payload.get("proving"):  # a run of the proving ground (D45): not the person's goal
                 goal = payload.get("goal") or {}
                 text = (f"<b>{head}</b>\n{html.escape(str(goal.get('objective') or ''))}\n"

@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
-// 26px: the hub and its port, the active model, this session's tokens and cost, short messages; on the right a model
+// 26px: the hub and its port, the active model, this session's tokens and cost, Claude Code's subscription limits
+// (when it has told them, 20.3), short messages; on the right a model
 // being installed (its percent, speed, time left - a click opens «Установки»), the loaded local model, VRAM, Windows'
 // commit charge and the GPU.
 Rectangle {
@@ -50,6 +51,16 @@ Rectangle {
             TapHandler { onTapped: bar.budgetsRequested() }
             ToolTip.visible: sessionHover.hovered
             ToolTip.text: App.sessionTooltip
+        }
+        Separator { visible: App.subscriptionText !== ""; anchors.verticalCenter: parent.verticalCenter }
+        Small {
+            objectName: "statusSubscription"
+            visible: App.subscriptionText !== ""
+            text: App.subscriptionText
+            color: App.subscriptionWarn ? Theme.p.warn : Theme.p.muted
+            HoverHandler { id: subscriptionHover }
+            ToolTip.visible: subscriptionHover.hovered
+            ToolTip.text: App.subscriptionTip
         }
     }
 

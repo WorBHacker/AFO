@@ -716,6 +716,15 @@ def _fold(history: list[MessageRow], lo: int, hi: int, line: str) -> list[Messag
         [row] if i not in drop else [])]  # fmt: skip
 
 
+def limit_words(resets: float) -> str:
+    """Why a goal of Claude Code waits (20.3): its subscription's limit, and until when (`resets` - 0: not said)."""
+    if not resets:
+        return tr("лимит подписки Claude Code исчерпан — продолжите цель, когда он сбросится")
+    at = datetime.fromtimestamp(resets)
+    when = at.strftime("%H:%M") if at.date() == datetime.now().date() else at.strftime("%d.%m %H:%M")
+    return tr("лимит подписки Claude Code до {when} — потом продолжите цель", when=when)
+
+
 def _iso(at: datetime) -> str:
     return at.isoformat(timespec="milliseconds").replace("+00:00", "Z")  # as the database keeps times
 
@@ -940,7 +949,10 @@ class Goals:
             raise GoalMissing("the chat has no goal")
         return goal
 
-    async def _status(self, goal: dict[str, Any], status: str, detail: str, *, ended: bool = False) -> dict:
+    async def _status(self, goal: dict[str, Any], status: str, detail: str, *, ended: bool = False,
+                      subscription: float | None = None) -> dict:  # fmt: skip
+        """The goal's status, kept and told; `subscription`: it waits for Claude Code's limit to reset (20.3) - when
+        (0: not said), for the window's and Telegram's notice."""
         now = utc_now()
         await self._db.acall(lambda conn: conn.execute(
             "UPDATE goals SET status = ?, detail = ?, updated_at = ?, ended_at = ? WHERE id = ?",
@@ -949,7 +961,8 @@ class Goals:
         # a run of the proving ground (D45) is not the person's goal: its end is told by the exam, not by a notice
         await self._bus.publish("goal.status", {"conversation_id": goal["conversation_id"], "goal_id": goal["id"],
                                                 "status": status, "detail": detail, "goal": changed,
-                                                "proving": goal["conversation_id"] in self._chat.proving})  # fmt: skip
+                                                "proving": goal["conversation_id"] in self._chat.proving,
+                                                "subscription": subscription})  # fmt: skip
         return changed
 
     # ---------- after a turn ----------
@@ -972,6 +985,10 @@ class Goals:
                 return
             if outcome.status == "cancelled":
                 await self._checked(goal, "paused", None, {}, tr("остановлено: ход прерван"))
+                return
+            if outcome.status == "error" and outcome.subscription is not None:  # the subscription's limit (20.3)
+                await self._checked(goal, "paused", None, {}, limit_words(outcome.subscription),
+                                    subscription=outcome.subscription)  # fmt: skip
                 return
             if outcome.status == "error" and not outcome.limited:
                 await self._checked(goal, "blocked", None, {}, tr("ход не удался: {error}", error=outcome.detail))
@@ -1399,9 +1416,11 @@ class Goals:
         return results
 
     async def _checked(self, goal: dict[str, Any], route: str, verdict: str | None, found: dict[str, Any],
-                       detail: str, mark: tuple[str | None, int] = (None, 0)) -> None:  # fmt: skip
+                       detail: str, mark: tuple[str | None, int] = (None, 0), *,
+                       subscription: float | None = None) -> None:  # fmt: skip
         """The check is appended (D14), and the goal takes the way it found. `found` (from contour): the criteria's
-        results, what else is missing, the judge's word, what changed - kept with the check."""
+        results, what else is missing, the judge's word, what changed - kept with the check. `subscription`: it
+        waits for Claude Code's limit (20.3)."""
         criteria = found.get("results") or []
         missing = [line[2:] for line in missing_text(criteria, found.get("extra")).splitlines()
                    if line.startswith("- ")]  # fmt: skip
@@ -1430,7 +1449,7 @@ class Goals:
                                                "check": check})  # fmt: skip
         status = {"achieved": "achieved", "blocked": "blocked", "budget": "budget", "paused": "paused"}.get(route)
         if status is not None:
-            await self._status(goal, status, detail, ended=status == "achieved")
+            await self._status(goal, status, detail, ended=status == "achieved", subscription=subscription)
 
     async def _take_steering(self, goal: dict[str, Any]) -> list[str]:
         def take(conn):

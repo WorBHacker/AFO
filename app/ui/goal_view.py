@@ -28,6 +28,7 @@ STATUS = {"active": N_("идёт"), "paused": N_("на паузе"), "blocked": 
           "achieved": N_("достигнута"), "cleared": N_("снята")}  # fmt: skip
 OPEN = ("active", "paused", "blocked", "budget")
 NOTICES = {"achieved": N_("Цель достигнута"), "blocked": N_("Цель ждёт вас"), "budget": N_("Цель дошла до предела")}
+LIMIT_NOTICE = N_("Цель на паузе: лимит подписки Claude Code")  # its goal waits for the limit to reset (20.3)
 VERDICTS = {"ACHIEVED": N_("выполнено"), "INCOMPLETE": N_("не выполнено"), "REGRESSED": N_("потеряно то, что работало")}
 DEFAULT_LIMITS = {"turns": "25", "tokens": "500", "minutes": "60"}  # tokens in thousands (Q26)
 ROUTES = {"continue": N_("дальше"), "last_turn": N_("последний ход"), "achieved": N_("достигнута"),
@@ -382,9 +383,10 @@ class GoalView(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         cid = payload.get("conversation_id") or ""
-        if kind == "goal.status" and payload.get("status") in NOTICES and not payload.get("proving"):
+        waits = payload.get("status") == "paused" and payload.get("subscription") is not None  # 20.3
+        if kind == "goal.status" and (payload.get("status") in NOTICES or waits) and not payload.get("proving"):
             goal = payload.get("goal") or {}
-            notice = tr(NOTICES[payload["status"]])
+            notice = tr(LIMIT_NOTICE) if waits else tr(NOTICES[payload["status"]])
             self.noticed.emit(notice, f"{goal.get('objective', '')}\n{payload.get('detail', '')}")
             if cid != (self.app.current or ""):
                 self.app.flash(tr("{notice}: «{objective}»", notice=notice, objective=goal.get("objective", "")[:60]))

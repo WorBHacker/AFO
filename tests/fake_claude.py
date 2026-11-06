@@ -6,7 +6,8 @@ command ("run push": a destructive one) and says the verdict; "question" - asks 
 the same tool) and says what was picked; "fetch" - first reads a page (WebFetch, asked the same way), then goes on
 as the rest of the message says; "agent" - a subagent reads a file (its texts with --forward-subagent-text);
 `--version` says $FAKE_CLAUDE_VERSION (2.1.300 by default);
-"limit" - hits a subscription limit; "hang" - waits until stopped; anything else - one answer.
+"limit" - hits a subscription limit; "nearly" - is told a limit is near, and answers; "hang" - waits until stopped;
+anything else - one answer.
 It writes what it was started with (arguments, environment, input, folder) to $FAKE_CLAUDE_LOG, a line per run.
 """
 
@@ -74,8 +75,30 @@ def main() -> int:
     turns = 1
     if "hang" in text:
         time.sleep(120)
+    if "nearly" in text:  # a limit near: the other spelling of its documentation, the reset in milliseconds
+        emit(
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "allowed_warning",
+                    "resets_at": 1890000000000,
+                    "rate_limit_type": "seven_day",
+                    "utilization": 0.85,
+                },
+            }
+        )
     if "limit" in text:
-        emit({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1890000000}})
+        emit(
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": "rejected",
+                    "resetsAt": 1890000000,
+                    "rateLimitType": "five_hour",
+                    "utilization": 1.0,
+                },
+            }
+        )
         emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": session,
               "errors": ["You've hit your session limit"], "usage": usage, "num_turns": 1})  # fmt: skip
         return 1

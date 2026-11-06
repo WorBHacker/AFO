@@ -114,6 +114,43 @@ def claude_code_limit(info: dict[str, Any]) -> str:
     return tr("Claude Code: лимит подписки близко")
 
 
+LIMIT_WINDOWS = {"five_hour": N_("5 часов"), "seven_day": N_("неделя"), "seven_day_opus": N_("неделя Opus"),
+                 "seven_day_sonnet": N_("неделя Sonnet"), "overage": N_("сверх лимита")}  # fmt: skip
+
+
+def _reset_time(seconds: float | None) -> str:
+    if not seconds:
+        return ""
+    at = datetime.fromtimestamp(seconds)
+    return at.strftime("%H:%M") if at.date() == datetime.now().date() else at.strftime("%d.%m %H:%M")
+
+
+def limit_line(state: dict[str, Any]) -> str:
+    """One window of the subscription's limits (20.3): «5 часов — 85 %, сброс в 15:45»; reached - «… — исчерпан»."""
+    window = tr(LIMIT_WINDOWS[state["window"]]) if state.get("window") in LIMIT_WINDOWS else tr("лимит")
+    when = _reset_time(state.get("resets_at"))
+    if state.get("status") == "rejected":
+        said = tr("исчерпан")
+    elif state.get("used") is not None:
+        said = f"{round(state['used'] * 100)} %"
+    else:
+        said = tr("близко") if state.get("status") == "allowed_warning" else tr("в норме")
+    return f"{window} — {said}" + (tr(", сброс в {when}", when=when) if when else "")
+
+
+def subscription(limits: list[dict[str, Any]]) -> tuple[str, str, bool]:
+    """Claude Code's subscription (20.3): the window nearest its limit in a line, the tooltip (every window) and
+    whether to warn - ("", "", False) when Claude Code has told nothing yet."""
+    if not limits:
+        return "", "", False
+    reached = [s for s in limits if s.get("status") == "rejected"]
+    worst = reached[0] if reached else max(limits, key=lambda s: (s.get("status") == "allowed_warning",
+                                                                  s.get("used") or 0))  # fmt: skip
+    tip = tr("Лимиты подписки Claude Code (по его последнему сообщению):") + "\n" + "\n".join(map(limit_line, limits))
+    warn = bool(reached) or worst.get("status") == "allowed_warning"
+    return limit_line(worst), tip, warn
+
+
 def status_text(status: dict[str, Any] | None) -> str:
     """GPU, memory and the loaded local model in one line for the status bar."""
     if not status:

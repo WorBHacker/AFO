@@ -404,8 +404,14 @@ class ProvingGround:
         timed_out = False
         try:
             goal = (await self._goals.get(cid))["goal"] or {}
+            last = time.monotonic()
             while goal.get("status") not in ENDED:
-                left = deadline - time.monotonic()
+                now = time.monotonic()
+                if goal.get("status") == "paused":  # Claude Code's subscription spent (20.3): its time stands still
+                    deadline += now - last
+                    await self._resume_after_limit(cid)
+                last = now
+                left = deadline - now
                 if left <= 0:
                     timed_out = True
                     break
@@ -441,6 +447,15 @@ class ProvingGround:
                         turns=goal.get("turns_used", 0), tokens=goal.get("tokens_used", 0),
                         cost_usd=goal.get("cost_usd", 0.0), seconds=round(goal.get("seconds_used", 0.0), 1),
                         ended_at=utc_now())  # fmt: skip
+
+    async def _resume_after_limit(self, conversation_id: str) -> None:
+        """A run's goal waits for Claude Code's subscription limit to reset (20.3): nobody watches a run, so the hub
+        goes on with it itself once the limit is reset."""
+        runner = getattr(self._chat, "claude_code", None)
+        until = await runner.limited_until() if runner is not None else None
+        if until is None or until <= time.time():
+            with contextlib.suppress(GoalError):
+                await self._goals.resume(conversation_id, None, by="proving")
 
     async def _hidden_checks(self, run: dict[str, Any], spec: dict[str, Any]) -> list[dict[str, Any]]:
         project = await self._db.acall(lambda conn: get_project(conn, run["project_id"]))

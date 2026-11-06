@@ -3,11 +3,13 @@ its hidden check, a right solution passes it, edited tests are caught; a try on 
 hidden, nobody answers there; a run that games the visible check fails the hidden one; an exam of two models with
 its table; stopping, deleting, a hub restart."""
 
+import asyncio
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -225,3 +227,32 @@ def test_a_copy_commits_whatever_the_users_own_git_says(tmp_path, monkeypatch):
     proving.copy_task(spec, copy)
     log = subprocess.run(["git", "-C", str(copy), "log", "--format=%s"], capture_output=True, text=True)
     assert log.stdout.strip() == "the task as given"
+
+
+def test_a_run_goes_on_by_itself_once_claude_codes_limit_resets():
+    """20.3: nobody watches a run - its goal paused at Claude Code's subscription limit is resumed by the hub once
+    the limit resets (none reached: at once; one reached: not before its reset)."""
+
+    class Runner:
+        until = None
+
+        async def limited_until(self):
+            return self.until
+
+    class Goals:
+        def __init__(self):
+            self.resumed = []
+
+        async def resume(self, conversation_id, limits, *, by):
+            self.resumed.append((conversation_id, by))
+
+    ground = proving.ProvingGround.__new__(proving.ProvingGround)
+    ground._goals, ground._chat = Goals(), type("Chat", (), {"claude_code": Runner()})()
+    ground._chat.claude_code.until = time.time() + 3600
+    asyncio.run(ground._resume_after_limit("c1"))
+    assert ground._goals.resumed == []  # not reset yet
+    ground._chat.claude_code.until = time.time() - 1
+    asyncio.run(ground._resume_after_limit("c1"))
+    ground._chat.claude_code.until = None
+    asyncio.run(ground._resume_after_limit("c2"))
+    assert ground._goals.resumed == [("c1", "proving"), ("c2", "proving")]

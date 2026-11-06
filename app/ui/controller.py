@@ -141,6 +141,7 @@ class Controller(QObject):
     busyChanged = Signal()
     hubChanged = Signal()
     statusChanged = Signal()
+    subscriptionChanged = Signal()  # Claude Code's subscription limits (20.3)
     sessionChanged = Signal()
     flashChanged = Signal()
     questionChanged = Signal()
@@ -190,6 +191,7 @@ class Controller(QObject):
         self._autostart: dict[str, Any] = {}
         self._retention: dict[str, Any] = {}
         self._status = rows.status_parts(None)
+        self._limits: list[dict[str, Any]] = []  # Claude Code's subscription limits, as it last told them (20.3)
         self._hub_state = "connecting"
         self._title = tr("Новый чат")
         self._meta = ""
@@ -386,7 +388,30 @@ class Controller(QObject):
 
     @Property(list, notify=modelChanged)
     def pickerItems(self) -> list:
-        return rows.picker_items(self.model_list, set(self._status["loaded"]), self._model_id, self._advice)
+        return rows.picker_items(self.model_list, set(self._status["loaded"]), self._model_id, self._advice,
+                                 subscription=presenter.subscription(self._limits)[0])  # fmt: skip
+
+    @Property(str, notify=subscriptionChanged)
+    def subscriptionText(self) -> str:
+        line = presenter.subscription(self._limits)[0]
+        return tr("Claude Code: {line}", line=line) if line else ""
+
+    @Property(str, notify=subscriptionChanged)
+    def subscriptionTip(self) -> str:
+        return presenter.subscription(self._limits)[1]
+
+    @Property(bool, notify=subscriptionChanged)
+    def subscriptionWarn(self) -> bool:
+        return presenter.subscription(self._limits)[2]
+
+    def load_limits(self) -> None:
+        self._call(lambda: self.client.claude_code_limits(), lambda found: self._set_limits(found.get("limits") or []),
+                   lambda _e: None)  # fmt: skip
+
+    def _set_limits(self, limits: list[dict[str, Any]]) -> None:
+        self._limits = limits
+        self.subscriptionChanged.emit()
+        self.modelChanged.emit()  # the picker says it at Claude Code's models
 
     @Property(str, notify=modelChanged)
     def modelCountText(self) -> str:
@@ -666,6 +691,7 @@ class Controller(QObject):
         self.load_conversations()
         self.refresh_status()
         self.refresh_usage()
+        self.load_limits()
         self.load_secrets()
         self.projects.load()
         self.terminals.load()
@@ -1766,7 +1792,13 @@ class Controller(QObject):
         elif kind in ("model.settings", "llama.config", "tune.changed"):
             self.model_setup.on_event(kind, payload)
         elif kind == "claude_code.limit":
-            self.flash(presenter.claude_code_limit(payload.get("info") or {}), error=True, ms=20000)
+            said = presenter.claude_code_limit(payload.get("info") or {})
+            self.flash(said, error=True, ms=20000)
+            if cid and cid == self.current:  # near or reached: the chat says it too, where the answer stopped (20.3)
+                self._errors += 1
+                self.messages.append(rows.error_row(f"e{self._errors}", said))
+        elif kind == "claude_code.limits":
+            self._set_limits(payload.get("limits") or [])
         elif kind == "hub.stopping":
             self._set_hub("stopped")
             for run_cid in list(self.live):  # an answer does not outlive the hub; nothing else would end it

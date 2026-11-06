@@ -597,10 +597,16 @@ def chat_rows(
 
 
 def picker_items(
-    models: list[dict[str, Any]], loaded: set[str], chosen: str | None, advice: dict[str, Any] | None = None
+    models: list[dict[str, Any]],
+    loaded: set[str],
+    chosen: str | None,
+    advice: dict[str, Any] | None = None,
+    *,
+    subscription: str = "",
 ) -> list[dict[str, Any]]:
     """Sections and models for the picker: the hub's advice for this chat first (D11), local ones (which is in VRAM
-    now), then cloud ones with prices; a model the chat may not use says why and cannot be picked."""
+    now), then cloud ones with prices; a model the chat may not use says why and cannot be picked. `subscription`:
+    Claude Code's limits in a line (20.3), said at its models."""
     items: list[dict[str, Any]] = []
     options = {o["model_id"]: o for o in (advice or {}).get("options") or []}
     best = options.get((advice or {}).get("recommended") or "")
@@ -625,6 +631,8 @@ def picker_items(
                 note = tr("загружена в видеопамять") if ref in loaded else tr("загрузится при отправке")
             elif caps.get("subscription"):
                 note = tr("подписка Claude Code · работает в папке проекта чата")
+                if subscription:
+                    note += " · " + subscription
             else:
                 prices = m.get("prices") or {}
                 note = tr(

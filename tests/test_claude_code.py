@@ -21,10 +21,12 @@ from hub.claude_code import (
     ClaudeCodeProvider,
     Translator,
     child_env,
+    current_limits,
     earlier_text,
     effort_for,
     error_text,
     find_cli,
+    read_limit,
     usage_of,
     user_line,
 )
@@ -153,6 +155,23 @@ def test_the_chats_depth_and_the_models_that_have_none():
     env = {"PATH": "x", "CLAUDE_CODE_EFFORT_LEVEL": "low"}
     assert child_env(env)["CLAUDE_CODE_EFFORT_LEVEL"] == "low"  # no depth from the hub: the user's own stands
     assert "CLAUDE_CODE_EFFORT_LEVEL" not in child_env(env, effort=True)
+
+
+def test_a_limits_info_in_either_spelling():
+    """20.3: the documentation spells the fields two ways and does not say seconds or milliseconds."""
+    camel = read_limit({"status": "rejected", "resetsAt": 1890000000, "rateLimitType": "five_hour", "utilization": 1})
+    snake = read_limit({"status": "allowed_warning", "resets_at": 1890000000000, "rate_limit_type": "seven_day",
+                        "utilization": 85})  # a percentage  # fmt: skip
+    assert camel == {"status": "rejected", "window": "five_hour", "used": 1.0, "resets_at": 1890000000.0}
+    assert snake == {"status": "allowed_warning", "window": "seven_day", "used": 0.85, "resets_at": 1890000000.0}
+    assert read_limit({"status": "allowed"}) == {"status": "allowed", "window": "", "used": None, "resets_at": None}
+    known = {
+        "five_hour": {**camel, "resets_at": 100.0, "seen_at": 50.0},  # reset already: gone
+        "seven_day": {**snake, "seen_at": 50.0},
+        "": {"status": "rejected", "window": "", "resets_at": None, "seen_at": 90.0},
+    }
+    assert [s["window"] for s in current_limits(known, now=200.0)] == ["", "seven_day"]  # no reset said: a while
+    assert [s["window"] for s in current_limits(known, now=90.0 + 601)] == ["seven_day"]
 
 
 def message(seq, role, content, model_id=None):
@@ -397,6 +416,28 @@ def test_a_limit_and_an_error_end_the_turn(hub):
     assert error["payload"]["detail"] == "Claude Code: You've hit your session limit"
     limit = next(e for e in feed if e["type"] == "claude_code.limit")
     assert limit["payload"]["info"]["status"] == "rejected"
+
+
+def test_the_subscriptions_limits_are_kept_and_a_goal_waits_for_them(hub):
+    """20.3: what Claude Code tells of its subscription's limits is kept per window - both spellings its documentation
+    shows, a reset in seconds or milliseconds -, and the window asks for it; a goal whose turn hits a reached limit
+    does not fail: it pauses until the limit resets, and says so."""
+    cid = chat_with_project(hub)
+    send(hub, cid, "nearly there")
+    hub.wait_idle(cid)
+    found = hub.http.get("/v1/claude-code/limits").json()
+    (week,) = found["limits"]
+    assert (week["window"], week["status"], week["used"], week["resets_at"]) == ("seven_day", "allowed_warning",
+                                                                                 0.85, 1890000000.0)  # fmt: skip
+    assert found["limited_until"] is None
+    set_goal(hub, cid, objective="the limit of the subscription")
+    done = goal_settled(hub, cid, "paused", "blocked")
+    assert done["goal"]["status"] == "paused" and "лимит подписки Claude Code до " in done["goal"]["detail"]
+    found = hub.http.get("/v1/claude-code/limits").json()
+    assert found["limited_until"] == 1890000000.0
+    assert [s["window"] for s in found["limits"]] == ["five_hour", "seven_day"]
+    told = hub.http.get("/v1/feed", params={"types": "goal.status"}).json()["events"]
+    assert any(e["payload"]["status"] == "paused" and e["payload"]["subscription"] == 1890000000.0 for e in told)
 
 
 def test_a_turn_can_be_stopped(hub):

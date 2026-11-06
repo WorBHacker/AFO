@@ -41,7 +41,7 @@ CLOSE_TRY_AGAIN = 1013
 UNSAVED_KEPT_S = 30.0
 # what a client other than the window follows besides its own conversations: state, never text
 OUTSIDE_EVENTS = ("hub.*", "project.*", "git.head", "processes.changed", "process.stopped", "port.*", "models.*",
-                  "llama_swap.started", "claude_code.limit")  # fmt: skip
+                  "llama_swap.started", "claude_code.limit", "claude_code.limits")  # fmt: skip
 
 
 class _Gate:

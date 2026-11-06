@@ -4036,6 +4036,28 @@ def test_claude_code_tool_rows_and_footer():
     assert "близко до " in presenter.claude_code_limit({"status": "allowed_warning", "resetsAt": 1890000000})
 
 
+def test_claude_codes_subscription_in_the_status_bar_and_the_picker():
+    """20.3: the window nearest its limit in the status bar (a reached one first), every window in its tooltip, and
+    the same line at Claude Code's models in the picker."""
+    from app import presenter
+
+    resets = datetime.now().replace(hour=15, minute=45, second=0, microsecond=0).timestamp()
+    week = {"status": "allowed", "window": "seven_day", "used": 0.4, "resets_at": None}
+    five = {"status": "allowed_warning", "window": "five_hour", "used": 0.85, "resets_at": resets}
+    assert presenter.subscription([]) == ("", "", False)
+    line, tip, warn = presenter.subscription([five, week])
+    assert line == "5 часов — 85 %, сброс в 15:45" and warn
+    assert tip.splitlines()[1:] == ["5 часов — 85 %, сброс в 15:45", "неделя — 40 %"]
+    reached = presenter.subscription([week, {"status": "rejected", "window": "seven_day_opus", "used": None,
+                                             "resets_at": None}])  # fmt: skip
+    assert reached[0] == "неделя Opus — исчерпан" and reached[2]
+    assert presenter.subscription([week]) == ("неделя — 40 %", tip.splitlines()[0] + "\nнеделя — 40 %", False)
+    claude = {"id": "claude-code/default", "name": "Claude Code", "locality": "cloud", "model_ref": "default",
+              "capabilities": {"subscription": True}}  # fmt: skip
+    (_section, item) = rows.picker_items([claude], set(), None, subscription="неделя — 40 %")
+    assert item["note"] == "подписка Claude Code · работает в папке проекта чата · неделя — 40 %"
+
+
 def test_a_subagents_steps_under_its_call():
     """21.3: while Claude Code's subagent works, each step it takes is the last line of the call that started it and
     joins what the call shows opened; done, the call shows the subagent's steps, then its answer."""

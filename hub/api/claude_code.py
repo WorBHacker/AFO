@@ -38,6 +38,15 @@ async def status(request: Request, client: Annotated[Client, Depends(require_cli
     return {"installed": True, "command": command, "detail": "", "running": sorted(runner.turns)}
 
 
+@router.get("/claude-code/limits")
+async def limits(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """The subscription's limits as Claude Code last told them (20.3), per window, those not reset yet: {status,
+    window, used (0-1 or null), resets_at (seconds since the epoch or null), seen_at}; `limited_until` - when a
+    reached one resets (null: none is reached). The event `claude_code.limits` says the same when it changes."""
+    runner = request.app.state.claude_code
+    return {"limits": await runner.limits(), "limited_until": await runner.limited_until()}
+
+
 @router.post("/projects/{project_id}/claude-code/terminal", status_code=201)
 async def open_terminal(
     project_id: str, body: Size, request: Request, client: Annotated[Client, Depends(require_client)]
