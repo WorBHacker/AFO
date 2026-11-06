@@ -163,6 +163,41 @@ def test_polling_and_a_finished_run(bot):
     assert api.sent()[-1]["text"] == "Агент «Ревьюер»: готово"
 
 
+def test_a_dropped_connection_is_logged_by_its_kind_and_repeats_as_one_line(bot, monkeypatch, caplog):
+    """23.1: a dropped connection has no text - the log said "telegram: ; again in 2 s" 29 times a night."""
+    tg, api, db, _queue = bot
+    monkeypatch.setattr(telegram, "BACKOFF_S", (0,))
+    code = db.call(telegram.new_link_code)
+    api.updates = [message(CHAT, f"/link {code}", update_id=7)]
+    trouble = [httpx.ReadError(""), httpx.ReadError(""), httpx.ReadError(""), httpx.ConnectError("refused")]
+    answer = api.handler
+
+    def flaky(request):
+        if trouble:
+            raise trouble.pop(0)
+        return answer(request)
+
+    api.handler = flaky
+
+    async def scenario():
+        tg.start()
+        for _ in range(100):
+            if db.call(telegram.linked_chat) == CHAT:
+                break
+            await asyncio.sleep(0.02)
+        await tg.stop()
+
+    tg._http = httpx.AsyncClient(transport=httpx.MockTransport(lambda request: api.handler(request)))
+    with caplog.at_level("WARNING", logger="hub.telegram"):
+        asyncio.run(scenario())
+    assert db.call(telegram.linked_chat) == CHAT
+    assert [r.getMessage() for r in caplog.records if r.name == "hub.telegram"] == [
+        "telegram: ReadError; again in 0 s",
+        "telegram: ReadError - 2 more times in a row",
+        "telegram: ConnectError: refused; again in 0 s",
+    ]
+
+
 def test_a_chats_goal_met_or_waiting_goes_to_the_phone(bot):
     tg, api, db, _queue = bot
     db.call(lambda c: telegram._set(c, telegram.CHAT_KEY, CHAT))

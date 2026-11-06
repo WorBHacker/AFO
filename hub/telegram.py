@@ -9,7 +9,8 @@ What goes to the phone (Telegram is a cloud service, D21): for a project that al
 command or diff; for any other, a short notice without code ("an agent waits for an answer in «proj»: file edit").
 "Разрешить" / "Отклонить" answer from the phone; a destructive command is not answered from the phone at all - only
 in the app. The message is updated when the request is answered anywhere (or expires). Finished agent runs are
-reported too. Long polling (getUpdates); network trouble is waited out.
+reported too. Long polling (getUpdates); network trouble is waited out - the log names its kind, and the same trouble
+in a row is one line with its count (23.1).
 """
 
 from __future__ import annotations
@@ -124,6 +125,17 @@ def buttons(approval: dict[str, Any]) -> dict[str, Any] | None:
                                  {"text": tr("Отклонить"), "callback_data": f"no:{approval['id']}"}]]}  # fmt: skip
 
 
+def why(exc: BaseException) -> str:
+    """What went wrong, for the log: the kind of error and its text - a dropped connection has no text (23.1)."""
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _repeated(trouble: str, times: int) -> None:
+    if times:
+        log.warning("telegram: %s - %s more times in a row", trouble, times)
+
+
 def _project(conn: sqlite3.Connection, project_id: str | None) -> dict[str, Any] | None:
     found = project_id and conn.execute("SELECT name, cloud_ok FROM projects WHERE id = ?", (project_id,)).fetchone()
     return {"name": found["name"], "cloud_ok": bool(found["cloud_ok"])} if found else None
@@ -178,7 +190,7 @@ class TelegramBot:
     # --- incoming: /link, button presses ---
 
     async def _poll(self) -> None:
-        trouble = 0
+        trouble, last, repeats = 0, "", 0  # the same trouble in a row is one line, its count when it ends (23.1)
         while True:
             await asyncio.sleep(0)  # a poll that answers at once must not hold the loop
             if not self._store.get(TOKEN):
@@ -191,9 +203,16 @@ class TelegramBot:
             except (httpx.HTTPError, ValueError, LookupError) as exc:
                 wait = BACKOFF_S[min(trouble, len(BACKOFF_S) - 1)]
                 trouble += 1
-                log.warning("telegram: %s; again in %s s", exc, wait)
+                if why(exc) == last:
+                    repeats += 1
+                else:
+                    _repeated(last, repeats)
+                    last, repeats = why(exc), 0
+                    log.warning("telegram: %s; again in %s s", last, wait)
                 await asyncio.sleep(wait)
                 continue
+            _repeated(last, repeats)
+            last, repeats = "", 0
             for update in updates:
                 self._offset = max(self._offset, update["update_id"] + 1)
                 try:
@@ -245,7 +264,7 @@ class TelegramBot:
                 if event is not None:
                     await self._send(event.type, event.payload)
             except (httpx.HTTPError, ValueError, LookupError) as exc:
-                log.warning("telegram: %s not sent: %s", getattr(event, "type", "the night's"), exc)
+                log.warning("telegram: %s not sent: %s", getattr(event, "type", "the night's"), why(exc))
             except Exception:
                 log.exception("telegram: %s failed", getattr(event, "type", "the night's"))
 
