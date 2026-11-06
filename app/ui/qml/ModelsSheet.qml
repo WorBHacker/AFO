@@ -230,6 +230,25 @@ Sheet {
                 onEditingFinished: ModelSetup.setField("name", text)
             }
         }
+        Row {  // 25.5: the user's word on its Russian - the advice and the cards' writer pass it by
+            spacing: 12
+            Segmented {
+                objectName: "modelRussian"
+                options: [{ id: "good", name: qsTr("По-русски пишет хорошо") },
+                          { id: "weak", name: qsTr("С ошибками") }]
+                value: ModelSetup.draft.weak_russian ? "weak" : "good"
+                onPicked: (id) => ModelSetup.setFlag("weak_russian", id === "weak")
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 300
+                wrapMode: Text.Wrap
+                text: qsTr("С ошибками — хаб не советует её для чатов и не берёт для карточек проектов")
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
 
         SectionTitle { text: qsTr("Возможности — если поставщик сообщает неверно") }
         Flow {

@@ -1,7 +1,8 @@
 """What the user set for each model in the window (D39, stage 8): shown in the picker or not, its own name, what it
 can do (context, tools, vision - when the provider says it wrong), its prices with their date (Q9), the answer's
-parameters with a preset, the default reasoning depth and a system prompt. The row of ALL ('') holds the general
-system prompt, the one for every model.
+parameters with a preset, the default reasoning depth and a system prompt; whether it writes Russian with errors
+(25.5: the advice and the cards' writer pass it by). The row of ALL ('') holds the general system prompt, the one
+for every model.
 
 Every save is a new version and the old ones stay: an answer remembers the version and the parameters it was made
 with (D14), and an earlier version can be taken back. What the provider says about a model is never overwritten -
@@ -109,6 +110,11 @@ def check(settings: Any) -> dict[str, Any]:
             case "hidden":
                 if not isinstance(value, bool):
                     raise SettingsError(tr("показывать в выборе: да или нет"))
+                if value:
+                    out[key] = True
+            case "weak_russian":  # 25.5: the user's word that it writes Russian with errors - not to be advised
+                if not isinstance(value, bool):
+                    raise SettingsError(tr("пишет по-русски с ошибками: да или нет"))
                 if value:
                     out[key] = True
             case "name":
@@ -265,6 +271,7 @@ def overlay(model: dict[str, Any], settings: dict[str, Any], number: int = 0) ->
     out = dict(model)
     out["provider_name"] = model["name"]
     out["hidden"] = bool(settings.get("hidden"))
+    out["weak_russian"] = bool(settings.get("weak_russian"))  # advised last (hub/advisor.py, 25.5)
     out["settings_version"] = number
     out["effort"] = settings.get("effort", "")  # the reasoning depth the window picks with this model
     if settings.get("name"):

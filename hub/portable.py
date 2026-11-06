@@ -48,7 +48,8 @@ from .secret_filter import MASK, redact
 KIND = "localchat-settings"
 VERSION = 1
 RULE_CHARS = 2000
-NAMES = {"name": N_("имя"), "hidden": N_("скрыта"), "capabilities": N_("возможности"), "prices": N_("цены"),
+NAMES = {"name": N_("имя"), "hidden": N_("скрыта"), "weak_russian": N_("пишет по-русски с ошибками"),
+         "capabilities": N_("возможности"), "prices": N_("цены"),
          "prices_asof": N_("дата цен"), "params": N_("параметры"), "preset": N_("заготовка"),
          "effort": N_("размышления"), "roles": N_("роли"), "context_budget": N_("бюджеты контекста"),
          "system_prompt": N_("системный промпт"), "instructions": N_("инструкции"), "model_id": N_("модель"),

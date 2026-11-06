@@ -4,7 +4,9 @@ The hub ranks the models it has by what matters to the user - quality, speed and
 from what it saw them do here (hub/stats.py): speed, errors, how agent tasks ended, money per answer; a local model
 already in video memory answers without the minute-long swap. What rules a model out is said, not hidden: a chat
 holding a project only local models may see (D10), a budget used up with no way past it (D12), Claude Code without
-a project. Nothing is switched silently (D11): the window shows the advice, the user picks.
+a project. Nothing is switched silently (D11): the window shows the advice, the user picks. A model the user marked
+as writing Russian with errors (25.5, its settings) comes after every unmarked one and is advised only when no
+other may answer.
 """
 
 from __future__ import annotations
@@ -118,10 +120,13 @@ def advise(
         if roles.get("chat") == model["id"]:  # the user's choice for chats counts a little (D39); never alone
             score += 0.05
             reasons.append(tr("ваша модель для чатов"))
+        weak = bool(model.get("weak_russian"))  # the user's own mark (25.5)
+        if weak:
+            reasons.append(tr("пишет по-русски с ошибками"))
         score = round(score, 3)
         options.append({"model_id": model["id"], "name": model["name"], "score": score, "reasons": reasons,
-                        "blocked": blocked, "estimate_usd": round(cost, 6)})  # fmt: skip
-    options.sort(key=lambda o: (o["blocked"] is not None, -o["score"], o["name"]))
+                        "blocked": blocked, "weak": weak, "estimate_usd": round(cost, 6)})  # fmt: skip
+    options.sort(key=lambda o: (o["blocked"] is not None, o["weak"], -o["score"], o["name"]))
     best = next((o["model_id"] for o in options if o["blocked"] is None), None)
     return {"recommended": best, "priority": priority if priority in PRIORITIES else "balanced", "options": options}
 

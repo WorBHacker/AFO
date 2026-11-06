@@ -57,7 +57,8 @@ ROLES = [("chat", N_("Модель нового чата"), N_("выбирает
                                                  "рядом с моделью чата — иначе дописывание на паузе")),
          ("edit", N_("Правка в редакторе"), N_("Ctrl+I над выделенным: модель предлагает замену, вы её принимаете "
                                                "или нет"))]  # fmt: skip
-BLANK: dict[str, Any] = {"name": "", "hidden": False, "context": "", "tools": "", "vision": "", "price_input": "",
+BLANK: dict[str, Any] = {"name": "", "hidden": False, "weak_russian": False, "context": "", "tools": "", "vision": "",
+                         "price_input": "",
                          "price_output": "", "price_cache_read": "", "price_cache_write": "", "temperature": "",
                          "top_p": "", "top_k": "", "min_p": "", "repeat_penalty": "", "max_tokens": "", "stop": "",
                          "thinking": "", "refusal_vector": "", "preset": "", "effort": "", "system_prompt": "",
@@ -119,6 +120,7 @@ def draft_of(settings: dict[str, Any]) -> dict[str, Any]:
     out.update({
         "name": settings.get("name", ""),
         "hidden": bool(settings.get("hidden")),
+        "weak_russian": bool(settings.get("weak_russian")),
         "context": shown(caps.get("context")),
         "tools": "" if "tools" not in caps else "yes" if caps["tools"] else "no",
         "vision": "" if "vision" not in caps else "yes" if caps["vision"] else "no",
@@ -148,6 +150,8 @@ def settings_of(draft: dict[str, Any], accepts: list[str], *, general: bool = Fa
     out: dict[str, Any] = {}
     if draft["hidden"]:
         out["hidden"] = True
+    if draft["weak_russian"]:
+        out["weak_russian"] = True
     if draft["name"].strip():
         out["name"] = draft["name"].strip()
     caps: dict[str, Any] = {}
@@ -212,6 +216,7 @@ def choices(models: list[dict[str, Any]], current: str) -> list[dict[str, Any]]:
         for model in group:
             note = " · ".join(s for s in (
                 tr("скрыта в выборе") if model.get("hidden") else "",
+                tr("пишет по-русски с ошибками") if model.get("weak_russian") else "",
                 tr("своё имя, у поставщика «{name}»", name=model.get("provider_name")) if model.get("provider_name")
                 and model.get("provider_name") != model["name"] else "",
                 tr("настройки v{version}", version=model["settings_version"]) if model.get("settings_version") else "",

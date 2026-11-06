@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hub import advisor, agents, store
+from hub import advisor, agents, model_settings, store
 from hub.db import Database, migrate
 from hub.gateway.base import Model
 
@@ -85,6 +85,27 @@ def test_a_used_up_budget(db):
     _advice, by_id = ranked(db)
     assert by_id["cloud/claude-haiku-5-5"]["blocked"] is None
     assert "бюджет исчерпан — только с подтверждением" in by_id["cloud/claude-haiku-5-5"]["reasons"]
+
+
+def test_a_model_marked_as_writing_russian_with_errors_is_not_advised(db):
+    """25.5 (§5.4: the local «coder» writes Russian with errors, mixing alphabets - accepted, it is the model's): the
+    user marks such a model in its settings, and the advice puts it after every unmarked one and does not recommend
+    it while another may answer - saying why; it is never hidden, and it is still advised when nothing else is."""
+    advice, _ = ranked(db, priority="price", loaded={"coder"})
+    assert advice["recommended"] == "local/coder"  # free and in video memory: the cheapest
+    db.call(lambda c: model_settings.save(c, "local/coder", model_settings.check({"weak_russian": True}), by="app"))
+    assert db.call(lambda c: store.get_model(c, "local/coder"))["weak_russian"] is True
+    advice, after = ranked(db, priority="price", loaded={"coder"})
+    free = [o["model_id"] for o in advice["options"] if o["blocked"] is None]
+    assert advice["recommended"] != "local/coder" and free[-1] == "local/coder"
+    assert "пишет по-русски с ошибками" in after["local/coder"]["reasons"] and after["local/coder"]["blocked"] is None
+    advice, _ = ranked(db, conversation_id="local", loaded={"coder"})  # only the local ones may see this chat
+    assert advice["recommended"] == "local/big"
+    db.call(lambda c: model_settings.save(c, "local/big", model_settings.check({"weak_russian": True}), by="app"))
+    assert ranked(db, conversation_id="local", loaded={"coder"})[0]["recommended"] in ("local/coder", "local/big")
+    with pytest.raises(model_settings.SettingsError):
+        model_settings.check({"weak_russian": "да"})
+    assert model_settings.check({"weak_russian": False}) == {}  # not marked is no mark
 
 
 def test_a_tasks_cost_before_it_runs(db):

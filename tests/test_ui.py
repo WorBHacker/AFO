@@ -4740,6 +4740,33 @@ def test_an_older_answer_never_undoes_a_newer_choice(app, monkeypatch):
     assert app.contextSettings["preset"] == "creative" and app.contextSettings["instructions"] == "Пиши тесты"
 
 
+def test_a_model_writing_russian_with_errors_does_not_write_cards():
+    """25.5: the user's mark in a model's settings; the cards' writer passes such a model by - the one of the role
+    «cards» excepted (the user chose it), and one is taken all the same when no other local one is."""
+    from types import SimpleNamespace
+
+    from app.ui import model_setup as ms
+    from app.ui.projects import Projects
+
+    assert ms.settings_of({**ms.BLANK, "weak_russian": True}, []) == {"weak_russian": True}
+    assert ms.draft_of({"weak_russian": True})["weak_russian"] is True and ms.settings_of(dict(ms.BLANK), []) == {}
+    coder = {"id": "l/coder", "name": "Coder", "locality": "local", "weak_russian": True}
+    qwen = {"id": "l/qwen", "name": "Qwen", "locality": "local"}
+    opus = {"id": "c/opus", "name": "Opus", "locality": "cloud"}
+    assert "пишет по-русски с ошибками" in next(i["note"] for i in ms.choices([coder], "") if i["id"] == "l/coder")
+
+    def writer(chosen, models, role=""):
+        app = SimpleNamespace(role_model=lambda _r: role, models={m["id"]: m for m in models}, model_list=models,
+                              modelId=chosen)  # fmt: skip
+        return Projects._card_writer(SimpleNamespace(app=app))
+
+    assert writer("l/coder", [opus, coder, qwen]) == "l/qwen"  # the chosen one writes Russian with errors
+    assert writer("c/opus", [opus, coder, qwen]) == "l/qwen"
+    assert writer("l/coder", [opus, coder]) == "l/coder"  # no other local one: it all the same
+    assert writer("c/opus", [opus]) == "c/opus"
+    assert writer("l/qwen", [coder, qwen], role="l/coder") == "l/coder"  # the role is the user's own choice
+
+
 def test_roles_in_the_window(app):
     from app.ui import model_setup as ms
 

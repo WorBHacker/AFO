@@ -779,15 +779,15 @@ class Projects(QObject):
 
     def _card_writer(self) -> str:
         """Who drafts: the model of the role «cards» (D39), else the chosen one if local, else the first local one
-        (D24: local by default)."""
+        (D24: local by default) - one the user marked as writing Russian with errors only when no other is (25.5)."""
         if self.app.role_model("cards"):
             return self.app.role_model("cards")
-        models = self.app.model_list
         chosen = self.app.models.get(self.app.modelId)
+        local = [m for m in self.app.model_list if m.get("locality") == "local"]
         if chosen and chosen.get("locality") == "local":
-            return chosen["id"]
-        local = next((m for m in models if m.get("locality") == "local"), None)
-        return local["id"] if local else self.app.modelId
+            local = [chosen, *(m for m in local if m["id"] != chosen["id"])]
+        best = next((m for m in local if not m.get("weak_russian")), local[0] if local else None)
+        return best["id"] if best else self.app.modelId
 
     @Slot()
     def updateCard(self) -> None:
