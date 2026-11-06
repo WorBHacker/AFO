@@ -1,8 +1,10 @@
 """The symbol index (stage 3, D26): definitions by tree-sitter, kept up to date, the tools; frozen tool lists."""
 
 import asyncio
+import dataclasses
 import json
 import os
+import shutil
 import sys
 
 import pytest
@@ -16,7 +18,7 @@ from hub.gateway.base import Model, StreamEvent
 from hub.projects import Project
 from hub.server import create_app
 from hub.settings import HubSettings
-from hub.symbols import SymbolIndex
+from hub.symbols import SymbolIndex, key
 from hub.tools import FIRST_TOOLS, TOOLS, ToolContext, run_tool
 
 migrate_module = sys.modules["hub.db.migrate"]
@@ -127,6 +129,23 @@ def test_index_finds_and_follows_changes(code):
     assert index.find(code, "send")["total"] == 0
     index.forget(code.id)
     assert index.refresh(code).files.keys() == {"src/app.py", "config.py"}
+
+
+def test_a_copy_of_a_project_has_an_index_of_its_own(code, tmp_path):
+    """19.4: a sandbox's copy has the project's id and a root of its own: what only the copy defines stays out of the
+    project's index - by name and by meaning -, and forgetting the copy leaves the project's."""
+    copy = dataclasses.replace(code, path=str(tmp_path / "copy"))
+    shutil.copytree(code.root, copy.root)
+    (copy.root / "src" / "only.py").write_text('def copy_only():\n    """Lives in the copy alone."""\n',
+                                               encoding="utf-8")  # fmt: skip
+    index = SymbolIndex(fresh_s=0)
+    assert index.find(copy, "copy_only")["total"] == 1 and index.find(copy, "copy alone")["symbols"]
+    assert index.find(code, "copy_only")["total"] == 0 and index.find(code, "copy alone")["symbols"] == []
+    assert index.find(code, "send")["total"] == index.find(copy, "send")["total"] == 3
+    index.forget(code.id, copy.root)
+    assert index.meaning.count(key(copy)) == 0 and index.meaning.count(key(code)) > 0
+    index.forget(code.id)
+    assert index.meaning.count(key(code)) == 0
 
 
 def test_a_big_project_is_indexed_in_parts(code):

@@ -76,9 +76,17 @@ async def apply_sandbox(conversation_id: str, project_id: str, request: Request,
                                        hunks, keep=goal is not None)  # fmt: skip
     except sb.SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    forget_copy(request.app.state.symbols, request.app.state.chat.sandboxes, conversation_id, project)
     said = {"conversation_id": conversation_id, "project_id": project.id, **done}
     await request.app.state.bus.publish("sandbox.applied", said, project_id=project.id)
     return done
+
+
+def forget_copy(symbols, folder, conversation_id: str, project) -> None:
+    """A sandbox gone takes its index of symbols with it (19.4: a copy has its own)."""
+    place = sb.place(folder, conversation_id, project)
+    if not (place / ".git").exists():
+        symbols.forget(project.id, place)
 
 
 @router.post("/{conversation_id}/sandbox/{project_id}/discard")
@@ -90,6 +98,7 @@ async def discard_sandbox(conversation_id: str, project_id: str, request: Reques
         await asyncio.to_thread(sb.discard, request.app.state.chat.sandboxes, conversation_id, project)
     except sb.SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    forget_copy(request.app.state.symbols, request.app.state.chat.sandboxes, conversation_id, project)
     said = {"conversation_id": conversation_id, "project_id": project.id}
     await request.app.state.bus.publish("sandbox.discarded", said, project_id=project.id)
     return {"discarded": project.id}

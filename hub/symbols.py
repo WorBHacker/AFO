@@ -186,8 +186,15 @@ def parse(source: bytes, language: str) -> list[Symbol]:
     return symbols
 
 
+def key(project: Project) -> str:
+    """Whose index it is (19.4): a sandbox's copy of a project has the project's id and a root of its own - and an
+    index of its own, so what only the copy defines stays out of the project's chats."""
+    return f"{project.id}|{project.root}"
+
+
 class SymbolIndex:
-    """What is defined where, per project, kept in memory and brought up to date on each query."""
+    """What is defined where, per project (and per copy of one), kept in memory and brought up to date on each
+    query."""
 
     def __init__(self, budget_s: float = REFRESH_BUDGET_S, fresh_s: float = FRESH_S):
         self._projects: dict[str, _Project] = {}
@@ -196,18 +203,23 @@ class SymbolIndex:
         self._fresh_s = fresh_s
         self.meaning = MeaningIndex()  # what each definition says of itself, for several words (18.3)
 
-    def _state(self, project_id: str) -> _Project:
+    def _state(self, project: Project) -> _Project:
         with self._guard:
-            return self._projects.setdefault(project_id, _Project())
+            return self._projects.setdefault(key(project), _Project())
 
-    def forget(self, project_id: str) -> None:
+    def forget(self, project_id: str, root: Path | None = None) -> None:
+        """A project's index and its copies'; with `root`, only the copy there (a sandbox gone)."""
         with self._guard:
-            self._projects.pop(project_id, None)
-        self.meaning.drop(project_id)
+            gone = [k for k in self._projects if k.split("|", 1)[0] == project_id
+                    and (root is None or k == f"{project_id}|{root}")]  # fmt: skip
+            for k in gone:
+                del self._projects[k]
+        for k in gone:
+            self.meaning.drop(k)
 
     def refresh(self, project: Project) -> _Project:
         """Compares the files with the disk and parses the new and changed ones (within the time budget)."""
-        state = self._state(project.id)
+        state = self._state(project)
         with state.lock:
             if state.complete and time.monotonic() - state.checked < self._fresh_s:
                 return state
@@ -241,10 +253,10 @@ class SymbolIndex:
                     continue
                 found = parse(source, language)
                 state.files[rel] = _File(st.st_size, st.st_mtime_ns, found)
-                self.meaning.put(project.id, rel, found, notes(source, found, language), about(source, language))
+                self.meaning.put(key(project), rel, found, notes(source, found, language), about(source, language))
             for rel in set(state.files) - present:
                 del state.files[rel]
-                self.meaning.drop(project.id, rel)
+                self.meaning.drop(key(project), rel)
             state.checked = time.monotonic()
             state.complete = complete
             return state
@@ -288,7 +300,7 @@ class SymbolIndex:
     def _by_meaning(self, project: Project, query: str, kind: str, limit: int) -> dict[str, Any]:
         state = self.refresh(project)
         found = []
-        rows, total = self.meaning.search(project.id, query, FIND_LIMIT * 4)
+        rows, total = self.meaning.search(key(project), query, FIND_LIMIT * 4)
         for path, n, why in rows:
             file = state.files.get(path)
             if n == FILE and file is not None and not kind:  # the file's own words

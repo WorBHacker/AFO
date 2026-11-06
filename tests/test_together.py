@@ -115,7 +115,6 @@ def test_a_rollback_card_over_the_editors_unsaved_edits_says_so(hub, repo):  # n
     assert asked["unsaved"] is True, "the rollback would remove a file the editor holds unsaved, and the card is silent"
 
 
-@step(4, "a sandbox and its project share one symbol index")
 def test_a_sandboxs_definitions_stay_out_of_its_projects_index(hub, repo):  # noqa: F811
     """«Песочница» × the symbol index (18.3 reads it by meaning): the sandbox's copy and the project share the
     project's id - a definition only the sandbox has must not turn up in the project's own chat."""

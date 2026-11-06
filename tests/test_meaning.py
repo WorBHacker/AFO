@@ -7,7 +7,7 @@ import os
 
 from hub import meaning
 from hub.projects import Project
-from hub.symbols import SymbolIndex, parse
+from hub.symbols import SymbolIndex, key, parse
 from hub.tools import ToolContext, run_tool
 
 
@@ -77,8 +77,9 @@ def test_several_words_find_definitions_by_what_they_say(repo):
     assert "require_role" not in [s["name"] for s in index.find(p, "user permission")["symbols"]]
     (repo / "guard.ts").unlink()
     assert index.find(p, "refuses token")["symbols"] == []  # a file gone takes its words with it
+    assert index.meaning.count(key(p)) > 0
     index.forget(p.id)
-    assert index.meaning.count(p.id) == 0
+    assert index.meaning.count(key(p)) == 0
 
 
 def test_find_symbol_with_several_words(repo):

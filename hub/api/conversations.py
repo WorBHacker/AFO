@@ -194,8 +194,10 @@ async def delete_conversation(
     deleted = await request.app.state.db.acall(lambda conn: store.delete_conversation(conn, conversation_id))
     if not deleted:
         raise HTTPException(status_code=404, detail="no such conversation")
-    if chat.sandboxes is not None:  # its «Песочница» goes with it: worktree, branch, ref (D46)
+    if chat.sandboxes is not None:  # its «Песочница» goes with it: worktree, branch, ref (D46), its symbols (19.4)
         await asyncio.to_thread(_drop_sandboxes, chat.sandboxes, conversation_id, attached)
+        for project in attached:
+            chat.symbols.forget(project.id, sandbox.place(chat.sandboxes, conversation_id, project))
     for kept in (chat.sandbox_broken, chat.seen_files):  # what the hub held for it in memory
         kept.pop(conversation_id, None)
     chat.outside.discard(conversation_id)
