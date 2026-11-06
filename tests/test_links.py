@@ -156,6 +156,50 @@ def test_links_looked_for_again_by_themselves(pair):
     asyncio.run(main())
 
 
+def test_a_port_once_heard_is_evidence_after_its_process_stops(pair, tmp_path):
+    """25.3 (§5.4: the port evidence held only while B's process listened): the process monitor keeps what listened
+    in each project's folder, with when it was last seen. The evidence lives after the process stops, with its day -
+    unless another project's process listens on that port now: then it is that one's."""
+    from hub.db import Database, migrate
+    from hub.events import EventBus
+    from hub.processes import ProcessMonitor
+
+    class Scanner:
+        def __init__(self):
+            self.pictures = [{"b": [{"pid": 7, "name": "python.exe", "ports": [8123]},
+                                    {"pid": 8, "name": "hub", "ports": [9], "hub": True}]},  # not the hub's own
+                             {"b": [{"pid": 7, "name": "python.exe", "ports": []}]}]  # fmt: skip
+
+        def scan(self, projects):
+            return self.pictures.pop(0)
+
+    async def main():
+        db = Database(data_paths().ensure().db)
+        db.call(migrate)
+        for p in pair:
+            db.call(lambda c, p=p: c.execute("INSERT INTO projects (id, name, path) VALUES (?, ?, ?)",
+                                             (p.id, p.name, p.path)))  # fmt: skip
+        monitor = ProcessMonitor(EventBus(db), db, interval_s=0, scanner=Scanner())
+        await monitor.sample()
+        heard = db.call(links.remembered_ports)
+        assert list(heard) == ["b"] and heard["b"][8123][0] == "python.exe"
+        await monitor.sample()  # it stopped listening: kept, with when it was last seen
+        stopped = db.call(links.remembered_ports)["b"][8123]
+        assert stopped[0] == "python.exe" and stopped[1] >= heard["b"][8123][1]
+        db.close()
+        return stopped
+
+    remembered = {"b": {8123: (asyncio.run(main())[0], "2026-11-05T18:30:00.000Z")}}
+    uses = next(p for p in links.scan(list(pair), {}, remembered) if p["kind"] == "uses")["evidence"]
+    said = next(line for line in uses if ":8123" in line and "src/client.py" in line)
+    assert said.endswith("в папке back этот порт слушал python.exe, последний раз 2026-11-05")
+    other = project(tmp_path / "other", "o")
+    (tmp_path / "other").mkdir()
+    taken = links.scan([*pair, other], {"o": {8123: "node.exe"}}, remembered)  # another one listens there now
+    assert all("back этот порт" not in line for p in taken for line in p["evidence"])
+    assert any("в папке other этот порт слушает node.exe" in line for p in taken for line in p["evidence"])
+
+
 class Echo:
     name = "fake"
 

@@ -5,6 +5,8 @@ Evidence the hub looks for, for each pair of projects A and B:
   submodule, `build: ../b` in docker-compose) - A uses B, or they deploy together;
 - a package: A depends on the package B builds (the name in B's pyproject.toml / package.json / Cargo.toml);
 - a port: something in A's files talks to localhost:P, and a process in B's folder listens on P - A uses B's API;
+  since 25.3 also one that listened there before (the process monitor keeps them, with the day: `project_ports`),
+  unless another project's process listens on P now;
 - the environment: A and B name the same settings (two or more, not the everyday ones like PORT) in their
   `.env.example` or docker-compose files - they share a database, a queue, a config.
 Each proposal keeps its evidence as lines a person can check. A confirmed link joins the map (L0) and lets a chat
@@ -133,9 +135,14 @@ def package_evidence(a: Project, b: Project, b_package: str | None) -> list[tupl
     return found
 
 
-def port_evidence(a: Project, b: Project, b_ports: dict[int, str]) -> list[tuple[str, str]]:
+def port_evidence(a: Project, b: Project, b_ports: dict[int, str],
+                  b_before: dict[int, tuple[str, str]] | None = None) -> list[tuple[str, str]]:  # fmt: skip
+    """A calls a port a process in B's folder listens on (`b_ports`: port -> its process), or listened on before
+    (`b_before`: port -> (process, when last seen))."""
+    heard = [(port, process, "") for port, process in b_ports.items()]
+    heard += [(port, process, at) for port, (process, at) in (b_before or {}).items() if port not in b_ports]
     found = []
-    for port, process in sorted(b_ports.items()):
+    for port, process, at in sorted(heard):
         try:
             result = search.search(a.root, PORT_QUERY.format(port=port), regex=True, limit=MAX_PORT_HITS)
         except ProjectError:
@@ -144,12 +151,15 @@ def port_evidence(a: Project, b: Project, b_ports: dict[int, str]) -> list[tuple
         hits = sorted(result["files"], key=lambda item: item["path"].lower().endswith(DOC_SUFFIXES))
         for item in hits[:1]:
             match = item["matches"][0]
-            found.append((
-                "uses",
-                tr("{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушает {process}",
-                   a=a.name, path=item["path"], number=match["line"], port=port, text=match["text"].strip()[:120],
-                   b=b.name, process=process),
-            ))  # fmt: skip
+            fields = {"a": a.name, "path": item["path"], "number": match["line"], "port": port, "b": b.name,
+                      "text": match["text"].strip()[:120], "process": process}  # fmt: skip
+            if at:
+                said = tr("{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушал {process}, "
+                          "последний раз {day}", day=at[:10], **fields)  # fmt: skip
+            else:
+                said = tr("{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушает {process}",
+                          **fields)  # fmt: skip
+            found.append(("uses", said))
     return found
 
 
@@ -172,18 +182,24 @@ def env_evidence(a: Project, b: Project, a_names: set[str], b_names: set[str]) -
                           names=listed))]  # fmt: skip
 
 
-def scan(all_projects: list[Project], ports: dict[str, dict[int, str]]) -> list[dict[str, Any]]:
+def scan(all_projects: list[Project], ports: dict[str, dict[int, str]],
+         before: dict[str, dict[int, tuple[str, str]]] | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """Proposals {a_id, b_id, kind, evidence: [lines]} for every pair with evidence. `ports`: project id -> {port:
-    process name} of what listens in its folder now."""
+    process name} of what listens in its folder now; `before`: project id -> {port: (process, when last seen)} of
+    what listened there (`remembered_ports`) - a port another project listens on now is that one's."""
     present = [p for p in all_projects if p.root.is_dir()]
     names = {p.id: package_name(p) for p in present}
     settings = {p.id: env_names(p) for p in present}
+    taken = {port for found in ports.values() for port in found}
+    past = {pid: {port: seen for port, seen in heard.items() if port not in taken}
+            for pid, heard in (before or {}).items()}  # fmt: skip
     proposals: dict[tuple[str, str, str], list[str]] = {}
     for a in present:
         for b in present:
             if a.id == b.id or _inside(a.root, b.root) or _inside(b.root, a.root):
                 continue  # nested folders are one tree, not two projects talking
-            found = path_evidence(a, b) + package_evidence(a, b, names[b.id]) + port_evidence(a, b, ports.get(b.id, {}))
+            found = path_evidence(a, b) + package_evidence(a, b, names[b.id]) + \
+                port_evidence(a, b, ports.get(b.id, {}), past.get(b.id))  # fmt: skip
             if a.id < b.id:  # sharing goes both ways: one proposal per pair
                 found += env_evidence(a, b, settings[a.id], settings[b.id])
             for kind, line in found:
@@ -203,11 +219,35 @@ def listening(found: dict[str, list[dict[str, Any]]]) -> dict[str, dict[int, str
             for pid, procs in found.items()}  # fmt: skip
 
 
+def remember_ports(conn: sqlite3.Connection, before: dict[str, dict[int, str]], now: dict[str, dict[int, str]],
+                   at: str) -> None:  # fmt: skip
+    """What listens in projects' folders (`listening`), kept with when it was last seen (25.3): the ports open now,
+    and the ones that closed since `before` - about when they closed."""
+    closed = {(pid, port): name for pid, ports in before.items() for port, name in ports.items()
+              if port not in now.get(pid, {})}  # fmt: skip
+    heard = {**closed, **{(pid, port): name for pid, ports in now.items() for port, name in ports.items()}}
+    for (pid, port), name in heard.items():
+        conn.execute(
+            "INSERT INTO project_ports (project_id, port, process, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT (project_id, port) DO UPDATE SET process = excluded.process, last_seen = excluded.last_seen",
+            (pid, port, name, at, at),
+        )
+
+
+def remembered_ports(conn: sqlite3.Connection) -> dict[str, dict[int, tuple[str, str]]]:
+    """Project id -> {port: (process, when last seen)}."""
+    out: dict[str, dict[int, tuple[str, str]]] = {}
+    for row in conn.execute("SELECT project_id, port, process, last_seen FROM project_ports"):
+        out.setdefault(row["project_id"], {})[row["port"]] = (row["process"], row["last_seen"])
+    return out
+
+
 async def look(db, processes) -> int:
     """Looks for evidence between every pair of projects now; new proposals join the list. How many are new."""
     everything = await db.acall(projects.list_projects)
     found = processes.latest if processes.latest is not None else await processes.sample()
-    proposals = await asyncio.to_thread(scan, everything, listening(found))
+    before = await db.acall(remembered_ports)
+    proposals = await asyncio.to_thread(scan, everything, listening(found), before)
     return await db.acall(lambda conn: store_proposals(conn, proposals))
 
 

@@ -158,6 +158,7 @@
  "{a}/{file}:{number} зависит от пакета «{package}» проекта {b}": "{a}/{file}:{number} depends on the package “{package}” of the project {b}",
  "{a}/{file}:{number} указывает на папку {b}: {text}": "{a}/{file}:{number} points at the folder of {b}: {text}",
  "{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушает {process}": "{a}/{path}:{number} calls :{port} ({text}); in the folder of {b}, {process} listens on this port",
+ "{a}/{path}:{number} обращается к :{port} ({text}); в папке {b} этот порт слушал {process}, последний раз {day}": "{a}/{path}:{number} calls :{port} ({text}); in the folder of {b}, {process} listened on this port, last on {day}",
  "{branch} теперь на {sha}: {subject}": "{branch} is now at {sha}: {subject}",
  "{choice} — в этом чате со следующего ответа": "{choice} — in this chat from the next answer on",
  "{config}: моделей — {count}; llama-server — {program}": "{config}: models — {count}; llama-server — {program}",

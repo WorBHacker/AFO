@@ -6,9 +6,11 @@ folder, listening TCP ports, CPU (a share of the whole machine, as Task Manager 
 process is does not change while it lives, so its details are read once per (pid, start time); only CPU and memory
 are read on every scan.
 
-The picture goes out as `processes.changed` (live only) whenever it differs from the last one. The `git` the hub
-itself runs for projects is left out: it is the hub's own reading, not the project's work. Stopping a process is
-the app's alone, only for a process of a project and never for the hub, and goes into the event log.
+The picture goes out as `processes.changed` (live only) whenever it differs from the last one; the ports listening
+in projects' folders are kept then, with when they were last seen (25.3: a link's port evidence lives after its
+process stops - hub/links.py). The `git` the hub itself runs for projects is left out: it is the hub's own reading,
+not the project's work. Stopping a process is the app's alone, only for a process of a project and never for the
+hub, and goes into the event log.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from typing import Any
 
 import psutil
 
+from . import links
+from .db import utc_now
 from .projects import list_projects
 
 log = logging.getLogger("hub.processes")
@@ -258,6 +262,9 @@ class ProcessMonitor:
             found = await asyncio.to_thread(self._scanner.scan, projects)
             if found != self.latest:
                 before, self.latest = self.latest, found
+                heard, now, at = links.listening(before or {}), links.listening(found), utc_now()
+                if heard != now:  # a port opened or closed (CPU and memory change the picture every scan)
+                    await self._db.acall(lambda conn: links.remember_ports(conn, heard, now, at))
                 await self._bus.publish("processes.changed", {"projects": found}, persist=False)
                 if before is not None:  # the first scan is where things stand, not something that happened
                     for kind, payload in port_changes(before, found):
