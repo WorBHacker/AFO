@@ -231,6 +231,72 @@ def test_automatic_tuning_waits_until_no_chat_uses_a_model(hub, setup, monkeypat
     assert found.results["big"]["status"] == "better"
 
 
+def test_automatic_tuning_waits_while_the_graphics_card_works(hub, setup, monkeypatch):  # noqa: F811
+    """Live (stage 28): after llama.cpp's update, tuning measured while the hub's «Проверить» and other programs
+    used the card - they answered at 11 tok/s instead of 89, and the numbers it wrote the config by were theirs too.
+    Not only chats keep it waiting: the card itself must have been quiet for IDLE_S."""
+    monkeypatch.setattr(tuning, "IDLE_S", 0.3)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
+    card = {"util_pct": 90}
+    found._gpu = lambda: card
+
+    async def scenario():
+        found.request("big", auto=True)
+        await asyncio.sleep(0.6)
+        assert found.job["status"] == "waiting" and "big" not in found.results  # no chat, but the card works
+        card["util_pct"] = 3
+        started = time.monotonic()
+        while "big" not in found.results:
+            assert time.monotonic() - started < 10
+            await asyncio.sleep(0.05)
+        assert time.monotonic() - started >= 0.25
+
+    asyncio.run(scenario())
+    assert found.results["big"]["status"] == "better"
+
+
+def test_a_chat_stops_automatic_measuring_and_it_is_measured_again(hub, setup, monkeypatch):  # noqa: F811
+    """A chat that starts while automatic tuning measures: the measuring stops (llama-bench let go), nothing is
+    written by its numbers, and the model waits its turn again - measured once all is quiet."""
+    monkeypatch.setattr(tuning, "IDLE_S", 0.2)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    before = setup.read_text(encoding="utf-8")
+    runs = []
+
+    def run(command, progress):
+        runs.append(command)
+        if len(runs) == 1:  # the first: a long one, until it is stopped
+            deadline = time.monotonic() + 10
+            while not found._halt.is_set():
+                assert time.monotonic() < deadline, "the measuring was not stopped"
+                time.sleep(0.02)
+            return [line(True, "q8_0", 2048, 16, pp=1500)]  # what it measured before: half a pair
+        return [line(True, "q8_0", 2048, 16, pp=1500), line(True, "q8_0", 2048, 16, tg=52)]
+
+    found = tuner(hub, measured={})
+    found._run = run
+
+    async def scenario():
+        found.request("big", auto=True)
+        started = time.monotonic()
+        while not runs:
+            assert time.monotonic() - started < 10
+            await asyncio.sleep(0.02)
+        found._chat.busy = ["c1"]  # a chat starts while it measures
+        while found.job.get("status") != "waiting":
+            assert time.monotonic() - started < 10, found.job
+            await asyncio.sleep(0.02)
+        assert setup.read_text(encoding="utf-8") == before and "big" not in found.results  # nothing by its numbers
+        found._chat.busy = []
+        while "big" not in found.results:
+            assert time.monotonic() - started < 10
+            await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert found.results["big"]["status"] == "better" and len(runs) >= 2
+
+
 def test_the_window_asks_and_reads(hub, setup, monkeypatch):  # noqa: F811
     state = hub.get("/v1/tune").json()
     assert state["auto"] is True and state["job"]["status"] == "idle" and state["results"] == {}

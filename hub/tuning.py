@@ -8,8 +8,10 @@ config - a copy of the old one beside it - and the model is loaded with its whol
 not, the old config comes back.
 
 Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no chat has run for
-IDLE_S: measuring unloads the models and takes the graphics card for minutes. The person's «Подобрать» waits only for
-the chats going on now."""
+IDLE_S and the graphics card itself has been quiet as long - the hub's own checks, the editor's completion, another
+program are no chats, and measured beside them the numbers are theirs too (stage 28, live); a chat that starts while
+it measures stops it, nothing is written, and the model waits its turn again. Measuring unloads the models and takes
+the graphics card for minutes. The person's «Подобрать» waits only for the chats going on now."""
 
 from __future__ import annotations
 
@@ -49,7 +51,8 @@ UNQUANTIZED = ("f16", "bf16", "f32")  # KV cache types that work with flash atte
 FIT_MARGIN_MIB = 1024  # what llama.cpp's fitting leaves free on the graphics card
 CLOSE = 0.03
 IDLE_S = 60.0
-WAIT_S = 5.0
+WAIT_S = 2.0  # as often as the status monitor samples the graphics card
+BUSY_PCT = 15  # the graphics card at this much load or more works for someone: tuning waits
 BENCH_TIMEOUT_S = 1800.0
 CHECK_TIMEOUT_S = 300.0
 WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write with the same context is not seen
@@ -61,6 +64,10 @@ COMPUTE_GIB = 1.5  # llama.cpp's buffers beside the weights and the cache (hub/m
 
 class TuneError(Exception):
     """The model cannot be tuned; the message is for the window."""
+
+
+class _Halted(Exception):
+    """Automatic measuring stopped for a chat: the model is measured again later."""
 
 
 def server_path(text: str) -> Path:
@@ -204,7 +211,8 @@ class Tuner:
 
     def __init__(self, db, bus, chat, *, url: str, space: Callable[[], dict[str, Any]],
                  run: Callable[[list[str], Callable[[], None]], list[str]] | None = None,
-                 check: Callable[[str], Awaitable[dict[str, Any]]] | None = None):  # fmt: skip
+                 check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+                 gpu: Callable[[], dict[str, Any] | None] | None = None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._chat = chat
@@ -218,6 +226,8 @@ class Tuner:
         self._task: asyncio.Task | None = None
         self._process: subprocess.Popen | None = None
         self._quiet_since = time.monotonic()
+        self._gpu = gpu or (lambda: None)  # the status monitor's latest look at the graphics card
+        self._halt = threading.Event()  # automatic measuring is to stop: a chat began
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -268,13 +278,14 @@ class Tuner:
                 continue
             await self._wait(automatic, model_id)
             self._queue.pop(0)
-            await self.tune(model_id)
+            if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
+                self._queue.append((model_id, True))  # measured again once all is quiet
 
     async def _wait(self, automatic: bool, model_id: str) -> None:
-        """Until no chat runs - and, for automatic tuning, none has for IDLE_S."""
+        """Until no chat runs - and, for automatic tuning, none has for IDLE_S, nor has the graphics card worked."""
         while True:
             now = time.monotonic()
-            if self._chat.busy:
+            if self._chat.busy or (automatic and self._card_busy()):
                 self._quiet_since = now
             elif not automatic or now - self._quiet_since >= IDLE_S:
                 return
@@ -283,18 +294,42 @@ class Tuner:
                 await self._publish()
             await asyncio.sleep(WAIT_S)
 
+    def _card_busy(self) -> bool:
+        util = (self._gpu() or {}).get("util_pct")
+        return util is not None and util >= BUSY_PCT
+
+    async def _watch(self) -> None:
+        """While automatic measuring goes on: a chat that starts stops it - llama-bench let go."""
+        while self.job.get("status") == "measuring":
+            if self._chat.busy:
+                self._halt.set()
+                self._kill()
+                return
+            await asyncio.sleep(WAIT_S)
+
     async def _publish(self, persist: bool = True) -> None:
         await self._bus.publish("tune.changed", {"job": self.state_job()}, persist=persist)
 
-    async def tune(self, model_id: str) -> dict[str, Any]:
-        """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model)."""
+    async def tune(self, model_id: str, *, automatic: bool = False) -> dict[str, Any]:
+        """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Automatic
+        measuring a chat stops is not a result: {"status": "halted"}, nothing kept."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
+        self._halt.clear()
+        watch = asyncio.create_task(self._watch()) if automatic else None
         await self._publish()
         try:
             result = await self._tune(model_id)
-        except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+        except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+            if self._halt.is_set():  # stopped for a chat (llama-bench killed): not a result
+                log.info("tuning %s stopped: a chat began; measured again later", model_id)
+                self.job = {"status": "idle"}
+                await self._publish()
+                return {"status": "halted"}
             result = {"status": "failed", "error": str(exc)}
             log.info("tuning %s: %s", model_id, exc)
+        finally:
+            if watch is not None:
+                watch.cancel()
         result["at"] = utc_now()
         self.results[model_id] = result
         await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
@@ -329,6 +364,8 @@ class Tuner:
         for kind in kinds:
             lines = await asyncio.to_thread(self._run, command(bench, view, kind, threads=threads, depth=depth),
                                             progress)  # fmt: skip
+            if self._halt.is_set():
+                raise _Halted
             measured += results(lines)
         if not measured:
             raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
