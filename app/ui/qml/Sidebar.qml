@@ -437,18 +437,14 @@ Rectangle {
                     font.pixelSize: 13
                 }
                 Rectangle {
+                    id: busyDot
                     visible: chatRow.modelData.busy
                     width: 7; height: 7; radius: 3.5
                     color: Theme.p.accent
                     anchors.right: parent.right
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
-                    SequentialAnimation on opacity {
-                        running: chatRow.modelData.busy
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.3; duration: 700 }
-                        NumberAnimation { to: 1; duration: 700 }
-                    }
+                    Pulse { target: busyDot; running: chatRow.modelData.busy }
                 }
             }
             TapHandler {

@@ -62,16 +62,12 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
             Rectangle {
+                id: thinkingDot
                 width: 7; height: 7; radius: 3.5
                 color: Theme.p.accent
                 visible: !!think.info.running
                 anchors.verticalCenter: parent.verticalCenter
-                SequentialAnimation on opacity {
-                    running: !!think.info.running
-                    loops: Animation.Infinite
-                    NumberAnimation { to: 0.25; duration: 600 }
-                    NumberAnimation { to: 1; duration: 600 }
-                }
+                Pulse { target: thinkingDot; running: !!think.info.running; low: 0.25 }
             }
             Icon { name: "sparkle"; size: 14; visible: !think.info.running; anchors.verticalCenter: parent.verticalCenter }
             Text {

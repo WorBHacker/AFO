@@ -288,17 +288,13 @@ Item {
                     onClicked: Projects.draftCard()
                 }
                 Text {
+                    id: drafting
                     visible: cardBox.card.state === "drafting"
                     text: qsTr("Модель «%1» составляет черновик…").arg(cardBox.card.writer)
                     color: Theme.p.muted
                     font.family: Theme.uiFont
                     font.pixelSize: 13
-                    SequentialAnimation on opacity {
-                        running: cardBox.card.state === "drafting"
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.4; duration: 700 }
-                        NumberAnimation { to: 1; duration: 700 }
-                    }
+                    Pulse { target: drafting; running: cardBox.card.state === "drafting"; low: 0.4 }
                 }
                 Rectangle {
                     visible: cardBox.card.state === "draft"

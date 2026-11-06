@@ -21,6 +21,10 @@ ListView {
     // a row that leaves is used again for one that comes in, not made anew (2026-11-05: the longest frames while
     // scrolling a 1000-message chat at 2560×1400 went from ~25 ms to ~15); it forgets its old message (reused())
     reuseItems: true
+    // no current row: the list's highlight - unused, but there - crept towards it (the first row) across estimated
+    // heights after every answer, and the window drew ~60 frames a second for minutes (24.5)
+    currentIndex: -1
+    highlightFollowsCurrentItem: false
     boundsBehavior: Flickable.StopAtBounds
     flickDeceleration: 4000
 

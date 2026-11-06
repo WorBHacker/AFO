@@ -92,6 +92,62 @@ def test_long_reasoning_opened_as_one_text(qapp):
         quick.close()
 
 
+def test_the_window_rests_while_an_answer_waits(qapp):
+    """24.5: frames and CPU over 3 s with nothing new on screen - an answer waiting (the pulsing dot), then after it -
+    in a 1000-message chat at 2560×1400."""
+    import time
+
+    from test_ui import event
+
+    from app.ui.main import QuickApp
+
+    messages = []
+    for n in range(PAIRS):
+        messages.append({"id": len(messages) + 1, "role": "user", "model_id": None, "usage": None,
+                         "content": [{"type": "text", "text": f"Вопрос {n}"}]})  # fmt: skip
+        messages.append({"id": len(messages) + 1, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+                         "content": [{"type": "text", "text": answer(n)}]})  # fmt: skip
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        quick.window.resize(2560, 1400)
+        app = quick.controller
+        fake = FakeClient()
+        fake.histories["c1"] = {"id": "c1", "title": "Длинный", "busy": False, "messages": messages}
+        app.attach(fake, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("c1")
+        wait_until(lambda: len(app.messages.rows) >= PAIRS, timeout=60)
+        swapped = []
+        quick.window.frameSwapped.connect(lambda: swapped.append(1))
+
+        def quiet() -> tuple[float, float]:
+            for _ in range(50):
+                QApplication.processEvents()
+                time.sleep(0.01)
+            swapped.clear()
+            with Clock() as clock:
+                began = time.perf_counter()
+                while time.perf_counter() - began < 3:
+                    QApplication.processEvents()
+                    time.sleep(0.002)
+            return len(swapped) / clock.s, clock.cpu / clock.s * 100
+
+        app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+        app.on_event(event("chat.delta", kind="content", text="Ответ идёт"))
+        app._render_live()
+        waiting, waiting_cpu = quiet()
+        app.on_event(event("chat.done", message_id=PAIRS * 2 + 1))
+        app._render_live()
+        after, after_cpu = quiet()
+        note("окно: ответ ждёт, нового нет — кадров в секунду", waiting, "шт", 5)
+        note("  CPU окна, % ядра", waiting_cpu, "%", 25)
+        note("окно: после ответа — кадров в секунду", after, "шт", 2)
+        note("  CPU окна, % ядра", after_cpu, "%", 25)
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_long_chat_from_the_hub_and_in_the_window(qapp):
     from app.ui.main import QuickApp
 

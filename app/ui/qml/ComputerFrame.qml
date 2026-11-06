@@ -50,15 +50,11 @@ Item {
                 anchors.centerIn: parent
                 spacing: 12
                 Rectangle {
+                    id: workingDot
                     width: 8; height: 8; radius: 4
                     color: "white"
                     anchors.verticalCenter: parent.verticalCenter
-                    SequentialAnimation on opacity {
-                        running: bar.visible
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.3; duration: 700 }
-                        NumberAnimation { to: 1; duration: 700 }
-                    }
+                    Pulse { target: workingDot; running: bar.visible; low: 0.3 }
                 }
                 Text {
                     text: AgentScreen.text

@@ -2171,6 +2171,57 @@ def test_open_reasoning_streams_in_parts_that_add_up_to_it(qapp):
         quick.close()
 
 
+def test_the_window_rests_while_an_answer_waits_and_after_it(qapp):
+    """24.5: the window draws only when something changes. The pulsing dots were endless animations: the window drew
+    ~60 frames a second all through an answer (a dot steps twice a second now). And after an answer in a long chat it
+    went on drawing: the list's highlight - unused, but there - crept towards its current row (the first) across
+    estimated heights that the answer had moved."""
+    from app.ui.main import QuickApp
+    from tests.stress.test_chat import answer
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        quick.window.resize(2560, 1400)
+        app = quick.controller
+        client = FakeClient()
+        messages = []
+        for n in range(500):
+            messages.append({"id": len(messages) + 1, "role": "user", "model_id": None, "usage": None,
+                             "content": [{"type": "text", "text": f"Вопрос {n}"}]})  # fmt: skip
+            messages.append({"id": len(messages) + 1, "role": "assistant", "model_id": "llama-swap/coder",
+                             "usage": None, "content": [{"type": "text", "text": answer(n)}]})  # fmt: skip
+        client.histories["c1"] = {"id": "c1", "title": "Длинный", "busy": False, "messages": messages}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("c1")
+        wait_until(lambda: len(app.messages.rows) == 1000, timeout=30)
+        swapped = []
+        quick.window.frameSwapped.connect(lambda: swapped.append(1))
+
+        def frames_in_a_second() -> int:
+            for _ in range(50):
+                QApplication.processEvents()
+                time.sleep(0.01)
+            swapped.clear()
+            began = time.monotonic()
+            while time.monotonic() - began < 1:
+                QApplication.processEvents()
+                time.sleep(0.002)
+            return len(swapped)
+
+        assert frames_in_a_second() == 0
+        app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+        app.on_event(event("chat.delta", kind="content", text="Ответ идёт"))
+        app._render_live()
+        assert frames_in_a_second() <= 5  # the answer waits: the sidebar's dot steps
+        app.on_event(event("chat.done", message_id=1001))
+        app._render_live()
+        assert frames_in_a_second() <= 2
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_long_chat_with_tools_rests_at_its_end(qapp):
     """An open chat does nothing while nothing happens. Its rows have very different heights, and those out of view
     were estimates: following the end through positionViewAtEnd() on every contentHeight change moved them, and
