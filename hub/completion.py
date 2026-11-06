@@ -3,7 +3,8 @@
 The model is the role «Дописывание кода» (`complete`). One of llama.cpp's (llama-swap) gets the code around the
 cursor in its `/infill` - fill in the middle, through llama-swap's `/upstream/<model>/infill`, `cache_prompt` so the
 file's beginning is reused; another model, or one llama.cpp says has no fill-in-the-middle tokens, is asked in words
-to go on from the cursor with code only. Short: N_PREDICT tokens, DEADLINE_S at most.
+to go on from the cursor with code only. Short: N_PREDICT tokens, DEADLINE_S at most, and no further than the block
+the cursor is in, with the indent the person typed as its only one (Shape, stage 28).
 
 The graphics card is one (review of stage 13): the completion model never pushes the chat's model out of it. A local
 one that is not loaded - llama-swap's /running - pauses completion; it starts only when the person asks for it
@@ -137,6 +138,7 @@ class Completions:
 
         task = asyncio.create_task(produce())
         self._current = task
+        shape = Shape(before)
         cancelled = False
         try:
             while True:
@@ -149,7 +151,10 @@ class Completions:
                     break
                 if piece is None:
                     break
-                yield piece
+                if shown := shape.feed(piece):
+                    yield shown
+                if shape.done:  # the block ended: llama.cpp is let go below
+                    break
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -161,7 +166,8 @@ class Completions:
                     await task
             cancelled = cancelled or (task.cancelled() if task.done() else False)
             stats = {"total_s": round(time.monotonic() - began, 3), **({"ttft_s": round(first[0], 3)} if first else {})}
-            meta = {"kind": "complete", "how": how, "stats": stats, "cancelled": cancelled}
+            meta = {"kind": "complete", "how": how, "stats": stats, "cancelled": cancelled and not shape.done,
+                    **({"cut": True} if shape.done else {})}  # fmt: skip
             with contextlib.suppress(Exception):
                 await self._db.acall(lambda conn: store.record_usage(
                     conn, client_id=None, conversation_id=None, message_id=None, model_id=model["id"], usage=usage,
@@ -208,3 +214,58 @@ class Completions:
 
 class _NoFim(Exception):
     pass
+
+
+TAB = 4  # a tab's width, for comparing indents
+
+
+def _width(space: str) -> int:
+    return len(space.replace("\r", "").expandtabs(TAB))
+
+
+class Shape:
+    """The grey text as Tab can take it (stage 28, live on qwen27b): a model's fill-in-the-middle indents again, now
+    and then, the line the person already indented, and goes on past the block into the next function. The indent
+    typed stays the line's only one; the text ends at the first line left of its block - the cursor's line's, or,
+    from the end of a line, the first line under it; the blank lines and the line break at its end are left out.
+    `feed` gives what may be shown of a piece; `done` - the block ended, the rest is not wanted."""
+
+    def __init__(self, before: str) -> None:
+        line = before[before.rfind("\n") + 1 :]
+        self._bare = not line.strip()  # the cursor stands in the line's indent
+        self._own = _width(line[: len(line) - len(line.lstrip())])  # the cursor line's indent
+        self._block: int | None = _width(line) if self._bare else None
+        self._line = 0  # the completion's line: 0 is the cursor's
+        self._wrote = False  # something shown on the cursor's line
+        self._start = True  # at a line's start: its indent and the blank lines before it held
+        self._held = ""
+        self.done = False
+
+    def feed(self, piece: str) -> str:
+        out: list[str] = []
+        for char in piece:
+            if self.done:
+                break
+            if not self._start:
+                if char == "\n":  # held: shown only with the line after it
+                    self._start, self._held, self._line = True, "\n", self._line + 1
+                else:
+                    out.append(char)
+                continue
+            if char in " \t\r\n":
+                self._held += char
+                self._line += char == "\n"
+                continue
+            if self._line == 0:
+                out.append(("" if self._bare else self._held) + char)  # the typed indent is the only one
+                self._wrote = True
+            else:
+                width = _width(self._held[self._held.rfind("\n") + 1 :])
+                if self._block is None:
+                    self._block = self._own if self._wrote else width
+                if width < self._block:
+                    self.done = True
+                    break
+                out.append(self._held + char)
+            self._start, self._held = False, ""
+        return "".join(out)

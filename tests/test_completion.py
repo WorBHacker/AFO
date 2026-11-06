@@ -27,6 +27,7 @@ class FakeLlama:
 
     def __init__(self, *, running: bool = True, fim: bool = True, pieces: int = 12, delay: float = 0.05):
         self.running, self.fim, self.pieces, self.delay = running, fim, pieces, delay
+        self.script: list[str] = []  # the pieces to stream, when set; else "t0 ", "t1 ", ...
         self.events: list[tuple[str, int]] = []
         self.bodies: list[dict] = []
         self.slot = threading.Lock()
@@ -70,8 +71,8 @@ class FakeLlama:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
                     self.end_headers()
-                    for n in range(fake.pieces):
-                        piece = {"choices": [{"delta": {"content": f"t{n} "}}]} if chat else {"content": f"t{n} "}
+                    for text in fake.script or [f"t{n} " for n in range(fake.pieces)]:
+                        piece = {"choices": [{"delta": {"content": text}}]} if chat else {"content": text}
                         self.wfile.write(f"data: {json.dumps(piece)}\n\n".encode())
                         self.wfile.flush()
                         time.sleep(fake.delay)
@@ -176,6 +177,36 @@ def test_a_model_not_loaded_pauses_completion(hub, llama, repo):
     assert ask(hub, pid, load=True)[-1] == {"done": True} and len(llama.bodies) == 1
     assert ask(hub, pid, path=".env")[0]["paused"] == "secret"
     assert hub.post("/v1/editor/complete", json={"project_id": "nope", "path": "a.py"}).status_code == 404
+
+
+def test_the_grey_text_keeps_the_typed_indent_and_ends_with_its_block(hub, llama, repo):
+    """Live on qwen27b (stage 28): after `def mul(a, b):` and the indent the person typed, /infill answered «return a *
+    b» and went on into the next function; twice of three it indented the line again - Tab would have doubled the
+    indent. The indent typed stays the line's only one; the grey text ends at the first line left of its block, and
+    llama.cpp is let go there."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    choose(hub, "llama-swap/coder")
+    llama.delay = 0.01
+
+    def grey(before: str, pieces: list[str]) -> str:
+        llama.script = pieces
+        return "".join(p.get("text", "") for p in ask(hub, pid, before=before))
+
+    tail = [f"\ndef f{n}():\n    pass\n" for n in range(60)]  # what the model would go on with: cut, not waited for
+    assert grey("def mul(a, b):\n    ", ["    ret", "urn a * b\n", "\n\ndef div(a, b):\n", "    return a / b\n",
+                                         *tail]) == "return a * b"  # fmt: skip
+    deadline = time.monotonic() + 5  # the stand-in sees the closed connection at its next piece
+    while ("closed", 1) not in llama.events:
+        assert time.monotonic() < deadline and ("done", 1) not in llama.events, llama.events
+        time.sleep(0.01)
+    indented = "def div(a, b):\n    if b == 0:\n        "
+    raised = 'raise ZeroDivisionError("b")'
+    assert grey(indented, [f"        {raised}\n", "    return a / b\n"]) == raised
+    assert grey("def total(items):", ["\n", "    return sum(items)\n", "\n", "\nprint(total([1]))\n"]) == (
+        "\n    return sum(items)")  # the cursor at a line's end: the body under it is the block  # fmt: skip
+    assert grey("def f(x):\n    ", ["if x:\n        return 1\n", "    return 0\n", "\nclass A:\n"]) == (
+        "if x:\n        return 1\n    return 0")  # a block inside keeps its own indent  # fmt: skip
+    assert grey("x = ", ["compute(", "1)\n"]) == "compute(1)"  # at the file's left edge only the end is trimmed
 
 
 def test_without_fill_in_the_middle_it_asks_in_words(hub, llama, repo):
