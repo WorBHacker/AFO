@@ -18,6 +18,7 @@ from hub.__main__ import main
 from hub.auth import create_client
 from hub.db import Database, migrate
 from hub.gateway.anthropic_provider import AnthropicProvider
+from hub.secret_filter import clean
 from hub.secrets import ANTHROPIC_API_KEY, MemorySecretStore
 from hub.server import create_app
 from hub.settings import HubSettings
@@ -238,6 +239,41 @@ def test_a_forgotten_password_takes_the_connections_with_it(tmp_path):
     assert store.get(conns.PASSWORD) is None and store.get(ANTHROPIC_API_KEY) is None
     assert db.call(lambda conn: conns.address(conn, conns.SEARXNG_URL)) == ""
     db.close()
+
+
+def test_kept_secrets_are_masked_by_their_value():
+    """A key whose look no pattern knows reaches neither a model nor a log as it is (step 22.1): the hub masks the
+    secrets it keeps by their values - those kept at its start, and a key set later at once. A server's environment
+    gives the values whose names say they are secrets; an app password counts with its spaces and without; a value
+    shorter than 8 characters is left alone, it would mask words."""
+    plain = "plain-key-0042"  # no pattern of the secret filter knows it
+    store = MemorySecretStore({
+        conns.OPENAI_API_KEY: plain,
+        conns.TELEGRAM_TOKEN: "1:x",
+        "mail_password": "abcd efgh ijkl mnop",
+        "agent_key.weather": "w-secret-123",
+        "mcp_env.gh": json.dumps({"GITHUB_PERSONAL_ACCESS_TOKEN": "pat0value99", "LOG_LEVEL": "debugging"}),
+    })  # fmt: skip
+    db = Database(data_paths().ensure().db)
+    db.call(migrate)
+    server = "INSERT INTO mcp_servers (name, transport, command, enabled) VALUES ('gh', 'stdio', 'x', 0)"
+    db.call(lambda conn: conn.execute(server))
+    weather = json.dumps([{"name": "weather", "host": "api.weather.example", "header": "X-Key", "prefix": ""}])
+    db.call(lambda conn: conn.execute("INSERT INTO settings (key, value) VALUES ('agent.keys', ?)", (weather,)))
+    db.close()
+    text = f"{plain}; abcd efgh ijkl mnop, abcdefghijklmnop; w-secret-123; pat0value99; 1:x; debugging"
+    assert clean(text) == text  # nothing knows them before the hub
+
+    app = create_app(HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9"), secret_store=store)
+    with TestClient(app, base_url=BASE) as hub:
+        hub.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        masked = "[REDACTED]; [REDACTED], [REDACTED]; [REDACTED]; [REDACTED]; 1:x; debugging"
+        assert clean(text) == masked
+        later = "BSA0fresh7781"
+        assert clean(f"brave {later}") == f"brave {later}"
+        put = hub.put(f"/v1/connections/{conns.BRAVE_SEARCH_KEY}", json={"value": later}, headers=unlocked(hub))
+        assert put.status_code == 200 and store.get(conns.BRAVE_SEARCH_KEY) == later
+        assert clean(f"brave {later}") == "brave [REDACTED]"  # at once, not at the next start
 
 
 def test_the_console(capsys):

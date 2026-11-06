@@ -195,18 +195,23 @@ class ConnectionLock:
 
 def reset(store: SecretStore, conn: sqlite3.Connection) -> list[str]:
     """A forgotten password: it goes, and so does every saved connection - nothing set under it stays behind."""
-    removed = [c.name for c in CONNECTIONS if c.kind != "address" and store.delete(c.name)]
+    names = kept(conn)
+    removed = [name for name in names if name in BY_NAME and store.delete(name)]
     removed += [c.name for c in CONNECTIONS if c.kind == "address" and set_address(conn, c.name, None)]
-    servers = [r["name"] for r in conn.execute("SELECT name FROM mcp_servers ORDER BY name")]  # their keys (9.5)
-    removed += [f"mcp_env.{name}" for name in servers if store.delete(f"mcp_env.{name}")]
-    if store.delete("mail_password"):  # the mailbox's app password (9.4b)
-        removed.append("mail_password")
-    keys = conn.execute("SELECT value FROM settings WHERE key = 'agent.keys'").fetchone()
-    for key in json.loads(keys["value"]) if keys else []:  # the agent's API keys (9.4b)
-        if store.delete(f"agent_key.{key.get('name')}"):
-            removed.append(f"agent_key.{key.get('name')}")
+    removed += [name for name in names if name not in BY_NAME and store.delete(name)]
     store.delete(PASSWORD)
     return removed
+
+
+def kept(conn: sqlite3.Connection) -> list[str]:
+    """The names of every secret the hub may keep under the password: the connections' keys and tokens, the MCP
+    servers' environments (9.5), the mailbox's app password and the agent's API keys (9.4b)."""
+    names = [c.name for c in CONNECTIONS if c.kind != "address"]
+    names += [f"mcp_env.{r['name']}" for r in conn.execute("SELECT name FROM mcp_servers ORDER BY name")]
+    names.append("mail_password")
+    keys = conn.execute("SELECT value FROM settings WHERE key = 'agent.keys'").fetchone()
+    names += [f"agent_key.{key.get('name')}" for key in (json.loads(keys["value"]) if keys else [])]
+    return names
 
 
 # --- the connections ---

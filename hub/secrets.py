@@ -2,14 +2,20 @@
 
 Secrets never go into settings.json or the database, and their values are never logged or returned by
 the API - the API reports only whether a key is set. Which secrets the hub knows, and the password that guards
-them, is hub/connections.py.
+them, is hub/connections.py. What the hub keeps is masked by its value in all a model sees and in the logs
+(`Masking`, 22.1).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+from collections.abc import Iterable
 from typing import Protocol
+
+from .secret_filter import mask_exactly
 
 log = logging.getLogger("hub.secrets")
 
@@ -19,6 +25,8 @@ OLD_SERVICE = "LocalChat"  # the name before 10.4b: a secret still kept under it
 STORE_ENV = "LOCALCHAT_SECRETS"
 
 ANTHROPIC_API_KEY = "anthropic_api_key"
+MASK_FROM = 8  # a kept value this long or longer is masked by itself: the window takes no shorter key (22.1)
+SECRET_NAME = re.compile(r"secret|token|passw|pwd|key|credential|auth", re.I)  # in a server's environment
 
 
 class SecretStore(Protocol):
@@ -81,6 +89,53 @@ class MemorySecretStore:
 
     def delete(self, name: str) -> bool:
         return self._data.pop(name, None) is not None
+
+
+class Masking:
+    """A store whose every value - kept at the hub's start, read or set later - is masked by itself in all a model
+    sees and in the logs (step 22.1): a key, a password or a token whose look no pattern of the secret filter knows
+    does not reach either as it is. A replaced or removed value stays masked until the hub restarts: it may still
+    work where it came from."""
+
+    def __init__(self, store: SecretStore):
+        self.store = store
+
+    def get(self, name: str) -> str | None:
+        value = self.store.get(name)
+        if value:
+            masked(value)
+        return value
+
+    def set(self, name: str, value: str) -> None:
+        masked(value)
+        self.store.set(name, value)
+
+    def delete(self, name: str) -> bool:
+        return self.store.delete(name)
+
+    def load(self, names: Iterable[str]) -> None:
+        """At the start: what is kept already is known before a model or a log could show it."""
+        for name in names:
+            self.get(name)
+
+
+def masked(value: str) -> None:
+    """A kept value into the secret filter. An MCP server's environment (JSON) gives the values whose names say they
+    are secrets - not its LOG_LEVEL; an app password as Google shows it (abcd efgh ijkl mnop) counts without its
+    spaces too."""
+    if value.lstrip().startswith("{"):
+        try:
+            env = json.loads(value)
+        except ValueError:
+            env = None
+        if isinstance(env, dict):
+            for name, inner in env.items():
+                if isinstance(inner, str) and SECRET_NAME.search(str(name)):
+                    masked(inner)
+            return
+    mask_exactly(value, MASK_FROM)
+    if len(value.split()) > 1:
+        mask_exactly("".join(value.split()), MASK_FROM)
 
 
 def default_secret_store() -> SecretStore:

@@ -7,8 +7,9 @@ Two layers, because each misses what the other catches:
 - by content: private key blocks, well-known token formats (Anthropic, OpenAI, GitHub, AWS, Google, Slack,
   Telegram, JWT, Hugging Face, npm, GitLab, Stripe, Tavily, the hub's own `lct_`), `Authorization:` headers,
   passwords in connection strings, and `NAME=value` where the name says it is a secret. The name stays, so the model
-  still knows the setting exists; the value becomes [REDACTED]. And by value: the hub's client tokens made before
-  they had their prefix (`mask_exactly`, D46) - a command that prints a token file shows the mask, not the token.
+  still knows the setting exists; the value becomes [REDACTED]. And by value (`mask_exactly`): the hub's client
+  tokens made before they had their prefix (D46) - a command that prints a token file shows the mask, not the
+  token - and the keys, tokens and passwords the hub keeps in the Credential Manager (22.1, hub/secrets.py).
 
 The window shows a person their own files as they are; this filter is for the model-facing paths (context, tools)
 and for the logs.
@@ -72,7 +73,7 @@ URL_PASSWORD = re.compile(r"(?P<head>\b[a-z][a-z0-9+.\-]*://[^:/\s@]+:)(?P<value
 CODE_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 WORD = re.compile(r"[A-Za-z_]+")
 NOT_A_VALUE = {"true", "false", "null", "none", "required", "optional", "string", "example", "changeme", "xxxxxx"}
-EXACT_MIN = 16  # a shorter value would mask ordinary words
+EXACT_MIN = 16  # a shorter value would mask ordinary words; a kept key is known to be a secret, from 8 on (22.1)
 _exact: re.Pattern[str] | None = None  # the values `mask_exactly` was given, longest first
 _exact_values: set[str] = set()
 _exact_lock = threading.Lock()
@@ -91,13 +92,13 @@ def is_secret_file(path: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for name in names for pattern in SECRET_FILES)
 
 
-def mask_exactly(value: str) -> None:
+def mask_exactly(value: str, shortest: int = EXACT_MIN) -> None:
     """A secret the hub holds whose look no pattern above knows - a client token of the hub made before tokens had
-    their prefix (D46, step 13.12): from now on it is masked wherever it shows up. A value the patterns catch, or a
-    short one, is left to them."""
+    their prefix (D46, step 13.12), a key it keeps (22.1): from now on it is masked wherever it shows up. A value the
+    patterns catch, or one shorter than `shortest`, is left to them."""
     global _exact
     value = value.strip()
-    if len(value) < EXACT_MIN or TOKEN.fullmatch(value):
+    if len(value) < shortest or TOKEN.fullmatch(value):
         return
     with _exact_lock:
         if value not in _exact_values:

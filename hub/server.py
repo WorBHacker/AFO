@@ -71,6 +71,7 @@ from .claude_code import ClaudeCodeRunner
 from .completion import Completions
 from .computer import Computer, vision_eyes
 from .connections import ConnectionLock
+from .connections import kept as kept_secrets
 from .db import Database
 from .editor import Editor
 from .events import EventBus
@@ -91,7 +92,7 @@ from .retention import Keeper
 from .ripgrep import Fetcher
 from .sandbox import orphans as sandbox_orphans
 from .schedule import Scheduler
-from .secrets import SecretStore, default_secret_store
+from .secrets import Masking, SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .setup import Setup
@@ -122,7 +123,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             log.info("llama-swap's paths: those of the one running")
         log.info("language: %s", db.call(language.load))  # what the hub writes for people (10.5)
         bus = EventBus(db)
-        secrets_store = secret_store if secret_store is not None else default_secret_store()
+        # what the hub keeps is masked by its value in all a model sees and in the logs, from the start (22.1)
+        secrets_store = Masking(secret_store if secret_store is not None else default_secret_store())
+        db.call(lambda conn: secrets_store.load(kept_secrets(conn)))
         gateway = build_default_gateway(db, settings.llama_swap_url, secrets_store)
         app.state.settings = settings
         app.state.secrets = secrets_store
