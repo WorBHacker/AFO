@@ -16,7 +16,7 @@ import json
 import platform
 import sys
 import zipfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,9 @@ from common import __version__, hardware
 from common.disks import drives
 from common.i18n import decimal, tr
 
-from . import autostart, engines, hf, llama_config, search, secret_filter
+from . import autostart, engines, hf, llama_config, search, secret_filter, store
+from .gateway.base import PRICES_FRESH_DAYS
+from .gateway.registry import PRICE_PAGES
 from .setup import page_file
 from .system_status import memory_sample
 
@@ -64,6 +66,40 @@ def _build_of(program: Path | None) -> str:
     if any(n.startswith("ggml-vulkan") for n in names):
         return "vulkan"
     return "cpu" if names else ""
+
+
+def prices_line(models: list[dict[str, Any]], today: date) -> dict[str, Any] | None:
+    """The paid models' prices (stage 20.1): a provider's table checked more than PRICES_FRESH_DAYS ago, or a
+    promotion that ended after it was checked - compare with the provider's page. None: nothing paid here."""
+    paid = [m for m in models if m.get("locality") == "cloud" and m.get("prices")]
+    dated = [m for m in paid if (m.get("capabilities") or {}).get("prices_asof")]  # OpenRouter's are live
+    if not paid:
+        return None
+    oldest: dict[str, str] = {}
+    for model in dated:
+        asof = model["capabilities"]["prices_asof"]
+        provider = model.get("provider") or model["id"].partition("/")[0]
+        oldest[provider] = min(asof, oldest.get(provider, asof))
+    problems, pages = [], []
+    for provider, asof in sorted(oldest.items()):
+        if (today - date.fromisoformat(asof)).days > PRICES_FRESH_DAYS:
+            problems.append(tr("{provider}: цены на {date}, старше {days} дней", provider=provider, date=asof,
+                               days=PRICES_FRESH_DAYS))  # fmt: skip
+            pages.append(provider)
+    for model in dated:
+        ended = model["capabilities"].get("promo_ended")
+        if ended:
+            problems.append(tr("{model}: акция кончилась {date}", model=model["id"], date=ended))
+            pages.append(model.get("provider") or model["id"].partition("/")[0])
+    title = tr("Цены облачных моделей")
+    if not problems:
+        said = tr("сверены: {dates}", dates=", ".join(f"{p} — {d}" for p, d in sorted(oldest.items()))) if oldest \
+            else tr("приходят от поставщика")  # fmt: skip
+        return _line("prices", title, True, said)
+    links = ", ".join(dict.fromkeys(PRICE_PAGES[p] for p in pages if p in PRICE_PAGES))
+    advice = tr("Сверьте с ценами поставщика ({pages}) и поправьте цену в «Модели», если она другая: бюджеты и "
+                "оценки идут по ней.", pages=links)  # fmt: skip
+    return _line("prices", title, None, "; ".join(problems), advice)
 
 
 def model_files(text: str) -> list[Path]:
@@ -157,6 +193,10 @@ async def check(state: Any) -> list[dict[str, Any]]:
             if trouble else tr("Хаб скачает ripgrep с GitHub сам, когда будет связь.")  # fmt: skip
     said = f"ripgrep: {rg}" if rg else tr("ripgrep нет — поиск идёт медленнее, обходом файлов")
     lines.append(_line("ripgrep", tr("Поиск по проектам"), True if rg else None, said, advice))
+    if getattr(state, "db", None) is not None:
+        prices = prices_line(await state.db.acall(store.list_models), date.today())
+        if prices is not None:
+            lines.append(prices)
     async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as http:
         for key, site in (("hf", hf.base_url()), ("github", engines.github_api())):
             try:

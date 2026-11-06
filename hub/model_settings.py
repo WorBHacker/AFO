@@ -49,6 +49,7 @@ CAPABILITIES = {"context": int, "tools": bool, "vision": bool}
 ROLES = ("chat", "cards", "agents", "coordinator", "planner", "executor", "vision", "judge", "fallback", "complete",
          "edit")  # fmt: skip
 PRICES = ("input", "output", "cache_read", "cache_write")  # USD per 1M tokens
+DATED = ("prices_ahead", "promo_until", "promo_ended")  # what a catalog row says of its dated prices (20.1)
 SYSTEM_PROMPT_MAX = 20_000
 
 
@@ -270,7 +271,8 @@ def overlay(model: dict[str, Any], settings: dict[str, Any], number: int = 0) ->
         out["name"] = settings["name"]
     if settings.get("capabilities"):
         out["capabilities"] = {**(model.get("capabilities") or {}), **settings["capabilities"]}
-    if settings.get("prices"):
+    if settings.get("prices"):  # the user's own price stands: the provider's dated changes are not theirs (20.1)
         out["prices"] = {**(model.get("prices") or {}), **settings["prices"]}
-        out["capabilities"] = {**out.get("capabilities", {}), "prices_asof": settings.get("prices_asof", "")}
+        caps = {k: v for k, v in out.get("capabilities", {}).items() if k not in DATED}
+        out["capabilities"] = {**caps, "prices_asof": settings.get("prices_asof", "")}
     return out

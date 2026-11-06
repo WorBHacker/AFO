@@ -8,6 +8,7 @@ one short question with these settings: its words, how soon, how fast, what it c
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +16,7 @@ from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.i18n import N_, tr
 from common.llama_memory import estimate
+from hub.gateway.base import PRICES_FRESH_DAYS
 
 from .. import presenter
 from .project_rows import local_time
@@ -86,6 +88,26 @@ def shown(value: Any) -> str:
     if isinstance(value, float) and value == int(value):
         return str(int(value))
     return str(value)
+
+
+def price_words(caps: dict[str, Any], today: date) -> list[str]:
+    """What the sheet says of a cloud model's prices (stage 20.1): when they were checked, and old ones marked; a
+    promotion and when it ends, an announced change, a promotion that ended since - compare."""
+    words = []
+    asof = caps.get("prices_asof")
+    if asof:
+        old = (today - date.fromisoformat(asof)).days > PRICES_FRESH_DAYS
+        words.append(tr("цены на {date}", date=asof) + (tr(" — старше {days} дней, сверьте", days=PRICES_FRESH_DAYS)
+                                                       if old else ""))  # fmt: skip
+    ahead = (caps.get("prices_ahead") or [None])[0]
+    if ahead:
+        then = tr("${input:g}/${output:g} за 1M", input=ahead["prices"].get("input", 0),
+                  output=ahead["prices"].get("output", 0))  # fmt: skip
+        words.append(tr("акция до {date}, потом {then}", date=ahead["since"], then=then) if ahead.get("promo_end")
+                     else tr("с {date} — {then}", date=ahead["since"], then=then))  # fmt: skip
+    if caps.get("promo_ended"):
+        words.append(tr("акция кончилась {date} — сверьте цену", date=caps["promo_ended"]))
+    return words
 
 
 def draft_of(settings: dict[str, Any]) -> dict[str, Any]:
@@ -407,8 +429,8 @@ class ModelSetup(QObject):
         parts = [provider_name(model.get("provider", "")), self._model]
         if caps.get("context"):
             parts.append(tr("контекст {size}K", size=caps["context"] // 1000))
-        if model.get("locality") == "cloud" and caps.get("prices_asof"):
-            parts.append(tr("цены на {date}", date=caps["prices_asof"]))
+        if model.get("locality") == "cloud":
+            parts += price_words(caps, date.today())
         return " · ".join(p for p in parts if p)
 
     @Property(bool, notify=changed)

@@ -12,6 +12,15 @@ from .base import ModelNotFound, Provider, ProviderError
 
 log = logging.getLogger("hub.gateway")
 
+# where each provider with a price table in this build publishes its prices (stage 20.1: «Проверить систему» sends
+# the user there when the table is old); OpenRouter's come with its catalog
+PRICE_PAGES = {
+    "anthropic": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "openai": "https://developers.openai.com/api/docs/pricing",
+    "gemini": "https://ai.google.dev/gemini-api/docs/pricing",
+    "deepseek": "https://api-docs.deepseek.com/quick_start/pricing",
+}
+
 
 class Gateway:
     def __init__(self, db: Database):

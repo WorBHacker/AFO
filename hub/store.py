@@ -6,13 +6,20 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from . import model_settings
 from .db import utc_now
 from .gateway import Model
+from .gateway.base import on_day
 
 # --- models catalog ---
+
+
+def today() -> date:
+    """The day a catalog row's dated prices are read on (tests set it)."""
+    return date.today()
 
 
 def upsert_model(conn: sqlite3.Connection, model: Model) -> None:
@@ -70,7 +77,8 @@ def get_model(conn: sqlite3.Connection, model_id: str) -> dict[str, Any] | None:
 
 
 def _model_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    """A stored row - its price as of today: a dated change it carries switches on its day (stage 20.1)."""
+    return on_day({
         "id": row["id"],
         "provider": row["provider"],
         "model_ref": row["model_ref"],
@@ -79,7 +87,7 @@ def _model_row(row: sqlite3.Row) -> dict[str, Any]:
         "capabilities": json.loads(row["capabilities"]),
         "prices": json.loads(row["prices"]),
         "enabled": bool(row["enabled"]),
-    }
+    }, today())  # fmt: skip
 
 
 # --- conversations and messages ---

@@ -30,11 +30,11 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from .base import Model, ProviderError, StreamEvent
+from .base import Model, ProviderError, StreamEvent, long_tier
 
 log = logging.getLogger("hub.gateway.anthropic")
 
-PRICES_ASOF = "2026-10-06"
+PRICES_ASOF = "2026-11-06"
 # USD per 1M tokens. Cache reads for Opus / Sonnet / Fable are the published ones; the rest follow the usual
 # multipliers (read 0.1x, write 1.25x of input for the 5-minute cache).
 _CATALOG: dict[str, tuple[str, dict[str, float]]] = {
@@ -43,10 +43,10 @@ _CATALOG: dict[str, tuple[str, dict[str, float]]] = {
         "Claude Sonnet 5.5",
         {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5},
     ),
-    # prices for prompts up to 100K tokens; longer prompts cost $0.50 / $2.50, which is not modelled yet
+    # two rate cards: a prompt over 100K tokens costs $0.50 / $2.50, the whole request (stage 20.1)
     "claude-haiku-5-5": (
         "Claude Haiku 5.5",
-        {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+        long_tier({"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125}, 100_000, 5, 5),
     ),
     "claude-fable-5-1": (
         "Claude Fable 5.1",

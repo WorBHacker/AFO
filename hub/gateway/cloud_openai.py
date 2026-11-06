@@ -4,7 +4,7 @@ Connections (OpenAI itself is on its Responses API: openai_responses.py). They s
 
 - the catalog: DeepSeek - the models of the published price table below (PRICES_ASOF) the key can use;
   OpenRouter - the models the user chose in Connections (hundreds are on offer), with the prices OpenRouter itself
-  publishes for each, so they are never stale
+  publishes for each, so they are never stale - a long prompt's dearer tier too (`pricing.overrides`, stage 20.1)
 - the request: how the hub's effort becomes the provider's reasoning setting
 - what is kept of an answer and sent back later: DeepSeek's reasoning_content and OpenRouter's reasoning_details, so a
   model keeps its own thinking across tool calls (D14)
@@ -182,11 +182,13 @@ class OpenRouterProvider(CloudOpenAIProvider):
             if min(prices.values()) < 0:  # a router entry priced per request, not per token
                 continue
             efforts = (item.get("reasoning") or {}).get("supported_efforts") or []
+            long = long_prompt(pricing)
             out.append({"id": item["id"], "name": item.get("name") or item["id"],
                         "input": round(prices["input"], 4), "output": round(prices["output"], 4),
                         "cache_read": round(prices["cache_read"], 4), "context": item.get("context_length"),
                         "reasoning": "reasoning" in (item.get("supported_parameters") or []),
-                        "efforts": [e for e in efforts if isinstance(e, str)]})  # fmt: skip
+                        "efforts": [e for e in efforts if isinstance(e, str)],
+                        **({"long": long} if long else {})})  # fmt: skip
             self._efforts[item["id"]] = out[-1]["efforts"] if out[-1]["reasoning"] else None
         return out
 
@@ -198,7 +200,8 @@ class OpenRouterProvider(CloudOpenAIProvider):
             return []
         return [Model(id=f"{self.name}/{m['id']}", provider=self.name, model_ref=m["id"], name=m["name"],
                       locality="cloud", capabilities={"context": m["context"], "reasoning": m["reasoning"]},
-                      prices={"input": m["input"], "output": m["output"], "cache_read": m["cache_read"]})
+                      prices={"input": m["input"], "output": m["output"], "cache_read": m["cache_read"],
+                              **m.get("long", {})})
                 for m in await self.everything() if m["id"] in chosen]  # fmt: skip
 
     def request_body(self, model_ref, messages, effort, tools, params=None):
@@ -220,6 +223,26 @@ class OpenRouterProvider(CloudOpenAIProvider):
     def kept(self, reasoning, details):
         joined = join_details(details)
         return {"reasoning_details": joined} if joined else None
+
+
+def long_prompt(pricing: dict[str, Any]) -> dict[str, float]:
+    """OpenRouter's dearer tiers for a long prompt (`pricing.overrides` entries with `min_prompt_tokens`; those by the
+    hour are not this) as the price table's long tier: from the first threshold, at the dearest tier's prices - an
+    estimate stays on the safe side, and the charge itself comes in the answer's usage. Per token there, per 1M here;
+    a part an entry does not name keeps its usual price."""
+    tiers = [o for o in pricing.get("overrides") or [] if isinstance(o, dict)
+             and isinstance(o.get("min_prompt_tokens"), int) and not any(k.startswith("utc_") for k in o)]  # fmt: skip
+    if not tiers:
+        return {}
+    out = {"long_over": min(t["min_prompt_tokens"] for t in tiers) - 1}
+    for ours, theirs in (("input", "prompt"), ("output", "completion"), ("cache_read", "input_cache_read")):
+        try:
+            found = [float(t[theirs]) * 1e6 for t in tiers if t.get(theirs) is not None]
+        except TypeError, ValueError:
+            return {}
+        if found:
+            out[f"long_{ours}"] = round(max(found), 4)
+    return out if len(out) > 1 else {}
 
 
 EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"]

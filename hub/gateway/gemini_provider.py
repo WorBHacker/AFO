@@ -17,9 +17,9 @@ What it takes care of (ai.google.dev, read 2026-10-27; Google steers new work to
 - usage: promptTokenCount is the whole prompt, cachedContentTokenCount the part read from Google's implicit cache;
   output is candidatesTokenCount + thoughtsTokenCount
 - a blocked prompt (promptFeedback.blockReason) or a stop for safety is a refusal; its tokens still count
-- prices: the published paid-tier table below; a model without a price here is not offered. Pro models cost more
-  above 200K prompt tokens - not modelled. Google's free tier may use requests to improve its products (D10: the
-  connection says so)
+- prices: the published paid-tier table below; a model without a price here is not offered. The Pro models cost
+  more for the whole request when the prompt is over 200K tokens - the table's long tier (stage 20.1). Google's free
+  tier may use requests to improve its products (D10: the connection says so)
 """
 
 from __future__ import annotations
@@ -35,14 +35,15 @@ from typing import Any
 
 import httpx
 
-from .base import Model, ProviderError, StreamEvent
+from .base import Model, ProviderError, StreamEvent, long_tier, scheduled
 
 log = logging.getLogger("hub.gateway.gemini")
 
 API = "https://generativelanguage.googleapis.com/v1beta"
 PRICES_ASOF = "2026-10-27"
 # USD per 1M tokens, Standard paid tier (output includes thinking). Each model: [(valid from, prices), ...] - Google
-# has announced rises for some; the newest that has started applies.
+# has announced rises for some; the newest that has started applies (hub/gateway/base.py: scheduled). Read again
+# 2026-11-06 for the Pro models' long tier, Argon's rise and 2.5 Pro going over to 3.8 Flash on December 1.
 _FLASH_38 = [("2026-01-01", {"input": 0.75, "output": 3.75, "cache_read": 0.075}),
              ("2027-01-01", {"input": 1.50, "output": 7.50, "cache_read": 0.15})]  # fmt: skip
 _CATALOG: dict[str, tuple[str, list[tuple[str, dict[str, float]]]]] = {
@@ -51,14 +52,18 @@ _CATALOG: dict[str, tuple[str, list[tuple[str, dict[str, float]]]]] = {
     "gemini-3.8-flash": ("Gemini 3.8 Flash", _FLASH_38),
     "gemini-3.6-flash": ("Gemini 3.6 Flash", _FLASH_38),
     "gemini-3.1-pro-preview": ("Gemini 3.1 Pro (preview)",
-                               [("2026-01-01", {"input": 2.0, "output": 12.0, "cache_read": 0.20})]),
+                               [("2026-01-01", long_tier({"input": 2.0, "output": 12.0, "cache_read": 0.20},
+                                                         200_000, 2, 1.5))]),
     "gemini-3-flash-preview": ("Gemini 3 Flash (preview)",
                                [("2026-01-01", {"input": 0.50, "output": 3.0, "cache_read": 0.05})]),
     "gemini-3.5-flash-lite": ("Gemini 3.5 Flash-Lite", [("2026-01-01", {"input": 0.30, "output": 2.50,
                                                                         "cache_read": 0.03})]),
     "gemini-3.1-flash-lite": ("Gemini 3.1 Flash-Lite", [("2026-01-01", {"input": 0.25, "output": 1.50,
                                                                         "cache_read": 0.025})]),
-    "gemini-2.5-pro": ("Gemini 2.5 Pro", [("2025-01-01", {"input": 1.25, "output": 10.0, "cache_read": 0.125})]),
+    # from December 1, 2026 Google sends its requests to Gemini 3.8 Flash, at Flash's prices
+    "gemini-2.5-pro": ("Gemini 2.5 Pro", [("2025-01-01", long_tier({"input": 1.25, "output": 10.0, "cache_read": 0.125},
+                                                                  200_000, 2, 1.5)),
+                                          ("2026-12-01", _FLASH_38[0][1]), _FLASH_38[1]]),
     "gemini-2.5-flash": ("Gemini 2.5 Flash", [("2025-01-01", {"input": 0.30, "output": 2.50, "cache_read": 0.03})]),
     "gemini-2.5-flash-lite": ("Gemini 2.5 Flash-Lite",
                               [("2025-01-01", {"input": 0.10, "output": 0.40, "cache_read": 0.01})]),
@@ -73,11 +78,6 @@ NO_ID = "gemini-call-"  # a call Gemini sent without an id: the hub's id, not se
 PLACEHOLDER_SIGNATURE = "skip_thought_signature_validator"  # documented, for calls Gemini did not make itself
 REFUSED = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY"}
 CHARS_PER_TOKEN_ESTIMATE = 3  # only for a run stopped before Google reported its usage
-
-
-def prices_on(schedule: list[tuple[str, dict[str, float]]], day: date) -> dict[str, float]:
-    started = [prices for since, prices in schedule if date.fromisoformat(since) <= day]
-    return started[-1] if started else schedule[0][1]
 
 
 class GeminiProvider:
@@ -136,6 +136,7 @@ class GeminiProvider:
                 continue
             if info.get("outputTokenLimit"):
                 self._max_output[ref] = int(info["outputTokenLimit"])
+            prices, caps = scheduled(schedule, self._today(), PRICES_ASOF)
             models.append(
                 Model(
                     id=f"{self.name}/{ref}",
@@ -147,9 +148,9 @@ class GeminiProvider:
                         "vision": True,
                         "context": info.get("inputTokenLimit"),
                         "max_output": info.get("outputTokenLimit"),
-                        "prices_asof": PRICES_ASOF,
+                        **caps,
                     },
-                    prices=prices_on(schedule, self._today()),
+                    prices=prices,
                 )
             )
         return models

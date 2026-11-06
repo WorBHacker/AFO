@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Protocol
 
 
@@ -41,7 +42,7 @@ class Model:
     name: str
     locality: str  # "local" | "cloud"
     capabilities: dict[str, Any] = field(default_factory=dict)
-    prices: dict[str, float] = field(default_factory=dict)  # USD per 1M tokens
+    prices: dict[str, float] = field(default_factory=dict)  # USD per 1M tokens; a long prompt's tier too (long_tier)
 
 
 @dataclass
@@ -116,17 +117,77 @@ def blocks_to_prompt_text(blocks: list[dict[str, Any]]) -> str:
     return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
 
 
+PRICES_FRESH_DAYS = 60  # a price table checked longer ago is marked: compare it with the provider's page (20.1)
+
+
+def long_tier(prices: dict[str, float], over: int, input_x: float, output_x: float) -> dict[str, float]:
+    """The prices with a dearer tier for a prompt over `over` tokens - the whole request at it (stage 20.1): input
+    and the cache `input_x` times theirs, output `output_x` times. Kept in the same table as `long_over` and
+    `long_<part>`, so a user's own price for a part leaves the tier as the provider has it."""
+    dearer = {f"long_{k}": round(v * (output_x if k == "output" else input_x), 6) for k, v in prices.items()}
+    return {**prices, "long_over": over, **dearer}
+
+
+def tier(prices: dict[str, float], prompt_tokens: int) -> dict[str, float]:
+    """The prices one request pays: the long tier's when its prompt (cache included) is over `long_over` tokens; a
+    part the tier does not name keeps its usual price."""
+    usual = {k: v for k, v in prices.items() if not k.startswith("long_")}
+    over = prices.get("long_over")
+    if over is None or prompt_tokens <= over:
+        return usual
+    return usual | {k.removeprefix("long_"): v for k, v in prices.items() if k.startswith("long_") and k != "long_over"}
+
+
+def scheduled(
+    schedule: list[tuple[str, dict[str, float]]], day: date, asof: str, *, promo_until: str | None = None
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """A provider's dated prices (an announced rise; a promotion's end - `promo_until`, the day the usual price is
+    back): the prices on `day` and what the catalog row says of them (capabilities: `prices_asof` - when the table
+    was checked, `prices_ahead` - the changes to come, which the row makes on their day by itself, `on_day`). The
+    first entry is the price from before; its date is not looked at."""
+    ahead = [{"since": since, "prices": prices, **({"promo_end": True} if since == promo_until else {})}
+             for since, prices in schedule[1:]]  # fmt: skip
+    caps: dict[str, Any] = {"prices_asof": asof, **({"promo_until": promo_until} if promo_until else {})}
+    row = on_day({"prices": schedule[0][1], "capabilities": {**caps, "prices_ahead": ahead}}, day)
+    if not row["capabilities"].get("prices_ahead"):
+        row["capabilities"].pop("prices_ahead", None)
+    return row["prices"], row["capabilities"]
+
+
+def on_day(model: dict[str, Any], day: date) -> dict[str, Any]:
+    """A catalog row on `day` (stage 20.1): a price change it carries that has come is its price now - a hub that
+    runs for weeks does not wait for the next catalog read. A promotion that ended after the table was checked says
+    so (`promo_ended`): the usual price after it is the provider's from before, and the window asks to compare."""
+    caps = model.get("capabilities") or {}
+    ahead = caps.get("prices_ahead") or []
+    now = day.isoformat()
+    come = [change for change in ahead if change["since"] <= now]
+    if not come:
+        return model
+    caps = {**caps, "prices_ahead": [change for change in ahead if change["since"] > now]}
+    if not caps["prices_ahead"]:
+        del caps["prices_ahead"]
+    ended = [change["since"] for change in come if change.get("promo_end")]
+    if ended:
+        caps.pop("promo_until", None)
+        if ended[-1] > str(caps.get("prices_asof") or ""):
+            caps["promo_ended"] = ended[-1]
+    return {**model, "prices": come[-1]["prices"], "capabilities": caps}
+
+
 def cost_usd(usage: dict[str, int], prices: dict[str, float]) -> float:
     """USD for one request from its token counts and the model's per-1M prices. Local models cost 0.
 
     `input_tokens` is the whole prompt; the parts read from or written to the cache are inside it and are
-    priced at their own rates. A provider that knows the request's price itself - OpenRouter says it, DeepSeek's
-    depends on the hour - puts it in `cost_microusd`, which then counts instead.
+    priced at their own rates - all of it at the long tier's when the prompt is over its line (`tier`). A provider
+    that knows the request's price itself - OpenRouter says it, DeepSeek's depends on the hour - puts it in
+    `cost_microusd`, which then counts instead.
     """
     if "cost_microusd" in usage:
         return round(usage["cost_microusd"] / 1_000_000, 6)
     if not prices:
         return 0.0
+    prices = tier(prices, usage.get("input_tokens", 0))
     cached = usage.get("cached_input_tokens", 0)
     cache_write = usage.get("cache_write_tokens", 0)
     fresh_input = max(usage.get("input_tokens", 0) - cached - cache_write, 0)

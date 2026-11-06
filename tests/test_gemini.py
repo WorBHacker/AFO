@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from hub.gateway.base import ProviderError
-from hub.gateway.gemini_provider import NO_ID, PLACEHOLDER_SIGNATURE, GeminiProvider, prices_on, to_wire
+from hub.gateway.gemini_provider import NO_ID, PLACEHOLDER_SIGNATURE, GeminiProvider, to_wire
 from tests.test_changes import finished
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -79,13 +79,7 @@ def test_the_catalog_is_the_priced_models_the_key_can_use():
     assert flash.capabilities["context"] == 1048576 and flash.capabilities["prices_asof"]
     assert asyncio.run(GeminiProvider(lambda: None).list_models()) == []  # no key: no models, no network
     later = asyncio.run(provider(Api(), today=date(2027, 1, 2)).list_models())[0]
-    assert later.prices["input"] == 1.50  # the rise Google announced for 2027
-
-
-def test_prices_follow_their_dates():
-    schedule = [("2026-01-01", {"input": 1.0}), ("2026-12-01", {"input": 2.0})]
-    assert prices_on(schedule, date(2026, 11, 30)) == {"input": 1.0}
-    assert prices_on(schedule, date(2026, 12, 1)) == {"input": 2.0}
+    assert later.prices["input"] == 1.50  # the rise Google announced for 2027 (tests/test_prices.py: the dates)
 
 
 def test_a_streamed_answer_with_thinking_a_call_and_usage():

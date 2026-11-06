@@ -12,8 +12,9 @@ What it takes care of:
 - effort: the hub's effort as each model takes it (its own list below)
 - tools: flat function definitions, not strict - the hub's schemas have optional fields
 - usage: input (with cached and cache-written parts) and output (thinking included); a prompt over 272K tokens costs
-  2x input / cache and 1.5x output for the whole request - priced here, the catalog shows the normal price
-- the catalog: the models of the price table (PRICES_ASOF) the key can use
+  2x input / cache and 1.5x output for the whole request - the price table's long tier (stage 20.1)
+- the catalog: the models of the price table (PRICES_ASOF) the key can use; a promotion's price until its day, then
+  the usual one (PROMOS)
 - `prompt_cache_key` (D46, step 13.9): one per conversation, so its requests go where its prefix is cached - made
   from the instructions and the first message, the same for every request of it (the history only grows); OpenAI
   asks for about 15 requests a minute at most per key, which one chat keeps to
@@ -27,34 +28,47 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import date
 from typing import Any
 
 import httpx
 
-from .base import Model, ProviderError, StreamEvent, cost_usd
+from .base import Model, ProviderError, StreamEvent, long_tier, scheduled
 
 log = logging.getLogger("hub.gateway.openai")
 
 API = "https://api.openai.com/v1"
 PRICES_ASOF = "2026-10-27"
 LONG_PROMPT = 272_000  # over this, the whole request costs 2x input and cache, 1.5x output
+
+
+def _priced(prices: dict[str, float]) -> dict[str, float]:
+    return long_tier(prices, LONG_PROMPT, 2, 1.5)
+
+
 ALL_EFFORTS = ["none", "low", "medium", "high", "xhigh", "max"]
 REASONING_DELTAS = ("response.reasoning_summary_text.delta", "response.reasoning_text.delta")  # summary, or raw text
 # id: (name, USD per 1M tokens, the efforts it takes)
 MODELS: dict[str, tuple[str, dict[str, float], list[str]]] = {
-    "gpt-6-astra": ("GPT-6 Astra", {"input": 10.0, "cache_read": 1.0, "cache_write": 12.5, "output": 50.0},
+    "gpt-6-astra": ("GPT-6 Astra", _priced({"input": 10.0, "cache_read": 1.0, "cache_write": 12.5, "output": 50.0}),
                     ALL_EFFORTS[1:]),
-    "gpt-6.1-sol": ("GPT-6.1 Sol", {"input": 2.0, "cache_read": 0.10, "cache_write": 2.5, "output": 10.0},
+    "gpt-6.1-sol": ("GPT-6.1 Sol", _priced({"input": 2.0, "cache_read": 0.10, "cache_write": 2.5, "output": 10.0}),
                     ALL_EFFORTS[1:]),
-    "gpt-6.1-terra": ("GPT-6.1 Terra", {"input": 1.0, "cache_read": 0.05, "cache_write": 1.25, "output": 5.0},
-                      ALL_EFFORTS),
-    "gpt-6-luna": ("GPT-6 Luna", {"input": 0.10, "cache_read": 0.01, "cache_write": 0.125, "output": 0.50},
+    "gpt-6.1-terra": ("GPT-6.1 Terra", _priced({"input": 1.0, "cache_read": 0.05, "cache_write": 1.25,
+                                                "output": 5.0}), ALL_EFFORTS),
+    "gpt-6-luna": ("GPT-6 Luna", _priced({"input": 0.10, "cache_read": 0.01, "cache_write": 0.125, "output": 0.50}),
                    ALL_EFFORTS),
-    "gpt-5.6-sol": ("GPT-5.6 Sol", {"input": 4.0, "cache_read": 0.40, "cache_write": 5.0, "output": 20.0},
+    "gpt-5.6-sol": ("GPT-5.6 Sol", _priced({"input": 4.0, "cache_read": 0.40, "cache_write": 5.0, "output": 20.0}),
                     ALL_EFFORTS),
-    "gpt-5.5": ("GPT-5.5", {"input": 5.0, "cache_read": 0.50, "output": 30.0}, ALL_EFFORTS[:-1]),
-    "gpt-5.4-mini": ("GPT-5.4 mini", {"input": 0.75, "cache_read": 0.075, "output": 4.50}, ALL_EFFORTS[:-1]),
+    "gpt-5.5": ("GPT-5.5", _priced({"input": 5.0, "cache_read": 0.50, "output": 30.0}), ALL_EFFORTS[:-1]),
+    "gpt-5.4-mini": ("GPT-5.4 mini", _priced({"input": 0.75, "cache_read": 0.075, "output": 4.50}),
+                     ALL_EFFORTS[:-1]),
 }  # fmt: skip
+# promotions: the day the usual price is back, and that price. GPT-5.6 Sol's (developers.openai.com/api/docs/pricing
+# and OpenAI's letter of 2026-11-03, read 2026-11-06): the price before it is back on November 30
+PROMOS: dict[str, tuple[str, dict[str, float]]] = {
+    "gpt-5.6-sol": ("2026-11-30", _priced({"input": 5.0, "cache_read": 0.50, "cache_write": 6.25, "output": 30.0})),
+}
 
 
 def effort_for(model_ref: str, wanted: str) -> str:
@@ -68,12 +82,14 @@ def effort_for(model_ref: str, wanted: str) -> str:
 
 class OpenAIProvider:
     def __init__(self, key_getter: Callable[[], str | None], name: str = "openai", api: str = API,
-                 transport: httpx.AsyncBaseTransport | None = None):  # fmt: skip
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 today: Callable[[], date] = date.today):  # fmt: skip
         self.name = name
         self.tools_always = True  # one tool list from the first message on (D14)
         self._key_getter = key_getter  # read on every use: the user may add or change the key while the hub runs
         self._api = api.rstrip("/")
         self._transport = transport  # tests put a mock here
+        self._today = today
 
     def _key(self) -> str | None:
         try:
@@ -94,9 +110,17 @@ class OpenAIProvider:
         if response.status_code != 200:
             raise ProviderError(f"{self.name}: cannot list models ({_describe(response.status_code, response.text)})")
         available = {m.get("id") for m in response.json().get("data", [])}
-        return [Model(id=f"{self.name}/{ref}", provider=self.name, model_ref=ref, name=label, locality="cloud",
-                      capabilities={"vision": True, "prices_asof": PRICES_ASOF}, prices=prices)
-                for ref, (label, prices, _efforts) in MODELS.items() if ref in available]  # fmt: skip
+        models = []
+        for ref, (label, prices, _efforts) in MODELS.items():
+            if ref not in available:
+                continue
+            caps: dict[str, Any] = {"prices_asof": PRICES_ASOF}
+            if ref in PROMOS:
+                ends, usual = PROMOS[ref]
+                prices, caps = scheduled([("", prices), (ends, usual)], self._today(), PRICES_ASOF, promo_until=ends)
+            models.append(Model(id=f"{self.name}/{ref}", provider=self.name, model_ref=ref, name=label,
+                                locality="cloud", capabilities={"vision": True, **caps}, prices=prices))  # fmt: skip
+        return models
 
     def accepts(self, model_ref: str) -> frozenset[str]:
         """The reasoning models take no temperature or top_p, and the Responses API no stop sequences: the
@@ -185,8 +209,6 @@ class OpenAIProvider:
         if cancel.is_set() and not counted["output_tokens"]:
             counted["output_tokens"] = -(-streamed_chars // 3)
             counted["estimated"] = 1
-        if counted["input_tokens"] > LONG_PROMPT and model_ref in MODELS:
-            counted["cost_microusd"] = long_prompt_cost(counted, MODELS[model_ref][1])
         reason = (final.get("incomplete_details") or {}).get("reason")
         calls = []
         for item in output:
@@ -252,12 +274,6 @@ def to_input(messages: list[dict[str, Any]], provider_name: str) -> tuple[str, l
         elif message["content"]:
             items.append({"role": "user", "content": message["content"]})
     return "\n\n".join(instructions), items
-
-
-def long_prompt_cost(usage: dict[str, int], prices: dict[str, float]) -> int:
-    """A request over LONG_PROMPT tokens: 2x input and cache prices, 1.5x output, for all of it (micro-USD)."""
-    doubled = {k: v * 2 for k, v in prices.items() if k != "output"} | {"output": prices["output"] * 1.5}
-    return round(cost_usd(usage, doubled) * 1_000_000)
 
 
 def _usage(usage: dict[str, Any]) -> dict[str, int]:
