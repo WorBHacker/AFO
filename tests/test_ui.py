@@ -2032,9 +2032,12 @@ def long_chat_with_tools(steps: int = 8) -> dict:
 
 
 def test_open_reasoning_streams_in_parts_that_add_up_to_it(qapp):
-    """Open reasoning shows in parts cut at line ends, so a tick lays out only the last part (one TextEdit of 100k
-    characters laid all of it out on every tick). Read back, the parts are exactly the reasoning."""
+    """Open reasoning shows in parts cut at line ends while it streams, so a tick lays out only the last part (one
+    TextEdit of 100k characters laid all of it out on every tick). Read back, the parts are exactly the reasoning.
+    Finished, it is one text - a selection goes through it (24.2)."""
     import random
+
+    from PySide6.QtCore import QMetaObject
 
     from app.ui.main import QuickApp
 
@@ -2045,17 +2048,18 @@ def test_open_reasoning_streams_in_parts_that_add_up_to_it(qapp):
         wait_until(lambda: not app.bg.busy)
         opened(app)
 
-        def parts() -> list[str]:
+        def texts() -> list:
             quick.window.grabWindow()  # a frame: the list lays out (and creates) the rows it shows
             todo, found = [quick.window.contentItem()], []
             while todo:
                 item = todo.pop(0)
                 todo.extend(item.childItems())
                 if item.objectName() == "thinkingParts":
-                    found.append(
-                        [child.property("text") for child in item.childItems() if child.property("part") is not None]
-                    )
-            return next(p for p in found if p and p[0].startswith("Старт"))
+                    found.append([child for child in item.childItems() if child.property("part") is not None])
+            return next(p for p in found if p and p[0].property("text").startswith("Старт"))
+
+        def parts() -> list[str]:
+            return [item.property("text") for item in texts()]
 
         app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
         app.on_event(event("chat.delta", kind="reasoning", text="Старт.\n"))
@@ -2082,6 +2086,32 @@ def test_open_reasoning_streams_in_parts_that_add_up_to_it(qapp):
         for _ in range(5):
             QApplication.processEvents()
         assert "\n".join(parts()) == sent
+
+        # the answer begins: the reasoning is finished - one text, selected through (24.2)
+        app.on_event(event("chat.delta", kind="text", text="Ответ."))
+        app._render_live()
+        for _ in range(5):
+            QApplication.processEvents()
+        assert parts() == [sent]
+        body = next(item for item in texts() if item.property("text") == sent)
+        QMetaObject.invokeMethod(body, "selectAll")
+        assert body.property("selectedText") == sent
+
+        # finished but longer than WHOLE: still in parts (laid out at once, 100 000 characters took 13 ms)
+        long = ("строка рассуждения " * 20 + "\n") * 400
+        assert len(long) > 100_000
+        app.client.histories["c2"] = {"id": "c2", "title": "Длинное", "busy": False, "messages": [
+            {"id": 1, "role": "user", "model_id": None, "usage": None, "content": [{"type": "text", "text": "?"}]},
+            {"id": 2, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+             "content": [{"type": "reasoning", "text": "Старт.\n" + long}, {"type": "text", "text": "Ответ."}]},
+        ]}  # fmt: skip
+        app.openChat("c2")
+        wait_until(lambda: len(app.messages.rows) == 2)
+        app.toggleThinking(1)
+        for _ in range(5):
+            QApplication.processEvents()
+        shown = parts()
+        assert len(shown) > 10 and "\n".join(shown) == "Старт.\n" + long
         assert quick.warnings == []
     finally:
         quick.close()

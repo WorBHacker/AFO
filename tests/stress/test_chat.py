@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from starlette.testclient import TestClient
-from test_ui import FakeClient, wait_until
+from test_ui import FakeClient, QApplication, wait_until
 
 from app import render
 from app.ui import rows
@@ -42,6 +42,54 @@ def fill(conn, cid: str) -> None:
             output = "\n".join(f"{i}| print({i})" for i in range(80))
             store.add_message(conn, cid, "tool", [{"type": "tool_result", "id": f"t{n}", "name": "read_file",
                                                    "output": output}])  # fmt: skip
+
+
+def test_long_reasoning_opened_as_one_text(qapp):
+    """24.2: a finished reasoning up to Thinking.qml's `wholeSize` (100 000 characters) is one text - a selection
+    goes through it; opening it lays it all out at once."""
+    import time
+
+    from app.ui.main import QuickApp
+
+    reasoning = ("Сначала проверю, что функция получает список, а не генератор; потом тесты рядом. " * 3 + "\n") * 400
+    reasoning = reasoning[:100_000]
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        fake = FakeClient()
+        fake.histories["c1"] = {"id": "c1", "title": "Размышления", "busy": False, "messages": [
+            {"id": 1, "role": "user", "model_id": None, "usage": None, "content": [{"type": "text", "text": "?"}]},
+            {"id": 2, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+             "content": [{"type": "reasoning", "text": reasoning}, {"type": "text", "text": "Ответ."}]},
+        ]}  # fmt: skip
+        app.attach(fake, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("c1")
+        wait_until(lambda: len(app.messages.rows) == 2)
+        for _ in range(10):
+            QApplication.processEvents()
+        swapped = []
+        quick.window.frameSwapped.connect(lambda: swapped.append(time.perf_counter()))
+        began = time.perf_counter()
+        app.toggleThinking(1)
+        wait_until(lambda: swapped, timeout=10)
+
+        def one() -> bool:
+            todo = [quick.window.contentItem()]
+            while todo:
+                item = todo.pop()
+                todo.extend(item.childItems())
+                if item.objectName() == "thinkingParts":
+                    found = [c for c in item.childItems() if c.property("part") is not None]
+                    if len(found) == 1 and found[0].property("text") == reasoning:
+                        return True
+            return False
+
+        wait_until(one)
+        note("окно: открыть размышления в 100 000 знаков одним текстом", (swapped[0] - began) * 1000, "мс", 100)
+        assert quick.warnings == []
+    finally:
+        quick.close()
 
 
 def test_a_long_chat_from_the_hub_and_in_the_window(qapp):

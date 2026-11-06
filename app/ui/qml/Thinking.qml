@@ -7,28 +7,38 @@ Column {
     property int rowIndex: -1
     // folded reasoning is not laid out at all; a string property notifies only when the text really changes
     property string bodyText: info.open ? (info.text || "") : ""
-    // Streaming reasoning grows at its end. It shows in parts of about `partSize` characters, cut at line ends (the
-    // line end is the cut), and a tick lays out only the last part again: one TextEdit of 100k characters laid all of
-    // it out on every tick. A selection does not cross parts.
+    // Streaming reasoning grows at its end. While it streams it shows in parts of about `partSize` characters, cut at
+    // line ends (the line end is the cut), and a tick lays out only the last part again: one TextEdit of 100k
+    // characters laid all of it out on every tick. Finished (the answer began), up to `wholeSize` characters it is one
+    // text - a selection goes through it (24.2; 100k characters are laid out in 13 ms); a longer one stays in parts,
+    // a selection within one.
     readonly property int partSize: 4000
+    readonly property int wholeSize: 100000
+    readonly property bool whole: !info.running && bodyText.length <= wholeSize
     property string shownText: ""
-    onBodyTextChanged: {
-        if (shownText !== "" && bodyText.startsWith(shownText) && parts.count > 0) {
+    onBodyTextChanged: show()
+    onWholeChanged: { parts.clear(); show() }
+    Component.onCompleted: if (shownText === "") show()
+    function show() {
+        if (bodyText === "")
+            parts.clear()
+        else if (whole && parts.count === 1)
+            parts.setProperty(0, "part", bodyText)
+        else if (!whole && shownText !== "" && bodyText.startsWith(shownText) && parts.count > 0)
             addText(bodyText.slice(shownText.length))
-        } else {
+        else {
             parts.clear()
             addText(bodyText)
         }
         shownText = bodyText
     }
-    Component.onCompleted: if (shownText === "") { addText(bodyText); shownText = bodyText }
     function addText(more) {
         if (more === "")
             return
         const growing = parts.count > 0
         let tail = (growing ? parts.get(parts.count - 1).part : "") + more
         const cut = []
-        while (tail.length > partSize) {
+        while (!whole && tail.length > partSize) {
             const end = tail.lastIndexOf("\n", partSize)
             if (end <= 0)
                 break  // no line end yet: the part grows until one comes
