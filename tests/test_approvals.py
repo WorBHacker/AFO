@@ -268,6 +268,10 @@ def test_a_write_into_a_file_with_unsaved_edits_is_never_covered(queue, tmp_path
     assert holds("NotebookEdit", {"notebook_path": str(target)}, None)
     assert not holds("Edit", {"file_path": "src/app.py"}, None)  # no project to count from: not this file
     assert not holds("Read", {"file_path": str(target)}, None) and not holds("edit_file", {"path": "src/b.py"}, root)
+    back = {"checkpoint": "начало цели", "files": "proj: src/app.py — удалить"}  # a goal's rollback card (19.6)
+    assert holds("goal_rollback", {**back, "paths": [str(root / "README.md"), str(target)]}, None)
+    assert not holds("goal_rollback", {**back, "paths": [str(root / "README.md")]}, None)
+    assert not holds("goal_rollback", back, None) and not holds("goal_rollback", {**back, "paths": "x"}, None)
 
     async def scenario():
         other = {"file_path": str(root / "b.py"), "old_string": "x", "new_string": "y"}

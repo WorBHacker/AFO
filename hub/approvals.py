@@ -268,6 +268,9 @@ class Unsaved:
         self._paths = set()
 
     def holds(self, tool: str, data: dict[str, Any], root: Path | None) -> bool:
+        if tool == "goal_rollback":  # a goal's files put back (11.6): any of those it writes or removes (19.6)
+            paths = data.get("paths") if isinstance(data.get("paths"), list) else []
+            return any(_same(Path(p)) in self._paths for p in paths if isinstance(p, str) and p)
         path = written(tool, data, root)
         return path is not None and _same(path) in self._paths
 

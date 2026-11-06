@@ -3,8 +3,8 @@ others - a goal in «Песочница» with a part applied meanwhile and a de
 guard and with two models; a rollback card over the editor's unsaved edits; Claude Code's goal with its edit allowed
 in part; the symbol index of a sandbox and of its project.
 
-One passed, six showed one part breaking another: each is a step of stage 19 (D53) and waits for it, marked
-`step(...)` - strict, so a scenario that starts to pass says so and its step takes the mark away."""
+One passed at first, six showed one part breaking another: each became a step of stage 19 (D53), and each passes
+since its step."""
 
 import pytest
 
@@ -17,10 +17,6 @@ from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, se
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 A_TXT = "if (Test-Path a.txt) { exit 0 } else { exit 1 }"
-
-
-def step(n, why):
-    return pytest.mark.xfail(strict=True, reason=f"stage 19.{n} (D53): {why}")
 
 
 def written(path, content):
@@ -99,7 +95,6 @@ def test_the_strong_models_plan_outlives_the_first_stage(hub, repo):  # noqa: F8
     assert "ПЛАН" in str(later), "the plan was folded away with stage 1"
 
 
-@step(6, "the rollback card does not look at the editor's unsaved files")
 def test_a_rollback_card_over_the_editors_unsaved_edits_says_so(hub, repo):  # noqa: F811
     """11.6 × D47 (14.2c): in the project a dead end asks to go back; a file it would remove or put back is open in
     the window's editor with unsaved edits - the card must say so, as a model's write into it does."""

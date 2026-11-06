@@ -1088,7 +1088,10 @@ class Goals:
             return True
         offer = tr(" — или откатить файлы к точке «{point}»: ответ — в карточке подтверждения", point=label)
         await self._checked(goal, "blocked", verdict, found, why + offer, mark)
-        data = {"checkpoint": label, "goal": goal["objective"], "files": self._files(plans), "why": why}
+        paths = [str(project.root / p) for project, _tree, planned in plans
+                 for p in planned["restore"] + planned["delete"]]  # fmt: skip
+        data = {"checkpoint": label, "goal": goal["objective"], "files": self._files(plans), "why": why,
+                "paths": paths}  # the editor's unsaved files among them: the card says so (19.6)  # fmt: skip
 
         async def ask() -> None:
             decision = await self._chat.approvals.ask(ROLLBACK, data, conversation_id=goal["conversation_id"],
