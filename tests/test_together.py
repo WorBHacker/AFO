@@ -6,8 +6,12 @@ in part; the symbol index of a sandbox and of its project.
 One passed at first, six showed one part breaking another: each became a step of stage 19 (D53), and each passes
 since its step."""
 
+import time
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
+from hub import goals
 from hub.claude_code import ClaudeCodeProvider
 from hub.projects import get_project
 from tests import test_claude_code as cc
@@ -124,6 +128,53 @@ def test_a_sandboxs_definitions_stay_out_of_its_projects_index(hub, repo):  # no
     by_name = symbols.find(real, "sandbox_only_helper")["total"]
     by_meaning = [s["name"] for s in symbols.find(real, "helps sandbox")["symbols"]]
     assert (by_name, by_meaning) == (0, []), "the project's chat finds what only the sandbox has"
+
+
+def test_the_time_a_turn_waits_for_the_human_is_not_the_goals(hub, repo):  # noqa: F811
+    """19.7 (20.4): a goal's turn asks a card in a chat that asks; the user answers a while later - the goal's time
+    counts the model's work, not the user's absence."""
+    worker = use(hub, Gated("agent", [WRITE, "Готово."]))
+    _pid, conv = chat_with_project(hub, repo, worker, mode="ask")
+    set_goal(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    time.sleep(4)  # the user is away
+    assert hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True}).status_code == 200
+    done = settled(hub, conv, "achieved", "blocked")
+    assert done["goal"]["status"] == "achieved" and done["goal"]["seconds_used"] < 2.5, done["goal"]
+
+
+def test_applying_while_the_goal_writes_goes_after_its_turn(hub, repo):  # noqa: F811
+    """19.7 (20.4): «Применить» in the sandbox while a goal's turn runs is not refused: it waits for the turn to end
+    and goes before the next one - which works on with it applied."""
+    worker = use(hub, Gated("agent", [written("a.txt", "a\n"), "Сделал a.txt.", WRITE, "Готово."]))
+    worker.gate.clear()
+    pid, conv = chat_with_project(hub, repo, worker, mode="sandbox")
+    set_goal(hub, conv, criteria=[{"command": A_TXT}, {"command": DONE}])
+    wait(worker.waiting.is_set)
+    said = hub.post(f"/v1/conversations/{conv}/sandbox/{pid}/apply")
+    assert said.status_code == 200 and said.json()["deferred"] is True
+    assert not (repo / "a.txt").exists()  # not under the running turn's feet
+    worker.gate.set()
+    done = settled(hub, conv, "achieved", "blocked", "budget")
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "a\n"  # it went when the turn ended
+    assert done["goal"]["status"] == "achieved", done["goal"]["detail"]
+    assert [c["route"] for c in done["checks"]] == ["continue", "achieved"]
+
+
+def test_the_seconds_cards_waited_count_once():
+    """19.7: the time a turn's cards waited - each from asked to answered, an open one to the turn's end, two at once
+    counted once, nothing outside the turn."""
+    since = datetime(2026, 11, 6, 10, 0, 0, tzinfo=UTC)
+    until = since + timedelta(seconds=100)
+
+    def at(s):
+        return (since + timedelta(seconds=s)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    assert goals.waiting([], since, until) == 0
+    assert goals.waiting([(at(10), at(30))], since, until) == 20
+    assert goals.waiting([(at(10), at(30)), (at(20), at(40)), (at(50), at(55))], since, until) == 35
+    assert goals.waiting([(at(90), None)], since, until) == 10  # still open at the turn's end
+    assert goals.waiting([(at(-50), at(5)), (at(95), at(130))], since, until) == 10  # only within the turn
 
 
 # --- Claude Code (a live hub, the stand-in CLI) ---

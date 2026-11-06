@@ -189,6 +189,7 @@ async def delete_conversation(
 ) -> None:
     await own_conversation(request, client, conversation_id)
     chat = request.app.state.chat
+    chat.after_turn.pop(conversation_id, None)  # nothing waits for its turn now (19.7)
     chat.cancel(conversation_id)
     attached = await request.app.state.db.acall(lambda conn: _attached(conn, conversation_id))
     deleted = await request.app.state.db.acall(lambda conn: store.delete_conversation(conn, conversation_id))

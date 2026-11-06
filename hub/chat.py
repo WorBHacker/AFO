@@ -158,6 +158,8 @@ class ChatService:
         self.sandbox_broken: dict[str, dict[str, str]] = {}
         # what each chat's model read: "<project id>:<path>" -> sha256 (D46; tools.ToolContext.seen)
         self.seen_files: dict[str, dict[str, str]] = {}
+        # what waits for a chat's turn to end, in order: «Применить» in its sandbox asked while the model wrote (19.7)
+        self.after_turn: dict[str, list[Callable[[], Awaitable[None]]]] = {}
 
     @property
     def busy(self) -> list[str]:
@@ -387,8 +389,9 @@ class ChatService:
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error",
                                                    "model_id": model["id"]})  # fmt: skip
         finally:
-            self._runs.pop(conversation_id, None)
             outcome.seconds = time.monotonic() - began
+            await self._after_turn(conversation_id)
+            self._runs.pop(conversation_id, None)
             if on_end is not None:
                 if self.approvals is not None:
                     await self.approvals.expire(conversation_id)
@@ -401,6 +404,16 @@ class ChatService:
                     await self.goals.turn_ended(conversation_id, outcome)
                 except Exception:
                     log.exception("the goal of %s did not take the turn's end", conversation_id)
+
+    async def _after_turn(self, conversation_id: str) -> None:
+        """What waited for the turn to end (19.7) - the chat still busy meanwhile, so what is asked during it waits
+        too and runs here as well; before the goal hears of the turn, so its next turn sees it done."""
+        while jobs := self.after_turn.pop(conversation_id, None):
+            for job in jobs:
+                try:
+                    await job()
+                except Exception:
+                    log.exception("what waited for the turn of %s failed", conversation_id)
 
     async def _run_agent(self, conversation_id: str, model: dict, text: str, cancel: asyncio.Event, client_id, *,
                          max_turns: int | None = None):  # fmt: skip
@@ -439,8 +452,9 @@ class ChatService:
             await self._bus.publish("chat.error", {"conversation_id": conversation_id, "detail": "internal error",
                                                    "model_id": model["id"]})  # fmt: skip
         finally:
-            self._runs.pop(conversation_id, None)
             outcome.seconds = time.monotonic() - began
+            await self._after_turn(conversation_id)
+            self._runs.pop(conversation_id, None)
             if self.approvals is not None:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
             if self.autonomy is not None:

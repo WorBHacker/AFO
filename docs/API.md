@@ -217,7 +217,7 @@
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/conversations/{conversation_id}/sandbox` | только окно | `sandbox_changes()` |  |
-| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | The sandbox's changes onto the project; with `files`, only those, and with `hunks` only those hunks of a file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written. With all of it gone the sandbox goes too - but not while the chat's goal is open: it works on there (19.2). | тело `Files \| None` |
+| POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/apply` | только окно | The sandbox's changes onto the project; with `files`, only those, and with `hunks` only those hunks of a file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written. With all of it gone the sandbox goes too - but not while the chat's goal is open: it works on there (19.2). While the model writes, the choice waits for its turn to end and goes then, before the next turn (19.7): `deferred`; and the event `sandbox.applied` (or `sandbox.apply_failed`) says how it went. | тело `Files \| None` |
 | POST | `/v1/conversations/{conversation_id}/sandbox/{project_id}/discard` | только окно | `discard_sandbox()` |  |
 
 ### conversations
@@ -627,6 +627,7 @@ conversation's text, an approval or a terminal's output.
 | `run.status` | нет | `run_id`, `status` | hub/agents.py |
 | `run.tasks` | нет | `run_id` | hub/agents.py |
 | `sandbox.applied` | да | `conversation_id`, `task_id`, `project_id` | hub/agents.py, hub/api/sandbox.py |
+| `sandbox.apply_failed` | да | `conversation_id`, `project_id`, `detail` | hub/api/sandbox.py |
 | `sandbox.changed` | да | `conversation_id`, `project_id`, `path` | hub/chat.py |
 | `sandbox.discarded` | да | `conversation_id`, `task_ids` | hub/agents.py, hub/api/sandbox.py |
 | `schedule.added` | да | `schedule` | hub/api/schedules.py |

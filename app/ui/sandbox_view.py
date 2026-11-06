@@ -33,6 +33,20 @@ def file_key(task: str, project_id: str, path: str) -> str:
     return "\x1f".join((task, project_id, path))
 
 
+def applied_text(result: dict[str, Any]) -> str:
+    """What «Применить» did - or that it waits for the model's turn to end (19.7)."""
+    if result.get("deferred"):
+        return tr("Применится после хода: модель ещё пишет")
+    if result.get("conflicts"):
+        text = tr("Применено, но с конфликтами: {files} — поправьте их в проекте",
+                  files=", ".join(result["conflicts"]))  # fmt: skip
+    else:
+        text = tr("Применено к проекту: {count} файлов", count=len(result.get("applied", [])))
+    if result.get("kept"):
+        text += " " + tr("Остальные файлы ({count}) ждут в песочнице.", count=len(result["kept"]))
+    return text
+
+
 def apply_text(ticked: int, total: int, everything: str, partial: bool = False) -> str:
     if ticked == total:
         return tr("Применить отмеченное") if partial else everything
@@ -247,20 +261,10 @@ class SandboxView(QObject):
         files = None if row["ticked"] == len(row["files"]) else [f["path"] for f in row["files"] if f["ticked"]]
         hunks = parts([row]) or None
 
-        def said(result: dict[str, Any]) -> str:
-            if result.get("conflicts"):
-                text = tr("Применено, но с конфликтами: {files} — поправьте их в проекте",
-                          files=", ".join(result["conflicts"]))  # fmt: skip
-            else:
-                text = tr("Применено к проекту: {count} файлов", count=len(result.get("applied", [])))
-            if result.get("kept"):
-                text += " " + tr("Остальные файлы ({count}) ждут в песочнице.", count=len(result["kept"]))
-            return text
-
         def untick() -> None:  # what is left comes back ticked
             self._forget(row["files"])
 
-        self._act(lambda cid: self.app.client.apply_sandbox(cid, project_id, files, hunks), said, untick)
+        self._act(lambda cid: self.app.client.apply_sandbox(cid, project_id, files, hunks), applied_text, untick)
 
     def _forget(self, files: list[dict[str, Any]]) -> None:
         for f in files:
@@ -326,4 +330,8 @@ class SandboxView(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if payload.get("conversation_id") in (None, self.app.current):
+            if kind == "sandbox.applied" and payload.get("after_turn"):  # what waited for the turn's end went (19.7)
+                self.app.flash(tr("После хода: {said}", said=applied_text(payload)))
+            elif kind == "sandbox.apply_failed":
+                self.app.show_error(tr("После хода применить не вышло: {error}", error=payload.get("detail", "")))
             self.load()

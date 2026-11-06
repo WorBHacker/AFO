@@ -6512,6 +6512,16 @@ def test_the_sandbox_hunks_in_the_window(qapp):
         quick.close()
 
 
+def test_applying_while_the_model_writes_says_it_goes_after_the_turn():
+    """19.7: «Применить» while the model writes waits for the turn's end - the window says so, and then what went."""
+    from app.ui.sandbox_view import applied_text
+
+    waits = applied_text({"applied": [], "conflicts": [], "kept": [], "deferred": True})
+    assert waits == "Применится после хода: модель ещё пишет"
+    went = applied_text({"applied": ["a.txt"], "conflicts": [], "kept": ["b.txt"], "after_turn": True})
+    assert went == "Применено к проекту: 1 файлов Остальные файлы (1) ждут в песочнице."
+
+
 def test_the_sandbox_says_what_of_its_diff_is_not_shown():
     """The audit (D46): the sheet shows the diff's first lines - and now says so; «Применить» takes every file."""
     from app.ui.approvals import PREVIEW_LINES

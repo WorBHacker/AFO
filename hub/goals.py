@@ -53,6 +53,7 @@ import logging
 import re
 import sqlite3
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from common.i18n import N_, tr
@@ -714,6 +715,27 @@ def _fold(history: list[MessageRow], lo: int, hi: int, line: str) -> list[Messag
         [row] if i not in drop else [])]  # fmt: skip
 
 
+def _iso(at: datetime) -> str:
+    return at.isoformat(timespec="milliseconds").replace("+00:00", "Z")  # as the database keeps times
+
+
+def waiting(asked: list[tuple[str, str | None]], since: datetime, until: datetime) -> float:
+    """The seconds of a turn (`since` to `until`) its cards waited for the human (19.7): each from asked to answered
+    (one still open - to the turn's end), the time two of them waited together counted once."""
+    spans = []
+    for created, decided in asked:
+        start = max(datetime.fromisoformat(created), since)
+        end = min(datetime.fromisoformat(decided) if decided else until, until)
+        if end > start:
+            spans.append((start, end))
+    total, reached = 0.0, since
+    for start, end in sorted(spans):
+        if end > reached:
+            total += (end - max(start, reached)).total_seconds()
+            reached = end
+    return total
+
+
 def _found_of(check: dict[str, Any]) -> dict[str, Any]:
     """A stored check as the notes read it (the next turn after a pause or a restart)."""
     criteria = [r for r in check["results"] if r.get("kind") in ("command", "semantic")]
@@ -1292,17 +1314,25 @@ class Goals:
         return bool(last) and last[0]["verdict"] == "REGRESSED"
 
     async def _count(self, goal: dict[str, Any], outcome: Outcome) -> dict[str, Any]:
+        """What the turn used: a turn, its tokens (not those read from the cache), its money - and its time, less
+        what it waited for the human's answer to a card (19.7: the limit is the model's work, not the user's
+        absence)."""
         totals = outcome.totals
         usage = totals.usage if totals is not None else {}  # input_tokens is the whole prompt, the cache inside it
         tokens = max(int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0), 0) + int(
             usage.get("output_tokens") or 0
         )
+        until = datetime.now(UTC)
+        since = until - timedelta(seconds=outcome.seconds)
 
         def write(conn):
+            asked = conn.execute("SELECT created_at, decided_at FROM approvals WHERE conversation_id = ? AND"
+                                 " created_at >= ?", (goal["conversation_id"], _iso(since))).fetchall()  # fmt: skip
+            seconds = max(outcome.seconds - waiting([tuple(r) for r in asked], since, until), 0.0)
             conn.execute(
                 "UPDATE goals SET turns_used = turns_used + ?, tokens_used = tokens_used + ?, seconds_used ="
                 " seconds_used + ?, cost_usd = cost_usd + ?, updated_at = ? WHERE id = ?",
-                (1 if totals is not None else 0, tokens, round(outcome.seconds, 3),
+                (1 if totals is not None else 0, tokens, round(seconds, 3),
                  totals.cost if totals is not None else 0.0, utc_now(), goal["id"]),
             )  # fmt: skip
             return get_goal(conn, goal["id"])

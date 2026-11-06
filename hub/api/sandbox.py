@@ -64,21 +64,37 @@ async def apply_sandbox(conversation_id: str, project_id: str, request: Request,
                         body: Files | None = None) -> dict:  # fmt: skip
     """The sandbox's changes onto the project; with `files`, only those, and with `hunks` only those hunks of a
     file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written. With all
-    of it gone the sandbox goes too - but not while the chat's goal is open: it works on there (19.2)."""
+    of it gone the sandbox goes too - but not while the chat's goal is open: it works on there (19.2). While the
+    model writes, the choice waits for its turn to end and goes then, before the next turn (19.7): `deferred`; and
+    the event `sandbox.applied` (or `sandbox.apply_failed`) says how it went."""
     _app_only(client)
-    if conversation_id in request.app.state.chat.busy:
-        raise HTTPException(status_code=409, detail="the model is still writing: wait for its answer to end")
     project = await _one(request, conversation_id, project_id)
     only, hunks = (body.files, body.hunks) if body else (None, None)
-    goal = await request.app.state.db.acall(lambda conn: goal_of(conn, conversation_id))  # it works on there (19.2)
+    state = request.app.state
+    if conversation_id in state.chat.busy:  # not under the running turn's feet: after it
+        state.chat.after_turn.setdefault(conversation_id, []).append(
+            lambda: _apply(state, conversation_id, project, only, hunks, later=True))  # fmt: skip
+        return {"applied": [], "conflicts": [], "kept": [], "deferred": True}
     try:
-        done = await asyncio.to_thread(sb.apply, request.app.state.chat.sandboxes, conversation_id, project, only,
-                                       hunks, keep=goal is not None)  # fmt: skip
+        return await _apply(state, conversation_id, project, only, hunks)
     except sb.SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    forget_copy(request.app.state.symbols, request.app.state.chat.sandboxes, conversation_id, project)
-    said = {"conversation_id": conversation_id, "project_id": project.id, **done}
-    await request.app.state.bus.publish("sandbox.applied", said, project_id=project.id)
+
+
+async def _apply(state, conversation_id: str, project, only, hunks, *, later: bool = False) -> dict:
+    goal = await state.db.acall(lambda conn: goal_of(conn, conversation_id))  # it works on there (19.2)
+    try:
+        done = await asyncio.to_thread(sb.apply, state.chat.sandboxes, conversation_id, project, only, hunks,
+                                       keep=goal is not None)  # fmt: skip
+    except sb.SandboxError as exc:
+        if not later:
+            raise
+        await state.bus.publish("sandbox.apply_failed", {"conversation_id": conversation_id, "project_id": project.id,
+                                                         "detail": str(exc)}, project_id=project.id)  # fmt: skip
+        return {}
+    forget_copy(state.symbols, state.chat.sandboxes, conversation_id, project)
+    said = {"conversation_id": conversation_id, "project_id": project.id, **done, "after_turn": later}
+    await state.bus.publish("sandbox.applied", said, project_id=project.id)
     return done
 
 
