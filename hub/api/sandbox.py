@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from .. import sandbox as sb
 from ..auth import Client
 from ..chat import _attached
+from ..goals import goal_of
 from .connections import _app_only
 from .deps import require_client
 
@@ -62,15 +63,17 @@ async def apply_sandbox(conversation_id: str, project_id: str, request: Request,
                         client: Annotated[Client, Depends(require_client)],
                         body: Files | None = None) -> dict:  # fmt: skip
     """The sandbox's changes onto the project; with `files`, only those, and with `hunks` only those hunks of a
-    file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written."""
+    file - the rest stays in the sandbox (`kept`). A file or hunk that is not there: 409, nothing written. With all
+    of it gone the sandbox goes too - but not while the chat's goal is open: it works on there (19.2)."""
     _app_only(client)
     if conversation_id in request.app.state.chat.busy:
         raise HTTPException(status_code=409, detail="the model is still writing: wait for its answer to end")
     project = await _one(request, conversation_id, project_id)
     only, hunks = (body.files, body.hunks) if body else (None, None)
+    goal = await request.app.state.db.acall(lambda conn: goal_of(conn, conversation_id))  # it works on there (19.2)
     try:
         done = await asyncio.to_thread(sb.apply, request.app.state.chat.sandboxes, conversation_id, project, only,
-                                       hunks)  # fmt: skip
+                                       hunks, keep=goal is not None)  # fmt: skip
     except sb.SandboxError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     said = {"conversation_id": conversation_id, "project_id": project.id, **done}

@@ -316,6 +316,28 @@ def test_applying_the_last_files_chosen_takes_the_sandbox_away(repo, tmp_path):
     assert not inside.root.exists() and refs(repo) == ""
 
 
+def test_a_sandbox_kept_for_its_goal_moves_past_all_that_went(repo, tmp_path):
+    """19.2: a chat whose goal is still open keeps its sandbox when the user applies all of it - the goal works on
+    there, with what the user took (not committed in the project); its diff is only what comes after."""
+    folder = tmp_path / "worktrees"
+    project = project_of(repo)
+    inside = sb.ensure(folder, "conv-10", project)
+    write(inside.root, "a.txt", "a\n")
+    assert sb.apply(folder, "conv-10", project, keep=True) == {"applied": ["a.txt"], "conflicts": [], "kept": []}
+    assert (repo / "a.txt").exists() and (inside.root / "a.txt").exists() and "sandbox/conv10" in refs(repo)
+    assert sb.changes(folder, "conv-10", project)["files"] == []
+    write(inside.root, "a.txt", "a\nb\n")
+    found = sb.changes(folder, "conv-10", project)
+    assert named(found) == [{"path": "a.txt", "status": "changed"}]
+    assert "+b" in found["diff"] and "+a" not in found["diff"]  # only what came after
+    assert sb.apply(folder, "conv-10", project, keep=True)["applied"] == ["a.txt"]
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "a\nb\n" and inside.root.exists()
+    assert sb.apply(folder, "conv-10", project, keep=True)["applied"] == []  # nothing to go: it stays all the same
+    assert inside.root.exists()
+    sb.apply(folder, "conv-10", project)  # the goal is over: nothing to go, and the sandbox goes
+    assert not inside.root.exists() and refs(repo) == ""
+
+
 def test_sandboxes_of_chats_that_are_gone_are_swept(repo, tmp_path):
     folder = tmp_path / "worktrees"
     project = project_of(repo)

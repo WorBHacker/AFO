@@ -14,7 +14,8 @@ checks out (core.autocrlf, .gitattributes) - so Windows line ends are no conflic
 addition; every file is worked out first, and only then is anything written - one that cannot be worked out leaves
 the project untouched.
 A file changed on both sides at the same place gets conflict marks the user resolves. The worktree, its branch and
-its ref go then, as on «Отбросить» - and with the chat, and at the hub's start when the chat is gone.
+its ref go then, as on «Отбросить» - and with the chat, and at the hub's start when the chat is gone. A chat whose
+goal is still open keeps it (19.2): the goal goes on there, and a new sandbox would begin without what the user took.
 
 The user may apply only the files ticked (17.1, D51): those go the same way, the others stay in the sandbox, and its
 base moves past what went (a commit of the hub's own: the base with those files as the sandbox has them) - so the
@@ -261,15 +262,17 @@ def parts(files: list[dict[str, Any]], hunks: dict[str, list[int]]) -> dict[str,
 
 
 def apply(folder: Path, conversation_id: str, project: Project, only: list[str] | None = None,
-          hunks: dict[str, list[int]] | None = None) -> dict[str, Any]:  # fmt: skip
+          hunks: dict[str, list[int]] | None = None, *, keep: bool = False) -> dict[str, Any]:  # fmt: skip
     """The sandbox's changes onto the project's working tree - all, or `only` the files ticked (17.1, D51), and of
     a file in `hunks` only those hunks (17.4). What is left (`kept`) stays in the sandbox, past its moved base; with
-    nothing left, the sandbox goes."""
+    nothing left, the sandbox goes - unless `keep` (the chat's goal is still open, 19.2): the goal works on there, with
+    what the user took, so the base moves past all of it."""
     found = changes(folder, conversation_id, project)
     files = found["files"] if only is None else chosen(found["files"], only)
     picked = parts(files, hunks or {})
     if not found["exists"] or not files:
-        discard(folder, conversation_id, project)
+        if not keep:
+            discard(folder, conversation_id, project)
         return {"applied": [], "conflicts": [], "kept": []}
     path = place(folder, conversation_id, project)
     base = _base(path, conversation_id)
@@ -286,7 +289,7 @@ def apply(folder: Path, conversation_id: str, project: Project, only: list[str] 
         else:
             write_atomic(target, data)  # the whole file or nothing (D46)
     kept = [f["path"] for f in found["files"] if f not in files or f["path"] in taken]
-    if kept:
+    if kept or keep:
         _advance(project, path, conversation_id, base, [f["path"] for f in files], taken)
     else:
         discard(folder, conversation_id, project)

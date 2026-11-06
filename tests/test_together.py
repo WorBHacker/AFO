@@ -52,7 +52,6 @@ def test_a_dead_end_after_a_part_was_applied_does_not_take_it_back(hub, repo):  
     assert "a.txt" not in shown, f"after the rollback the sandbox offers to undo what the user applied: {shown}"
 
 
-@step(2, "a new sandbox starts at the last commit, without what the user applied")
 def test_a_goal_goes_on_with_what_the_user_applied(hub, repo):  # noqa: F811
     """17.1 × 11: the user pauses a goal in «Песочница» and applies all it made - the sandbox is taken away; resumed,
     the goal works in a new one. What the user took is the project's now: the goal must not lose it."""
