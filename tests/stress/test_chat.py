@@ -135,9 +135,19 @@ def test_a_long_chat_from_the_hub_and_in_the_window(qapp):
         note("окно: открыть чат, всего", opened.s * 1000, "мс", 4000)
         note("окно: из них поток окна занят", shown.s * 1000, "мс", 300)
 
-        with Clock() as themed:
-            app.setTheme("light")
-        note("окно: смена темы в этом чате", themed.s * 1000, "мс", 4000)
-        assert quick.warnings == []
+        # a theme switch renders again the rows in sight, the others as the scroll comes to them (24.3)
+        for _ in range(30):
+            QApplication.processEvents()
+        made = []
+        real_restyled = rows.restyled
+        rows.restyled = lambda row: made.append(1) or real_restyled(row)
+        try:
+            with Clock() as themed:
+                app.setTheme("dark" if not app.theme.dark else "light")
+        finally:
+            rows.restyled = real_restyled
+        note("окно: смена темы в этом чате", themed.s * 1000, "мс", 300)
+        note("  строк отрисовано заново сразу", len(made), "шт", 60)
+        assert made and quick.warnings == []
     finally:
         quick.close()

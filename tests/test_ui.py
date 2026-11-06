@@ -1960,12 +1960,66 @@ def test_afos_own_update_from_the_settings(app):
 
 
 def test_theme_switch_rerenders_the_html(app):
+    """A row's HTML is rendered again in the new theme when the chat view asks for it - a row in sight (24.3)."""
     opened(app)
     app.setTheme("light")
     assert palette.current() is palette.LIGHT
+    assert palette.LIGHT.text_soft not in app.messages.rows[1]["segments"][0]["html"]  # not in sight: not yet
+    app.restyleRow(1)
     assert palette.LIGHT.text_soft in app.messages.rows[1]["segments"][0]["html"]
+    app.restyleRow(1)  # once is enough
     assert app.theme.p["window"] == palette.LIGHT.window
     assert app.settings.value("ui/theme") == "light"
+
+
+def test_a_theme_switch_renders_again_only_the_rows_in_sight(qapp, monkeypatch):
+    """24.3: in a long chat a theme switch renders again the rows on screen and near it at once, the others when the
+    scroll comes to them - all at once, 1000 messages held the window 0.66 s."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.setTheme("dark")  # what the switch goes from
+        client = FakeClient()
+        code = "\n".join(f"total += {n}" for n in range(12))
+        messages = []
+        for n in range(150):
+            messages.append({"id": len(messages) + 1, "role": "user", "model_id": None, "usage": None,
+                             "content": [{"type": "text", "text": f"вопрос {n}"}]})  # fmt: skip
+            answer = f"Ответ {n}\n\n```python\n{code}\n```"
+            messages.append({"id": len(messages) + 1, "role": "assistant", "model_id": "llama-swap/coder",
+                             "usage": None, "content": [{"type": "text", "text": answer}]})  # fmt: skip
+        client.histories["c1"] = {"id": "c1", "title": "Длинный", "busy": False, "messages": messages}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("c1")
+        wait_until(lambda: len(app.messages.rows) == 300)
+        for _ in range(30):
+            QApplication.processEvents()
+        made = []
+        real = rows.restyled
+        monkeypatch.setattr(rows, "restyled", lambda row: made.append(row["key"]) or real(row))
+        app.setTheme("light")
+        for _ in range(10):
+            QApplication.processEvents()
+
+        def light(index: int) -> bool:  # an answer's row: its words in the light theme's colour
+            return palette.LIGHT.text_soft in app.messages.rows[index]["segments"][0]["html"]
+
+        assert 0 < len(made) < 40 and light(299) and not light(1)  # the end in sight, the start not
+        conversation = next(o for o in quick.window.findChildren(QObject)
+                            if o.metaObject().className().startswith("ChatView"))  # fmt: skip
+        QMetaObject.invokeMethod(conversation, "positionViewAtBeginning")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert light(1) and len(made) < 80
+        assert quick.warnings == []
+    finally:
+        quick.close()
+        quick.theme.setMode("dark")
 
 
 def test_copy_puts_text_on_the_clipboard(app, clipboard_stand_in):

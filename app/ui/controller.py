@@ -145,6 +145,8 @@ class Controller(QObject):
     subscriptionChanged = Signal()  # Claude Code's subscription limits (20.3)
     sessionChanged = Signal()
     flashChanged = Signal()
+    # a theme switch left the messages' HTML with the old colours: the chat view asks for its rows in sight (24.3)
+    restyling = Signal()
     questionChanged = Signal()
     budgetsChanged = Signal()
     keyChanged = Signal()
@@ -1987,9 +1989,19 @@ class Controller(QObject):
         self.restartRequested.emit()
 
     def _restyle(self) -> None:
-        """A theme switch: the messages' HTML carries the old colours, render it again."""
-        for index, row in enumerate(list(self.messages.rows)):
-            self.messages.update(index, **rows.restyled(row))
+        """A theme switch: the messages' HTML carries the old colours. Each row is rendered again once it is in sight
+        (the chat view asks: `restyleRow`) - those on screen and near it at once, the others as the scroll comes to
+        them: all at once, 1000 messages held the window 0.66 s (24.3)."""
+        for row in self.messages.rows:
+            row["stale"] = True  # not a role: nothing in the window changes yet
+        # its own signal, not the theme's: QML's handlers of that one ran before this slot
+        self.restyling.emit()
+
+    @Slot(int)
+    def restyleRow(self, index: int) -> None:
+        """A row in sight (ChatView.qml): rendered again if a theme switch left it with the old colours."""
+        if 0 <= index < len(self.messages.rows) and self.messages.rows[index].get("stale"):
+            self.messages.update(index, **{**rows.restyled(self.messages.rows[index]), "stale": False})
 
     # ================= flash messages =================
 

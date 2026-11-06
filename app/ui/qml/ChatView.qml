@@ -32,9 +32,22 @@ ListView {
         required property var model
         width: list.width
         height: loader.height
+        // after a theme switch a row is rendered again once in sight - on screen or within a screen of it (24.3)
+        readonly property bool inSight: y + height > list.contentY - list.height && y < list.contentY + 2 * list.height
+        onInSightChanged: if (inSight) App.restyleRow(index)
+        Component.onCompleted: if (inSight) App.restyleRow(index)
+        Connections {
+            target: App
+            function onRestyling() { if (slot.inSight) App.restyleRow(slot.index) }
+        }
         // the last row grows while an answer streams: its end stays in view
         onHeightChanged: if (list.follow && index === list.count - 1) Qt.callLater(list.toEnd)
-        ListView.onReused: if (loader.item && loader.item.reused) loader.item.reused()
+        ListView.onReused: {
+            if (loader.item && loader.item.reused)
+                loader.item.reused()
+            if (inSight)
+                App.restyleRow(index)
+        }
         Loader {
             id: loader
             x: (slot.width - list.column) / 2
