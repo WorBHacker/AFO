@@ -14,8 +14,8 @@ Every decision and stage is in [ARCHITECTURE.md](ARCHITECTURE.md) (in Russian).
 
 Download `AFO-Setup-<version>.exe` from [Releases](https://github.com/WorBHacker/AFO/releases) and run it. The usual
 Windows wizard (Russian or English) installs AFO for the current user in `%LOCALAPPDATA%\Programs\AFO`, no
-administrator rights needed. The installer is not signed yet, so Windows shows “Windows protected your PC”: click
-“More info” → “Run anyway”. Windows 10 or 11, 64-bit. Uninstall in Settings → Apps → Installed apps; your data and
+administrator rights needed. The installer is not signed yet (see [Code signing policy](#code-signing-policy)), so
+Windows shows “Windows protected your PC”: click “More info” → “Run anyway”. Windows 10 or 11, 64-bit. Uninstall in Settings → Apps → Installed apps; your data and
 downloaded models stay unless you ask to delete them.
 
 Updates: Settings → About. AFO looks on GitHub twice a day for a newer version (you can turn that off), downloads
@@ -119,6 +119,21 @@ The Pro and Max plans' limits are meant for one person's ordinary use. Scheduled
 exam can run Claude Code often and without you — for that kind of work a Claude model with an API key (Connections) is
 the safer choice. Anthropic's terms: [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
 [Usage Policy](https://www.anthropic.com/legal/aup).
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+Until SignPath Foundation accepts the project, releases are not signed. What gets signed is AFO's own: the installer,
+its uninstaller and AFO's own programs, built by GitHub Actions from this repository
+([release.yml](.github/workflows/release.yml)). The embedded Python keeps the Python Software Foundation's signature,
+and the libraries keep their own. Every release is approved by hand before it is signed.
+
+- Committers and reviewers: [WorBHacker](https://github.com/WorBHacker)
+- Approvers: [WorBHacker](https://github.com/WorBHacker)
+
+Privacy policy: [PRIVACY.md](PRIVACY.md). AFO sends nothing to its author; what goes to the services you connect
+yourself is listed there.
 
 ## License
 

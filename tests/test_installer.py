@@ -69,6 +69,54 @@ def test_a_folder_too_deep_for_the_programs_files_is_refused_in_words(tmp_path):
     assert "english.DirTooLong=" in iss
 
 
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+SIGNPATH = ("Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by "
+            "[SignPath Foundation](https://signpath.org)")  # their terms' words, as they are  # fmt: skip
+
+
+def test_the_release_is_built_on_github_from_this_source():
+    """20.6 (Q16), what SignPath Foundation asks: GitHub's Windows machine builds the installer from the repository -
+    the same `python -m installer.build`, the Python it insists on, the libraries of requirements.lock - and a tag
+    vX.Y.Z makes a draft release with the two files the hub's update looks for (hub/release.py)."""
+    flow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'tags: ["v*.*.*"]' in flow and "workflow_dispatch:" in flow  # a manual run only builds
+    assert f'python-version: "{build.PYTHON}"' in flow  # the build refuses any other Python
+    assert "python -m pip install --disable-pip-version-check -r requirements.lock" in flow
+    assert "python -m installer.build" in flow and "build/dist/AFO-Setup-*" in flow
+    assert "--draft" in flow and flow.count("contents: write") == 1  # only the job that makes the release may write
+    assert "the tag is not the code's version" in flow
+
+
+def test_the_installer_has_its_sha256_beside_it(tmp_path):
+    """The .sha256 next to the installer, in the form the hub's update reads (its first word)."""
+    made = tmp_path / "AFO-Setup-9.9.9.exe"
+    made.write_bytes(b"MZ installer")
+    written = build.checksum(made)
+    assert written == tmp_path / "AFO-Setup-9.9.9.exe.sha256"
+    digest, name = written.read_text(encoding="ascii").split()
+    assert re.fullmatch(r"[0-9a-f]{64}", digest) and name == made.name
+    assert digest == build._sha256(made)
+    assert build.main(["--checksum", str(made)]) == 0  # after signing: only the sum again
+
+
+def test_the_code_signing_policy_and_the_privacy_policy_are_where_signpath_asks():
+    """20.6: SignPath Foundation's terms - «Code signing policy» on the home page and the download page, their words,
+    the team's roles, a privacy policy; the installer's product name and version for their metadata rules."""
+    for readme in ("README.md", "README.en.md"):
+        text = (ROOT / readme).read_text(encoding="utf-8")
+        policy = text.split("Code signing policy\n", 1)[1].split("\n## ", 1)[0]
+        assert SIGNPATH in policy and "Committers and reviewers:" in policy and "Approvers:" in policy
+        assert "(PRIVACY.md)" in policy
+        install = re.search(r"\n## (Install|Установка)\n(.*?)\n## ", text, re.S).group(2)
+        assert "Code signing policy" in install and "/releases" in install  # the download says it too
+    privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+    said = ("telemetry", "Credential Manager", "127.0.0.1", "Check for updates by itself", "Anthropic", "OpenAI",
+            "Gemini", "DeepSeek", "OpenRouter", "Telegram", "Hugging Face", "Brave", "Tavily", "SearXNG")  # fmt: skip
+    assert [word for word in said if word not in privacy] == []
+    iss = build.ISS.read_text(encoding="utf-8")
+    assert "VersionInfoProductName=AFO" in iss and "VersionInfoProductVersion={#AppVersion}" in iss
+
+
 def test_the_wizard_agrees_with_the_program():
     """installer/afo.iss: for the current user, no administrator; Russian and English; the Start menu's shortcut is
     the window's taskbar button (one app id); the login value is the one Settings turns on and off; an update replaces

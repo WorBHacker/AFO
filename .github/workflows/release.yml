@@ -1,0 +1,64 @@
+# AFO's release (20.6, Q16): GitHub's Windows machine builds the installer from this repository - the same
+# `python -m installer.build` as on the developer's computer: the embeddable Python from python.org (its sha256
+# checked), the libraries at the versions of requirements.lock, Inno Setup's wizard (installer/afo.iss); the build
+# itself checks that the program's folder imports and its window is built. A tag vX.Y.Z makes a draft release with
+# AFO-Setup-X.Y.Z.exe and its .sha256, published by hand once its notes are written; a manual run only builds.
+# Signing (SignPath Foundation) goes between the build and the release once the project is accepted - then the
+# .sha256 is written again for the signed file (`python -m installer.build --checksum`).
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14.7"
+      - name: Inno Setup 6
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup --no-progress -y }
+      - name: The libraries at their tested versions
+        run: python -m pip install --disable-pip-version-check -r requirements.lock -e . --no-deps
+      - name: The tag is the code's version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = python -c "from common import __version__; print(__version__)"
+          if ("v$version" -ne $env:TAG) { throw "the tag is not the code's version: $env:TAG, the code $version" }
+      - name: Build
+        run: python -m installer.build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AFO-Setup
+          path: build/dist/AFO-Setup-*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: AFO-Setup
+      - name: A draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" AFO-Setup-* --repo "$GITHUB_REPOSITORY" --draft --title "AFO ${TAG#v}"
+          --notes "Built by GitHub Actions from this tag's commit. Code signing policy:
+          https://github.com/WorBHacker/AFO/blob/main/README.en.md#code-signing-policy - until SignPath Foundation accepts the project, the
+          installer is not signed. The notes follow before the release is published."

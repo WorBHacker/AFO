@@ -3,7 +3,11 @@ checked), the libraries at the versions in requirements.lock, AFO's code and ico
 (installer/afo.iss).
 
     .venv/Scripts/python.exe -m installer.build              build/AFO, checked, then build/dist/AFO-Setup-<version>.exe
+                                                             and its .sha256
     .venv/Scripts/python.exe -m installer.build --folder     the folder only
+    .venv/Scripts/python.exe -m installer.build --checksum F   F.sha256 only (again after signing)
+
+A release is built the same way by GitHub Actions from the repository (.github/workflows/release.yml, 20.6).
 
 Not one frozen .exe (PyInstaller, Nuitka): the hub runs Python itself - the agent's scripts, `python -m hub` from the
 window and at login, the MCP bridge `python -m hub mcp`, the syntax check - and a frozen program has none. The build
@@ -194,10 +198,22 @@ def installer(program: Path, out: Path = BUILD) -> Path:
     return dist / f"AFO-Setup-{__version__}.exe"
 
 
+def checksum(made: Path) -> Path:
+    """`<sha256>  <name>` beside the installer, as sha256sum writes it: the hub's update compares it with GitHub's
+    digest (hub/release.py). A signature changes the file, so after signing it is written again."""
+    target = made.with_name(made.name + ".sha256")
+    target.write_text(f"{_sha256(made)}  {made.name}\n", encoding="ascii", newline="\n")
+    return target
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m installer.build", description="AFO's installer")
     parser.add_argument("--folder", action="store_true", help="the program's folder only, no installer")
+    parser.add_argument("--checksum", type=Path, metavar="FILE", help="only FILE.sha256 beside FILE (after signing)")
     args = parser.parse_args(argv)
+    if args.checksum:
+        print("ready:", checksum(args.checksum))
+        return 0
     try:
         program = folder()
         check(program)
@@ -205,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
             print("ready:", program)
             return 0
         made = installer(program)
+        checksum(made)
     except (BuildError, subprocess.CalledProcessError) as exc:
         print("not built:", exc, file=sys.stderr)
         return 1

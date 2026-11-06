@@ -24,6 +24,9 @@ AppVersion={#AppVersion}
 AppVerName=AFO {#AppVersion}
 AppPublisher=AFO
 VersionInfoVersion={#AppVersion}
+; SignPath Foundation's rule for the files it signs: the product's name and version in each (20.6)
+VersionInfoProductName=AFO
+VersionInfoProductVersion={#AppVersion}
 ; for the current user: %LOCALAPPDATA%\Programs\AFO, no UAC prompt
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\AFO

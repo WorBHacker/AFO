@@ -6,6 +6,19 @@
 
 Локальная AI-экосистема: **хаб** знает проекты, процессы, терминалы и модели; **лёгкое приложение** на Qt Quick (QML, рисуется процессором — видеокарта остаётся моделям); VS Code, Claude Code и агенты подключаются к хабу. Все решения и этапы — в [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Установка
+
+Скачайте `AFO-Setup-<версия>.exe` из [Releases](https://github.com/WorBHacker/AFO/releases) и запустите. Обычный
+мастер Windows (по-русски или по-английски) ставит AFO для текущего пользователя в `%LOCALAPPDATA%\Programs\AFO`, без
+прав администратора. Установщик пока не подписан (см. [Подпись кода · Code signing policy](#подпись-кода--code-signing-policy)),
+поэтому Windows покажет «Система Windows защитила ваш компьютер»: «Подробнее» → «Выполнить в любом случае». Windows 10
+или 11, 64-бит. Удаление — «Параметры → Приложения → Установленные приложения»; данные и скачанные модели остаются,
+если не попросить их удалить.
+
+Обновления — «Настройки → О программе». AFO дважды в день смотрит на GitHub, нет ли новой версии (это можно
+выключить), по нажатию скачивает установщик (сверяя sha256) и, спросив, ставит его поверх себя: окно закрывается и
+открывается уже новой версией, данные и модели остаются. Копия кода обновляется `git pull`.
+
 ## Структура
 
 | Папка | Что это |
@@ -147,6 +160,21 @@ AFO не входит в аккаунт Claude и не просит ни пар�
 моделей могут запускать Claude Code часто и без вас — для такой работы надёжнее модель Claude по ключу API
 («Подключения»). Условия Anthropic: [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance),
 [Usage Policy](https://www.anthropic.com/legal/aup).
+
+## Подпись кода · Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+Пока SignPath Foundation не приняла проект, выпуски не подписаны. Подписывается только своё: установщик, его
+деинсталлятор и собственные программы AFO, собранные GitHub Actions из этого репозитория
+([release.yml](.github/workflows/release.yml)). У встроенного Python — подпись Python Software Foundation, у библиотек
+— их собственные. Каждый выпуск подтверждается вручную, прежде чем его подпишут.
+
+- Committers and reviewers: [WorBHacker](https://github.com/WorBHacker)
+- Approvers: [WorBHacker](https://github.com/WorBHacker)
+
+Приватность — [PRIVACY.md](PRIVACY.md): автору AFO не отправляет ничего; что уходит в сервисы, которые вы подключаете
+сами, — перечислено там.
 
 ## Лицензия
 
