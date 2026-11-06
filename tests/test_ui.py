@@ -4036,6 +4036,24 @@ def test_claude_code_tool_rows_and_footer():
     assert "близко до " in presenter.claude_code_limit({"status": "allowed_warning", "resetsAt": 1890000000})
 
 
+def test_a_subagents_steps_under_its_call():
+    """21.3: while Claude Code's subagent works, each step it takes is the last line of the call that started it and
+    joins what the call shows opened; done, the call shows the subagent's steps, then its answer."""
+    call = {"type": "tool_call", "id": "a1", "name": "Agent", "input": {"description": "найти тесты"}}
+    shown = [{"id": "m1", "tools": rows.tools_of({"content": [call]})}]
+    step = {"type": "call", "name": "Read", "input": {"file_path": "tests/test_x.py"}}
+    (changed,) = rows.with_subagent_step(shown, "a1", step).values()
+    assert changed[0]["summary"] == "→ Читаю tests/test_x.py" and changed[0]["output"] == "→ Читаю tests/test_x.py"
+    assert rows.with_subagent_step(shown, "other", step) == {}  # no call of that id: nothing
+    assert rows.with_subagent_step(shown, "a1", {"type": "result", "error": False}) == {}  # a quiet result: no line
+    sub = [{"type": "text", "text": "Ищу тесты."}, step, {"type": "result", "name": "Read", "error": True,
+                                                          "output": "нет файла"}]  # fmt: skip
+    result = {"type": "tool_result", "id": "a1", "name": "Agent", "output": "Тестов нет", "error": False, "sub": sub}
+    (done,) = rows.with_results(shown[0]["tools"], [result])
+    assert done["summary"] == "Тестов нет"
+    assert done["output"] == "Ищу тесты.\n→ Читаю tests/test_x.py\n  ошибка: нет файла\n\nТестов нет"
+
+
 def test_how_long_a_request_waits_and_who_waits():
     from app.ui.approvals import age, waiting_rows
 

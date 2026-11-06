@@ -1643,6 +1643,11 @@ class Controller(QObject):
             run = self.live.pop(cid, None) if message["role"] == "assistant" else None
             if cid == self.current:
                 self._message_arrived(message, run)
+        elif kind == "chat.subagent":  # a step of Claude Code's subagent, under the call that started it (21.3)
+            if cid == self.current:
+                parent, step = payload.get("parent", ""), payload.get("step") or {}
+                for index, tools in rows.with_subagent_step(self.messages.rows, parent, step).items():
+                    self.messages.update(index, tools=tools)
         elif kind == "chat.done":
             self._run_ended(cid)
             self.session.add(payload.get("usage"), payload.get("cost_usd"))

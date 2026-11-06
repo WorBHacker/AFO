@@ -4,7 +4,8 @@ What it does depends on the user's message: "edit" - asks to edit notes.txt thro
 edits it if allowed ("edit every": `x = 1` to `x = 2` all through conf.py); "run" - asks to run a PowerShell
 command ("run push": a destructive one) and says the verdict; "question" - asks the user (AskUserQuestion, through
 the same tool) and says what was picked; "fetch" - first reads a page (WebFetch, asked the same way), then goes on
-as the rest of the message says;
+as the rest of the message says; "agent" - a subagent reads a file (its texts with --forward-subagent-text);
+`--version` says $FAKE_CLAUDE_VERSION (2.1.300 by default);
 "limit" - hits a subscription limit; "hang" - waits until stopped; anything else - one answer.
 It writes what it was started with (arguments, environment, input, folder) to $FAKE_CLAUDE_LOG, a line per run.
 """
@@ -49,6 +50,9 @@ def ask_permission(config_path: str, tool_name: str, tool_name_arg: str, data: d
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv == ["--version"]:
+        print(os.environ.get("FAKE_CLAUDE_VERSION", "2.1.300") + " (Claude Code)")
+        return 0
     if "-p" not in argv:  # interactive, in a terminal
         print("fake claude: interactive")
         return 0
@@ -120,6 +124,26 @@ def main() -> int:
         said = f"Выполнил: {command}" if verdict["behavior"] == "allow" else f"Не стал: {verdict['message']}"
         emit({"type": "assistant", "parent_tool_use_id": None,
               "message": {"id": "m1", "content": [{"type": "text", "text": said}]}})  # fmt: skip
+    elif "agent" in text:  # a subagent (21.3): its steps carry the call that started it
+        task = {"description": "Найти конфиг", "subagent_type": "Explore", "prompt": "Где конфиг?"}
+        emit({"type": "assistant", "parent_tool_use_id": None,
+              "message": {"id": "m1", "content": [{"type": "tool_use", "id": "toolu_a", "name": "Agent",
+                                                   "input": task}]}})  # fmt: skip
+        if "--forward-subagent-text" in argv:  # without it the CLI sends a subagent's calls and results only
+            emit({"type": "assistant", "parent_tool_use_id": "toolu_a",
+                  "message": {"id": "s1", "content": [{"type": "text", "text": "Ищу конфиг."}]}})  # fmt: skip
+        emit({"type": "assistant", "parent_tool_use_id": "toolu_a",
+              "message": {"id": "s1", "content": [{"type": "tool_use", "id": "toolu_s1", "name": "Read",
+                                                   "input": {"file_path": "conf.py"}}]}})  # fmt: skip
+        emit({"type": "user", "parent_tool_use_id": "toolu_a",
+              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s1",
+                                                       "content": "x = 1"}]}})  # fmt: skip
+        emit({"type": "user", "parent_tool_use_id": None,
+              "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_a",
+                                                       "content": "Конфиг — conf.py"}]}})  # fmt: skip
+        emit({"type": "assistant", "parent_tool_use_id": None,
+              "message": {"id": "m2", "content": [{"type": "text", "text": "Нашёл: conf.py."}]}})  # fmt: skip
+        turns = 2
     elif "question" in text:
         options = [{"label": "Синий", "description": "спокойный"}, {"label": "Красный", "description": "яркий"}]
         asked = {"questions": [{"question": "Какой цвет?", "header": "Цвет", "multiSelect": False, "options": options}]}

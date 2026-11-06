@@ -310,7 +310,7 @@ def tool_label(name: str, args: Any) -> str:
             head = tr("Поручаю {count} {tasks}", count=len(given),
                       tasks=presenter.plural(len(given), "задачу", "задачи", "задач"))  # fmt: skip
             return f"{head}: {names}" if names else head
-        case "Task" | "Agent":
+        case "Task" | "Agent":  # Claude Code's subagent: its steps show when the call is opened (21.3)
             return tr("Поручаю подагенту: {task}", task=a.get("description", ""))
         case "edit_file":
             return tr("Правлю {path}", path=path)
@@ -387,6 +387,9 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
             continue
         output = result.get("output", "")
         first = output.strip().splitlines()[0] if output.strip() else ""
+        if result.get("sub"):  # what a subagent did (21.3), then what it answered
+            steps = [line for line in map(sub_line, result["sub"]) if line.strip()]
+            output = "\n".join(steps) + "\n\n" + output
         out.append(
             {
                 **tool,
@@ -396,6 +399,35 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
             }
         )
     return out
+
+
+def sub_line(step: dict[str, Any]) -> str:
+    """A subagent's step (21.3) as a line under the call that started it: a call as the chat says it, its result's
+    error, its text."""
+    match step.get("type"):
+        case "call":
+            return "→ " + tool_label(str(step.get("name", "")), step.get("input"))
+        case "result":
+            return "  " + tr("ошибка: {text}", text=step.get("output", "")[:200]) if step.get("error") else ""
+        case "text":
+            return step.get("text", "")
+    return ""
+
+
+def with_subagent_step(rows: list[dict[str, Any]], parent: str, step: dict[str, Any]) -> dict[int, list[dict]]:
+    """A subagent's step as it comes (21.3): the running call that started it shows it as its last line and in its
+    output. {row index: its calls}; {} when no row has that call."""
+    line = sub_line(step)
+    if not line.strip():
+        return {}
+    for index in range(len(rows) - 1, -1, -1):
+        tools = rows[index].get("tools") or []
+        if any(tool["id"] == parent and tool["state"] == "running" for tool in tools):
+            changed = [{**t, "summary": line.strip()[:120],
+                        "output": (t["output"] + "\n" + line).strip()[-TOOL_OUTPUT_SHOWN:]}
+                       if t["id"] == parent else t for t in tools]  # fmt: skip
+            return {index: changed}
+    return {}
 
 
 def answered(rows: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:

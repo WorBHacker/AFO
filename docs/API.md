@@ -551,6 +551,7 @@ conversation's text, an approval or a terminal's output.
 | `chat.message` | да | `conversation_id`, `message` | hub/chat.py, hub/claude_code.py |
 | `chat.projects` | нет | `conversation_id`, `projects` | hub/api/conversations.py |
 | `chat.run_started` | нет | `conversation_id`, `model_id` | hub/chat.py |
+| `chat.subagent` | нет | `conversation_id` | hub/claude_code.py |
 | `chat.titled` | да | `conversation_id`, `title` | hub/api/conversations.py, hub/chat.py |
 | `chat.tool` | нет | `conversation_id`, `name`, `input` | hub/chat.py |
 | `claude_code.limit` | да | — | hub/claude_code.py |

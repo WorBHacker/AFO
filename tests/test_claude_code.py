@@ -90,14 +90,37 @@ def test_the_blocks_of_one_message_become_one_message():
     ]  # fmt: skip
     kinds = [(s.kind, s.role) for s in steps]
     assert kinds == [("session", ""), ("delta", "content"), ("message", "assistant"), ("message", "assistant"),
-                     ("message", "tool"), ("message", "assistant"), ("limit", ""), ("result", "")]  # fmt: skip
+                     ("sub", ""), ("message", "tool"), ("message", "assistant"), ("limit", ""),
+                     ("result", "")]  # fmt: skip
     first, second, results, last = (s.data for s in steps if s.kind == "message")
     assert [b["type"] for b in first] == ["reasoning", "text", "tool_call"]  # gathered, up to the first call
     assert second == [{"type": "tool_call", "id": "t2", "name": "Bash", "input": {"command": "ls"}}]
     assert results[0] == {"type": "tool_result", "id": "t1", "name": "Read", "output": "print(1)", "error": False}
     assert results[1]["error"] is True and results[1]["name"] == "Bash" and "ещё 10000 символов" in results[1]["output"]
     assert last == [{"type": "text", "text": "Готово."}]
-    assert all("subagent" not in json.dumps(s.data, ensure_ascii=False) for s in steps)
+    messages = [s.data for s in steps if s.kind == "message"]
+    assert "subagent" not in json.dumps(messages, ensure_ascii=False)  # a subagent's text is not the chat's own
+
+
+def test_a_subagents_steps_go_with_the_call_that_started_it():
+    """21.3: a subagent's texts, calls and results come as steps under the call that started it, and go with that
+    call's result; a long text is cut, a call's input keeps its short values."""
+    t = Translator()
+    t.feed(assistant("m1", {"type": "tool_use", "id": "a1", "name": "Agent", "input": {"description": "Найти"}}))
+    sub = [*t.feed(assistant("s1", {"type": "text", "text": "Ищу. " + "x" * 3000}, parent="a1")),
+           *t.feed(assistant("s1", {"type": "tool_use", "id": "r1", "name": "Write",
+                                    "input": {"file_path": "a.py", "content": "y" * 5000}}, parent="a1")),
+           *t.feed({"type": "user", "parent_tool_use_id": "a1", "message": {"content": [
+               {"type": "tool_result", "tool_use_id": "r1", "content": "denied", "is_error": True}]}})]  # fmt: skip
+    assert [(s.kind, s.data["parent"], s.data["step"]["type"]) for s in sub] == [
+        ("sub", "a1", "text"), ("sub", "a1", "call"), ("sub", "a1", "result")]  # fmt: skip
+    text, call, result = (s.data["step"] for s in sub)
+    assert len(text["text"]) == 2000 and text["text"].endswith("…")
+    assert call["name"] == "Write" and call["input"]["file_path"] == "a.py" and len(call["input"]["content"]) == 200
+    assert result == {"type": "result", "name": "Write", "error": True, "output": "denied"}
+    (done,) = t.feed({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a1",
+                                                                "content": "Нашёл"}]}})  # fmt: skip
+    assert done.data[0]["output"] == "Нашёл" and done.data[0]["sub"] == [text, call, result]
 
 
 def test_usage_errors_input_and_environment():
@@ -277,6 +300,30 @@ def test_a_turn_asks_the_user_and_edits_when_allowed(hub):
     second = runs(hub)[1]
     assert second["argv"][second["argv"].index("--resume") + 1]  # the same Claude Code session goes on
     assert chat["messages"][-1]["content"][0]["text"].startswith("Ответ на:")
+
+
+def test_a_subagents_steps_are_kept_under_its_call(hub, monkeypatch):
+    """21.3: Claude Code's subagent reads a file; the chat keeps what it did with the call that started it - its text
+    too, with a CLI that knows --forward-subagent-text (2.1.211+); an older one sends its calls and results only."""
+    cid = chat_with_project(hub)
+    send(hub, cid, "use an agent")
+    chat = hub.wait_idle(cid)
+    roles = [(m["role"], [b["type"] for b in m["content"]]) for m in chat["messages"]]
+    assert roles == [("user", ["text"]), ("assistant", ["tool_call"]), ("tool", ["tool_result"]),
+                     ("assistant", ["text"])]  # the subagent's steps are no messages of their own  # fmt: skip
+    result = chat["messages"][2]["content"][0]
+    assert result["output"] == "Конфиг — conf.py"
+    assert result["sub"] == [{"type": "text", "text": "Ищу конфиг."},
+                             {"type": "call", "name": "Read", "input": {"file_path": "conf.py"}},
+                             {"type": "result", "name": "Read", "error": False, "output": "x = 1"}]  # fmt: skip
+    assert "--forward-subagent-text" in runs(hub)[0]["argv"]
+
+    hub.app.state.claude_code._versions.clear()
+    monkeypatch.setenv("FAKE_CLAUDE_VERSION", "2.1.200")
+    send(hub, cid, "use an agent again")
+    chat = hub.wait_idle(cid)
+    assert "--forward-subagent-text" not in runs(hub)[1]["argv"]
+    assert [s["type"] for s in chat["messages"][-2]["content"][0]["sub"]] == ["call", "result"]
 
 
 def test_the_chats_depth_reaches_claude_code(hub, monkeypatch):

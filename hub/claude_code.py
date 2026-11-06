@@ -68,6 +68,11 @@ CONVERSATION_HEADER = "X-LocalChat-Conversation"
 MODELS = {"default": "Claude Code", "opus": "Claude Code · Opus", "sonnet": "Claude Code · Sonnet",
           "haiku": "Claude Code · Haiku"}  # fmt: skip
 RESULT_MAX_CHARS = 30_000  # of one tool result kept in the chat (the rest stays in Claude Code's own session)
+SUB_STEPS = 200  # a subagent's steps kept with the call that started it (21.3)
+SUB_TEXT_CHARS = 2_000  # of a subagent's text, or of a result it got
+SUB_INPUT_CHARS = 200  # of a value in a subagent call's input
+FORWARD_SUBAGENT_TEXT = (2, 1, 211)  # the CLI that knows --forward-subagent-text: a subagent's texts come too
+VERSION_TIMEOUT_S = 15
 EARLIER_CHARS = 6_000  # of the chat before Claude Code joined it, given with its first message
 STDERR_LINES = 30
 STOP_WAIT_S = 3.0
@@ -160,7 +165,7 @@ class ClaudeCodeProvider:
 class Step:
     """One thing the hub does with what Claude Code streamed."""
 
-    kind: str  # session | delta | message | limit | result
+    kind: str  # session | delta | message | sub | limit | result
     data: Any = None
     role: str = ""
     raw: dict[str, Any] | None = None
@@ -169,23 +174,28 @@ class Step:
 class Translator:
     """Claude Code's stream-json lines -> the hub's steps: its session, text and thinking deltas, its messages in
     the hub's block format (tool calls, then their results as a message of role "tool"), subscription limit
-    notices, and the final result. Subagents' own messages (parent_tool_use_id set) stay inside Claude Code: the
-    chat shows the main thread.
+    notices, and the final result.
 
     Claude Code sends each finished block of a model message as its own line (they share message.id); the blocks
     of one message are gathered into one stored message - up to its first tool call, so the call shows in the chat
-    while it runs (and while it waits for the user's approval)."""
+    while it runs (and while it waits for the user's approval).
+
+    A subagent's own messages (parent_tool_use_id: the call that started it, 21.3) are not the chat's: each of its
+    texts, calls and their results is a step "sub" (the window shows it under that call as it comes), and all of
+    them go with the call's result - its block's `sub` - so the chat keeps what the subagent did. No model gets them
+    from the hub: Claude Code's own model has its subagent's answer, the call's result, as before."""
 
     def __init__(self) -> None:
         self.calls: dict[str, str] = {}  # tool_use id -> tool name
         self._pending: list[dict[str, Any]] = []
         self._pending_id: str | None = None
         self._pending_raw: list[dict[str, Any]] = []
+        self._subs: dict[str, list[dict[str, Any]]] = {}  # a subagent's steps, by the call that started it
 
     def feed(self, event: dict[str, Any]) -> list[Step]:
         kind = event.get("type")
-        if event.get("parent_tool_use_id"):
-            return []
+        if parent := event.get("parent_tool_use_id"):
+            return self._sub(parent, kind, event.get("message") or {})
         if kind == "stream_event":
             delta = (event.get("event") or {}).get("delta") or {}
             if delta.get("type") == "text_delta":
@@ -250,8 +260,44 @@ class Translator:
             if len(output) > RESULT_MAX_CHARS:
                 more = tr("… (ещё {count} символов)", count=len(output) - RESULT_MAX_CHARS)
                 output = output[:RESULT_MAX_CHARS] + "\n" + more
-            results.append(tool_result_block(call_id, self.calls.get(call_id, ""), output, bool(block.get("is_error"))))
+            result = tool_result_block(call_id, self.calls.get(call_id, ""), output, bool(block.get("is_error")))
+            if sub := self._subs.pop(call_id, None):  # what the subagent this call started did (21.3)
+                result["sub"] = sub
+            results.append(result)
         return results
+
+    def _sub(self, parent: str, kind: Any, message: dict[str, Any]) -> list[Step]:
+        """A subagent's message: its texts, calls and their results as the steps it took (21.3)."""
+        found: list[dict[str, Any]] = []
+        content = message.get("content")
+        for block in content if isinstance(content, list) else []:
+            match (kind, block.get("type")):
+                case ("assistant", "text") if block.get("text", "").strip():
+                    found.append({"type": "text", "text": _short(block["text"], SUB_TEXT_CHARS)})
+                case ("assistant", "tool_use"):
+                    self.calls[block.get("id", "")] = block.get("name", "")
+                    found.append({"type": "call", "name": block.get("name", ""), "input": _small(block.get("input"))})
+                case ("user", "tool_result"):
+                    found.append({"type": "result", "name": self.calls.get(block.get("tool_use_id", ""), ""),
+                                  "error": bool(block.get("is_error")),
+                                  "output": _short(_text_of(block.get("content")), SUB_TEXT_CHARS)})  # fmt: skip
+        kept = self._subs.setdefault(parent, [])
+        found = found[: max(SUB_STEPS - len(kept), 0)]
+        kept += found
+        return [Step("sub", {"parent": parent, "step": step}) for step in found]
+
+
+def _short(text: str, limit: int) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _small(data: Any) -> dict[str, Any]:
+    """A subagent call's input, its long values cut: what it called is kept, not the files it wrote."""
+    if not isinstance(data, dict):
+        return {}
+    return {k: _short(v, SUB_INPUT_CHARS) if isinstance(v, str) else v for k, v in data.items()
+            if isinstance(v, str | int | float | bool)}  # fmt: skip
 
 
 def _text_of(content: Any) -> str:
@@ -363,6 +409,7 @@ class ClaudeCodeRunner:
         self._hub_url = hub_url
         self._find = find
         self.turns: dict[str, Turn] = {}  # conversation_id -> its turn now running
+        self._versions: dict[tuple[str, ...], tuple[int, ...] | None] = {}  # each CLI's version, asked once
 
     # --- the hub's MCP for Claude Code ---
 
@@ -405,6 +452,21 @@ class ClaudeCodeRunner:
             )
         return found
 
+    def version(self) -> tuple[int, ...] | None:
+        """The CLI's version (`claude --version`: «2.1.211 (Claude Code)»), asked once per CLI; None - unknown."""
+        cli = tuple(self.cli())
+        if cli not in self._versions:
+            try:
+                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                done = subprocess.run([*cli, "--version"], capture_output=True, timeout=VERSION_TIMEOUT_S,
+                                      env=child_env(), creationflags=flags)  # fmt: skip
+                found = re.search(rb"(\d+)\.(\d+)\.(\d+)", done.stdout)
+                self._versions[cli] = tuple(int(n) for n in found.groups()) if found else None
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                log.warning("claude --version did not answer: %s", exc)
+                self._versions[cli] = None
+        return self._versions[cli]
+
     def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path],
                 project: bool = True, max_turns: int | None = None,
                 effort: str | None = None) -> list[str]:  # fmt: skip
@@ -416,6 +478,8 @@ class ClaudeCodeRunner:
             argv += ["--model", model_ref]
         if effort:  # the chat's depth (21.2)
             argv += ["--effort", effort]
+        if (self.version() or ()) >= FORWARD_SUBAGENT_TEXT:  # a subagent's texts too, not only its calls (21.3)
+            argv.append("--forward-subagent-text")
         if resume:
             argv += ["--resume", resume]
         for folder in extra_dirs:
@@ -540,6 +604,8 @@ class ClaudeCodeRunner:
             message = await self._db.acall(write)
             await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
             return message.id if step.role == "assistant" else None
+        elif step.kind == "sub":  # a subagent's step, under its call in the window (21.3); kept with its result
+            await self._bus.publish("chat.subagent", {"conversation_id": conversation_id, **step.data}, persist=False)
         elif step.kind == "limit" and step.data.get("status") not in (None, "allowed"):
             # the subscription's limits (D12): near ("allowed_warning") or reached ("rejected") - into the feed
             payload = {"conversation_id": conversation_id, "info": step.data}

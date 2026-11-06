@@ -2065,6 +2065,7 @@
  "отчёт со ссылками на источники, разногласия источников отмечены": "a report with links to the sources, where the sources disagree is noted",
  "очень высокая": "very high",
  "ошибка": "error",
+ "ошибка: {text}": "error: {text}",
  "ошибки {percent:.0f}%": "errors {percent:.0f}%",
  "ошибки ходят по кругу: одна сменяет другую и возвращается": "the failures go round in a circle: one replaces the other and comes back",
  "память общая с ОЗУ": "memory shared with RAM",
