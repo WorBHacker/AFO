@@ -4,6 +4,7 @@
 import asyncio
 import types
 import zipfile
+from datetime import datetime
 
 import httpx
 
@@ -100,6 +101,31 @@ models:
 
 async def _refused():
     raise httpx.ConnectError("offline")
+
+
+def test_the_check_names_a_crash_of_the_last_days_and_not_a_caught_exception(tmp_path):
+    """23.2: the window's and the hub's crashes - those the next start found (common/crashes.py)."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    now = datetime(2026, 11, 6, 12, 0)
+    line = diagnostics.crashes_line(logs, now)
+    assert line["id"] == "crashes" and line["ok"] is True and "7" in line["text"]
+    (logs / "app-crash.log").write_text(
+        "=== 2026-10-29 09:38:11 pid 7 started\nWindows fatal exception: code 0x800706be\n\nThread ...\n"
+        "=== 2026-10-29 10:14:12 pid 7 ended normally: the record above is an exception Windows caught, not a crash\n"
+        "=== 2026-10-30 08:00:00 pid 8 started\nWindows fatal exception: access violation\n"
+        "=== crashed at 2026-10-30 09:15:00: Windows fatal exception: access violation\n"
+        "=== 2026-11-05 10:00:00 pid 9 started\nWindows fatal exception: access violation\n"
+        "=== crashed at 2026-11-05 21:40:00: Windows fatal exception: access violation\n",
+        encoding="utf-8")  # fmt: skip
+    (logs / "hub-crash.log").write_text(
+        "=== 2026-11-06 08:00:00 pid 10 started\nFatal Python error: Segmentation fault\n"
+        "=== crashed at 2026-11-06 08:30:00: Fatal Python error: Segmentation fault\n", encoding="utf-8")  # fmt: skip
+    line = diagnostics.crashes_line(logs, now)
+    assert line["ok"] is None
+    assert line["text"] == ("окно — 05.11 21:40: Windows fatal exception: access violation; "
+                            "хаб — 06.11 08:30: Fatal Python error: Segmentation fault")  # fmt: skip
+    assert "Собрать журналы для поддержки" in line["advice"]
 
 
 def test_the_check_and_the_report_through_the_api(hub):  # noqa: F811

@@ -6,11 +6,12 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import httpx
 import pytest
 
+from common import crashes
 from common.paths import DATA_DIR_ENV, PROJECT_ROOT
 from hub.settings import PORT_ENV
 
@@ -164,3 +165,33 @@ def test_a_native_crash_of_the_hub_leaves_a_trace(env, isolated_data_dir):
     result = subprocess.run([sys.executable, "-c", code], cwd=PROJECT_ROOT, env=env, capture_output=True, timeout=60)
     assert result.returncode != 0
     assert "Segmentation fault" in (isolated_data_dir / "logs" / "hub-crash.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="an exception Windows itself raises and catches")
+def test_a_caught_windows_exception_is_not_a_crash_and_a_crash_is_found_at_the_next_start(env, isolated_data_dir):
+    """23.2: faulthandler writes an exception that was caught too - 0x800706be, a COM call that failed: 29.10 the window
+    went on after it and closed normally. Only a record its session did not live through is a crash."""
+    start = (
+        "import ctypes, faulthandler\n"
+        "from common.paths import data_paths\n"
+        "from hub.__main__ import watch_for_crashes\n"
+        "watch_for_crashes(data_paths().ensure())\n"
+    )
+    caught = "try:\n    ctypes.windll.kernel32.RaiseException(0x800706BE, 0, 0, None)\nexcept OSError:\n    pass\n"
+
+    def session(code=""):
+        return subprocess.run([sys.executable, "-c", start + code], cwd=PROJECT_ROOT, env=env, capture_output=True,
+                              timeout=60).returncode  # fmt: skip
+
+    log = isolated_data_dir / "logs" / "hub-crash.log"
+    since = datetime.now() - timedelta(hours=1)
+    assert session(caught) == 0 and session() == 0
+    text = log.read_text(encoding="utf-8")
+    assert "Windows fatal exception: code 0x800706be" in text and "an exception Windows caught, not a crash" in text
+    assert crashes.found(log, since) == []
+    assert session("faulthandler._sigsegv()\n") != 0
+    assert crashes.found(log, since) == []  # the next start says it
+    assert session() == 0 and session() == 0
+    found = crashes.found(log, since)
+    assert [what for _when, what in found] == ["Fatal Python error: Segmentation fault"]
+    assert since < found[0][0] <= datetime.now()

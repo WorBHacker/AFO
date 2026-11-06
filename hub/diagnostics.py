@@ -1,9 +1,10 @@
 """«Проверить систему» and the logs for support (stage 10.6, D37): what works and what does not, in plain words with
 what to do, and one file to send to whoever helps.
 
-The check looks at the hub, llama-swap (does it answer, its config, llama-server's program), the local models, the
-graphics card and its driver against the llama.cpp build, RAM and the page file, the disks the models live on, the
-internet (Hugging Face, GitHub). Each line: ok (true), a warning (null) or a problem (false), its words and advice.
+The check looks at the hub (and the window's and its own crashes of the last days), llama-swap (does it answer, its
+config, llama-server's program), the local models, the graphics card and its driver against the llama.cpp build, RAM
+and the page file, the disks the models live on, the internet (Hugging Face, GitHub). Each line: ok (true), a warning
+(null) or a problem (false), its words and advice.
 
 The report is a zip in <data>/reports: the check, the versions, the last part of each log with secrets taken out
 (hub/secret_filter.py) and llama-swap's config - never the database, keys or tokens.
@@ -16,13 +17,13 @@ import json
 import platform
 import sys
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from common import __version__, hardware
+from common import __version__, crashes, hardware
 from common.disks import drives
 from common.i18n import decimal, tr
 
@@ -35,6 +36,7 @@ from .system_status import memory_sample
 LOG_TAIL = 2 * 1024 * 1024  # the last 2 MB of each log go into a report
 REPORT_KEEP = 5
 LOW_DISK_GIB = 10.0
+CRASH_DAYS = 7
 
 
 def _n(value: float) -> str:
@@ -102,6 +104,21 @@ def prices_line(models: list[dict[str, Any]], today: date) -> dict[str, Any] | N
     return _line("prices", title, None, "; ".join(problems), advice)
 
 
+def crashes_line(logs: Path, now: datetime) -> dict[str, Any]:
+    """The window's and the hub's crashes of the last days (23.2): records their sessions did not live through, as
+    the next start found them (common/crashes.py); an exception Windows caught is not one."""
+    since = now - timedelta(days=CRASH_DAYS)
+    found = [(when, who, what) for name, who in (("app", tr("окно")), ("hub", tr("хаб")))
+             for when, what in crashes.found(logs / f"{name}-crash.log", since)]  # fmt: skip
+    title = tr("Вылеты окна и хаба")
+    if not found:
+        return _line("crashes", title, True, tr("за {days} дней не было", days=CRASH_DAYS))
+    said = "; ".join(f"{who} — {when:%d.%m %H:%M}: {what}" for when, who, what in sorted(found))
+    advice = tr("Если повторяется — «Собрать журналы для поддержки» и отправьте архив тому, кто помогает: следы "
+                "вылета — в нём.")  # fmt: skip
+    return _line("crashes", title, None, said, advice)
+
+
 def model_files(text: str) -> list[Path]:
     out = []
     for model_id in llama_config.model_blocks(text):
@@ -119,6 +136,7 @@ async def check(state: Any) -> list[dict[str, Any]]:
     url = state.settings.llama_swap_url
     lines.append(_line("hub", tr("Хаб"), True, tr("AFO {version} работает, данные в {folder}", version=__version__,
                                                   folder=paths.root)))  # fmt: skip
+    lines.append(crashes_line(paths.logs, datetime.now()))
 
     answering = await autostart.answers(url)
     lines.append(_line("llama-swap", tr("Локальные модели (llama-swap)"), answering,

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import faulthandler
 import json
 import logging
 import os
@@ -33,7 +32,7 @@ import sys
 import time
 from pathlib import Path
 
-from common import __version__, i18n
+from common import __version__, crashes, i18n
 from common.i18n import tr
 from common.logging_setup import setup_logging
 from common.paths import DataPaths
@@ -88,9 +87,9 @@ def serve(settings: HubSettings) -> int:
 
 def watch_for_crashes(paths: DataPaths) -> None:
     """A native crash (in tree-sitter, winpty, SQLite: not in Python) leaves the Python stacks in
-    data/logs/hub-crash.log; without it the hub just disappears, and hub.log says nothing (D46)."""
-    crash_file = open(paths.logs / "hub-crash.log", "a", encoding="utf-8")  # noqa: SIM115 - open until exit
-    faulthandler.enable(crash_file, all_threads=True)
+    data/logs/hub-crash.log; without it the hub just disappears, and hub.log says nothing (D46). Only a record the hub
+    did not live through counts as a crash (common/crashes.py, 23.2)."""
+    crashes.watch(paths.logs / "hub-crash.log")
 
 
 def _run_uvicorn(settings: HubSettings) -> None:
