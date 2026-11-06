@@ -27,7 +27,6 @@ def written(path, content):
     return [("write_file", {"project": "proj", "path": path, "content": content})]
 
 
-@step(3, "a rollback in the sandbox takes back what the user applied")
 def test_a_dead_end_after_a_part_was_applied_does_not_take_it_back(hub, repo):  # noqa: F811
     """17.1 × 11.6: the user pauses a goal in «Песочница», applies one of the files the model made, resumes; a dead
     end later goes back to the goal's start - the file the user took must not come back as a change that deletes it."""

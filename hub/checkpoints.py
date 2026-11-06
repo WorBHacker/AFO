@@ -10,13 +10,15 @@ added since; ignored files are not the checkpoint's to touch. A file still there
 has now (the worker keeps a file's own, D46) - git keeps its text with LF, and its own checkout (CRLF on Windows)
 left an LF file looking changed to `git status`; a file gone comes back as git's checkout writes it. In «Песочница» the
 files are the sandbox's own and the hub goes back by itself; in the project they are the user's, and a card asks
-(hub/goals.py). The refs of goals no longer kept (ended longer ago than D30's term, or deleted with their chat) go
-with the hub's pruning (hub/retention.py).
+(hub/goals.py). A sandbox's checkpoint has its base then for a parent (19.3): what the user applied to the project
+after it is not taken back. The refs of goals no longer kept (ended longer ago than D30's term, or deleted with their
+chat) go with the hub's pruning (hub/retention.py).
 """
 
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import judge, projects
@@ -31,12 +33,44 @@ def ref(goal_id: str, name: str) -> str:
     return f"{REFS}/{goal_id}/{name}"
 
 
-def save(root: Path, goal_id: str, name: str, tree: str | None = None) -> dict[str, str]:
-    """The working files now (or `tree`, taken already) as the goal's checkpoint `name`: {commit, tree}."""
+def save(root: Path, goal_id: str, name: str, tree: str | None = None, base: str | None = None) -> dict[str, str]:
+    """The working files now (or `tree`, taken already) as the goal's checkpoint `name`: {commit, tree}. `base`: in
+    «Песочница», the sandbox's base now - the commit's parent, so going back knows what the user applied since."""
     tree = tree or judge.snapshot(root)
-    commit = judge._git(root, *IDENTITY, "commit-tree", tree, "-m", f"AFO goal {goal_id}: {name}").strip()
+    parent = ("-p", base) if base else ()
+    commit = judge._git(root, *IDENTITY, "commit-tree", tree, *parent, "-m", f"AFO goal {goal_id}: {name}").strip()
     judge._git(root, "update-ref", ref(goal_id, name), commit)
     return {"commit": commit, "tree": tree}
+
+
+def keeping_applied(root: Path, commit: str, base: str) -> str:
+    """Where going back to the sandbox's checkpoint `commit` takes its files (19.3): the checkpoint's tree, but the
+    files the user applied to the project since - those that changed from the sandbox's base then (the commit's
+    parent) to `base`, its base now - as `base` has them: going back must not offer to take back what the project
+    has now. A checkpoint with no parent (in the project itself): its own tree."""
+    tree = judge._git(root, "rev-parse", f"{commit}^{{tree}}").strip()
+    then = judge._git(root, "rev-list", "--parents", "-n", "1", commit).split()[1:]
+    if not then or then[0] == base:
+        return tree
+    found = judge._git(root, "diff", "--raw", "--no-abbrev", "--no-renames", "-z", then[0], base).split("\0")
+    lines = []
+    for info, path in zip(found[0::2], found[1::2], strict=False):
+        if info and path:
+            _old, mode, _was, blob = info.lstrip(":").split()[:4]
+            lines.append(f"{mode} {blob}\t{path}" if mode != "000000" else f"0 {'0' * len(blob)}\t{path}")
+    if not lines:
+        return tree
+    with tempfile.TemporaryDirectory() as tmp:  # an index of its own: the sandbox's stays as it is
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        judge._git(root, "read-tree", tree, env=env)
+        try:
+            done = projects.git(root, "update-index", "-z", "--index-info", input="\0".join([*lines, ""]).encode(),
+                                timeout=judge.GIT_TIMEOUT, env=env)  # fmt: skip
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise JudgeError(f"git did not run: {exc}") from exc
+        if done.returncode != 0:
+            raise JudgeError(done.stderr.decode("utf-8", "replace").strip()[:300] or "git update-index failed")
+        return judge._git(root, "write-tree", env=env).strip()
 
 
 def plan(root: Path, tree: str) -> dict[str, list[str]]:

@@ -57,7 +57,7 @@ from typing import Any
 
 from common.i18n import N_, tr
 
-from . import approvals, checkpoints, commands, guard, judge, store
+from . import approvals, checkpoints, commands, guard, judge, sandbox, store
 from .autonomous import NOTE
 from .chat import ChatService, Limits, Outcome
 from .claude_code import PROVIDER as CLAUDE_CODE
@@ -802,11 +802,19 @@ class Goals:
                 (goal["id"], p, t)))  # fmt: skip
             await self._keep(goal, project, "start", tree)  # the first checkpoint (11.6)
 
+    async def _sandboxed(self, goal: dict[str, Any]) -> bool:
+        mode = (await self._db.acall(lambda conn: store.context_settings(conn, goal["conversation_id"])))["mode"]
+        return mode == "sandbox"
+
     async def _keep(self, goal: dict[str, Any], project, name: str, tree: str | None = None) -> None:
-        """A checkpoint of one git project's files (11.6): its commit and ref, and its row."""
+        """A checkpoint of one git project's files (11.6): its commit and ref, and its row. In «Песочница» the commit
+        remembers the sandbox's base (19.3)."""
         try:
-            saved = await asyncio.to_thread(checkpoints.save, project.root, goal["id"], name, tree)
-        except judge.JudgeError as exc:
+            base = None
+            if await self._sandboxed(goal):
+                base = await asyncio.to_thread(sandbox.base_of, project.root, goal["conversation_id"])
+            saved = await asyncio.to_thread(checkpoints.save, project.root, goal["id"], name, tree, base)
+        except (judge.JudgeError, sandbox.SandboxError) as exc:
             log.warning("goal %s: no checkpoint %s of %s: %s", goal["id"], name, project.name, exc)
             return
         await self._db.acall(lambda conn: conn.execute(
@@ -1000,23 +1008,29 @@ class Goals:
         """The last checkpoint not gone back to yet, and what going back would do in each of its projects - None when
         there is none, or nothing would change."""
         rows = await self._db.acall(lambda conn: conn.execute(
-            "SELECT name, project_id, tree FROM goal_checkpoints WHERE goal_id = ? AND rolled_back = 0"
+            "SELECT name, project_id, commit_id, tree FROM goal_checkpoints WHERE goal_id = ? AND rolled_back = 0"
             " ORDER BY rowid DESC", (goal["id"],)).fetchall())  # fmt: skip
         if not rows:
             return None
         name = rows[0]["name"]
         roots = {p.id: p for p in await self._chat.tool_projects(goal["conversation_id"])}
+        sandboxed = await self._sandboxed(goal)
         found = []
         for row in rows:
             if row["name"] == name and row["project_id"] in roots:
                 project = roots[row["project_id"]]
                 try:
-                    planned = await asyncio.to_thread(checkpoints.plan, project.root, row["tree"])
-                except judge.JudgeError as exc:
+                    tree = row["tree"]
+                    if sandboxed:  # what the user applied since stays (19.3)
+                        base = await asyncio.to_thread(sandbox.base_of, project.root, goal["conversation_id"])
+                        tree = await asyncio.to_thread(checkpoints.keeping_applied, project.root, row["commit_id"],
+                                                       base)  # fmt: skip
+                    planned = await asyncio.to_thread(checkpoints.plan, project.root, tree)
+                except (judge.JudgeError, sandbox.SandboxError) as exc:
                     log.warning("goal %s: no way back to %s in %s: %s", goal["id"], name, project.name, exc)
                     continue
                 if planned["restore"] or planned["delete"]:
-                    found.append((project, row["tree"], planned))
+                    found.append((project, tree, planned))
         return (name, found) if found else None
 
     @staticmethod
@@ -1043,8 +1057,7 @@ class Goals:
             return False
         name, plans = point
         label = point_words(name)[0]
-        mode = (await self._db.acall(lambda conn: store.context_settings(conn, goal["conversation_id"])))["mode"]
-        if mode == "sandbox":  # the sandbox's own files: nobody's work is lost
+        if await self._sandboxed(goal):  # the sandbox's own files: nobody's work is lost
             await self._go_back(goal, name, plans, why, verdict=verdict, found=found, mark=mark)
             return True
         offer = tr(" — или откатить файлы к точке «{point}»: ответ — в карточке подтверждения", point=label)

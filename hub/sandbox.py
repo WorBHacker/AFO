@@ -160,7 +160,7 @@ def start_from(project: Project, commits: list[str]) -> tuple[str, list[str]]:
     return head, list(dict.fromkeys(conflicts))
 
 
-def _base(path: Path, conversation_id: str) -> str:
+def base_of(path: Path, conversation_id: str) -> str:
     """The commit the sandbox began from; a sandbox made before its ref was kept: where its branch stands."""
     found = _git(path, "for-each-ref", "--format=%(objectname)", base_ref(conversation_id)).strip()
     return found or _git(path, "rev-parse", "HEAD").strip()
@@ -172,7 +172,7 @@ def changes(folder: Path, conversation_id: str, project: Project) -> dict[str, A
     if not (path / ".git").exists():
         return {"project_id": project.id, "name": project.name, "files": [], "diff": "", "exists": False}
     _git(path, "add", "-A")  # new files count too; the index is the sandbox's own
-    base = _base(path, conversation_id)
+    base = base_of(path, conversation_id)
     names = _git(path, "diff", "--cached", "--name-status", "--no-renames", "-z", base).split("\0")
     files = [{"path": name, "status": STATUS.get(status[:1], "changed")}
              for status, name in zip(names[0::2], names[1::2], strict=False) if status and name]  # fmt: skip
@@ -275,7 +275,7 @@ def apply(folder: Path, conversation_id: str, project: Project, only: list[str] 
             discard(folder, conversation_id, project)
         return {"applied": [], "conflicts": [], "kept": []}
     path = place(folder, conversation_id, project)
-    base = _base(path, conversation_id)
+    base = base_of(path, conversation_id)
     partial = [f for f in files if f["path"] in picked]
     taken = {f["path"]: edits.compose(v, set(picked[f["path"]])).after
              for f, v in zip(partial, _versions(path, base, partial), strict=True) if v is not None}  # fmt: skip
