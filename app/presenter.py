@@ -175,7 +175,7 @@ def status_text(status: dict[str, Any] | None) -> str:
         )  # fmt: skip
     local = status.get("local") or {}
     if not local.get("reachable"):
-        parts.append(tr("llama-swap не отвечает"))
+        parts.append(_down(local, with_pid=True))
     elif local.get("running"):
         loaded = ", ".join(f"{r['model']} ({_state(r['state'])})" for r in local["running"])
         parts.append(tr("загружена: {models}", models=loaded))
@@ -267,10 +267,20 @@ def gpu_load(status: dict[str, Any] | None) -> str:
     return "GPU " + " · ".join(parts) if parts else ""
 
 
+def _down(local: dict[str, Any], *, with_pid: bool = False) -> str:
+    """llama-swap does not answer - or cannot: another program holds its port (23.4)."""
+    taken = local.get("taken_by")
+    if not taken:
+        return tr("llama-swap не отвечает")
+    if with_pid:
+        return tr("порт {port} занят: {name} (pid {pid})", port=taken["port"], name=taken["name"], pid=taken["pid"])
+    return tr("порт {port} занят: {name}", port=taken["port"], name=taken["name"])
+
+
 def local_model(status: dict[str, Any] | None) -> str:
     local = (status or {}).get("local") or {}
     if not local.get("reachable"):
-        return tr("llama-swap не отвечает")
+        return _down(local)
     running = local.get("running") or []
     if not running:
         return tr("видеопамять свободна")

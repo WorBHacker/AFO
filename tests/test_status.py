@@ -7,6 +7,7 @@ import httpx
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
+from hub import autostart
 from hub.server import create_app
 from hub.settings import HubSettings
 from hub.system_status import GIB, MIB, GpuProbe, StatusMonitor, llama_swap_sample, memory_sample
@@ -64,6 +65,35 @@ def test_monitor_publishes_only_changes_and_does_not_store_them(monkeypatch):
     assert [(t, persist) for t, _, persist in bus.published] == [("system.status", False)] * 2
     assert latest["gpu"]["vram_used_mib"] == 9000
     assert latest["local"]["reachable"] is False
+
+
+def test_who_holds_llama_swaps_port_and_llama_swap_once_it_is_free(monkeypatch):
+    """23.4: the status line says who holds the port; when that program lets it go, llama-swap starts."""
+    holder = {"port": 8080, "pid": 4242, "name": "strata.exe", "exe": ""}
+    taken = [holder]
+    monkeypatch.setattr(autostart, "port_taken", lambda url: taken[0])
+    model = httpx.MockTransport(lambda request: httpx.Response(404))  # not llama-swap: no /running
+    sample = asyncio.run(llama_swap_sample("http://127.0.0.1:8080", transport=model))
+    assert sample == {"reachable": False, "running": [], "taken_by": holder}
+    monkeypatch.setattr("hub.system_status.memory_sample", lambda: None)
+    again = []
+
+    async def start_again():
+        again.append(True)
+
+    monitor = StatusMonitor(FakeBus(), "http://127.0.0.1:9", interval_s=0, gpu=FixedGpu(), freed=start_again)
+
+    async def samples():
+        await monitor.sample()
+        await monitor.sample()  # still held
+        taken[0] = None
+        freed = await monitor.sample()
+        await monitor.sample()  # nothing new
+        await asyncio.sleep(0.05)
+        return freed
+
+    assert "taken_by" not in asyncio.run(samples())["local"]
+    assert again == [True]
 
 
 def test_status_and_unload_endpoints():

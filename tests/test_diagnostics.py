@@ -66,6 +66,7 @@ models:
         return False
 
     monkeypatch.setattr(autostart, "answers", silent)
+    monkeypatch.setattr(autostart, "port_taken", lambda url: None)  # whoever holds this computer's 8080
     monkeypatch.setattr(httpx.AsyncClient, "head", lambda self, url: _refused())
     monkeypatch.setattr(diagnostics.search, "ripgrep", lambda: None)
     state = types.SimpleNamespace(settings=types.SimpleNamespace(paths=DataPaths(tmp_path / "data").ensure(),
@@ -126,6 +127,16 @@ def test_the_check_names_a_crash_of_the_last_days_and_not_a_caught_exception(tmp
     assert line["text"] == ("окно — 05.11 21:40: Windows fatal exception: access violation; "
                             "хаб — 06.11 08:30: Fatal Python error: Segmentation fault")  # fmt: skip
     assert "Собрать журналы для поддержки" in line["advice"]
+
+
+def test_the_check_says_who_holds_llama_swaps_port():
+    """23.4: llama-swap cannot start - a model of Strata holds 8080; the check names the program and its file."""
+    taken = {"port": 8080, "pid": 4242, "name": "strata.exe", "exe": "C:\\Strata\\engine\\strata.exe"}
+    line = diagnostics.llama_swap_line("http://127.0.0.1:8080", False, taken)
+    assert line["id"] == "llama-swap" and line["ok"] is False
+    assert line["text"] == "порт 8080 занят: strata.exe (pid 4242, C:\\Strata\\engine\\strata.exe)"
+    assert "Закройте strata.exe" in line["advice"] and "сам" in line["advice"]
+    assert diagnostics.llama_swap_line("http://127.0.0.1:8080", True, None)["ok"] is True
 
 
 def test_the_check_and_the_report_through_the_api(hub):  # noqa: F811

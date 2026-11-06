@@ -7,7 +7,8 @@ or a stopped llama-swap gives `null` / `reachable: false`, never an error.
 - GPU: NVML through ctypes (nvml.dll ships with the NVIDIA driver), no extra package and no nvidia-smi process
 - memory: GlobalMemoryStatusEx - physical RAM and the commit charge against the commit limit (RAM + page
   file), which is what large MoE models run into (ARCHITECTURE.md, section 2)
-- llama-swap: GET /running
+- llama-swap: GET /running; when it does not answer and another program holds its port here, that program
+  (`taken_by`), and once the program lets the port go, the hub starts llama-swap (23.4)
 """
 
 from __future__ import annotations
@@ -18,9 +19,12 @@ import ctypes
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+
+from . import autostart
 
 log = logging.getLogger("hub.status")
 
@@ -133,7 +137,8 @@ async def llama_swap_sample(base_url: str, transport: httpx.AsyncBaseTransport |
             response = await client.get(f"{base_url.rstrip('/')}/running")
             response.raise_for_status()
     except httpx.HTTPError:
-        return {"reachable": False, "running": []}
+        taken = await asyncio.to_thread(autostart.port_taken, base_url)
+        return {"reachable": False, "running": [], **({"taken_by": taken} if taken else {})}
     running = [
         {"model": item.get("model", ""), "state": item.get("state", "")} for item in response.json().get("running", [])
     ]
@@ -143,12 +148,15 @@ async def llama_swap_sample(base_url: str, transport: httpx.AsyncBaseTransport |
 class StatusMonitor:
     """Samples the machine on an interval; publishes `system.status` when the picture changes."""
 
-    def __init__(self, bus, llama_swap_url: str, interval_s: float = DEFAULT_INTERVAL_S, gpu: GpuProbe | None = None):
+    def __init__(self, bus, llama_swap_url: str, interval_s: float = DEFAULT_INTERVAL_S, gpu: GpuProbe | None = None,
+                 freed: Callable[[], Awaitable[Any]] | None = None):  # fmt: skip
         self._bus = bus
         self._llama_swap_url = llama_swap_url
         self._interval = interval_s
         self._gpu = gpu
+        self._freed = freed  # another program let llama-swap's port go: llama-swap may start now
         self._task: asyncio.Task | None = None
+        self._again: asyncio.Task | None = None
         self.latest: dict[str, Any] | None = None
 
     async def sample(self) -> dict[str, Any]:
@@ -160,6 +168,10 @@ class StatusMonitor:
             "memory": await asyncio.to_thread(memory_sample),
             "local": await llama_swap_sample(self._llama_swap_url),
         }
+        held = ((self.latest or {}).get("local") or {}).get("taken_by")
+        if held and "taken_by" not in status["local"] and not status["local"]["reachable"] and self._freed:
+            log.info("port %s is free again (%s let it go): llama-swap may start", held["port"], held["name"])
+            self._again = asyncio.create_task(self._freed())
         if status != self.latest:
             self.latest = status
             await self._bus.publish("system.status", status, persist=False)
@@ -170,10 +182,11 @@ class StatusMonitor:
             self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+        for task in (self._task, self._again):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     async def _loop(self) -> None:
         while True:

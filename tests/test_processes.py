@@ -3,6 +3,7 @@ with its port and stopped through the API."""
 
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from hub.processes import (
     ProcessMonitor,
     ProcessScanner,
     as_tree,
+    listener,
     owner,
     port_changes,
     roots_of,
@@ -34,6 +36,17 @@ SERVER = (
     "print(s.getsockname()[1], os.getpid(), flush=True)\n"
     "time.sleep(60)\n"
 )
+
+
+def test_who_listens_on_a_port():
+    """23.4: llama-swap's port held by another program - the hub names it."""
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        found = listener(port)
+        assert found["pid"] == os.getpid() and found["name"].lower().startswith("python")
+    assert listener(port) is None
 
 
 def test_which_project_owns_a_process():

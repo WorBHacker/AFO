@@ -12,6 +12,7 @@ The report is a zip in <data>/reports: the check, the versions, the last part of
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import platform
@@ -119,6 +120,22 @@ def crashes_line(logs: Path, now: datetime) -> dict[str, Any]:
     return _line("crashes", title, None, said, advice)
 
 
+def llama_swap_line(url: str, answering: bool, taken: dict[str, Any] | None) -> dict[str, Any]:
+    """Does llama-swap answer - and when another program holds its port (23.4), which one and where its file is."""
+    title = tr("Локальные модели (llama-swap)")
+    if taken:
+        said = tr("порт {port} занят: {name} (pid {pid}, {exe})", port=taken["port"], name=taken["name"],
+                  pid=taken["pid"], exe=taken.get("exe") or "?")  # fmt: skip
+        advice = tr("llama-swap не может слушать этот порт. Закройте {name} — это другая программа с моделью "
+                    "(например, Strata или LM Studio): хаб запустит llama-swap сам.", name=taken["name"])  # fmt: skip
+        return _line("llama-swap", title, False, said, advice)
+    if answering:
+        return _line("llama-swap", title, True, tr("отвечает на {url}", url=url))
+    return _line("llama-swap", title, False, tr("не отвечает на {url}", url=url),
+                 tr("Включите «Хаб сам запускает llama-swap» в «Настройки → Запуск» и перезапустите хаб; если движка "
+                    "ещё нет — «Мастер первого запуска»."))  # fmt: skip
+
+
 def model_files(text: str) -> list[Path]:
     out = []
     for model_id in llama_config.model_blocks(text):
@@ -138,11 +155,8 @@ async def check(state: Any) -> list[dict[str, Any]]:
                                                   folder=paths.root)))  # fmt: skip
     lines.append(crashes_line(paths.logs, datetime.now()))
 
-    answering = await autostart.answers(url)
-    lines.append(_line("llama-swap", tr("Локальные модели (llama-swap)"), answering,
-                       tr("отвечает на {url}", url=url) if answering else tr("не отвечает на {url}", url=url),
-                       "" if answering else tr("Включите «Хаб сам запускает llama-swap» в «Настройки → Запуск» и "
-                       "перезапустите хаб; если движка ещё нет — «Мастер первого запуска».")))  # fmt: skip
+    taken = await asyncio.to_thread(autostart.port_taken, url)
+    lines.append(llama_swap_line(url, taken is None and await autostart.answers(url), taken))
 
     config = llama_config.config_path()
     text = ""

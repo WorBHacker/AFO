@@ -326,3 +326,17 @@ def is_alive(pid: int) -> bool:
         return psutil.Process(pid).is_running()
     except psutil.Error:
         return False
+
+
+def listener(port: int) -> dict[str, Any] | None:
+    """Who listens on this TCP port of this computer: {pid, name, exe} ('' for what cannot be read); None when nobody
+    does, or it cannot be seen (23.4: llama-swap's port held by another program)."""
+    with contextlib.suppress(psutil.Error, OSError):
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == port and conn.pid:
+                found = {"pid": conn.pid, "name": "", "exe": ""}
+                for key in ("name", "exe"):
+                    with contextlib.suppress(psutil.Error, OSError):
+                        found[key] = getattr(psutil.Process(conn.pid), key)()
+                return found
+    return None

@@ -250,6 +250,10 @@ class Setup:
                 await self._gateway.sync_catalog()
             if started in ("running", "started", "slow"):
                 self.job.update(status="done", step="", started=started)
+            elif (taken := await asyncio.to_thread(autostart.port_taken, self._url)) is not None:  # 23.4
+                self.job.update(status="failed", error=tr(
+                    "порт {port} занят: {name} (pid {pid}) — закройте эту программу, и хаб запустит llama-swap сам",
+                    port=taken["port"], name=taken["name"], pid=taken["pid"]))  # fmt: skip
             else:
                 self.job.update(status="failed", error=tr("llama-swap не запустился ({state})", state=started))
         except engines.EngineError as exc:

@@ -172,7 +172,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                         tick_s=settings.schedule_tick_s or 20.0, mail=app.state.mail)  # fmt: skip
         app.state.telegram = TelegramBot(db, bus, app.state.approvals, secrets_store,
                                          quiet=app.state.scheduler.quiet_now)  # fmt: skip
-        app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s)
+        # another program let llama-swap's port go: llama-swap starts, as the hub's start does it (23.4)
+        app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s,
+                                         freed=lambda: _initial_sync(app))  # fmt: skip
         app.state.installer = Installer(
             db,
             bus,

@@ -61,6 +61,9 @@ def test_status_line_and_commit_warning():
     status["memory"]["commit_used_gib"] = 60.0
     assert not presenter.commit_is_tight(status)
     assert "llama-swap не отвечает" in presenter.status_text({"local": {"reachable": False}})
+    taken = {"local": {"reachable": False, "taken_by": {"port": 8080, "pid": 4242, "name": "strata.exe"}}}
+    assert "порт 8080 занят: strata.exe (pid 4242)" in presenter.status_text(taken)  # 23.4
+    assert presenter.local_model(taken) == "порт 8080 занят: strata.exe"
 
 
 def test_usage_text():

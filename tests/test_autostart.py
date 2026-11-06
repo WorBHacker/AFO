@@ -4,10 +4,19 @@ and llama-swap started by the hub when it does not answer (here a fake starter a
 import asyncio
 
 import httpx
+import pytest
 
 from hub import autostart
 from hub.auth import create_client
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
+
+PORT_TAKEN = autostart.port_taken
+
+
+@pytest.fixture(autouse=True)
+def no_holder(monkeypatch):
+    """Who holds this computer's 8080 really (the user's llama-swap, say) is not these tests' business."""
+    monkeypatch.setattr(autostart, "port_taken", lambda url: None)
 
 
 def test_the_login_value():
@@ -75,6 +84,23 @@ def test_llama_swap_is_started_only_when_it_is_down_and_wanted(tmp_path):
             self.starts.append(command)  # started, but never answers within the wait
 
     assert ensure(Stuck(), tmp_path=tmp_path) == "slow"
+
+
+def test_llama_swaps_port_held_by_another_program(tmp_path, monkeypatch):
+    """23.4: a model of Strata on 8080 - llama-swap cannot start there, and the hub says who holds the port."""
+    strata = {"pid": 4242, "name": "strata.exe", "exe": "C:\\Strata\\strata.exe"}
+    holders = {8080: strata, 8081: {"pid": 7, "name": "llama-swap.exe", "exe": ""}, 8082: {"pid": 8, "name": "",
+                                                                                         "exe": ""}}  # fmt: skip
+    monkeypatch.setattr(autostart.processes, "listener", holders.get)
+    assert PORT_TAKEN("http://127.0.0.1:8080") == {"port": 8080, **strata}
+    assert PORT_TAKEN("http://127.0.0.1:8081") is None  # llama-swap itself
+    assert PORT_TAKEN("http://localhost:8082") is None  # a program whose name cannot be read: nothing to say
+    assert PORT_TAKEN("http://127.0.0.1:8083") is None  # nobody
+    assert PORT_TAKEN("http://192.168.0.5:8080") is None  # another computer's
+    monkeypatch.setattr(autostart, "port_taken", PORT_TAKEN)
+    (tmp_path / "start-llama-swap.cmd").write_text("@echo off\n", encoding="utf-8")
+    model = FakeLlamaSwap(up=True)  # it answers /v1/models as llama-server does - and is not llama-swap
+    assert ensure(model, tmp_path=tmp_path) == "taken" and model.starts == []
 
 
 def test_the_api(hub):  # noqa: F811

@@ -137,6 +137,17 @@ def test_the_engine_for_a_computer_that_has_none(hub, github, monkeypatch, tmp_p
     assert (cuda / "cudart64_13.dll").exists() and (cuda / "llama-server.exe").exists()
     assert (swap / "config.yaml").read_text(encoding="utf-8") == text  # an existing config is never overwritten
 
+    async def taken_start(url, script, wanted, log_file, **kwargs):
+        return "taken"  # 23.4: another program holds llama-swap's port
+
+    monkeypatch.setattr(autostart, "ensure_llama_swap", taken_start)
+    monkeypatch.setattr(autostart, "port_taken", lambda url: {"port": 8080, "pid": 4242, "name": "strata.exe"})
+    hub.post("/v1/setup/engine", json={"build": "cuda-13"})
+    while hub.get("/v1/setup").json()["job"]["status"] in ("downloading", "starting"):
+        time.sleep(0.05)
+    failed = hub.get("/v1/setup").json()["job"]
+    assert failed["status"] == "failed" and "порт 8080 занят: strata.exe (pid 4242)" in failed["error"]
+
 
 def test_which_build_runs_and_the_macro_it_lives_in(tmp_path):
     cuda = tmp_path / "llama.cpp" / "b11899"

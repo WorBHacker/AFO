@@ -8,7 +8,8 @@
   LOCALCHAT_LLAMA_SWAP_START, else the script or llama-swap.exe chosen in Settings (10.3), else the start script beside
   the checkout on the computer it was built on, else the llama-swap.exe the first-run wizard put in AFO's engines
   (10.2) - an .exe gets the config (hub/llama_config.py) and the address. On unless the user turns it off in
-  Settings. Its output goes to data/logs/llama-swap.out.log.
+  Settings. Its output goes to data/logs/llama-swap.out.log. When another program holds its port (a model of Strata
+  on 8080), llama-swap is not started - it could not listen there - and the hub says who holds it (23.4).
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 import httpx
@@ -29,6 +30,7 @@ import psutil
 
 from common.paths import PROJECT_ROOT, engines_home
 
+from . import processes
 from .db import utc_now
 
 log = logging.getLogger("hub.autostart")
@@ -275,6 +277,20 @@ def set_llama_swap_wanted(conn: sqlite3.Connection, on: bool) -> None:
     )
 
 
+def port_taken(url: str) -> dict[str, Any] | None:
+    """Another program than llama-swap listens on llama-swap's port here: {port, pid, name, exe} - llama-swap cannot
+    start, and what answers there is not it (23.4). None: nobody, llama-swap, another computer's port, or a program
+    whose name cannot be read (llama-swap run as an administrator, maybe)."""
+    parts = urlsplit(url)
+    if (parts.hostname or "") not in LOCAL_HOSTS:
+        return None
+    port = parts.port or 8080
+    holder = processes.listener(port)
+    if holder is None or not holder["name"] or holder["name"].lower().startswith("llama-swap"):
+        return None
+    return {"port": port, **holder}
+
+
 async def answers(url: str, transport: httpx.AsyncBaseTransport | None = None) -> bool:
     try:
         async with httpx.AsyncClient(timeout=2.0, transport=transport) as http:
@@ -301,9 +317,15 @@ def spawn(command: list[str], cwd: Path, log_file: Path) -> None:
 async def ensure_llama_swap(url: str, script: Path, wanted: bool, log_file: Path, *, starter=spawn,
                             transport: httpx.AsyncBaseTransport | None = None,
                             ready_timeout: float = READY_TIMEOUT_S) -> str:  # fmt: skip
-    """running (it answered), started (and now answers), slow (started, not answering yet), off, missing, remote."""
+    """running (it answered), started (and now answers), slow (started, not answering yet), off, missing, remote,
+    taken (another program holds its port: it answers there, if it does, and llama-swap could not listen)."""
     if (urlsplit(url).hostname or "") not in LOCAL_HOSTS:
         return "remote"
+    taken = await asyncio.to_thread(port_taken, url)
+    if taken is not None:
+        log.warning("port %s is taken by %s (pid %s): llama-swap cannot listen there", taken["port"], taken["name"],
+                    taken["pid"])  # fmt: skip
+        return "taken"
     if await answers(url, transport):
         return "running"
     if not wanted:
