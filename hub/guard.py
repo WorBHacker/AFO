@@ -2,7 +2,7 @@
 contract's constraints the hub checks itself.
 
 Going round in circles has three signals, read from the checks after the worker's turns since the goal last stopped
-(an investigation's own turn does not count: it changes nothing):
+or closed a stage (an investigation's own turn does not count: it changes nothing):
     the same failure  - a check's fingerprint (its failures without their noise: times, durations, temporary paths,
                         addresses) twice in a row: the next turn investigates; three times in a row: the human;
     a pendulum        - a↔b over four checks: the next turn investigates; again after that: the human;
@@ -75,6 +75,13 @@ def fingerprint(results: list[dict[str, Any]], extra: list[str]) -> str | None:
 def failing(results: list[dict[str, Any]], extra: list[str]) -> int:
     """How much failed: the commands not met and what else the check found."""
     return sum(1 for r in results if r.get("kind") == "command" and r.get("met") is False) + len(extra)
+
+
+def afresh(check: dict[str, Any]) -> bool:
+    """After this check the signals count afresh: the goal stopped or went back - or a stage was accepted (19.1): a
+    stage done is progress, though the criteria may fail the same way until the last one."""
+    return check["route"] in STOPS or any(r.get("kind") == "stage" and r.get("accepted")
+                                          for r in check.get("results") or [])  # fmt: skip
 
 
 def _worker(history: list[dict[str, Any]]) -> list[int]:

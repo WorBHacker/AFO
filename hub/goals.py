@@ -950,9 +950,10 @@ class Goals:
             # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
             extra = _problems(found)
             mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
-            history = await self._history(goal)
-            edited, edits = await self._edits(goal, history, mark[1])
-            loop = guard.signal(history, mark[0], mark[1], edits, edited)
+            history, start = await self._history(goal)
+            edited, edits = await self._edits(history, mark[1], goal["conversation_id"], start)
+            accepted = (found.get("stage") or {}).get("accepted")  # a stage done is progress (19.1)
+            loop = None if accepted else guard.signal(history, mark[0], mark[1], edits, edited)
             if loop is not None and loop[0] == "blocked":
                 if await self._back(goal, verdict, found, mark, loop[1]):  # a dead end: a checkpoint (11.6)
                     return
@@ -1154,24 +1155,27 @@ class Goals:
         hard = "fix" if route == "investigated" else ""  # what the investigation found: the strong model fixes it
         await self._turn(goal, continue_note(goal, found, said, head=head), hard=hard)
 
-    async def _history(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
-        """The checks since the goal last stopped (a block, a limit, a pause: resumed, it starts afresh), oldest
-        first - what the loop guard reads (11.4)."""
+    async def _history(self, goal: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+        """The checks since the goal last stopped (a block, a limit, a pause: resumed, it starts afresh) or closed a
+        stage (19.1), oldest first - what the loop guard reads (11.4) - and when that began."""
         found = await self._db.acall(lambda conn: checks(conn, goal["id"], 50))
-        stops = [i for i, c in enumerate(found) if c["route"] in guard.STOPS]
-        return found[stops[-1] + 1 :] if stops else found
+        cuts = [i for i, c in enumerate(found) if guard.afresh(c)]
+        if not cuts:
+            return found, goal["created_at"]
+        return found[cuts[-1] + 1 :], found[cuts[-1]]["created_at"]
 
-    async def _edits(self, goal: dict[str, Any], history: list[dict[str, Any]], now: int) -> tuple[str, int]:
-        """The file written most since what fails last got fewer (the goal's start, or since it last stopped), and
-        how many times - the third signal (11.4). The hub's own writes; a sandbox's are not counted."""
+    async def _edits(self, history: list[dict[str, Any]], now: int, conversation_id: str,
+                     start: str) -> tuple[str, int]:  # fmt: skip
+        """The file written most since what fails last got fewer (from `start`: the goal's, or where it last stopped
+        or closed a stage), and how many times - the third signal (11.4). The hub's own writes; a sandbox's are not
+        counted."""
         since = guard.no_progress_since(history, now)
         if since is None:
             return "", 0
-        since = since or (history[0]["created_at"] if history else goal["created_at"])
-        since = max(since, goal["created_at"])
+        since = max(since or (history[0]["created_at"] if history else start), start)
         row = await self._db.acall(lambda conn: conn.execute(
             "SELECT path, count(*) FROM file_changes WHERE conversation_id = ? AND created_at > ? GROUP BY project_id,"
-            " path ORDER BY 2 DESC LIMIT 1", (goal["conversation_id"], since)).fetchone())  # fmt: skip
+            " path ORDER BY 2 DESC LIMIT 1", (conversation_id, since)).fetchone())  # fmt: skip
         return (row[0], row[1]) if row else ("", 0)
 
     async def contour(self, goal: dict[str, Any], results: list[dict[str, Any]],

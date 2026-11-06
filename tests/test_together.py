@@ -75,7 +75,6 @@ def test_a_goal_goes_on_with_what_the_user_applied(hub, repo):  # noqa: F811
     assert first["route"] == "achieved"
 
 
-@step(1, "a stage done is not progress for the loop guard")
 def test_stages_that_go_on_are_not_going_round_in_circles(hub, repo):  # noqa: F811
     """11.5 × 11.4: a goal in three stages whose only criterion is met at the end - each turn closes a stage, the
     criterion's failure stays the same until the last one. That is progress, not a loop."""

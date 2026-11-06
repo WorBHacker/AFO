@@ -46,6 +46,15 @@ def test_the_three_signals():
     assert guard.signal([check(None)], None, 0, 9) is None
 
 
+def test_after_a_stop_or_a_stage_done_the_signals_count_afresh():
+    """19.1: a stage accepted is progress, though the criteria fail the same way until the last stage."""
+    assert guard.afresh(check("a", "paused")) and guard.afresh(check(None, "rolled_back"))
+    assert not guard.afresh(check("a")) and not guard.afresh(check("a", "investigate"))
+    done = {**check("a"), "results": [{"kind": "stage", "n": 1, "accepted": True, "why": ""}]}
+    refused = {**check("a"), "results": [{"kind": "stage", "n": 1, "accepted": False, "why": "a.py does not parse"}]}
+    assert guard.afresh(done) and not guard.afresh(refused)
+
+
 def test_where_progress_was_last_made():
     history = [check("a", failing=3, at="t1"), check("b", failing=2, at="t2"), check("c", failing=2, at="t3")]
     assert guard.no_progress_since(history, 2) == "t2"  # 3 → 2 at t2, then no better
