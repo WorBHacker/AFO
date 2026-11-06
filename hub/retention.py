@@ -1,5 +1,6 @@
 """What the hub keeps on disk, within D30's limits (2026-10-28; Q4's default size): the files before and after the
-models' changes (data/snapshots, by hash), the agent's screen snapshots (data/computer) and the terminals' logs
+models' changes and the versions of the files' history (data/snapshots, by hash; stage 26), the agent's screen
+snapshots (data/computer) and the terminals' logs
 (data/terminals, hub/terminals.py) - each kind kept `days` and within `max_gb`, the oldest going first. Conversations,
 runs, events and spending are kept always (D30) - and so are the files and pictures their messages name
 (data/blobs); working copies of sent files (data/attachments, data/pasted) go like the snapshots.
@@ -92,17 +93,25 @@ def _thin(found: list[tuple[Path, int, float]], cutoff: float, max_bytes: int) -
 
 def prune_snapshots(conn: sqlite3.Connection, folder: Path, *, days: int, max_bytes: int,
                     now: float | None = None) -> int:  # fmt: skip
-    """The changed files' snapshots: each is as old as the youngest change that needs it (a card's export, or one
-    nothing refers to, as its file)."""
+    """The changed files' snapshots: each is as old as the youngest change or version of the files' history (stage
+    26) that needs it (a card's export, or one nothing refers to, as its file). The history's rows past the term go
+    with them."""
     now = time.time() if now is None else now
     used: dict[str, float] = {}
-    for row in conn.execute("SELECT before_hash, after_hash, created_at FROM file_changes").fetchall():
+    rows = conn.execute(
+        "SELECT before_hash, after_hash, created_at FROM file_changes UNION ALL"
+        " SELECT hash, NULL, created_at FROM file_versions WHERE hash IS NOT NULL"
+    ).fetchall()
+    for row in rows:
         at = _seconds(row["created_at"])
         for name in (row["before_hash"], row["after_hash"]):
             if name and at > used.get(name, 0.0):
                 used[name] = at
     found = [(path, size, max(used.get(path.name, 0.0), 0.0) or mtime) for path, size, mtime in _files(folder, "*")]
-    return _thin(found, now - days * 86400, max_bytes)
+    cutoff = now - days * 86400
+    since = datetime.fromtimestamp(cutoff, UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    conn.execute("DELETE FROM file_versions WHERE created_at < ?", (since,))
+    return _thin(found, cutoff, max_bytes)
 
 
 def prune_screens(folder: Path, *, days: int, max_bytes: int, now: float | None = None) -> int:

@@ -10,7 +10,8 @@ batches, each reading git again):
   (node_modules, .venv, ...), the hub's own data folder, and then whatever git ignores;
 - `project.files` {project_id, changed, folders, more} names the files that changed and the folders that gained or
   lost entries (`more`: too many to list, reload everything);
-- git is read again, and `project.git` (status and recent commits) goes out when it differs from the last one.
+- git is read again, and `project.git` (status and recent commits) goes out when it differs from the last one;
+- the changed files go to their history (`keep`, hub/history.py, stage 26), which keeps each new version.
 
 Both events are live only (not stored): the files and git are the record. Git runs read-only and without the index
 lock (hub/projects.py), so reading it never sets off the watcher again.
@@ -158,11 +159,13 @@ class ProjectWatcher:
     """Watches projects' folders and publishes `project.files` and `project.git` on the bus."""
 
     def __init__(self, bus, *, ignore: Iterable[Path] = (), flush_s: float = FLUSH_S, flush_max_s: float = FLUSH_MAX_S,
-                 listed=None, relocate=None, check_s: float = 0.0):  # fmt: skip
+                 listed=None, relocate=None, check_s: float = 0.0, keep=None):  # fmt: skip
         """`listed`: async, every listed project now; `relocate`: async (project_id, new folder) -> the project as it
-        is then - both from the hub's database, for the folders' check (none given: no check)."""
+        is then - both from the hub's database, for the folders' check (none given: no check). `keep`: async
+        (project, the files a batch changed) - the files' history (hub/history.py)."""
         self._bus = bus
         self._listed, self._relocate, self._check_s = listed, relocate, check_s
+        self._keep = keep
         self._ids: dict[str, tuple[int, int]] = {}  # project -> its folder's (device, file id), to find it moved
         self._missing: set[str] = set()
         self.ignore = tuple(_norm(str(p)) for p in ignore)  # folders never reported, e.g. the hub's own data
@@ -319,6 +322,8 @@ class ProjectWatcher:
                 ignored = set()
             batch.changed -= ignored
             batch.folders -= ignored
+        if batch.changed and self._keep is not None:  # every one, not only the MAX_LISTED told
+            self._spawn(self._keep(entry[0], set(batch.changed)))
         if batch.changed or batch.folders:
             more = len(batch.changed) > MAX_LISTED or len(batch.folders) > MAX_LISTED
             payload = {

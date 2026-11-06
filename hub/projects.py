@@ -305,10 +305,21 @@ def read_file(root: Path, rel: str, max_bytes: int = MAX_READ_BYTES) -> dict[str
     truncated = size > len(data)
     result: dict[str, Any] = {"path": _rel(root, path), "size": size, "truncated": truncated,
                               "sha256": "" if truncated else hashlib.sha256(data).hexdigest()}  # fmt: skip
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):  # UTF-16 by its byte order mark: text, though full of zeros
+    return {**result, **decoded(data)}
+
+
+def is_binary(data: bytes) -> bool:
+    """Not text: a zero byte near the start - unless a UTF-16 byte order mark says it is text full of zeros."""
+    return not data.startswith((b"\xff\xfe", b"\xfe\xff")) and b"\0" in data[:BINARY_SNIFF]
+
+
+def decoded(data: bytes) -> dict[str, Any]:
+    """A file's bytes as text: {binary, text, encoding, eol} - UTF-8, else the Windows code page; also a version the
+    history kept (hub/history.py)."""
+    if is_binary(data):
+        return {"binary": True, "text": "", "encoding": "", "eol": ""}
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         text, encoding = data.decode("utf-16", "replace"), "utf-16"
-    elif b"\0" in data[:BINARY_SNIFF]:
-        return {**result, "binary": True, "text": "", "encoding": "", "eol": ""}
     elif data.startswith(b"\xef\xbb\xbf"):  # the mark itself is not text: nobody should copy it into an edit
         text, encoding = data[3:].decode("utf-8", "replace"), "utf-8 BOM"
     else:
@@ -320,7 +331,7 @@ def read_file(root: Path, rel: str, max_bytes: int = MAX_READ_BYTES) -> dict[str
                 continue
         else:
             text, encoding = data.decode("utf-8", "replace"), "utf-8"
-    return {**result, "binary": False, "text": text, "encoding": encoding, "eol": line_ends(text)}
+    return {"binary": False, "text": text, "encoding": encoding, "eol": line_ends(text)}
 
 
 def line_ends(text: str) -> str:

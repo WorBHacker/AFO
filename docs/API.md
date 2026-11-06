@@ -442,6 +442,15 @@
 | GET | `/v1/projects/{project_id}/rules` | только окно | `list_rules()` |  |
 | DELETE | `/v1/rules/{rule_id}` | только окно | `delete_rule()` |  |
 
+### history
+
+/v1/.../history - a project's files version after version (stage 26, hub/history.py): what the hub kept of each change it saw, to compare and to take back. The window's alone: other clients read files through MCP.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/projects/{project_id}/history` | только окно | The versions of `path`, newest first; without it - the project's files that have a history, the latest change first (deleted ones too). | `?path: str = ''`<br>`?limit: int = 100` |
+| GET | `/v1/history/{version_id}` | только окно | A version with its text and a diff: from the version before it (`previous`), or from the file as it is now to this version (`current`: what taking it back changes). | `?against: Literal['previous', 'current'] = 'previous'` |
+
 ### agents
 
 /v1/agents and /v1/runs - the hub's own agents (stage 5, D16): profiles, and runs of tasks.

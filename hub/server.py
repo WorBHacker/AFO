@@ -30,6 +30,7 @@ from .api import (
     editor,
     events_ws,
     goals,
+    history,
     install,
     links,
     llama,
@@ -77,6 +78,7 @@ from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .goals import Goals
+from .history import History
 from .judge import Judge
 from .links import Rescanner
 from .mail import MailTools
@@ -196,10 +198,11 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
+        app.state.history = History(db, paths.snapshots)  # each new version of a project's file (stage 26)
         app.state.watcher = ProjectWatcher(
             bus, ignore=[paths.root], listed=lambda: db.acall(list_projects),
             relocate=lambda pid, folder: db.acall(lambda conn: set_path(conn, pid, folder)),
-            check_s=settings.folder_check_s,
+            check_s=settings.folder_check_s, keep=app.state.history.keep,
         )  # fmt: skip
         app.state.processes = ProcessMonitor(bus, db, settings.process_interval_s)
         app.state.rescanner = Rescanner(bus, db, app.state.processes, settings.links_quiet_s)
@@ -326,6 +329,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(approvals.router)
     app.include_router(claude_code.router)
     app.include_router(changes.router)
+    app.include_router(history.router)
     app.include_router(agents.router)
     app.include_router(stats.router)
     app.include_router(advice.router)

@@ -14,6 +14,9 @@ where the rest are (`left_out`).
 The user's own saves from the window's editor take the same way (D47, step 14.1; D29: one way of writing): checked
 against the version the editing began from, written in the file's encoding (cp1251 and UTF-16 too), kept as a
 change of the tool `save` - «вы» in «Изменения» - and undone like a model's; a secret file's content is not kept.
+
+Each recorded write goes into the file's history too (stage 26, hub/history.py): the version before it, when the
+history has not got it, and the write itself under its name.
 """
 
 from __future__ import annotations
@@ -356,16 +359,16 @@ def apply(planned: Planned, folder: Path) -> tuple[str | None, str]:
     return before, after
 
 
-def diff(path: str, before: bytes | None, after: bytes | None) -> str:
-    """A unified diff between two versions (None: no file), cut at DIFF_LINES lines."""
+def diff(path: str, before: bytes | None, after: bytes | None, limit: int = DIFF_LINES) -> str:
+    """A unified diff between two versions (None: no file), cut at `limit` lines."""
     lines = list(difflib.unified_diff(
         (before or b"").decode("utf-8", "replace").splitlines(keepends=True),
         (after or b"").decode("utf-8", "replace").splitlines(keepends=True),
         fromfile=f"a/{path}" if before is not None else "/dev/null",
         tofile=f"b/{path}" if after is not None else "/dev/null",
     ))  # fmt: skip
-    text = "".join(_shown(line) for line in lines[:DIFF_LINES])
-    return text + (tr("… ещё {count} строк", count=len(lines) - DIFF_LINES) + "\n" if len(lines) > DIFF_LINES else "")
+    text = "".join(_shown(line) for line in lines[:limit])
+    return text + (tr("… ещё {count} строк", count=len(lines) - limit) + "\n" if len(lines) > limit else "")
 
 
 def _lines(data: bytes | None) -> list[str]:
@@ -497,7 +500,36 @@ def record(
         " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (project_id, planned.path, hashes[0], hashes[1], tool, conversation_id, approval_id),
     ).lastrowid
+    # the file's history (stage 26): the version before, unless the watcher has the write already, and the write
+    if planned.before is not None and last_version(conn, project_id, planned.path) != hashes[1]:
+        note_version(conn, project_id, planned.path, hashes[0], len(planned.before))
+    note_version(conn, project_id, planned.path, hashes[1], len(planned.after), change_id)
     return get_change(conn, change_id)
+
+
+def last_version(conn: sqlite3.Connection, project_id: str, path: str) -> str | None:
+    """The hash of the file's last version in its history ("" - it was deleted); None - it has no history."""
+    row = conn.execute("SELECT hash FROM file_versions WHERE project_id = ? AND path = ? ORDER BY id DESC LIMIT 1",
+                       (project_id, path)).fetchone()  # fmt: skip
+    return None if row is None else row["hash"] or ""
+
+
+def note_version(conn: sqlite3.Connection, project_id: str, path: str, hashed: str | None, size: int,
+                 change_id: int | None = None) -> bool:  # fmt: skip
+    """A version of a project's file into its history (stage 26; `hashed` None - deleted): one row for each new
+    state, its content kept by the caller. The same as the last is not new - the watcher seeing a hub's write after
+    its record; the watcher's row of a write takes the write's name, when the record comes after it."""
+    last = conn.execute("SELECT id, hash, change_id FROM file_versions WHERE project_id = ? AND path = ?"
+                        " ORDER BY id DESC LIMIT 1", (project_id, path)).fetchone()  # fmt: skip
+    if last is not None and last["hash"] == hashed:
+        if change_id is not None and last["change_id"] is None:
+            conn.execute("UPDATE file_versions SET change_id = ? WHERE id = ?", (change_id, last["id"]))
+        return False
+    if hashed is None and last is None:  # gone, and never seen: nothing to say
+        return False
+    conn.execute("INSERT INTO file_versions (project_id, path, hash, size, change_id) VALUES (?, ?, ?, ?, ?)",
+                 (project_id, path, hashed, size, change_id))  # fmt: skip
+    return True
 
 
 def get_change(conn: sqlite3.Connection, change_id: int) -> dict[str, Any]:
