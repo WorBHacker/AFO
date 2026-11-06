@@ -14,7 +14,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 from starlette.testclient import TestClient
 
 from common.paths import DATA_DIR_ENV, PROJECT_ROOT, data_paths
-from hub import locate
+from hub import locate, winjob
 from hub.auth import create_client
 from hub.locate import probe
 from hub.mcp_stdio import HUB_ERROR, PARSE_ERROR, Bridge, client_token, pump, sse_messages
@@ -171,20 +171,70 @@ def hub_cli(env, *args):
     )
 
 
-def test_the_hub_leaves_the_starters_job_when_it_may(monkeypatch):
-    started = []
+class Started:
+    def __init__(self, flags, jobs):
+        self.flags, self.jobs, self.resumed, self.killed = flags, jobs, False, False
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return 1
+
+
+@pytest.mark.parametrize("starter", ["outside any job", "a job that says no", "a job that keeps it silently",
+                                     "no WMI either"])  # fmt: skip
+def test_the_hub_leaves_the_starters_job_or_is_born_outside_it(monkeypatch, starter):
+    """23.3: a job that does not let processes leave it - one says so (PermissionError), one keeps the process silently
+    (the venv's python.exe sits in a job of its own that lets go, inside the client's that does not)."""
+    started, through_wmi = [], []
 
     def popen(args, creationflags=0, **kwargs):
-        started.append(creationflags)
-        if creationflags & locate.BREAKAWAY:
+        if creationflags & locate.BREAKAWAY and starter == "a job that says no":
             raise PermissionError("the job forbids breakaway")
+        started.append(Started(creationflags, starter != "outside any job"))
+        return started[-1]
 
     monkeypatch.setattr(locate.subprocess, "Popen", popen)
+    monkeypatch.setattr(locate, "_in_a_job", lambda process: process.jobs)
+    monkeypatch.setattr(locate, "_resume", lambda process: setattr(process, "resumed", True) or True)
+    monkeypatch.setattr(locate, "_through_wmi", lambda cmd: through_wmi.append(cmd) or starter != "no WMI either")
     locate.start_hub()
-    if os.name == "nt":
-        assert started[0] & locate.BREAKAWAY and not started[1] & locate.BREAKAWAY  # tried to leave, then stayed
-    else:
-        assert len(started) == 1
+    if os.name != "nt":
+        assert len(started) == 1 and not through_wmi
+    elif starter == "outside any job":
+        assert len(started) == 1 and started[0].flags & locate.BREAKAWAY and started[0].resumed and not through_wmi
+        assert started[0].flags & locate.SUSPENDED  # looked at before it ran a line
+    elif starter == "a job that says no":
+        assert not started and through_wmi == [[sys.executable, "-m", "hub"]]
+    elif starter == "a job that keeps it silently":
+        assert len(started) == 1 and started[0].killed and not started[0].resumed and through_wmi
+    else:  # the hub then ends with that job, as before
+        assert started[0].killed and through_wmi and len(started) == 2
+        assert not started[1].flags & (locate.BREAKAWAY | locate.SUSPENDED)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows jobs")
+def test_the_hub_outlives_a_job_that_does_not_let_it_leave(env, isolated_data_dir):
+    """23.3: the MCP client of the Python SDK holds the adapter in a job that ends every process in it when it closes
+    and does not let them leave - the hub the adapter started ended with the client (§5.4)."""
+    base = f"http://127.0.0.1:{env[PORT_ENV]}"
+    assert probe(base) == "absent"
+    code = "from common.paths import data_paths\nfrom hub.locate import running_hub\nprint(running_hub(data_paths()))\n"
+    try:
+        with winjob.Job(4 * 1024**3) as job:  # kills what is in it when it closes; no leaving
+            starter = subprocess.Popen([sys.executable, "-c", code], cwd=PROJECT_ROOT, env={**os.environ, **env},
+                                       stdout=subprocess.PIPE, text=True, creationflags=locate.SUSPENDED)  # fmt: skip
+            job.add(starter)  # before its first line, as the venv's python.exe starts the interpreter at once
+            assert locate._resume(starter)
+            assert starter.communicate(timeout=90)[0].strip() == base
+        time.sleep(1)
+        assert probe(base) == "ok"  # the job and the adapter in it are gone, the hub is not
+    finally:
+        hub_cli(env, "stop")
+        deadline = time.monotonic() + 30
+        while probe(base) != "absent" and time.monotonic() < deadline:
+            time.sleep(0.2)
 
 
 def test_without_a_token_the_adapter_says_how_to_make_one(env):
@@ -222,6 +272,8 @@ def test_a_stdio_client_works_through_the_adapter_which_starts_the_hub(env, isol
         assert wrong.is_error and "no project 'nope'" in wrong.content[0].text
         assert started == "ok"
         assert "forwarding stdio to" in (isolated_data_dir / "logs" / "hub-mcp.log").read_text(encoding="utf-8")
+        time.sleep(1)
+        assert probe(base) == "ok"  # the client closed its job with the adapter in it; the hub lives on (23.3)
     finally:
         hub_cli(env, "stop")
         deadline = time.monotonic() + 30
