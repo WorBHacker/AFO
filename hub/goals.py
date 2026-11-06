@@ -653,17 +653,43 @@ def _hub_note(row: MessageRow) -> bool:
     return row.role == "user" and any(b.get("hub") for b in row.content)
 
 
-def compacted(history: list[MessageRow], done: list[dict[str, Any]], start: int | None) -> list[MessageRow]:
+PLAN_CHARS = 6000  # the first turn's words kept through the fold (19.5)
+
+
+def compacted(history: list[MessageRow], done: list[dict[str, Any]], start: int | None,
+              keep_plan: bool = False) -> list[MessageRow]:  # fmt: skip
     """The history with each stage `done` as one line (11.5): from after the notes that opened it (the first of them
     the contract) to its last message, the stage's turns are one message of the worker - «[STAGE n DONE - turns a-b]
-    title: its line»; the context layers stay. A stage the user wrote in is left as it is."""
+    title: its line»; the context layers stay. A stage the user wrote in is left as it is. `keep_plan` (the contract
+    names a strong model, 11.7): what its first turn said - the plan it wrote for the lighter model - stays in the
+    first stage's line, as the contract stays (19.5)."""
     lo, first_turn = (start or 0) - 1, 1
+    plan = _first_words(history, lo) if keep_plan else ""
     for stage in sorted(done, key=lambda m: m["n"]):
         hi = stage["closed_seq"]
         turns = f"turn {stage['turn']}" if stage["turn"] == first_turn else f"turns {first_turn}-{stage['turn']}"
-        history = _fold(history, lo, hi, f"[STAGE {stage['n']} DONE - {turns}] {stage['title']}: {stage['summary']}")
+        line = f"[STAGE {stage['n']} DONE - {turns}] {stage['title']}: {stage['summary']}"
+        if first_turn == 1 and plan:
+            line += f"\nWHAT THE GOAL'S FIRST TURN SAID (the plan, kept):\n{plan}"
+        history = _fold(history, lo, hi, line)
         lo, first_turn = hi, (stage["turn"] or first_turn) + 1
     return history
+
+
+def _first_words(history: list[MessageRow], lo: int) -> str:
+    """The text of the goal's first turn: its answers after the notes that opened it, to the next note."""
+    inside = [row for row in history if row.seq > lo]
+    k = 0
+    while k < len(inside) and _hub_note(inside[k]):
+        k += 1
+    said = []
+    for row in inside[k:]:
+        if row.role == "user":
+            break  # the next turn's note, or the user's own words
+        if row.role == "assistant":
+            said += [b["text"].strip() for b in row.content if b.get("type") == "text" and b.get("text", "").strip()]
+    text = "\n".join(said)
+    return text if len(text) <= PLAN_CHARS else text[: PLAN_CHARS - 1] + "…"
 
 
 def _fold(history: list[MessageRow], lo: int, hi: int, line: str) -> list[MessageRow]:
@@ -1126,7 +1152,7 @@ class Goals:
                 return None
             start = conn.execute("SELECT min(seq) FROM messages WHERE conversation_id = ? AND created_at >= ?",
                                  (conversation_id, goal["created_at"])).fetchone()[0]  # fmt: skip
-            return done, start
+            return done, start, bool(goal["strong_model_id"])
 
         found = await self._db.acall(read)
         return compacted(history, *found) if found else history

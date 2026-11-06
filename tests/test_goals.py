@@ -13,6 +13,7 @@ from hub.auth import create_client
 from hub.claude_code import ClaudeCodeProvider
 from hub.gateway import ProviderError
 from hub.gateway.base import Model, StreamEvent
+from hub.store import MessageRow
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
 from tests.test_claude_code import FAKE
@@ -230,6 +231,25 @@ def test_a_goal_in_stages_keeps_one_line_for_a_stage_done(hub, repo):  # noqa: F
     assert sum(1 for m in stored if m["role"] == "tool") == 2  # the conversation itself keeps every call (D14)
     names = goal_refs(repo, done["goal"]["id"])  # in a second's time their commits may tie: the names are enough
     assert sorted(names) == ["stage-1", "stage-2", "start"]  # 11.6: the start and each stage done are checkpoints
+
+
+def test_the_strong_models_plan_stays_in_the_first_stages_line():
+    """19.5: with a strong model (11.7) the goal's first turn is its plan for the lighter model - folding the first
+    stage keeps what that turn said in the stage's line; without one the line is as before."""
+
+    def row(seq, role, text, note=False):
+        return MessageRow(seq, seq, role, None, [{"type": "text", "text": text, **({"hub": True} if note else {})}], "")
+
+    history = [row(1, "user", "<goal_loop type=start>", note=True), row(2, "assistant", "ПЛАН: сначала a, потом b."),
+               row(3, "user", "<goal_loop type=continuation>", note=True), row(4, "assistant", "STAGE DONE: a"),
+               row(5, "user", "<goal_loop type=continuation>", note=True)]  # fmt: skip
+    done = [{"n": 1, "title": "Сделать a", "summary": "a", "turn": 2, "closed_seq": 4}]
+    folded = goals.compacted(history, done, 1, keep_plan=True)
+    assert [r.seq for r in folded] == [1, 2, 5]  # the contract, the stage's line, the next note
+    assert folded[1].content[0]["text"] == ("[STAGE 1 DONE - turns 1-2] Сделать a: a\nWHAT THE GOAL'S FIRST TURN "
+                                            "SAID (the plan, kept):\nПЛАН: сначала a, потом b.")  # fmt: skip
+    plain = goals.compacted(history, done, 1)
+    assert plain[1].content[0]["text"] == "[STAGE 1 DONE - turns 1-2] Сделать a: a"
 
 
 def goal_refs(repo, goal_id):

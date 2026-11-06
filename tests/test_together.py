@@ -85,7 +85,6 @@ def test_stages_that_go_on_are_not_going_round_in_circles(hub, repo):  # noqa: F
     assert routes == ["continue", "continue", "achieved"], f"routes {routes}, the goal {done['goal']['detail']!r}"
 
 
-@step(5, "the plan is folded away with the first stage")
 def test_the_strong_models_plan_outlives_the_first_stage(hub, repo):  # noqa: F811
     """11.7 × 11.5: the strong model writes the plan in its first turn «for the lighter model»; once the first stage
     is done its turns go to the model as one line - the plan must still reach the next turns."""
