@@ -4921,6 +4921,18 @@ def test_folders_and_sites_for_the_agent_in_the_window(qapp, tmp_path):
         view.start()
         wait_until(lambda: not app.bg.busy and client.auto_calls)
         assert client.auto_calls[0][1]["network"] is True
+        # the windows are the task's (22.3): a new task starts with the switch; the task may say otherwise
+        app.setMode("agent")
+        view.newTask()
+        wait_until(lambda: not app.bg.busy and view.draft["screenCloud"] is True)
+        assert quick.window.findChild(QObject, "agentScreenCloud") is not None
+        view.setFlag("screen_cloud", False)
+        assert view.draft["screenCloud"] is False
+        view.setField("goal", "Прочитать заметки")
+        view.start()
+        wait_until(lambda: not app.bg.busy and len(client.auto_calls) == 2)
+        assert client.auto_calls[1][1]["screen_cloud"] is False
+        assert client.auto_calls[0][1]["screen_cloud"] is None  # not said: the switch, as the hub has it
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

@@ -40,7 +40,7 @@ QUIET_KEY = "agent.quiet"
 QUIET_DEFAULT = {"enabled": True, "from": "23:00", "to": "08:00"}
 CLOCK = re.compile(r"([01]?\d|2[0-3]):([0-5]\d)")
 GOAL_FIELDS = ("goal", "done_when", "model_id", "profile_id", "autonomy", "project_ids", "network", "max_steps",
-               "max_minutes", "budget_usd", "max_replans", "planner_model_id")  # fmt: skip
+               "max_minutes", "budget_usd", "max_replans", "planner_model_id", "screen_cloud")  # fmt: skip
 TICK_S = 20.0
 MAIL_EVERY_S = 120.0  # how often INBOX is looked into while a mail schedule is on
 MAIL_SEEN = "mail.seen_uid"  # settings: the newest letter already looked at

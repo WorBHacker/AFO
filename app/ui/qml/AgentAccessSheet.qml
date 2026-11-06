@@ -100,7 +100,7 @@ Sheet {
     Switch {
         objectName: "accessScreenCloud"
         width: parent.width
-        text: qsTr("Облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной)")
+        text: qsTr("Новая задача: облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной). В задаче это можно поменять")
         checked: Autonomy.screenCloud
         onToggled: Autonomy.setScreenCloud(checked)
     }

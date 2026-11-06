@@ -46,7 +46,7 @@ import psutil
 
 from common.i18n import tr
 
-from . import agent_tools, model_settings, programs, store
+from . import model_settings, programs, store
 from .db import Database
 from .events import EventBus
 from .secret_filter import clean
@@ -199,6 +199,14 @@ ROLES = {
     50037: "titlebar", 50038: "separator",
 }  # fmt: skip
 SKIPPED = {50037, 50014, 50027, 50038}  # the title bar's buttons, scroll bars' parts, separators: noise
+
+
+def screen_cloud(conn: sqlite3.Connection, run_id: str) -> bool:
+    """Whether the task lets a cloud model read other programs' windows (Q20, 22.3): its own choice, made when it
+    began. Anything but an agent's task: no."""
+    row = conn.execute("SELECT screen_cloud FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
+    return bool(row and row["screen_cloud"])
+
 
 # ---------------------------------------------------------------- Win32
 
@@ -907,12 +915,12 @@ class Computer:
     async def handle(
         self, run_id: str, call: dict[str, Any], cancel: asyncio.Event, ask: Ask, *, cloud: bool = False
     ) -> tuple[str, bool]:
-        """`cloud`: the model answering is a cloud one - it reads other programs' windows only if the user let it
-        (Q20, D46); acting on them goes by the same rules as for any model."""
+        """`cloud`: the model answering is a cloud one - it reads other programs' windows only in a task where the
+        user let it (Q20, D46, 22.3); acting on them goes by the same rules as for any model."""
         args = call["input"] if isinstance(call["input"], dict) else {}
-        if cloud and call["name"] in READING and not await self._db.acall(agent_tools.screen_cloud):
+        if cloud and call["name"] in READING and not await self._db.acall(lambda conn: screen_cloud(conn, run_id)):
             return ("not done: you are a cloud model, and the user did not let the cloud see other programs' windows "
-                    "(«Папки и сайты для агента»); a local model can look"), True  # fmt: skip  # i18n: keep
+                    "in this task; a local model can look"), True  # fmt: skip  # i18n: keep
         try:
             match call["name"]:
                 case "screen_windows":  # what another program shows may hold a key or a password (D10, D46)

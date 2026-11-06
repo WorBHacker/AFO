@@ -62,7 +62,8 @@ TEMPLATES = [
 LEVEL_KEY = "agent/autonomy"  # app.ini: the level the person chose last
 BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_model_id": "", "project_ids": [],
                          "autonomy": "plan", "max_steps": "100", "max_minutes": "60", "budget_usd": "1",
-                         "max_replans": "3", "network": False, "refusal_vector": ""}  # fmt: skip
+                         "max_replans": "3", "network": False, "refusal_vector": "",
+                         "screen_cloud": None}  # None: as «Папки и сайты для агента» says (22.3)  # fmt: skip
 REFUSAL_SAID = {1: N_("снятие отказов вкл"), 0: N_("снятие отказов выкл")}
 
 
@@ -147,7 +148,7 @@ def goal_body(draft: dict[str, Any]) -> dict[str, Any]:
             "planner_model_id": draft["planner_model_id"] or None, "project_ids": list(draft["project_ids"]),
             "autonomy": draft["autonomy"], "max_steps": whole("max_steps", tr("Шагов")),
             "max_minutes": whole("max_minutes", tr("Минут")), "max_replans": whole("max_replans", tr("Новых планов")),
-            "budget_usd": budget, "network": bool(draft.get("network")),
+            "budget_usd": budget, "network": bool(draft.get("network")), "screen_cloud": draft.get("screen_cloud"),
             "refusal_vector": {"on": True, "off": False}.get(draft.get("refusal_vector") or "")}  # fmt: skip
 
 
@@ -225,7 +226,9 @@ class AutonomyView(QObject):
         models = self.app.models
         d = self._draft
         names = {p["id"]: p["name"] for p in self.app.projects.items}
-        return {**d, "modelName": model_name(models, d["model_id"]) if d["model_id"] else tr("выберите модель"),
+        screen = d.get("screen_cloud")
+        return {**d, "screenCloud": bool(self._access.get("screen_cloud")) if screen is None else screen,
+                "modelName": model_name(models, d["model_id"]) if d["model_id"] else tr("выберите модель"),
                 "plannerName": model_name(models, d["planner_model_id"]) if d["planner_model_id"]
                 else tr("та же модель"),
                 "projectNames": ", ".join(names.get(p, p) for p in d["project_ids"])}  # fmt: skip
@@ -453,6 +456,7 @@ class AutonomyView(QObject):
         model = self.app.role_model("executor") or self.app.modelId
         self._draft = {**BLANK, "model_id": model, "planner_model_id": self.app.role_model("planner"),
                        "autonomy": self._level()}  # fmt: skip
+        self.loadAccess()  # the switch the new task starts with: whether the cloud sees programs' windows (22.3)
         self.selectionChanged.emit()
         self.changed.emit()
         self.tasksChanged.emit()
@@ -499,8 +503,8 @@ class AutonomyView(QObject):
 
     @Slot(str, bool)
     def setFlag(self, name: str, value: bool) -> None:
-        if name == "network":
-            self._draft = {**self._draft, "network": value}
+        if name in ("network", "screen_cloud"):
+            self._draft = {**self._draft, name: value}
             self.changed.emit()
 
     # ---------- what it may reach beyond projects (9.4) ----------

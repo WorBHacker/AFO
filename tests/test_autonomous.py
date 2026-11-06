@@ -85,6 +85,35 @@ def test_a_cloud_model_never_gets_a_run_with_a_local_only_project(hub, repo):  #
     assert planner.prompts == [] and cloudy.prompts == []
 
 
+def test_a_cloud_model_sees_other_programs_windows_only_in_a_task_that_lets_it(hub, monkeypatch):  # noqa: F811
+    """Q20 as the user decided it (22.3): a cloud model reads other programs' windows only in a task where that is
+    turned on. The switch in «Папки и сайты для агента» is what a new task starts with: turned on later, it does not
+    open the windows to a task that began without it."""
+    use(hub, Scripted("agent", []))
+    computer = hub.app.state.computer
+
+    async def look(run_id, args):
+        return "Window 7 «Заметки» - Notes; [3] edit «Текст» value «план на завтра»"
+
+    async def cloud_looks(run_id):
+        return await computer.handle(run_id, {"name": "screen_look", "input": {"window": 7}}, None, None, cloud=True)
+
+    monkeypatch.setattr(computer, "_look", look)
+    closed = start(hub)
+    assert ended(hub, closed)["screen_cloud"] == 0
+    output, error = hub.portal.call(cloud_looks, closed)
+    assert error and "in this task" in output
+    let = start(hub, screen_cloud=True)
+    assert ended(hub, let)["screen_cloud"] == 1
+    output, error = hub.portal.call(cloud_looks, let)
+    assert not error and "план на завтра" in output
+
+    assert hub.put("/v1/agent/access", json={"screen_cloud": True}).status_code == 200
+    assert hub.portal.call(cloud_looks, closed)[1] is True  # began without it: stays so
+    assert ended(hub, start(hub))["screen_cloud"] == 1  # a new task starts with the switch
+    assert ended(hub, start(hub, screen_cloud=False))["screen_cloud"] == 0  # unless it says otherwise
+
+
 def test_a_goal_planned_carried_out_checked_and_reported(hub):  # noqa: F811
     agent = use(hub, Scripted("agent", [
         [PLAN],

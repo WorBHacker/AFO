@@ -40,7 +40,7 @@ log = logging.getLogger("hub.agent_tools")
 FOLDERS = "agent.folders"  # settings: [{"path": ..., "write": bool, "cloud": bool}]
 DOMAINS = "agent.domains"  # settings: hosts the agent may reach without asking
 KEYS = "agent.keys"  # settings: [{"name", "host", "header", "prefix"}]; the value is a secret "agent_key.<name>"
-SCREEN_CLOUD = "agent.screen_cloud"  # settings: a cloud model may read other programs' windows (Q20)
+SCREEN_CLOUD = "agent.screen_cloud"  # settings: a new task lets a cloud model read other programs' windows (Q20)
 KEY_SECRET = "agent_key."
 DEFAULT_DOMAINS = ["docs.python.org", "pypi.org", "developer.mozilla.org", "learn.microsoft.com", "docs.github.com",
                    "en.wikipedia.org", "ru.wikipedia.org"]  # fmt: skip
@@ -113,8 +113,9 @@ def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
 
 
 def screen_cloud(conn: sqlite3.Connection) -> bool:
-    """Whether a cloud model may read what other programs' windows show (their elements as text; a snapshot goes to a
-    local model only). Off unless the user turns it on (Q20, D46)."""
+    """Whether a new task lets a cloud model read what other programs' windows show (their elements as text; a
+    snapshot goes to a local model only): the task's own choice decides (22.3), this is what it starts with. Off
+    unless the user turns it on (Q20, D46)."""
     return bool(_setting(conn, SCREEN_CLOUD, False))
 
 

@@ -205,6 +205,8 @@ class Goal(BaseModel):
     budget_usd: float | None = autonomous.DEFAULTS["budget_usd"]
     network: bool = False  # its Python scripts may reach the network (9.4)
     refusal_vector: bool | None = None  # Strata's refusal vector for this task (its model must have one); None: as set
+    screen_cloud: bool | None = None  # a cloud model reads other programs' windows in this task (Q20, 22.3); None: as
+    # «Папки и сайты для агента» says
 
 
 @router.post("/runs/autonomous", status_code=201)

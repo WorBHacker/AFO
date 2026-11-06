@@ -203,6 +203,18 @@ Item {
                     }
                     Hint { text: qsTr("Скрипты, которые агент запускает в песочнице, получат доступ в интернет. Обычно не нужно: сайты агент читает и без этого.") }
                 }
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    Name { text: qsTr("Облачной модели — окна программ") }
+                    Segmented {
+                        objectName: "agentScreenCloud"
+                        options: [{ id: "no", name: qsTr("нельзя") }, { id: "yes", name: qsTr("можно") }]
+                        value: Autonomy.draft.screenCloud ? "yes" : "no"
+                        onPicked: (id) => Autonomy.setFlag("screen_cloud", id === "yes")
+                    }
+                    Hint { text: qsTr("Облачная модель прочтёт надписи и поля в окнах разрешённых программ — только в этой задаче. Снимки экрана видит только локальная модель. Сначала — как в «Папках и сайтах для агента».") }
+                }
             }
         }
     }
