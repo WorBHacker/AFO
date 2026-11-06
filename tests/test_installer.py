@@ -1,6 +1,6 @@
 """AFO's installer (step 10.4c, Q16): the embeddable Python and the libraries at their tested versions, the wizard
 (installer/afo.iss) in step with the program, the icon, and the agent's scripts' Python taken from the embedded one.
-Nothing is downloaded and Inno Setup is not run here: the build itself is checked by hand (ARCHITECTURE §5.3)."""
+Nothing is downloaded and Inno Setup is not run here: the build itself is checked by hand (docs/journal.md)."""
 
 import io
 import re

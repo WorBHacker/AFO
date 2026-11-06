@@ -1,7 +1,7 @@
 """The stress stand (D46, step 13.7): how long the hub and the window take on big synthetic data. Not part of the
 usual run - `pytest -m stress` runs it and prints the numbers at the end. No network, no models, nothing of the
 user's. Each number has a soft limit, several times what it measured on the developer's machine: it catches a
-regression, not a slower computer. The numbers themselves go to ARCHITECTURE.md §5.3.
+regression, not a slower computer. The numbers themselves go to the journal, docs/journal.md.
 
 A package (`__init__.py`), so this conftest does not take the place of tests/conftest.py among imported modules."""
 
