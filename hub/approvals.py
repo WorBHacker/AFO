@@ -213,16 +213,21 @@ def hub_data(tool: str, data: dict[str, Any], root: Path | None = None) -> bool:
     """A command that names the hub's own data - its folder, a token file, the database (D46, step 13.12): what it
     prints goes to a model, so it is asked every time, in a trusted chat too, and an answer covers nothing. In a
     project that holds the data folder (a checkout of LocalChat keeps it as `data`), the folder's path inside the
-    project names it as well; `root` - the project the command runs in."""
+    project names it as well; `root` - the project the command runs in. A project that lives in the folder itself
+    (a proving ground's copy, 20.5) may name its own path - not a way out of it with «..»."""
     if tool not in COMMAND_TOOLS:
         return False
     folder = projects.HUB_DATA
     inside = projects.private_part(root) if root is not None else ""
+    own = ""
+    if folder is not None and root is not None and root.resolve().is_relative_to(folder.resolve()):
+        own = root.resolve().as_posix().casefold()
     for text in spellings(str(data.get("command", ""))):
         flat = text.replace("\\", "/")
         if HUB_DATA_NAMES.search(flat):
             return True
-        if folder is not None and folder.as_posix().casefold() in flat.casefold():
+        named = re.sub(re.escape(own) + r"(?!/+\.\.)", "", flat.casefold()) if own else flat.casefold()
+        if folder is not None and folder.as_posix().casefold() in named:
             return True
         if inside and re.search(rf"(?<![\w.-]){re.escape(inside)}", flat, re.IGNORECASE):
             return True

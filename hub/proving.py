@@ -18,6 +18,10 @@ copy: passed = the goal met and every hidden check passed.
 after another (local models share one GPU anyway), each on its own copy; its table says, per task and model, passed
 or not and why, the turns, tokens, minutes and money. Exams are kept (D14) until the user deletes one - with its
 copies, chats and projects. A run going when the hub stops does not go on: it is marked stopped.
+
+Claude Code may sit an exam too (20.5): it works in its copy, the rest of the hub's data folder closed to its file
+tools (hub/claude_code.py, private_rules), and spends the subscription's limits, not money - a run waiting for a
+limit to reset is not timed out, and goes on when it is reset.
 """
 
 from __future__ import annotations
@@ -277,8 +281,6 @@ class ProvingGround:
                 model = store.get_model(conn, model_id)
                 if model is None or not model["enabled"]:
                     raise ProvingError(f"model {model_id!r} is not available now")
-                if model["provider"] == "claude-code":
-                    raise ProvingError("Claude Code carries no goal yet (stage 11.7): leave it out of the exam")
             if conn.execute("SELECT 1 FROM proving_exams WHERE status = 'running'").fetchone():
                 raise ProvingError("an exam is going already: one at a time")
             exam_id = uuid.uuid4().hex[:12]

@@ -13,7 +13,7 @@ import pytest
 import uvicorn
 
 from common.paths import data_paths
-from hub import guard, store
+from hub import approvals, guard, projects, store
 from hub.chat import _to_prompt
 from hub.claude_code import (
     CONVERSATION_HEADER,
@@ -26,6 +26,7 @@ from hub.claude_code import (
     effort_for,
     error_text,
     find_cli,
+    private_rules,
     read_limit,
     usage_of,
     user_line,
@@ -172,6 +173,30 @@ def test_a_limits_info_in_either_spelling():
     }
     assert [s["window"] for s in current_limits(known, now=200.0)] == ["", "seven_day"]  # no reset said: a while
     assert [s["window"] for s in current_limits(known, now=90.0 + 601)] == ["seven_day"]
+
+
+def test_the_data_folder_closed_but_the_way_to_a_copy_inside_it(tmp_path, monkeypatch):
+    """20.5: a project outside the hub's data folder - the whole folder closed; one inside it (a proving ground's
+    copy) - every entry beside the way down to it closed, the way itself open; a command there may name its own
+    path, not climb out of it."""
+    data = tmp_path / "Data"
+    for folder in ("tokens", "logs", "proving/r1", "proving/r2"):
+        (data / folder).mkdir(parents=True)
+    (data / "hub.db").write_bytes(b"")
+    monkeypatch.setattr(projects, "HUB_DATA", data.resolve())
+    form = "//" + data.resolve().as_posix().replace(":", "", 1)
+    form = form[:2] + form[2].lower() + form[3:]
+    assert private_rules(tmp_path / "elsewhere") == [f"Read({form}/**)", f"Edit({form}/**)"]
+    assert private_rules() == private_rules(data)  # the folder itself is no copy
+    rules = private_rules(data / "proving" / "r1")
+    assert rules == [f"Read({form}/hub.db)", f"Edit({form}/hub.db)", f"Read({form}/logs/**)", f"Edit({form}/logs/**)",
+                     f"Read({form}/tokens/**)", f"Edit({form}/tokens/**)", f"Read({form}/proving/r2/**)",
+                     f"Edit({form}/proving/r2/**)"]  # fmt: skip
+    copy = data / "proving" / "r1"
+    own = f'python "{copy}\\fizz.py"'
+    assert not approvals.hub_data("Bash", {"command": own}, copy)
+    assert approvals.hub_data("Bash", {"command": f'type "{copy}\\..\\..\\tokens\\x"'}, copy)
+    assert approvals.hub_data("Bash", {"command": own}, tmp_path / "elsewhere")  # from outside: the hub's data
 
 
 def message(seq, role, content, model_id=None):
@@ -438,6 +463,32 @@ def test_the_subscriptions_limits_are_kept_and_a_goal_waits_for_them(hub):
     assert [s["window"] for s in found["limits"]] == ["five_hour", "seven_day"]
     told = hub.http.get("/v1/feed", params={"types": "goal.status"}).json()["events"]
     assert any(e["payload"]["status"] == "paused" and e["payload"]["subscription"] == 1890000000.0 for e in told)
+
+
+def test_claude_code_sits_an_exam_in_its_copy(hub, monkeypatch):
+    """20.5: Claude Code may sit the proving ground's exam - it works in its copy inside the hub's data folder, and the
+    rest of that folder (the tokens, the database, the other copies) stays closed to its file tools; its run costs
+    no money."""
+    from tests.test_proving import FIZZ
+
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE", json.dumps({"fizzbuzz.py": FIZZ}))
+    body = {"model_ids": ["claude-code/default"], "task_ids": ["fizzbuzz"]}
+    started = hub.http.post("/v1/proving/exams", json=body)
+    assert started.status_code == 201, started.text
+    deadline, where = time.monotonic() + 180, f"/v1/proving/exams/{started.json()['exam']['id']}"
+    while (exam := hub.http.get(where).json()["exam"])["status"] != "done":
+        assert time.monotonic() < deadline, "the exam did not end"
+        time.sleep(0.2)
+    (run,) = exam["runs"]
+    assert run["status"] == "passed", run["detail"]
+    assert run["cost_usd"] == 0 and run["tokens"] > 0
+    (argv,) = [r["argv"] for r in runs(hub)]
+    rules = argv[argv.index("--disallowedTools") + 1 :]
+    data = "//" + data_paths().root.resolve().as_posix().replace(":", "", 1)
+    data = data[:2] + data[2].lower() + data[3:]
+    assert f"Read({data}/tokens/**)" in rules and f"Edit({data}/tokens/**)" in rules
+    assert not any(r.startswith((f"Read({data}/**", f"Read({data}/proving/**")) for r in rules)  # the way is open
+    assert not any(Path(run["folder"]).name in r for r in rules)  # and its own copy
 
 
 def test_a_turn_can_be_stopped(hub):

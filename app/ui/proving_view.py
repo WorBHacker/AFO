@@ -36,6 +36,11 @@ def money(usd: float) -> str:
     return decimal(f"${usd:.2f}") if usd else tr("бесплатно")
 
 
+def spent(summary: dict[str, Any]) -> str:
+    """What a model's runs cost: Claude Code's - its subscription's limits, no money counted (20.5)."""
+    return tr("подписка") if summary["model_id"].startswith("claude-code/") else money(summary["cost_usd"])
+
+
 def cell(run: dict[str, Any] | None) -> dict[str, Any]:
     """One run in the table: a mark, a line of what it took, why it did not pass."""
     if run is None:
@@ -57,7 +62,7 @@ def table(exam: dict[str, Any]) -> dict[str, Any]:
     names = {r["model_id"]: r["model_name"] for r in exam["runs"]}
     heads = [{"id": s["model_id"], "name": names.get(s["model_id"], s["model_id"]),
               "score": tr("сдано {passed} из {tasks}", passed=s["passed"], tasks=s["tasks"]),
-              "spent": f"{money(s['cost_usd'])} · {minutes(s['seconds'])}"} for s in exam["summary"]]  # fmt: skip
+              "spent": f"{spent(s)} · {minutes(s['seconds'])}"} for s in exam["summary"]]  # fmt: skip
     rows = []
     for task_id in exam["tasks"]:
         mine = {r["model_id"]: r for r in exam["runs"] if r["task_id"] == task_id}
@@ -117,15 +122,17 @@ class ProvingView(QObject):
 
     @Property(list, notify=changed)
     def models(self) -> list:
-        """The models an exam may take: offered, not Claude Code (it carries no goal yet)."""
+        """The models an exam may take: those offered - Claude Code too (20.5), on its subscription."""
         out = []
         for model_id, model in self.app.models.items():
-            if model.get("provider") == "claude-code" or not model.get("enabled", True):
+            if not model.get("enabled", True):
                 continue
             local = model.get("locality") == "local"
+            note = tr("локальная: по очереди на видеокарте") if local else tr("облачная: платная")
+            if model.get("provider") == "claude-code":
+                note = tr("подписка Claude Code: тратит её лимиты, цена не считается")
             out.append({"id": model_id, "name": model.get("name") or model_id, "chosen": model_id in self._models,
-                        "note": tr("локальная: по очереди на видеокарте") if local else tr("облачная: платная"),
-                        "icon": "cpu" if local else "cloud"})  # fmt: skip
+                        "note": note, "icon": "cpu" if local else "cloud"})  # fmt: skip
         return out
 
     @Property(bool, notify=changed)

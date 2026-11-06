@@ -2113,6 +2113,7 @@
  "подключён": "connected",
  "подписка": "subscription",
  "подписка Claude Code · работает в папке проекта чата": "Claude Code subscription · works in the chat's project folder",
+ "подписка Claude Code: тратит её лимиты, цена не считается": "Claude Code subscription: spends its limits, no price counted",
  "подписка, оценка {cost}": "subscription, estimated {cost}",
  "подписка, по оценке ≈{cost}": "subscription, estimated ≈{cost}",
  "подходящей видеокарты нет: модели будут работать на процессоре — только маленькие и медленнее": "no suitable graphics card: models will run on the CPU — only small ones, and slower",

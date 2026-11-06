@@ -4058,6 +4058,14 @@ def test_claude_codes_subscription_in_the_status_bar_and_the_picker():
     assert item["note"] == "подписка Claude Code · работает в папке проекта чата · неделя — 40 %"
 
 
+def test_claude_code_in_the_exams_table_spends_the_subscription():
+    """20.5: Claude Code's runs cost no money - the exam's table says «подписка» where the others say what they cost."""
+    from app.ui.proving_view import spent
+
+    assert spent({"model_id": "claude-code/default", "cost_usd": 0.0}) == "подписка"
+    assert spent({"model_id": "agent/m", "cost_usd": 0.0}) == "бесплатно"
+
+
 def test_a_subagents_steps_under_its_call():
     """21.3: while Claude Code's subagent works, each step it takes is the last line of the call that started it and
     joins what the call shows opened; done, the call shows the subagent's steps, then its answer."""

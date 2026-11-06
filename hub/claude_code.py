@@ -364,18 +364,39 @@ def child_env(environ: dict[str, str] | None = None, *, effort: bool = False) ->
                   "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0"}  # fmt: skip
 
 
-def private_rules() -> list[str]:
+def private_rules(root: Path | None = None) -> list[str]:
     """Claude Code's own file tools stay out of the hub's data folder - its tokens, database, logs (D46, step 13.12):
     they read the project's files without asking anyone, and a checkout of LocalChat holds that folder. Deny rules on
     the folder's absolute path, in Claude Code's POSIX form (D:\\x -> //d/x); a Read rule keeps out Grep and Glob as
     well, an Edit rule the writing tools. Its shell commands come to the hub's approval_prompt, which asks about them
-    (approvals.hub_data). Not checked with the real CLI - its documentation's syntax."""
-    if projects.HUB_DATA is None:
+    (approvals.hub_data). Not checked with the real CLI - its documentation's syntax.
+
+    Where it works inside that folder itself (`root`: a copy of a proving ground's task, 20.5; a chat's own folder
+    when it has no project) - in Claude Code a deny wins over any allow, so the rules close each entry beside the
+    way down to it instead (the database, tokens, logs, the other copies), as the folder holds them at the start."""
+    data = projects.HUB_DATA
+    if data is None:
         return []
-    path = projects.HUB_DATA.as_posix()
-    drive, colon, rest = path.partition(":")
-    where = f"//{drive.lower()}{rest}" if colon and len(drive) == 1 else f"/{path}"
-    return [f"Read({where}/**)", f"Edit({where}/**)"]
+    if root is None or not root.resolve().is_relative_to(data.resolve()) or root.resolve() == data.resolve():
+        return _denied(data, folder=True)
+    rules, here = [], data.resolve()
+    for part in root.resolve().relative_to(data.resolve()).parts:
+        try:
+            beside = sorted(e for e in here.iterdir() if e.name.casefold() != part.casefold())
+        except OSError:
+            beside = []
+        for entry in beside:
+            rules += _denied(entry, folder=entry.is_dir())
+        here = here / part
+    return rules
+
+
+def _denied(path: Path, *, folder: bool) -> list[str]:
+    path_text = path.as_posix()
+    drive, colon, rest = path_text.partition(":")
+    where = f"//{drive.lower()}{rest}" if colon and len(drive) == 1 else f"/{path_text}"
+    target = f"{where}/**" if folder else where
+    return [f"Read({target})", f"Edit({target})"]
 
 
 def effort_for(effort: str | None, session_model: str | None) -> str | None:
@@ -493,8 +514,9 @@ class ClaudeCodeRunner:
         return self._versions[cli]
 
     def command(self, model_ref: str, config: Path, *, resume: str | None, extra_dirs: list[Path],
-                project: bool = True, max_turns: int | None = None,
-                effort: str | None = None) -> list[str]:  # fmt: skip
+                project: bool = True, max_turns: int | None = None, effort: str | None = None,
+                root: Path | None = None) -> list[str]:  # fmt: skip
+        """The CLI's arguments for a turn in `root` (the hub's data folder closed to its file tools but for it)."""
         prompt = APPEND_PROMPT + ("" if project else NO_PROJECT_PROMPT)
         argv = [*self.cli(), "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--include-partial-messages", "--mcp-config", str(config), "--permission-prompt-tool",
@@ -511,7 +533,7 @@ class ClaudeCodeRunner:
             argv += ["--add-dir", str(folder)]
         if max_turns:  # a goal's turn (11.7): its tool steps, as the hub's own loop has (print mode only)
             argv += ["--max-turns", str(max_turns)]
-        if rules := private_rules():
+        if rules := private_rules(root):
             argv += ["--disallowedTools", *rules]  # last: the flag takes the rules that follow it
         return argv
 
@@ -546,7 +568,7 @@ class ClaudeCodeRunner:
         config = await asyncio.to_thread(self.mcp_config, conversation_id, conversation_id)
         argv = await asyncio.to_thread(self.command, model["model_ref"], config, resume=resume,
                                        extra_dirs=[p.root for p in projects[1:]], project=project is not None,
-                                       max_turns=max_turns, effort=effort)  # fmt: skip
+                                       max_turns=max_turns, effort=effort, root=folder)  # fmt: skip
         turn = Turn(conversation_id, project, folder, effort=effort is not None)
         self.turns[conversation_id] = turn
         try:

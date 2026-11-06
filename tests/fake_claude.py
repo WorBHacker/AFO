@@ -5,7 +5,8 @@ edits it if allowed ("edit every": `x = 1` to `x = 2` all through conf.py); "run
 command ("run push": a destructive one) and says the verdict; "question" - asks the user (AskUserQuestion, through
 the same tool) and says what was picked; "fetch" - first reads a page (WebFetch, asked the same way), then goes on
 as the rest of the message says; "agent" - a subagent reads a file (its texts with --forward-subagent-text);
-`--version` says $FAKE_CLAUDE_VERSION (2.1.300 by default);
+`--version` says $FAKE_CLAUDE_VERSION (2.1.300 by default); with $FAKE_CLAUDE_WRITE ({path: content}) it writes
+those files (Write, asked through the same tool) whatever the message;
 "limit" - hits a subscription limit; "nearly" - is told a limit is near, and answers; "hang" - waits until stopped;
 anything else - one answer.
 It writes what it was started with (arguments, environment, input, folder) to $FAKE_CLAUDE_LOG, a line per run.
@@ -113,7 +114,19 @@ def main() -> int:
         emit({"type": "user", "parent_tool_use_id": None,
               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_0",
                                                        "content": content}]}})  # fmt: skip
-    if "edit" in text:
+    if writes := os.environ.get("FAKE_CLAUDE_WRITE"):  # {path: content}: written through Write, asked as the CLI asks
+        said = []
+        for name, content in json.loads(writes).items():
+            data = {"file_path": name, "content": content}
+            verdict = ask_permission(option(argv, "--mcp-config"), option(argv, "--permission-prompt-tool"), "Write",
+                                     data)  # fmt: skip
+            if verdict["behavior"] == "allow":
+                Path(name).parent.mkdir(parents=True, exist_ok=True)
+                Path(name).write_text(content, encoding="utf-8")
+            said.append(f"{name}: {verdict['behavior']}")
+        emit({"type": "assistant", "parent_tool_use_id": None,
+              "message": {"id": "m1", "content": [{"type": "text", "text": "; ".join(said)}]}})  # fmt: skip
+    elif "edit" in text:
         for delta in ({"type": "thinking_delta", "thinking": "Нужно поправить."},
                       {"type": "text_delta", "text": "Правлю файл."}):  # fmt: skip
             emit({"type": "stream_event", "event": {"type": "content_block_delta", "delta": delta},
