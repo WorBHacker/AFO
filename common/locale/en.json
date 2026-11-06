@@ -57,6 +57,7 @@
  ". Claude Code по подписке — оценка {estimate}": ". Claude Code on the subscription — estimated {estimate}",
  ". Модель не запустилась — конфиг возвращён из {backup}": ". The model did not start — the config is restored from {backup}",
  ". Не загружено без пароля подключений: {parts}": ". Not loaded without the connections password: {parts}",
+ ". Не поместилась в видеопамять и ответила из общей памяти — в разы медленнее. Оценка: {estimate}": ". It did not fit in video memory and answered from shared memory — several times slower. Estimate: {estimate}",
  "0 — никогда": "0 — never",
  "0,5–2": "0.5–2",
  "0–2, выше — разнообразнее": "0–2, higher — more varied",

@@ -242,6 +242,25 @@ def test_a_model_that_does_not_start_gets_its_old_settings_back(hub):
     assert hub.post("/v1/llama/restore", json={"backup": "../hub.db"}).status_code == 404
 
 
+def test_a_trial_past_the_video_memory_says_so(hub, tmp_path):
+    """Past the video memory a model still starts on Windows - the NVIDIA driver lends it shared memory - and answers
+    several times slower: live (stage 28) an 8B at 262144 tokens answered «на связи» at 16 tok/s instead of 83, and the
+    trial said only that. Now it says what the window's estimate says, too."""
+    model = gguf(tmp_path / "eight.gguf", {"general.architecture": "x", "x.block_count": 8, "x.attention.head_count": 8,
+                                          "x.attention.head_count_kv": 8, "x.attention.key_length": 128,
+                                          "x.attention.value_length": 128, "x.embedding_length": 1024,
+                                          "x.context_length": 262144})  # fmt: skip
+    hub.config.write_text(CONFIG.replace("F:/models/big.gguf", model.as_posix()), encoding="utf-8")
+    hub.app.state.status.latest = {"gpu": {"vram_total_mib": 4096}}
+    fits = hub.post("/v1/llama/models/big/trial").json()  # 32768 tokens: its KV cache ≈ 0.5 GB
+    assert fits["ok"] and "over" not in fits
+    hub.put("/v1/llama/models/big", json={"changes": {"context": 196608}})  # ≈ 3.2 GB, with the buffers past 4 GB
+    over = hub.post("/v1/llama/models/big/trial").json()
+    assert over["ok"] and "не поместится в видеопамять" in over["over"] and "restored" not in over  # it does answer
+    hub.app.state.status.latest = None  # no video card known: nothing to say
+    assert "over" not in hub.post("/v1/llama/models/big/trial").json()
+
+
 def test_a_one_line_command_is_read_not_edited(tmp_path, monkeypatch):
     """2026-10-28: llama-swap takes `cmd: <one line>` too; such a model shows in the window (not editable, said why)
     and a block the hub cannot read at all no longer makes the whole list of launch settings fail."""

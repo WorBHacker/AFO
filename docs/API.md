@@ -84,7 +84,7 @@
 |---|---|---|---|---|
 | GET | `/v1/llama/models` | только окно | `models()` |  |
 | PUT | `/v1/llama/models/{model_id}` | только окно | `change()` | тело `{changes: dict[str, Any]}` |
-| POST | `/v1/llama/models/{model_id}/trial` | только окно | The model started with its settings and asked one short question. When it does not answer and its settings were changed by the last write, that file's copy comes back (Q25). |  |
+| POST | `/v1/llama/models/{model_id}/trial` | только окно | The model started with its settings and asked one short question. When it does not answer and its settings were changed by the last write, that file's copy comes back (Q25). When it answers with settings the memory estimate says do not fit, `over` says so: the video card's driver lent it shared memory, it is several times slower (stage 28). |  |
 | POST | `/v1/llama/restore` | только окно | `restore()` | тело `{backup: str}` |
 
 ### install

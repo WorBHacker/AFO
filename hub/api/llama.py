@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from common.gguf import GGUFError, model_info
 from common.i18n import tr
+from common.llama_memory import estimate
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
@@ -121,12 +122,16 @@ async def change(request: Request, model_id: str, body: Change, client: Annotate
 @router.post("/models/{model_id}/trial")
 async def trial(request: Request, model_id: str, client: Annotated[Client, Depends(require_app)]) -> dict:
     """The model started with its settings and asked one short question. When it does not answer and its settings
-    were changed by the last write, that file's copy comes back (Q25)."""
+    were changed by the last write, that file's copy comes back (Q25). When it answers with settings the memory
+    estimate says do not fit, `over` says so: the video card's driver lent it shared memory, it is several times
+    slower (stage 28)."""
     state = request.app.state
     model = await state.db.acall(lambda conn: store.get_model(conn, f"{PROVIDER}/{model_id}"))
     if model is None or not model["enabled"]:
         raise HTTPException(status_code=404, detail=f"llama-swap does not offer {model_id} now")
     result = await run_check(state, model, client)
+    if result.get("ok") and (judged := await _estimate(request, model_id)) and judged["verdict"] == "over":
+        result["over"] = judged["text"]  # it answered from the shared memory the driver lent it: slower (stage 28)
     last = getattr(state, "llama_trial", None)
     if not result.get("ok") and last and last[0] == model_id:
         path = llama_config.config_path()
@@ -137,6 +142,22 @@ async def trial(request: Request, model_id: str, client: Annotated[Client, Depen
         await state.gateway.sync_catalog()
         result["restored"] = last[1].name
     return result
+
+
+async def _estimate(request: Request, model_id: str) -> dict[str, Any] | None:
+    """The window's memory estimate (8.5) of the model's settings as the config has them now; None when there is
+    nothing to estimate - not llama.cpp's, its file not read, no video card known."""
+    try:
+        view = llama_config.model_view(_read(llama_config.config_path()), model_id)
+    except (HTTPException, llama_config.ConfigError):
+        return None
+    view.update(await asyncio.to_thread(_files, view))
+    total = ((request.app.state.status.latest or {}).get("gpu") or {}).get("vram_total_mib")
+    if not view.get("editable") or not view.get("info") or not total:
+        return None
+    return estimate(view["info"], context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
+                    gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=view.get("mmproj_bytes") or 0,
+                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=total)  # fmt: skip
 
 
 class Restore(BaseModel):

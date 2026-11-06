@@ -4885,6 +4885,13 @@ def test_a_local_models_launch_in_the_window(app):
     setup.trialLaunch()
     wait_until(lambda: not app.bg.busy and not setup.launchBusy)
     assert "не запустилась — конфиг возвращён из config.yaml.bak-1" in setup.launchStatus
+    over = "≈ 23.4 ГБ видеопамяти из 15.9 (KV-кэш 19.1 ГБ) — не поместится в видеопамять: меньше контекст"
+    app.client.trial_llama_model = lambda model_id: {"ok": True, "text": "на связи", "tok_s": 16.2, "seconds": 18.0,
+                                                     "over": over}  # fmt: skip
+    setup.trialLaunch()  # it answered - from the shared memory the driver lent it (stage 28)
+    wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+    assert "«на связи»" in setup.launchStatus and "общей памяти" in setup.launchStatus and over in setup.launchStatus
+    assert setup.launchFailed
 
 
 def test_budgets_and_settings_files_in_the_window(app, tmp_path):

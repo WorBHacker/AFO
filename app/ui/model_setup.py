@@ -597,12 +597,15 @@ class ModelSetup(QObject):
         def done(result: dict[str, Any]) -> None:
             self._launch_busy = False
             said = check_text(result)
+            if result.get("over"):  # it answered from the shared memory the video card's driver lent it (stage 28)
+                said += tr(". Не поместилась в видеопамять и ответила из общей памяти — в разы медленнее. Оценка: "
+                           "{estimate}", estimate=result["over"])  # fmt: skip
             if result.get("restored"):
                 said += tr(". Модель не запустилась — конфиг возвращён из {backup}", backup=result["restored"])
                 if self._model == model_id:
                     self._load_launch(model_id)
             self._launch_status = said
-            self._launch_failed = not result.get("ok") or bool(result.get("restored"))
+            self._launch_failed = not result.get("ok") or bool(result.get("restored") or result.get("over"))
             self.changed.emit()
 
         def failed(error: Exception) -> None:
