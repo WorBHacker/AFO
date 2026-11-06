@@ -19,6 +19,13 @@ A model that stops without finishing is told what is left (a nudge, at most MAX_
 and on with its plan standing still (it checked the same thing over and over) is told where it is every STUCK_AFTER
 actions; at the step limit it may still mark its step and finish, so the run ends with a report. The user may pause
 the run, and change its plan - the agent hears it before its next step.
+
+Words are checked against what was done (25.1): a step marked done, failed or skipped gets the files it actually
+changed - each git project's files where the step began against now (a command's writes too), the hub's own writes
+elsewhere - and the agent hears them. The condition «готово» in the forms a goal's constraints take («не трогать:»,
+«только:», «не запускать:», hub/guard.py) is the hub's to check: a write or command against it is refused at the
+call (hub/agents.py sets the guard), and what got past it - a command's write - is the step's mismatch, on its card,
+and «goal met» is not taken while it stands. The report's files are compared with the whole run's diff.
 """
 
 from __future__ import annotations
@@ -27,16 +34,17 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 import uuid
 from typing import Any
 
-from common.i18n import tr
+from common.i18n import N_, tr
 
-from . import judge, memory, store
+from . import guard, judge, memory, store
 from .db import Database, utc_now
 from .events import EventBus
-from .projects import ProjectError, get_project
+from .projects import Project, ProjectError, get_project
 
 log = logging.getLogger("hub.autonomous")
 
@@ -52,7 +60,11 @@ LIMIT = ("not run: the step limit is reached. Call finish now with an honest rep
 MAX_STEPS_IN_PLAN = 30
 NOTE = "[AFO hub]"
 MAX_OPTIONS = 6  # answers offered with a question
-MAX_DISPUTES = 2  # «goal met» the judge does not agree with is sent back this often; then the report says «not met»
+MAX_DISPUTES = 2  # «goal met» the judge (or a broken condition) sends back this often; then the report says «not met»
+MAX_FILES = 300  # of a step's changed files, kept
+FILES_TOLD = 20  # of them, named to the agent
+CLAUSES = re.compile(r";|\n|\.\s+")  # the parts of the condition «готово»
+STATUS_SAID = {"changed": N_("изменён"), "added": N_("создан"), "deleted": N_("удалён")}  # a file, on the card
 
 GUIDE = """You work on your own toward a goal, with the user watching (an autonomous agent). Work like this:
 1. Look first, if needed (read files, search), then call set_plan: numbered steps, each with how you will check it.
@@ -176,12 +188,14 @@ def run_info(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
 
 def _steps(conn: sqlite3.Connection, run_id: str, version: int) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT n, title, check_how, status, attempts, note, updated_at FROM run_steps"
+        "SELECT n, title, check_how, status, attempts, note, updated_at, files, mismatch FROM run_steps"
         " WHERE conversation_id = ? AND version = ? ORDER BY n",
         (run_id, version),
     ).fetchall()
     return [{"n": r["n"], "title": r["title"], "check": r["check_how"], "status": r["status"],
-             "attempts": r["attempts"], "note": r["note"], "updated_at": r["updated_at"]} for r in rows]  # fmt: skip
+             "attempts": r["attempts"], "note": r["note"], "updated_at": r["updated_at"],
+             "files": json.loads(r["files"]) if r["files"] is not None else None,
+             "mismatch": r["mismatch"]} for r in rows]  # fmt: skip
 
 
 def plans(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
@@ -243,6 +257,90 @@ def set_step(conn: sqlite3.Connection, run_id: str, version: int, n: int, *, sta
     return next(s for s in _steps(conn, run_id, version) if s["n"] == n)
 
 
+def step_began(conn: sqlite3.Connection, run_id: str, version: int, n: int, base: dict[str, str], at: str) -> None:
+    """Where the files stood as the step first went running: a try after a failure keeps it - its diff is the
+    whole step's."""
+    conn.execute("UPDATE run_steps SET base = COALESCE(base, ?), started_at = COALESCE(started_at, ?)"
+                 " WHERE conversation_id = ? AND version = ? AND n = ?",
+                 (json.dumps(base), at, run_id, version, n))  # fmt: skip
+
+
+def step_start(conn: sqlite3.Connection, run_id: str, version: int, n: int) -> tuple[dict[str, str], str] | None:
+    row = conn.execute("SELECT base, started_at FROM run_steps WHERE conversation_id = ? AND version = ? AND n = ?",
+                       (run_id, version, n)).fetchone()  # fmt: skip
+    return (json.loads(row["base"]), row["started_at"]) if row is not None and row["started_at"] else None
+
+
+def run_start(conn: sqlite3.Connection, run_id: str) -> tuple[dict[str, str], str] | None:
+    """Where the files stood as the run's first plan was saved, and when; None - no plan yet (or a run from before
+    25.1: nothing kept)."""
+    row = conn.execute(
+        "SELECT r.baselines, p.created_at FROM agent_runs r JOIN run_plans p ON p.conversation_id = r.conversation_id"
+        " AND p.version = 1 WHERE r.conversation_id = ?",
+        (run_id,),
+    ).fetchone()
+    return (json.loads(row["baselines"]), row["created_at"]) if row is not None and row["baselines"] else None
+
+
+def step_facts(conn: sqlite3.Connection, run_id: str, version: int, n: int, files: list[dict[str, Any]] | None,
+               mismatch: str) -> None:  # fmt: skip
+    conn.execute("UPDATE run_steps SET files = ?, mismatch = ? WHERE conversation_id = ? AND version = ? AND n = ?",
+                 (None if files is None else json.dumps(files, ensure_ascii=False), mismatch, run_id, version,
+                  n))  # fmt: skip
+
+
+def conditions(done_when: str | None) -> list[guard.Rule]:
+    """The forms of the condition «готово» the hub checks itself, as a goal's constraints (11.4, hub/guard.py): its
+    parts are split at «;», a line's end or a sentence's."""
+    return guard.rules([p.strip().rstrip(".").strip() for p in CLAUSES.split(done_when or "") if p.strip()])
+
+
+def files_told(files: list[dict[str, Any]] | None) -> str:
+    """A step's changed files as the agent reads them."""
+    if files is None:
+        return ""
+    named = ", ".join(f"{f['path']} ({f['status']}, +{f['added']} -{f['removed']})" for f in files[:FILES_TOLD])
+    more = f" and {len(files) - FILES_TOLD} more" if len(files) > FILES_TOLD else ""
+    return f" What the step changed, by the hub's diff: {named + more or 'no file'}."
+
+
+def breaches(rules: list[guard.Rule], found: list[tuple[str, dict[str, Any]]]) -> list[tuple[guard.Rule, dict]]:
+    """The changed files (`found`: the path in its project, the file as shown) the condition's rules forbid."""
+    return [(r, f) for rel, f in found if (r := guard.breaking(rules, rel)) is not None]
+
+
+def broken_said(broken: list[tuple[guard.Rule, dict]]) -> list[str]:
+    """The breaches as the card shows them: «условие «…» — изменён README.md»."""
+    return [tr("условие «{rule}» — {what} {path}", rule=r.text, path=f["path"],
+               what=tr(STATUS_SAID.get(f["status"]) or STATUS_SAID["changed"])) for r, f in broken]  # fmt: skip
+
+
+def broken_told(broken: list[tuple[guard.Rule, dict]]) -> str:
+    """The breaches as the agent reads them: «не трогать: README.md»: README.md changed."""
+    return "; ".join(f"«{r.text}»: {f['path']} {f['status']}" for r, f in broken)
+
+
+def _token_names(said: str, rel: str, shown: str) -> bool:
+    """A file of the report names this changed file: its path from the project's root (or longer - an absolute
+    path, the project's name before it), or its name alone."""
+    rel, shown = rel.casefold(), shown.casefold()
+    name = rel.rsplit("/", 1)[-1]
+    for token in re.split(r"[\s,;()«»\"'`]+", said.replace("\\", "/").casefold()):
+        token = token.removeprefix("./").rstrip(".:")
+        if token and (token in (rel, shown, name) or token.endswith(("/" + rel, "/" + shown))):
+            return True
+    return False
+
+
+def compare_files(said: list[str], found: list[tuple[str, dict[str, Any]]], *, whole: bool) -> dict[str, list[str]]:
+    """The report's files (`said`) against the run's diff: changed and not named, named and not changed - the latter
+    only when the hub saw every change (`whole`: each project's diff by git; elsewhere a command's writes are not
+    seen)."""
+    unlisted = [f["path"] for rel, f in found if not any(_token_names(s, rel, f["path"]) for s in said)]
+    unchanged = [s for s in said if not any(_token_names(s, rel, f["path"]) for rel, f in found)] if whole else []
+    return {"unlisted": unlisted, "unchanged": unchanged}
+
+
 def questions(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM run_questions WHERE conversation_id = ? ORDER BY created_at",
                         (run_id,)).fetchall()  # fmt: skip
@@ -288,6 +386,7 @@ class Autonomy:
         self._resumed: dict[str, asyncio.Event] = {}  # a paused run waits on its event
         self._switch: dict[str, str] = {}  # the planner made the plan: the run's model carries it out
         self._disputes: dict[str, int] = {}  # «goal met» the judge sent back
+        self._marks: dict[str, tuple[dict[str, str], str]] = {}  # where the files stood as a step last ended, when
         self.judge: judge.Judge | None = None  # set by the server: checks «goal met» (D44, 11.2)
 
     async def info(self, run_id: str) -> dict[str, Any] | None:
@@ -347,14 +446,28 @@ class Autonomy:
                 return (f"the user did not approve this plan{said}. Change it as they say and call set_plan again, "
                         "or ask_user what they want."), True  # fmt: skip
             approved = "user"
-        version = await self._db.acall(lambda conn: save_plan(conn, run_id, steps, reason=reason, made_by="agent",
-                                                              approved=approved))  # fmt: skip
+        trees = None
+        if before is None:  # nothing acts before the first plan: where the files stand now is the run's start (25.1)
+            trees = await self._trees(run_id, await self._projects(run_id))
+            self._marks[run_id] = (trees, utc_now())
+
+        def write(conn):
+            made = save_plan(conn, run_id, steps, reason=reason, made_by="agent", approved=approved)
+            if trees is not None:
+                conn.execute("UPDATE agent_runs SET baselines = ? WHERE conversation_id = ?",
+                             (json.dumps(trees), run_id))  # fmt: skip
+            return made
+
+        version = await self._db.acall(write)
         await self._published(run_id)
         if run["planner_model_id"] and run["planner_model_id"] != run["model_id"]:
             self._switch[run_id] = run["model_id"]  # the planner's work is done: the run's model goes on
         first = steps[0]["title"]
+        rules = conditions(run["done_when"]) if before is None else []
+        checked = (" Of the condition «done», the hub refuses what breaks " + ", ".join(f"«{r.text}»" for r in rules) +
+                   " and checks each step's changes against it.") if rules else ""  # fmt: skip
         return (f"Plan version {version} saved" + (", approved by the user" if approved == "user" else "") +
-                f". Start step 1 «{first}»: update_step(step=1, status=\"running\")."), False  # fmt: skip
+                f". Start step 1 «{first}»: update_step(step=1, status=\"running\").{checked}"), False  # fmt: skip
 
     async def _update_step(self, run: dict, args: dict, cancel: asyncio.Event) -> tuple[str, bool]:
         run_id = run["conversation_id"]
@@ -384,24 +497,37 @@ class Autonomy:
                 said = f": {decision.comment}" if decision.comment else ""
                 return f"the user did not let this step start{said}. Change the plan or ask_user.", True
         note = " · ".join(p for p in (result, tr("проверка: {check}", check=check) if check else "") if p)
-        saved = await self._db.acall(lambda conn: set_step(conn, run_id, plan["version"], n, status=status,
-                                                           note=note))  # fmt: skip
+        version = plan["version"]
+        files, mismatch, told = None, "", ""
+        if status == "running":  # where the files stand now: the step's diff runs from here (25.1)
+            base = await self._trees(run_id, await self._projects(run_id))
+            at = utc_now()
+            await self._db.acall(lambda conn: step_began(conn, run_id, version, n, base, at))
+        else:
+            files, mismatch, told = await self._step_changes(run, version, n)
+
+        def write(conn):
+            if status != "running":
+                step_facts(conn, run_id, version, n, files, mismatch)
+            return set_step(conn, run_id, version, n, status=status, note=note)
+
+        saved = await self._db.acall(write)
         await self._published(run_id)
         steps = [saved if s["n"] == n else s for s in plan["steps"]]
         if status == "running":
             return f"Step {n} is running. When it is done, check it: {step['check'] or 'as the goal needs'}.", False
         if status == "failed":
             if saved["attempts"] >= MAX_TRIES:
-                return (f"Step {n} failed {saved['attempts']} times. Do not try the same way again: change the plan "
-                        "(set_plan with the reason) or ask the user (ask_user)."), False  # fmt: skip
-            return f"Step {n} failed ({saved['attempts']} of {MAX_TRIES}). Try another way.", False
+                return (f"Step {n} failed {saved['attempts']} times.{told} Do not try the same way again: change the "
+                        "plan (set_plan with the reason) or ask the user (ask_user)."), False  # fmt: skip
+            return f"Step {n} failed ({saved['attempts']} of {MAX_TRIES}).{told} Try another way.", False
         left = [s for s in steps if s["status"] not in ("done", "skipped")]
         if not left:
-            return ("Every step is done or skipped. Now check the goal itself" +
+            return (f"Step {n} {status}.{told} Every step is done or skipped. Now check the goal itself" +
                     (f" against «{run['done_when']}»" if run["done_when"] else "") +
                     ", then call finish with the report."), False  # fmt: skip
         nxt = left[0]
-        return f"Step {n} {status}. Next: step {nxt['n']} «{nxt['title']}».", False
+        return f"Step {n} {status}.{told} Next: step {nxt['n']} «{nxt['title']}».", False
 
     async def _ask(self, run: dict, args: dict, cancel: asyncio.Event) -> tuple[str, bool]:
         question = str(args.get("question") or "").strip()[:2000]
@@ -494,6 +620,15 @@ class Autonomy:
                                 "met; if it cannot be done, finish with goal_met false and say why")  # fmt: skip
         report = {"summary": summary, "goal_met": bool(args.get("goal_met")), "done": _list(args.get("done")),
                   "not_done": _list(args.get("not_done")), "files": _list(args.get("files"))}  # fmt: skip
+        broken = await self._run_changes(run, report)
+        if report["goal_met"] and broken:  # the hub's own check comes before the judge's
+            count = self._disputes[run_id] = self._disputes.get(run_id, 0) + 1
+            if count <= MAX_DISPUTES:
+                rules = ", ".join(dict.fromkeys(f"«{r.text}»" for r, _f in broken))
+                files = ", ".join(f"{f['path']} {f['status']}" for _r, f in broken)
+                raise AutonomyError(f"not saved: the condition {rules} is broken - {files} since the plan was made. "
+                                    "Put it back as it was, or finish with goal_met false and say why.")  # fmt: skip
+            report["goal_met"] = False
         if report["goal_met"] and self.judge is not None:
             disputed = await self._judged(run, report)
             if disputed:
@@ -520,14 +655,15 @@ class Autonomy:
                     projects.append(get_project(conn, pid))
             judge.check_model(conn, judge_id, projects)
             began = conn.execute("SELECT created_at FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
-            return judge_id, projects, began[0], current_plan(conn, run_id)
+            start = run_start(conn, run_id)  # git projects: the diff from the first plan - a command's writes too
+            return judge_id, projects, began[0], current_plan(conn, run_id), start[0] if start else {}
 
         try:
             found = await self._db.acall(read)
             if found is None:
                 return None
-            judge_id, projects, began, plan = found
-            evidence = await self.judge.evidence(run_id, projects, {}, began)
+            judge_id, projects, began, plan, baselines = found
+            evidence = await self.judge.evidence(run_id, projects, baselines, began)
             said = await self.judge.ask(judge_id, judge.run_prompt(run, plan, report, evidence),
                                         conversation_id=run_id, meta={"run_id": run_id})  # fmt: skip
         except judge.JudgeError as exc:
@@ -544,6 +680,105 @@ class Autonomy:
         return (f"not saved: the judge does not agree that the goal is met ({said['status']}). Missing: {missing}. "
                 f"{said['feedback']} Go on with the work (update_step), or finish with goal_met false and say "
                 "why.").replace("  ", " ")  # fmt: skip
+
+    # ---------- what the run changed (25.1) ----------
+
+    async def _projects(self, run_id: str) -> list[Project]:
+        def read(conn):
+            found = []
+            for pid in store.conversation_projects(conn, run_id):
+                with contextlib.suppress(ProjectError):
+                    found.append(get_project(conn, pid))
+            return found
+
+        return await self._db.acall(read)
+
+    @staticmethod
+    async def _trees(run_id: str, projects: list[Project]) -> dict[str, str]:
+        """Each git project's files as a tree now (hub/judge.py: no commit, the user's index untouched)."""
+        trees = {}
+        for project in projects:
+            if judge.is_git(project.root):
+                try:
+                    trees[project.id] = await asyncio.to_thread(judge.snapshot, project.root)
+                except judge.JudgeError as exc:
+                    log.warning("run %s: no tree of %s: %s", run_id, project.name, exc)
+        return trees
+
+    async def _changed(self, run_id: str, projects: list[Project], base: dict[str, str],
+                       since: str) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, str], bool]:  # fmt: skip
+        """What changed since `base` - each git project's tree then against now - and elsewhere the hub's own writes
+        since `since`: [(the path in its project, {path, status, added, removed})] - with several projects the path
+        shown is «<project>/<path>» -, the trees now, and whether every change was seen (by git everywhere)."""
+        heads = await self._trees(run_id, projects)
+        by_hub = [p.id for p in projects if p.id not in base or p.id not in heads]
+        mine: dict[str, list[dict[str, str]]] = {}
+        if by_hub:
+            folder = self.judge.snapshots if self.judge is not None else None
+            mine = await self._db.acall(lambda conn: judge.recorded(conn, folder, run_id, since, by_hub))
+        found: list[tuple[str, dict[str, Any]]] = []
+        whole = not by_hub
+        for project in projects:
+            prefix = f"{project.name}/" if len(projects) > 1 else ""
+            if project.id in by_hub:
+                for c in mine.get(project.id, []):
+                    added, removed = judge.line_counts(c["patch"])
+                    found.append((c["path"], {"path": prefix + c["path"], "status": c["status"], "added": added,
+                                              "removed": removed}))  # fmt: skip
+                continue
+
+            def read(p=project):
+                changes = judge.tree_changes(p.root, base[p.id], heads[p.id])
+                return changes, judge.tree_counts(p.root, base[p.id], heads[p.id]) if changes else {}
+
+            try:
+                changes, counts = await asyncio.to_thread(read)
+            except judge.JudgeError as exc:
+                log.warning("run %s: what changed in %s is unknown: %s", run_id, project.name, exc)
+                whole = False
+                continue
+            for c in changes:
+                added, removed = counts.get(c["path"], (0, 0))
+                found.append((c["path"], {"path": prefix + c["path"], "status": c["status"], "added": added,
+                                          "removed": removed}))  # fmt: skip
+        return found[:MAX_FILES], heads, whole
+
+    async def _step_changes(self, run: dict, version: int, n: int) -> tuple[list[dict[str, Any]] | None, str, str]:
+        """What the step changed: from where it began - else where the last step ended, else the run's start - to
+        now, and what of it breaks the condition «готово». (the files - None: no projects to see -, the mismatch as
+        the card shows it, what the agent reads)."""
+        run_id = run["conversation_id"]
+        projects = await self._projects(run_id)
+        if not projects:
+            return None, "", ""
+        start = await self._db.acall(lambda conn: step_start(conn, run_id, version, n)) or self._marks.get(run_id) \
+            or await self._db.acall(lambda conn: run_start(conn, run_id))  # fmt: skip
+        if start is None:
+            return None, "", ""
+        found, heads, _whole = await self._changed(run_id, projects, *start)
+        self._marks[run_id] = (heads, utc_now())
+        broken = breaches(conditions(run["done_when"]), found)
+        files = [f for _rel, f in found]
+        told = files_told(files)
+        if broken:
+            told += (f" It does not fit the condition {broken_told(broken)}. Put it back as it was, or ask the user "
+                     "(ask_user) whether it may stay.")  # fmt: skip
+        return files, "; ".join(broken_said(broken)), told
+
+    async def _run_changes(self, run: dict, report: dict[str, Any]) -> list[tuple[guard.Rule, dict]]:
+        """The report against the whole run's diff: what changed, what of it the report does not name, what it names
+        that did not change, what breaks the condition - kept in the report. Returns the breaches."""
+        run_id = run["conversation_id"]
+        projects = await self._projects(run_id)
+        start = await self._db.acall(lambda conn: run_start(conn, run_id)) if projects else None
+        if start is None:
+            return []
+        found, _heads, whole = await self._changed(run_id, projects, *start)
+        broken = breaches(conditions(run["done_when"]), found)
+        report["changed"] = [f["path"] for _rel, f in found]
+        report.update(compare_files(report["files"], found, whole=whole))
+        report["broken"] = broken_said(broken)
+        return broken
 
     async def _memory(self, run: dict, name: str, args: dict, cancel: asyncio.Event, cloud: bool) -> tuple[str, bool]:
         """The agent's memory (9.3, Q24): its notes, the facts kept for good, the search through both."""
@@ -677,5 +912,6 @@ class Autonomy:
         return await self._db.acall(lambda conn: current_plan(conn, run_id))
 
     def forget(self, run_id: str) -> None:
-        for store_ in (self._notices, self._nudges, self._acts, self._resumed, self._switch, self._disputes):
+        for store_ in (self._notices, self._nudges, self._acts, self._resumed, self._switch, self._disputes,
+                       self._marks):  # fmt: skip
             store_.pop(run_id, None)

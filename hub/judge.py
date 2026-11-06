@@ -125,6 +125,23 @@ def tree_patch(root: Path, base: str, head: str, paths: list[str]) -> str:
     return _git(root, "diff", "--no-renames", "--unified=3", base, head, "--", *paths) if paths else ""
 
 
+def tree_counts(root: Path, base: str, head: str) -> dict[str, tuple[int, int]]:
+    """Lines added and removed in each file between the two trees (a binary file: 0, 0)."""
+    out = {}
+    for entry in _git(root, "diff", "--numstat", "--no-renames", "-z", base, head).split("\0"):
+        added, _, rest = entry.partition("\t")
+        removed, _, path = rest.partition("\t")
+        if path:
+            out[path] = (int(added) if added.isdigit() else 0, int(removed) if removed.isdigit() else 0)
+    return out
+
+
+def line_counts(patch: str) -> tuple[int, int]:
+    """One file's unified diff: lines added, lines removed."""
+    minus, plus = _lines(patch)
+    return len(plus), len(minus)
+
+
 def recorded(conn: sqlite3.Connection, folder: Path | None, conversation_id: str, since: str,
              project_ids: list[str]) -> dict[str, list[dict[str, str]]]:  # fmt: skip
     """The hub's own writes in this conversation since `since`, per project: each file once, from before the first
@@ -351,11 +368,21 @@ def goal_prompt(goal: dict[str, Any], results: list[dict[str, Any]], evidence: E
     )  # fmt: skip
 
 
+def _step_line(step: dict[str, Any]) -> str:
+    """A step of the agent's plan: its words, then what the hub saw it change (25.1)."""
+    line = f"{step['n']}. [{step['status']}] {step['title']}" + (f" - {step['note']}" if step.get("note") else "")
+    if step.get("files") is not None:
+        line += " | CHANGED, by the hub's diff: " + (", ".join(f"{f['status']} {f['path']}" for f in step["files"])
+                                                      or "nothing")  # fmt: skip
+    if step.get("mismatch"):
+        line += f" | AGAINST THE CONDITION: {step['mismatch']}"
+    return line
+
+
 def run_prompt(run: dict[str, Any], plan: dict[str, Any] | None, report: dict[str, Any], evidence: Evidence) -> str:
     """What the judge reads about an autonomous agent's «goal met»: the goal, its plan with how each step was
-    checked, its report - the agent's words, unverified - and its writes."""
-    steps = "\n".join(f"{s['n']}. [{s['status']}] {s['title']}" + (f" - {s['note']}" if s.get("note") else "")
-                      for s in (plan or {}).get("steps") or []) or "(no plan)"  # fmt: skip
+    checked and what the hub saw it change, its report - the agent's words, unverified - and its writes."""
+    steps = "\n".join(_step_line(s) for s in (plan or {}).get("steps") or []) or "(no plan)"
     told = "\n".join([report.get("summary") or "", *("done: " + d for d in report.get("done") or []),
                       *("not done: " + d for d in report.get("not_done") or [])])  # fmt: skip
     return clean(

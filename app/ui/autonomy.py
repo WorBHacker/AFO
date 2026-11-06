@@ -35,7 +35,9 @@ AUTONOMY = [("free", N_("Авто"), N_("Работает сам: план не 
             ("each_step", N_("Каждый шаг"), N_("Утверждаете план и каждый шаг перед его началом. Медленнее всего, но "
                                                "всё под вашим контролем."))]  # fmt: skip
 LIMITS = [("done_when", N_("Готово, когда"), N_("По этому агент проверит себя в конце, например «все тесты "
-                                                "проходят». Можно оставить пустым — тогда он сверится с самой целью.")),
+                                                "проходят». Можно оставить пустым — тогда он сверится с самой целью. "
+                                                "«не трогать: README.md», «только: src/», «не запускать: git push» "
+                                                "(через «;») хаб проверяет сам.")),
           ("max_steps", N_("Шагов, не больше"), N_("Сколько действий агент может сделать, прежде чем остановится.")),
           ("max_minutes", N_("Минут, не больше"), N_("Сколько времени задача может идти.")),
           ("budget_usd", N_("Бюджет, $"), N_("Сколько можно потратить на платные модели; локальные — бесплатно.")),
@@ -65,6 +67,7 @@ BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_m
                          "max_replans": "3", "network": False, "refusal_vector": "",
                          "screen_cloud": None}  # None: as «Папки и сайты для агента» says (22.3)  # fmt: skip
 REFUSAL_SAID = {1: N_("снятие отказов вкл"), 0: N_("снятие отказов выкл")}
+FILES_SHOWN = 10  # of a step's changed files, named on its card
 
 
 def utc_now() -> str:
@@ -89,13 +92,26 @@ def task_rows(runs: list[dict[str, Any]], selected: str, paused: set[str]) -> li
     return out
 
 
+def files_text(files: list[dict[str, Any]] | None) -> str:
+    """What a step changed, by the hub's diff (25.1): «изменено: README.md (+1 −0), count.txt (+1 −0)»; "" - not
+    seen (a task without projects, a step not ended)."""
+    if files is None:
+        return ""
+    if not files:
+        return tr("файлы не менялись")
+    named = ", ".join(f"{f['path']} (+{f['added']} −{f['removed']})" for f in files[:FILES_SHOWN])
+    more = tr(" и ещё {count}", count=len(files) - FILES_SHOWN) if len(files) > FILES_SHOWN else ""
+    return tr("изменено: {files}", files=named + more)
+
+
 def step_rows(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
     rows = []
     for step in (plan or {}).get("steps") or []:
         label, icon = STEP_STATES.get(step["status"], (step["status"], "dots"))
         tries = tr(" · попыток {count}", count=step["attempts"]) if step.get("attempts") else ""
         rows.append({"n": step["n"], "title": step["title"], "check": step.get("check") or "", "status": step["status"],
-                     "label": tr(label) + tries, "icon": icon, "note": step.get("note") or ""})  # fmt: skip
+                     "label": tr(label) + tries, "icon": icon, "note": step.get("note") or "",
+                     "files": files_text(step.get("files")), "mismatch": step.get("mismatch") or ""})  # fmt: skip
     return rows
 
 
@@ -122,7 +138,10 @@ def report_rows(report: dict[str, Any] | None) -> dict[str, Any]:
     return {"summary": report.get("summary", ""), "goalMet": bool(report.get("goal_met")),
             "verdict": tr("Цель достигнута") if report.get("goal_met") else tr("Цель не достигнута"),
             "done": report.get("done") or [], "notDone": report.get("not_done") or [],
-            "files": report.get("files") or []}  # fmt: skip
+            "files": report.get("files") or [],
+            # the agent's words against the run's diff (25.1)
+            "changed": report.get("changed") or [], "unlisted": report.get("unlisted") or [],
+            "unchanged": report.get("unchanged") or [], "broken": report.get("broken") or []}  # fmt: skip
 
 
 def goal_body(draft: dict[str, Any]) -> dict[str, Any]:

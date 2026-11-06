@@ -315,6 +315,59 @@ def test_the_plan_comes_before_acting(hub):  # noqa: F811
     assert run["report"]["goal_met"] is False
 
 
+def trusted_agent(hub, repo):  # noqa: F811
+    """A project, and the agent's profile that writes and runs commands there without asking."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    body = {"name": "Правщик", "instructions": "", "model_id": "agent/m", "mode": "trusted", "max_steps": 30,
+            "tools": ["read_file", "write_file", "run_command"], "project_ids": [pid]}  # fmt: skip
+    made = hub.post("/v1/agents", json=body)
+    assert made.status_code == 201, made.text
+    return made.json()["id"]
+
+
+def test_a_step_is_checked_against_what_it_changed(hub, repo):  # noqa: F811
+    """25.1 (§5.4: «coder» changed a line its condition «готово» forbade, and wrote that it had not): a step marked
+    done gets what it actually changed - the project's files where the step began against now, so a command's writes
+    count as the hub's own. The condition's forms the hub checks refuse at the call, as a goal's constraints (11.4);
+    what a command did against them goes into the step's record and on the card, and «goal met» is not taken while
+    it stands. The report's files are compared with the run's diff."""
+    agent = use(hub, Scripted("agent", [
+        [PLAN],
+        [step(1, "running")],
+        [("write_file", {"project": "proj", "path": "README.md", "content": "x\n"})],  # refused at the call
+        [("write_file", {"project": "proj", "path": "count.txt", "content": "12\n"})],
+        [step(1, "done", result="прочитан", check="README не трогал")],
+        [("run_command", {"project": "proj", "command": "Add-Content README.md 'more'"})],  # unseen at the call
+        [step(2, "done", result="12", check="посчитал")],  # never «running»: from where step 1 ended
+        [("finish", {"summary": "12 строк.", "goal_met": True, "files": ["count.txt"]})],  # not taken
+        [("finish", {"summary": "12 строк, но README изменён.", "goal_met": False,
+                     "files": ["proj/count.txt", "docs/guide.md"]})],
+        "Готово.",
+    ]))  # fmt: skip
+    condition = "число строк названо; не трогать: README.md"
+    run_id = start(hub, profile_id=trusted_agent(hub, repo), done_when=condition, project_ids=None)
+    run = ended(hub, run_id)
+    said = results(agent)
+    assert said[0].startswith("Plan version 1 saved") and "the hub refuses what breaks «не трогать: README.md»" in \
+        said[0]  # fmt: skip
+    assert "forbids writing readme.md" in said[2] and (repo / "README.md").read_text(encoding="utf-8").startswith("#")
+    assert "What the step changed, by the hub's diff: count.txt (added, +1 -0)." in said[4]
+    assert "Next: step 2" in said[4] and "does not fit" not in said[4]
+    assert "README.md (changed, +1 -0)" in said[6] and "It does not fit the condition «не трогать: README.md»" in \
+        said[6]  # fmt: skip
+    assert said[7].startswith("not saved: the condition «не трогать: README.md» is broken") and "README.md" in said[7]
+    assert said[8].startswith("Report saved")
+    first, second = hub.get(f"/v1/runs/{run_id}/plan").json()["plans"][0]["steps"]
+    assert first["files"] == [{"path": "count.txt", "status": "added", "added": 1, "removed": 0}]
+    assert first["mismatch"] == "" and first["note"] == "прочитан · проверка: README не трогал"
+    assert second["files"] == [{"path": "README.md", "status": "changed", "added": 1, "removed": 0}]
+    assert second["mismatch"] == "условие «не трогать: README.md» — изменён README.md"
+    report = run["report"]
+    assert report["goal_met"] is False and report["changed"] == ["README.md", "count.txt"]
+    assert report["unlisted"] == ["README.md"] and report["unchanged"] == ["docs/guide.md"]
+    assert report["broken"] == ["условие «не трогать: README.md» — изменён README.md"]
+
+
 def test_questions_come_with_answers_to_pick_in_a_task_and_in_a_chat(hub):  # noqa: F811
     """2026-10-28 (the user's word): ask_user offers answers (options) - an agent's task shows them as buttons, and
     an ordinary chat's model has the same tool now; a chat's question waits in the chat and its answer goes back."""

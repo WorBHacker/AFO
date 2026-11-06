@@ -316,6 +316,25 @@ Item {
                                         font.family: Theme.uiFont
                                         font.pixelSize: 12
                                     }
+                                    Text {  // what the step changed, by the hub's diff (25.1)
+                                        visible: modelData.files !== ""
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        text: modelData.files
+                                        color: Theme.p.faint
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 12
+                                    }
+                                    Text {
+                                        objectName: "agentStepMismatch"
+                                        visible: modelData.mismatch !== ""
+                                        width: parent.width
+                                        wrapMode: Text.Wrap
+                                        text: qsTr("Не сходится: %1").arg(modelData.mismatch)
+                                        color: Theme.p.warn
+                                        font.family: Theme.uiFont
+                                        font.pixelSize: 12
+                                    }
                                 }
                             }
                         }
@@ -426,7 +445,8 @@ Item {
                     Repeater {
                         model: [{ name: qsTr("Сделано"), items: (view.task.report || {}).done || [] },
                                 { name: qsTr("Не сделано"), items: (view.task.report || {}).notDone || [] },
-                                { name: qsTr("Файлы"), items: (view.task.report || {}).files || [] }]
+                                { name: qsTr("Файлы"), items: (view.task.report || {}).files || [] },
+                                { name: qsTr("Изменено на деле"), items: (view.task.report || {}).changed || [] }]
                         delegate: Text {
                             required property var modelData
                             visible: modelData.items.length > 0
@@ -434,6 +454,22 @@ Item {
                             wrapMode: Text.Wrap
                             text: modelData.name + ": " + modelData.items.join("; ")
                             color: Theme.p.text_soft
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                    }
+                    Repeater {  // the report's words against the run's diff (25.1)
+                        objectName: "agentReportMismatch"
+                        model: [{ name: qsTr("Нарушено условие"), items: (view.task.report || {}).broken || [] },
+                                { name: qsTr("Нет в отчёте"), items: (view.task.report || {}).unlisted || [] },
+                                { name: qsTr("В отчёте, но не менялись"), items: (view.task.report || {}).unchanged || [] }]
+                        delegate: Text {
+                            required property var modelData
+                            visible: modelData.items.length > 0
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            text: modelData.name + ": " + modelData.items.join("; ")
+                            color: Theme.p.warn
                             font.family: Theme.uiFont
                             font.pixelSize: 12
                         }

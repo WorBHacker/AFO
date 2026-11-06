@@ -282,7 +282,9 @@ AUTO_RUN = {**RUN, "id": "auto1", "conversation_id": "auto1", "kind": "autonomou
 AUTO_PLAN = {"goal": "Посчитать строки", "done_when": "число названо", "autonomy": "plan", "report": None,
              "paused": False, "plans": [{"version": 2, "reason": "сбивался", "approved": "user", "steps": [
                  {"n": 1, "title": "Прочитать", "check": "файл прочитан", "status": "done", "attempts": 0,
-                  "note": "прочитан · проверка: 9 строк"},
+                  "note": "прочитан · проверка: 9 строк",
+                  "files": [{"path": "README.md", "status": "changed", "added": 1, "removed": 0}],
+                  "mismatch": "условие «не трогать: README.md» — изменён README.md"},
                  {"n": 2, "title": "Посчитать", "check": "дважды", "status": "running", "attempts": 1, "note": ""}]}],
              "questions": [{"id": "q1", "question": "Считать пустые?", "status": "pending"}]}  # fmt: skip
 PRESETS = {
@@ -4930,6 +4932,17 @@ def test_the_agent_modes_rows():
     assert rows_[1]["goalMet"] and rows_[0]["statusLabel"] == "пауза"
     steps = au.step_rows(AUTO_PLAN["plans"][0])
     assert (steps[0]["label"], steps[0]["icon"], steps[1]["label"]) == ("готово", "check", "идёт · попыток 1")
+    # 25.1: what a step changed by the hub's diff, and what of it breaks the condition «готово»
+    assert (steps[0]["files"], steps[1]["files"], steps[1]["mismatch"]) == ("изменено: README.md (+1 −0)", "", "")
+    assert steps[0]["mismatch"] == "условие «не трогать: README.md» — изменён README.md"
+    assert au.files_text([]) == "файлы не менялись" and au.files_text(None) == ""
+    many = [{"path": f"f{i}.txt", "status": "added", "added": 2, "removed": 0} for i in range(12)]
+    assert au.files_text(many).endswith("f9.txt (+2 −0) и ещё 2")
+    said = au.report_rows({"summary": "ok", "goal_met": False, "files": ["a.py"], "changed": ["README.md"],
+                           "unlisted": ["README.md"], "unchanged": ["a.py"], "broken": ["условие …"]})  # fmt: skip
+    assert (said["changed"], said["unlisted"], said["unchanged"], said["broken"]) == (
+        ["README.md"], ["README.md"], ["a.py"], ["условие …"])  # fmt: skip
+    assert au.report_rows({"summary": "ok", "goal_met": True})["unlisted"] == []  # a report from before 25.1
     text = au.plan_text(AUTO_PLAN["plans"][0])
     assert text == "Прочитать — файл прочитан\nПосчитать — дважды"
     assert au.steps_from_text("1. Прочитать — файл прочитан\n\n2) Посчитать") == [
@@ -4994,6 +5007,8 @@ def test_the_agent_mode_in_the_window(qapp):
         run["detail"] = ""
         assert view.task["detailPlain"] == ""
         assert quick.window.findChild(QObject, "agentQuestion").property("visible")
+        mismatch = item_named(quick.window.findChild(QObject, "agentSteps"), "agentStepMismatch")  # 25.1: step 1's
+        assert mismatch.property("visible") and "не трогать: README.md" in mismatch.property("text")
         view.answer("q1", "  нет  ")
         view.pause()
         view.editPlan("Только посчитать — дважды", "быстрее")

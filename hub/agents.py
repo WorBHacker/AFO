@@ -46,6 +46,7 @@ from . import (
     compact,
     computer,
     goals,
+    guard,
     judge,
     mail,
     memory,
@@ -1007,6 +1008,8 @@ class AgentRunner:
             self._waiting.pop(run_id, None)
             self._held.add(run_id)
         auto = run.get("kind") == "autonomous"
+        if auto and (rules := autonomous.conditions(run.get("done_when"))):  # refused at the call, as a goal's (25.1)
+            self._chat.guards[run_id] = guard.TurnGuard(rules)
         limits = Limits(max_steps=run["max_steps"], deadline=time.monotonic() + run["max_minutes"] * 60,
                         budget_usd=run["budget_usd"], autonomous=auto)  # fmt: skip
         model_id = run["model_id"]
@@ -1036,6 +1039,7 @@ class AgentRunner:
         status = outcome.status if outcome.status in ("done", "error", "cancelled") else "done"
         if self._chat.computer is not None:  # its hold on the desktop goes with it (D41)
             await self._chat.computer.release(run_id)
+        self._chat.guards.pop(run_id, None)
         autonomy = self._chat.autonomy
         if autonomy is not None:
             await autonomy.expire_all(run_id)  # its questions: nobody waits for the answers now

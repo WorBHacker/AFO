@@ -220,17 +220,28 @@ def claude_call(tool_name: str, data: dict[str, Any], root: Path | None) -> tupl
     return "write", path
 
 
+def breaking(found: list[Rule], target: str) -> Rule | None:
+    """The rule a write to `target` (the path in the project) breaks: «don't touch» it, or «only» elsewhere."""
+    path = _path(target)
+    for r in found:
+        if r.kind == "paths_no" and any(_matches(path, i) for i in r.items):
+            return r
+    only = [r for r in found if r.kind == "paths_only"]
+    if only and not any(_matches(path, i) for r in only for i in r.items):
+        return only[0]
+    return None
+
+
 def refusal(found: list[Rule], what: str, target: str) -> str | None:
     """Why a write (`target`: the path in the project) or a command breaks a constraint the hub checks; None - not."""
     if what == "write":
         path = _path(target)
-        for r in found:
-            if r.kind == "paths_no" and any(_matches(path, i) for i in r.items):
-                return f"not done: the goal's constraint «{r.text}» forbids writing {path}"
-        only = [r for r in found if r.kind == "paths_only"]
-        if only and not any(_matches(path, i) for r in only for i in r.items):
-            return f"not done: the goal's constraint «{only[0].text}» allows writing only there, not {path}"
-        return None
+        r = breaking(found, target)
+        if r is None:
+            return None
+        if r.kind == "paths_no":
+            return f"not done: the goal's constraint «{r.text}» forbids writing {path}"
+        return f"not done: the goal's constraint «{r.text}» allows writing only there, not {path}"
     for r in found:
         if r.kind == "commands_no" and (item := next((i for i in r.items if _runs(target, i)), None)):
             return f"not done: the goal's constraint «{r.text}» forbids the command `{item}`"
