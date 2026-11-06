@@ -2,8 +2,10 @@
 
 Every request is asked in the approval queue, unless its site is on the short list of documentation sites below or
 the project allows that site ("always in this project" on it). Only http and https, and never this computer or the
-local network: a model must not reach the hub's own API or other local services through the web tool. What comes
-back is the page's text - headings, paragraphs, lists, links - without scripts and styles, a part at a time.
+local network: a model must not reach the hub's own API or other local services through the web tool. The name is
+looked up once and the request goes to the address that was checked (22.2): a DNS answer that turns local after the
+check (rebinding) has nothing to change. What comes back is the page's text - headings, paragraphs, lists, links -
+without scripts and styles, a part at a time.
 
 What a page says is untrusted data (D19): once a chat has read the web, its writes and commands are asked every time,
 whatever the chat's trust or the project's rules (hub/chat.py).
@@ -15,6 +17,8 @@ import asyncio
 import ipaddress
 import re
 import socket
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -32,6 +36,7 @@ USER_AGENT = "AFO-hub/0.1 (a local assistant reading one page for its user)"
 # the carriers' and VPNs' shared space (Tailscale gives its machines addresses there): not "private" to Python, yet
 # never the open web
 SHARED = ipaddress.ip_network("100.64.0.0/10")
+LOCAL_NAMES = (".local", ".localhost", ".internal", ".lan")
 # documentation sites a request to which needs no question (D19: a short list for quick answers)
 ALLOWED_SITES = frozenset({
     "pypi.org", "docs.python.org", "npmjs.com", "www.npmjs.com", "developer.mozilla.org", "learn.microsoft.com",
@@ -70,27 +75,59 @@ def check_url(url: Any) -> str:
     return url
 
 
-def _connected_to(response: httpx.Response) -> str | None:
-    """The address the request really reached (after DNS), when the transport tells it."""
-    stream = response.extensions.get("network_stream")
-    peer = stream.get_extra_info("server_addr") if stream is not None else None
-    return str(peer[0]) if peer else None
+def _local(address: str) -> bool:
+    """An address of this computer or its local network."""
+    ip = ipaddress.ip_address(address.split("%")[0])
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+        or ip.is_multicast
+        or ip in SHARED
+    )
 
 
-def _is_local(host: str) -> bool:
-    """The host is this computer or its local network - by name or by any address it resolves to."""
-    if host in ("localhost",) or host.endswith((".local", ".localhost", ".internal", ".lan")):
-        return True
+def addresses(host: str) -> list[str]:
+    """Where a request to the host may go: the addresses its name resolves to, looked up once. This computer or its
+    local network - by name or by any of its addresses - is refused."""
+    refused = f"{host} is this computer or its local network: the web tool does not go there"
+    if host == "localhost" or host.endswith(LOCAL_NAMES):
+        raise ToolError(refused)
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError as exc:
         raise ToolError(f"{host} could not be found ({exc.strerror or exc})") from exc
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%")[0])
-        if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved \
-                or address.is_unspecified or address.is_multicast or address in SHARED:  # fmt: skip
-            return True
-    return False
+    found = list(dict.fromkeys(str(info[4][0]) for info in infos))
+    if not found or any(_local(address) for address in found):
+        raise ToolError(refused)
+    return found
+
+
+@asynccontextmanager
+async def _get(http: httpx.AsyncClient, url: str, found: list[str]) -> AsyncIterator[httpx.Response]:
+    """GET to the first of the checked addresses that connects. The name rides in Host and, over https, in SNI - the
+    certificate is checked against it, not against the address."""
+    target = httpx.URL(url)
+    for address in found:
+        request = http.build_request(
+            "GET",
+            target.copy_with(host=address),
+            headers={"Host": target.netloc.decode("ascii")},
+            extensions={"sni_hostname": target.raw_host.decode("ascii")},
+        )
+        try:
+            response = await http.send(request, stream=True)
+        except httpx.ConnectError:
+            if address == found[-1]:
+                raise
+            continue  # an IPv6 address on a computer without IPv6, say: the next one
+        try:
+            yield response
+        finally:
+            await response.aclose()
+        return
 
 
 class _Text(HTMLParser):
@@ -169,16 +206,17 @@ async def fetch(args: dict[str, Any]) -> str:
     start = args.get("start_char", 0)
     if isinstance(start, bool) or not isinstance(start, int) or start < 0:
         raise ToolError("`start_char` must be a whole number from 0")
-    async with httpx.AsyncClient(timeout=TIMEOUT_S, follow_redirects=False, headers={"User-Agent": USER_AGENT}) as http:
+    # no connection is kept for the next request: one made under a name never carries another (a redirect's)
+    async with httpx.AsyncClient(
+        timeout=TIMEOUT_S,
+        follow_redirects=False,
+        headers={"User-Agent": USER_AGENT},
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as http:
         for _ in range(MAX_REDIRECTS + 1):
-            if await asyncio.to_thread(_is_local, site(url)):
-                raise ToolError(f"{site(url)} is this computer or its local network: the web tool does not go there")
+            found = await asyncio.to_thread(addresses, site(url))
             try:
-                async with http.stream("GET", url) as response:
-                    # the name was checked before, but it may resolve anew (DNS rebinding): check where it went
-                    peer = _connected_to(response)
-                    if peer is not None and await asyncio.to_thread(_is_local, peer):
-                        raise ToolError(f"{site(url)} led to this computer or its local network ({peer}): refused")
+                async with _get(http, url, found) as response:
                     if response.is_redirect and response.headers.get("location"):
                         url = check_url(urljoin(url, response.headers["location"]))
                         continue

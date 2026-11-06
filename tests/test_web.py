@@ -3,8 +3,10 @@ the list, and a chat that read the web asks for every write and command."""
 
 import asyncio
 import http.server
+import socket
 import threading
 
+import httpx
 import pytest
 
 from hub import store, web
@@ -19,6 +21,7 @@ PAGE = (
     "<ul><li>шаг один</li><li>шаг два</li></ul><script>steal()</script><p>Ключ: sk-ant-api03-" + "k" * 40 + "</p>"
     "</body></html>"
 )
+HOSTS: list[str] = []  # the Host header of each request the small site below got
 
 
 @pytest.fixture
@@ -27,6 +30,7 @@ def site(monkeypatch):
 
     class Pages(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            HOSTS.append(self.headers["Host"])
             if self.path == "/old":
                 self.send_response(302)
                 self.send_header("Location", "/doc")
@@ -44,8 +48,9 @@ def site(monkeypatch):
 
     server = http.server.HTTPServer(("127.0.0.1", 0), Pages)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    real = web._is_local
-    monkeypatch.setattr(web, "_is_local", lambda host: False if host == "127.0.0.1" else real(host))
+    real = web._local
+    monkeypatch.setattr(web, "_local", lambda address: address != "127.0.0.1" and real(address))
+    HOSTS.clear()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
 
@@ -146,23 +151,58 @@ def test_listed_sites_need_no_question(hub, repo, site, monkeypatch):  # noqa: F
     assert hub.get("/v1/approvals").json()["approvals"] == []
 
 
-def test_a_name_that_turns_local_after_the_check_is_refused(site, monkeypatch):
-    """DNS rebinding: the name passed the check, then the connection reached this computer - nothing is read."""
-    checks = []
+def test_the_name_is_looked_up_once_and_its_checked_address_is_the_one_reached(site, monkeypatch):
+    """DNS rebinding (22.2): a name that answers the check with a public address and the connection with a local one
+    reaches nothing local - it is looked up once, the request goes to the address that was checked, and the name
+    rides in Host."""
+    port = site.rsplit(":", 1)[1]
+    real = socket.getaddrinfo
+    looked_up = []
 
-    def public_first_then_local(host):  # the name's check passes; the address the connection reached does not
-        checks.append(host)
-        return len(checks) > 1
+    def rebinding(host, *args, **kwargs):
+        if host != "docs.example":
+            return real(host, *args, **kwargs)
+        looked_up.append(host)
+        address = "127.0.0.1" if len(looked_up) == 1 else "10.0.0.7"  # the site (public to this test), then local
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
 
-    monkeypatch.setattr(web, "_is_local", public_first_then_local)
-    with pytest.raises(ToolError, match=r"led to this computer or its local network \(127\.0\.0\.1\)"):
-        asyncio.run(web.fetch({"url": f"{site}/doc"}))
+    monkeypatch.setattr(web.socket, "getaddrinfo", rebinding)
+    text = asyncio.run(web.fetch({"url": f"http://docs.example:{port}/doc"}))
+    assert text.startswith(f"http://docs.example:{port}/doc - Справка — demo") and "# Установка" in text
+    assert looked_up == ["docs.example"] and [f"docs.example:{port}"] == HOSTS
+
+
+def test_a_secure_page_goes_to_the_checked_address_under_its_name(monkeypatch):
+    """Over https the name is the one in SNI and in the certificate's check, the connection goes to a checked address;
+    an address that does not connect gives way to the next one; every redirect is looked up and checked anew."""
+    v6, v4 = "2606:2800:21f:cb07:6820:80da:af6b:8b2c", "93.184.215.14"
+    answers = [
+        (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (v6, 0, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", (v4, 0)),
+    ]
+    monkeypatch.setattr(web.socket, "getaddrinfo", lambda host, port: answers)
+    sent = []
+
+    async def send(self, request, **kwargs):
+        sent.append((request.url.host, request.headers["host"], request.extensions.get("sni_hostname")))
+        if request.url.host == v6:
+            raise httpx.ConnectError("no route to the host", request=request)
+        if request.url.path == "/old":
+            return httpx.Response(302, headers={"Location": "http://localhost:8765/v1/info"}, request=request)
+        return httpx.Response(200, headers={"Content-Type": "text/plain"}, content=b"hello", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    assert asyncio.run(web.fetch({"url": "https://docs.example/doc"})).endswith("\n\nhello")
+    assert sent == [(v6, "docs.example", "docs.example"), (v4, "docs.example", "docs.example")]
+    with pytest.raises(ToolError, match="localhost is this computer or its local network"):
+        asyncio.run(web.fetch({"url": "https://docs.example/old"}))
 
 
 def test_the_shared_address_space_is_not_the_web(monkeypatch):
     """The audit (D46): 100.64.0.0/10 - a carrier's or a VPN's (Tailscale's) machines - is not "private" to Python,
     yet it is never the open web."""
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("100.101.102.103", 0))])
-    assert web._is_local("box.tailnet.example")
+    with pytest.raises(ToolError, match="this computer or its local network"):
+        web.addresses("box.tailnet.example")
     monkeypatch.setattr(web.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("93.184.215.14", 0))])
-    assert not web._is_local("example.com")
+    assert web.addresses("example.com") == ["93.184.215.14"]
