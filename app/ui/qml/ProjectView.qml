@@ -1450,6 +1450,7 @@ Item {
                     width: parent.width
                     height: parent.height - y
                     source: Editor.compareView
+                    reader: "compare"
                     showNumbers: false
                 }
             }
@@ -1464,6 +1465,7 @@ Item {
             visible: !view.editing && (!!view.file.diffMode || (!view.file.binary && !view.file.missing))
             source: Projects.fileShown
             showNumbers: !view.file.diffMode
+            gotoLine: view.file.gotoLine || 0
             gotoOffset: view.file.gotoOffset === undefined ? -1 : view.file.gotoOffset
             gotoSeq: view.file.gotoSeq || 0
         }

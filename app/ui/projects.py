@@ -466,7 +466,7 @@ class Projects(QObject):
 
     @Slot()
     def copyFile(self) -> None:
-        """The whole open file to the clipboard (a selection with the mouse stays within one piece of the viewer)."""
+        """The whole open file to the clipboard (as it is on the disk: its line ends too)."""
         if self._file_data is not None and not self._file_data.get("binary"):
             self.app.copy(self._file_data.get("text", ""))
 
@@ -487,19 +487,17 @@ class Projects(QObject):
         self._file_gen += 1
         generation = self._file_gen
 
-        def fetch() -> tuple[dict[str, Any], str, tuple[str, dict[str, Any], dict[str, Any] | None]]:
+        def fetch() -> tuple[dict[str, Any], str, tuple[dict[str, Any], dict[str, Any] | None]]:
             data = self.app.client.file(pid, path) if exists else None
             data = data or {"path": path, "size": 0, "binary": False, "text": "", "missing": True}
             text = self.app.client.diff(pid, path)["diff"] if diff else ""
-            # coloured here, off the window's thread (~1 s per MB); again there only if the theme changes meanwhile
-            theme = palette.current().name
-            return data, text, (theme, project_rows.file_view(data), project_rows.diff_view(text) if diff else None)
+            return data, text, (project_rows.file_view(data), project_rows.diff_view(text) if diff else None)
 
-        def show(found: tuple[dict[str, Any], str, tuple[str, dict[str, Any], dict[str, Any] | None]]) -> None:
+        def show(found: tuple[dict[str, Any], str, tuple[dict[str, Any], dict[str, Any] | None]]) -> None:
             if generation != self._file_gen or self.currentId != pid:
                 return
-            self._file_data, self._diff_text, (theme, view, shown) = found
-            self._render_file(diff, (view, shown) if theme == palette.current().name else None)
+            self._file_data, self._diff_text, ready = found
+            self._render_file(diff, ready)
 
         def failed(error: Exception) -> None:
             if generation != self._file_gen:
@@ -514,7 +512,7 @@ class Projects(QObject):
         self.app._call(fetch, show, failed)
 
     def _render_file(self, diff: bool, ready: tuple[dict[str, Any], dict[str, Any] | None] | None = None) -> None:
-        """`ready`: the file view and the diff view, coloured already in the current theme."""
+        """`ready`: the file view and the diff view, made off the window's thread."""
         data = self._file_data
         if data is None:
             return
@@ -526,11 +524,11 @@ class Projects(QObject):
         view["mark"] = mark
         view["diffMode"] = diff
         view.update(self._goto_fields(data) if not diff else {"gotoLine": 0, "gotoOffset": -1, "gotoSeq": 0})
-        chunks = view.pop("chunks", [])
-        body = {"chunks": chunks, "rich": view.get("rich", False), "columns": view.get("columns", 0),
-                "digits": view.get("digits", 1)}  # fmt: skip
+        # the text (or a big file's pieces) goes to the viewer alone (`fileShown`), coloured there (app/ui/reader.py)
+        body = {k: view.pop(k) for k in ("text", "chunks") if k in view}
+        body.update({k: view.get(k) for k in ("lexer", "columns", "digits")})
         if diff and shown is not None:
-            body = {"chunks": shown["chunks"], "rich": shown["rich"], "columns": shown["columns"], "digits": 0}
+            body = shown
             view["diffEmpty"] = not self._diff_text
         self._file = view
         self._shown = {**body, "key": data["path"] + (":diff" if diff else "")}
@@ -584,8 +582,7 @@ class Projects(QObject):
         self.fileShownChanged.emit()
 
     def _restyle(self) -> None:
-        if self._file_data is not None:
-            self._render_file(bool(self._file.get("diffMode")))
+        """The theme changed. The open file's colours are the viewer's own (app/ui/reader.py)."""
         if self._search:
             self.searchChanged.emit()  # the marks carry colours
         if self._card:

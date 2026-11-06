@@ -17,7 +17,6 @@ from common import invisible
 from common.i18n import N_, tr
 
 from .. import palette, presenter
-from ..render import highlight_lines
 
 # code the hub's symbol index reads (hub/symbols.py, SUFFIXES): such a file has an outline
 OUTLINE_SUFFIXES = {
@@ -29,8 +28,11 @@ SYMBOL_KINDS = {
     "interface": ("I", N_("интерфейс")), "type": ("T", N_("тип")), "module": ("N", N_("модуль")),
     "constant": ("K", N_("константа")), "macro": ("#", N_("макрос")), "impl": ("I", N_("реализация")),
 }  # fmt: skip
-HIGHLIGHT_MAX_BYTES = 300_000  # bigger files are shown as plain text: colouring them takes ~1 s per MB
-CHUNK_LINES = 300  # the viewer lays out only the pieces on screen and near it: a long file opens like a short one
+# the viewer shows a file up to this as one text (selected through the whole of it, coloured by the editor's
+# highlighter); a bigger one in pieces, plain: one text costs ~0.4 s a megabyte to lay out (24.1). The editor's
+# limit too (editor.EDIT_LIMIT)
+WHOLE_MAX_BYTES = 1024 * 1024
+CHUNK_LINES = 300  # a bigger file's pieces: only those on screen and near it are laid out
 CONFLICT = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 
 
@@ -96,37 +98,36 @@ def columns_of(text: str) -> int:
     return max((len(line.expandtabs(TAB_COLUMNS)) for line in text.split("\n")), default=0)
 
 
-def pieces(rows: list[str], coloured: list[str] | None, digits: int) -> list[dict[str, Any]]:
-    """Lines in pieces of CHUNK_LINES for the viewer: each piece's code (rich text when coloured), its line numbers
-    (plain, padded to `digits`, so a monospace column lines up on the right; none when 0) and where it starts in the
-    whole text."""
+def pieces(rows: list[str], digits: int) -> list[dict[str, Any]]:
+    """A file over WHOLE_MAX_BYTES in pieces of CHUNK_LINES for the viewer: each piece's text, its line numbers
+    (padded to `digits`, so a monospace column lines up on the right; none when 0) and where it starts in the whole
+    text."""
     chunks, start = [], 0
     for first in range(0, len(rows), CHUNK_LINES):
-        plain = "\n".join(rows[first : first + CHUNK_LINES])
-        code = plain
-        if coloured is not None:
-            code = f'<pre style="margin:0; font-family:{palette.MONO_CSS};">'
-            code += "\n".join(coloured[first : first + CHUNK_LINES]) + "</pre>"
+        code = "\n".join(rows[first : first + CHUNK_LINES])
         last = min(first + CHUNK_LINES, len(rows))
         numbers = "\n".join(str(n).rjust(digits) for n in range(first + 1, last + 1)) if digits else ""
         chunks.append({"code": code, "numbers": numbers, "start": start})
-        start += len(plain) + 1
+        start += len(code) + 1
     return chunks
 
 
-def code_view(text: str, path: str, *, lang: str | None = None) -> dict[str, Any]:
-    """A file for the viewer, in pieces (`pieces`): coloured as rich text when not too big, else plain; line numbers
-    as plain text (a plain line is as tall as a line of the coloured <pre>, and plain numbers lay out ~5x faster).
-    Windows line ends are shown as plain ones, so a line's offset in the text is its offset on screen."""
+def whole(text: str) -> bool:
+    return len(text.encode("utf-8", "replace")) <= WHOLE_MAX_BYTES
+
+
+def code_view(text: str, path: str) -> dict[str, Any]:
+    """A file for the viewer (CodeView.qml): up to WHOLE_MAX_BYTES its `text`, coloured by the `lexer` named
+    (app/ui/reader.py); bigger, its `chunks` (`pieces`), plain. Windows line ends are shown as plain ones, so a line's
+    offset in the text is its offset on screen; the last line end is no empty line."""
     text = text.replace("\r\n", "\n")
     lines = text.count("\n") + (0 if text.endswith("\n") or not text else 1)
-    lang = lang if lang is not None else language_of(path)
-    rich = bool(lang) and len(text.encode("utf-8", "replace")) <= HIGHLIGHT_MAX_BYTES
     digits = len(str(max(lines, 1)))
     body = text[:-1] if text.endswith("\n") else text
-    coloured = highlight_lines(body, lang) if rich else None
-    chunks = pieces(body.split("\n"), coloured, digits)
-    return {"chunks": chunks, "lines": lines, "rich": rich, "columns": columns_of(text), "digits": digits}
+    view: dict[str, Any] = {"lines": lines, "columns": columns_of(text), "digits": digits}
+    if whole(text):
+        return {**view, "text": body, "lexer": language_of(path)}
+    return {**view, "chunks": pieces(body.split("\n"), digits), "lexer": ""}
 
 
 DIFF_META = (
@@ -144,27 +145,13 @@ DIFF_META = (
 
 
 def diff_view(text: str) -> dict[str, Any]:
-    """A unified diff line by line in the theme's own colours (code styles colour diffs unevenly): added lines
-    green, removed red, hunk headers in the accent, file headers muted."""
+    """A unified diff for the viewer, without line numbers: its text in the theme's own colours (the "diff" lexer,
+    app/ui/highlighter.py DiffLexer) - or, over WHOLE_MAX_BYTES, in plain pieces."""
     body = text[:-1] if text.endswith("\n") else text
-    if len(text.encode("utf-8", "replace")) > HIGHLIGHT_MAX_BYTES:
-        return {"chunks": pieces(body.split("\n"), None, 0), "rich": False, "columns": columns_of(body)}
-    p = palette.current()
-    out = []
-    for line in body.split("\n"):
-        if line.startswith(DIFF_META):
-            colour = p.muted
-        elif line.startswith("@@"):
-            colour = p.accent
-        elif line.startswith("+"):
-            colour = p.ok
-        elif line.startswith("-"):
-            colour = p.error
-        else:
-            colour = ""
-        escaped = html.escape(line, quote=False)
-        out.append(f'<span style="color:{colour};">{escaped}</span>' if colour else escaped)
-    return {"chunks": pieces(body.split("\n"), out, 0), "rich": True, "columns": columns_of(body)}
+    view: dict[str, Any] = {"columns": columns_of(body), "digits": 0}
+    if whole(text):
+        return {"text": body, "lexer": "diff", **view}
+    return {"chunks": pieces(body.split("\n"), 0), "lexer": "", **view}
 
 
 def file_view(data: dict[str, Any]) -> dict[str, Any]:

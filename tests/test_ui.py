@@ -5,7 +5,6 @@ import copy
 import hashlib
 import json
 import os
-import re
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -18,7 +17,7 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 from app import palette
 from app.hub_client import HubError
-from app.ui import commands, project_rows, rows
+from app.ui import commands, editor, project_rows, rows
 from app.ui.controller import Controller
 from app.ui.models import TREE_ROLES, RowModel
 from app.ui.theme import Theme, qml_colour
@@ -2851,24 +2850,20 @@ def test_project_rows():
         ("logo.png", 0, ""),
         ("README.md", 0, ""),
     ]
-    code = project_rows.code_view("".join(f"x = {n}\n" for n in range(10)) + "\tlong = 1\n", "a.py")
-    # coloured with tags Qt reads fast (no CSS spans); the lexer's last newline is not an empty last line
-    [piece] = code["chunks"]
-    assert code["rich"] and code["lines"] == 11 and "<font color=" in piece["code"] and "<span" not in piece["code"]
-    assert piece["code"].endswith("1</font></pre>") and piece["start"] == 0
-    assert " 9\n10" in piece["numbers"] and "<" not in piece["numbers"]  # plain, padded: they line up on the right
+    # one text (24.1), its colours the editor's highlighter's: the lexer's name; the last newline is no empty line
+    code = project_rows.code_view("".join(f"x = {n}\r\n" for n in range(10)) + "\tlong = 1\n", "a.py")
+    assert code["text"] == "".join(f"x = {n}\n" for n in range(10)) + "\tlong = 1" and "chunks" not in code
+    assert (code["lexer"], code["lines"], code["digits"]) == ("python", 11, 2)
     assert code["columns"] == project_rows.TAB_COLUMNS + len("long = 1")  # the width, without a layout
     plain = project_rows.code_view("<b>не html</b>", "notes.unknownext")
-    assert not plain["rich"] and plain["chunks"] == [{"code": "<b>не html</b>", "numbers": "1", "start": 0}]
-    big = project_rows.code_view("x = 1\n" * 60_000, "big.py")
-    assert not big["rich"]  # too big to colour
+    assert plain["text"] == "<b>не html</b>" and plain["lexer"] == ""
+    big = project_rows.code_view("x = 1\n" * 200_000, "big.py")  # 1.2 MB: in pieces, plain
+    assert "text" not in big and big["lexer"] == "" and len(big["chunks"]) == 667  # of 300 lines
     diff = project_rows.diff_view("@@ -1 +1 @@\n-old <x>\n+new\n same\n")
-    [piece] = diff["chunks"]
-    assert f'<span style="color:{palette.DARK.ok};">+new</span>' in piece["code"] and piece["numbers"] == ""
-    assert f'<span style="color:{palette.DARK.error};">-old &lt;x&gt;</span>' in piece["code"]
-    assert "\n same</pre>" in piece["code"]
+    assert diff == {"text": "@@ -1 +1 @@\n-old <x>\n+new\n same", "lexer": "diff", "columns": 11, "digits": 0}
     view = project_rows.file_view({"path": "src/app.py", "size": 26, "text": FILES["src/app.py"], "encoding": "utf-8"})
     assert (view["name"], view["folder"], view["linesText"], view["sizeText"]) == ("app.py", "src", "2 строки", "26 Б")
+    assert view["lang"] == "python" and view["lexer"] == "python"  # the header's language, the viewer's colours
 
 
 def test_projects_tree_files_and_git(app, clipboard_stand_in):
@@ -2897,16 +2892,17 @@ def test_projects_tree_files_and_git(app, clipboard_stand_in):
 
     projects.openFile("src/app.py", False)
     wait_until(lambda: projects.file.get("path") == "src/app.py")
-    assert projects.file["rich"] and projects.file["hasDiff"] and projects.file["mark"] == "M"
+    assert projects.file["lexer"] == "python" and projects.file["hasDiff"] and projects.file["mark"] == "M"
     assert projects.file["linesText"] == "2 строки"
     assert projects.openPath == "src/app.py"  # what the tree's rows read: not the whole file each
     assert "chunks" not in projects.file and "text" not in projects.file  # the text goes to the viewer alone
-    assert projects.fileShown["key"] == "src/app.py" and projects.fileShown["rich"]
+    assert projects.fileShown["key"] == "src/app.py" and projects.fileShown["lexer"] == "python"
+    assert projects.fileShown["text"] == FILES["src/app.py"].rstrip("\n")
     projects.copyFile()
     assert clipboard_stand_in.text() == FILES["src/app.py"]
     projects.showDiff(True)
     wait_until(lambda: projects.file.get("diffMode"))
-    assert "+print('new')" in projects.fileShown["chunks"][0]["code"] and projects.fileShown["rich"]
+    assert "+print('new')" in projects.fileShown["text"] and projects.fileShown["lexer"] == "diff"
     assert projects.fileShown["key"] == "src/app.py:diff" and projects.fileShown["digits"] == 0
     projects.openFile("logo.png", False)
     wait_until(lambda: projects.file.get("path") == "logo.png")
@@ -2914,8 +2910,9 @@ def test_projects_tree_files_and_git(app, clipboard_stand_in):
     projects.openFile("old.py", True)  # deleted: only its diff
     wait_until(lambda: projects.file.get("path") == "old.py")
     assert projects.file["missing"] and projects.file["diffMode"]
+    shown = projects.fileShown
     app.setTheme("light")
-    assert "<span" in projects.fileShown["chunks"][0]["code"]  # coloured again for the new theme
+    assert projects.fileShown == shown  # the colours are the viewer's highlighter's: the text is not sent again
     projects.closeFile()
     assert projects.file == {} and projects.openPath == "" and projects.fileShown == {}
 
@@ -3000,7 +2997,7 @@ def test_projects_follow_the_hubs_events(app):
     send(app, "project.files", {"project_id": "p1", "changed": ["src/new.py", "src/app.py"],
                                         "folders": ["src"], "more": False})  # fmt: skip
     wait_until(lambda: any(r["path"] == "src/new.py" for r in projects.tree.rows))
-    wait_until(lambda: "changed" in projects.fileShown["chunks"][0]["code"])
+    wait_until(lambda: "changed" in projects.fileShown["text"])
     assert projects.file["linesText"] == "1 строка"
 
     # a change in a closed folder or in another project costs nothing
@@ -3741,7 +3738,7 @@ def test_projects_mode_and_palette(app):
 
 
 def test_the_projects_view_without_warnings(qapp):
-    from PySide6.QtCore import QObject
+    from PySide6.QtCore import QMetaObject, QObject, QPointF
 
     from app.ui.main import QuickApp
 
@@ -3779,41 +3776,64 @@ def test_the_projects_view_without_warnings(qapp):
         for _ in range(10):
             QApplication.processEvents()
         code = quick.window.findChild(QObject, "codeView")
-        assert code.property("visible") and code.property("contentHeight") > 40
-        # its width comes from the longest line (no layout asked for it): a long Cyrillic or tabbed line still fits
+        text = code.findChild(QObject, "codeText")  # the file as one read-only text (24.1)
+        flick = code.findChild(QObject, "codeFlick")
+        assert code.property("visible") and text.property("readOnly") and text.property("lineCount") == 2
+        # a long Cyrillic or tabbed line fits
         app.client.files["wide.py"] = "x = '" + "широкая строка " * 30 + "'\n\t\tif x:\n"
         app.projects.openFile("wide.py", False)
         wait_until(lambda: app.projects.file.get("path") == "wide.py")
         for _ in range(10):
             QApplication.processEvents()
-        todo, body = [code], None
-        while todo:
-            item = todo.pop()
-            todo.extend(item.childItems())
-            body = item if item.metaObject().className() == "QQuickTextEdit" else body
-        assert body.property("width") >= body.property("implicitWidth") > 2000
-        # a long file: only the pieces near the screen are laid out; a line far down is shown and marked (2026-10-28)
-        n = project_rows.CHUNK_LINES
-        app.client.files["long.py"] = "".join(f"line_{i} = {i}\n" for i in range(40 * n))
-        app.projects.openFileAt("long.py", 30 * n + 5)
+        assert text.property("width") >= text.property("implicitWidth") > 2000
+        # a long file: selected from its first line to its last; a line far down shown and marked; the screen
+        # coloured by the viewer's highlighter, the top of the file not yet
+        app.client.files["long.py"] = "".join(f"line_{i} = {i}\n" for i in range(12_000))
+        app.projects.openFileAt("long.py", 9005)
         wait_until(lambda: app.projects.file.get("path") == "long.py")
         for _ in range(20):
             QApplication.processEvents()
-        todo, laid = [code], []
-        while todo:
-            item = todo.pop()
-            todo.extend(item.childItems())
-            if item.metaObject().className() == "QQuickTextEdit" and "line_" in item.property("text"):
-                laid.append(item)
-        assert code.property("count") == 40 and 0 < len(laid) <= 4
+        assert text.property("lineCount") == 12_000
+        QMetaObject.invokeMethod(text, "selectAll")
+        assert text.property("selectedText") == app.client.files["long.py"].rstrip("\n")
+        QMetaObject.invokeMethod(text, "deselect")
         mark = code.findChild(QObject, "gotoMark")  # the viewer's (the compare sheet has one too)
-        line_height = laid[0].property("height") / n
-        piece = next(item.parentItem() for item in laid if re.search(rf"line_{30 * n}\D", item.property("text")))
-        assert mark.property("visible") and mark.property("height") == line_height
-        assert mark.property("y") == piece.property("y") + 4 * line_height
-        # every piece as tall: where the list put it is where it is (the margins are the header and the footer)
-        assert mark.property("y") - code.property("originY") == 14 + (30 * n + 4) * line_height
-        assert code.property("contentY") < mark.property("y") < code.property("contentY") + code.property("height")
+        line_height = text.property("contentHeight") / 12_000
+        assert mark.property("visible") and abs(mark.property("height") - line_height) < 0.5
+        assert abs(mark.property("y") - text.property("topPadding") - 9004 * line_height) < 1
+        assert flick.property("contentY") < mark.property("y") < flick.property("contentY") + flick.property("height")
+        document = app.readers._colours["file"]._document
+        wait_until(lambda: document.findBlockByNumber(9004).userState() >= 0)
+        assert document.findBlockByNumber(9004).layout().formats() and document.firstBlock().userState() == -1
+        # from there to a diff: its text drawn (put in in the same go as the jump to the top, it was not)
+        app.projects.openFile("src/app.py", True)
+        wait_until(lambda: app.projects.file.get("diffMode") and text.property("lineCount") == 5)
+        for _ in range(20):
+            QApplication.processEvents()
+        shot, corner = quick.window.grabWindow(), flick.mapToScene(QPointF(0, 0))
+        left, top = int(corner.x()), int(corner.y())
+        background = shot.pixelColor(left + 600, top + 600).lightness()
+        inked = [(x, y) for y in range(top, top + 90) for x in range(left, left + 100)
+                 if abs(shot.pixelColor(x, y).lightness() - background) > 60]  # fmt: skip
+        assert len(inked) > 100
+        # far down a long file that shrinks on disk: the short text at once (while a text is replaced, its height and
+        # its line count change one after the other: 100 000 line numbers for a moment held the window 7 s)
+        app.projects.openFileAt("long.py", 9005)
+        wait_until(lambda: flick.property("contentY") > 100_000)
+        began = time.monotonic()
+        app.client.files["long.py"] = "short = 1\n"
+        send(app, "project.files", {"project_id": "p1", "changed": ["long.py"], "folders": [""], "more": False})
+        wait_until(lambda: text.property("text") == "short = 1")
+        assert time.monotonic() - began < 2 and code.findChild(QObject, "lineNumbers").property("count") < 100
+        # over a megabyte: in pieces, plain - only those near the screen laid out (2026-10-28)
+        app.client.files["huge.txt"] = "".join(f"line_{i} = {i}\n" for i in range(80_000))
+        app.projects.openFile("huge.txt", False)
+        wait_until(lambda: app.projects.file.get("path") == "huge.txt")
+        for _ in range(20):
+            QApplication.processEvents()
+        pieces = code.findChild(QObject, "codePieces")
+        assert pieces.property("visible") and pieces.property("count") == 80_000 // project_rows.CHUNK_LINES + 1
+        assert not flick.property("visible") and text.property("text") == ""  # the long text let go
         app.projects.openFile("src/app.py", False)
         wait_until(lambda: app.projects.file.get("path") == "src/app.py")
         app.projects.showDiff(True)
@@ -6437,22 +6457,24 @@ def test_links_the_hub_found_by_itself_in_the_feed():
     assert many["detail"].startswith("front → back, использует; back → front, общее; front → back, использует… —")
 
 
-def test_a_long_file_in_pieces():
-    """2026-10-28: the viewer gets a file in pieces of CHUNK_LINES and lays out only those on screen; colours stay on
-    their lines across pieces (a docstring over a boundary), and blank lines at the start are kept."""
+def test_a_file_over_a_megabyte_in_pieces():
+    """24.1: up to WHOLE_MAX_BYTES (the editor's limit) the viewer shows a file as one text - selected through the
+    whole of it, coloured by the editor's highlighter; a bigger one (the hub gives up to 2 MB of it) comes in pieces of
+    CHUNK_LINES, plain: one text costs ~0.4 s a megabyte to lay out (2026-10-28: only the pieces on screen are)."""
+    assert project_rows.WHOLE_MAX_BYTES == editor.EDIT_LIMIT
     n = project_rows.CHUNK_LINES
-    text = "\n\n" + "".join(f"x{i} = {i}\n" for i in range(n - 4)) + '"""a docstring\nover\nthe boundary"""\ny = 1\n'
+    line = "x = 'строка'  # " + "-" * 40 + "\n"
+    whole = line * (project_rows.WHOLE_MAX_BYTES // len(line.encode()))
+    assert "text" in project_rows.code_view(whole, "a.py") and "text" in project_rows.diff_view(whole)
+    text = "\n\n" + "a\r\n" * (project_rows.WHOLE_MAX_BYTES // 2)  # over the limit, Windows line ends
     view = project_rows.code_view(text, "long.py")
-    first, second = view["chunks"]
-    assert view["lines"] == n + 2 and view["digits"] == 3
-    assert first["code"].startswith('<pre style="margin:0;') and first["code"].split(">", 1)[1].startswith("\n\n")
-    assert first["numbers"].split("\n")[:3] == ["  1", "  2", "  3"] and second["numbers"] == f"{n + 1}\n{n + 2}"
-    assert second["start"] == text.index("the boundary")  # where the piece starts in the whole text
-    assert second["code"].count("<font") == second["code"].count("</font>")  # each line closes its tags
-    assert "the boundary" in second["code"] and "y" in second["code"]
-    plain = project_rows.code_view("a\r\nb\r\n" * n, "notes.unknownext")
-    assert [c["start"] for c in plain["chunks"]] == [0, 2 * n]  # Windows line ends counted as plain ones
-    assert all(c["code"].count("\n") == n - 1 for c in plain["chunks"])
+    first, second = view["chunks"][:2]
+    assert "text" not in view and view["lexer"] == "" and view["digits"] == 6
+    assert first["code"].startswith("\n\na\na") and "<" not in first["code"]  # plain; blank lines at the start kept
+    assert first["numbers"].split("\n")[:3] == ["     1", "     2", "     3"]
+    assert second["start"] == 2 + 2 * (n - 2)  # where the piece starts in the whole text, line ends as plain ones
+    assert all(c["code"].count("\n") == n - 1 for c in view["chunks"][:-1])
+    assert "chunks" in project_rows.diff_view("+" + text) and project_rows.diff_view("+" + text)["lexer"] == ""
 
 
 def test_models_found_on_the_drives_are_listed_and_added(app):

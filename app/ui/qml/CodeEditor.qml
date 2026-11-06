@@ -23,7 +23,9 @@ Item {
     readonly property bool ghostShown: visible && Ghost.key === tabKey && Ghost.text !== ""
                                        && body.cursorPosition === Ghost.position
     readonly property alias body: body
-    readonly property real lineHeight: body.lineCount > 0 ? body.contentHeight / body.lineCount : metrics.height
+    // a line's height - never under the font's: while a text is replaced its height and its line count change one
+    // after the other, and 17 px over 3000 lines put 100 000 numbers in the gutter for a moment (7 s, 24.1)
+    readonly property real lineHeight: Math.max(metrics.height, body.lineCount > 0 ? body.contentHeight / body.lineCount : 0)
     readonly property real gutterWidth: Math.ceil(metrics.advanceWidth("0") * Math.max(3, String(body.lineCount).length)) + 24
     readonly property int firstLine: Math.max(0, Math.floor((flick.contentY - body.topPadding) / lineHeight))
     readonly property int cursorLine: Math.floor((body.cursorRectangle.y - body.topPadding) / lineHeight)
@@ -51,6 +53,7 @@ Item {
         height: parent.height
         clip: true
         Repeater {
+            objectName: "lineNumbers"
             model: Math.ceil(flick.height / editor.lineHeight) + 2
             delegate: Text {
                 required property int index

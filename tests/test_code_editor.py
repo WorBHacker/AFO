@@ -147,7 +147,8 @@ def test_editing_saving_and_the_disk(app):  # noqa: F811
     disk("print('третье')\n")  # with edits: the bar asks
     wait_until(lambda: view.conflict.get("reason") == "changed")
     view.compare()
-    assert view.compareView["chunks"] and not view.compareView["empty"]
+    assert "+print('" in view.compareView["text"] and view.compareView["lexer"] == "diff"  # the viewer colours it
+    assert not view.compareView["empty"]
     view.takeDisk()
     assert document.toPlainText() == "print('третье')\n" and not view.dirty and not view.conflict
     document.undo()  # the edits come back with Ctrl+Z
@@ -321,6 +322,41 @@ def test_the_editor_in_the_window(qapp):  # noqa: F811
         quick.close()
 
 
+def test_a_long_text_replaced_by_a_short_one_in_the_window(qapp):  # noqa: F811
+    """24.1: the disk's short version taken in place of a long text scrolled far down - at once: while a text is
+    replaced its height and its line count change one after the other, and the line numbers for a moment were
+    100 000 (17 px over 3000 lines), the window held for seconds."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.files["long.py"] = "".join(f"x_{n} = {n}\n" for n in range(3000))
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("projects")
+        app.projects.openProject("p1")
+        app.projects.openFile("long.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "long.py")
+        app.editor.open("p1", "long.py")
+        wait_until(lambda: shown(quick, "editorText") is not None)
+        body = shown(quick, "editorText")
+        body.setProperty("cursorPosition", len(client.files["long.py"]))  # the screen at the end
+        for _ in range(10):
+            QApplication.processEvents()
+        client.files["long.py"] = "short = 1\n"
+        began = time.monotonic()
+        app.editor.files_changed("p1", ["long.py"], False)  # no edits: the disk's version taken in place
+        wait_until(lambda: body.property("text") == "short = 1\n")
+        for _ in range(5):
+            QApplication.processEvents()
+        assert time.monotonic() - began < 2 and shown(quick, "lineNumbers").property("count") < 100
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_whole_text_lexed_once_the_screen_coloured(app):  # noqa: F811
     """A comment over two lines is one token for the whole text (lexed a line at a time, it would not be); Qt counts
     an emoji as two. The screen's reach (on it and AROUND it) gets its colours at once, then from the whole text's
@@ -334,6 +370,10 @@ def test_the_whole_text_lexed_once_the_screen_coloured(app):  # noqa: F811
     (row,), _ = highlighter.lex_lines(highlighter.lexer_for("a.py"), "s = '\U0001f600'; n = 1")
     assert next(r for r in row if r[2] in Number)[0] == len("s = '\U0001f600'; n = ") + 1
     assert highlighter.lexer_for("notes.unknownext") is None
+    asked = []  # a lexing nobody waits for any more stops on the way (24.1)
+    wanted = lambda: asked.append(1) or len(asked) < 2  # noqa: E731
+    assert highlighter.lex_lines(highlighter.lexer_for("a.py"), "x = 1\n" * 10_000, wanted) is None
+    assert len(asked) == 2
 
     document = QTextDocument(app)  # Qt deletes it before the highlighter made after it
     document.documentLayout()  # a TextEdit's document has its layout; without one Qt sends no contentsChange
@@ -367,6 +407,39 @@ def test_the_whole_text_lexed_once_the_screen_coloured(app):  # noqa: F811
     assert len(laid) < 10  # after the pause, only what changed is laid on again
     keyword = highlighter._style(palette.current().name).style_for_token(Keyword)["color"]
     assert first[0].format.foreground().color().name() == "#" + keyword.lower()
+    colours.stop()
+
+
+def test_a_diff_in_the_themes_own_colours(app):  # noqa: F811
+    """24.1: the viewer shows a diff as one text too, coloured by the highlighter - in the theme's own colours (code
+    styles colour diffs unevenly): added lines green, removed red, hunk headers in the accent, file headers muted. A
+    viewer's highlighter colours nothing as the text comes in (it is not typed): its colours come once it is told
+    which (`begin`)."""
+    diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n"
+    lines, _ = highlighter.lex_lines(highlighter.lexer_named("diff"), diff.rstrip("\n"))
+    assert [len(r) for r in lines] == [1, 1, 1, 1, 1, 1, 0]  # a whole line each, the unchanged one none
+    assert lines[5][0][:2] == (0, len("+new"))
+    assert highlighter.lexer_named("python") is not None and highlighter.lexer_named("") is None
+
+    document = QTextDocument(app)
+    document.documentLayout()
+    colours = highlighter.Highlighter(app, typing=False)
+    colours.attach(document)
+    document.setPlainText(diff.rstrip("\n"))
+    assert all(document.findBlockByNumber(n).userState() == -1 for n in range(7))  # not coloured as it came in
+    colours.begin(highlighter.lexer_named("diff"))
+
+    def colour(line: int) -> str:
+        ranges = document.findBlockByNumber(line).layout().formats()  # held: a range's format lives with it
+        return ranges[0].format.foreground().color().name()
+
+    p = palette.current()
+    assert (colour(0), colour(1), colour(3)) == (p.muted.lower(), p.muted.lower(), p.accent.lower())
+    assert (colour(4), colour(5)) == (p.error.lower(), p.ok.lower())
+    assert document.findBlockByNumber(6).layout().formats() == []
+    app.setTheme("light" if p.name == "dark" else "dark")
+    colours.again()
+    assert colour(5) == palette.current().ok.lower()
     colours.stop()
 
 

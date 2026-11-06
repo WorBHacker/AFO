@@ -6,8 +6,7 @@ import time
 
 import pytest
 
-from app.render import highlight_lines
-from app.ui import project_rows
+from app.ui import highlighter, project_rows
 from hub import cards, projects, search
 from hub.projects import Project
 from hub.symbols import SymbolIndex
@@ -153,7 +152,7 @@ def test_a_50_mb_file_in_the_viewer(tmp_path):
     note("файл 50 МБ: хаб читает начало", read.s * 1000, "мс", 300)
     with Clock() as laid:
         view = project_rows.file_view(data)
-    assert not view["rich"]
+    assert "chunks" in view and view["lexer"] == ""  # over the editor's limit: in pieces, plain
     note("файл 50 МБ: просмотрщик готовит куски", laid.s * 1000, "мс", 500)
 
 
@@ -161,9 +160,9 @@ def test_colouring_a_big_file():
     text = "".join(module_text(i, j) for i in range(30) for j in range(100))
     one_mb = (text * (1024 * 1024 // len(text) + 1))[: 1024 * 1024]
     with Clock() as coloured:
-        highlight_lines(one_mb, "python")
-    note("подсветка: 1 МБ Python", coloured.s, "с", 6)
+        highlighter.lex_lines(highlighter.lexer_for("big.py"), one_mb)
+    note("подсветка: разбор 1 МБ Python (в фоне)", coloured.s, "с", 6)
     with Clock() as viewer:
-        view = project_rows.code_view(one_mb[: project_rows.HIGHLIGHT_MAX_BYTES], "big.py")
-    assert view["rich"]
-    note("просмотрщик: 300 КБ с подсветкой", viewer.s, "с", 2)
+        view = project_rows.code_view(one_mb, "big.py")
+    assert view["lexer"] == "python" and "text" in view  # one text, its colours the highlighter's (24.1)
+    note("просмотрщик: 1 МБ — текст для окна", viewer.s * 1000, "мс", 300)

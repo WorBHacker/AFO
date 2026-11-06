@@ -47,6 +47,7 @@ from .models import RowModel
 from .programs import Programs
 from .projects import Projects
 from .proving_view import ProvingView
+from .reader import Readers
 from .release_view import ReleaseView
 from .sandbox_view import SandboxView
 from .schedule_view import SchedulesView
@@ -258,6 +259,7 @@ class Controller(QObject):
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.transfer_view = TransferView(self)  # all the settings into a file and back (D46, 13.10)
         self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
+        self.readers = Readers(self)  # the viewer's text and its colours (24.1)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)

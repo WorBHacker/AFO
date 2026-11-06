@@ -48,7 +48,9 @@ from .rewrite import Rewriter
 if TYPE_CHECKING:
     from .controller import Controller
 
-EDIT_LIMIT = 1024 * 1024  # bytes: a bigger file opens in the viewer only (D47; 1 MB is coloured in 1.1 s, 13.7)
+# bytes: a bigger file opens in the viewer only, in pieces (D47; 1 MB is coloured in 1.1 s, 13.7; laid out in
+# 0.4 s, 24.1)
+EDIT_LIMIT = project_rows.WHOLE_MAX_BYTES
 OPENERS = (":", "{", "[", "(")  # a line ending so opens a block: the next line goes one step further in
 ENCODINGS = {"utf-8": "UTF-8", "utf-8 BOM": N_("UTF-8 с BOM"), "cp1251": "Windows-1251", "utf-16": "UTF-16"}
 REASONS = {"changed": N_("Файл изменился на диске, пока был открыт."), "gone": N_("Файл удалён с диска."),

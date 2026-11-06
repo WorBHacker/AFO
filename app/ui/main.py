@@ -116,6 +116,7 @@ class QuickApp:
         context.setContextProperty("Check", self.controller.check_view)
         context.setContextProperty("Transfer", self.controller.transfer_view)
         context.setContextProperty("Editor", self.controller.editor)
+        context.setContextProperty("Readers", self.controller.readers)
         context.setContextProperty("Finder", self.controller.editor.finder)
         context.setContextProperty("Completer", self.controller.editor.completer)
         context.setContextProperty("Ghost", self.controller.editor.ghost)

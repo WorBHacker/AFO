@@ -12,6 +12,9 @@ once typing pauses (RELEX_MS); its result is laid on only if the text has not ch
 
 The colours go where QSyntaxHighlighter puts them - the block's layout formats, then markContentsDirty - with our
 own order and pace instead of its pass over the whole document at once.
+
+The viewer (24.1, app/ui/reader.py) colours its text the same way: a file, or a diff in the theme's own colours
+(`DiffLexer`); nothing is typed there - its text comes whole, and its colours once it is told which (`begin`).
 """
 
 from __future__ import annotations
@@ -19,10 +22,11 @@ from __future__ import annotations
 import contextlib
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pygments.lexers import get_lexer_by_name
 from pygments.styles import get_all_styles, get_style_by_name
+from pygments.token import Generic, Text
 from pygments.util import ClassNotFound
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextDocument, QTextLayout
@@ -35,6 +39,7 @@ if TYPE_CHECKING:
 
 SLICE_MS = 8.0  # the window's thread lays colours on for no longer than this at a time
 RELEX_MS = 150  # after the last key, the whole text is lexed again
+ASK_EVERY = 4096  # tokens between asking whether a lexing is still wanted
 AROUND = 200  # lines above and below the screen that get their colours with it
 WIDE = re.compile("[\U00010000-\U0010ffff]")  # a character Qt counts twice (UTF-16)
 
@@ -43,11 +48,47 @@ Ranges = tuple[tuple[int, int, Any], ...]  # (start, length, token type) in a li
 
 def lexer_for(path: str):
     """The viewer's lexer for the file, with the text taken as it is; None for a file it does not colour."""
-    lang = project_rows.language_of(path)
+    return lexer_named(project_rows.language_of(path))
+
+
+def lexer_named(lang: str):
+    """The lexer by its name (Pygments' alias), with the text taken as it is; "diff" - a diff in the theme's own
+    colours; None for none."""
+    if lang == "diff":
+        return DiffLexer()
     try:
         return get_lexer_by_name(lang, stripnl=False, stripall=False, ensurenl=False) if lang else None
     except ClassNotFound:
         return None
+
+
+class DiffLexer:
+    """A unified diff a line at a time in the theme's own colours (code styles colour diffs unevenly): added lines
+    green, removed red, hunk headers in the accent, file headers muted - `colours` names the palette's."""
+
+    colours: ClassVar[dict[Any, str]] = {Generic.Heading: "muted", Generic.Subheading: "accent",
+                                         Generic.Inserted: "ok", Generic.Deleted: "error"}  # fmt: skip
+
+    @staticmethod
+    def get_tokens_unprocessed(text: str):
+        at = 0
+        for number, line in enumerate(text.split("\n")):
+            if number:
+                yield at, Text, "\n"
+                at += 1
+            if line.startswith(project_rows.DIFF_META):
+                token = Generic.Heading
+            elif line.startswith("@@"):
+                token = Generic.Subheading
+            elif line.startswith("+"):
+                token = Generic.Inserted
+            elif line.startswith("-"):
+                token = Generic.Deleted
+            else:
+                token = None  # as it is: no colours to lay on
+            if line and token is not None:
+                yield at, token, line
+            at += len(line)
 
 
 def mark(ranges: Ranges) -> int:
@@ -55,12 +96,16 @@ def mark(ranges: Ranges) -> int:
     return hash(ranges) & 0x3FFFFFFF
 
 
-def lex_lines(lexer, text: str) -> tuple[list[Ranges], list[int]]:
-    """The whole text lexed once: each line's coloured ranges, and their marks (off the window's thread both)."""
+def lex_lines(lexer, text: str, wanted=None) -> tuple[list[Ranges], list[int]] | None:
+    """The whole text lexed once: each line's coloured ranges, and their marks (off the window's thread both). None
+    when `wanted()` said no on the way: a lexing nobody waits for any more (the text typed on, the viewer out of sight)
+    held the GIL for a second of 1 MB that the window's own work waited for (24.1)."""
     rows = text.split("\n")
     lines: list[list[tuple[int, int, Any]]] = [[] for _ in rows]
     line = start = 0
-    for index, token, value in lexer.get_tokens_unprocessed(text):
+    for count, (index, token, value) in enumerate(lexer.get_tokens_unprocessed(text)):
+        if wanted is not None and not count % ASK_EVERY and not wanted():
+            return None
         first, *rest = value.split("\n")
         if first and line < len(lines):
             lines[line].append((index - start, len(first), token))
@@ -84,9 +129,10 @@ def _units(line: str, index: int) -> int:
 
 
 class Highlighter(QObject):
-    def __init__(self, app: Controller):
+    def __init__(self, app: Controller, typing: bool = True):
         super().__init__(app)
         self.app = app
+        self.typing = typing  # False: the viewer's - its text comes whole, coloured once told which (`begin`)
         self._document: QTextDocument | None = None
         self._lexer = None
         self._formats: dict[Any, QTextCharFormat | None] = {}
@@ -103,6 +149,10 @@ class Highlighter(QObject):
         self._lex_timer = QTimer(self, singleShot=True, interval=RELEX_MS)
         self._lex_timer.timeout.connect(self.relex)
         self.slices: list[float] = []  # each slice's milliseconds (the stress stand reads them)
+
+    @property
+    def document(self) -> QTextDocument | None:
+        return self._document
 
     def attach(self, document: QTextDocument) -> None:
         """The editor's document. Qt sends contentsChange only once a document has its layout - a TextEdit's has."""
@@ -124,10 +174,14 @@ class Highlighter(QObject):
         self._gone()
 
     def start(self, path: str) -> None:
-        """A file opened in the editor: its lexer, the screen's reach coloured at once, the whole text lexed after
-        RELEX_MS - once the first frame is out: the lexing holds the GIL that QML's bindings into Python wait for, and
-        begun at once it held a 1 MB file's first frame back 0.6 s (14.4)."""
-        self._lexer = lexer_for(path)
+        """A file opened in the editor: its lexer's colours (`begin`)."""
+        self.begin(lexer_for(path))
+
+    def begin(self, lexer) -> None:
+        """The text's colours by this lexer (None: none): the screen's reach coloured at once, the whole text lexed
+        after RELEX_MS - once the first frame is out: the lexing holds the GIL that QML's bindings into Python wait
+        for, and begun at once it held a 1 MB file's first frame back 0.6 s (14.4)."""
+        self._lexer = lexer
         self.again(lex=False)
         self._lex_timer.start()
 
@@ -188,8 +242,8 @@ class Highlighter(QObject):
         generation, revision, lexer = self._generation, self._document.revision(), self._lexer
         text = self._document.toRawText().replace("\u2029", "\n").replace("\u2028", "\n")
 
-        def done(found: tuple[list[Ranges], list[int]]) -> None:
-            if generation != self._generation or self._document is None:
+        def done(found: tuple[list[Ranges], list[int]] | None) -> None:
+            if found is None or generation != self._generation or self._document is None:
                 return
             if self._document.revision() != revision:  # typed meanwhile: once more, after the pause
                 self._lex_timer.start()
@@ -198,7 +252,7 @@ class Highlighter(QObject):
             self._revision = revision
             self._queue()
 
-        self.app._call(lambda: lex_lines(lexer, text), done, lambda _e: None)
+        self.app._call(lambda: lex_lines(lexer, text, lambda: generation == self._generation), done, lambda _e: None)
 
     def _edited(self, position: int, _removed: int, added: int) -> None:
         """Typing: the touched lines coloured at once on their own, the whole text after the pause. Inside
@@ -206,6 +260,10 @@ class Highlighter(QObject):
         if self._laying or self._lexer is None or self._document is None:
             return
         self._pending, self._lines, self._marks = [], [], []  # the lines may have moved: the next lexing says
+        self._generation += 1  # a lexing on its way is of the text before: it stops
+        if not self.typing:  # the viewer's new text: its colours once it is told which
+            self._lex_timer.stop()
+            return
         first, last = self._document.findBlock(position), self._document.findBlock(position + added)
         if last.blockNumber() - first.blockNumber() <= 3:
             block = first
@@ -284,7 +342,10 @@ class Highlighter(QObject):
         if theme != self._theme:
             self._formats, self._theme = {}, theme
         if token not in self._formats:
-            found = _style(theme).style_for_token(token)
+            own = getattr(self._lexer, "colours", None)
+            found = _style(theme).style_for_token(token) if own is None else {"color": None}
+            if own is not None and token in own:
+                found = {"color": getattr(palette.current(), own[token]).lstrip("#")}
             look = None
             if found.get("color") or found.get("bold") or found.get("italic"):
                 look = QTextCharFormat()

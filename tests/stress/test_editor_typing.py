@@ -10,7 +10,7 @@ import time
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pygments.token import Keyword
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtQuick import QQuickItem
 from test_ui import FakeClient, QApplication, wait_until
@@ -48,6 +48,50 @@ def big_file() -> str:
         n += 1
 
 
+def test_a_megabyte_in_the_viewer(qapp):
+    """24.1: the viewer shows a file up to the editor's limit as one read-only text, coloured as the editor colours
+    it - opening it, the middle of the file found from a search."""
+    from app.ui.main import QuickApp
+
+    text = big_file()
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.files["big.py"] = text
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("projects")
+        app.projects.openProject("p1")
+        wait_until(lambda: not app.bg.busy)
+        body = quick.window.findChild(QObject, "codeView").findChild(QObject, "codeText")
+        on_screen = []
+
+        def frame() -> None:
+            if not on_screen and body.property("lineCount") > 1000:
+                on_screen.append(time.perf_counter())
+
+        quick.window.frameSwapped.connect(frame)
+        began = time.perf_counter()
+        app.projects.openFile("big.py", False)
+        wait_until(lambda: on_screen, timeout=30)
+        document = app.readers._colours["file"]._document
+        wait_until(lambda: document.firstBlock().userState() >= 0, timeout=10)
+        note("просмотрщик: открыть 1 МБ — до первого кадра с текстом", (on_screen[0] - began) * 1000, "мс", 3000)
+        colours = app.readers._colours["file"]
+        wait_until(lambda: colours._revision == document.revision() and not colours._pending, timeout=60)
+        line = text.count("\n") // 2
+        with Clock() as jumped:
+            app.projects.openFileAt("big.py", line)
+            wait_until(lambda: document.findBlockByNumber(line - 1).userState() == colours._marks[line - 1], timeout=10)
+        note("просмотрщик: 1 МБ — строка из поиска в середине, в цвете", jumped.s * 1000, "мс", 300)
+        wait_until(lambda: not colours._pending, timeout=10)
+        note("просмотрщик: 1 МБ — самый долгий кусок раскраски в потоке окна", max(colours.slices), "мс", 16)
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_megabyte_in_the_editor(qapp):
     from app.ui.main import QuickApp
 
@@ -63,6 +107,11 @@ def test_a_megabyte_in_the_editor(qapp):
         app.projects.openProject("p1")
         app.projects.openFile("big.py", False)
         wait_until(lambda: app.projects.file.get("path") == "big.py", timeout=30)
+        # «Править» is pressed on a file shown: its text in the viewer, coloured (24.1)
+        viewer = quick.window.findChild(QObject, "codeView").findChild(QObject, "codeText")
+        shown_colours = app.readers._colours["file"]
+        wait_until(lambda: viewer.property("lineCount") > 1000 and shown_colours.document is not None
+                   and shown_colours._revision == shown_colours.document.revision(), timeout=30)  # fmt: skip
         on_screen = []  # when the first frame with the file's text went out
 
         def frame() -> None:
