@@ -3750,9 +3750,13 @@ def test_the_emulators_quick_drawing_draws_what_pyte_draws():
 
     pieces = ["abc", "строка ", "x" * 37, "日本", "é", " ", "\r\n", "\n", "\r", "\x1b[31m", "\x1b[1;42m",
               "\x1b[0m", "\x1b[4h", "\x1b[4l", "\x1b[?7l", "\x1b[?7h", "\x1b[5;3H", "\x1b[2K", "\x1b(0", "\x1b(B",
-              "lqqk", "\x0e", "\x0f", "\x1b[2;4r", "\x1b[r", "\t"]  # fmt: skip
+              "lqqk", "\x0e", "\x0f", "\x1b[2;4r", "\x1b[r", "\t",
+              # two cells wide (24.4): at a line's last column, an odd number of them, among narrow ones; a
+              # combining mark and one of no width (pyte's still)
+              "日本語のテキスト", "x" * 11 + "語", "a日b本c", "\U0001f600", "表" * 13, "e\u0301", "\u200b",
+              "a\u0300b"]  # fmt: skip
     rng = random.Random(13)
-    for case in range(300):
+    for case in range(600):
         quick, reference = TermScreen(12, 4), Reference(12, 4)
         streams = pyte.Stream(quick), pyte.Stream(reference)
         for _ in range(rng.randint(1, 60)):
@@ -3765,6 +3769,21 @@ def test_the_emulators_quick_drawing_draws_what_pyte_draws():
             return cells, screen.cursor.x, screen.cursor.y, screen.dirty, [s.text for s in screen.scrolled]
 
         assert state(quick) == state(reference), case
+
+    # characters two cells wide are the quick drawing's too (24.4: pyte took them 2-3 times slower); combining marks
+    # and characters of no width are pyte's
+    asked = []
+    real = pyte.Screen.draw
+    pyte.Screen.draw = lambda screen, data: asked.append(data) or real(screen, data)
+    try:
+        screen = TermScreen(20, 3)
+        stream = pyte.Stream(screen)
+        stream.feed("日本語 и строка\U0001f600")
+        assert asked == [] and screen.buffer[0][0].data == "日" and screen.buffer[0][1].data == ""
+        stream.feed("e\u0301")
+        assert asked == ["e\u0301"]
+    finally:
+        pyte.Screen.draw = real
 
 
 def test_terminal_lines_follow_output_change_by_change(app, monkeypatch):

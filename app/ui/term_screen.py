@@ -136,15 +136,17 @@ class TermScreen(pyte.Screen):
         self._cells: dict = {}  # a style -> {character: its cell}
 
     def draw(self, data: str) -> None:
-        """pyte's drawing, quicker for ordinary text - every character one cell wide, no insert mode: pyte made a new
-        cell (Char) for each character, 70% of the window's time in a flood of output (D46, step 13.7). Cells never
-        change (pyte replaces them), so the same character in the same style shares one; a line is filled up to the
-        screen's edge at a time. Anything else goes to pyte as it came."""
+        """pyte's drawing, quicker for ordinary text - characters one or two cells wide, no insert mode: pyte made a
+        new cell (Char) for each character, 70% of the window's time in a flood of output (D46, step 13.7). Cells never
+        change (pyte replaces them), so the same character in the same style shares one; a line of narrow characters is
+        filled up to the screen's edge at a time. Anything else (a combining mark, a character of no width) goes to
+        pyte as it came."""
         if modes.IRM in self.mode:
             super().draw(data)
             return
         text = data.translate(self.g1_charset if self.charset else self.g0_charset)
-        if any(wcwidth(char) != 1 for char in set(text)):
+        widths = {char: wcwidth(char) for char in set(text)}
+        if any(width not in (1, 2) for width in widths.values()):
             super().draw(data)
             return
         attrs = self.cursor.attrs
@@ -153,6 +155,9 @@ class TermScreen(pyte.Screen):
             if len(self._cells) >= STYLES_KEPT:
                 self._cells.clear()
             cells = self._cells[attrs] = {}
+        if 2 in widths.values():
+            self._draw_wide(text, widths, attrs, cells)
+            return
         columns = self.columns
         while text:
             cursor = self.cursor
@@ -175,6 +180,36 @@ class TermScreen(pyte.Screen):
                 x += 1
             cursor.x = x
         self.dirty.add(self.cursor.y)
+
+    def _draw_wide(self, text: str, widths: dict[str, int], attrs, cells: dict) -> None:
+        """Text with characters two cells wide (CJK, emoji), a character at a time as pyte draws it (24.4: pyte took
+        2-3 times longer): a wide one takes its cell and leaves an empty one after it, unless it stands in the last
+        column; past the last column the line wraps (or, without wrapping, the character steps back over the last
+        cells)."""
+        columns, cursor = self.columns, self.cursor
+        wrap = modes.DECAWM in self.mode
+        stub = cells.get("")
+        if stub is None:
+            stub = cells[""] = attrs._replace(data="")
+        line = self.buffer[cursor.y]
+        for char in text:
+            width = widths[char]
+            if cursor.x == columns:
+                if wrap:
+                    self.dirty.add(cursor.y)
+                    self.carriage_return()
+                    self.linefeed()
+                    line = self.buffer[cursor.y]
+                else:
+                    cursor.x -= width
+            cell = cells.get(char)
+            if cell is None:
+                cell = cells[char] = attrs._replace(data=char)
+            line[cursor.x] = cell
+            if width == 2 and cursor.x + 1 < columns:
+                line[cursor.x + 1] = stub
+            cursor.x = min(cursor.x + width, columns)
+        self.dirty.add(cursor.y)
 
     def index(self) -> None:
         top, bottom = self.margins or Margins(0, self.lines - 1)

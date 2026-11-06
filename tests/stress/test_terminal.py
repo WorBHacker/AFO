@@ -27,6 +27,30 @@ class Bus:
         self.events.append((event_type, payload))
 
 
+def test_wide_characters_in_the_windows_emulator():
+    """24.4: characters two cells wide (CJK) drawn as quickly as narrow ones - pyte drew them 2-3 times slower."""
+    import pyte
+
+    from app.ui.term_screen import TermScreen
+
+    class Pyte(TermScreen):
+        draw = pyte.Screen.draw
+
+    def played(screen_class, line: str) -> float:
+        screen = screen_class(120, 30)
+        stream = pyte.Stream(screen)
+        text = "".join(f"\x1b[32m{n:>6}\x1b[0m {line}\r\n" for n in range(20_000))
+        with Clock() as clock:
+            stream.feed(text)
+        return clock.s * 1000
+
+    cjk = "日本語のログ行：処理が完了しました。結果を保存します。"
+    latin = "a log line: the work is done, the result is saved now."
+    note("терминал в окне: 20 000 строк иероглифами", played(TermScreen, cjk), "мс", 3000)
+    note("  они же у pyte", played(Pyte, cjk), "мс", 20_000)
+    note("  20 000 строк латиницей", played(TermScreen, latin), "мс", 3000)
+
+
 def test_200_000_lines_through_the_hub_and_the_window(tmp_path, qapp):
     from app.ui.main import QuickApp
 
