@@ -77,9 +77,9 @@ def gather(root: Path, paths: Iterable[str], folder: Path) -> dict[str, tuple[st
     return found
 
 
-def record(conn: sqlite3.Connection, project_id: str, found: dict[str, tuple[str, int] | None]) -> int:
-    """The gathered files into their history; how many new versions."""
-    return sum(changes.note_version(conn, project_id, rel, *(seen or (None, 0))) for rel, seen in found.items())
+def record(conn: sqlite3.Connection, project_id: str, found: dict[str, tuple[str, int] | None]) -> list[str]:
+    """The gathered files into their history; those that got a new version."""
+    return [rel for rel, seen in found.items() if changes.note_version(conn, project_id, rel, *(seen or (None, 0)))]
 
 
 # ---------------------------------------------------------------- reading
@@ -140,10 +140,12 @@ def diff(path: str, before: bytes | None, after: bytes | None) -> str:
 
 class History:
     """Takes what the watcher saw into the history: reading on a worker thread, a project's batches one at a time
-    (each compares with the last version the one before it left)."""
+    (each compares with the last version the one before it left). `history.changed` {project_id, paths} - live
+    only - says which files got a new version: the window's «История файла» and its deleted files follow it."""
 
-    def __init__(self, db: Database, folder: Path):
+    def __init__(self, db: Database, bus, folder: Path):
         self._db = db
+        self._bus = bus
         self.folder = folder
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -152,9 +154,12 @@ class History:
         async with lock:
             try:
                 found = await asyncio.to_thread(gather, project.root, paths, self.folder)
-                if found:
-                    await self._db.acall(lambda conn: record(conn, project.id, found))
+                added = await self._db.acall(lambda conn: record(conn, project.id, found)) if found else []
             except sqlite3.IntegrityError:  # the project was removed meanwhile
                 return
             except Exception:
                 log.exception("project %s: keeping the changed files' versions failed", project.id)
+                return
+            if added:
+                await self._bus.publish("history.changed", {"project_id": project.id, "paths": added[:FILES_LISTED]},
+                                        project_id=project.id, persist=False)  # fmt: skip

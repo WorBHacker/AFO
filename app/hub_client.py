@@ -771,6 +771,20 @@ class HubClient:
     def rules(self, project_id: str) -> list[dict]:
         return self._call("GET", f"/v1/projects/{project_id}/rules")["rules"]
 
+    # --- a project's files version after version (stage 26) ---
+
+    def history(self, project_id: str, path: str = "") -> list[dict]:
+        """The versions of `path`, newest first; without it - the files that have a history."""
+        found = self._call("GET", f"/v1/projects/{project_id}/history", params={"path": path})
+        return found["versions"] if path else found["files"]
+
+    def version(self, version_id: int, against: str = "previous") -> dict:
+        """A version with its text and a diff - from the version before it, or (`current`) from the file now."""
+        return self._call("GET", f"/v1/history/{version_id}", params={"against": against})
+
+    def restore_version(self, version_id: int, base: str) -> dict:
+        return self._call("POST", f"/v1/history/{version_id}/restore", {"base": base})
+
     def delete_rule(self, rule_id: int) -> None:
         self._call("DELETE", f"/v1/rules/{rule_id}")
 

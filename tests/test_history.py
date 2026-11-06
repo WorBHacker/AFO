@@ -36,7 +36,7 @@ def watched(root, tmp_path):
         found = db.call(lambda c: history.versions(c, folder, project.id, path))
         return [None if v["deleted"] else (folder / v["hash"]).read_bytes() for v in found]
 
-    return db, project, history.History(db, folder), contents
+    return db, project, history.History(db, Bus(), folder), contents
 
 
 def test_every_change_the_watcher_sees_is_kept(repo, tmp_path):
@@ -174,3 +174,52 @@ def test_versions_live_within_the_term_and_the_size(tmp_path):
     removed = db.call(lambda c: retention.prune_snapshots(c, folder, days=90, max_bytes=150))
     assert removed == 1 and kept() == ["newer"]  # over the size: its content went, so it is not offered
     db.close()
+
+
+def test_a_version_is_taken_back_the_way_a_save_goes(hub, repo):  # noqa: F811
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+
+    def listed():
+        return hub.get(f"/v1/projects/{pid}/history", params={"path": "old.txt"}).json()["versions"]
+
+    def wait(condition):
+        deadline = time.monotonic() + 8
+        while not condition():
+            assert time.monotonic() < deadline, "condition not met"
+            time.sleep(0.05)
+
+    first = "привет\r\nмир\r\n".encode("cp1251")  # another program's: cp1251, Windows line ends
+    (repo / "old.txt").write_bytes(first)
+    wait(lambda: len(listed()) == 1)
+    (repo / "old.txt").write_bytes("пока\n".encode())
+    wait(lambda: len(listed()) == 2)
+    old, now = listed()[1], listed()[0]
+
+    def restore(version, base):
+        return hub.post(f"/v1/history/{version['id']}/restore", json={"base": base})
+
+    stale = restore(old, "0" * 64)  # the file is not what the user saw
+    assert stale.status_code == 409 and stale.json()["detail"]["reason"] == "changed"
+    assert stale.json()["detail"]["file"]["text"] == "пока\n"
+    assert restore(now, now["hash"]).status_code == 422  # it is this version already
+
+    back = restore(old, now["hash"])
+    assert back.status_code == 200, back.text
+    assert (repo / "old.txt").read_bytes() == first  # its own bytes: the encoding and the line ends as they were
+    result = back.json()
+    assert (result["change"]["tool"], result["created"], result["restored"]) == ("restore", False, old["id"])
+    assert listed()[0]["tool"] == "restore"
+    feed = hub.get("/v1/feed", params={"types": "file.saved"}).json()["events"]
+    assert feed[-1]["payload"]["restored"] == old["id"]
+    assert hub.post(f"/v1/changes/{result['change']['id']}/revert", json={}).status_code == 200  # undone as any
+    assert (repo / "old.txt").read_bytes() == "пока\n".encode()
+
+    (repo / "old.txt").unlink()
+    wait(lambda: listed()[0]["deleted"])
+    assert restore(listed()[0], "").status_code == 422  # the file deleted is nothing to take back
+    again = restore(old, "")  # a deleted file comes back
+    assert again.status_code == 200 and again.json()["created"] and (repo / "old.txt").read_bytes() == first
+    token = hub.app.state.db.call(lambda c: create_client(c, "cline", cloud=False))
+    other = hub.post(f"/v1/history/{old['id']}/restore", json={"base": ""},
+                     headers={"Authorization": f"Bearer {token}"})  # fmt: skip
+    assert other.status_code == 403

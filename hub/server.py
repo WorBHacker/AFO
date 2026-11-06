@@ -198,7 +198,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
-        app.state.history = History(db, paths.snapshots)  # each new version of a project's file (stage 26)
+        app.state.history = History(db, bus, paths.snapshots)  # each new version of a project's file (stage 26)
         app.state.watcher = ProjectWatcher(
             bus, ignore=[paths.root], listed=lambda: db.acall(list_projects),
             relocate=lambda pid, folder: db.acall(lambda conn: set_path(conn, pid, folder)),

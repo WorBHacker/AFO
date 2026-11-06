@@ -19,6 +19,13 @@ Item {
     readonly property bool editing: Editor.editing && Editor.projectId === Projects.currentId
                                     && Editor.path === (file.path || "")
 
+    // «История файла» (stage 26.2): from the viewer's header, or for a deleted file from the overview
+    function showHistory(path) {
+        FileHistory.show(Projects.currentId, path)
+        historySheet.open()
+    }
+    HistorySheet { id: historySheet }
+
     // ---------- no project ----------
 
     Column {
@@ -531,6 +538,76 @@ Item {
                             iconName: "trash"
                             tip: qsTr("Снова спрашивать")
                             onClicked: Projects.removeRule(rule.modelData.id)
+                        }
+                    }
+                }
+            }
+
+            // files gone from the disk whose versions the hub keeps (stage 26): a click opens the file's history
+            Column {
+                objectName: "projectDeleted"
+                visible: Projects.deletedFiles.length > 0
+                width: parent.width
+                spacing: 2
+                Text {
+                    bottomPadding: 6
+                    text: qsTr("Удалённые файлы")
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Repeater {
+                    model: Projects.deletedFiles
+                    delegate: AbstractButton {
+                        id: gone
+                        objectName: "deletedFile"
+                        required property var modelData
+                        width: page.width
+                        height: 32
+                        hoverEnabled: true
+                        onClicked: view.showHistory(modelData.path)
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 700
+                        ToolTip.text: qsTr("История файла: его версии, вернуть любую")
+                        background: Rectangle { radius: 6; color: gone.hovered ? Theme.p.item_hover : "transparent" }
+                        contentItem: Item {
+                            Icon {
+                                x: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                name: "trash"
+                                size: 14
+                                tint: Theme.p.faint
+                            }
+                            Text {
+                                id: goneName
+                                x: 32
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: gone.modelData.name
+                                color: Theme.p.text
+                                font.family: Theme.uiFont
+                                font.pixelSize: 13
+                                font.strikeout: true
+                            }
+                            Text {
+                                x: goneName.x + goneName.width + 10
+                                width: Math.max(0, parent.width - x - 150)
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: gone.modelData.folder
+                                elide: Text.ElideMiddle
+                                color: Theme.p.faint
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                            }
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: gone.modelData.when
+                                color: Theme.p.faint
+                                font.family: Theme.uiFont
+                                font.pixelSize: 12
+                            }
                         }
                     }
                 }
@@ -1154,6 +1231,14 @@ Item {
                     options: [{ id: "file", name: qsTr("Файл") }, { id: "diff", name: qsTr("Изменения") }]
                     value: view.file.diffMode ? "diff" : "file"
                     onPicked: (id) => Projects.showDiff(id === "diff")
+                }
+                IconButton {
+                    objectName: "fileHistory"
+                    visible: !view.file.binary
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "history"
+                    tip: qsTr("История файла: все его версии, которые видел хаб, — сравнить и вернуть")
+                    onClicked: view.showHistory(view.file.path)
                 }
                 IconButton {
                     id: outlineButton

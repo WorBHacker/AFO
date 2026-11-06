@@ -235,7 +235,9 @@ TOOL_WORDS = {
     "edit_file": N_("правка"),
     "write_file": N_("запись"),
     "save": N_("сохранено"),
-}  # save: the user's own (D47)
+    "restore": N_("возвращена версия"),
+}  # save: the user's own (D47); restore: a version the user took back from the file's history (26.2)
+USER_TOOLS = ("save", "restore")
 RULE_TOOLS = {
     "edit_file": N_("править файлы"),
     "write_file": N_("записывать файлы"),
@@ -253,11 +255,22 @@ def write_rows(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "path": c["path"],
         "note": " · ".join(s for s in (
             tr("создан") if c.get("before_hash") is None else tr(TOOL_WORDS.get(c.get("tool", ""), c.get("tool", ""))),
-            tr("чат «{chat}»", chat=c["chat"]) if c.get("chat") else tr("вы") if c.get("tool") == "save" else "",
+            tr("чат «{chat}»", chat=c["chat"]) if c.get("chat") else tr("вы") if c.get("tool") in USER_TOOLS else "",
             local_time(c.get("created_at", "")),
         ) if s),
         "reverted": bool(c.get("reverted_at")),
     } for c in found]  # fmt: skip
+
+
+DELETED_SHOWN = 10
+
+
+def deleted_rows(found: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Files the history saw go (stage 26), the latest first: name, folder, when - each can be brought back."""
+    return [{"path": f["path"], "name": f["path"].rsplit("/", 1)[-1],
+             "folder": f["path"].rsplit("/", 1)[0] if "/" in f["path"] else "",
+             "when": tr("удалён {ago}", ago=ago(f.get("last_at", "")))}
+            for f in found if f.get("deleted")][:DELETED_SHOWN]  # fmt: skip
 
 
 def rule_text(key: str) -> str:

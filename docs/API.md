@@ -444,12 +444,13 @@
 
 ### history
 
-/v1/.../history - a project's files version after version (stage 26, hub/history.py): what the hub kept of each change it saw, to compare and to take back. The window's alone: other clients read files through MCP.
+/v1/.../history - a project's files version after version (stage 26, hub/history.py): what the hub kept of each change it saw, to compare and to take back (through the save's own way, 14.1). The window's alone: other clients read files through MCP.
 
 | Метод | Путь | Кто | Что | Параметры |
 |---|---|---|---|---|
 | GET | `/v1/projects/{project_id}/history` | только окно | The versions of `path`, newest first; without it - the project's files that have a history, the latest change first (deleted ones too). | `?path: str = ''`<br>`?limit: int = 100` |
 | GET | `/v1/history/{version_id}` | только окно | A version with its text and a diff: from the version before it (`previous`), or from the file as it is now to this version (`current`: what taking it back changes). | `?against: Literal['previous', 'current'] = 'previous'` |
+| POST | `/v1/history/{version_id}/restore` | только окно | Takes the version back (stage 26.2) the way a save goes (14.1): when the file is still the version the user saw (`base`) - else 409 with what is there now (`reason`: changed, gone, exists) - the version's own bytes are written whole, and kept in «Изменения» as the user's (`restore`), to undo as any change. `file.saved` goes out. | тело `{base: str = ''}` |
 
 ### agents
 
@@ -575,7 +576,7 @@ conversation's text, an approval or a terminal's output.
 | `editor.focus` | нет | — | hub/editor.py |
 | `file.changed` | да | `change`, `project_id` | hub/chat.py |
 | `file.reverted` | да | `change`, `project_id` | hub/api/changes.py |
-| `file.saved` | да | `project_id` | hub/api/projects.py |
+| `file.saved` | да | `project_id` | hub/api/history.py, hub/api/projects.py |
 | `git.head` | да | `project_id` | hub/watch.py |
 | `goal.check` | да | `conversation_id`, `goal_id`, `check` | hub/goals.py |
 | `goal.checking` | нет | `conversation_id`, `goal_id` | hub/goals.py |
@@ -583,6 +584,7 @@ conversation's text, an approval or a terminal's output.
 | `goal.set` | да | `conversation_id`, `goal` | hub/goals.py |
 | `goal.status` | да | `conversation_id`, `goal_id`, `status`, `detail`, `goal`, `proving`, `subscription`, `by` | hub/goals.py |
 | `goal.steered` | да | `conversation_id`, `goal_id`, `id`, `text` | hub/goals.py |
+| `history.changed` | нет | `project_id`, `paths` | hub/history.py |
 | `hub.shutdown_requested` | да | `by` | hub/api/system.py |
 | `hub.started` | да | `version`, `migrations_applied` | hub/server.py |
 | `hub.stopping` | да | — | hub/server.py |

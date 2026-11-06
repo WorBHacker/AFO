@@ -7,7 +7,8 @@ import time
 import pytest
 
 from app.ui import highlighter, project_rows
-from hub import cards, projects, search
+from hub import cards, history, projects, search
+from hub.db import Database, migrate
 from hub.projects import Project
 from hub.symbols import SymbolIndex
 from hub.watch import ProjectWatcher
@@ -95,9 +96,13 @@ def test_the_tree(big, monkeypatch):
     note("  его процессов git", len(count.calls), "шт", 40)
 
 
-def test_a_storm_of_changes_under_the_watcher(big, monkeypatch):
+def test_a_storm_of_changes_under_the_watcher(big, monkeypatch, tmp_path):
+    """With the files' history (stage 26): each of the 5000 changed files read and kept as a version."""
     count = Count(monkeypatch)
     files = sorted((big / "src").rglob("*.py"))[:5000]
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    db.call(lambda conn: conn.execute("INSERT INTO projects (id, name, path) VALUES ('big', 'big', ?)", (str(big),)))
 
     class Bus:
         def __init__(self):
@@ -108,7 +113,7 @@ def test_a_storm_of_changes_under_the_watcher(big, monkeypatch):
 
     async def scenario():
         bus = Bus()
-        watcher = ProjectWatcher(bus)
+        watcher = ProjectWatcher(bus, keep=history.History(db, bus, tmp_path / "snapshots").keep)
         watcher.start([project(big)])
         deadline = time.perf_counter() + 30
         while not any(t == "project.git" for _, t, _ in bus.events):
@@ -133,10 +138,15 @@ def test_a_storm_of_changes_under_the_watcher(big, monkeypatch):
 
     events, last_write, cpu = asyncio.run(scenario())
     kinds = [t for _, t, _ in events]
-    last = max(at for at, t, _ in events)
+    last = max(at for at, t, _ in events if t != "history.changed")
     assert kinds.count("project.git") >= 1
     assert sum(len(p["changed"]) for _, t, p in events if t == "project.files") > 0
     note("наблюдатель: 5000 изменений, успокоился после последнего", (last - last_write) * 1000, "мс", 3000)
+    kept = db.call(lambda conn: conn.execute("SELECT COUNT(*) FROM file_versions").fetchone()[0])
+    told = max(at for at, t, _ in events if t == "history.changed")
+    note("  история: версий файлов", kept, "шт", 5000)
+    note("  история записана после последнего изменения", (told - last_write) * 1000, "мс", 5000)
+    db.close()
     note("  событий project.files", kinds.count("project.files"), "шт", 10)
     note("  событий project.git", kinds.count("project.git"), "шт", 10)
     note("  процессов git", len(count.calls), "шт", 40)

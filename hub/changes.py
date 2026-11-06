@@ -46,6 +46,7 @@ CONTEXT = 3  # unchanged lines around a change in a hunk, as a unified diff has 
 ENCLOSING = {"function", "method", *CONTAINER_KINDS}  # definitions that name where a hunk is (not «x = 1»)
 SAVE_ENCODINGS = ("utf-8", "utf-8 BOM", "cp1251", "utf-16")  # as projects.read_file names them
 SAVE_TOOL = "save"  # a change the user made in the window's editor (D47): «вы» in «Изменения»
+RESTORE_TOOL = "restore"  # a version the user took back from the file's history (stage 26.2): «вы» too
 
 WRITE_TOOLS: list[dict[str, Any]] = [
     {
@@ -245,6 +246,23 @@ def plan_save(project: Project, rel: str, text: str, encoding: str, base: str) -
     save any file of the project, a secret one too; never the hub's own data or git's own folder."""
     if encoding not in SAVE_ENCODINGS:  # the request itself, before the disk is looked at
         raise WriteError(f"unknown encoding {encoding!r}: {', '.join(SAVE_ENCODINGS)}")
+    shown, target, before = _as_seen(project, rel, base)
+    after = encoded(text, encoding, before)
+    if len(after) > MAX_BYTES:
+        raise WriteError(f"{shown} would be larger than 2 MB: the hub does not write it")
+    return Planned(shown, target, before, after)
+
+
+def plan_restore(project: Project, rel: str, data: bytes, base: str) -> Planned:
+    """A version from the file's history taken back (stage 26.2), the way a save goes: checked against the version
+    the user saw (`base`, as plan_save) and written with the version's own bytes - its encoding, mark and line ends."""
+    shown, target, before = _as_seen(project, rel, base)
+    return Planned(shown, target, before, data)
+
+
+def _as_seen(project: Project, rel: str, base: str) -> tuple[str, Path, bytes | None]:
+    """The file the user means to write over: its path, where it is and its bytes now - when they are the version
+    `base` (sha256; "" - no file), else Conflict."""
     try:
         target = resolve_inside(project.root, rel)
     except ProjectError as exc:
@@ -260,10 +278,7 @@ def plan_save(project: Project, rel: str, text: str, encoding: str, base: str) -
     if before is not None and digest(before) != base:
         raise Conflict(f"{shown} has changed on the disk since it was opened" if base else f"{shown} exists already",
                        "changed" if base else "exists")  # fmt: skip
-    after = encoded(text, encoding, before)
-    if len(after) > MAX_BYTES:
-        raise WriteError(f"{shown} would be larger than 2 MB: the hub does not write it")
-    return Planned(shown, target, before, after)
+    return shown, target, before
 
 
 def save(planned: Planned, folder: Path) -> tuple[str | None, str] | None:

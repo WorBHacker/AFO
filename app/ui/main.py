@@ -107,6 +107,7 @@ class QuickApp:
         context.setContextProperty("Mail", self.controller.mail_view)
         context.setContextProperty("AgentKeys", self.controller.agent_keys)
         context.setContextProperty("Sandbox", self.controller.sandbox_view)
+        context.setContextProperty("FileHistory", self.controller.history_view)
         context.setContextProperty("Goal", self.controller.goal_view)
         context.setContextProperty("Tasks", self.controller.tasks_view)
         context.setContextProperty("Proving", self.controller.proving_view)

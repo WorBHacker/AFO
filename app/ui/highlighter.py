@@ -334,6 +334,11 @@ class Highlighter(QObject):
         self._laying = True  # markContentsDirty is no edit of the user's
         try:
             self._document.markContentsDirty(start, end - start)
+            if not self.typing:
+                # a viewer's TextEdit draws anew only what contentsChange names: its next text (another file,
+                # another version) stayed grey until something laid it out again (26.2). Not the editor's: there
+                # the drafts, the completions and the finder take contentsChange for typing
+                self._document.contentsChange.emit(start, end - start, end - start)
         finally:
             self._laying = False
 

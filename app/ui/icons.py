@@ -27,7 +27,7 @@ LUCIDE = {
     "refresh": "refresh-cw", "folder": "folder", "folder-plus": "folder-plus", "file": "file", "branch": "git-branch",
     "commit": "git-commit-horizontal", "external": "external-link", "back": "arrow-left", "lock": "lock",
     "pin": "pin", "activity": "activity", "terminal": "square-terminal", "keyboard": "keyboard",
-    "outline": "list-tree", "shield": "shield-check", "agent": "bot",
+    "outline": "list-tree", "shield": "shield-check", "agent": "bot", "history": "history",
 }  # fmt: skip
 
 PATHS = {

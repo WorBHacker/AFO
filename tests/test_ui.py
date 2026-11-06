@@ -1394,6 +1394,9 @@ class FakeClient:
     def rules(self, project_id):
         return [dict(r) for r in self.rule_list]
 
+    def history(self, project_id, path=""):  # a project file's versions (stage 26): tests/test_history_ui.py
+        return []
+
     def delete_rule(self, rule_id):
         self.rule_list = [r for r in self.rule_list if r["id"] != rule_id]
 

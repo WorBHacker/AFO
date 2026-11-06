@@ -38,6 +38,7 @@ from .connections import Connections
 from .editor import EditorView
 from .feed import Feed
 from .goal_view import GoalView
+from .history_view import HistoryView
 from .install_view import InstallView
 from .mail_view import MailView
 from .mcp_view import McpView
@@ -262,6 +263,7 @@ class Controller(QObject):
         self.transfer_view = TransferView(self)  # all the settings into a file and back (D46, 13.10)
         self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
         self.readers = Readers(self)  # the viewer's text and its colours (24.1)
+        self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
@@ -1750,8 +1752,10 @@ class Controller(QObject):
             self.connections.on_event(kind, payload)
         elif kind == "system.status":
             self._show_status(payload)
-        elif kind.startswith(("project.", "processes.", "card.", "note.", "link")):
+        elif kind.startswith(("project.", "processes.", "card.", "note.", "link", "file.", "rules.", "history.")):
             self.projects.on_event(kind, payload)
+            if kind.startswith(("file.", "history.")):
+                self.history_view.on_event(kind, payload)
         elif kind.startswith("terminal."):
             self.terminals.on_event(kind, payload)
         elif kind.startswith("approval."):

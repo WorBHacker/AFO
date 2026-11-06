@@ -73,6 +73,7 @@ class Projects(QObject):
         self._notes: list[dict[str, Any]] = []
         self._changes: list[dict[str, Any]] = []  # what models wrote in the open project (D17)
         self._rules: list[dict[str, Any]] = []
+        self._history: list[dict[str, Any]] = []  # the open project's files that have a history (stage 26)
         self._links: list[dict[str, Any]] = []  # every link, as the hub lists them
         self._scanning = False
         self._memos: dict[str, tuple[tuple, Any]] = {}  # computed properties, built once per change (_memo)
@@ -208,6 +209,12 @@ class Projects(QObject):
     def fileChanges(self) -> list:
         """What models wrote in the open project, newest first (D17): each can be undone."""
         return project_rows.write_rows(self._changes)
+
+    @Property(list, notify=changesChanged)
+    def deletedFiles(self) -> list:
+        """Files of the open project gone from the disk whose versions the hub keeps (stage 26): each comes back from
+        its history."""
+        return project_rows.deleted_rows(self._history)
 
     @Property(list, notify=changesChanged)
     def rules(self) -> list:
@@ -602,7 +609,7 @@ class Projects(QObject):
         elif kind == "note.changed":
             if payload.get("project_id") == self.currentId:
                 self.load_notes()
-        elif kind.startswith(("file.", "rules.")):
+        elif kind.startswith(("file.", "rules.", "history.")):
             if payload.get("project_id") == self.currentId:
                 self.load_changes()
         elif kind.startswith("card."):
@@ -888,12 +895,13 @@ class Projects(QObject):
             return
         pid = self.current["id"]
 
-        def show(found: tuple[list[dict[str, Any]], list[dict[str, Any]]]) -> None:
+        def show(found: tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]) -> None:
             if pid == self.currentId:
-                self._changes, self._rules = found
+                self._changes, self._rules, self._history = found
                 self.changesChanged.emit()
 
-        self.app._call(lambda: (self.app.client.changes(pid), self.app.client.rules(pid)), show, lambda _e: None)
+        client = self.app.client
+        self.app._call(lambda: (client.changes(pid), client.rules(pid), client.history(pid)), show, lambda _e: None)
 
     @Slot(int)
     def revertChange(self, change_id: int) -> None:
