@@ -2312,7 +2312,7 @@
  "установщик не сказал почему": "the installer did not say why",
  "файл": "file",
  "файл {path}": "file {path}",
- "файл {path} правился {n} раз, а ошибок не меньше": "the file {path} was changed {n} times, with no fewer failures",
+ "файл {path} менялся в {n} ходах, а ошибок не меньше": "the file {path} changed in {n} turns, with no fewer failures",
  "файл модели не прочитан": "the model's file was not read",
  "файл не прочитался: {error}": "the file could not be read: {error}",
  "файл подкачки ≈ {gib} ГБ": "page file ≈ {gib} GB",

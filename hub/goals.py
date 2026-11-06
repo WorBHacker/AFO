@@ -20,7 +20,8 @@ Checkpoints (11.6, hub/checkpoints.py): each git project's files at the goal's s
 by refs of the hub's own. Where the loop guard would stop the goal, it goes back to the last checkpoint instead (once
 each) and the worker hears to take another way - in «Песочница» at once, in the project after a card (the files are
 the user's); refused, the goal waits for the human as before.
-Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file written again and again -
+Going round in circles (11.4, hub/guard.py): the same failure twice, a pendulum, one file changed turn after turn -
+by whoever wrote it, the projects' trees at a turn's start and end say (21.1) -
 the next turn investigates (writing and commands refused, the root cause asked for); after that, the human. The
 contract's constraints in the forms the hub can check are refused at the call; three tries in a turn - the human.
 Two models (11.7, the user's plan, idea 5) only when the contract names a strong one: it takes the first turn (the
@@ -759,6 +760,7 @@ class Goals:
         self._offers: dict[str, asyncio.Task] = {}  # a card asking to go back to a checkpoint, by goal (11.6)
         self._locks: dict[str, asyncio.Lock] = {}  # one check at a time per chat
         self._counted: set[str] = set()  # chats whose running turn is the goal's: it counts even if paused meanwhile
+        self._began: dict[str, dict[str, str]] = {}  # a goal's turn running: its projects' trees at its start (21.1)
 
     async def start(self) -> list[str]:
         """Goals the last hub left at work go on (D16): each active one gets its next turn."""
@@ -960,6 +962,7 @@ class Goals:
             mine = conversation_id in self._counted
             self._counted.discard(conversation_id)
             turn = self._chat.guards.pop(conversation_id, None) if mine else None  # its tries at the constraints
+            began = self._began.pop(conversation_id, None) if mine else None  # its projects' trees then (21.1)
             if goal is None and mine:  # cleared while its turn ran: the turn still counts
                 goal = await self._db.acall(lambda conn: latest_goal(conn, conversation_id))
             if goal is None or not (goal["status"] == "active" or mine):
@@ -988,8 +991,10 @@ class Goals:
                 return
             await self._bus.publish("goal.checking", {"conversation_id": conversation_id, "goal_id": goal["id"]},
                                     persist=False)  # fmt: skip
+            changed = await self._changed(conversation_id, began or {})  # before the checks' commands run
             results = await self.run_checks(goal)
             found = await self.contour(goal, results)
+            found["turn_files"] = changed
             if (stage := await self._stage(goal, found)) is not None:  # «STAGE DONE» (11.5)
                 found["stage"] = stage
             goal = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))  # the judge's use counted
@@ -1006,8 +1011,8 @@ class Goals:
             # going round in circles (11.4): the judge's words differ each time - not part of the fingerprint
             extra = _problems(found)
             mark = (guard.fingerprint(found["results"], extra), guard.failing(found["results"], extra))
-            history, start = await self._history(goal)
-            edited, edits = await self._edits(history, mark[1], goal["conversation_id"], start)
+            history = await self._history(goal)
+            edited, edits = guard.thrashing(history, mark[1], found["turn_files"])
             accepted = (found.get("stage") or {}).get("accepted")  # a stage done is progress (19.1)
             loop = None if accepted else guard.signal(history, mark[0], mark[1], edits, edited)
             if loop is not None and loop[0] == "blocked":
@@ -1219,28 +1224,40 @@ class Goals:
         hard = "fix" if route == "investigated" else ""  # what the investigation found: the strong model fixes it
         await self._turn(goal, continue_note(goal, found, said, head=head), hard=hard)
 
-    async def _history(self, goal: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    async def _history(self, goal: dict[str, Any]) -> list[dict[str, Any]]:
         """The checks since the goal last stopped (a block, a limit, a pause: resumed, it starts afresh) or closed a
-        stage (19.1), oldest first - what the loop guard reads (11.4) - and when that began."""
+        stage (19.1), oldest first - what the loop guard reads (11.4)."""
         found = await self._db.acall(lambda conn: checks(conn, goal["id"], 50))
         cuts = [i for i, c in enumerate(found) if guard.afresh(c)]
-        if not cuts:
-            return found, goal["created_at"]
-        return found[cuts[-1] + 1 :], found[cuts[-1]]["created_at"]
+        return found[cuts[-1] + 1 :] if cuts else found
 
-    async def _edits(self, history: list[dict[str, Any]], now: int, conversation_id: str,
-                     start: str) -> tuple[str, int]:  # fmt: skip
-        """The file written most since what fails last got fewer (from `start`: the goal's, or where it last stopped
-        or closed a stage), and how many times - the third signal (11.4). The hub's own writes; a sandbox's are not
-        counted."""
-        since = guard.no_progress_since(history, now)
-        if since is None:
-            return "", 0
-        since = max(since or (history[0]["created_at"] if history else start), start)
-        row = await self._db.acall(lambda conn: conn.execute(
-            "SELECT path, count(*) FROM file_changes WHERE conversation_id = ? AND created_at > ? GROUP BY project_id,"
-            " path ORDER BY 2 DESC LIMIT 1", (conversation_id, since)).fetchone())  # fmt: skip
-        return (row[0], row[1]) if row else ("", 0)
+    async def _trees(self, conversation_id: str) -> dict[str, str]:
+        """Each git project's files as a tree now (in «Песочница» - the sandbox's), by project id."""
+        trees = {}
+        for project in await self._chat.tool_projects(conversation_id):
+            if judge.is_git(project.root):
+                try:
+                    trees[project.id] = await asyncio.to_thread(judge.snapshot, project.root)
+                except judge.JudgeError as exc:
+                    log.warning("goal of %s: no tree of %s: %s", conversation_id, project.name, exc)
+        return trees
+
+    async def _changed(self, conversation_id: str, began: dict[str, str]) -> list[str]:
+        """What the turn changed (21.1): each project's tree at its start against now - whoever wrote it, the hub's
+        tools, Claude Code or a command. With several projects a file is «<project>/<path>»."""
+        projects = await self._chat.tool_projects(conversation_id)
+        now = await self._trees(conversation_id) if began else {}
+        out = []
+        for project in projects:
+            if project.id in began and project.id in now:
+                try:
+                    found = await asyncio.to_thread(judge.tree_changes, project.root, began[project.id],
+                                                    now[project.id])  # fmt: skip
+                except judge.JudgeError as exc:
+                    log.warning("goal of %s: what %s changed is unknown: %s", conversation_id, project.name, exc)
+                    continue
+                out += [c["path"] if len(projects) == 1 else f"{project.name}/{c['path']}" for c in found]
+        return out
 
     async def contour(self, goal: dict[str, Any], results: list[dict[str, Any]],
                       bases: dict[str, str] | None = None) -> dict[str, Any]:  # fmt: skip
@@ -1394,6 +1411,8 @@ class Goals:
             results.append({"kind": "changes", "projects": found["evidence"]})
         if found.get("judge"):
             results.append({"kind": "judge", **found["judge"]})
+        if found.get("turn_files") is not None:  # what the turn changed: the third signal reads it later (21.1)
+            results.append({"kind": "turn", "files": found["turn_files"]})
         if found.get("stage"):
             results.append(found["stage"])
 
@@ -1446,6 +1465,7 @@ class Goals:
             end = note.rfind("</goal_loop>")
             note = f"{note[:end]}{PLAN_LINE}\n{note[end:]}"
         mark = {"model_id": model_id, "why": why} if goal.get("strong_model_id") else None  # seen in the feed (D11)
+        self._began[conversation_id] = await self._trees(conversation_id)  # what the turn changes: from here (21.1)
         try:
             self._counted.add(conversation_id)
             # what the chat asks at each tool call of this turn (11.4): the constraints, whether it investigates
@@ -1456,6 +1476,7 @@ class Goals:
         except GatewayError as exc:
             self._counted.discard(conversation_id)
             self._chat.guards.pop(conversation_id, None)
+            self._began.pop(conversation_id, None)
             if conversation_id in self._chat.busy:
                 return
             current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))

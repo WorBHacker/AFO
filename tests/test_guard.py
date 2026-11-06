@@ -40,9 +40,11 @@ def test_the_three_signals():
     swinging = [check("a"), check("b"), check("a", "investigate"), check(None, "investigated"), check("b"),
                 check("a")]  # fmt: skip
     assert guard.signal(swinging, "b", 1, 0)[0] == "blocked"  # a↔b again after the look
-    assert guard.signal([check("a")], "b", 1, 5)[0] == "investigate"  # one file edited 5 times, nothing better
-    assert guard.signal([check("a")], "b", 0, 5) is None  # nothing fails: no thrashing
-    assert guard.signal([check(None, "investigated")], "b", 1, 5)[0] == "blocked"  # and again after the look
+    turns = guard.THRASH_TURNS
+    assert guard.signal([check("a")], "b", 1, turns)[0] == "investigate"  # one file changed turn after turn
+    assert guard.signal([check("a")], "b", 1, turns - 1) is None
+    assert guard.signal([check("a")], "b", 0, turns) is None  # nothing fails: no thrashing
+    assert guard.signal([check(None, "investigated")], "b", 1, turns)[0] == "blocked"  # and again after the look
     assert guard.signal([check(None)], None, 0, 9) is None
 
 
@@ -55,11 +57,18 @@ def test_after_a_stop_or_a_stage_done_the_signals_count_afresh():
     assert guard.afresh(done) and not guard.afresh(refused)
 
 
-def test_where_progress_was_last_made():
-    history = [check("a", failing=3, at="t1"), check("b", failing=2, at="t2"), check("c", failing=2, at="t3")]
-    assert guard.no_progress_since(history, 2) == "t2"  # 3 → 2 at t2, then no better
-    assert guard.no_progress_since(history, 1) is None  # better now: nothing to count
-    assert guard.no_progress_since([check("a", failing=2, at="t1")], 2) == ""  # never better: since the goal began
+def test_the_turns_that_changed_one_file_since_progress_was_last_made():
+    """21.1: each check keeps what its turn changed; the count runs from where what fails last got fewer."""
+
+    def turned(failing, *files):
+        return {**check("x", failing=failing), "results": [{"kind": "turn", "files": list(files)}]}
+
+    history = [turned(3, "a.py", "b.py"), turned(2, "a.py"), turned(2, "a.py", "c.py")]
+    assert guard.thrashing(history, 2, ["a.py"]) == ("a.py", 2)  # 3 → 2 at the second: that turn made progress
+    assert guard.thrashing(history, 1, ["a.py"]) == ("", 0)  # better now: nothing to count
+    assert guard.thrashing([turned(2, "a.py")], 2, ["a.py", "a.py"]) == ("a.py", 2)  # never better: from the start
+    assert guard.thrashing([check("x", failing=2)], 2, []) == ("", 0)  # a check with no turn kept (an old one)
+    assert guard.turn_files(turned(1, "a.py")) == ["a.py"] and guard.turn_files(check("x")) == []
 
 
 def test_the_constraints_the_hub_can_check():

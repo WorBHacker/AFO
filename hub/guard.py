@@ -6,7 +6,9 @@ or closed a stage (an investigation's own turn does not count: it changes nothin
     the same failure  - a check's fingerprint (its failures without their noise: times, durations, temporary paths,
                         addresses) twice in a row: the next turn investigates; three times in a row: the human;
     a pendulum        - a↔b over four checks: the next turn investigates; again after that: the human;
-    thrashing         - one file written THRASH_EDITS times or more while what fails got no fewer: the same.
+    thrashing         - one file changed in THRASH_TURNS turns while what fails got no fewer: the same. What a turn
+                        changed is read from the projects' trees at its start and its end (21.1) - the hub's writes,
+                        Claude Code's and the commands' alike.
 An investigation is the plan's idea 3: for one turn writing and commands are refused; the worker reads, follows the
 calls and says the root cause and the fix it will make. Its check runs nothing - nothing could change.
 
@@ -19,6 +21,7 @@ diff.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import fnmatch
 import hashlib
@@ -31,7 +34,7 @@ from common.i18n import tr
 
 FINGERPRINT_CHARS = 16
 TWICE, THRICE, SWING = 2, 3, 4  # checks in a row
-THRASH_EDITS = 5  # writes of one file with no fewer failures
+THRASH_TURNS = 3  # turns that changed one file with no fewer failures
 TRIES = 3  # refused tries at a constraint in one turn that stop the goal
 STOPS = ("blocked", "budget", "paused", "rolled_back")  # the goal stopped or went back: after it, afresh
 INVESTIGATING = ("not done: this is an investigation turn (the goal's loop guard) - writing and commands are refused "
@@ -99,19 +102,28 @@ def _progress(history: list[dict[str, Any]], now: int) -> int | None:
     return places[last] if last else -1
 
 
-def no_progress_since(history: list[dict[str, Any]], now: int) -> str | None:
-    """Since when what fails got no fewer - a check's time, "" for the start; None when it is fewer now."""
+def turn_files(check: dict[str, Any]) -> list[str]:
+    """The files the turn before this check changed (21.1), as the check keeps them."""
+    return next((r.get("files") or [] for r in check.get("results") or [] if r.get("kind") == "turn"), [])
+
+
+def thrashing(history: list[dict[str, Any]], now: int, files: list[str]) -> tuple[str, int]:
+    """The file changed in the most turns since what fails last got fewer, and in how many - the third signal's
+    count. `files`: what this turn changed; the earlier turns' are kept with their checks."""
     at = _progress(history, now)
     if at is None:
-        return None
-    return history[at]["created_at"] if at >= 0 else ""
+        return "", 0
+    counts = collections.Counter(set(files))
+    for check in history[at + 1 :]:
+        counts.update(set(turn_files(check)))
+    return counts.most_common(1)[0] if counts else ("", 0)
 
 
 def signal(history: list[dict[str, Any]], fp: str | None, now: int, edits: int = 0,
            edited: str = "") -> tuple[str, str] | None:  # fmt: skip
     """After a check: ("investigate" | "blocked", why) when the goal goes round in circles, else None. `history`: the
     checks since the goal last stopped, the oldest first; `fp`, `now`: this check's fingerprint and failures; `edits`:
-    the most writes of one file (`edited`) since what fails last got fewer."""
+    the most turns that changed one file (`edited`) since what fails last got fewer (thrashing())."""
     places = _worker(history)
     fps = [history[i]["fingerprint"] for i in places] + [fp]
     starts = [*places, len(history)]
@@ -128,8 +140,8 @@ def signal(history: list[dict[str, Any]], fp: str | None, now: int, edits: int =
         if a and b and a != b and (a, b) == (c, d):
             return ("blocked" if looked_after(starts[-SWING]) else "investigate"), tr(
                 "ошибки ходят по кругу: одна сменяет другую и возвращается")  # fmt: skip
-    if edits >= THRASH_EDITS and now > 0 and (at := _progress(history, now)) is not None:
-        said = tr("файл {path} правился {n} раз, а ошибок не меньше", path=edited or "?", n=edits)
+    if edits >= THRASH_TURNS and now > 0 and (at := _progress(history, now)) is not None:
+        said = tr("файл {path} менялся в {n} ходах, а ошибок не меньше", path=edited or "?", n=edits)
         return ("blocked" if looked_after(at) else "investigate"), said
     return None
 

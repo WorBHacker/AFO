@@ -189,18 +189,17 @@ def test_three_tries_at_a_constraint_in_a_turn_stop_the_goal(hub, repo):  # noqa
     assert not (repo / "migrations").exists()
 
 
-def test_one_file_edited_again_and_again_without_progress_sends_an_investigator(hub, repo):  # noqa: F811
-    """The third signal: a file written five times while what fails does not get fewer - even when the failure's
-    words change each time (the check shows the file)."""
+def test_a_file_written_again_and_again_in_one_turn_is_one_turn(hub, repo):  # noqa: F811
+    """The third signal counts turns, not writes (21.1): a turn that writes a file five times - writing, looking,
+    writing again is how work goes - changed it once."""
     read = [("read_file", {"project": "proj", "path": "notes.txt"})]
     again = [("write_file", {"project": "proj", "path": "notes.txt", "content": f"версия {n}\n"}) for n in range(5)]
-    worker = use(hub, Gated("agent", [read, again, "Переписал заметки.", "Гипотеза: заметки ни при чём.", WRITE,
-                                      "Готово."]))  # fmt: skip
+    worker = use(hub, Gated("agent", [read, again, "Переписал заметки.", WRITE, "Готово."]))
     _pid, conv = chat_with_project(hub, repo, worker)
     set_goal(hub, conv, criteria=[{"command": "Get-Content notes.txt; " + DONE}])
-    done = settled(hub, conv, "achieved")
-    assert [c["route"] for c in done["checks"]] == ["investigate", "investigated", "achieved"]
-    assert "notes.txt" in done["checks"][0]["detail"] and "5" in done["checks"][0]["detail"]
+    done = settled(hub, conv, "achieved", "blocked")
+    assert [c["route"] for c in done["checks"]] == ["continue", "achieved"]
+    assert {"kind": "turn", "files": ["notes.txt"]} in done["checks"][0]["results"]
 
 
 def test_a_goal_in_stages_keeps_one_line_for_a_stage_done(hub, repo):  # noqa: F811
@@ -259,6 +258,23 @@ def goal_refs(repo, goal_id):
 
 
 DEAD_END = ["Пробую.", "Ещё раз.", "Гипотеза: done.txt никто не создаёт.", "Снова пробую."]  # the guard: the human
+
+
+def test_a_file_a_command_changes_turn_after_turn_is_thrashing_too(hub, repo):  # noqa: F811
+    """21.1: the third signal reads what each turn changed from the project's tree at its start and its end - so a
+    file written by a command (or by Claude Code) counts as the hub's own writes do. Here each turn rewrites x.txt by
+    a command, and the check fails each time a little differently: no same failure, no pendulum - and no fewer
+    failures; after THRASH_TURNS turns the next one investigates."""
+    turns = [[("run_command", {"project": "proj", "command": f"Set-Content x.txt {n}"})] for n in (1, 2, 3)]
+    script = [step for t in turns for step in (t, "Записал.")]
+    worker = use(hub, Gated("agent", [*script, "Причина: x.txt не тот файл.", WRITE, "Готово."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    set_goal(hub, conv, criteria=[{"command": "if (Test-Path done.txt) { exit 0 } else { Get-Content x.txt; exit 1 }"}])
+    done = settled(hub, conv, "achieved", "blocked")
+    routes = [c["route"] for c in done["checks"]]
+    assert routes == ["continue", "continue", "investigate", "investigated", "achieved"], routes
+    assert "x.txt" in done["checks"][2]["detail"]
+    assert [r for r in done["checks"][0]["results"] if r["kind"] == "turn"] == [{"kind": "turn", "files": ["x.txt"]}]
 
 
 def test_a_dead_end_in_the_sandbox_goes_back_to_the_last_checkpoint(hub, repo):  # noqa: F811
