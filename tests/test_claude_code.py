@@ -35,6 +35,7 @@ from hub.server import create_app
 from hub.settings import HubSettings
 
 FAKE = [sys.executable, str(Path(__file__).with_name("fake_claude.py"))]
+NO = "not done: the user said no - "  # how a «no» with a comment reaches a model (stage 28)
 
 
 # --- finding the CLI ---
@@ -385,14 +386,16 @@ def test_the_chats_depth_reaches_claude_code(hub, monkeypatch):
 
 
 def test_a_denial_with_a_comment_reaches_claude_code(hub):
+    """The «no» as the hub's own models hear it, not the bare comment: live (stage 28) Haiku took «нет: папка данных
+    хаба» for what PowerShell printed."""
     cid = chat_with_project(hub)
     send(hub, cid, "edit it")
     asked = hub.wait_approval()
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не трогай заметки"})
     chat = hub.wait_idle(cid)
     result = chat["messages"][2]["content"][0]
-    assert result["error"] is True and result["output"] == "не трогай заметки"
-    assert chat["messages"][-1]["content"][0]["text"] == "Не стал править: не трогай заметки"
+    assert result["error"] is True and result["output"] == f"{NO}не трогай заметки"
+    assert chat["messages"][-1]["content"][0]["text"] == f"Не стал править: {NO}не трогай заметки"
     assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "свежий файл\n"
 
 
@@ -594,7 +597,7 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "PowerShell" and asked["destructive"] is True
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не сейчас"})
-    assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Не стал: не сейчас"
+    assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == f"Не стал: {NO}не сейчас"
 
     # D19 holds for Claude Code too (the audit, D46): a trusted chat lets it read a page without a card, but the edit
     # after it is asked - the page may have told it what to do
@@ -604,7 +607,7 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "Edit" and asked["conversation_id"] == later
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "сначала проверю"})
-    assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == "Не стал править: сначала проверю"
+    assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == f"Не стал править: {NO}сначала проверю"
 
     # a file the window's editor holds with unsaved edits (D47, step 14.2c): Claude Code's edit of it - its path
     # counts from the project - is asked in a trusted chat too
@@ -613,7 +616,7 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "Edit" and asked["unsaved"] is True and asked["conversation_id"] == trusted
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "там мои правки"})
-    assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Не стал править: там мои правки"
+    assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == f"Не стал править: {NO}там мои правки"
 
 
 # --- a goal's worker (11.7, D44) ---

@@ -328,7 +328,10 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         if decision.allow:
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
-        return json.dumps({"behavior": "deny", "message": decision.comment}, ensure_ascii=False)
+        # the «no» as the hub's own models hear it (hub/chat.py): live, a bare comment was read as the command's
+        # output (stage 28)
+        said = f"not done: the user said no - {decision.comment}"
+        return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
 
     async def answers_to(conversation_id: str, data: dict[str, Any]) -> str:
         """Claude Code's AskUserQuestion: each question asked in the chat with its options; the answers go back as
