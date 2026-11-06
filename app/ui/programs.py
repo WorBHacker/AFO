@@ -28,7 +28,8 @@ FILTERS = [
     ("new", N_("Новые")),
 ]
 ROLES = ["key", "id", "name", "detail", "path", "decision", "fresh", "removed", "manual"]
-KIND_NOTES = {"store": "Microsoft Store", "manual": N_("добавлена вручную")}
+KIND_NOTES = {"store": "Microsoft Store", "manual": N_("добавлена вручную"), "game": N_("игра Steam"),
+              "window": N_("найдена по открытому окну")}  # fmt: skip
 
 
 def matches(program: dict[str, Any], view: str) -> bool:

@@ -386,6 +386,30 @@ def test_a_program_opens_a_link_of_its_own_kind(tmp_path, monkeypatch):
     assert any(t["name"] == "open_program" and "link" in t["parameters"]["properties"] for t in pc.TOOLS)
 
 
+def test_a_steam_game_starts_through_steam(tmp_path, monkeypatch):
+    """25.2: a game of Steam's libraries has no .exe of its own in the catalog - Steam starts it by its id."""
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    game = programs.Found("steam:292030", "Witcher", "game", folder="D:\\Steam\\steamapps\\common\\The Witcher 3")
+
+    def add(conn):
+        programs.apply_scan(conn, [game], "2026-11-06T00:00:00Z")
+        programs.decide(conn, programs.program_id(game.key), "allow", "app", "2026-11-06T00:00:00Z")
+
+    db.call(add)
+    computer = pc.Computer(db, EventBus(db), tmp_path / "computer", watch_person=False)
+    run = db.call(lambda c: store.create_conversation(c, kind="agent_run", title="Тест"))
+    opened = []
+    monkeypatch.setattr(pc.os, "startfile", opened.append, raising=False)
+
+    async def ask(tool, shown, cover):
+        return None
+
+    said, failed = asyncio.run(computer.handle(run, {"name": "open_program", "input": {"program": "Witcher"}},
+                                               asyncio.Event(), ask))  # fmt: skip
+    assert not failed and said.startswith("started «Witcher»") and opened == ["steam://rungameid/292030"]
+
+
 def test_what_the_screen_shows_is_secret_filtered(tmp_path, monkeypatch):
     """The audit (D46): another program's window may show a key or a password - it goes to the model masked, as a
     file's text does (D10); a cloud model gets the look too."""

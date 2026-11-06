@@ -1152,6 +1152,8 @@ class Computer:
             return f"«{program['name']}» opens {link}; look at its window in a moment - see screen_windows"
         if program.get("exe"):
             await asyncio.to_thread(os.startfile, program["exe"])
+        elif program.get("link"):  # a Steam game (25.2): Steam starts it
+            await asyncio.to_thread(os.startfile, program["link"])
         elif program.get("aumid"):
             await asyncio.to_thread(subprocess.Popen, ["explorer.exe", f"shell:AppsFolder\\{program['aumid']}"])
         else:

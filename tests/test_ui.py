@@ -2858,6 +2858,15 @@ def test_program_rows_filters_and_questions():
     assert [q["name"] for q in programs.questions(PROGRAMS)] == ["Telegram"]
     gone_but_allowed = {**PROGRAMS[3], "decision": "allow"}  # its decision is worth seeing
     assert programs.program_rows([gone_but_allowed], "all", "")[0]["detail"] == "не найдена на компьютере"
+    # 25.2: a Steam game by its folder, a program seen by its open window
+    game = {"id": "g", "name": "Witcher", "kind": "game", "exe": "", "folder": "D:\\Steam\\common\\Witcher",
+            "decision": None, "fresh": True, "removed": False}  # fmt: skip
+    seen = {"id": "w", "name": "Terminal (mintty)", "kind": "window", "publisher": "Thomas Wolff",
+            "exe": "C:\\Git\\usr\\bin\\mintty.exe", "decision": None, "fresh": True, "removed": False}  # fmt: skip
+    rows_ = programs.program_rows([game, seen], "all", "")
+    assert [(r["detail"], r["path"]) for r in rows_] == [("игра Steam", "D:\\Steam\\common\\Witcher"),
+                                                         ("Thomas Wolff · найдена по открытому окну",
+                                                          "C:\\Git\\usr\\bin\\mintty.exe")]  # fmt: skip
 
 
 def test_the_programs_window_part(app):

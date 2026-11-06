@@ -2,8 +2,11 @@
 
 The hub finds the programs a person can start: the Start menu (Get-StartApps - desktop programs and Microsoft Store
 apps alike) with the Store packages' folders, and the registry's installed programs for publisher and version. Help
-files, links, documents and consoles (.msc) in the Start menu are left out: only what runs as a program. Any other
-.exe is added by hand.
+files, links, documents and consoles (.msc) in the Start menu are left out: only what runs as a program. Since 25.2
+also the games of Steam's libraries (a Start entry of one is only a steam:// link), matched by their folder, and the
+programs with a window open that no look knows - a portable one, or a launcher's real window (Git Bash's shortcut
+runs git-bash.exe, its window is mintty.exe's): each is offered like a new program and stays while its .exe is
+there, open or not. Any other .exe is added by hand.
 
 Each program has a decision: allowed, denied or none - and none is no (D41: the agent controls allowed programs
 only). Only the desktop app decides. A desktop program is matched by its exact .exe (a folder such as System32 holds
@@ -54,6 +57,10 @@ HOSTS = frozenset({"explorer.exe", "python.exe", "pythonw.exe", "py.exe", "pyw.e
 _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)  # steam://, http://, ms-settings: - links, not programs
 _EXE_IN_ID = re.compile(r"([\w-]+\.exe)", re.IGNORECASE)  # Microsoft.Office.WINWORD.EXE.15 -> WINWORD.EXE
 _CN = re.compile(r"(?:^|,\s*)(?:O|CN)=([^,]+)")
+_STEAM_LINK = re.compile(r"^steam://rungameid/(\d+)$", re.IGNORECASE)
+_VDF = re.compile(r'"((?:[^"\\]|\\.)*)"|([{}])')
+STEAM_TOOLS = frozenset({"228980"})  # Steamworks Common Redistributables: Steam's own, no game and no window
+FOLDER_KINDS = ("store", "game")  # matched by their folder, not one .exe
 
 POWERSHELL = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -77,7 +84,7 @@ class Found:
 
     key: str
     name: str
-    kind: str  # desktop / store / manual
+    kind: str  # desktop / store / manual / game (Steam's) / window (seen by its window, 25.2)
     exe: str = ""
     folder: str = ""
     aumid: str = ""
@@ -213,6 +220,124 @@ def enrich(found: list[Found], installed: list[dict[str, str]]) -> list[Found]:
     return out
 
 
+def vdf(text: str) -> dict[str, Any]:
+    """Valve's KeyValues text (libraryfolders.vdf, appmanifest_*.acf) as nested dicts."""
+    stack: list[dict[str, Any]] = [{}]
+    key = None
+    for match in _VDF.finditer(text):
+        string, brace = match.groups()
+        if brace == "{":
+            child: dict[str, Any] = {}
+            if key is not None:
+                stack[-1][key] = child
+            stack.append(child)
+            key = None
+        elif brace == "}":
+            if len(stack) > 1:
+                stack.pop()
+            key = None
+        elif key is None:
+            key = re.sub(r"\\(.)", r"\1", string)
+        else:
+            stack[-1][key] = re.sub(r"\\(.)", r"\1", string)
+            key = None
+    return stack[0]
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def steam_names(entries: list[dict[str, Any]]) -> dict[str, str]:
+    """The Start menu's names of Steam games (in the person's language, as Steam made the shortcut), by app id."""
+    out = {}
+    for entry in entries:
+        match = _STEAM_LINK.match(str(entry.get("AppID") or "").strip())
+        name = str(entry.get("Name") or "").strip()
+        if match and name:
+            out[match.group(1)] = name
+    return out
+
+
+def steam_games(root: str, names: dict[str, str]) -> list[Found]:
+    """The games of a Steam install (`root`): each library libraryfolders.vdf lists, each appmanifest in it - a game
+    in steamapps/common/<installdir>, when that folder is there. Steam's own tools are left out."""
+    libraries = [Path(root)]
+    listed = vdf(_read(Path(root) / "steamapps" / "libraryfolders.vdf")).get("libraryfolders")
+    for entry in listed.values() if isinstance(listed, dict) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry["path"]:
+            libraries.append(Path(entry["path"]))
+    out: dict[str, Found] = {}
+    for library in {norm(str(p)): p for p in libraries}.values():
+        apps = library / "steamapps"
+        try:
+            manifests = sorted(apps.glob("appmanifest_*.acf"))
+        except OSError:
+            continue
+        for manifest in manifests:
+            state = vdf(_read(manifest)).get("AppState")
+            if not isinstance(state, dict):
+                continue
+            appid, installdir = str(state.get("appid") or ""), str(state.get("installdir") or "")
+            folder = apps / "common" / installdir
+            if not appid.isdigit() or not installdir or appid in STEAM_TOOLS or not folder.is_dir():
+                continue
+            name = names.get(appid) or str(state.get("name") or "") or installdir
+            out.setdefault(f"steam:{appid}", Found(f"steam:{appid}", name, "game", folder=str(folder)))
+    return list(out.values())
+
+
+def steam_root() -> str:
+    """Where Steam is installed (the registry's SteamPath), '' when it is not."""
+    if sys.platform != "win32":
+        return ""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            value = str(winreg.QueryValueEx(key, "SteamPath")[0])
+    except OSError:
+        return ""
+    return os.path.normpath(value) if value and os.path.isdir(value) else ""
+
+
+def window_name(exe: str, facts: dict[str, str]) -> str:
+    """A program seen by its window, as the person reads it: what it says it is, with its file's name when that
+    differs - «Terminal (mintty)»; its file's name when it says nothing."""
+    stem = os.path.splitext(os.path.basename(exe))[0]
+    said = facts.get("FileDescription", "").strip()
+    return stem if not said or said.casefold() == stem.casefold() else f"{said} ({stem})"
+
+
+def from_windows(
+    windows: list[dict[str, Any]], found: list[Found], info: Callable[[str], dict[str, str]]
+) -> list[Found]:
+    """The windows open now (`windows`: exe, aumid) of programs the look did not find: each a program to offer. Not
+    a host of others (HOSTS), not Windows' own, not one the look knows by its .exe, its folder or its windows' id."""
+    windows_dir = norm(os.environ.get("WINDIR", r"C:\Windows"))
+    exes = {norm(f.exe) for f in found if f.exe}
+    folders = [norm(f.folder).rstrip(os.sep) for f in found if f.kind in FOLDER_KINDS and f.folder]
+    aumids = {f.aumid.lower() for f in found if f.aumid}
+    out: dict[str, Found] = {}
+    for window in windows:
+        exe = str(window.get("exe") or "")
+        target = norm(exe)
+        if not target or os.path.basename(target) in HOSTS or target.startswith(windows_dir + os.sep):
+            continue
+        if target in exes or str(window.get("aumid") or "").lower() in aumids:
+            continue
+        if any(target.startswith(folder + os.sep) for folder in folders) or f"exe:{target}" in out:
+            continue
+        facts = info(exe)
+        out[f"exe:{target}"] = Found(f"exe:{target}", window_name(exe, facts), "window", exe=exe,
+                                     folder=os.path.dirname(exe), publisher=facts.get("CompanyName", ""),
+                                     version=real_version(facts.get("ProductVersion", "")))  # fmt: skip
+    return list(out.values())
+
+
 def with_file_info(found: list[Found], info: Callable[[str], dict[str, str]]) -> list[Found]:
     """What the registry did not say, from the program's own .exe: its company and version."""
     out = []
@@ -343,13 +468,30 @@ def start_and_store() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return listed(data.get("start")), listed(data.get("packages"))
 
 
+def open_windows() -> list[dict[str, Any]]:
+    """The windows open now, without AFO's own (hub/computer.py - it asks this module which programs are allowed)."""
+    from . import computer
+
+    return [w for w in computer.top_windows() if not computer.is_localchat(w["pid"])]
+
+
 def scan_windows() -> list[Found]:
     """One look at this computer's programs."""
     if sys.platform != "win32":
         return []
     entries, packages = start_and_store()
     found = enrich(from_start(entries, packages, resolve_app_id), installed_programs())
-    return with_file_info(found, file_info)
+    found = with_file_info(found, file_info)
+    try:  # a part that fails leaves the rest of the look as it is
+        root = steam_root()
+        found += steam_games(root, steam_names(entries)) if root else []
+    except Exception as exc:
+        log.warning("programs: Steam's games were not read: %s", exc)
+    try:
+        found += from_windows(open_windows(), found, file_info)
+    except Exception as exc:
+        log.warning("programs: the open windows were not read: %s", exc)
+    return found
 
 
 FILE_FACTS = ("FileDescription", "CompanyName", "ProductVersion")
@@ -376,7 +518,8 @@ def file_info(path: str) -> dict[str, str]:
     for name in FILE_FACTS:
         block = rf"\StringFileInfo\{language:04x}{codepage:04x}\{name}"
         if version.VerQueryValueW(data, block, ctypes.byref(pointer), ctypes.byref(length)) and length.value:
-            facts[name] = ctypes.wstring_at(pointer.value, length.value).rstrip("\0").strip()
+            # up to its first nul: some files give a length past it, and the next entry's words would follow
+            facts[name] = ctypes.wstring_at(pointer.value, length.value).split("\0", 1)[0].strip()
     return facts
 
 
@@ -393,6 +536,7 @@ def program_json(row: Any) -> dict[str, Any]:
         "exe": row["exe"],
         "folder": row["folder"],
         "aumid": row["aumid"],
+        "link": f"steam://rungameid/{row['key'].removeprefix('steam:')}" if row["kind"] == "game" else "",  # starts it
         "decision": row["decision"],
         "decided_at": row["decided_at"],
         "first_seen": row["first_seen"],
@@ -424,16 +568,19 @@ def _set_setting(conn, key: str, value: Any, now: str) -> None:
     )
 
 
-def apply_scan(conn, found: list[Found], now: str) -> dict[str, Any]:
+def apply_scan(conn, found: list[Found], now: str, exists: Callable[[str], bool] = os.path.isfile) -> dict[str, Any]:
     """What one look found, into the catalog: new programs (fresh after the first look), seen ones refreshed, the
-    ones not found marked removed (hand-added ones are never removed by a look)."""
+    ones not found marked removed. Hand-added ones are never removed by a look, nor become another kind; one seen by
+    its window is not seen while it is closed - it goes when its .exe does (`exists`)."""
     first = _setting(conn, FIRST_SCAN) is None
-    known = {row["key"]: row for row in conn.execute("SELECT key, kind, removed_at FROM programs")}
+    known = {row["key"]: row for row in conn.execute("SELECT key, kind, exe, removed_at FROM programs")}
     new, seen = [], set()
     for f in found:
         if f.key in seen:
             continue
         seen.add(f.key)
+        if f.key in known and known[f.key]["kind"] == "manual" and f.kind == "window":
+            continue  # the user's own, with the name they gave it
         if f.key in known:
             conn.execute(
                 "UPDATE programs SET name = ?, publisher = ?, version = ?, kind = ?, exe = ?, folder = ?, aumid = ?,"
@@ -452,7 +599,8 @@ def apply_scan(conn, found: list[Found], now: str) -> dict[str, Any]:
                 new.append(pid)
     removed = [
         key for key, row in known.items() if key not in seen and row["kind"] != "manual" and row["removed_at"] is None
-    ]
+        and not (row["kind"] == "window" and exists(row["exe"]))
+    ]  # fmt: skip
     for key in removed:
         conn.execute("UPDATE programs SET removed_at = ?, fresh = 0 WHERE key = ?", (now, key))
     if first:
@@ -513,7 +661,7 @@ def dismiss_offer(conn) -> None:
 def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] | None:
     """The allowed program a window belongs to, by its process's .exe or its AppUserModelID; None - not allowed.
     A desktop program by its exact .exe (not a host of others: HOSTS); a Store app by its package folder (not one of
-    Windows' own)."""
+    Windows' own), a Steam game by its folder."""
     rows = conn.execute(
         "SELECT * FROM programs WHERE decision = 'allow' AND (removed_at IS NULL OR kind = 'manual')"
     ).fetchall()
@@ -524,7 +672,7 @@ def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] |
             return program_json(row)
         if not target:
             continue
-        if row["kind"] == "store":
+        if row["kind"] in FOLDER_KINDS:
             folder = norm(row["folder"]).rstrip(os.sep)
             # a package of Windows itself hosts many parts (the input host beside «Архивация Windows»): its
             # folder tells nothing - such an app is known by its windows' id only
