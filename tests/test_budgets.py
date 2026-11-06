@@ -1,6 +1,8 @@
-"""Budgets (D12): periods, spending per scope, limits; refusing and confirming paid requests; threshold events."""
+"""Budgets (D12): periods, spending per scope, limits; refusing and confirming paid requests; threshold events; a
+request's most estimated before it goes (stage 20.2) - a chat's, a run's next step, a goal's turn, the judge."""
 
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 import pytest
 from starlette.testclient import TestClient
@@ -8,8 +10,10 @@ from starlette.testclient import TestClient
 from common.paths import data_paths
 from hub import budgets, store
 from hub.auth import create_client
-from hub.db import Database, migrate
-from hub.gateway.base import Model, StreamEvent
+from hub.chat import BudgetReached, Limits
+from hub.db import Database, migrate, utc_now
+from hub.gateway.base import Model, StreamEvent, long_tier
+from hub.judge import JudgeError
 from hub.server import create_app
 from hub.settings import HubSettings
 from tests.test_chat import BASE, WS_HOST, auth, drain_until, register_fake, send
@@ -193,8 +197,109 @@ def test_crossing_limits_publishes_warning_and_exceeded(api):
     conv = api.post("/v1/conversations", headers=auth(api), json={}).json()["id"]
     with api.websocket_connect("/v1/events", headers={**auth(api), **WS_HOST}) as ws:
         ws.receive_json()
-        send(api, conv, "раз")
+        # a request to it may cost more than $0.00001 (stage 20.2): it goes only when the user says so
+        body = {"content": "раз", "model_id": "fake/echo", "confirm_over_budget": True}
+        assert api.post(f"/v1/conversations/{conv}/messages", headers=auth(api), json=body).status_code == 202
         events = drain_until(ws, "chat.done")
         events += [ws.receive_json(), ws.receive_json()]
-    kinds = {e["type"]: e["payload"]["budget"]["scope"] for e in events if e["type"].startswith("budget.")}
+    kinds = {e["type"]: e["payload"]["budget"]["scope"] for e in events
+             if e["type"] in ("budget.warning", "budget.exceeded")}  # fmt: skip
     assert kinds == {"budget.warning": "provider", "budget.exceeded": "total"}
+
+
+# --- a request's most, before it goes (stage 20.2) ---
+
+SMALL = [Model("fake/echo", "fake", "echo", "Echo", "cloud", {"max_output": 10_000}, {"input": 0.0, "output": 1.0})]
+# any request to it may cost up to $0.01: 10K answer tokens at $1 per 1M, its prompt free
+
+
+def test_a_requests_most_is_its_prompt_and_its_longest_answer():
+    model = {"prices": {"input": 2.0, "output": 10.0, "cache_read": 0.2}, "capabilities": {"max_output": 8000}}
+    assert budgets.upper_cost(model, 10_000) == pytest.approx((10_000 * 2.0 + 8000 * 10.0) / 1e6)  # no cache discount
+    assert budgets.upper_cost(model, 10_000, {"max_tokens": 1000}) == pytest.approx((10_000 * 2.0 + 1000 * 10.0) / 1e6)
+    unknown = {"prices": {"input": 2.0, "output": 10.0}, "capabilities": {}}
+    assert budgets.upper_cost(unknown, 0) == pytest.approx(budgets.ANSWER_CAP * 10.0 / 1e6)
+    huge = {"prices": {"input": 2.0, "output": 10.0}, "capabilities": {"max_output": 300_000}}
+    assert budgets.upper_cost(huge, 0) == budgets.upper_cost(unknown, 0)  # the hub asks for no more than that
+    tiered = {"prices": long_tier({"input": 2.0, "output": 10.0}, 200_000, 2, 1.5),
+              "capabilities": {"max_output": 1000}}  # fmt: skip
+    assert budgets.upper_cost(tiered, 300_000) == pytest.approx((300_000 * 4.0 + 1000 * 15.0) / 1e6)
+    assert budgets.upper_cost({"prices": {}, "capabilities": {}}, 10**6) == 0.0  # a local model
+
+
+def test_a_budget_is_too_small_for_a_request_that_may_cost_more_than_it_has_left(db):
+    def setup(conn):
+        budgets.upsert_budget(conn, scope="total", period="month", soft_usd=None, hard_usd=1.0)
+        budgets.upsert_budget(conn, scope="provider", scope_ref="anthropic", period="day", soft_usd=0.1, hard_usd=None)
+        spend(conn, "anthropic/opus", 0.7, utc_now())
+
+    db.call(setup)
+    assert db.call(lambda c: budgets.too_dear(c, "anthropic/opus", 0.3)) == []  # $0.30 of $0.30 left: it fits
+    (over,) = db.call(lambda c: budgets.too_dear(c, "anthropic/opus", 0.31))  # a warning alone holds nothing back
+    assert (over["scope"], over["state"], over["left_usd"], over["estimate_usd"]) == ("total", "ok", 0.3, 0.31)
+    db.call(lambda c: spend(c, "anthropic/opus", 0.5, utc_now()))
+    (over,) = db.call(lambda c: budgets.too_dear(c, "anthropic/opus", 0.0))  # used up: nothing goes
+    assert (over["state"], over["left_usd"]) == ("hard", 0.0)
+
+
+def test_a_chat_request_that_may_cost_more_than_is_left_asks_first(api):
+    register_fake(api, models=SMALL)
+    put_budget(api, scope="total", period="month", hard_usd=0.005)
+    conv = api.post("/v1/conversations", headers=auth(api), json={}).json()["id"]
+    refused = send(api, conv, "вопрос")
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert detail["code"] == "budget_exceeded" and detail["can_confirm"] is True
+    (budget,) = detail["budgets"]
+    assert (budget["state"], budget["left_usd"], budget["estimate_usd"]) == ("ok", 0.005, 0.01)
+    assert "may cost up to $0.0100" in detail["message"]
+    assert api.get(f"/v1/conversations/{conv}", headers=auth(api)).json()["messages"] == []  # nothing stored
+    with api.websocket_connect("/v1/events", headers={**auth(api), **WS_HOST}) as ws:
+        ws.receive_json()
+        body = {"content": "всё равно", "model_id": "fake/echo", "confirm_over_budget": True}
+        assert api.post(f"/v1/conversations/{conv}/messages", headers=auth(api), json=body).status_code == 202
+        assert drain_until(ws, "budget.overridden")[-1]["payload"]["budgets"][0]["estimate_usd"] == 0.01
+        drain_until(ws, "chat.done")
+    put_budget(api, scope="total", period="month", hard_usd=0.005, hard_action="block")
+    other = api.post("/v1/conversations", headers=auth(api), json={}).json()["id"]
+    body = {"content": "x", "model_id": "fake/echo", "confirm_over_budget": True}
+    blocked = api.post(f"/v1/conversations/{other}/messages", headers=auth(api), json=body)
+    assert blocked.status_code == 409 and blocked.json()["detail"]["can_confirm"] is False
+
+
+def test_a_run_stops_before_a_step_that_may_cost_more_than_is_left(api):
+    call = [{"id": "c1", "name": "nothing", "input": {}}]
+    end = StreamEvent("end", usage={"input_tokens": 5, "output_tokens": 3, "cost_microusd": 10_000},
+                      stop_reason="tool_use", tool_calls=call)  # fmt: skip
+    register_fake(api, end=end, models=SMALL)
+    put_budget(api, scope="total", period="month", hard_usd=0.015)  # the first step fits, the second does not
+    conv = api.post("/v1/conversations", headers=auth(api), json={}).json()["id"]
+    with api.websocket_connect("/v1/events", headers={**auth(api), **WS_HOST}) as ws:
+        ws.receive_json()
+        assert send(api, conv, "делай").status_code == 202
+        for _ in range(200):
+            error = ws.receive_json()
+            if error["type"] == "chat.error":
+                break
+    assert "the next request may cost up to $0.0100" in error["payload"]["detail"]
+    spent = api.get("/v1/budgets", headers=auth(api)).json()["budgets"][0]["spent_usd"]
+    assert spent == 0.01  # one step went, the second was not sent
+
+
+def test_a_goals_turn_an_agents_run_and_the_judge_are_held_back_the_same(api):
+    register_fake(api, models=SMALL)
+    put_budget(api, scope="total", period="month", hard_usd=0.005)
+    conv = api.post("/v1/conversations", headers=auth(api), json={}).json()["id"]
+    chat = api.app.state.chat
+    with pytest.raises(BudgetReached, match=r"may cost up to \$0\.0100"):
+        api.portal.call(partial(chat.go_on, conv, "fake/echo", "дальше", limits=Limits()))
+    with pytest.raises(BudgetReached):
+        api.portal.call(partial(chat.start, conv, "fake/echo", "задача", limits=Limits(), on_end=_ignore))
+    assert api.get(f"/v1/conversations/{conv}", headers=auth(api)).json()["messages"] == []
+    with pytest.raises(JudgeError, match=r"may cost up to \$0\.0100"):
+        api.portal.call(partial(api.app.state.judge.complete, "fake/echo", "Судья.", "Готово?", lambda text: {},
+                                conversation_id=None, meta={}, form="да или нет"))  # fmt: skip
+
+
+async def _ignore(outcome):
+    return None

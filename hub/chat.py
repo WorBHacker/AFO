@@ -191,10 +191,11 @@ class ChatService:
             raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
         if model["locality"] == "cloud":
             await self._check_cloud(conversation_id)
-        if model["prices"]:  # local models are free and never held back
-            await self._check_budgets(model_id, confirm_over_budget, client_id)
-        sent = await self._attached_files(model, files or [])
+        sent = await self._attached_files(model, files or [])  # kept once by their content: a resend takes the same
         user_blocks = [*([{"type": "text", "text": text}] if text.strip() or not sent else []), *sent]
+        if model["prices"]:  # local models are free and never held back
+            estimate = await self._upper_cost(conversation_id, model, user_blocks)
+            await self._check_budgets(model_id, confirm_over_budget, client_id, estimate)
 
         def write(conn):
             title = None
@@ -252,14 +253,35 @@ class ChatService:
         listed = "\n".join(f"- {p}" for p in paths)
         return (f"{text}\n\n" if text.strip() else "") + f"Files sent with this message (read them):\n{listed}"
 
-    async def _check_budgets(self, model_id: str, confirmed: bool, client_id: str | None) -> None:
-        over = await self._db.acall(lambda conn: budgets.reached(conn, model_id))
+    async def _check_budgets(self, model_id: str, confirmed: bool, client_id: str | None, estimate: float) -> None:
+        """A used-up budget, or one with less left than the request may cost (`estimate`, stage 20.2), holds a paid
+        request back: BudgetReached - unless the user confirmed and every such budget allows asking."""
+        over = await self._db.acall(lambda conn: budgets.too_dear(conn, model_id, estimate))
         if not over:
             return
         can_confirm = all(b["hard_action"] == "ask" for b in over)
         if not (confirmed and can_confirm):
             raise BudgetReached(over, can_confirm)
         await self._bus.publish("budget.overridden", {"model_id": model_id, "client_id": client_id, "budgets": over})
+
+    async def _upper_cost(self, conversation_id: str, model: dict, adding: list[dict[str, Any]] | str) -> float:
+        """The most this chat's next request to a paid `model` may cost (stage 20.2): the conversation so far with its
+        system prompt and tool definitions, and what comes with the request (`adding`: a new message's blocks, a
+        hub note) - no more than the model's window, which the request is fitted to (hub/fit.py) - and the longest
+        answer. A rough measure, as fit's; each later step of the run is weighed again on its own request."""
+        accepts = self._gateway.accepts(model["id"])
+
+        def gather(conn):
+            return store.get_messages(conn, conversation_id), _answer_setup(conn, conversation_id, model["id"], accepts)
+
+        history, (system, params, _version) = await self._db.acall(gather)
+        window = (model.get("capabilities") or {}).get("context")
+        tools = compact.for_model([*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])], window)
+        prompt = [{"role": "system", "content": system},
+                  *_to_prompt(history, cloud=model.get("locality") == "cloud", blobs=self.blobs)]  # fmt: skip
+        images = sum(1 for b in adding if isinstance(b, dict) and b.get("type") == "image")
+        tokens = fit.estimate(prompt, tools) + fit.tokens(adding) + fit.IMAGE_TOKENS * images
+        return budgets.upper_cost(model, min(tokens, window) if window else tokens, params)
 
     def cancel(self, conversation_id: str) -> bool:
         cancel = self._runs.get(conversation_id)
@@ -289,7 +311,8 @@ class ChatService:
         if model["locality"] == "cloud":
             await self._check_cloud(conversation_id)
         if model["prices"]:
-            await self._check_budgets(model_id, False, client_id)
+            estimate = await self._upper_cost(conversation_id, model, text or "")
+            await self._check_budgets(model_id, False, client_id, estimate)
         if text:
             message = await self._db.acall(
                 lambda conn: store.add_message(conn, conversation_id, "user", [{"type": "text", "text": text}])
@@ -336,7 +359,8 @@ class ChatService:
             if model["locality"] == "cloud":
                 await self._check_cloud(conversation_id)
             if model["prices"]:
-                await self._check_budgets(model_id, False, client_id)
+                estimate = await self._upper_cost(conversation_id, model, note)
+                await self._check_budgets(model_id, False, client_id, estimate)
             await self._hub_note(conversation_id, note, mark)
             if not agent:
                 await self._use_limits(model_id)
@@ -528,6 +552,13 @@ class ChatService:
             if shortened:
                 log.info("conversation %s: %d old messages shortened to fit %s's window", conversation_id, shortened,
                          model["id"])  # fmt: skip
+            if step and model["prices"]:  # the run's first request was weighed before it started (stage 20.2)
+                estimate = budgets.upper_cost(model, int(fit.estimate(prompt, tools) * scale), params)
+                over = await self._db.acall(lambda conn, m=model["id"], e=estimate: budgets.too_dear(conn, m, e))
+                if over and all(b["state"] == "hard" for b in over):
+                    raise GatewayError("the budget ran out while the model was working; send again to go on")
+                if over:
+                    raise GatewayError(f"{budgets.held_back(over, 'the next request')}; send again to go on")
             try:
                 completion = await self._consume(conversation_id, provider, model_ref, prompt, effort, cancel, tools,
                                                  params)  # fmt: skip
@@ -612,10 +643,6 @@ class ChatService:
                 raise GatewayError("the task's time limit was reached; give it more time or a narrower task")
             if limits.budget_usd is not None and run.cost >= limits.budget_usd:
                 raise GatewayError(f"the task's budget (${limits.budget_usd:g}) was reached at ${run.cost:.4f}")
-            if model["prices"]:
-                over = await self._db.acall(lambda conn, m=model["id"]: budgets.reached(conn, m))
-                if over:
-                    raise GatewayError("the budget ran out while the model was working; send again to go on")
 
     async def _hub_note(self, conversation_id: str, text: str, mark: dict[str, Any] | None = None) -> None:
         """A word from the hub to the model between its steps (D40): stored as a user turn, marked as the hub's
@@ -1323,8 +1350,7 @@ class BudgetReached(GatewayError):
     """A budget covering the model has reached its hard limit. `can_confirm`: the user may still send."""
 
     def __init__(self, over: list[dict], can_confirm: bool):
-        names = ", ".join(f"{b['scope_ref'] or 'all paid models'} per {b['period']}" for b in over)
-        super().__init__(f"budget reached: {names}")
+        super().__init__(budgets.held_back(over, "the request"))
         self.budgets = over
         self.can_confirm = can_confirm
 

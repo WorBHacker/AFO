@@ -1549,10 +1549,10 @@ class Controller(QObject):
                         else:
                             give_up(made)
 
-                    self._ask(tr("Бюджет исчерпан"), presenter.budget_question(over), tr("Отправить"), decide)
+                    self._ask(presenter.budget_ask_title(over), presenter.budget_question(over), tr("Отправить"),
+                              decide)  # fmt: skip
                     return
-                self.show_error(tr("Бюджет исчерпан, платные запросы запрещены: {budget}",
-                                   budget=presenter.budget_line(over[0])))  # fmt: skip
+                self.show_error(presenter.budget_refusal(over))
             else:
                 self.show_error(str(error))
             give_up(made)

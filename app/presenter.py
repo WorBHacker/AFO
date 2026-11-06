@@ -326,9 +326,36 @@ def budgets_state(budgets: list[dict[str, Any]]) -> str:
     return max((b.get("state", "ok") for b in budgets), key=STATE_ORDER.get, default="ok")
 
 
+def _dear(over: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The budgets not used up that a request may still take past their limit (stage 20.2)."""
+    return [b for b in over if b.get("state") != "hard" and "estimate_usd" in b]
+
+
+def budget_ask_title(over: list[dict[str, Any]]) -> str:
+    return tr("Бюджета может не хватить") if _dear(over) else tr("Бюджет исчерпан")
+
+
 def budget_question(over: list[dict[str, Any]]) -> str:
-    lines = "\n".join(f"• {budget_line(b)}" for b in over)
-    return tr("Бюджет исчерпан:\n{lines}\n\nОтправить запрос всё равно? Это отметится в журнале хаба.", lines=lines)
+    dear = _dear(over)
+    if not dear:
+        lines = "\n".join(f"• {budget_line(b)}" for b in over)
+        return tr("Бюджет исчерпан:\n{lines}\n\nОтправить запрос всё равно? Это отметится в журнале хаба.", lines=lines)
+    lines = "\n".join(f"• {budget_line(b)}" + (tr(", осталось {left}", left=money(b["left_usd"])) if b in dear else "")
+                      for b in over)  # fmt: skip
+    return tr("Запрос может стоить до {estimate} — больше, чем осталось в бюджете:\n{lines}\n\nОценка — по длине "
+              "разговора и самому длинному ответу модели; её уменьшит «Предел ответа» модели в «Модели». Отправить "
+              "запрос всё равно? Это отметится в журнале хаба.", estimate=money(max(b["estimate_usd"] for b in dear)),
+              lines=lines)  # fmt: skip
+
+
+def budget_refusal(over: list[dict[str, Any]]) -> str:
+    """Why a paid request is not sent at all: a blocking budget used up, or with less left than it may cost."""
+    dear = _dear(over)
+    if not dear:
+        return tr("Бюджет исчерпан, платные запросы запрещены: {budget}", budget=budget_line(over[0]))
+    return tr("Запрос может стоить до {estimate}, а в бюджете «{title}» осталось {left} — платные запросы сверх "
+              "предела запрещены", estimate=money(dear[0]["estimate_usd"]), title=budget_title(dear[0]),
+              left=money(dear[0]["left_usd"]))  # fmt: skip
 
 
 def budget_event_text(kind: str, budget: dict[str, Any]) -> str:

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import budgets, changes, model_settings, projects, store, syntax
+from . import budgets, changes, fit, model_settings, projects, store, syntax
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -426,13 +426,18 @@ class Judge:
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
         if model is None or not model["enabled"]:
             raise JudgeError(f"the model {model_id!r} is not available now")
-        if model["prices"] and await self._db.acall(lambda conn: budgets.reached(conn, model_id)):
-            raise JudgeError(f"the budget of «{model['name']}» is used up")
         provider, model_ref = self._gateway.resolve(model_id)
         own = (await self._db.acall(lambda conn: model_settings.current(conn, model_id)))[1]
         params = model_settings.clean_params(own.get("params") or {}, self._gateway.accepts(model_id))
         extra = {"params": params} if params else {}
         messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        if model["prices"]:  # a used-up budget, or less left than the question may cost (stage 20.2)
+            estimate = budgets.upper_cost(model, fit.estimate(messages), params)
+            over = await self._db.acall(lambda conn: budgets.too_dear(conn, model_id, estimate))
+            if over and all(b["state"] == "hard" for b in over):
+                raise JudgeError(f"the budget of «{model['name']}» is used up")
+            if over:
+                raise JudgeError(budgets.held_back(over, f"a question to «{model['name']}»"))
         tokens, cost = 0, 0.0
         for _attempt in range(TRIES):
             text, end = [], None

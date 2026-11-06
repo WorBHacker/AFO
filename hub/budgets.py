@@ -2,8 +2,10 @@
 
 A budget covers all paid models ("total") or one provider ("provider", e.g. anthropic). Reaching its soft limit
 publishes a warning; once its hard limit is reached, a new request to a paid model is refused - or, with the
-"ask" action, sent only after the user confirms (and that override is logged). Local models cost nothing and
-are never held back. Periods follow the local calendar: the day starts at midnight, the week on Monday.
+"ask" action, sent only after the user confirms (and that override is logged). So is a request that may cost more
+than the limit has left (stage 20.2): before it goes, its most is estimated - the prompt and the longest answer.
+Local models cost nothing and are never held back. Periods follow the local calendar: the day starts at midnight,
+the week on Monday.
 """
 
 from __future__ import annotations
@@ -14,10 +16,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import utc_now
+from .gateway.base import tier
 
 SCOPES = ("total", "provider")
 PERIODS = ("day", "week", "month")
 ACTIONS = ("ask", "block")
+ANSWER_CAP = 64_000  # an answer's tokens an estimate counts at most: the hub asks Claude for no longer one (20.2)
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,42 @@ def statuses(conn: sqlite3.Connection, model_id: str | None = None, now: datetim
 def reached(conn: sqlite3.Connection, model_id: str, now: datetime | None = None) -> list[dict]:
     """The budgets covering this model whose hard limit is reached: a new request must not go out unasked."""
     return [s for s in statuses(conn, model_id, now) if s["state"] == "hard"]
+
+
+def upper_cost(model: dict[str, Any], prompt_tokens: int, params: dict[str, Any] | None = None) -> float:
+    """The most one request to this model may cost (stage 20.2): its prompt at the input price - no cache discount -
+    and the longest answer it may give at the output price, the long tier's when the prompt is over its line. The
+    answer: the model's «Предел ответа» when the user set one, else what the provider says it may write, at most
+    ANSWER_CAP."""
+    prices = tier(model.get("prices") or {}, prompt_tokens)
+    if not prices:
+        return 0.0
+    longest = (model.get("capabilities") or {}).get("max_output") or ANSWER_CAP
+    answer = (params or {}).get("max_tokens") or min(longest, ANSWER_CAP)
+    return round((prompt_tokens * prices.get("input", 0) + answer * prices.get("output", 0)) / 1_000_000, 6)
+
+
+def too_dear(conn: sqlite3.Connection, model_id: str, estimate_usd: float, now: datetime | None = None) -> list[dict]:
+    """The budgets covering this model that a request of up to `estimate_usd` may take past their hard limit (stage
+    20.2): what they have left is less (a used-up one has nothing left). Each with `left_usd` and `estimate_usd`."""
+    out = []
+    for current in statuses(conn, model_id, now):
+        if current["hard_usd"] is None:
+            continue
+        left = max(round(current["hard_usd"] - current["spent_usd"], 6), 0.0)
+        if current["state"] == "hard" or estimate_usd > left:
+            out.append({**current, "left_usd": left, "estimate_usd": round(estimate_usd, 6)})
+    return out
+
+
+def held_back(over: list[dict], what: str) -> str:
+    """Why `what` (a request) does not go, for errors and the log: the budgets used up, or the most it may cost
+    against what they have left."""
+    names = ", ".join(f"{b['scope_ref'] or 'all paid models'} per {b['period']}" for b in over)
+    if all(b["state"] == "hard" for b in over):
+        return f"budget reached: {names}"
+    estimate, left = max(b["estimate_usd"] for b in over), min(b["left_usd"] for b in over)
+    return f"{what} may cost up to ${estimate:.4f}, more than the budget has left (${left:.4f}): {names}"
 
 
 def crossed(conn: sqlite3.Connection, model_id: str, cost_usd: float) -> list[tuple[str, dict]]:

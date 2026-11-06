@@ -113,3 +113,18 @@ def test_budget_texts():
     hard = presenter.budget_event_text("exceeded", {**month, "spent_usd": 10.2, "hard_action": "block"})
     assert hard.endswith("Новые платные запросы — запрещены")
     assert "Отправить запрос всё равно?" in presenter.budget_question([{**month, "spent_usd": 11.0}])
+    assert presenter.budget_refusal([{**month, "spent_usd": 11.0, "state": "hard"}]) == (
+        "Бюджет исчерпан, платные запросы запрещены: Все платные модели за месяц: $11.00 из $10.00 (предупреждение с "
+        "$5.00)"
+    )
+    # stage 20.2: not used up, but the request may cost more than is left
+    dear = {**month, "spent_usd": 9.9, "state": "ok", "left_usd": 0.1, "estimate_usd": 1.28}
+    question = presenter.budget_question([dear])
+    assert question.startswith("Запрос может стоить до $1.28 — больше, чем осталось в бюджете:\n• Все платные")
+    assert "осталось $0.10" in question and "«Предел ответа»" in question and "Отправить запрос всё равно?" in question
+    assert presenter.budget_ask_title([dear]) == "Бюджета может не хватить"
+    assert presenter.budget_ask_title([{**month, "spent_usd": 11.0, "state": "hard"}]) == "Бюджет исчерпан"
+    assert presenter.budget_refusal([dear]) == (
+        "Запрос может стоить до $1.28, а в бюджете «Все платные модели за месяц» осталось $0.10 — платные запросы "
+        "сверх предела запрещены"
+    )
