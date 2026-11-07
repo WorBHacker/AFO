@@ -110,6 +110,16 @@ Column {
                 source: call.picture
                 asynchronous: true  // the provider asks the hub the first time: not on the window's thread
                 fillMode: Image.PreserveAspectFit
+                MouseArea {  // «По картинке» (29.6б): to «Нарисовать» as the source
+                    id: pictureMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: { Visual.fromChat(call.picture.split("/").pop()); App.openUi("draw") }
+                }
+                ToolTip.visible: pictureMouse.containsMouse
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("Щелчок — нарисовать по этой картинке")
             }
 
             Rectangle {

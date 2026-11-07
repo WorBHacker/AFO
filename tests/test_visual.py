@@ -158,6 +158,15 @@ def _rungs(*args):
     return [(r["model_id"], r["width"], r["height"], r["rung"]) for r in visual.rungs(*args)]
 
 
+def test_a_size_in_a_sources_shape():
+    """29.6б: drawn from a picture, the size follows its shape - as many pixels as the model's own side squared."""
+    from common.picture_sizes import shaped
+
+    assert shaped(1024, 1024, 1024) == (1024, 1024) and shaped(32, 32, 512) == (512, 512)
+    assert shaped(1920, 1080, 1024) == (1344, 768) and shaped(1080, 1920, 1024) == (768, 1344)
+    assert shaped(4000, 1000, 512) == (1024, 256)  # very wide: no side under 256
+
+
 def test_the_ladder_goes_smaller_then_lighter():
     models = [SDXS, FLUX, ZIMG]
     assert _rungs(FLUX, 1024, 1024, models, {}) == [
@@ -257,7 +266,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
             self._send(200, {"msg": "ok"})
             return
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
-        cls.asked.append(body)
+        cls.asked.append({**body, "path": self.path} if self.path.endswith("/img2img") else body)
         cls.stopped, cls.total = False, body["steps"]
         for step in range(1, cls.total + 1):
             cls.step = step
@@ -536,6 +545,50 @@ def test_a_chat_model_draws_a_picture_and_the_chat_keeps_it(hub):
     result = _drawn(_finished(hub, stopped, stopped=True))
     assert result["error"] and "stopped" in result["output"]
     assert hub.get("/v1/visual/jobs").json()["jobs"][0]["status"] == "cancelled" and FakeDrawSwap.unloaded
+
+
+def test_a_picture_drawn_from_a_picture(hub):
+    """29.6б «По картинке»: a source - one drawn here, one a chat holds, a file sent - goes to the engine's img2img
+    with how much to change it; the size follows its shape; only a model of several steps follows it (SDXS's one step
+    draws anew: 29.6б live), so the ladder skips the others; the source is kept beside the job for its rungs."""
+    _install(hub)
+    _install(hub, "tiny", {**DRAW_PLAN, "set": "tiny", "tier": "light", "flags": ["--steps", "1"]})
+    first = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+
+    job = hub.post("/v1/visual/images", json={"prompt": "a fox, watercolor", "from_job": first["id"],
+                                              "strength": 0.6}).json()["job"]  # fmt: skip
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    asked = FakeDrawSwap.asked[-1]
+    assert asked["path"] == "/sdapi/v1/img2img" and asked["denoising_strength"] == 0.6
+    assert base64.b64decode(asked["init_images"][0]) == hub.get(f"/v1/visual/jobs/{first['id']}/file").content
+    assert (asked["width"], asked["height"], done["strength"]) == (512, 512, 0.6)  # PICTURE is square
+    assert (hub.app.state.visual.media / done["source"]).is_file()  # kept beside the job: its rungs use it
+    picture = hub.get(f"/v1/visual/jobs/{job['id']}/file").content
+    assert "Denoising strength: 0.6" in visual.parameters(picture)
+
+    blob = hub.app.state.chat.blobs
+    blob.mkdir(parents=True, exist_ok=True)
+    (blob / ("ab" * 32)).write_bytes(PICTURE)  # a picture a chat holds
+    from_chat = hub.post("/v1/visual/images", json={"prompt": "a fox", "from_blob": "ab" * 32}).json()["job"]
+    assert _wait(hub, from_chat["id"], "done")["strength"] == 0.6  # «Заметно» unless said
+    sent = base64.b64encode(PICTURE).decode()
+    from_file = hub.post("/v1/visual/images", json={"prompt": "a fox", "from_png": sent, "strength": 0.3}).json()
+    assert _wait(hub, from_file["job"]["id"], "done")["strength"] == 0.3
+
+    for wrong, status in (({"from_blob": "cd" * 32}, 404), ({"from_job": "nope"}, 404),
+                          ({"from_png": base64.b64encode(b"not a picture").decode()}, 422),
+                          ({"from_png": "@@@"}, 422), ({"from_png": sent, "model": "tiny"}, 422),
+                          ({"from_png": sent, "strength": 1.5}, 422)):  # fmt: skip
+        said = hub.post("/v1/visual/images", json={"prompt": "a fox", **wrong})
+        assert said.status_code == status, (wrong, said.json())
+    one_step = hub.post("/v1/visual/images", json={"prompt": "a fox", "from_png": sent, "model": "tiny"})
+    assert "несколько шагов" in one_step.json()["detail"]
+
+    FakeDrawSwap.answer = "fail"  # the ladder: smaller, but no model of one step
+    failed = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox", "from_png": sent}).json()["job"]["id"],
+                   "failed", "done")  # fmt: skip
+    assert [t["model_id"] for t in failed["tries"]] == ["draw", "draw"]
 
 
 def test_without_llama_swap_the_ladder_stops_at_once(hub):

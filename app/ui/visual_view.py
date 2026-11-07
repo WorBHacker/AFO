@@ -2,6 +2,10 @@
 is drawn - step and preview - and the result: «Ещё вариант», «Сохранить как…», the folder; the latest pictures
 beside it. The chip «Нарисовать» in the chat's input opens it with what was typed.
 
+«По картинке» (29.6б): the picture shown («По этой картинке»), a file («Выбрать картинку…» - any picture Qt reads,
+sent as PNG), or a chat's (a click on it there) is the source, with «Чуть / Заметно / Сильно»; the hub sizes the
+picture by its shape. Only models of several steps draw from a source.
+
 A picture that did not come out goes a rung lower by itself in the hub (29.4б); the sheet says how - «меньшим
 размером», «моделью …» - and before the next one shows where it will begin: the model that comes out here in place of
 the chosen one, no more pixels than came out.
@@ -18,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QObject, QSize, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QBuffer, QByteArray, QIODevice, QObject, QSize, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
@@ -35,6 +39,7 @@ QUALITY = [("fast", N_("Быстрее")), ("quality", N_("Качественн�
 STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done": N_("готово"), "failed": N_("не вышло"),
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 12
+STRENGTHS = [("little", N_("Чуть"), 0.3), ("some", N_("Заметно"), 0.6), ("much", N_("Сильно"), 0.85)]
 _TIER = {"fast": ("main", "light", "quality"), "quality": ("quality", "main", "light")}
 
 
@@ -65,6 +70,7 @@ class PictureProvider(QQuickImageProvider):
         self.pictures: dict[str, bytes] = {}
         self.blobs: dict[str, bytes] = {}
         self.fetch: Callable[[str], bytes] | None = None  # a chat's picture from the hub
+        self.source = b""  # «По картинке»: the source shown (29.6б)
 
     def requestImage(self, picture_id: str, size: QSize, requested: QSize) -> QImage:
         kind, _, key = picture_id.partition("/")
@@ -75,6 +81,8 @@ class PictureProvider(QQuickImageProvider):
                     data = self.blobs[key] = self.fetch(key)
                 except HubError:
                     data = b""
+        elif kind == "source":
+            data = self.source
         else:
             data = self.preview if kind == "preview" else self.pictures.get(key, b"")
         image = QImage()
@@ -101,6 +109,9 @@ class VisualView(QObject):
         self._preview = 0  # bumped with each preview: QML asks the provider again
         self._recent: list[dict[str, Any]] = []
         self._fetching: set[str] = set()
+        self._source: dict[str, str] = {}  # «По картинке»: {from_job | from_blob | from_png: value, shown: url}
+        self._shown = 0  # bumped with each source: QML asks the provider again
+        self._strength = "some"
 
     # ================= for QML =================
 
@@ -130,6 +141,22 @@ class VisualView(QObject):
         return len(self._models) > 1
 
     @Property(bool, notify=changed)
+    def hasSource(self) -> bool:
+        return bool(self._source)
+
+    @Property(str, notify=changed)
+    def sourceSource(self) -> str:
+        return self._source.get("shown", "")
+
+    @Property(list, notify=changed)
+    def strengths(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n, _v in STRENGTHS]
+
+    @Property(str, notify=changed)
+    def strength(self) -> str:
+        return self._strength
+
+    @Property(bool, notify=changed)
     def loaded(self) -> bool:
         return self._loaded
 
@@ -141,7 +168,9 @@ class VisualView(QObject):
     def modelText(self) -> str:
         model, width, height, why = self._plan()
         if model is None:
-            return ""
+            return why
+        if self._source:
+            return tr("{name} · по картинке", name=model["name"])
         text = tr("{name} · {width} × {height}", name=model["name"], width=width, height=height)
         return tr("{text} — {why}", text=text, why=why) if why else text
 
@@ -192,7 +221,15 @@ class VisualView(QObject):
 
     def _plan(self) -> tuple[dict[str, Any] | None, int, int, str]:
         """What the next picture is drawn with: the model (the one that comes out here in place of the chosen), its
-        size in this shape (no more pixels than come out here), and why it is not the chosen one as it is."""
+        size in this shape (no more pixels than come out here), and why it is not the chosen one as it is. From a
+        source (29.6б): a model of several steps; its size - the hub's, by the source's shape."""
+        if self._source:
+            followers = [m for m in self._models if int(m.get("steps") or 0) >= 2]
+            model = pick_model(followers, self._default, self._quality)
+            if model is None:
+                return None, 0, 0, tr("По картинке рисуют модели в несколько шагов: поставьте FLUX.2-klein или "
+                                      "Z-Image-Turbo")  # fmt: skip
+            return model, 0, 0, ""
         model = pick_model(self._models, self._default, self._quality)
         if model is None:
             return None, 0, 0, ""
@@ -310,8 +347,12 @@ class VisualView(QObject):
         model, width, height, _why = self._plan()
         if not self._prompt.strip() or model is None or self.busy:
             return
-        spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "width": width, "height": height,
-                "seed": seed}  # fmt: skip
+        spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "seed": seed}
+        if self._source:  # its shape sizes it, in the hub (29.6б)
+            spec |= {k: v for k, v in self._source.items() if k != "shown"}
+            spec["strength"] = next(v for k, _n, v in STRENGTHS if k == self._strength)
+        else:
+            spec |= {"width": width, "height": height}
         if self.app.currentId:
             spec["conversation_id"] = self.app.currentId
         self._job, self._step = {"status": "queued", "prompt": spec["prompt"]}, (0, 0)
@@ -327,6 +368,54 @@ class VisualView(QObject):
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.visual_draw(spec), started, failed)
+
+    # ================= «По картинке» (29.6б) =================
+
+    def _use(self, kind: str, value: str, data: bytes | None = None, shown: str = "") -> None:
+        if data is not None:
+            self.provider.source, self._shown = data, self._shown + 1
+            shown = f"image://pictures/source/{self._shown}"
+        self._source = {kind: value, "shown": shown}
+        self.changed.emit()
+
+    @Slot()
+    def fromThis(self) -> None:
+        """«По этой картинке»: the picture shown is the source."""
+        job_id = self._job.get("id", "")
+        data = self.provider.pictures.get(job_id)
+        if data and self._job.get("status") == "done":
+            self._use("from_job", job_id, data)
+
+    @Slot(str)
+    def fromChat(self, blob: str) -> None:
+        """A picture in a chat (a click on it there) is the source."""
+        if blob:
+            self._use("from_blob", blob, shown=f"image://pictures/blob/{blob}")
+
+    @Slot(str)
+    def chooseSource(self, url: str) -> None:
+        """«Выбрать картинку…»: any picture Qt reads, sent as PNG."""
+        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
+        image = QImage(path)
+        if image.isNull():
+            self.app.show_error(tr("Не открыть картинку: {path}", path=path))
+            return
+        array = QByteArray()
+        buffer = QBuffer(array)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        data = bytes(array.data())
+        self._use("from_png", base64.b64encode(data).decode(), data)
+
+    @Slot()
+    def clearSource(self) -> None:
+        self._source = {}
+        self.changed.emit()
+
+    @Slot(str)
+    def setStrength(self, strength: str) -> None:
+        self._strength = strength if strength in {k for k, _n, _v in STRENGTHS} else "some"
+        self.changed.emit()
 
     @Slot()
     def stop(self) -> None:

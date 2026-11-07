@@ -12,8 +12,9 @@ from datetime import UTC, datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtCore import QSettings, QSize, Qt, QUrl
 from PySide6.QtGui import QGuiApplication as QApplication  # a QML window needs no widgets
+from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 from app import palette
@@ -6600,6 +6601,46 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         assert client.visual_calls[-1][1] | {"seed": 0} == {"prompt": "рыжая лиса в снегу",
                                                            "model": "flux2-klein-4b-cpu", "width": 672, "height": 384,
                                                            "seed": 0}  # fmt: skip
+
+        # 29.6б «По картинке»: the picture shown, a file, a chat's picture - with how much to change it
+        view.setQuality("quality")
+        client.visual_rungs = {}
+        view.load()
+        wait_until(lambda: not app.bg.busy and view.modelText.startswith("Z-Image"))
+        view._job = {**client.visual_jobs_list[0], "status": "done", "id": "v1"}
+        view.provider.pictures["v1"] = PICTURE
+        view.fromThis()
+        assert view.hasSource and view.sourceSource.startswith("image://pictures/source/")
+        assert view.strength == "some" and [s["id"] for s in view.strengths] == ["little", "some", "much"]
+        assert view.modelText == "Z-Image-Turbo · по картинке"
+        view.setStrength("much")
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "draw")
+        spec = client.visual_calls[-1][1]
+        assert (spec["from_job"], spec["strength"], spec["model"]) == ("v1", 0.85, "z-image-turbo")
+        assert "width" not in spec and "height" not in spec  # the source's shape: the hub sizes it
+        client.visual_jobs_list[0]["status"] = "done"
+        app.on_event({"type": "visual.changed", "payload": {"job": client.visual_jobs_list[0]}})
+        (tmp_path / "мой.png").write_bytes(PICTURE)
+        view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "мой.png")).toString())
+        assert view.hasSource
+        view.again()
+        wait_until(lambda: not app.bg.busy and "from_png" in client.visual_calls[-1][1])
+        sent = QImage.fromData(base64.b64decode(client.visual_calls[-1][1]["from_png"]), "PNG")  # sent as PNG
+        assert sent.size() == QSize(32, 32) and sent.pixel(5, 7) == QImage.fromData(PICTURE).pixel(5, 7)
+        view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "нет.png")).toString())
+        assert view.hasSource  # a file that is not there: the one chosen stays, the error said
+        view.fromChat("ef" * 32)
+        assert view.sourceSource == "image://pictures/blob/" + "ef" * 32
+        view.clearSource()
+        assert not view.hasSource and view.modelText.startswith("Z-Image-Turbo · ")
+        view.fromChat("ef" * 32)
+        client.visual_jobs_list[0]["status"] = "done"
+        app.on_event({"type": "visual.changed", "payload": {"job": client.visual_jobs_list[0]}})
+        view.draw()
+        wait_until(lambda: not app.bg.busy and "from_blob" in client.visual_calls[-1][1])
+        assert client.visual_calls[-1][1]["from_blob"] == "ef" * 32
+        view.clearSource()
 
         # 29.6а: a picture a chat's model drew - in the chat, under its call
         blob = "cd" * 32

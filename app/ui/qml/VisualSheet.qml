@@ -23,6 +23,14 @@ Sheet {
     }
 
     FileDialog {
+        id: sourceDialog
+        title: qsTr("Картинка-образец")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Картинки (*.png *.jpg *.jpeg *.webp *.bmp)")]
+        onAccepted: Visual.chooseSource(selectedFile.toString())
+    }
+
+    FileDialog {
         id: saveDialog
         title: qsTr("Сохранить картинку")
         fileMode: FileDialog.SaveFile
@@ -83,6 +91,7 @@ Sheet {
             spacing: 10
             Segmented {
                 objectName: "visualShape"
+                visible: !Visual.hasSource  // from a picture: its shape
                 options: Visual.shapes
                 value: Visual.shape
                 onPicked: (id) => Visual.setShape(id)
@@ -95,12 +104,65 @@ Sheet {
                 onPicked: (id) => Visual.setQuality(id)
             }
             PlainButton {
+                objectName: "visualFromFile"
+                visible: !Visual.hasSource
+                iconName: "image"
+                text: qsTr("По картинке…")
+                onClicked: sourceDialog.open()
+            }
+            PlainButton {
                 objectName: "visualDraw"
                 kind: Visual.busy ? "danger" : "primary"
                 iconName: Visual.busy ? "stop" : "image"
                 enabled: Visual.busy || promptArea.text.trim() !== ""
                 text: Visual.busy ? qsTr("Стоп") : qsTr("Нарисовать")
                 onClicked: Visual.busy ? Visual.stop() : Visual.draw()
+            }
+        }
+        // «По картинке» (29.6б): the source and how much to change it
+        Row {
+            objectName: "visualSource"
+            visible: Visual.hasSource
+            spacing: 10
+            Rectangle {
+                width: 64
+                height: 64
+                radius: 6
+                color: Theme.p.card
+                border.color: Theme.p.hairline
+                Image {
+                    anchors.fill: parent
+                    anchors.margins: 3
+                    source: Visual.sourceSource
+                    sourceSize.width: 128
+                    sourceSize.height: 128
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                }
+            }
+            Column {
+                spacing: 6
+                anchors.verticalCenter: parent.verticalCenter
+                Text {
+                    text: qsTr("По картинке — насколько менять:")
+                    color: Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                Row {
+                    spacing: 8
+                    Segmented {
+                        objectName: "visualStrength"
+                        options: Visual.strengths
+                        value: Visual.strength
+                        onPicked: (id) => Visual.setStrength(id)
+                    }
+                    PlainButton {
+                        iconName: "close"
+                        text: qsTr("Без образца")
+                        onClicked: Visual.clearSource()
+                    }
+                }
             }
         }
         Note { text: Visual.modelText; color: Theme.p.faint; visible: text !== "" }
@@ -161,6 +223,12 @@ Sheet {
                 iconName: "refresh"
                 text: qsTr("Ещё вариант")
                 onClicked: Visual.again()
+            }
+            PlainButton {
+                objectName: "visualFromThis"
+                iconName: "image"
+                text: qsTr("По этой картинке")
+                onClicked: Visual.fromThis()
             }
             PlainButton {
                 objectName: "visualSave"

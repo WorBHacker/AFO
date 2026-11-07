@@ -46,6 +46,12 @@ class Image(BaseModel):
     height: int = Field(default=0, ge=0, le=4096)
     seed: int | None = None  # none or below 0: a new one
     conversation_id: str | None = Field(default=None, max_length=64)
+    # «По картинке» (29.6б): one source - a job's picture, a chat's (sha256), a PNG sent (base64) - and how much to
+    # change it (0.1-0.95; 0.6 unless said); the size then follows its shape
+    from_job: str = Field(default="", max_length=64)
+    from_blob: str = Field(default="", max_length=64)
+    from_png: str = Field(default="", max_length=28_000_000)
+    strength: float | None = None
 
 
 @router.post("/images")

@@ -12,6 +12,14 @@ CPU_PIXELS = 512 * 512  # on the processor no more: past it a picture takes minu
 SHAPES = {"square": (1.0, 1.0), "wide": (1.3125, 0.75), "tall": (0.75, 1.3125)}
 
 
+def shaped(width: int, height: int, side: int) -> tuple[int, int]:
+    """A picture drawn from one `width` × `height` (29.6б): as many pixels as the model's side squared, in its shape;
+    each side a multiple of 64 within SIDES."""
+    root = math.sqrt(width / height)
+    return (min(SIDES[1], max(SIDES[0], round(side * root / 64) * 64)),
+            min(SIDES[1], max(SIDES[0], round(side / root / 64) * 64)))  # fmt: skip
+
+
 def size_for(shape: str, side: int) -> tuple[int, int]:
     """The picture's width and height: the model's side in this shape, each a multiple of 64."""
     w, h = SHAPES.get(shape, SHAPES["square"])

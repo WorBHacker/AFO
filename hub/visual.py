@@ -22,6 +22,11 @@
   the picture is drawn as any other (this computer's model, the ladder), waited for, and its PNG kept with the chat
   in data/blobs (as long as the chat, D30) - the window shows it under the call; the model hears what was drawn in
   words, never the picture. Its answer stopped - the picture is stopped.
+- «По картинке» (29.6б): a source - one drawn here, one a chat holds, a PNG sent - goes to the engine's
+  `/sdapi/v1/img2img` with how much to change it (denoising strength); the engine crops and resizes it to the size
+  asked (29.6б live), so the size follows its shape. Only a model of several steps follows a source - SDXS's one step
+  draws anew whatever the strength (live) - and so the ladder skips the others. The source is kept beside the job
+  (data/media/<month>/<job>-source.png): each rung sends it again.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -47,7 +52,7 @@ from typing import Any
 import httpx
 
 from common.i18n import tr
-from common.picture_sizes import CPU_PIXELS, SHAPES, SIDES, fit, half, moved, size_for
+from common.picture_sizes import CPU_PIXELS, SHAPES, SIDES, fit, half, moved, shaped, size_for
 
 from .db import utc_now
 
@@ -247,6 +252,9 @@ SIZES = SIDES  # a side, in pixels; a multiple of 16 (the models' latent grid)
 TIERS = ("main", "light", "quality")  # the picture a person gets unless they choose: the fast main one first
 RANK = {"light": 0, "main": 1, "quality": 2}  # how heavy a tier's models are: a rung lower is a lighter one
 MAX_TRIES = 5  # a picture's tries at most, the first among them
+STRENGTH = 0.6  # «По картинке»: how much a source is changed unless said («Заметно»)
+STRENGTHS = (0.1, 0.95)  # past it nothing of the source is left
+SOURCE_BYTES = 20 * 1024**2
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
 
 
@@ -286,6 +294,19 @@ class VisualError(Exception):
     def __init__(self, message: str, status: int = 409):
         super().__init__(message)
         self.status = status
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """A PNG's width and height from its header; None - not a PNG."""
+    if not data.startswith(SIGNATURE) or data[12:16] != b"IHDR" or len(data) < 24:
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return (width, height) if width and height else None
+
+
+def follows(model: dict[str, Any]) -> bool:
+    """Whether a model draws from a picture: several steps - one step draws anew (29.6б live)."""
+    return int(model.get("steps") or 0) >= 2
 
 
 def _row(row) -> dict[str, Any]:
@@ -411,11 +432,12 @@ def remember(conn, here: str, rules: dict[str, dict[str, Any]]) -> None:
                  (RUNGS, json.dumps(saved), utc_now()))  # fmt: skip
 
 
-def described(prompt: str, negative: str, seed: int, model: dict[str, Any], width: int, height: int) -> str:
+def described(prompt: str, negative: str, seed: int, model: dict[str, Any], width: int, height: int,
+              strength: float | None = None) -> str:  # fmt: skip
     """A picture's «parameters» as A1111 writes them, when the engine wrote none."""
     lines = [prompt, *([f"Negative prompt: {negative}"] if negative else [])]
     lines.append(f"Steps: {model['steps']}, CFG scale: {model['cfg']}, Seed: {seed}, Size: {width}x{height}, "
-                 f"Model: {model['model_id']}")  # fmt: skip
+                 f"Model: {model['model_id']}" + (f", Denoising strength: {strength}" if strength else ""))  # fmt: skip
     return "\n".join(lines)
 
 
@@ -429,11 +451,13 @@ def default_model(models: list[dict[str, Any]], machine: dict[str, Any]) -> dict
 class Visual:
     """The hub's pictures (29.4): asked for, drawn one at a time through llama-swap, shown as they go, kept."""
 
-    def __init__(self, db, bus, *, llama_swap_url: str, media: Path, machine: Callable[[], dict[str, Any]]):
+    def __init__(self, db, bus, *, llama_swap_url: str, media: Path, machine: Callable[[], dict[str, Any]],
+                 blobs: Path | None = None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._url = llama_swap_url.rstrip("/")
         self.media = media
+        self.blobs = blobs  # data/blobs: a chat's pictures, sources for «По картинке» (29.6б)
         self._machine = machine
         self._task: asyncio.Task | None = None
         self._running: str | None = None  # the job being drawn
@@ -472,21 +496,58 @@ class Visual:
         best = default_model(found, machine)
         return {"models": found, "default": best["model_id"] if best else ""}
 
+    async def _source(self, spec: dict[str, Any]) -> bytes | None:
+        """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None."""
+        if spec.get("from_job"):
+            found = await self._db.acall(lambda conn: job(conn, str(spec["from_job"])))
+            path = self.file(found) if found is not None else None
+        elif spec.get("from_blob"):
+            name = str(spec["from_blob"])
+            ok = self.blobs is not None and len(name) == 64 and all(c in "0123456789abcdef" for c in name)
+            path = self.blobs / name if ok else None
+        elif spec.get("from_png"):
+            try:
+                data = base64.b64decode(str(spec["from_png"]), validate=True)
+            except ValueError as exc:
+                raise VisualError(tr("картинка-образец не читается"), 422) from exc
+            if png_size(data) is None or len(data) > SOURCE_BYTES:
+                raise VisualError(tr("образец — картинка PNG до {mb} МБ", mb=SOURCE_BYTES // 1024**2), 422)
+            return data
+        else:
+            return None
+        data = await asyncio.to_thread(path.read_bytes) if path is not None and path.is_file() else None
+        if data is None:
+            raise VisualError(tr("нет такой картинки"), 404)
+        if png_size(data) is None:
+            raise VisualError(tr("образец — картинка PNG до {mb} МБ", mb=SOURCE_BYTES // 1024**2), 422)
+        return data
+
     async def draw(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
-        """A picture asked for: {prompt, negative, model, width, height, seed, conversation_id}."""
+        """A picture asked for: {prompt, negative, model, width, height, seed, conversation_id}; «По картинке»
+        (29.6б): from_job, from_blob or from_png (base64), and strength."""
         prompt = (spec.get("prompt") or "").strip()
         if not prompt:
             raise VisualError(tr("нужно описание картинки"), 422)
+        source = await self._source(spec)
+        strength = float(spec.get("strength") or STRENGTH) if source is not None else None
+        if strength is not None and not STRENGTHS[0] <= strength <= STRENGTHS[1]:
+            raise VisualError(tr("насколько менять образец — от {low} до {high}", low=STRENGTHS[0],
+                                 high=STRENGTHS[1]), 422)  # fmt: skip
         found = await self._db.acall(installed)
         if spec.get("model"):  # a model, or its block on the processor (29.4в)
             model = next((m for m in [*found, *on_cpu(found)] if m["model_id"] == spec["model"]), None)
             if model is None:
                 raise VisualError(tr("нет модели картинок {model}", model=spec["model"]), 404)
         else:
-            model = default_model(found, await asyncio.to_thread(self._machine))
+            choice = [m for m in found if follows(m)] if source is not None else found
+            model = default_model(choice, await asyncio.to_thread(self._machine))
             if model is None:
                 raise VisualError(tr("модели картинок ещё нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
-        width, height = int(spec.get("width") or model["size"]), int(spec.get("height") or model["size"])
+        if source is not None and not follows(model):
+            raise VisualError(tr("по картинке рисуют модели в несколько шагов — {model} рисует за один, заново",
+                                 model=model["name"]), 422)  # fmt: skip
+        side = shaped(*png_size(source), model["size"]) if source is not None else (model["size"], model["size"])
+        width, height = int(spec.get("width") or side[0]), int(spec.get("height") or side[1])
         for side in (width, height):
             if not SIZES[0] <= side <= SIZES[1] or side % 16:
                 raise VisualError(tr("сторона картинки — от {low} до {high} точек, кратно 16", low=SIZES[0],
@@ -494,13 +555,17 @@ class Visual:
         seed = spec.get("seed")
         seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
         job_id = uuid.uuid4().hex[:12]
+        kept = ""
+        if source is not None:  # beside the job: each rung sends it again
+            kept = f"{datetime.now(UTC):%Y-%m}/{job_id}-source.png"
+            await asyncio.to_thread(_save, self.media / kept, source)
 
         def add(conn) -> None:
             conn.execute(
                 "INSERT INTO visual_jobs (id, prompt, negative, model_id, width, height, seed, status, client, "
-                "conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "conversation_id, source, strength) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
-                 spec.get("conversation_id")),
+                 spec.get("conversation_id"), kept, strength),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -617,6 +682,14 @@ class Visual:
                                                                model=found["model_id"]))  # fmt: skip
             return
         here = computer(await asyncio.to_thread(self._machine))
+        source = None
+        if found.get("source"):  # «По картинке»: only models that follow a source are rungs (29.6б)
+            path = self.media / found["source"]
+            source = await asyncio.to_thread(path.read_bytes) if path.is_file() else None
+            if source is None:
+                await self._set(job_id, status="failed", error=tr("образец этой картинки уже удалён"))
+                return
+            models = [m for m in models if follows(m)]
         ladder = rungs(model, found["width"], found["height"], models, await self._db.acall(
             lambda conn: remembered(conn, here)))  # fmt: skip
         tries: list[dict[str, Any]] = []
@@ -626,7 +699,7 @@ class Visual:
                 break
             await self._set(job_id, status="running", error="", model_id=rung["model_id"], width=rung["width"],
                             height=rung["height"], tries=tries)  # fmt: skip
-            picture, error, gone, seconds = await self._try(job_id, found, rung, by_id[rung["model_id"]])
+            picture, error, gone, seconds = await self._try(job_id, found, rung, by_id[rung["model_id"]], source)
             if job_id in self._stopping:
                 break
             tries.append({**rung, "ok": picture is not None, "error": error, "seconds": seconds})
@@ -645,24 +718,26 @@ class Visual:
         drawn = tries[-1]
         picture = with_parameters(picture, parameters(picture) or described(
             found["prompt"], found["negative"], found["seed"], by_id[drawn["model_id"]], drawn["width"],
-            drawn["height"]))  # fmt: skip
+            drawn["height"], found.get("strength") if source is not None else None))  # fmt: skip
         name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
         await asyncio.to_thread(_save, self.media / name, picture)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
 
-    async def _try(self, job_id: str, found: dict[str, Any], rung: dict[str, Any],
-                   model: dict[str, Any]) -> tuple[bytes | None, str, bool, float]:  # fmt: skip
+    async def _try(self, job_id: str, found: dict[str, Any], rung: dict[str, Any], model: dict[str, Any],
+                   source: bytes | None = None) -> tuple[bytes | None, str, bool, float]:  # fmt: skip
         """One rung: (the picture or None, why not, whether llama-swap is not there at all, the seconds it took)."""
         body = {"model": rung["model_id"], "prompt": found["prompt"], "negative_prompt": found["negative"],
                 "width": rung["width"], "height": rung["height"], "seed": found["seed"], "steps": model["steps"],
                 "cfg_scale": model["cfg"], "batch_size": 1}  # fmt: skip
+        if source is not None:  # «По картинке» (29.6б): the engine crops and resizes it to the size asked
+            body |= {"init_images": [base64.b64encode(source).decode()], "denoising_strength": found["strength"]}
         start = time.monotonic()
         self._watch_stop = asyncio.Event()
         self._watching = asyncio.create_task(self._watch(job_id, rung["model_id"], self._watch_stop))
         response, error, gone = None, "", False
         try:
             async with httpx.AsyncClient(timeout=PICTURE_TIMEOUT_S) as http:
-                response = await http.post(f"{self._url}/sdapi/v1/txt2img", json=body)
+                response = await http.post(f"{self._url}/sdapi/v1/{'img2img' if source else 'txt2img'}", json=body)
         except httpx.HTTPError as exc:
             error, gone = _no_answer(exc), isinstance(exc, httpx.ConnectError)
         finally:
