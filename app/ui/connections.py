@@ -8,6 +8,7 @@ field with why. The first time, the sheet asks the user to make up the password.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 TELEGRAM = "telegram_bot_token"
 SHOWN_CHOICES = 80  # models listed at once in the chooser; the search narrows the rest
+KEY_FILE_MAX = 64 * 1024  # a service account's key file is ~2.4K
 
 
 def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
@@ -43,6 +45,7 @@ def connection_rows(data: dict[str, Any], notes: dict[str, dict[str, Any]]) -> l
             "site": c["site"],
             "hint": c["hint"],
             "secret": c["kind"] != "address",
+            "file": c["kind"] == "file",  # a key file, chosen on disk (stage 30)
             "set": bool(c["set"]),
             "status": status,
             "note": note.get("text", ""),
@@ -270,6 +273,20 @@ class Connections(QObject):
             self.app.load_models()
 
         self._run(lambda: self.app.client.set_connection(name, value.strip(), ticket), saved)
+
+    @Slot(str, str)
+    def saveFile(self, name: str, url: str) -> None:
+        """A key file chosen on disk goes to the hub as it is: the hub keeps only what signs in."""
+        path = Path(QUrl(url).toLocalFile() or url)
+        try:
+            if path.stat().st_size > KEY_FILE_MAX:
+                self._say(tr("Это не файл ключа: он больше 64 КБ"))
+                return
+            text = path.read_text(encoding="utf-8-sig")
+        except (OSError, ValueError) as exc:
+            self._say(tr("Файл не прочитан: {error}", error=exc))
+            return
+        self.save(name, text)
 
     @Slot(str)
     def remove(self, name: str) -> None:

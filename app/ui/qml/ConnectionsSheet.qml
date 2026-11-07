@@ -1,9 +1,11 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // Connections (D13): the hub's API keys, tokens and addresses behind the user's password. Keys go in and never
-// come back out - the sheet shows whether one is set and, while open, its last four characters. Closing the sheet
-// locks it; ten minutes without a change lock it too.
+// come back out - the sheet shows whether one is set and, while open, its last four characters. A key file (Vertex
+// AI's service account, stage 30) is chosen on disk. Closing the sheet locks it; ten minutes without a change lock
+// it too.
 Sheet {
     id: sheet
     objectName: "connectionsSheet"
@@ -153,8 +155,17 @@ Sheet {
                     onClicked: Services.openSite(entry.modelData.name)
                 }
             }
+            PlainButton {
+                objectName: "pickFile_" + entry.modelData.name
+                visible: Services.state === "open" && entry.modelData.file
+                kind: "primary"
+                iconName: "folder"
+                text: entry.modelData.set ? qsTr("Заменить файл ключа…") : qsTr("Выбрать файл ключа…")
+                enabled: !Services.busy
+                onClicked: { keyFile.connection = entry.modelData.name; keyFile.open() }
+            }
             Row {
-                visible: Services.state === "open"
+                visible: Services.state === "open" && !entry.modelData.file
                 width: parent.width
                 spacing: 8
                 Field {
@@ -306,6 +317,15 @@ Sheet {
                 font.pixelSize: 12
             }
         }
+    }
+
+    FileDialog {
+        id: keyFile
+        property string connection
+        title: qsTr("Файл ключа сервисного аккаунта")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Файл ключа (*.json)")]
+        onAccepted: Services.saveFile(connection, selectedFile.toString())
     }
 
     // ---------- the agent's mailbox (9.4b) ----------

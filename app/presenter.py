@@ -294,6 +294,7 @@ HARD_ACTIONS = [("ask", N_("спрашивать")), ("block", N_("запрещ�
 PROVIDER_NAMES = {
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
+    "vertex": "Google Vertex AI",
     "openai": "OpenAI",
     "openrouter": "OpenRouter",
     "deepseek": "DeepSeek",

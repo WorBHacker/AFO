@@ -81,6 +81,10 @@ CHARS_PER_TOKEN_ESTIMATE = 3  # only for a run stopped before Google reported it
 
 
 class GeminiProvider:
+    service = "the Gemini API"  # what is out of reach when the network fails
+    rejected = "the API key was rejected"  # a 401
+    forbidden = "this key may not use that (403)"
+
     def __init__(
         self,
         key_getter: Callable[[], str | None],
@@ -103,6 +107,19 @@ class GeminiProvider:
         except Exception as exc:
             raise ProviderError(f"{self.name}: cannot read the API key from the secret store ({exc})") from exc
 
+    async def _headers(self) -> dict[str, str]:
+        """How a request signs in: the key in its header (Vertex AI: a token, hub/gateway/vertex_provider.py)."""
+        key = self._key()
+        if not key:
+            raise ProviderError("no Gemini API key is set: add it in the window's Connections")
+        return {"x-goog-api-key": key}
+
+    def _model_url(self, model_ref: str, method: str) -> str:
+        return f"{self._api}/models/{model_ref}:{method}"
+
+    def _describe(self, response: httpx.Response) -> str:
+        return _describe(response, self.rejected, self.forbidden)
+
     async def list_models(self) -> list[Model]:
         """The priced Gemini models this key can use. No key - no models, and no network call."""
         key = self._key()
@@ -118,7 +135,7 @@ class GeminiProvider:
                 except httpx.HTTPError as exc:
                     raise ProviderError(f"{self.name}: cannot list models (network: {type(exc).__name__})") from exc
                 if response.status_code != 200:
-                    raise ProviderError(f"{self.name}: cannot list models ({_describe(response)})")
+                    raise ProviderError(f"{self.name}: cannot list models ({self._describe(response)})")
                 body = response.json()
                 for item in body.get("models") or []:
                     if "generateContent" in (item.get("supportedGenerationMethods") or []):
@@ -168,9 +185,7 @@ class GeminiProvider:
         params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         params = params or {}
-        key = self._key()
-        if not key:
-            raise ProviderError("no Gemini API key is set: add it in the window's Connections")
+        headers = await self._headers()
         system, contents = to_wire(messages, self.name)
         thinking: dict[str, Any] = {"includeThoughts": True}
         if model_ref.startswith("gemini-2."):
@@ -199,15 +214,15 @@ class GeminiProvider:
         finish: str | None = None
         blocked: str | None = None
         timeout = httpx.Timeout(connect=10.0, read=600.0, write=30.0, pool=10.0)
-        url = f"{self._api}/models/{model_ref}:streamGenerateContent"
+        url = self._model_url(model_ref, "streamGenerateContent")
         try:
             async with (
                 httpx.AsyncClient(timeout=timeout, transport=self._transport) as http,
-                http.stream("POST", url, params={"alt": "sse"}, json=body, headers={"x-goog-api-key": key}) as response,
+                http.stream("POST", url, params={"alt": "sse"}, json=body, headers=headers) as response,
             ):
                 if response.status_code != 200:
                     await response.aread()
-                    raise ProviderError(f"{self.name}: {_describe(response)}")
+                    raise ProviderError(f"{self.name}: {self._describe(response)}")
                 async for line in response.aiter_lines():
                     if cancel.is_set():
                         break
@@ -226,7 +241,7 @@ class GeminiProvider:
                                 streamed_chars += len(text)
                                 yield StreamEvent("reasoning" if part.get("thought") else "content", text)
         except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name}: cannot reach the Gemini API ({type(exc).__name__})") from exc
+            raise ProviderError(f"{self.name}: cannot reach {self.service} ({type(exc).__name__})") from exc
         except ValueError as exc:
             raise ProviderError(f"{self.name}: an answer that could not be read; try again") from exc
         if finish == "MALFORMED_FUNCTION_CALL":
@@ -340,18 +355,20 @@ def _stats(output_tokens: int, started: float, first_at: float | None) -> dict[s
     }
 
 
-def _describe(response: httpx.Response) -> str:
+def _describe(response: httpx.Response, rejected: str, forbidden: str) -> str:
     """A short, safe description of a refusal: Google's message, never the request or the key."""
     try:
         error = response.json().get("error") or {}
     except ValueError:
         error = {}
+    if not isinstance(error, dict):  # Google's token service says {"error": "invalid_grant", ...}
+        error = {"message": error}
     reasons = {d.get("reason") for d in error.get("details") or [] if isinstance(d, dict)}
     code = response.status_code
     if "API_KEY_INVALID" in reasons or code == 401:
-        return "the API key was rejected"
+        return rejected
     if code == 403:
-        return "this key may not use that (403)"
+        return forbidden
     if code == 404:
         return "no such model (404)"
     if code == 429:

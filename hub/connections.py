@@ -42,6 +42,8 @@ ADDRESS_PREFIX = "connections."  # an address's key in the settings table
 UNLOCK_HEADER = "X-LocalChat-Unlock"
 
 GEMINI_API_KEY = "gemini_api_key"
+VERTEX_ACCOUNT = "vertex_service_account"  # a Google service account's key file, kept as service_account() makes it
+ACCOUNT_FIELDS = ("project_id", "client_email", "private_key_id", "private_key")
 OPENAI_API_KEY = "openai_api_key"
 DEEPSEEK_API_KEY = "deepseek_api_key"
 OPENROUTER_API_KEY = "openrouter_api_key"
@@ -57,7 +59,7 @@ HUGGINGFACE_TOKEN = "huggingface_token"  # hub/hf.py reads it (10.1)
 class Connection:
     name: str
     title: str  # N_(): tr() where it is shown
-    kind: str  # "key" (an API key), "token" (a bot's token), "address" (not a secret: the settings table)
+    kind: str  # "key" (an API key), "token" (a bot's token), "file" (a key file), "address" (not a secret: settings)
     purpose: str  # what it gives, for the window - N_(), as the title
     site: str  # where to get it
     hint: str  # what it looks like
@@ -73,6 +75,10 @@ CONNECTIONS: list[Connection] = [
     Connection(GEMINI_API_KEY, "Google Gemini", "key", N_("Модели Gemini. На бесплатном уровне Google может "
                "использовать запросы для улучшения своих моделей — для закрытого кода нужен платный"),
                "https://aistudio.google.com/apikey", "AIza…", provider="gemini"),
+    Connection(VERTEX_ACCOUNT, "Google Vertex AI", "file", N_("Модели Gemini через Google Cloud — оплата со счёта "
+               "Google Cloud, запросы не идут на обучение. Нужен файл ключа сервисного аккаунта (JSON) с ролью "
+               "«Vertex AI User»"), "https://console.cloud.google.com/iam-admin/serviceaccounts", "….json",
+               provider="vertex"),
     Connection(DEEPSEEK_API_KEY, "DeepSeek", "key", N_("Модели DeepSeek — недорогие; запросы обрабатываются на "
                "серверах в Китае — для закрытого кода решайте сами"), "https://platform.deepseek.com/api_keys",
                "sk-…", provider="deepseek"),
@@ -257,9 +263,32 @@ def set_chosen_models(conn: sqlite3.Connection, provider: str, ids: list[str]) -
     return ids
 
 
+def service_account(text: str) -> str:
+    """A Google service account's key file as it is kept (stage 30): only what signs in - the project, the account,
+    its key and the key's id; ValueError with what is wrong, in the window's words."""
+    try:
+        found = json.loads(text)
+    except ValueError:
+        found = None
+    if not isinstance(found, dict) or found.get("type") != "service_account":
+        raise ValueError(tr('это не файл ключа сервисного аккаунта Google (JSON с "type": "service_account"): '
+                            "Google Cloud → IAM → Сервисные аккаунты → Ключи → Добавить ключ → JSON"))  # fmt: skip
+    if not all(isinstance(found.get(name), str) and found[name] for name in ACCOUNT_FIELDS):
+        raise ValueError(tr("в файле ключа нет проекта, аккаунта или самого ключа — скачайте ключ заново"))
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    try:
+        load_pem_private_key(found["private_key"].encode(), password=None)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(tr("ключ в файле не читается — скачайте ключ заново")) from exc
+    return json.dumps({name: found[name] for name in ACCOUNT_FIELDS}, separators=(",", ":"))
+
+
 def clean_value(connection: Connection, value: str) -> str:
     """The value as it is stored, or ValueError with what is wrong (in the window's words)."""
     value = value.strip()
+    if connection.kind == "file":
+        return service_account(value)
     if connection.kind == "address":
         value = value.rstrip("/")
         if not re.fullmatch(r"https?://[^\s/]+(/\S*)?", value):
@@ -285,7 +314,18 @@ def rows(store: SecretStore, conn: sqlite3.Connection, *, unlocked: bool) -> lis
             row["value"] = value
         else:
             value = store.get(c.name) or ""
-            row["tail"] = value[-4:] if unlocked and len(value) >= 12 else ""
+            if c.kind == "file":  # the key's id, as the console lists the account's keys
+                row["tail"] = _key_id(value)[-4:] if unlocked else ""
+            else:
+                row["tail"] = value[-4:] if unlocked and len(value) >= 12 else ""
         row["set"] = bool(value)
         out.append(row)
     return out
+
+
+def _key_id(kept: str) -> str:
+    try:
+        found = json.loads(kept) if kept else {}
+    except ValueError:
+        return ""
+    return str(found.get("private_key_id") or "") if isinstance(found, dict) else ""

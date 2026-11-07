@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 GENERAL = "*"  # the general row in the window ('' at the hub)
 PROVIDERS = {"llama-swap": N_("Локальные · llama-swap"), "anthropic": "Claude", "claude-code": "Claude Code",
-             "openai": "OpenAI", "gemini": "Gemini", "deepseek": "DeepSeek", "openrouter": "OpenRouter"}  # fmt: skip
+             "openai": "OpenAI", "gemini": "Gemini", "vertex": "Vertex AI", "deepseek": "DeepSeek",
+             "openrouter": "OpenRouter"}  # fmt: skip
 NUMBERS = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "max_tokens")
 INTEGERS = ("top_k", "max_tokens")
 LABELS = {"temperature": (N_("Температура"), N_("0–2, выше — разнообразнее")), "top_p": ("top_p", "0–1"),

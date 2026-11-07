@@ -36,7 +36,7 @@ class Password(BaseModel):
 
 
 class Value(BaseModel):
-    value: str = Field(min_length=1, max_length=2000)
+    value: str = Field(min_length=1, max_length=20_000)  # a service account's key file is ~2.4K (stage 30)
 
 
 class Chosen(BaseModel):

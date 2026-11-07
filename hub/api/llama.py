@@ -149,7 +149,7 @@ async def _estimate(request: Request, model_id: str) -> dict[str, Any] | None:
     nothing to estimate - not llama.cpp's, its file not read, no video card known."""
     try:
         view = llama_config.model_view(_read(llama_config.config_path()), model_id)
-    except (HTTPException, llama_config.ConfigError):
+    except HTTPException, llama_config.ConfigError:
         return None
     view.update(await asyncio.to_thread(_files, view))
     total = ((request.app.state.status.latest or {}).get("gpu") or {}).get("vram_total_mib")

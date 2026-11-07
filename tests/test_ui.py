@@ -2455,10 +2455,29 @@ def test_connection_rows():
         {"name": "u", "title": "U", "kind": "address", "purpose": "", "site": "", "hint": "", "set": True,
          "value": "http://127.0.0.1:8888"},
         {"name": "t", "title": "T", "kind": "token", "purpose": "", "site": "", "hint": "", "set": False},
+        {"name": "v", "title": "V", "kind": "file", "purpose": "", "site": "", "hint": "", "set": True, "tail": "cafe"},
     ]}  # fmt: skip
     shown = connection_rows(data, {"t": {"ok": False, "text": "Telegram: Unauthorized"}})
-    assert [r["status"] for r in shown] == ["задан", "http://127.0.0.1:8888", "не задан"]
+    assert [r["status"] for r in shown] == ["задан", "http://127.0.0.1:8888", "не задан", "задан · …cafe"]
     assert shown[2]["note"] == "Telegram: Unauthorized" and shown[2]["noteOk"] is False
+    assert [r["file"] for r in shown] == [False, False, False, True] and shown[3]["secret"] is True
+
+
+def test_a_key_file_goes_to_the_hub_as_it_is(app, tmp_path):
+    conns = app.connections
+    wait_until(lambda: conns.state == "new")
+    conns.createPassword("секрет-1", "секрет-1")
+    wait_until(lambda: conns.state == "open")
+    key_file = tmp_path / "project-1234-0123456789ab.json"
+    key_file.write_text('{\n  "type": "service_account"\n}\n', encoding="utf-8")
+    conns.saveFile("vertex_service_account", key_file.as_uri())
+    wait_until(lambda: app.client.secret_calls)
+    assert app.client.secret_calls == [("set", "vertex_service_account", '{\n  "type": "service_account"\n}')]
+    conns.saveFile("vertex_service_account", (tmp_path / "gone.json").as_uri())
+    assert conns.error.startswith("Файл не прочитан") and len(app.client.secret_calls) == 1
+    (tmp_path / "big.json").write_text("x" * 70_000, encoding="utf-8")
+    conns.saveFile("vertex_service_account", (tmp_path / "big.json").as_uri())
+    assert conns.error == "Это не файл ключа: он больше 64 КБ" and len(app.client.secret_calls) == 1
 
 
 def test_rename_and_delete_a_chat(app):
