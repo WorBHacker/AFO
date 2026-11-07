@@ -194,8 +194,7 @@ async def check(state: Any) -> list[dict[str, Any]]:
         said = tr("ОЗУ {total} ГБ, занято {used} ГБ; файл подкачки ≈ {page} ГБ", total=_n(memory["ram_total_gib"]),
                   used=_n(memory["ram_used_gib"]), page=_n(page["gib"]))  # fmt: skip
         lines.append(_line("memory", tr("Память"), None if page["advice"] else True, said, page["advice"]))
-    pictures = hardware.pictures_for(hardware.dxgi_adapters(), nvidia, vulkan=hardware.vulkan_loader(),
-                                     ram_gib=(memory or {}).get("ram_total_gib") or 0)  # fmt: skip
+    pictures = hardware.pictures_here((memory or {}).get("ram_total_gib") or 0)
     lines.append(_line("pictures", tr("Картинки и видео"), True, pictures["why"], ""))
 
     files = model_files(text) if text else []

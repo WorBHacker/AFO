@@ -97,9 +97,7 @@ class Setup:
         nvidia = await asyncio.to_thread(hardware.nvidia_driver)
         build = hardware.build_for(cards, nvidia)
         memory = await asyncio.to_thread(memory_sample)
-        pictures = hardware.pictures_for(await asyncio.to_thread(hardware.dxgi_adapters), nvidia,
-                                         vulkan=hardware.vulkan_loader(),
-                                         ram_gib=(memory or {}).get("ram_total_gib") or 0)  # fmt: skip
+        pictures = await asyncio.to_thread(hardware.pictures_here, (memory or {}).get("ram_total_gib") or 0)
         engine = await asyncio.to_thread(self._engine)
         answering = await autostart.answers(self._url)
         ready = answering or bool(engine["server"] and engine["start_found"])

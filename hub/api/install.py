@@ -5,6 +5,8 @@ GET /system - this computer as an install sees it (video memory and RAM for a ne
 the curated list with the variant recommended here; GET /search - Hugging Face at large; GET /repo/<a>/<b> - one
 repository's variants judged. POST / starts an install; GET /jobs lists them; POST /jobs/<id>/<pause|resume|cancel>;
 DELETE /jobs/<id> takes an unfinished one off the list (its files too); DELETE /models/<id> removes an installed model.
+GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
+(the picture engine comes with the first).
 """
 
 from __future__ import annotations
@@ -96,6 +98,27 @@ class Install(BaseModel):
 async def install(request: Request, body: Install, client: Annotated[Client, Depends(require_app)]) -> dict:
     try:
         return {"job": await _installer(request).install(body.model_dump(), client)}
+    except (hf.HubError, mi.InstallError, llama_config.ConfigError) as exc:
+        raise _refusal(exc) from exc
+
+
+@router.get("/pictures")
+async def pictures(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    installer = _installer(request)
+    machine = await asyncio.to_thread(installer.machine)
+    return {"models": await installer.picture_catalog(), "machine": machine}
+
+
+class Pictures(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    drive: str = Field(default="", max_length=3)
+    folder: str = Field(default="", max_length=400)
+
+
+@router.post("/pictures")
+async def install_pictures(request: Request, body: Pictures, client: Annotated[Client, Depends(require_app)]) -> dict:
+    try:
+        return {"job": await _installer(request).install_pictures(body.model_dump(), client)}
     except (hf.HubError, mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
 

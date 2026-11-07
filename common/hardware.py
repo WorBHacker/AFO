@@ -204,6 +204,11 @@ def pictures_for(cards: list[dict[str, Any]], nvidia: dict[str, Any] | None, *, 
     return plan | {"why": _pictures_why(plan, card, compute, nvidia)}
 
 
+def pictures_here(ram_gib: float) -> dict[str, Any]:
+    """pictures_for() of this computer."""
+    return pictures_for(dxgi_adapters(), nvidia_driver(), vulkan=vulkan_loader(), ram_gib=ram_gib)
+
+
 def _pictures_why(plan: dict[str, Any], card: dict[str, Any] | None, compute: tuple, nvidia: dict | None) -> str:
     if plan["build"] == "cpu":
         where = tr("подходящей видеокарты нет — картинки на процессоре: маленькая модель за секунды, большая — минуты")

@@ -16,6 +16,10 @@
   settings get smaller (half the context, then --fit) and it is tried again; still no start - its block goes, the
   files stay for «Повторить» or removal.
 - Removal: the model unloaded, its block out of the config, its files deleted - only what this installer put there.
+- Picture models (D55, 29.3): the catalog's `pictures`, each a set of files from several repositories (diffusion
+  model, text encoder, VAE), for stable-diffusion.cpp's sd-server. The engine comes with the first one - its pinned
+  build for this computer (hub/engines.py), downloaded as part of the install and named in the config's `sd_server`
+  macro; the trial is one small picture through llama-swap, and a blank one does not count (hub/visual.py).
 """
 
 from __future__ import annotations
@@ -36,20 +40,22 @@ from typing import Any
 
 import httpx
 
-from common import disks
+from common import disks, hardware
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
 from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
-from common.paths import NAME, models_home
+from common.paths import NAME, engines_home, models_home
 
-from . import hf, llama_config, store
+from . import engines, hf, llama_config, store, visual
 from .db import utc_now
 from .model_scan import SPLIT
+from .system_status import memory_sample
 
 log = logging.getLogger("hub.install")
 
 CATALOG = Path(__file__).with_name("model_catalog.json")
-PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Картинки")}
+PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать")}
+SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -83,6 +89,34 @@ class InstallError(Exception):
 def curated() -> list[dict[str, Any]]:
     """The curated list's models (model_catalog.json)."""
     return json.loads(CATALOG.read_text(encoding="utf-8"))["models"]
+
+
+def picture_sets() -> list[dict[str, Any]]:
+    """The curated picture models (model_catalog.json `pictures`, D55): {id, name, purposes, tier, license, original,
+    size, files: [{role (sd-server's flag), repo, path}], flags, about}."""
+    return json.loads(CATALOG.read_text(encoding="utf-8")).get("pictures") or []
+
+
+def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
+    """How a picture model runs here (hardware.pictures_for): fast | slow - minutes a picture, on the processor or
+    an integrated card."""
+    if entry["tier"] == "light":
+        return "fast"
+    if entry["tier"] == "quality":
+        return "fast" if machine.get("quality") else "slow"
+    return "fast" if machine.get("pictures") == "main" else "slow"
+
+
+def this_computer() -> dict[str, Any]:
+    """What pictures this computer can make (29.2)."""
+    return hardware.pictures_here((memory_sample() or {}).get("ram_total_gib") or 0)
+
+
+def sd_server(text: str) -> Path | None:
+    """The sd-server a config's `sd_server` macro names, when it is there."""
+    value = llama_config.macros(text).get(SD_MACRO)
+    path = Path(value.strip("'\"")) if value else None
+    return path if path is not None and path.is_file() else None
 
 
 # --- this computer against a model ---
@@ -268,6 +302,7 @@ class Installer:
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
         self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
+        self.machine: Callable[[], dict[str, Any]] = this_computer  # what pictures it can make (tests give their own)
         self._task: asyncio.Task | None = None
         self._cancel: dict[str, threading.Event] = {}
         self._wanted: dict[str, str] = {}  # job -> "paused" | "cancelled", what a stopped download becomes
@@ -377,6 +412,64 @@ class Installer:
         async with httpx.AsyncClient(timeout=30.0) as http:
             return await hf.search(http, query, token=self.token())
 
+    # --- picture models (29.3) ---
+
+    async def _listed(self, repo: str) -> dict[str, Any]:
+        kept = self._repos.get(f"files:{repo}")
+        if kept and time.monotonic() - kept[0] < REPO_TTL_S:
+            return kept[1]
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            found = await hf.files(http, repo, self.token())
+        self._repos[f"files:{repo}"] = (time.monotonic(), found)
+        return found
+
+    async def picture_files(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
+        """A picture model's files as Hugging Face has them now: each with its repository, commit, size, sha256."""
+        found = {repo: await self._listed(repo) for repo in dict.fromkeys(f["repo"] for f in entry["files"])}
+        out = []
+        for f in entry["files"]:
+            listed = found[f["repo"]]["files"].get(f["path"])
+            if listed is None:
+                raise InstallError(tr("в {repo} нет файла {path}", repo=f["repo"], path=f["path"]), 404)
+            out.append({"path": f["path"], "repo": f["repo"], "revision": found[f["repo"]]["revision"], "done": False,
+                        "size": listed["size"], "sha256": listed["sha256"], "role": f["role"]})  # fmt: skip
+        return out
+
+    async def picture_catalog(self) -> list[dict[str, Any]]:
+        """The curated picture models, each with its size and how it runs here."""
+        machine = await asyncio.to_thread(self.machine)
+        mine = {r["plan"].get("set"): r for r in await self._db.acall(installed)}
+        listed = []
+        for entry in picture_sets():
+            verdict = picture_verdict(entry, machine)
+            shown = {**entry, "purpose_words": [tr(PURPOSES[p]) for p in entry["purposes"]], "verdict": verdict,
+                     "words": tr("быстро") if verdict == "fast" else tr("медленно — минуты на картинку"),
+                     "recommended": entry["tier"] == ("main" if machine.get("pictures") == "main" else "light"),
+                     "installed": [mine[entry["id"]]["model_id"]] if entry["id"] in mine else []}  # fmt: skip
+            try:
+                size = sum(f["size"] for f in await self.picture_files(entry))
+                shown.update(size=size, gb=round(size / 1e9, 1))
+            except (hf.HubError, InstallError) as exc:
+                shown["error"] = str(exc)
+            listed.append(shown)
+        return listed
+
+    async def _engine_files(self, build: str) -> list[dict[str, Any]]:
+        """The picture engine's archives when the config names no sd-server yet: its pinned build for this computer."""
+        if sd_server(await asyncio.to_thread(config_text)) is not None:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                release = await engines.sd_cpp_release(http, build)
+        except engines.EngineError as exc:
+            raise InstallError(str(exc), 502) from exc
+        missing = [a["name"] for a in release["assets"] if not a["sha256"]]
+        if missing:  # as llama.cpp's (D46): nothing to run without it
+            raise InstallError(tr("GitHub не дал контрольную сумму для {files}: без неё программа не ставится",
+                                  files=", ".join(missing)), 502)  # fmt: skip
+        return [{"path": a["name"], "url": a["url"], "size": a["size"], "sha256": a["sha256"], "role": "engine",
+                 "tag": release["tag"], "build": build, "done": False} for a in release["assets"]]  # fmt: skip
+
     # --- installs ---
 
     async def _publish(self, job_id: str) -> None:
@@ -411,17 +504,7 @@ class Installer:
             files.append({"path": lens["file"], "size": lens["size"], "sha256": lens["sha256"], "role": "mmproj",
                           "done": False})  # fmt: skip
         total = sum(f["size"] for f in files)
-        if spec.get("folder"):
-            root = Path(spec["folder"]).expanduser()
-            if not root.is_absolute():
-                raise InstallError(tr("папка для моделей — полный путь"), 422)
-        elif spec.get("drive"):
-            drive = next((d for d in found["drives"] if d["letter"] == spec["drive"].upper()[:1]), None)
-            if drive is None:
-                raise InstallError(tr("нет диска {drive}", drive=spec["drive"]), 422)
-            root = models_root(drive)
-        else:  # LocalChat's own `model` folder; too little room there - the check below says so
-            root = models_home()
+        root = self._root(spec, found["drives"])  # AFO's own `model` folder by default; too little room - said below
         folder = root / repo.replace("/", os.sep)
         try:
             _check_room(folder, total)
@@ -450,6 +533,63 @@ class Installer:
         await self._publish(job_id)
         self._kick()
         return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def install_pictures(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
+        """A picture model from the curated list: {id, drive or folder}; the engine comes with the first one."""
+        entry = next((e for e in picture_sets() if e["id"] == spec["id"]), None)
+        if entry is None:
+            raise InstallError(tr("в списке нет модели {model}", model=spec["id"]), 404)
+        rows = await self._db.acall(jobs)
+        same = next((r for r in rows if r["plan"].get("set") == entry["id"]
+                     and r["status"] not in ("cancelled", "removed")), None)  # fmt: skip
+        if same and same["status"] == "done":
+            raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
+        if same:
+            return same
+        files = await self.picture_files(entry)
+        machine = await asyncio.to_thread(self.machine)
+        engine = await self._engine_files(machine["build"])
+        root = self._root(spec, await asyncio.to_thread(self.drives))
+        folder = root / "pictures" / entry["id"]
+        try:
+            _check_room(folder, sum(f["size"] for f in files))
+        except OSError as exc:
+            raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
+                               422) from exc  # fmt: skip
+        model_id = llama_config.free_id(await asyncio.to_thread(config_text), entry["id"])
+        plan = {"engine": "sd", "set": entry["id"], "tier": entry["tier"], "build": machine["build"],
+                "flags": entry["flags"], "size": entry["size"]}  # fmt: skip
+        job_id = uuid.uuid4().hex[:12]
+        everything = [*engine, *files]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
+                "license, status, total_bytes, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (job_id, files[0]["repo"], files[0]["revision"], hf.quant_of(files[0]["path"]), json.dumps(everything),
+                 str(folder), model_id, entry["name"], json.dumps(entry["purposes"]), entry["license"],
+                 sum(f["size"] for f in everything), json.dumps(plan)),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        self._clients[job_id] = client
+        await self._publish(job_id)
+        self._kick()
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
+    def _root(self, spec: dict[str, Any], drives: list[dict[str, Any]]) -> Path:
+        """Where a model goes: the folder asked for, the drive's AFO folder, or AFO's own `model` folder."""
+        if spec.get("folder"):
+            root = Path(spec["folder"]).expanduser()
+            if not root.is_absolute():
+                raise InstallError(tr("папка для моделей — полный путь"), 422)
+            return root
+        if spec.get("drive"):
+            drive = next((d for d in drives if d["letter"] == spec["drive"].upper()[:1]), None)
+            if drive is None:
+                raise InstallError(tr("нет диска {drive}", drive=spec["drive"]), 422)
+            return models_root(drive)
+        return models_home()
 
     async def add_local(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
         """A model already on this computer (15.1, D49): {path (its file; the first part of a split one), projector
@@ -635,8 +775,12 @@ class Installer:
         try:
             await self._download(found, cancel)
             found = await self._get(job_id)
-            reachable = await self._configure(found)
-            await self._try(await self._get(job_id), reachable)
+            if found["plan"].get("engine") == "sd":
+                reachable = await self._configure_pictures(found)
+                await self._try_picture(await self._get(job_id), reachable)
+            else:
+                reachable = await self._configure(found)
+                await self._try(await self._get(job_id), reachable)
         except hf.Cancelled:
             wanted = self._wanted.pop(job_id, "paused")
             if wanted == "cancelled":
@@ -685,12 +829,13 @@ class Installer:
         await self._set(job_id, status="downloading", error="")
         done = sum(f["size"] for f in files if f["done"])
         for f in files:
-            dest = folder / PurePosixPath(f["path"]).name
+            dest = _dest(folder, f)
             if f["done"] and dest.exists() and dest.stat().st_size == f["size"]:
                 continue
             if dest.exists() and dest.stat().st_size == f["size"]:  # got its name only once its sha256 matched
                 f["done"] = True
             else:
+                await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)  # the engines' downloads
                 await self._fetch(found, f, dest, done, cancel)
             done += f["size"]
             f["done"] = True
@@ -698,14 +843,16 @@ class Installer:
 
     async def _fetch(self, found: dict[str, Any], f: dict[str, Any], dest: Path, base: int,
                      cancel: threading.Event) -> None:  # fmt: skip
-        url = hf.file_url(found["repo"], f["path"], found["revision"])
+        # a picture model's file names its repository and commit; the engine's archive is GitHub's (no token there)
+        url = f.get("url") or hf.file_url(f.get("repo") or found["repo"], f["path"], f.get("revision") or
+                                          found["revision"])  # fmt: skip
         progress = hf.Progress()
         report = self._reporter(found["id"], base, found["total_bytes"])
         broken = 0
         for attempt in range(len(RETRIES_S) + 1):
             try:
                 await asyncio.to_thread(hf.download, url, dest, size=f["size"], sha256=f.get("sha256"),
-                                        token=self.token(), report=report, cancel=cancel,
+                                        token=None if f.get("url") else self.token(), report=report, cancel=cancel,
                                         progress=progress)  # fmt: skip
                 return
             except hf.HubError as exc:
@@ -794,6 +941,73 @@ class Installer:
                                  "попробует снова; или удалите",
                                  error=result.get("error") or tr("нет ответа")))  # fmt: skip
 
+    async def _configure_pictures(self, found: dict[str, Any]) -> bool:
+        """A picture model's block (and, with the first one, the engine unpacked and named in the `sd_server` macro);
+        whether llama-swap answered (and read it)."""
+        job_id = found["id"]
+        await self._set(job_id, status="configuring", error="")
+        folder = Path(found["folder"])
+        text = await asyncio.to_thread(config_text)
+        engine = [f for f in found["files"] if f["role"] == "engine"]
+        if engine:
+            target = engines_home() / "stable-diffusion.cpp" / f"{engine[0]['tag']}-{engine[0]['build']}"
+            try:
+                for f in engine:
+                    await asyncio.to_thread(engines.unpack, _dest(folder, f), target)
+                server = engines.sd_server_in(target)
+            except engines.EngineError as exc:
+                raise InstallError(str(exc), 502) from exc
+            text = llama_config.with_macro(text, SD_MACRO, "'\"" + str(server).replace("\\", "/") + "\"'")
+        elif sd_server(text) is None:
+            raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
+        model_id = found["model_id"]
+        if model_id in llama_config.model_blocks(text):
+            if _ours(text, model_id, job_id):
+                text = llama_config.remove_model(text, model_id)
+            else:
+                model_id = llama_config.free_id(text, model_id)
+        block = llama_config.sd_block(
+            model_id,
+            name=found["name"],
+            description=tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
+            server=f"${{{SD_MACRO}}}",
+            files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
+            flags=list(found["plan"].get("flags") or []),
+            metadata={
+                "source": f"huggingface.co/{found['repo']}",
+                "license": found["license"] or "?",
+                "localchat_install": job_id,
+            },
+        )
+        path = llama_config.config_path()
+        new = llama_config.add_model(text, model_id, block)
+        backup = await asyncio.to_thread(llama_config.write, path, new)
+        ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+        if not ok and problem != tr(llama_config.NOT_ANSWERING):
+            await asyncio.to_thread(llama_config.restore, path, backup)
+            raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
+                                  problem=problem), 502)  # fmt: skip
+        await self._set(job_id, model_id=model_id)
+        await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
+        return ok
+
+    async def _try_picture(self, found: dict[str, Any], reachable: bool) -> None:
+        """The trial picture: one small picture through llama-swap; a blank one does not count (hub/visual.py)."""
+        job_id, model_id = found["id"], found["model_id"]
+        if not reachable:
+            await self._set(job_id, status="done", trial={"skipped": tr("llama-swap не отвечает — модель проверится "
+                                                                        "при первой картинке")})  # fmt: skip
+            return
+        await self._set(job_id, status="trial")
+        result = await visual.trial(self._url, model_id)
+        if result["ok"]:
+            await self._set(job_id, status="done", trial={"seconds": result["seconds"], "size": result["size"]})
+            return
+        await self._withdraw(model_id)
+        await self._set(job_id, status="failed", trial={"seconds": result.get("seconds")},
+                        error=tr("модель скачана, но пробная картинка не вышла: {error}. Файлы остались — "
+                                 "«Повторить» попробует снова; или удалите", error=result["error"]))  # fmt: skip
+
     def _done(self, model_id: str) -> None:
         if self.on_done is not None:
             self.on_done(model_id)
@@ -870,6 +1084,13 @@ def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, 
     )
 
 
+def _dest(folder: Path, f: dict[str, Any]) -> Path:
+    """Where a file of an install goes: the model's folder; the picture engine's archive - the engines' downloads."""
+    if f["role"] == "engine":
+        return engines_home() / "downloads" / f["path"]
+    return folder / PurePosixPath(f["path"]).name
+
+
 def _check_room(folder: Path, size: int) -> None:
     anchor = Path(folder.anchor or folder)
     free = shutil.disk_usage(anchor).free
@@ -885,6 +1106,8 @@ def _delete_files(found: dict[str, Any]) -> None:
         return
     folder = Path(found["folder"])
     for f in found["files"]:
+        if f["role"] == "engine":
+            continue  # the picture engine stays: the other picture models run on it
         dest = folder / PurePosixPath(f["path"]).name
         for path in (dest, dest.with_name(dest.name + ".part")):
             for _ in range(10):  # a server that just let go of the file: Windows may hold it a moment longer

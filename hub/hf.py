@@ -213,6 +213,19 @@ async def repository(http: httpx.AsyncClient, repo: str, token: str | None = Non
             "projectors": projectors}  # fmt: skip
 
 
+async def files(http: httpx.AsyncClient, repo: str, token: str | None = None) -> dict[str, Any]:
+    """A repository's files - {path: {size, sha256}} - with its licence and the commit they are at: a picture model
+    takes its files from several repositories (D55, 29.3)."""
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise HubError(tr("имя репозитория — «автор/модель»"), 422)
+    info = await _get(http, f"/api/models/{repo}", repo, token, **{"expand[]": list(INFO_FIELDS)})
+    tree = await _get(http, f"/api/models/{repo}/tree/main", repo, token, recursive="true")
+    listed = {f["path"]: {"size": int(f.get("size") or 0),
+                          "sha256": (f.get("lfs") or {}).get("oid") or (f.get("lfs") or {}).get("sha256")}
+              for f in tree if isinstance(f, dict) and f.get("type") == "file"}  # fmt: skip
+    return {**summary({**info, "id": info.get("id") or repo}), "revision": info.get("sha") or "main", "files": listed}
+
+
 def file_url(repo: str, path: str, revision: str = "main") -> str:
     return f"{base_url()}/{repo}/resolve/{revision}/{quote(path)}"
 

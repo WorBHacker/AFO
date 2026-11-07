@@ -2,7 +2,9 @@
 must, a model file's header, the memory estimate, and the API - a copy first, llama-swap reading the file again, the
 copy back when it does not, or when the model does not start. A stand-in llama-swap reads the same file."""
 
+import base64
 import json
+import random
 import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +20,7 @@ from hub import llama_config as lc
 from hub.auth import create_client
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.test_visual import png
 
 CONFIG = """# llama-swap: one address for every local model.
 healthCheckTimeout: 900
@@ -140,6 +143,11 @@ def test_a_model_files_header_and_the_memory_it_takes(tmp_path):
     assert "из 16" in whole["text"] and "целиком" in whole["text"]
 
 
+_noise = random.Random(7)
+PICTURE = png(32, 32, lambda x, y: (_noise.randrange(256), _noise.randrange(256), _noise.randrange(256)))
+GREY = png(32, 32, lambda x, y: (128, 128, 128))
+
+
 class FakeLlamaSwap(BaseHTTPRequestHandler):
     """llama-swap as the hub sees it: the models of the config file as it is now (it rereads the file, like
     --watch-config), unless `frozen`; a chat completion that answers, or fails when the model does not start."""
@@ -147,6 +155,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     config = None
     frozen = None
     fail = False
+    blank = False  # a picture model answers «success» with a flat grey picture (29.3)
     asked: ClassVar[list] = []
 
     def log_message(self, *args):
@@ -165,8 +174,10 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         data = []
         for model_id in lc.model_blocks(text):
             view = lc.model_view(text, model_id)
-            data.append({"id": model_id, "name": view["name"],
-                         "meta": {"llamaswap": {"context": view.get("context") or 65536}}})  # fmt: skip
+            meta = {"context": view.get("context") or 65536}
+            if view["engine"] == lc.SD_ENGINE:  # what the config's metadata says, as llama-swap passes it on
+                meta = {"engine": lc.SD_ENGINE}
+            data.append({"id": model_id, "name": view["name"], "meta": {"llamaswap": meta}})
         self._send(200, {"data": data})
 
     def do_POST(self):
@@ -174,6 +185,10 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         FakeLlamaSwap.asked.append(body)
         if self.fail:
             self._send(502, {"error": "upstream command exited prematurely"})
+            return
+        if self.path == "/v1/images/generations":  # a picture model's trial (29.3)
+            picture = GREY if self.blank else PICTURE
+            self._send(200, {"data": [{"b64_json": base64.b64encode(picture).decode()}]})
             return
         chunks = [
             {"choices": [{"delta": {"content": "на связи"}}]},
@@ -190,6 +205,7 @@ def hub(tmp_path, monkeypatch):
     gguf(tmp_path / "big.gguf", {"general.architecture": "x", "x.block_count": 8})
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
+    FakeLlamaSwap.blank = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)

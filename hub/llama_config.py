@@ -143,6 +143,26 @@ def set_macro(text: str, name: str, value: str) -> str:
     raise ConfigError(tr("в config.yaml нет макроса {name}", name=name))
 
 
+def with_macro(text: str, name: str, value: str) -> str:
+    """The config with a macro set: replaced where it is, else added at the end of `macros:` (the section made before
+    `models:` when there is none); every other line as it was."""
+    if name in macros(text):
+        return set_macro(text, name, value)
+    lines = text.splitlines()
+    section = _section(lines, "macros")
+    if section is None:
+        at = next((i for i, line in enumerate(lines) if re.match(r"^models:\s*(#.*)?$", line)), None)
+        if at is None:
+            raise ConfigError(tr("в config.yaml нет раздела models"))
+        lines[at:at] = ["macros:", f"  {name}: {value}", ""]
+    else:
+        at = section[1]
+        while at > section[0] and not lines[at - 1].strip():
+            at -= 1
+        lines.insert(at, f"  {name}: {value}")
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
 def _cmd_lines(lines: list[str], start: int, end: int) -> tuple[int, int]:
     """The `cmd: |` block scalar of a model: its lines (the first after `cmd:` to the end of the indent)."""
     head = next((i for i in range(start, end) if re.match(r"^\s+cmd:\s*[|>]", lines[i])), None)

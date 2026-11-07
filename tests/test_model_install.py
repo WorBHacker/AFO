@@ -4,11 +4,13 @@ sha256, the model's block in the config, the trial run that tries smaller settin
 Hugging Face serves a tiny GGUF model; the stand-in llama-swap of the 8.5 tests reads the same config."""
 
 import hashlib
+import io
 import json
 import socket
 import struct
 import threading
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
@@ -17,8 +19,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 from starlette.testclient import TestClient
 
-from common.paths import data_paths
-from hub import hf
+from common.paths import data_paths, engines_home
+from hub import engines, hf
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.auth import create_client
@@ -60,6 +62,23 @@ FILES = {
 PARAMS = 320_000  # bits a weight: Q4_K_M 4.5, Q8_0 8.5, BF16 16
 
 
+def _zip(files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buffer.getvalue()
+
+
+# a picture model (29.3): its files in three repositories, and the picture engine's pinned release on GitHub
+PICTURES = {"test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
+            "test/Words-GGUF": {"words-Q4_K_M.gguf": b"W" * 60_000},
+            "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000}}  # fmt: skip
+ENGINE = {f"sd-master-{engines.SD_TAG.rsplit('-', 1)[1]}-bin-win-cuda12-x64.zip":
+          _zip({"sd-server.exe": b"MZ server", "ggml-cuda.dll": b"MZ"}),
+          "cudart-sd-bin-win-cu12-x64.zip": _zip({"cudart64_12.dll": b"MZ"})}  # fmt: skip
+
+
 class FakeHub(BaseHTTPRequestHandler):
     """Hugging Face's API and file downloads as LocalChat uses them: search, a repository's info and tree, files by
     Range (redirected to a 'CDN' on another host name), a gated repository that wants a token."""
@@ -73,6 +92,8 @@ class FakeHub(BaseHTTPRequestHandler):
     spans: ClassVar[list] = []  # (file, start, end) of each Range request with an end (a piece, 2026-11-05)
     no_ranges = False  # a server that ignores Range: the whole file, 200
     active = peak = 0  # CDN requests being served at once
+    picture_auth: ClassVar[list] = []  # the Authorization header of each picture file's request
+    github_auth: ClassVar[list] = []  # and of each engine archive's (GitHub's: never Hugging Face's token)
     lock = threading.Lock()
 
     def log_message(self, *args):
@@ -118,6 +139,25 @@ class FakeHub(BaseHTTPRequestHandler):
             self.end_headers()
         elif path.startswith("/cdn/"):
             self._file(path.removeprefix("/cdn/"))
+        elif picture := next((r for r in PICTURES if path.startswith((f"/api/models/{r}", f"/{r}/"))), None):
+            files = PICTURES[picture]
+            if path == f"/api/models/{picture}":
+                self._json({"id": picture, "sha": "def456", "tags": ["license:apache-2.0"]})
+            elif path == f"/api/models/{picture}/tree/main":
+                self._json([{"type": "file", "path": name, "size": len(data),
+                             "lfs": {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}}
+                            for name, data in files.items()])  # fmt: skip
+            else:  # /<repo>/resolve/<commit>/<path>
+                FakeHub.picture_auth.append(self.headers.get("Authorization"))
+                self._send_file(path.split("/resolve/", 1)[1].split("/", 1)[1], files)
+        elif path == f"/repos/{engines.SD_CPP}/releases/tags/{engines.SD_TAG}":
+            assets = [{"name": name, "browser_download_url": f"http://127.0.0.1:{self.port}/gh/{name}",
+                       "size": len(data), "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+                      for name, data in ENGINE.items()]  # fmt: skip
+            self._json({"tag_name": engines.SD_TAG, "assets": assets})
+        elif path.startswith("/gh/"):
+            FakeHub.github_auth.append(self.headers.get("Authorization"))
+            self._send_file(path.removeprefix("/gh/"), ENGINE)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -131,9 +171,10 @@ class FakeHub(BaseHTTPRequestHandler):
             with FakeHub.lock:
                 FakeHub.active -= 1
 
-    def _send_file(self, name):
-        FakeHub.cdn_auth.append(self.headers.get("Authorization"))
-        data = FILES[name]
+    def _send_file(self, name, files=None):
+        if files is None:
+            FakeHub.cdn_auth.append(self.headers.get("Authorization"))
+        data = (files or FILES)[name]
         if name in self.corrupt:
             data = data[:-1] + b"X"
         start, end = 0, len(data) - 1
@@ -175,6 +216,7 @@ class QuietServer(ThreadingHTTPServer):
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
     FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak = [], False, 0, 0
+    FakeHub.picture_auth, FakeHub.github_auth = [], []
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -423,6 +465,7 @@ def hub(tmp_path, monkeypatch, fake_hub):
     config.write_text(CONFIG, encoding="utf-8")
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
+    FakeLlamaSwap.blank = False
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)
@@ -467,7 +510,8 @@ def test_a_model_installed_tried_and_removed(hub):
     assert shown["recommended"] == "Q8_0" and shown["projector"]["file"] == "mmproj-Tiny-Q8_0.gguf"
     assert shown["header"]["layers"] == 8 and shown["license"] == "mit"
     listed = hub.get("/v1/install/catalog").json()["models"]
-    assert listed[0]["recommended"]["quant"] == "Q8_0" and listed[0]["purpose_words"] == ["Разговоры", "Картинки"]
+    assert listed[0]["recommended"]["quant"] == "Q8_0"
+    assert listed[0]["purpose_words"] == ["Разговоры", "Понимать картинки"]
     found = hub.get("/v1/install/search", params={"q": "tiny"}).json()["models"]
     assert [m["unrestricted"] for m in found] == [False, True]
 
@@ -498,6 +542,72 @@ def test_a_model_installed_tried_and_removed(hub):
 
     other = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     assert hub.get("/v1/install/jobs", headers={"Authorization": f"Bearer {other}"}).status_code == 403
+
+
+DRAW = {"id": "draw", "name": "Draw", "purposes": ["image"], "tier": "main", "license": "apache-2.0",
+        "original": "test/Draw", "size": 1024, "flags": ["--cfg-scale", "1", "--steps", "4"], "about": {"ru": "Рисует"},
+        "files": [{"role": "diffusion-model", "repo": "test/Draw-GGUF", "path": "draw-Q4_0.gguf"},
+                  {"role": "llm", "repo": "test/Words-GGUF", "path": "words-Q4_K_M.gguf"},
+                  {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
+MACHINE = {"build": "cuda12", "card": "RTX", "memory_gib": 15.6, "pictures": "main", "quality": False,
+           "video": "local", "tiles": False, "why": "RTX: картинки 1024 × 1024 за секунды"}  # fmt: skip
+
+
+def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkeypatch):
+    """29.3 (D55): a picture model - files from three repositories - and, with the first one, the picture engine's
+    pinned build from GitHub; the trial is a picture through llama-swap, a blank one does not count."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, {**DRAW, "id": "best", "tier": "quality", "name": "Best"}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installer, "token", lambda: "hf_good")  # Hugging Face's token: never sent to GitHub
+
+    listed = hub.get("/v1/install/pictures").json()
+    assert listed["machine"]["build"] == "cuda12"
+    draw, best = listed["models"]
+    assert (draw["size"], draw["verdict"], draw["recommended"], draw["purpose_words"]) == (160_000, "fast", True,
+                                                                                           ["Рисовать"])  # fmt: skip
+    assert best["verdict"] == "slow" and not best["recommended"]  # a quality model wants 6 GB: minutes here
+
+    job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert [f["role"] for f in job["files"]] == ["engine", "engine", "diffusion-model", "llm", "vae"]
+    assert job["total_bytes"] == 160_000 + sum(len(d) for d in ENGINE.values())
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert done["trial"]["size"] == 512 and done["percent"] == 100.0
+    text = hub.config.read_text(encoding="utf-8")
+    server = engines_home() / "stable-diffusion.cpp" / f"{engines.SD_TAG}-cuda12" / "sd-server.exe"
+    assert server.read_bytes() == b"MZ server" and lc.macros(text)["sd_server"] == f'"{server.as_posix()}"'
+    assert (server.parent / "cudart64_12.dll").exists()  # the CUDA runtime beside it
+    view = lc.model_view(text, "draw")
+    folder = hub.tmp / "localchat-model" / "pictures" / "draw"
+    assert view["engine"] == lc.SD_ENGINE and "--steps 4" in view["command"]
+    assert f'--vae "{(folder / "vae.safetensors").as_posix()}"' in view["command"]
+    assert (folder / "vae.safetensors").read_bytes() == PICTURES["test/Vae"]["split_files/vae/vae.safetensors"]
+    assert FakeLlamaSwap.asked[-1] | {"prompt": ""} == {"model": "draw", "prompt": "", "size": "512x512", "n": 1,
+                                                        "response_format": "b64_json"}  # fmt: skip
+    assert FakeHub.picture_auth and set(FakeHub.picture_auth) == {"Bearer hf_good"}
+    assert FakeHub.github_auth and not any(FakeHub.github_auth)
+    assert "llama-swap/draw" not in {m["id"] for m in hub.get("/v1/models").json()["models"]}  # not a chat model
+    assert hub.get("/v1/install/pictures").json()["models"][0]["installed"] == ["draw"]
+    again = hub.post("/v1/install/pictures", json={"id": "draw"})
+    assert again.status_code == 409 and "уже установлена" in again.json()["detail"]
+
+    gone = hub.delete("/v1/install/models/draw").json()["job"]
+    assert gone["status"] == "removed" and not folder.exists() and server.exists()  # the engine stays for others
+    text = hub.config.read_text(encoding="utf-8")
+    assert "draw" not in lc.model_blocks(text) and "sd_server" in lc.macros(text)
+
+    FakeLlamaSwap.blank = True  # the next one: no engine to fetch; its trial picture comes out flat grey
+    job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert [f["role"] for f in job["files"]] == ["diffusion-model", "llm", "vae"]
+    failed = wait_for(hub, job["id"], "failed", "done")
+    assert failed["status"] == "failed" and "пустой" in failed["error"] and "Повторить" in failed["error"]
+    assert "draw" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))  # withdrawn; its files stay
+    assert (folder / "draw-Q4_0.gguf").exists()
+    assert hub.post("/v1/install/pictures", json={"id": "nope"}).status_code == 404
 
 
 def test_a_model_that_will_not_start_tries_smaller_settings_then_leaves_the_config(hub):

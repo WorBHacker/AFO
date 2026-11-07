@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-10-28",
-  "about": "The curated list of local models the installer offers first (stage 10.1, Q15, Q17): ordinary versions from their makers or llama.cpp's own ggml-org, GGUF for llama.cpp. Sizes, variants, licences and sha256 come from Hugging Face live; this list names only the repositories and says what each is for.",
+  "updated": "2026-11-07",
+  "about": "The curated list of local models the installer offers first (stage 10.1, Q15, Q17): ordinary versions from their makers or llama.cpp's own ggml-org, GGUF for llama.cpp. Sizes, variants, licences and sha256 come from Hugging Face live; this list names only the repositories and says what each is for. `pictures` (D55, 29.3): picture models for stable-diffusion.cpp, each a set of files from several repositories - their GGUF from the quantizers named here (leejet is stable-diffusion.cpp's own; Q17 extended, 2026-11-07), the licence of the original model.",
   "models": [
     {
       "id": "qwen3.5-0.8b",
@@ -126,6 +126,112 @@
       "about": {
         "ru": "Очень большая открытая модель OpenAI: для компьютеров с 64 ГБ ОЗУ и больше. Большая часть живёт в ОЗУ.",
         "en": "OpenAI's very large open model: for computers with 64 GB of RAM or more. Most of it lives in RAM."
+      }
+    }
+  ],
+  "pictures": [
+    {
+      "id": "sdxs-512",
+      "name": "SDXS 512",
+      "purposes": [
+        "image"
+      ],
+      "tier": "light",
+      "license": "openrail++",
+      "original": "IDKiro/sdxs-512-0.9",
+      "size": 512,
+      "files": [
+        {
+          "role": "model",
+          "repo": "concedo/sdxs-512-tinySDdistilled-GGUF",
+          "path": "sdxs-512-tinySDdistilled_Q8_0.gguf"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--steps",
+        "1"
+      ],
+      "about": {
+        "ru": "Самая лёгкая: картинка 512 × 512 за секунды даже без видеокарты. Простые сцены, без надписей.",
+        "en": "The lightest: a 512 × 512 picture in seconds even without a graphics card. Simple scenes, no lettering."
+      }
+    },
+    {
+      "id": "flux2-klein-4b",
+      "name": "FLUX.2 [klein] 4B",
+      "purposes": [
+        "image"
+      ],
+      "tier": "main",
+      "license": "apache-2.0",
+      "original": "black-forest-labs/FLUX.2-klein-4B",
+      "size": 1024,
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "leejet/FLUX.2-klein-4B-GGUF",
+          "path": "flux-2-klein-4b-Q4_0.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen3-4B-GGUF",
+          "path": "Qwen3-4B-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/flux2-klein-4B",
+          "path": "split_files/vae/flux2-vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--steps",
+        "4"
+      ],
+      "about": {
+        "ru": "Основная: 1024 × 1024 за несколько секунд на видеокарте от 3 ГБ, хорошо понимает запрос. На процессоре — минуты.",
+        "en": "The main one: 1024 × 1024 in a few seconds on a graphics card with 3 GB or more, follows the request well. Minutes on the processor."
+      }
+    },
+    {
+      "id": "z-image-turbo",
+      "name": "Z-Image-Turbo",
+      "purposes": [
+        "image"
+      ],
+      "tier": "quality",
+      "license": "apache-2.0",
+      "original": "Tongyi-MAI/Z-Image-Turbo",
+      "size": 1024,
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "leejet/Z-Image-Turbo-GGUF",
+          "path": "z_image_turbo-Q4_K.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+          "path": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/z_image_turbo",
+          "path": "split_files/vae/ae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--steps",
+        "8"
+      ],
+      "about": {
+        "ru": "Качественнее: фотографии и надписи лучше, вдвое медленнее основной. Для видеокарты от 6 ГБ.",
+        "en": "Higher quality: better photos and lettering, twice as slow as the main one. For a graphics card with 6 GB or more."
       }
     }
   ]

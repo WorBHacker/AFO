@@ -98,6 +98,8 @@
 | GET | `/v1/install/search` | только окно | `search()` | `?q: str` |
 | GET | `/v1/install/repo/{author}/{name}` | только окно | `repository()` | `?fresh: bool = False` |
 | POST | `/v1/install` | только окно | `install()` | тело `{repo: str, quant: str, projector: bool \| None = None, drive: str = '', folder: str = '', name: str = ''}` |
+| GET | `/v1/install/pictures` | только окно | `pictures()` |  |
+| POST | `/v1/install/pictures` | только окно | `install_pictures()` | тело `{id: str, drive: str = '', folder: str = ''}` |
 | GET | `/v1/install/found` | только окно | The models found on the drives (15.1): each with whether it would fit, and its id when the config runs it. |  |
 | POST | `/v1/install/found/scan` | только окно | `scan()` |  |
 | POST | `/v1/install/found/cancel` | только окно | `stop_scan()` |  |
