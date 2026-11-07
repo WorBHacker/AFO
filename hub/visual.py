@@ -9,7 +9,16 @@
   (it holds the model while the picture is drawn - the asynchronous API lets go of it, and a chat's request could
   swap sd-server out in the middle, 29.1); meanwhile `/upstream/<model>/sdapi/v1/progress` gives the step and a
   preview, sent to the window as events; «Стоп» unloads the model - the picture ends within a fraction of a second.
-  The file goes to data/media/<year-month>/<job>.png.
+  The file goes to data/media/<year-month>/<job>.png, kept within D30's term and size (hub/retention.py).
+- The ladder (29.4б): a picture that does not come out - the engine refused or fell, the answer is blank, no answer
+  in time - is tried again by itself, a rung lower: a quarter of the pixels, then a lighter model (its own size in
+  the same shape, then smaller). The rung it came out on is remembered for that model on this computer (a settings
+  row, by the build, the card and its memory - data moved to another computer does not take it along): the next
+  picture begins there. The weights' place in memory and the VAE in tiles after running out are the engine's own
+  rungs (29.1); the cloud's card comes with 29.7.
+- What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
+  stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
+  tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from typing import Any
 import httpx
 
 from common.i18n import tr
+from common.picture_sizes import SIDES, fit, half, moved
 
 from .db import utc_now
 
@@ -44,6 +54,9 @@ FLAT_RATIO = 0.02  # a PNG smaller than this share of its pixels' bytes is looke
 FLAT_SPREAD = 4.0  # brightness spread below this: one colour
 SAMPLES = 64  # a grid of this many points a side is enough to see a spread
 CHANNELS = {0: 1, 2: 3, 4: 2, 6: 4}  # PNG colour types: grey, RGB, grey and alpha, RGBA
+SIGNATURE = b"\x89PNG\r\n\x1a\n"
+PARAMETERS = b"parameters"  # the key stable-diffusion.cpp and A1111 keep a picture's prompt, seed and steps under
+TEXTS = (b"tEXt", b"iTXt", b"zTXt")
 
 
 class PictureError(ValueError):
@@ -51,7 +64,7 @@ class PictureError(ValueError):
 
 
 def _png(data: bytes) -> tuple[int, int, int, bytes]:
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    if not data.startswith(SIGNATURE):
         raise PictureError("not a PNG")
     pos, header, idat = 8, None, []
     while pos + 8 <= len(data):
@@ -128,6 +141,60 @@ def blank(data: bytes) -> bool:
     return (sum((v - mean) ** 2 for v in seen) / len(seen)) ** 0.5 < FLAT_SPREAD
 
 
+def _chunks(data: bytes):
+    """A PNG's chunks: (kind, body, where it begins, where it ends)."""
+    pos = len(SIGNATURE)
+    while pos + 12 <= len(data):
+        length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        yield kind, data[pos + 8 : pos + 8 + length], pos, pos + 12 + length
+        pos += 12 + length
+
+
+def _text(kind: bytes, body: bytes) -> str | None:
+    """A text chunk's value when its key is «parameters», else None."""
+    key, _, rest = body.partition(b"\0")
+    if key != PARAMETERS or kind not in TEXTS:
+        return None
+    with contextlib.suppress(zlib.error, UnicodeDecodeError, IndexError):
+        if kind == b"tEXt":
+            try:
+                return rest.decode()  # stable-diffusion.cpp writes its UTF-8 there
+            except UnicodeDecodeError:
+                return rest.decode("latin-1")
+        if kind == b"zTXt":
+            return zlib.decompress(rest[1:]).decode("latin-1")
+        text = rest[2:].split(b"\0", 2)[2]  # iTXt: compressed?, method, language, translated key, the text
+        return (zlib.decompress(text) if rest[0] else text).decode()
+    return None
+
+
+def parameters(data: bytes) -> str:
+    """What a PNG says it was drawn from (its «parameters»: the prompt, the seed, the steps); "" when nothing."""
+    if not data.startswith(SIGNATURE):
+        return ""
+    return next((t for kind, body, _a, _b in _chunks(data) if (t := _text(kind, body)) is not None), "")
+
+
+def with_parameters(data: bytes, text: str) -> bytes:
+    """The PNG with `text` as its «parameters», right after the header (an old one goes): a tEXt when Latin-1 holds
+    it, else an iTXt in UTF-8 - Pillow and A1111 read either."""
+    if not data.startswith(SIGNATURE):
+        return data
+    try:
+        kind, body = b"tEXt", PARAMETERS + b"\0" + text.encode("latin-1")
+    except UnicodeEncodeError:
+        kind, body = b"iTXt", PARAMETERS + b"\0\0\0\0\0" + text.encode()  # not compressed, no language
+    chunk = struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    out = bytearray(SIGNATURE)
+    for found, found_body, begin, end in _chunks(data):
+        if _text(found, found_body) is not None:
+            continue
+        out += data[begin:end]
+        if found == b"IHDR":
+            out += chunk
+    return bytes(out)
+
+
 def _refused(response: httpx.Response) -> str:
     said = " ".join(response.text.split())[:200]
     return tr("движок ответил {status}: {said}", status=response.status_code, said=said)
@@ -169,8 +236,11 @@ async def trial(base_url: str, model_id: str, *, size: int = TRIAL_SIZE,
 STEP_S = 0.5  # how often the progress is asked while a picture is drawn
 PICTURE_TIMEOUT_S = 1800.0  # half an hour at most: the processor and a big model (29.1)
 LIVE = ("queued", "running")
-SIZES = (256, 2048)  # a side, in pixels; a multiple of 16 (the models' latent grid)
+SIZES = SIDES  # a side, in pixels; a multiple of 16 (the models' latent grid)
 TIERS = ("main", "light", "quality")  # the picture a person gets unless they choose: the fast main one first
+RANK = {"light": 0, "main": 1, "quality": 2}  # how heavy a tier's models are: a rung lower is a lighter one
+MAX_TRIES = 5  # a picture's tries at most, the first among them
+RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
 
 
 class VisualError(Exception):
@@ -225,6 +295,70 @@ def installed(conn) -> list[dict[str, Any]]:
     return out
 
 
+def _rank(model: dict[str, Any]) -> int:
+    return RANK.get(model["tier"], RANK["main"])
+
+
+def rungs(model: dict[str, Any], width: int, height: int, models: list[dict[str, Any]],
+          remembered: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:  # fmt: skip
+    """A picture's tries until one comes out (29.4б): as asked, then a quarter of the pixels, then each lighter model -
+    its own size in the same shape, then smaller. Where it came out here before (`remembered`, by model) is where it
+    begins: the model that did instead of this one, no more pixels than came out."""
+    instead = next((m for m in models if m["model_id"] == (remembered.get(model["model_id"]) or {}).get("instead")),
+                   None)  # fmt: skip
+    first = instead if instead is not None and _rank(instead) < _rank(model) else model
+    chain = [first, *sorted((m for m in models if _rank(m) < _rank(first)), key=_rank, reverse=True)]
+    out = []
+    for each in chain:
+        w, h = moved(width, height, model["size"], each["size"])
+        w, h = fit(w, h, int((remembered.get(each["model_id"]) or {}).get("pixels") or 0))
+        out.append({"model_id": each["model_id"], "width": w, "height": h, "rung": "lighter" if out else "asked"})
+        if smaller := half(w, h):
+            out.append({"model_id": each["model_id"], "width": smaller[0], "height": smaller[1], "rung": "smaller"})
+    return out[:MAX_TRIES]
+
+
+def learned(tries: list[dict[str, Any]], asked: str) -> dict[str, dict[str, Any]]:
+    """What a picture's tries teach the next one here: the model that came out, instead of those that did not and of
+    the one asked for; the pixels, when it came out smaller."""
+    ok = next((t for t in tries if t["ok"]), None)
+    if ok is None or ok is tries[0]:
+        return {}
+    out = {t["model_id"]: {"instead": ok["model_id"]} for t in tries if t["model_id"] != ok["model_id"]}
+    if asked != ok["model_id"]:
+        out[asked] = {"instead": ok["model_id"]}
+    if ok["rung"] == "smaller":
+        out[ok["model_id"]] = {"pixels": ok["width"] * ok["height"]}
+    return out
+
+
+def computer(machine: dict[str, Any]) -> str:
+    """This computer, as far as pictures go: the engine's build, the card and its memory."""
+    return "|".join(str(machine.get(k) or "") for k in ("build", "card", "memory_gib"))
+
+
+def remembered(conn, here: str) -> dict[str, dict[str, Any]]:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (RUNGS,)).fetchone()
+    return (json.loads(row["value"]) if row else {}).get(here, {})
+
+
+def remember(conn, here: str, rules: dict[str, dict[str, Any]]) -> None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (RUNGS,)).fetchone()
+    saved = json.loads(row["value"]) if row else {}
+    saved[here] = {**saved.get(here, {}), **rules}
+    conn.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET "
+                 "value = excluded.value, updated_at = excluded.updated_at",
+                 (RUNGS, json.dumps(saved), utc_now()))  # fmt: skip
+
+
+def described(prompt: str, negative: str, seed: int, model: dict[str, Any], width: int, height: int) -> str:
+    """A picture's «parameters» as A1111 writes them, when the engine wrote none."""
+    lines = [prompt, *([f"Negative prompt: {negative}"] if negative else [])]
+    lines.append(f"Steps: {model['steps']}, CFG scale: {model['cfg']}, Seed: {seed}, Size: {width}x{height}, "
+                 f"Model: {model['model_id']}")  # fmt: skip
+    return "\n".join(lines)
+
+
 def default_model(models: list[dict[str, Any]], machine: dict[str, Any]) -> dict[str, Any] | None:
     """The model a picture is drawn with unless one is chosen: the main one where this computer draws it fast, else
     the light one, else whatever there is."""
@@ -265,8 +399,15 @@ class Visual:
                 await asyncio.wait_for(self._task, 10.0)
 
     async def models(self) -> dict[str, Any]:
+        """The picture models, each with where it came out here (29.4б): `pixels` - no more than these, `instead` -
+        the model that came out in its place."""
         found = await self._db.acall(installed)
-        best = default_model(found, await asyncio.to_thread(self._machine))
+        machine = await asyncio.to_thread(self._machine)
+        here = await self._db.acall(lambda conn: remembered(conn, computer(machine)))
+        for model in found:
+            rule = here.get(model["model_id"]) or {}
+            model["pixels"], model["instead"] = int(rule.get("pixels") or 0), rule.get("instead") or ""
+        best = default_model(found, machine)
         return {"models": found, "default": best["model_id"] if best else ""}
 
     async def draw(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
@@ -357,32 +498,68 @@ class Visual:
                 self._stopping.discard(found["id"])
 
     async def _run(self, found: dict[str, Any]) -> None:
-        job_id, model_id = found["id"], found["model_id"]
-        model = next((m for m in await self._db.acall(installed) if m["model_id"] == model_id), None)
+        job_id = found["id"]
+        models = await self._db.acall(installed)
+        model = next((m for m in models if m["model_id"] == found["model_id"]), None)
         if model is None:
-            await self._set(job_id, status="failed", error=tr("модель картинок {model} удалена", model=model_id))
+            await self._set(job_id, status="failed", error=tr("модель картинок {model} удалена",
+                                                               model=found["model_id"]))  # fmt: skip
             return
-        await self._set(job_id, status="running", error="")
-        body = {"model": model_id, "prompt": found["prompt"], "negative_prompt": found["negative"],
-                "width": found["width"], "height": found["height"], "seed": found["seed"], "steps": model["steps"],
+        here = computer(await asyncio.to_thread(self._machine))
+        ladder = rungs(model, found["width"], found["height"], models, await self._db.acall(
+            lambda conn: remembered(conn, here)))  # fmt: skip
+        by_id = {m["model_id"]: m for m in models}
+        tries: list[dict[str, Any]] = []
+        picture, start = None, time.monotonic()
+        for rung in ladder:
+            if job_id in self._stopping:
+                break
+            await self._set(job_id, status="running", error="", model_id=rung["model_id"], width=rung["width"],
+                            height=rung["height"], tries=tries)  # fmt: skip
+            picture, error, gone, seconds = await self._try(job_id, found, rung, by_id[rung["model_id"]])
+            if job_id in self._stopping:
+                break
+            tries.append({**rung, "ok": picture is not None, "error": error, "seconds": seconds})
+            if picture is not None or gone:  # llama-swap is not there: no rung lower helps
+                break
+        seconds = round(time.monotonic() - start, 1)
+        if job_id in self._stopping:
+            await self._set(job_id, status="cancelled", error="", seconds=seconds, tries=tries)
+            return
+        if picture is None:
+            await self._set(job_id, status="failed", error=tries[-1]["error"] if tries else "", seconds=seconds,
+                            tries=tries)  # fmt: skip
+            return
+        if rules := learned(tries, model["model_id"]):
+            await self._db.acall(lambda conn: remember(conn, here, rules))
+        drawn = tries[-1]
+        picture = with_parameters(picture, parameters(picture) or described(
+            found["prompt"], found["negative"], found["seed"], by_id[drawn["model_id"]], drawn["width"],
+            drawn["height"]))  # fmt: skip
+        name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
+        await asyncio.to_thread(_save, self.media / name, picture)
+        await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
+
+    async def _try(self, job_id: str, found: dict[str, Any], rung: dict[str, Any],
+                   model: dict[str, Any]) -> tuple[bytes | None, str, bool, float]:  # fmt: skip
+        """One rung: (the picture or None, why not, whether llama-swap is not there at all, the seconds it took)."""
+        body = {"model": rung["model_id"], "prompt": found["prompt"], "negative_prompt": found["negative"],
+                "width": rung["width"], "height": rung["height"], "seed": found["seed"], "steps": model["steps"],
                 "cfg_scale": model["cfg"], "batch_size": 1}  # fmt: skip
         start = time.monotonic()
-        self._watching = asyncio.create_task(self._watch(job_id, model_id))
-        response, error = None, ""
+        self._watching = asyncio.create_task(self._watch(job_id, rung["model_id"]))
+        response, error, gone = None, "", False
         try:
             async with httpx.AsyncClient(timeout=PICTURE_TIMEOUT_S) as http:
                 response = await http.post(f"{self._url}/sdapi/v1/txt2img", json=body)
         except httpx.HTTPError as exc:
-            error = _no_answer(exc)
+            error, gone = _no_answer(exc), isinstance(exc, httpx.ConnectError)
         finally:
             self._watching.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._watching
             self._watching = None
         seconds = round(time.monotonic() - start, 1)
-        if job_id in self._stopping:
-            await self._set(job_id, status="cancelled", error="", seconds=seconds)
-            return
         picture = None
         if response is not None and response.status_code != 200:
             error = _refused(response)
@@ -393,14 +570,7 @@ class Visual:
                 error = tr("ответ без картинки")
         if picture is not None and blank(picture):
             picture, error = None, _blank_words()
-        tries = [{"model_id": model_id, "width": found["width"], "height": found["height"], "ok": picture is not None,
-                  "error": error, "seconds": seconds}]  # fmt: skip
-        if picture is None:
-            await self._set(job_id, status="failed", error=error, seconds=seconds, tries=tries)
-            return
-        name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
-        await asyncio.to_thread(_save, self.media / name, picture)
-        await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
+        return picture, error, gone, seconds
 
     async def _watch(self, job_id: str, model_id: str) -> None:
         """The picture's step and preview to the window while it is drawn."""

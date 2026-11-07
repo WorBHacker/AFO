@@ -82,6 +82,34 @@ def test_a_blank_picture_is_told_from_a_real_one():
     assert visual.blank(b"not a png")
 
 
+def _chunks(data: bytes) -> list[bytes]:
+    """A PNG's chunk kinds, each one's CRC checked."""
+    pos, kinds = 8, []
+    while pos < len(data):
+        length, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        body = data[pos + 8 : pos + 8 + length]
+        assert struct.unpack(">I", data[pos + 8 + length : pos + 12 + length])[0] == zlib.crc32(kind + body), kind
+        kinds.append(kind)
+        pos += 12 + length
+    return kinds
+
+
+def test_the_prompt_and_seed_go_into_the_picture():
+    """29.4б: a picture keeps what it was drawn from - in «parameters», as stable-diffusion.cpp and A1111 write it."""
+    assert visual.parameters(PICTURE) == ""
+    text = "рыжая лиса в снегу\nSteps: 4, Seed: 7"
+    described = visual.with_parameters(PICTURE, text)
+    assert visual.parameters(described) == text and visual.pixels(described) == visual.pixels(PICTURE)
+    assert _chunks(described) == [b"IHDR", b"iTXt", b"IDAT", b"IEND"]  # not Latin-1: UTF-8, as PNG has it
+    plain = visual.with_parameters(described, "a fox\nSeed: 7")
+    assert visual.parameters(plain) == "a fox\nSeed: 7" and _chunks(plain) == [b"IHDR", b"tEXt", b"IDAT", b"IEND"]
+    # stable-diffusion.cpp puts its UTF-8 into a tEXt (Latin-1 by PNG's rules): read as UTF-8, written back right
+    engine = PICTURE[:33] + _chunk(b"tEXt", b"parameters\x00" + text.encode()) + PICTURE[33:]
+    assert visual.parameters(engine) == text
+    assert _chunks(visual.with_parameters(engine, text)) == [b"IHDR", b"iTXt", b"IDAT", b"IEND"]
+    assert visual.with_parameters(b"not a png", text) == b"not a png"
+
+
 def _swap(answer):
     def handler(request):
         assert request.url.path == "/v1/images/generations"
@@ -119,6 +147,56 @@ def test_the_trial_picture_without_an_answer(error):
     assert not result["ok"] and type(error).__name__ in result["error"]
 
 
+# --- the ladder (29.4б): a smaller size, then a lighter model; the rung that came out remembered ---
+
+FLUX = {"model_id": "flux", "name": "FLUX", "tier": "main", "size": 1024}
+SDXS = {"model_id": "sdxs", "name": "SDXS", "tier": "light", "size": 512}
+ZIMG = {"model_id": "zimg", "name": "Z", "tier": "quality", "size": 1024}
+
+
+def _rungs(*args):
+    return [(r["model_id"], r["width"], r["height"], r["rung"]) for r in visual.rungs(*args)]
+
+
+def test_the_ladder_goes_smaller_then_lighter():
+    models = [SDXS, FLUX, ZIMG]
+    assert _rungs(FLUX, 1024, 1024, models, {}) == [
+        ("flux", 1024, 1024, "asked"), ("flux", 512, 512, "smaller"),
+        ("sdxs", 512, 512, "lighter"), ("sdxs", 256, 256, "smaller")]  # fmt: skip
+    # a wide one keeps its shape; a side under 256 is no rung
+    assert _rungs(FLUX, 1344, 768, models, {}) == [("flux", 1344, 768, "asked"), ("flux", 672, 384, "smaller"),
+                                                   ("sdxs", 672, 384, "lighter")]  # fmt: skip
+    # at most MAX_TRIES
+    assert _rungs(ZIMG, 1024, 1024, models, {}) == [("zimg", 1024, 1024, "asked"), ("zimg", 512, 512, "smaller"),
+                                                    ("flux", 1024, 1024, "lighter"), ("flux", 512, 512, "smaller"),
+                                                    ("sdxs", 512, 512, "lighter")]  # fmt: skip
+    assert _rungs(SDXS, 256, 256, models, {}) == [("sdxs", 256, 256, "asked")]
+    # remembered here: the size that came out (as many pixels, the shape kept), the model that did
+    assert _rungs(FLUX, 1344, 768, models, {"flux": {"pixels": 512 * 512}}) == [
+        ("flux", 672, 384, "asked"), ("sdxs", 672, 384, "lighter")]  # fmt: skip
+    assert _rungs(FLUX, 1024, 1024, models, {"flux": {"instead": "sdxs"}}) == [
+        ("sdxs", 512, 512, "asked"), ("sdxs", 256, 256, "smaller")]  # fmt: skip
+    for odd in ({"instead": "zimg"}, {"instead": "gone"}):  # not lighter, not here: not followed
+        assert _rungs(FLUX, 1024, 1024, models, {"flux": odd})[0] == ("flux", 1024, 1024, "asked")
+
+
+def test_what_the_ladder_learns():
+    def tried(*rows):
+        return [{"model_id": m, "width": w, "height": h, "rung": r, "ok": ok} for m, w, h, r, ok in rows]
+
+    assert visual.learned(tried(("flux", 1024, 1024, "asked", True)), "flux") == {}
+    assert visual.learned(tried(("flux", 1024, 1024, "asked", False), ("flux", 512, 512, "smaller", True)),
+                          "flux") == {"flux": {"pixels": 512 * 512}}  # fmt: skip
+    lighter = tried(("flux", 1024, 1024, "asked", False), ("flux", 512, 512, "smaller", False),
+                    ("sdxs", 512, 512, "lighter", True))  # fmt: skip
+    assert visual.learned(lighter, "flux") == {"flux": {"instead": "sdxs"}}
+    # started from a remembered model that no longer comes out: the one asked for goes on to the next
+    assert visual.learned(lighter, "zimg") == {"flux": {"instead": "sdxs"}, "zimg": {"instead": "sdxs"}}
+    # nothing came out: nothing learned
+    assert visual.learned(tried(("flux", 1024, 1024, "asked", False), ("flux", 512, 512, "smaller", False)),
+                          "flux") == {}  # fmt: skip
+
+
 # --- the pictures people ask for (29.4): a hub, and llama-swap with a picture model behind it ---
 
 
@@ -127,7 +205,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
     progress through /upstream, «Стоп» as unloading the model (the picture in flight ends with 502)."""
 
     steps_s = 0.05  # a step's time
-    answer = "picture"  # picture | blank | fail
+    answer: ClassVar = "picture"  # picture | blank | fail - or what a request gets, by its body
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
     step = total = 0
@@ -169,10 +247,11 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
                 self._send(502, {"error": "upstream exited"})
                 return
         cls.step = cls.total = 0
-        if cls.answer == "fail":
+        answer = cls.answer(body) if callable(cls.answer) else cls.answer
+        if answer == "fail":
             self._send(500, {"error": "CUDA error: out of memory"})
             return
-        picture = PICTURE if cls.answer == "picture" else GREY
+        picture = PICTURE if answer == "picture" else GREY
         self._send(200, {"images": [base64.b64encode(picture).decode()], "info": "{}"})
 
 
@@ -239,7 +318,9 @@ def test_a_picture_asked_for_drawn_shown_as_it_goes_and_kept(hub):
                                       "width": 512, "height": 512, "seed": 7, "steps": 4, "cfg_scale": 1.0,
                                       "batch_size": 1}  # fmt: skip
     picture = hub.get(f"/v1/visual/jobs/{job['id']}/file")
-    assert picture.status_code == 200 and picture.content == PICTURE and picture.headers["content-type"] == "image/png"
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/png"
+    assert visual.pixels(picture.content) == visual.pixels(PICTURE)  # and what it was drawn from, in the file:
+    assert visual.parameters(picture.content).startswith("a red fox in snow\nSteps: 4, CFG scale: 1.0, Seed: 7, ")
     assert done["file"].endswith(f"/{job['id']}.png") and done["tries"][0]["ok"] and done["seconds"] >= 0
     steps = [p for kind, p in hub.seen if kind == "visual.progress"]
     assert steps and steps[0]["id"] == job["id"] and steps[0]["steps"] == 4 and steps[0]["preview"]
@@ -261,6 +342,7 @@ def test_stop_unloads_the_model_and_the_picture_ends(hub):
     hub.post(f"/v1/visual/jobs/{job['id']}/cancel")
     stopped = _wait(hub, job["id"], "cancelled", "failed", "done", timeout=5.0)
     assert stopped["status"] == "cancelled" and FakeDrawSwap.unloaded == ["draw"]
+    assert len(FakeDrawSwap.asked) == 1  # stopped: no rung lower
     assert hub.get(f"/v1/visual/jobs/{job['id']}/file").status_code == 404
 
 
@@ -270,7 +352,54 @@ def test_a_picture_that_does_not_come_out_says_why(hub, answer, words):
     FakeDrawSwap.answer = answer
     job = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
     failed = _wait(hub, job["id"], "failed", "done")
-    assert failed["status"] == "failed" and words in failed["error"] and not failed["tries"][0]["ok"]
+    assert failed["status"] == "failed" and words in failed["error"]
+    assert [(t["width"], t["rung"], t["ok"]) for t in failed["tries"]] == [(512, "asked", False),
+                                                                          (256, "smaller", False)]  # fmt: skip
+    models = hub.get("/v1/visual/models").json()["models"]
+    assert (models[0]["pixels"], models[0]["instead"]) == (0, "")  # nothing came out: nothing remembered
+
+
+def test_a_picture_that_fails_goes_a_rung_lower_and_the_rung_is_remembered(hub):
+    _install(hub)
+    _install(hub, "tiny", {**DRAW_PLAN, "set": "tiny", "tier": "light", "flags": ["--steps", "1"]})
+    FakeDrawSwap.answer = lambda body: "fail" if body["model"] == "draw" and body["width"] > 256 else "picture"
+    job = hub.post("/v1/visual/images", json={"prompt": "a fox", "seed": 3}).json()["job"]
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done" and (done["model_id"], done["width"], done["height"]) == ("draw", 256, 256)
+    assert [(t["model_id"], t["width"], t["rung"], t["ok"]) for t in done["tries"]] == [
+        ("draw", 512, "asked", False), ("draw", 256, "smaller", True)]  # fmt: skip
+    assert "500" in done["tries"][0]["error"] and "Size: 256x256" in visual.parameters(
+        hub.get(f"/v1/visual/jobs/{job['id']}/file").content)  # fmt: skip
+    models = {m["model_id"]: m for m in hub.get("/v1/visual/models").json()["models"]}
+    assert (models["draw"]["pixels"], models["tiny"]["pixels"]) == (256 * 256, 0)
+    asked = len(FakeDrawSwap.asked)
+    again = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
+    assert _wait(hub, again["id"], "done", "failed")["status"] == "done"
+    assert len(FakeDrawSwap.asked) == asked + 1 and FakeDrawSwap.asked[-1]["width"] == 256  # began where it came out
+
+    FakeDrawSwap.answer = lambda body: "blank" if body["model"] == "draw" else "picture"
+    third = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done", "failed")
+    assert third["status"] == "done" and (third["model_id"], third["width"]) == ("tiny", 512)
+    assert [(t["model_id"], t["width"], t["rung"]) for t in third["tries"]] == [("draw", 256, "asked"),
+                                                                               ("tiny", 512, "lighter")]  # fmt: skip
+    models = hub.get("/v1/visual/models").json()["models"]
+    assert {m["model_id"]: m["instead"] for m in models} == {"draw": "tiny", "tiny": ""}
+    asked = len(FakeDrawSwap.asked)
+    fourth = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+    assert len(FakeDrawSwap.asked) == asked + 1 and fourth["model_id"] == "tiny"  # straight to the one that comes out
+
+    # another computer (data moved over, another card): what this one learned does not hold there
+    hub.app.state.installer.machine = lambda: {"build": "vulkan", "card": "Radeon", "pictures": "main"}
+    models = {m["model_id"]: m for m in hub.get("/v1/visual/models").json()["models"]}
+    assert (models["draw"]["pixels"], models["draw"]["instead"]) == (0, "")
+
+
+def test_without_llama_swap_the_ladder_stops_at_once(hub):
+    _install(hub)
+    hub.app.state.visual._url = "http://127.0.0.1:9"  # nothing listens there
+    job = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
+    failed = _wait(hub, job["id"], "failed", "done")
+    assert len(failed["tries"]) == 1 and "llama-swap не ответил" in failed["error"]
 
 
 def test_pictures_a_stopped_hub_left_going_fail(hub):

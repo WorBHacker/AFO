@@ -62,7 +62,8 @@ CHAT_MODES = [
 def kept_text(usage: dict[str, dict[str, int]]) -> str:
     """What the hub keeps on disk now, by kind (D30): «снимки файлов 12 МБ · снимки экрана 40 МБ · …»."""
     names = [("snapshots", tr("снимки файлов")), ("screens", tr("снимки экрана")),
-             ("terminals", tr("журналы терминалов")), ("files", tr("файлы из чатов"))]  # fmt: skip
+             ("terminals", tr("журналы терминалов")), ("files", tr("файлы из чатов")),
+             ("pictures", tr("картинки"))]  # fmt: skip
     return " · ".join(f"{word} {mb((usage.get(kind) or {}).get('bytes', 0))}" for kind, word in names)
 
 

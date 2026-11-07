@@ -3,7 +3,8 @@ models' changes and the versions of the files' history (data/snapshots, by hash;
 snapshots (data/computer) and the terminals' logs
 (data/terminals, hub/terminals.py) - each kind kept `days` and within `max_gb`, the oldest going first. Conversations,
 runs, events and spending are kept always (D30) - and so are the files and pictures their messages name
-(data/blobs); working copies of sent files (data/attachments, data/pasted) go like the snapshots.
+(data/blobs); working copies of sent files (data/attachments, data/pasted) go like the snapshots, and so do the
+pictures «Нарисовать» keeps (data/media/<year-month>, 29.4б) - one sent into a chat is the chat's, in data/blobs.
 
 The limits are the user's (`settings` row "retention", the window's «Настройки → Хаб → Хранение»); the hub prunes at
 its start and every PRUNE_EVERY_S. A snapshot still needed by a change younger than `days` stays; when it goes, the
@@ -167,7 +168,8 @@ def _seconds(at: str | None) -> float:
 def usage(root: Path) -> dict[str, dict[str, int]]:
     """How much each kind takes now: {kind: {bytes, files}}."""
     kinds = {"snapshots": _files(root / "snapshots", "*"), "screens": _files(root / "computer", "*/*.png"),
-             "terminals": _files(root / "terminals", "*.log"), "files": _files(root / "blobs", "*")}  # fmt: skip
+             "terminals": _files(root / "terminals", "*.log"), "files": _files(root / "blobs", "*"),
+             "pictures": _files(root / "media", "*/*")}  # fmt: skip
     return {kind: {"bytes": sum(f[1] for f in found), "files": len(found)} for kind, found in kinds.items()}
 
 
@@ -183,6 +185,7 @@ def prune_all(conn: sqlite3.Connection, root: Path, now: float | None = None) ->
         "files": prune_blobs(conn, root / "blobs", days=days, now=now),
         "copies": prune_copies(root / "attachments", "*/*/*", days=days, max_bytes=max_bytes, now=now)
         + prune_copies(root / "pasted", "*", days=days, max_bytes=max_bytes, now=now),
+        "pictures": prune_copies(root / "media", "*/*", days=days, max_bytes=max_bytes, now=now),
     }
 
 

@@ -383,6 +383,7 @@ class FakeClient:
         self.install_jobs_list = []
         self.visual_calls = []  # «Нарисовать» (29.5)
         self.visual_jobs_list = []
+        self.visual_rungs = {}  # the rung each model came out on here (29.4б)
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -631,11 +632,12 @@ class FakeClient:
         }
 
     def visual_models(self):
-        return {"models": [{"model_id": "flux2-klein-4b", "name": "FLUX.2 [klein] 4B", "tier": "main", "size": 1024,
-                            "steps": 4, "cfg": 1.0},
-                           {"model_id": "z-image-turbo", "name": "Z-Image-Turbo", "tier": "quality", "size": 1024,
-                            "steps": 8, "cfg": 1.0}],
-                "default": "flux2-klein-4b"}  # fmt: skip
+        models = [{"model_id": "flux2-klein-4b", "name": "FLUX.2 [klein] 4B", "tier": "main", "size": 1024,
+                   "steps": 4, "cfg": 1.0},
+                  {"model_id": "z-image-turbo", "name": "Z-Image-Turbo", "tier": "quality", "size": 1024,
+                   "steps": 8, "cfg": 1.0}]  # fmt: skip
+        return {"models": [{"pixels": 0, "instead": "", **m, **self.visual_rungs.get(m["model_id"], {})}
+                           for m in models], "default": "flux2-klein-4b"}  # fmt: skip
 
     def visual_draw(self, spec):
         self.visual_calls.append(("draw", spec))
@@ -6540,6 +6542,34 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         failed = {**client.visual_jobs_list[0], "status": "failed", "error": "картинка вышла пустой"}
         app.on_event({"type": "visual.changed", "payload": {"job": failed}})
         assert view.statusText == "не вышло: картинка вышла пустой" and not view.busy
+
+        # 29.4б: a picture that came out a rung lower says how; the rung remembered here shows before it is drawn
+        tries = [{"model_id": "z-image-turbo", "width": 1344, "height": 768, "rung": "asked", "ok": False},
+                 {"model_id": "z-image-turbo", "width": 672, "height": 384, "rung": "smaller", "ok": None}]  # fmt: skip
+        lower = {**failed, "status": "running", "width": 672, "height": 384, "tries": tries[:1]}
+        app.on_event({"type": "visual.changed", "payload": {"job": lower}})
+        assert view.statusText == "не вышло — пробую меньшим размером, 672 × 384"
+        app.on_event({"type": "visual.progress", "payload": {"id": lower["id"], "step": 1, "steps": 8}})
+        assert view.statusText == "рисую: шаг 1 из 8 — меньшим размером, 672 × 384"
+        app.on_event({"type": "visual.changed", "payload": {"job": {**lower, "status": "done", "seconds": 12.0,
+                                                                    "tries": tries, "file": "x.png"}}})  # fmt: skip
+        wait_until(lambda: not app.bg.busy and view.done)
+        assert view.statusText == "готово за 12 с — меньшим размером, 672 × 384"
+        flux = {**tries[1], "model_id": "flux2-klein-4b", "rung": "lighter"}
+        lighter = {**lower, "status": "done", "seconds": 12.0, "model_id": "flux2-klein-4b",
+                   "tries": [tries[0], {**tries[1], "ok": False}, flux]}  # fmt: skip
+        app.on_event({"type": "visual.changed", "payload": {"job": lighter}})
+        assert view.statusText == "готово за 12 с — моделью FLUX.2 [klein] 4B"
+        client.visual_rungs = {"z-image-turbo": {"instead": "flux2-klein-4b"}, "flux2-klein-4b": {"pixels": 512 * 512}}
+        view.load()
+        wait_until(lambda: not app.bg.busy and view.modelText.startswith("FLUX"))
+        assert view.modelText == "FLUX.2 [klein] 4B · 672 × 384 — Z-Image-Turbo здесь не выходит"
+        view.again()
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 4)
+        assert client.visual_calls[-1][1] | {"seed": 0} == {"prompt": "рыжая лиса в снегу", "model": "flux2-klein-4b",
+                                                           "width": 672, "height": 384, "seed": 0}  # fmt: skip
+        view.setQuality("fast")
+        assert view.modelText == "FLUX.2 [klein] 4B · 672 × 384 — крупнее здесь не выходит"
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
@@ -6826,7 +6856,7 @@ def test_what_the_hub_keeps_in_the_settings(qapp):
         kept = app.retention
         assert (kept["days"], kept["maxGb"]) == ("90", "2")
         assert kept["usage"] == ("снимки файлов 12 МБ · снимки экрана 0 МБ · журналы терминалов 3,0 ГБ · "
-                                 "файлы из чатов 0 МБ")  # fmt: skip
+                                 "файлы из чатов 0 МБ · картинки 0 МБ")  # fmt: skip
         app.setRetention("90", "2")  # nothing changed: nothing sent
         app.setRetention("тридцать", "2")
         assert app.flashError and not [e for e in client.log if e[0] == "retention"]

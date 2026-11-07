@@ -78,7 +78,9 @@ def test_screens_and_logs_go_past_the_term_and_over_the_size(tmp_path):
                                 " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"))  # fmt: skip
     aged(tmp_path / "snapshots" / "x", 1)
     removed = db.call(lambda c: retention.prune_all(c, tmp_path))
-    assert removed == {"snapshots": 0, "screens": 0, "terminals": 1, "files": 0, "copies": 0}  # 90 days by default
+    # 90 days by default
+    assert removed == {"snapshots": 0, "screens": 0, "terminals": 1, "files": 0, "copies": 0,
+                       "pictures": 0}  # fmt: skip
     used = retention.usage(tmp_path)
     assert used["snapshots"] == {"bytes": 100, "files": 1} and used["terminals"]["files"] == 0
     db.close()
@@ -103,12 +105,26 @@ def test_files_sent_with_messages_stay_while_a_message_names_them(tmp_path):
     db.close()
 
 
+def test_pictures_drawn_go_past_the_term_and_over_the_size(tmp_path):
+    """29.4б: data/media - the pictures «Нарисовать» keeps, by month - go like the snapshots (D30); a picture sent
+    into a chat lives in the chat (data/blobs), kept with it."""
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    old = aged(tmp_path / "media" / "2026-01" / "old.png", 120)
+    fresh = aged(tmp_path / "media" / "2026-11" / "new.png", 2)
+    assert db.call(lambda c: retention.prune_all(c, tmp_path))["pictures"] == 1
+    assert not old.exists() and not old.parent.exists() and fresh.exists()  # a month left empty goes too
+    assert retention.usage(tmp_path)["pictures"] == {"bytes": 100, "files": 1}
+    db.close()
+
+
 def test_the_api_reads_sets_and_prunes(hub):  # noqa: F811
     found = hub.get("/v1/support/retention").json()
     assert (found["days"], found["max_gb"]) == (90, 2.0) and set(found["usage"]) == {"snapshots", "screens",
-                                                                                      "terminals", "files"}  # fmt: skip
+                                                                                      "terminals", "files",
+                                                                                      "pictures"}  # fmt: skip
     assert hub.put("/v1/support/retention", json={"days": 2, "max_gb": 1}).status_code == 422
     saved = hub.put("/v1/support/retention", json={"days": 30, "max_gb": 0.5}).json()
     assert (saved["days"], saved["max_gb"]) == (30, 0.5)
     pruned = hub.post("/v1/support/retention/prune").json()
-    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals", "files", "copies", "goal_refs"}
+    assert set(pruned["removed"]) == {"snapshots", "screens", "terminals", "files", "copies", "pictures", "goal_refs"}

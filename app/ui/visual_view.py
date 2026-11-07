@@ -2,6 +2,10 @@
 is drawn - step and preview - and the result: «Ещё вариант», «Сохранить как…», the folder; the latest pictures
 beside it. The chip «Нарисовать» in the chat's input opens it with what was typed.
 
+A picture that did not come out goes a rung lower by itself in the hub (29.4б); the sheet says how - «меньшим
+размером», «моделью …» - and before the next one shows where it will begin: the model that comes out here in place of
+the chosen one, no more pixels than came out.
+
 The hub draws (hub/visual.py); this asks and shows. Pictures reach QML through an image provider
 (image://pictures/...): the preview's JPEG from the progress events, a result's PNG fetched once and kept.
 """
@@ -18,6 +22,7 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
+from common.picture_sizes import fit
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -126,11 +131,11 @@ class VisualView(QObject):
 
     @Property(str, notify=changed)
     def modelText(self) -> str:
-        model = pick_model(self._models, self._default, self._quality)
+        model, width, height, why = self._plan()
         if model is None:
             return ""
-        width, height = size_for(self._shape, model["size"])
-        return tr("{name} · {width} × {height}", name=model["name"], width=width, height=height)
+        text = tr("{name} · {width} × {height}", name=model["name"], width=width, height=height)
+        return tr("{text} — {why}", text=text, why=why) if why else text
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
@@ -138,13 +143,17 @@ class VisualView(QObject):
 
     @Property(str, notify=changed)
     def statusText(self) -> str:
-        status = self._job.get("status", "")
+        status, how = self._job.get("status", ""), self._how()
         if not status:
             return ""
         if status == "running" and self._step[1]:
-            return tr("рисую: шаг {step} из {steps}", step=self._step[0], steps=self._step[1])
+            text = tr("рисую: шаг {step} из {steps}", step=self._step[0], steps=self._step[1])
+            return tr("{text} — {how}", text=text, how=how) if how else text
+        if status == "running" and how:
+            return tr("не вышло — пробую {how}", how=how)
         if status == "done":
-            return tr("готово за {time}", time=seconds_text(self._job.get("seconds")))
+            text = tr("готово за {time}", time=seconds_text(self._job.get("seconds")))
+            return tr("{text} — {how}", text=text, how=how) if how else text
         if status == "failed":
             return tr("не вышло: {error}", error=self._job.get("error", ""))
         return tr(STATUS[status]) if status in STATUS else status
@@ -172,6 +181,37 @@ class VisualView(QObject):
         return [{"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
                  "chosen": j["id"] == self._job.get("id")}
                 for j in self._recent if j["status"] == "done" and j["id"] in self.provider.pictures]  # fmt: skip
+
+    def _plan(self) -> tuple[dict[str, Any] | None, int, int, str]:
+        """What the next picture is drawn with: the model (the one that comes out here in place of the chosen), its
+        size in this shape (no more pixels than come out here), and why it is not the chosen one as it is."""
+        model = pick_model(self._models, self._default, self._quality)
+        if model is None:
+            return None, 0, 0, ""
+        why = ""
+        instead = next((m for m in self._models if m["model_id"] == model.get("instead")), None)
+        if instead is not None:
+            why, model = tr("{model} здесь не выходит", model=model["name"]), instead
+        width, height = size_for(self._shape, model["size"])
+        fitted = fit(width, height, int(model.get("pixels") or 0))
+        if fitted != (width, height) and not why:
+            why = tr("крупнее здесь не выходит")
+        return model, fitted[0], fitted[1], why
+
+    def _how(self) -> str:
+        """How the picture shown went a rung lower (29.4б): its model or size against its first try; "" if it did
+        not."""
+        tries = self._job.get("tries") or []
+        if not tries:
+            return ""
+        model_id, first = self._job.get("model_id"), tries[0]
+        if model_id != first.get("model_id"):
+            name = next((m["name"] for m in self._models if m["model_id"] == model_id), model_id)
+            return tr("моделью {name}", name=name)
+        width, height = self._job.get("width"), self._job.get("height")
+        if (width, height) != (first.get("width"), first.get("height")):
+            return tr("меньшим размером, {width} × {height}", width=width, height=height)
+        return ""
 
     # ================= loading =================
 
@@ -244,10 +284,9 @@ class VisualView(QObject):
         self._start(seed=-1)
 
     def _start(self, *, seed: int) -> None:
-        model = pick_model(self._models, self._default, self._quality)
+        model, width, height, _why = self._plan()
         if not self._prompt.strip() or model is None or self.busy:
             return
-        width, height = size_for(self._shape, model["size"])
         spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "width": width, "height": height,
                 "seed": seed}  # fmt: skip
         if self.app.currentId:
