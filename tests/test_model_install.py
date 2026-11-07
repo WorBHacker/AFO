@@ -570,6 +570,9 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     assert (draw["size"], draw["verdict"], draw["recommended"], draw["purpose_words"]) == (160_000, "fast", True,
                                                                                            ["Рисовать"])  # fmt: skip
     assert best["verdict"] == "slow" and not best["recommended"]  # a quality model wants 6 GB: minutes here
+    assert mi.picture_offer(draw) == {  # what the first-run wizard offers for «Рисовать»
+        "id": "draw", "name": "Draw", "repo": "pictures:draw", "purposes": ["image"], "installed": [],
+        "recommended": {"quant": "", "size": 160_000, "verdict": "gpu", "words": "быстро"}}  # fmt: skip
 
     job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
     assert [f["role"] for f in job["files"]] == ["engine", "engine", "diffusion-model", "llm", "vae"]

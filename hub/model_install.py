@@ -107,6 +107,14 @@ def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
     return "fast" if machine.get("pictures") == "main" else "slow"
 
 
+def picture_offer(entry: dict[str, Any]) -> dict[str, Any]:
+    """A picture model of picture_catalog() as the first-run wizard offers a model (hub/setup.py suggestions): its
+    row installs it by `pictures:<id>`."""
+    return {"id": entry["id"], "name": entry["name"], "repo": f"pictures:{entry['id']}", "purposes": entry["purposes"],
+            "installed": entry["installed"], "recommended": {"quant": "", "size": entry.get("size", 0),
+            "verdict": "gpu" if entry["verdict"] == "fast" else "cpu", "words": entry["words"]}}  # fmt: skip
+
+
 def this_computer() -> dict[str, Any]:
     """What pictures this computer can make (29.2)."""
     return hardware.pictures_here((memory_sample() or {}).get("ram_total_gib") or 0)

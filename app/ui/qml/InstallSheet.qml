@@ -199,6 +199,7 @@ Sheet {
                             onInstall: Installer.installRecommended(card.modelData.repo)
                         }
                         PlainButton {
+                            visible: card.modelData.variants  // a picture model is one set of files (29.3)
                             text: qsTr("Варианты…")
                             onClicked: Installer.openRepo(card.modelData.repo)
                         }

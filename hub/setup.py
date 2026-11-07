@@ -29,6 +29,7 @@ from common.i18n import N_, decimal, tr
 from common.paths import engines_home
 
 from . import autostart, engines, llama_config
+from . import model_install as mi
 from .system_status import memory_sample
 
 log = logging.getLogger("hub.setup")
@@ -107,7 +108,11 @@ class Setup:
                 "folder": str(engines_home())}  # fmt: skip
 
     async def first_models(self) -> dict[str, Any]:
-        return suggestions(await self._installer.catalog())
+        found = suggestions(await self._installer.catalog())
+        pictures = await self._installer.picture_catalog()  # «Рисовать» (29.3): the tier this computer draws on
+        best = next((p for p in pictures if p["recommended"] and not p.get("error")), None)
+        found["image"] = mi.picture_offer(best) if best else None
+        return found
 
     # --- the engine ---
 

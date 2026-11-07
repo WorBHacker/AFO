@@ -582,8 +582,57 @@ class FakeClient:
                     "installed": ["x"],
                 },
                 "vision": None,
+                "image": {
+                    "name": "FLUX.2 [klein] 4B",
+                    "repo": "pictures:flux2-klein-4b",
+                    "recommended": {"quant": "", "size": 4_930_000_000, "verdict": "gpu", "words": "быстро"},
+                    "installed": [],
+                },
             }
         }
+
+    def install_pictures(self):
+        return {
+            "models": [
+                {
+                    "id": "sdxs-512",
+                    "name": "SDXS 512",
+                    "purposes": ["image"],
+                    "purpose_words": ["Рисовать"],
+                    "tier": "light",
+                    "license": "openrail++",
+                    "about": {"ru": "Самая лёгкая"},
+                    "size": 690_000_000,
+                    "verdict": "fast",
+                    "words": "быстро",
+                    "recommended": False,
+                    "installed": ["sdxs-512"],
+                },
+                {
+                    "id": "z-image-turbo",
+                    "name": "Z-Image-Turbo",
+                    "purposes": ["image"],
+                    "purpose_words": ["Рисовать"],
+                    "tier": "quality",
+                    "license": "apache-2.0",
+                    "about": {"ru": "Качественнее"},
+                    "size": 6_250_000_000,
+                    "verdict": "slow",
+                    "words": "медленно — минуты на картинку",
+                    "recommended": False,
+                    "installed": [],
+                },
+            ],
+            "machine": {"build": "cuda12", "pictures": "main"},
+        }
+
+    def install_pictures_start(self, spec):
+        self.install_calls.append(("pictures", spec))
+        job = {"id": "p1", "repo": "leejet/Z-Image-Turbo-GGUF", "quant": "Q4_K", "name": "Z-Image-Turbo",
+               "model_id": "z-image-turbo", "status": "queued", "done_bytes": 0, "total_bytes": 6_250_000_000,
+               "percent": 0.0, "error": "", "trial": {}, "files": [], "plan": {"set": spec["id"]}}  # fmt: skip
+        self.install_jobs_list = [job]
+        return {"job": job}
 
     def setup_engine(self, build=""):
         self.install_calls.append(("engine", build))
@@ -5940,6 +5989,20 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert rows[1]["tone"] == "error" and "63,4 ГБ" in rows[1]["words"] and not rows[1]["canInstall"]
         view.setPurpose("code")
         assert [r["id"] for r in view.catalog] == ["gpt-oss-120b"]
+        assert [p["name"] for p in view.purposes][-2:] == ["Понимать картинки", "Рисовать"]
+        view.setPurpose("image")  # picture models (29.3): the hub's own list, no variants to open
+        wait_until(lambda: not app.bg.busy and view.catalog)
+        light, best = view.catalog
+        assert (light["name"], light["installed"], light["canInstall"], light["variants"]) == ("SDXS 512", True, False,
+                                                                                                 False)  # fmt: skip
+        assert (best["offer"], best["tone"], best["words"], best["canInstall"]) == (
+            "6,2 ГБ", "warn", "медленно — минуты на картинку", True)  # fmt: skip
+        view.installRecommended(best["repo"])
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "pictures")
+        assert client.install_calls[-1] == ("pictures", {"id": "z-image-turbo"})
+        assert view.catalog[1]["job"]["line"] == "в очереди"  # its row shows the install
+        client.install_jobs_list = []
+        view._jobs = []
         view.setPurpose("")
         places = view.drives  # LocalChat's own `model` folder first, and chosen (2026-10-28, the user's word)
         assert [d["id"] for d in places] == ["home", "D", "F"] and places[0]["selected"] and places[2]["slow"]
@@ -6103,7 +6166,10 @@ def test_the_first_run_wizard(qapp):
         rows = view.models
         assert [(r["title"], r["offer"], r["canInstall"], r["installed"]) for r in rows] == [
             ("Разговоры", "Q8_0 · 8,0 ГБ", True, False), ("Код", "Q8_0 · 8,1 ГБ", True, True),
-            ("Понимать картинки", "", False, False)]  # fmt: skip
+            ("Понимать картинки", "", False, False), ("Рисовать", "4,9 ГБ", True, False)]  # fmt: skip
+        view.installModel("image")  # a picture model (29.3): its own install, the engine with it
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "pictures")
+        assert client.install_calls[-1] == ("pictures", {"id": "flux2-klein-4b"})
         view.installModel("chat")
         wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
         assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"

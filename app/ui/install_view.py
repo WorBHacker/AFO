@@ -18,8 +18,11 @@ from common.plain_errors import explain
 if TYPE_CHECKING:
     from .controller import Controller
 
-PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Картинки"))]
+PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Понимать картинки")),
+            ("image", N_("Рисовать"))]  # fmt: skip
+PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own - a set of files from several
 TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
+TONES_PICTURES = {"fast": "ok", "slow": "warn"}
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
           "configuring": N_("записываю в llama-swap"), "trial": N_("пробный запуск"), "done": N_("установлена"),
           "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
@@ -117,8 +120,22 @@ def catalog_rows(models: list[dict[str, Any]], purpose: str = "") -> list[dict[s
                     "about": about(m.get("about") or {}),
                     "purposes": " · ".join(m.get("purpose_words") or []), "license": m.get("license", ""),
                     "gated": bool(m.get("gated")), "words": words, "tone": tone, "offer": offer,
-                    "installed": installed,
+                    "installed": installed, "variants": True,
                     "canInstall": bool(best) and not m.get("installed_recommended")})  # fmt: skip
+    return out
+
+
+def picture_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The picture models (29.3, D55) as the catalog's rows: one set each, nothing to choose between."""
+    out = []
+    for m in models:
+        installed = bool(m.get("installed"))
+        words, tone = (m["error"], "error") if m.get("error") else (m.get("words", ""), TONES_PICTURES[m["verdict"]])
+        out.append({"id": m["id"], "repo": PICTURES + m["id"], "quant": "", "name": m["name"],
+                    "about": about(m.get("about") or {}), "purposes": " · ".join(m.get("purpose_words") or []),
+                    "license": m.get("license", ""), "gated": False, "words": words, "tone": tone,
+                    "offer": gb(m["size"]) if m.get("size") else "", "installed": installed, "variants": False,
+                    "canInstall": not installed and not m.get("error")})  # fmt: skip
     return out
 
 
@@ -317,6 +334,8 @@ class InstallView(QObject):
         self._catalog: list[dict[str, Any]] = []
         self._catalog_loading = False
         self._catalog_error = ""
+        self._pictures: list[dict[str, Any]] = []  # the picture models (29.3), asked for when «Рисовать» is picked
+        self._pictures_loading = False
         self._purpose = ""
         self._tab = "catalog"
         self._query = ""
@@ -362,12 +381,20 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def catalog(self) -> list:
+        if self._purpose == "image":
+            return [{**r, "job": job_state(self._job_for_set(r["id"]))} for r in picture_rows(self._pictures)]
         return [{**r, "job": job_state(self._job_for(r["repo"], r["quant"]))} if r["quant"] else {**r, "job": {}}
                 for r in catalog_rows(self._catalog, self._purpose)]  # fmt: skip
 
+    def _job_for_set(self, set_id: str) -> dict[str, Any] | None:
+        """A picture model's install still on the list - the newest."""
+        found = [j for j in self._jobs if (j.get("plan") or {}).get("set") == set_id
+                 and j["status"] not in ("cancelled", "removed")]  # fmt: skip
+        return found[0] if found else None
+
     @Property(bool, notify=changed)
     def catalogLoading(self) -> bool:
-        return self._catalog_loading
+        return self._catalog_loading or (self._purpose == "image" and self._pictures_loading)
 
     @Property(str, notify=changed)
     def catalogError(self) -> str:
@@ -579,6 +606,22 @@ class InstallView(QObject):
     def setPurpose(self, purpose: str) -> None:
         self._purpose = purpose
         self.changed.emit()
+        if purpose == "image" and not self._pictures and not self._pictures_loading:
+            self._load_pictures()
+
+    def _load_pictures(self) -> None:
+        self._pictures_loading, self._catalog_error = True, ""
+        self.changed.emit()
+
+        def show(data: dict[str, Any]) -> None:
+            self._pictures, self._pictures_loading = data.get("models", []), False
+            self.changed.emit()
+
+        def failed(error: Exception) -> None:
+            self._pictures_loading, self._catalog_error = False, tr("Каталог не загрузился: {error}", error=error)
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.install_pictures(), show, failed)
 
     @Slot(str)
     def search(self, query: str) -> None:
@@ -645,13 +688,15 @@ class InstallView(QObject):
 
     # ================= installing =================
 
-    def _start(self, spec: dict[str, Any]) -> None:
+    def _start(self, spec: dict[str, Any], *, pictures: bool = False) -> None:
         if self._folder:
             spec["folder"] = self._folder
         elif self._drive:
             spec["drive"] = self._drive
         self._busy = True
         self.changed.emit()
+        client = self.app.client
+        start = (lambda: client.install_pictures_start(spec)) if pictures else (lambda: client.install(spec))
 
         def done(result: dict[str, Any]) -> None:
             self._busy = False
@@ -666,14 +711,20 @@ class InstallView(QObject):
             self.app.show_error(tr("Не начать установку: {error}", error=error))
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.install(spec), done, failed)
+        self.app.call_or_fail(start, done, failed)
 
     def startInstall(self, repo: str, quant: str) -> None:
-        """An install the wizard asks for (10.2): the drive this sheet would choose."""
-        self._start({"repo": repo, "quant": quant})
+        """An install the wizard asks for (10.2): the drive this sheet would choose; a picture model's by its row."""
+        if repo.startswith(PICTURES):
+            self._start({"id": repo.removeprefix(PICTURES)}, pictures=True)
+        else:
+            self._start({"repo": repo, "quant": quant})
 
     @Slot(str)
     def installRecommended(self, repo: str) -> None:
+        if repo.startswith(PICTURES):
+            self.startInstall(repo, "")
+            return
         model = next((m for m in self._catalog if m["repo"] == repo), None)
         if model and model.get("recommended"):
             self._start({"repo": repo, "quant": model["recommended"]["quant"]})

@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 
 PURPOSES = [("chat", N_("Разговоры"), N_("отвечает на вопросы, пишет и переводит тексты")),
             ("code", N_("Код"), N_("пишет и объясняет программы")),
-            ("vision", N_("Понимать картинки"), N_("понимает картинки и снимки экрана"))]  # fmt: skip
+            ("vision", N_("Понимать картинки"), N_("понимает картинки и снимки экрана")),
+            ("image", N_("Рисовать"), N_("рисует картинки по описанию"))]  # fmt: skip
 VENDORS = {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "other": ""}
 DISMISSED = "setup/dismissed"
 
@@ -64,7 +65,8 @@ def model_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
         words, tone = verdict_of(best) if best else (tr("подходящей модели нет"), "error")
         out.append({"id": purpose, "title": tr(title), "what": tr(what), "name": (m or {}).get("name", ""),
                     "repo": (m or {}).get("repo", ""), "quant": best.get("quant", ""),
-                    "offer": f"{best['quant']} · {gb(best['size'])}" if best else "", "words": words, "tone": tone,
+                    "offer": " · ".join(x for x in (best.get("quant"), gb(best["size"])) if x) if best else "",
+                    "words": words, "tone": tone,
                     "installed": bool((m or {}).get("installed")), "canInstall": bool(best)})  # fmt: skip
     return out
 

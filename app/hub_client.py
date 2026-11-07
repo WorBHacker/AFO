@@ -149,6 +149,12 @@ class HubClient:
     def install_catalog(self) -> dict:
         return self._call("GET", "/v1/install/catalog", timeout=90)
 
+    def install_pictures(self) -> dict:
+        return self._call("GET", "/v1/install/pictures", timeout=90)
+
+    def install_pictures_start(self, spec: dict) -> dict:
+        return self._call("POST", "/v1/install/pictures", spec, timeout=60)
+
     def install_search(self, query: str) -> dict:
         return self._call("GET", "/v1/install/search", params={"q": query}, timeout=60)
 
