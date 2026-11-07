@@ -35,8 +35,15 @@ class SecretStore(Protocol):
     def delete(self, name: str) -> bool: ...
 
 
+ENTRY_BYTES = 2560  # one Credential Manager entry: keyring writes UTF-16, so 1280 characters (CredWrite: error 1783)
+PART = 600  # characters in one part of a longer value: under ENTRY_BYTES even if every one takes two UTF-16 units
+PARTS = "afo-parts:"  # the entry of a value kept in parts says how many; they follow as "<name>#1", "<name>#2"…
+
+
 class KeyringSecretStore:
-    """Backed by the OS secret store (Windows Credential Manager via keyring's WinVaultKeyring)."""
+    """Backed by the OS secret store (Windows Credential Manager via keyring's WinVaultKeyring). A value longer than
+    one entry takes - a Google service account's key file (stage 30), a long MCP server environment - is kept in
+    parts (step 30.1)."""
 
     def __init__(self, service: str = SERVICE, old: str | None = OLD_SERVICE):
         self.service = service
@@ -45,23 +52,54 @@ class KeyringSecretStore:
     def get(self, name: str) -> str | None:
         import keyring
 
-        value = keyring.get_password(self.service, name)
+        value = self._read(self.service, name)
         if value is None and self.old:
             value = keyring.get_password(self.old, name)
-            if value is not None:  # kept under the old name: moved
-                keyring.set_password(self.service, name, value)
+            if value is not None:  # kept under the old name (never in parts): moved
+                self.set(name, value)
                 self._drop(self.old, name)
         return value
 
     def set(self, name: str, value: str) -> None:
         import keyring
 
-        keyring.set_password(self.service, name, value)
+        before = self._parts(name)
+        if len(value.encode("utf-16-le")) <= ENTRY_BYTES and not value.startswith(PARTS):
+            keyring.set_password(self.service, name, value)
+            count = 0
+        else:
+            pieces = [value[i : i + PART] for i in range(0, len(value), PART)]
+            for number, piece in enumerate(pieces, 1):
+                keyring.set_password(self.service, f"{name}#{number}", piece)
+            keyring.set_password(self.service, name, f"{PARTS}{len(pieces)}")
+            count = len(pieces)
+        for number in range(count + 1, before + 1):  # a shorter value than before: its extra parts go
+            self._drop(self.service, f"{name}#{number}")
 
     def delete(self, name: str) -> bool:
         """Under the old name too, so a secret never comes back from there."""
+        for number in range(1, self._parts(name) + 1):
+            self._drop(self.service, f"{name}#{number}")
         gone = self._drop(self.service, name)
         return (self._drop(self.old, name) if self.old else False) or gone
+
+    def _read(self, service: str, name: str) -> str | None:
+        import keyring
+
+        value = keyring.get_password(service, name)
+        if value is None or not value.startswith(PARTS):
+            return value
+        pieces = [keyring.get_password(service, f"{name}#{n}") for n in range(1, int(value[len(PARTS) :]) + 1)]
+        if None in pieces:
+            log.warning("secret %s: a part of it is missing from the Credential Manager", name)
+            return None
+        return "".join(str(piece) for piece in pieces)
+
+    def _parts(self, name: str) -> int:
+        import keyring
+
+        value = keyring.get_password(self.service, name) or ""
+        return int(value[len(PARTS) :]) if value.startswith(PARTS) else 0
 
     @staticmethod
     def _drop(service: str, name: str) -> bool:
