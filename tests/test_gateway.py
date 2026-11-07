@@ -39,6 +39,18 @@ def test_list_models_maps_fields():
     assert m.prices == {}
 
 
+def test_a_picture_model_is_no_chat_model():
+    """29.3 (D55): llama-swap lists sd-server's models with the chat models; a chat cannot talk to them."""
+
+    def handler(request):
+        return httpx.Response(200, json={"data": [
+            {"id": "coder", "name": "Coder", "meta": {"llamaswap": {"engine": "llama.cpp"}}},
+            {"id": "flux2-klein-4b", "name": "FLUX.2 klein", "meta": {"llamaswap": {"engine": "stable-diffusion.cpp"}}},
+        ]})  # fmt: skip
+
+    assert [m.model_ref for m in asyncio.run(provider_with(handler).list_models())] == ["coder"]
+
+
 def test_list_models_wraps_errors():
     def handler(request):
         return httpx.Response(503, text="down")

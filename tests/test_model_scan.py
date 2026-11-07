@@ -36,6 +36,9 @@ def test_the_models_on_a_drive(tmp_path):
     put(root / "models" / "mtp-Qwen3-8B-Q4_K_M.gguf", tiny_gguf(60_000))  # a speculative draft: no model alone
     put(root / "embed" / "nomic-embed-text-v1.5.Q4_K_M.gguf", tiny_gguf(80_000))  # embeddings: not for chats
     put(root / "work" / ".venv" / "Lib" / "site-packages" / "x" / "y.gguf", tiny_gguf(120_000))  # Python's own
+    # a picture model's files (29.3): its diffusion GGUF has no layers in the header, umt5 is a text encoder
+    put(root / "pictures" / "z_image_turbo-Q4_K.gguf", tiny_gguf(120_000, layers=0))
+    put(root / "pictures" / "umt5-xxl-encoder-Q4_K_M.gguf", tiny_gguf(120_000, layers=24, architecture="t5encoder"))
     seen = []
     found = model_scan.scan([root], min_bytes=50_000, report=lambda folders, models, drive: seen.append(drive))
     by = {m["name"]: m for m in found}

@@ -77,7 +77,9 @@ def _walk(root: Path, min_bytes: int, cancel: threading.Event, tick: Callable[[]
 
 def _model(path: Path, files: list[Path], name: str, source: str, projector: str = "") -> dict[str, Any] | None:
     """What the window shows of a model: from its first file's header. None when it is not GGUF inside, or not a
-    model to chat with: a speculative draft (`mtp-…`) needs its model, an embedding model makes no answers."""
+    model to chat with: a speculative draft (`mtp-…`) needs its model, an embedding model makes no answers, a picture
+    model's files are stable-diffusion.cpp's (29.3: its diffusion GGUF has no layers in the header, umt5 is a text
+    encoder)."""
     if name.lower().startswith(("mtp-", "draft-")):
         return None
     try:
@@ -85,6 +87,8 @@ def _model(path: Path, files: list[Path], name: str, source: str, projector: str
     except GGUFError, OSError:
         return None
     if "embed" in name.lower() or (info.get("architecture") or "").endswith("bert"):
+        return None
+    if not info.get("layers") or info.get("architecture") == "t5encoder":
         return None
     size = 0
     for file in files:

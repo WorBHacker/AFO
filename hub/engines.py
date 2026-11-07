@@ -8,6 +8,9 @@ releases, for a computer that has neither yet.
 - Each archive is checked against the sha256 GitHub publishes for it (`digest`), unpacked into a folder of its own
   (`<engines>/llama.cpp/b<number>-<build>`, `<engines>/llama-swap`), and llama-swap gets a config of its own that
   names llama-server in a macro - the installer (10.1) adds the models.
+- stable-diffusion.cpp (pictures and videos, D55, 29.3): its sd-server, from the one release AFO was checked on - it
+  publishes a build per commit, several a day, and some are broken (29.1); CUDA 12 for NVIDIA with its runtime
+  beside it, Vulkan, the processor's. Into `<engines>/stable-diffusion.cpp/<tag>-<build>`.
 """
 
 from __future__ import annotations
@@ -38,6 +41,9 @@ def github_api() -> str:
 LLAMA_CPP = "ggml-org/llama.cpp"
 LLAMA_SWAP = "mostlygeek/llama-swap"
 ASSET = re.compile(r"^llama-(b\d+)-bin-win-(cuda-(\d+)\.(\d+)|vulkan|cpu)-x64\.zip$")
+SD_CPP = "leejet/stable-diffusion.cpp"
+SD_TAG = "master-1053-5a1ba5d"  # checked on 2026-11-07 (29.1, docs/visual.md §2a); a newer one after the same trials
+SD_RUNTIME = "cudart-sd-bin-win-cu12-x64.zip"
 CONFIG = """# llama-swap: one OpenAI-compatible address (http://127.0.0.1:8080/v1) for every local model.
 # Written by AFO's first-run wizard; models are added by {installer}. The model asked for is started,
 # the one running before it stopped (one graphics card).
@@ -117,6 +123,35 @@ def pick_llama_swap(release: dict[str, Any]) -> dict[str, Any] | None:
     asset = next((a for a in release.get("assets") or [] if re.fullmatch(r"llama-swap_[\w.]+_windows_amd64\.zip",
                                                                          a["name"])), None)  # fmt: skip
     return {"tag": release.get("tag_name") or "", "assets": [_asset(asset)]} if asset else None
+
+
+def pick_sd_cpp(release: dict[str, Any], build: str) -> dict[str, Any] | None:
+    """The pinned release's Windows archive for this build (cuda12 | vulkan | cpu) and, for CUDA, its runtime:
+    {tag, build, assets}; None when the release is another or lacks them."""
+    if release.get("tag_name") != SD_TAG:
+        return None
+    named = {a["name"]: a for a in release.get("assets") or []}
+    archive = named.get(f"sd-master-{SD_TAG.rsplit('-', 1)[1]}-bin-win-{build}-x64.zip")
+    runtime = named.get(SD_RUNTIME) if build == "cuda12" else None
+    if archive is None or (build == "cuda12" and runtime is None):
+        return None
+    return {"tag": SD_TAG, "build": build, "assets": [_asset(a) for a in (archive, runtime) if a]}
+
+
+async def sd_cpp_release(http: httpx.AsyncClient, build: str) -> dict[str, Any]:
+    found = pick_sd_cpp(await github(http, SD_CPP, f"releases/tags/{SD_TAG}"), build)
+    if found is None:
+        raise EngineError(tr("в выпуске stable-diffusion.cpp {tag} нет сборки {build} для Windows", tag=SD_TAG,
+                             build=build))  # fmt: skip
+    return found
+
+
+def sd_server_in(folder: Path) -> Path:
+    """sd-server.exe in an unpacked stable-diffusion.cpp build."""
+    found = next(iter(sorted(folder.rglob("sd-server.exe"), key=lambda p: len(p.parts))), None)
+    if found is None:
+        raise EngineError(tr("в {folder} нет sd-server.exe", folder=folder))
+    return found
 
 
 async def llama_cpp_release(http: httpx.AsyncClient, build: str) -> dict[str, Any]:

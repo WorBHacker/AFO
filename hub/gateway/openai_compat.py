@@ -127,6 +127,8 @@ class OpenAICompatProvider:
             # llama-swap nests the config's metadata (meta.llamaswap) and also says the context itself
             meta = item.get("meta") or {}
             meta = {**meta, **(meta.get("llamaswap") or {})}
+            if meta.get("engine") == "stable-diffusion.cpp":
+                continue  # a picture model (D55, 29.3): the visual module's, a chat cannot talk to it
             if item.get("context_length") and not meta.get("context"):
                 meta["context"] = item["context_length"]
             if refusal_vector(meta):

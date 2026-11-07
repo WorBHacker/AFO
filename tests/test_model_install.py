@@ -29,16 +29,17 @@ from tests.test_llama_config import CONFIG, FakeLlamaSwap
 GIB = 1024**3
 
 
-def tiny_gguf(size: int, *, layers: int = 8, context: int = 16384) -> bytes:
+def tiny_gguf(size: int, *, layers: int = 8, context: int = 16384, architecture: str = "tiny") -> bytes:
     """A GGUF file of `size` bytes: a real header (the architecture's keys, then a tokenizer list), then filler."""
 
     def string(text):
         data = text.encode()
         return struct.pack("<Q", len(data)) + data
 
-    keys = {"general.architecture": "tiny", "general.name": "Tiny", "tiny.block_count": layers,
-            "tiny.context_length": context, "tiny.embedding_length": 256, "tiny.attention.head_count": 4,
-            "tiny.attention.head_count_kv": 2}  # fmt: skip
+    a = architecture
+    keys = {"general.architecture": a, "general.name": "Tiny", f"{a}.block_count": layers,
+            f"{a}.context_length": context, f"{a}.embedding_length": 256, f"{a}.attention.head_count": 4,
+            f"{a}.attention.head_count_kv": 2}  # fmt: skip
     out = b"GGUF" + struct.pack("<IQQ", 3, 0, len(keys) + 1)
     for key, value in keys.items():
         out += string(key) + (struct.pack("<I", 8) + string(value) if isinstance(value, str)
@@ -269,6 +270,25 @@ def test_a_new_models_block_in_the_config_and_out_again():
     grouped = new + 'groups:\n  "pair":\n    members: ["big", "tiny-q8_0"]\n'
     with pytest.raises(lc.ConfigError, match="группу"):
         lc.remove_model(grouped, "tiny-q8_0")
+    # llama-swap v270 keeps its groups under routing: (29.1) - a member there is as much in a group
+    routed = new + 'routing:\n  router:\n    use: group\n    settings:\n      groups:\n        "pair":\n' \
+        '          members:\n            - big\n            - tiny-q8_0\n'  # fmt: skip
+    with pytest.raises(lc.ConfigError, match="группу"):
+        lc.remove_model(routed, "tiny-q8_0")
+    assert "tiny-q8_0" not in lc.model_blocks(lc.remove_model(new + "routing:\n  router:\n    use: group\n",
+                                                              "tiny-q8_0"))  # fmt: skip
+    # a picture model (29.3, D55): sd-server with its set of files, ready when it lists its models
+    pictures = lc.sd_block("flux2-klein-4b", name="FLUX.2 klein 4B", description="test", server="${sd_server}",
+                           files={"diffusion-model": "F:\\pictures\\klein.gguf", "llm": "F:/pictures/qwen.gguf",
+                                  "vae": "F:/pictures/vae.safetensors"},
+                           flags=["--cfg-scale", "1", "--steps", "4"],
+                           metadata={"source": "huggingface.co/leejet/FLUX.2-klein-4B-GGUF"})  # fmt: skip
+    drawn = lc.add_model(CONFIG, "flux2-klein-4b", pictures)
+    view = lc.model_view(drawn, "flux2-klein-4b")
+    assert (view["engine"], view["editable"], view["name"]) == ("stable-diffusion.cpp", False, "FLUX.2 klein 4B")
+    assert '--diffusion-model "F:/pictures/klein.gguf"' in view["command"] and "--listen-port ${PORT}" in pictures
+    assert "checkEndpoint: /v1/models" in pictures and "engine: stable-diffusion.cpp" in pictures
+    assert lc.remove_model(drawn, "flux2-klein-4b") == CONFIG
     followed = CONFIG + "\nhooks:\n  on_startup: {}\n"  # a section after models: the block goes before it
     assert lc.model_blocks(lc.add_model(followed, "tiny-q8_0", block))["tiny-q8_0"]
     assert lc.add_model(followed, "tiny-q8_0", block).endswith("hooks:\n  on_startup: {}\n")

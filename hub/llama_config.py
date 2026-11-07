@@ -52,6 +52,7 @@ FLAGS = {
 }
 COUNTS = {"batch": (32, 65536), "ubatch": (32, 65536), "threads": (1, 512), "n_cpu_moe": (1, 999)}  # 0: llama.cpp's
 CACHE_TYPES = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0")
+SD_ENGINE = "stable-diffusion.cpp"  # a picture model's sd-server (D55, 29.3)
 _TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
 _MODEL_KEY = re.compile(r'^  (?:"([^"]+)"|\'([^\']+)\'|([^\s:#][^:]*)):\s*(?:#.*)?$')
 
@@ -185,7 +186,13 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
     for name, value in macros(text).items():
         cmd = cmd.replace(f"${{{name}}}", value)
     tokens = _TOKEN.findall(cmd)
-    engine = "llama.cpp" if any("llama-server" in t for t in tokens) else "strata" if "serve" in tokens else "other"
+    if any("llama-server" in t for t in tokens):
+        engine = "llama.cpp"
+    elif any("sd-server" in t for t in tokens) or any(re.match(rf"^\s+engine:\s*{SD_ENGINE}\s*$", line)
+                                                      for line in block):  # fmt: skip
+        engine = SD_ENGINE  # pictures (29.3): its settings are the visual module's, not the window's launch settings
+    else:
+        engine = "strata" if "serve" in tokens else "other"
 
     def value(setting: str) -> str | None:
         at = _flag(tokens, FLAGS[setting])
@@ -449,12 +456,32 @@ def model_block(model_id: str, *, name: str, description: str, server: str, mode
     return "\n".join(lines)
 
 
+def sd_block(model_id: str, *, name: str, description: str, server: str, files: dict[str, str], flags: list[str],
+             metadata: dict[str, Any] | None = None) -> str:  # fmt: skip
+    """A picture model's block (D55, 29.3): sd-server with its set of files (`--diffusion-model`, `--llm`, `--vae`…:
+    the flag's name without its dashes -> the file) and its defaults; llama-swap waits for its list of models - it has
+    no /health (29.1)."""
+    lines = [f"  {quoted(model_id)}:", f"    name: {quoted(name)}", f"    description: {quoted(description)}",
+             "    cmd: |", f"      {server}"]  # fmt: skip
+    lines += [f"      --{flag} {quoted(path.replace(os.sep, '/'))}" for flag, path in files.items()]
+    if flags:
+        lines.append("      " + " ".join(flags))
+    lines += ["      --listen-ip 127.0.0.1 --listen-port ${PORT}", "    checkEndpoint: /v1/models", "    metadata:",
+              f"      engine: {SD_ENGINE}"]  # fmt: skip
+    for key, value in (metadata or {}).items():
+        lines.append(f"      {key}: {quoted(str(value))}")
+    return "\n".join(lines)
+
+
 def _in_groups(lines: list[str], model_id: str) -> bool:
-    section = _section(lines, "groups")
-    if section is None:
-        return False
+    """Whether a model is a member of a group: the top-level `groups:` (and `matrix:`), or llama-swap's own since v270,
+    `routing:` (29.1) - a model gone from a group's members makes llama-swap refuse the config."""
     named = re.compile(rf"(?<![\w.-]){re.escape(model_id)}(?![\w.-])")  # a member: a list item or in [a, b]
-    return any(named.search(line.split("#", 1)[0]) for line in lines[section[0] : section[1]])
+    for key in ("groups", "matrix", "routing"):
+        section = _section(lines, key)
+        if section and any(named.search(line.split("#", 1)[0]) for line in lines[section[0] : section[1]]):
+            return True
+    return False
 
 
 def add_model(text: str, model_id: str, block: str) -> str:

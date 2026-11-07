@@ -51,6 +51,24 @@ def test_the_release_that_holds_the_build():
     assert swap["tag"] == "v268" and swap["assets"][0]["name"] == "llama-swap_268_windows_amd64.zip"
 
 
+def test_the_picture_engines_pinned_build():
+    """29.3 (D55): stable-diffusion.cpp's build AFO was checked on (29.1) - not its newest: it publishes several a day,
+    and some are broken. CUDA comes with its runtime; Vulkan and the processor's alone."""
+    sha = engines.SD_TAG.rsplit("-", 1)[1]
+    pinned = release(engines.SD_TAG, f"sd-master-{sha}-bin-win-cuda12-x64.zip", "cudart-sd-bin-win-cu12-x64.zip",
+                     f"sd-master-{sha}-bin-win-vulkan-x64.zip", f"sd-master-{sha}-bin-win-cpu-x64.zip",
+                     f"sd-master-{sha}-bin-win-rocm-10.1.0-x64.zip",
+                     f"sd-master-{sha}-bin-Linux-Ubuntu-26.04-x86_64.zip")  # fmt: skip
+    cuda = engines.pick_sd_cpp(pinned, "cuda12")
+    assert cuda["tag"] == engines.SD_TAG and [a["name"] for a in cuda["assets"]] == [
+        f"sd-master-{sha}-bin-win-cuda12-x64.zip", "cudart-sd-bin-win-cu12-x64.zip"]  # fmt: skip
+    assert [a["name"] for a in engines.pick_sd_cpp(pinned, "vulkan")["assets"]] == [
+        f"sd-master-{sha}-bin-win-vulkan-x64.zip"]  # fmt: skip
+    assert [a["name"] for a in engines.pick_sd_cpp(pinned, "cpu")["assets"]] == [f"sd-master-{sha}-bin-win-cpu-x64.zip"]
+    assert engines.pick_sd_cpp(release(engines.SD_TAG, f"sd-master-{sha}-bin-win-cuda12-x64.zip"), "cuda12") is None
+    assert engines.pick_sd_cpp(release("master-1060-0000000", "sd-master-0000000-bin-win-cpu-x64.zip"), "cpu") is None
+
+
 def test_archives_unpack_inside_their_folder_and_the_first_config(tmp_path):
     good = tmp_path / "good.zip"
     with zipfile.ZipFile(good, "w") as zf:
