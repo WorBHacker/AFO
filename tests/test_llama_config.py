@@ -157,6 +157,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     fail = False
     blank: ClassVar = False  # a picture model answers «success» with a flat grey picture (29.3): all, or those named
     asked: ClassVar[list] = []
+    video: ClassVar[list] = []  # a video model's trial (29.8): vid_gen, then its job
 
     def log_message(self, *args):
         pass
@@ -170,6 +171,12 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if "/sdcpp/v1/jobs/" in self.path:
+            from tests.test_visual import WEBP
+
+            self._send(200, {"id": "job_v", "status": "completed", "result": {
+                "b64_json": base64.b64encode(WEBP).decode(), "frame_count": 9, "fps": 24}})  # fmt: skip
+            return
         text = self.frozen or self.config.read_text(encoding="utf-8")
         data = []
         for model_id in lc.model_blocks(text):
@@ -182,6 +189,10 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        if self.path.endswith("/sdcpp/v1/vid_gen"):
+            FakeLlamaSwap.video.append({**body, "path": self.path})
+            self._send(202, {"id": "job_v", "status": "queued"})
+            return
         FakeLlamaSwap.asked.append(body)
         if self.fail:
             self._send(502, {"error": "upstream command exited prematurely"})
@@ -206,7 +217,7 @@ def hub(tmp_path, monkeypatch):
     gguf(tmp_path / "big.gguf", {"general.architecture": "x", "x.block_count": 8})
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
-    FakeLlamaSwap.blank = False
+    FakeLlamaSwap.blank, FakeLlamaSwap.video = False, []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)

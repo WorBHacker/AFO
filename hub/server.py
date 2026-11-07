@@ -202,6 +202,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   machine=lambda: app.state.installer.machine())  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
+        if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
+            swap.gate = app.state.visual.gpu_gate
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes

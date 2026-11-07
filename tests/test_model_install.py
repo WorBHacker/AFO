@@ -71,7 +71,9 @@ def _zip(files: dict[str, bytes]) -> bytes:
 
 
 # a picture model (29.3): its files in three repositories, and the picture engine's pinned release on GitHub
-PICTURES = {"test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
+PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video model (29.8)
+            "test/Umt5-GGUF": {"umt5-Q4_K_M.gguf": b"U" * 40_000},
+            "test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
             "test/Words-GGUF": {"words-Q4_K_M.gguf": b"W" * 60_000},
             "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000}}  # fmt: skip
 ENGINE = {f"sd-master-{engines.SD_TAG.rsplit('-', 1)[1]}-bin-win-cuda12-x64.zip":
@@ -551,6 +553,12 @@ DRAW = {"id": "draw", "name": "Draw", "purposes": ["image"], "tier": "main", "li
         "files": [{"role": "diffusion-model", "repo": "test/Draw-GGUF", "path": "draw-Q4_0.gguf"},
                   {"role": "llm", "repo": "test/Words-GGUF", "path": "words-Q4_K_M.gguf"},
                   {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
+CLIP = {"id": "clip", "name": "Clip", "kind": "video", "purposes": ["video"], "tier": "video", "license": "apache-2.0",
+        "original": "test/Clip", "size": 832, "about": {"ru": "Снимает"},
+        "flags": ["--cfg-scale", "1", "--sampling-method", "euler", "--steps", "4", "--flow-shift", "5"],
+        "files": [{"role": "diffusion-model", "repo": "test/Clip-GGUF", "path": "clip-Q4_K_M.gguf"},
+                  {"role": "t5xxl", "repo": "test/Umt5-GGUF", "path": "umt5-Q4_K_M.gguf"},
+                  {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
 MACHINE = {"build": "cuda12", "card": "RTX", "memory_gib": 15.6, "pictures": "main", "quality": False,
            "video": "local", "tiles": False, "why": "RTX: картинки 1024 × 1024 за секунды"}  # fmt: skip
 
@@ -636,6 +644,38 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     assert not {"draw", "draw-cpu"} & set(lc.model_blocks(text))  # withdrawn, both; its files stay
     assert (folder / "draw-Q4_0.gguf").exists()
     assert hub.post("/v1/install/pictures", json={"id": "nope"}).status_code == 404
+
+
+def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):
+    """29.8а: Wan2.2-TI2V-5B (here «Clip»): its files from three repositories, the same engine; offered where this
+    computer makes videos (hardware.pictures_for: local, or slow); its VAE in tiles where the tier says (Vulkan on
+    NVIDIA falls without, 29.1); the trial - a short video through vid_gen."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, CLIP]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "video": "slow", "tiles": True})
+    listed = {m["id"]: m for m in hub.get("/v1/install/pictures").json()["models"]}
+    assert (listed["clip"]["verdict"], listed["clip"]["kind"], listed["clip"]["purpose_words"]) == (
+        "slow", "video", ["Видео"])  # fmt: skip
+
+    job = hub.post("/v1/install/pictures", json={"id": "clip"}).json()["job"]
+    assert [f["role"] for f in job["files"] if f["role"] != "engine"] == ["diffusion-model", "t5xxl", "vae"]
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert done["plan"]["kind"] == "video" and done["trial"]["frames"] == 9 and "cpu" not in done["plan"]
+    view = lc.model_view(hub.config.read_text(encoding="utf-8"), "clip")
+    assert "--vae-tiling" in view["command"] and "--t5xxl" in view["command"] and "--flow-shift 5" in view["command"]
+    trial = FakeLlamaSwap.video[-1]
+    assert trial["path"] == "/upstream/clip/sdcpp/v1/vid_gen" and trial["video_frames"] == 9
+    assert [m["model_id"] for m in hub.get("/v1/visual/models").json()["videos"]] == ["clip"]
+    hub.delete("/v1/install/models/clip")
+
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "video": "cloud"})
+    assert hub.get("/v1/install/pictures").json()["models"][1]["verdict"] == "no"
+    refused = hub.post("/v1/install/pictures", json={"id": "clip"})
+    assert refused.status_code == 409 and "облак" in refused.json()["detail"]
 
 
 def test_a_model_that_will_not_start_tries_smaller_settings_then_leaves_the_config(hub):

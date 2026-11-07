@@ -22,7 +22,7 @@ PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_(
             ("image", N_("Рисовать"))]  # fmt: skip
 PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own - a set of files from several
 TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
-TONES_PICTURES = {"fast": "ok", "slow": "warn"}
+TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
           "configuring": N_("записываю в llama-swap"), "trial": N_("пробный запуск"), "done": N_("установлена"),
           "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
@@ -136,7 +136,7 @@ def picture_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "about": about(m.get("about") or {}), "purposes": " · ".join(m.get("purpose_words") or []),
                     "license": m.get("license", ""), "gated": False, "words": words, "tone": tone,
                     "offer": gb(m["size"]) if m.get("size") else "", "installed": installed, "variants": False,
-                    "canInstall": not installed and not m.get("error")})  # fmt: skip
+                    "canInstall": not installed and not m.get("error") and m["verdict"] != "no"})  # fmt: skip
     return out
 
 

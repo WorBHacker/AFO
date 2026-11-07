@@ -2,7 +2,8 @@
 
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
-GET /jobs/<id>/file - the picture itself (PNG); GET /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6:
+POST /videos - a video (29.8а, Wan2.2; a job like a picture's); GET /jobs/<id>/file - the picture itself (PNG; a
+video - WebP); GET /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6:
 a model drew it). Events: visual.changed (a job), visual.progress (step and preview).
 """
 
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -62,6 +63,27 @@ async def image(request: Request, body: Image, client: Annotated[Client, Depends
         raise _refusal(exc) from exc
 
 
+class Video(BaseModel):
+    """A video (29.8а): its shape, how long, «Качественнее» - Wan's own 1280×704."""
+
+    prompt: str = Field(min_length=1, max_length=4000)
+    negative: str = Field(default="", max_length=2000)
+    model: str = Field(default="", max_length=120)
+    shape: Literal["wide", "tall", "square"] = "wide"
+    seconds: float = Field(default=2.0, ge=0.5, le=4.0)
+    hd: bool = False
+    seed: int | None = None
+    conversation_id: str | None = Field(default=None, max_length=64)
+
+
+@router.post("/videos")
+async def video(request: Request, body: Video, client: Annotated[Client, Depends(require_app)]) -> dict:
+    try:
+        return {"job": await _visual(request).video(body.model_dump(), client.name)}
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+
+
 @router.get("/jobs")
 async def jobs(request: Request, client: Annotated[Client, Depends(require_app)], limit: int = 50) -> dict:
     return {"jobs": await request.app.state.db.acall(lambda conn: v.jobs(conn, max(1, min(limit, 500))))}
@@ -92,7 +114,7 @@ async def file(request: Request, job_id: str, client: Annotated[Client, Depends(
     path = _visual(request).file(await _job(request, job_id))
     if path is None:
         raise HTTPException(status_code=404, detail=tr("картинки ещё нет"))
-    return FileResponse(path, media_type="image/png")
+    return FileResponse(path, media_type=v.picture_type(path) or "application/octet-stream")  # a video: WebP
 
 
 @router.get("/pictures/{name}")

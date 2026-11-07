@@ -54,7 +54,8 @@ from .system_status import memory_sample
 log = logging.getLogger("hub.install")
 
 CATALOG = Path(__file__).with_name("model_catalog.json")
-PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать")}
+PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать"),
+            "video": N_("Видео")}  # fmt: skip
 SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
@@ -100,7 +101,9 @@ def picture_sets() -> list[dict[str, Any]]:
 
 def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
     """How a picture model runs here (hardware.pictures_for): fast | slow - minutes a picture, on the processor or
-    an integrated card."""
+    an integrated card; a video model (29.8): fast | slow | no - videos here only in the cloud."""
+    if entry.get("kind") == "video":
+        return {"local": "fast", "slow": "slow"}.get(machine.get("video", ""), "no")
     if entry["tier"] == "light":
         return "fast"
     if entry["tier"] == "quality":
@@ -451,8 +454,12 @@ class Installer:
         listed = []
         for entry in picture_sets():
             verdict = picture_verdict(entry, machine)
-            shown = {**entry, "purpose_words": [tr(PURPOSES[p]) for p in entry["purposes"]], "verdict": verdict,
-                     "words": tr("быстро") if verdict == "fast" else tr("медленно — минуты на картинку"),
+            words = {"fast": tr("быстро"), "slow": tr("медленно — минуты на картинку"),
+                     "no": tr("видео на этом компьютере — только в облаке")}  # fmt: skip
+            if entry.get("kind") == "video" and verdict == "slow":
+                words["slow"] = tr("медленно — минуты на секунду видео")
+            shown = {**entry, "kind": entry.get("kind", "image"), "verdict": verdict, "words": words[verdict],
+                     "purpose_words": [tr(PURPOSES[p]) for p in entry["purposes"]],
                      "recommended": entry["tier"] == ("main" if machine.get("pictures") == "main" else "light"),
                      "installed": [mine[entry["id"]]["model_id"]] if entry["id"] in mine else []}  # fmt: skip
             try:
@@ -561,8 +568,11 @@ class Installer:
             raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
         if same:
             return same
-        files = await self.picture_files(entry)
         machine = await asyncio.to_thread(self.machine)
+        video = entry.get("kind") == "video"
+        if video and picture_verdict(entry, machine) == "no":
+            raise InstallError(tr("видео на этом компьютере — только в облаке: {why}", why=machine.get("why", "")))
+        files = await self.picture_files(entry)
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
         folder = root / "pictures" / entry["id"]
@@ -572,8 +582,11 @@ class Installer:
             raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
                                422) from exc  # fmt: skip
         model_id = llama_config.free_id(await asyncio.to_thread(config_text), entry["id"])
-        plan = {"engine": "sd", "set": entry["id"], "tier": entry["tier"], "build": machine["build"],
-                "flags": entry["flags"], "size": entry["size"]}  # fmt: skip
+        flags = list(entry["flags"])
+        if video and machine.get("tiles") and "--vae-tiling" not in flags:  # Vulkan falls without (29.1)
+            flags.append("--vae-tiling")
+        plan = {"engine": "sd", "set": entry["id"], "tier": entry["tier"], "build": machine["build"], "flags": flags,
+                "size": entry["size"], **({"kind": "video"} if video else {})}  # fmt: skip
         job_id = uuid.uuid4().hex[:12]
         everything = [*engine, *files]
 
@@ -983,7 +996,8 @@ class Installer:
             raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
         blocks = [(found["model_id"], SD_MACRO, tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
                    found["name"])]  # fmt: skip
-        if found["plan"].get("build") != "cpu" and sd_server(text, SD_CPU_MACRO) is not None:
+        video = found["plan"].get("kind") == "video"  # a video on the processor: hours - no block there (29.8)
+        if not video and found["plan"].get("build") != "cpu" and sd_server(text, SD_CPU_MACRO) is not None:
             blocks.append((f"{found['model_id']}-cpu", SD_CPU_MACRO, tr(
                 "{name}, установлена AFO: рисует картинки процессором, когда видеокарта не может.", name=found["name"]),
                 tr("{name} — на процессоре", name=found["name"])))  # fmt: skip
@@ -1019,7 +1033,7 @@ class Installer:
             await asyncio.to_thread(llama_config.restore, path, backup)
             raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
                                   problem=problem), 502)  # fmt: skip
-        await self._set(job_id, model_id=model_id, plan={**found["plan"], "cpu": cpu_id})
+        await self._set(job_id, model_id=model_id, plan={**found["plan"], **({"cpu": cpu_id} if cpu_id else {})})
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
         return ok
 
@@ -1032,6 +1046,16 @@ class Installer:
                                                                         "при первой картинке")})  # fmt: skip
             return
         await self._set(job_id, status="trial")
+        if found["plan"].get("kind") == "video":  # a short video (29.8а)
+            result = await visual.trial_video(self._url, model_id)
+            if result["ok"]:
+                await self._set(job_id, status="done", trial={"seconds": result["seconds"], "frames": result["frames"]})
+                return
+            await self._withdraw(model_id)
+            await self._set(job_id, status="failed", error=tr(
+                "модель скачана, но пробное видео не вышло: {error}. Файлы остались — «Повторить» попробует снова; или "
+                "удалите", error=result["error"]))  # fmt: skip
+            return
         result = await visual.trial(self._url, model_id)
         on_cpu = await visual.trial(self._url, cpu_id) if not result["ok"] and cpu_id else None
         if result["ok"] or (on_cpu and on_cpu["ok"]):

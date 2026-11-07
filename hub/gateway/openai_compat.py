@@ -17,10 +17,12 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ClassVar
 
 import httpx
+
+from common.i18n import tr
 
 from .base import Model, ProviderError, StreamEvent
 
@@ -108,6 +110,8 @@ class OpenAICompatProvider:
         self._key_getter = key_getter or (lambda: api_key)  # read on every use: the user may change the key
         self._transport = transport  # tests inject a mock; production leaves it None
         self._vectors: set[str] = set()  # the models (and their aliases) with a refusal vector to switch, as listed
+        # llama-swap's: the hub's card gate (29.8а) - a video holds the card, an answer waits for its end
+        self.gate: Callable[[asyncio.Event], Awaitable[bool]] | None = None
 
     def _headers(self) -> dict[str, str]:
         key = self._key_getter()
@@ -172,6 +176,17 @@ class OpenAICompatProvider:
         usage: dict = {}
         timings: dict = {}
         finish_reason: str | None = None
+        if self.gate is not None:  # a video holds the card (29.8а): llama-swap would swap it out under the video
+            waiting = asyncio.ensure_future(self.gate(cancel))
+            await asyncio.sleep(0)
+            if not waiting.done():
+                yield StreamEvent("loading", tr("видеокарта снимает видео — ответ начнётся после него"))
+            await waiting
+            if cancel.is_set():
+                yield StreamEvent("end", usage=self.priced(model_ref, _usage({}, 0), {}),
+                                  stats=_stats({}, {}, started, None), stop_reason=None, tool_calls=[],
+                                  raw=self.kept("", []))  # fmt: skip
+                return
         # read has no timeout: a local model can be slow between tokens; connect/write still bounded
         timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
         try:

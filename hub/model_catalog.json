@@ -233,6 +233,49 @@
         "ru": "Качественнее: фотографии и надписи лучше, вдвое медленнее основной. Для видеокарты от 6 ГБ.",
         "en": "Higher quality: better photos and lettering, twice as slow as the main one. For a graphics card with 6 GB or more."
       }
+    },
+    {
+      "id": "wan2.2-ti2v-5b-turbo",
+      "name": "Wan2.2 TI2V 5B Turbo",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.2-TI2V-5B",
+      "size": 832,
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF",
+          "path": "Wan2_2-TI2V-5B-Turbo-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+          "path": "split_files/vae/wan2.2_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "4",
+        "--flow-shift",
+        "5"
+      ],
+      "about": {
+        "ru": "Видео по описанию: 832 × 480, 2 секунды — около 13 с на видеокарте NVIDIA от 12 ГБ, около минуты на 6–8 ГБ. Turbo за 4 шага.",
+        "en": "Video from a description: 832 × 480, 2 seconds — about 13 s on an NVIDIA card with 12 GB, about a minute on 6–8 GB. Turbo, 4 steps."
+      }
     }
   ]
 }

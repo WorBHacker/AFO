@@ -167,6 +167,16 @@ def test_a_size_in_a_sources_shape():
     assert shaped(4000, 1000, 512) == (1024, 256)  # very wide: no side under 256
 
 
+def test_a_videos_size_and_frames():
+    """29.8: Wan2.2-TI2V-5B's sizes - 832×480 on most cards, its own 1280×704 with «Качественнее» (29.1); frames
+    4k+1 at 24 a second."""
+    from common.picture_sizes import frames_for, video_size
+
+    assert video_size("wide", False) == (832, 480) and video_size("tall", False) == (480, 832)
+    assert video_size("wide", True) == (1280, 704) and video_size("square", False) == (640, 640)
+    assert [frames_for(s) for s in (1, 2, 3)] == [25, 49, 73] and frames_for(0.5) == 13
+
+
 def test_the_ladder_goes_smaller_then_lighter():
     models = [SDXS, FLUX, ZIMG]
     assert _rungs(FLUX, 1024, 1024, models, {}) == [
@@ -234,6 +244,9 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
 
     steps_s = 0.05  # a step's time
     answer: ClassVar = "picture"  # picture | blank | fail - or what a request gets, by its body
+    video: ClassVar[list] = []  # the videos asked for (29.8)
+    video_polls = 3  # a video's job is done at this look
+    polls = 0
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
     step = total = 0
@@ -251,6 +264,19 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        cls = FakeDrawSwap
+        if "/sdcpp/v1/jobs/" in self.path:  # a video's job (29.8): generating for `video_polls` looks, then done
+            if cls.stopped:
+                self._send(502, {"error": "upstream exited"})
+                return
+            cls.polls += 1
+            if cls.polls < cls.video_polls:
+                self._send(200, {"id": "job_v", "status": "generating", "result": None})
+                return
+            self._send(200, {"id": "job_v", "status": "completed", "result": {
+                "b64_json": base64.b64encode(WEBP).decode(), "mime_type": "image/webp", "output_format": "webp",
+                "fps": 24, "frame_count": cls.video[-1]["video_frames"]}})  # fmt: skip
+            return
         if self.path.startswith("/upstream/") and self.path.endswith("/sdapi/v1/progress"):
             cls = FakeDrawSwap
             self._send(200, {"progress": cls.step / cls.total if cls.total else 0, "current_image": "jpeg" * 3,
@@ -266,6 +292,11 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
             self._send(200, {"msg": "ok"})
             return
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        if self.path.endswith("/sdcpp/v1/vid_gen"):  # a video: accepted at once, drawn in the background (29.8)
+            cls.video.append({**body, "path": self.path})
+            cls.polls, cls.stopped = 0, False
+            self._send(202, {"id": "job_v", "kind": "vid_gen", "status": "queued", "poll_url": "/sdcpp/v1/jobs/job_v"})
+            return
         cls.asked.append({**body, "path": self.path} if self.path.endswith("/img2img") else body)
         cls.stopped, cls.total = False, body["steps"]
         for step in range(1, cls.total + 1):
@@ -286,16 +317,21 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
 _rnd = random.Random(5)
 PICTURE = png(32, 32, lambda x, y: (_rnd.randrange(256), _rnd.randrange(256), _rnd.randrange(256)))
 GREY = png(32, 32, lambda x, y: (128, 128, 128))
+WEBP = b"RIFF" + struct.pack("<I", 30) + b"WEBPVP8X" + bytes(22)  # what sd-server's video comes as (29.8 live)
+WAN_FLAGS = ["--cfg-scale", "1", "--sampling-method", "euler", "--steps", "4", "--flow-shift", "5"]
+CLIP_PLAN = {"engine": "sd", "set": "clip", "kind": "video", "tier": "video", "size": 832, "flags": WAN_FLAGS}
 DRAW_PLAN = {"engine": "sd", "set": "draw", "tier": "main", "size": 512, "flags": ["--cfg-scale", "1", "--steps", "4"]}
 
 
 @pytest.fixture
 def hub(monkeypatch):
     FakeDrawSwap.steps_s, FakeDrawSwap.answer, FakeDrawSwap.asked, FakeDrawSwap.unloaded = 0.05, "picture", [], []
+    FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls = [], 3, 0
     FakeDrawSwap.step = FakeDrawSwap.total = 0
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeDrawSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
     monkeypatch.setattr(visual, "STEP_S", 0.05)
+    monkeypatch.setattr(visual, "VIDEO_STEP_S", 0.05)
     app = create_app(HubSettings(paths=data_paths(), llama_swap_url=f"http://127.0.0.1:{swap.server_port}",
                                  status_interval_s=0, process_interval_s=0))  # fmt: skip
     with TestClient(app, base_url="http://127.0.0.1:8765") as client:
@@ -589,6 +625,92 @@ def test_a_picture_drawn_from_a_picture(hub):
     failed = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox", "from_png": sent}).json()["job"]["id"],
                    "failed", "done")  # fmt: skip
     assert [t["model_id"] for t in failed["tries"]] == ["draw", "draw"]
+
+
+def test_a_video_drawn_in_the_background_and_kept(hub):
+    """29.8а: a video - sd-server draws it in the background (vid_gen, through llama-swap's /upstream: it loads the
+    model), the hub looks at its job; meanwhile the card is held - a local chat model waits (llama-swap would swap the
+    video's engine out under it, 29.8 live); the WebP kept. «Стоп» unloads the model."""
+    _install(hub)
+    _install(hub, "clip", CLIP_PLAN)
+    listed = hub.get("/v1/visual/models").json()
+    assert [m["model_id"] for m in listed["models"]] == ["draw"]  # a video model draws no pictures
+    assert [(m["model_id"], m["size"]) for m in listed["videos"]] == [("clip", 832)]
+
+    FakeDrawSwap.video_polls = 8
+    job = hub.post("/v1/visual/videos", json={"prompt": "a fox running through snow", "shape": "wide",
+                                              "seconds": 2, "seed": 4}).json()["job"]  # fmt: skip
+    assert (job["kind"], job["model_id"], job["width"], job["height"], job["frames"], job["fps"]) == (
+        "video", "clip", 832, 480, 49, 24)  # fmt: skip
+    _wait(hub, job["id"], "running")
+    assert hub.app.state.visual.holding  # the card: a local chat model waits for the video's end
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert not hub.app.state.visual.holding
+    asked = FakeDrawSwap.video[-1]
+    assert asked["path"] == "/upstream/clip/sdcpp/v1/vid_gen" and asked["output_format"] == "webp"
+    assert (asked["width"], asked["height"], asked["video_frames"], asked["fps"]) == (832, 480, 49, 24)
+    assert asked["seed"] == 4
+    assert asked["sample_params"]["sample_steps"] == 4 and asked["sample_params"]["flow_shift"] == 5.0
+    assert asked["sample_params"]["guidance"]["txt_cfg"] == 1.0 and asked["prompt"] == "a fox running through snow"
+    video = hub.get(f"/v1/visual/jobs/{job['id']}/file")
+    assert video.status_code == 200 and video.headers["content-type"] == "image/webp" and video.content == WEBP
+    assert done["file"].endswith(".webp")
+    assert hub.post("/v1/visual/videos", json={"prompt": "x", "seconds": 9}).status_code == 422
+    assert hub.post("/v1/visual/images", json={"prompt": "x", "model": "clip"}).status_code == 404  # not a picture
+
+    FakeDrawSwap.video_polls = 1000  # a long one, stopped
+    long = hub.post("/v1/visual/videos", json={"prompt": "a fox"}).json()["job"]
+    _wait(hub, long["id"], "running")
+    time.sleep(0.3)
+    hub.post(f"/v1/visual/jobs/{long['id']}/cancel")
+    stopped = _wait(hub, long["id"], "cancelled", "failed", "done", timeout=10.0)
+    assert stopped["status"] == "cancelled" and FakeDrawSwap.unloaded[-1] == "clip"
+    assert not hub.app.state.visual.holding
+
+
+def test_a_local_chat_model_waits_while_the_card_draws_a_video():
+    """29.8а: the llama-swap provider asks the hub's gate before each answer: while a video holds the card it says so
+    (a «loading» line, as llama-swap's own) and sends nothing until the video ends; the user may stop meanwhile."""
+    from hub.gateway.openai_compat import OpenAICompatProvider
+
+    sent = []
+
+    def handler(request):
+        sent.append(time.monotonic())
+        chunks = [{"choices": [{"delta": {"content": "да"}}]},
+                  {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 1}}]  # fmt: skip
+        body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async def run():
+        provider = OpenAICompatProvider("llama-swap", "http://swap", transport=httpx.MockTransport(handler))
+        free = asyncio.Event()
+
+        async def gate(cancel):
+            if free.is_set():
+                return False
+            waiting = asyncio.ensure_future(cancel.wait())
+            await asyncio.wait({waiting, asyncio.ensure_future(free.wait())}, return_when=asyncio.FIRST_COMPLETED)
+            return True
+
+        provider.gate = gate
+        events, cancel = [], asyncio.Event()
+
+        async def answer():
+            async for event in provider.stream_chat("chat", [{"role": "user", "content": "привет"}], "low", cancel):
+                events.append(event)
+
+        task = asyncio.create_task(answer())
+        await asyncio.sleep(0.2)
+        held = (list(events), list(sent))
+        free.set()
+        await task
+        return held, events
+
+    (held_events, held_sent), events = asyncio.run(run())
+    assert held_sent == [] and [e.kind for e in held_events] == ["loading"]  # nothing sent while the card is held
+    assert "видео" in held_events[0].text and sent and "".join(e.text for e in events if e.kind == "content") == "да"
 
 
 def test_without_llama_swap_the_ladder_stops_at_once(hub):

@@ -117,6 +117,7 @@
 |---|---|---|---|---|
 | GET | `/v1/visual/models` | только окно | `models()` |  |
 | POST | `/v1/visual/images` | только окно | `image()` | тело `{prompt: str, negative: str = '', model: str = '', width: int = 0, height: int = 0, seed: int \| None = None, conversation_id: str \| None = None, from_job: str = '', from_blob: str = '', from_png: str = '', strength: float \| None = None}` |
+| POST | `/v1/visual/videos` | только окно | `video()` | тело `{prompt: str, negative: str = '', model: str = '', shape: Literal['wide', 'tall', 'square'] = 'wide', seconds: float = 2.0, hd: bool = False, seed: int \| None = None, conversation_id: str \| None = None}` |
 | GET | `/v1/visual/jobs` | только окно | `jobs()` | `?limit: int = 50` |
 | GET | `/v1/visual/jobs/{job_id}` | только окно | `one()` |  |
 | POST | `/v1/visual/jobs/{job_id}/cancel` | только окно | `cancel()` |  |

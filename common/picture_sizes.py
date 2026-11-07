@@ -20,6 +20,23 @@ def shaped(width: int, height: int, side: int) -> tuple[int, int]:
             min(SIDES[1], max(SIDES[0], round(side / root / 64) * 64)))  # fmt: skip
 
 
+# a video's (29.8; Wan2.2-TI2V-5B): 832×480 on most cards, its own 1280×704 with «Качественнее» (29.1: much better)
+VIDEO = {"wide": (832, 480), "tall": (480, 832), "square": (640, 640)}
+VIDEO_HD = {"wide": (1280, 704), "tall": (704, 1280), "square": (960, 960)}
+FPS = 24
+SECONDS = (0.5, 4.0)
+
+
+def video_size(shape: str, hd: bool) -> tuple[int, int]:
+    sizes = VIDEO_HD if hd else VIDEO
+    return sizes.get(shape, sizes["wide"])
+
+
+def frames_for(seconds: float, fps: int = FPS) -> int:
+    """A video's frames for so many seconds: 4k+1, as Wan's VAE takes them."""
+    return max(1, round(seconds * fps / 4)) * 4 + 1
+
+
 def size_for(shape: str, side: int) -> tuple[int, int]:
     """The picture's width and height: the model's side in this shape, each a multiple of 64."""
     w, h = SHAPES.get(shape, SHAPES["square"])

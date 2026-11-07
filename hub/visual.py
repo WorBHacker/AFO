@@ -27,6 +27,11 @@
   asked (29.6б live), so the size follows its shape. Only a model of several steps follows a source - SDXS's one step
   draws anew whatever the strength (live) - and so the ladder skips the others. The source is kept beside the job
   (data/media/<month>/<job>-source.png): each rung sends it again.
+- A video (29.8а): Wan2.2-TI2V-5B on the same engine; sd-server draws it only in the background - `vid_gen`, then
+  its job looked at (`/sdcpp/v1/jobs/<id>`), through llama-swap's `/upstream/<model>/` (it loads the model) - and
+  so llama-swap holds nothing meanwhile: a local chat model's request would swap the video's engine out under it
+  (29.8 live). The hub holds the card itself: while a video is drawn its llama-swap provider waits before each
+  answer (`gpu_gate`; a «loading» line says why). The result is an animated WebP (the engine's own, 29.8 live).
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -52,7 +57,19 @@ from typing import Any
 import httpx
 
 from common.i18n import tr
-from common.picture_sizes import CPU_PIXELS, SHAPES, SIDES, fit, half, moved, shaped, size_for
+from common.picture_sizes import (
+    CPU_PIXELS,
+    FPS,
+    SHAPES,
+    SIDES,
+    fit,
+    frames_for,
+    half,
+    moved,
+    shaped,
+    size_for,
+    video_size,
+)
 
 from .db import utc_now
 
@@ -255,7 +272,38 @@ MAX_TRIES = 5  # a picture's tries at most, the first among them
 STRENGTH = 0.6  # «По картинке»: how much a source is changed unless said («Заметно»)
 STRENGTHS = (0.1, 0.95)  # past it nothing of the source is left
 SOURCE_BYTES = 20 * 1024**2
+VIDEO_TIMEOUT_S = 3600.0  # an hour at most: a video on a slow card (29.1: 7.5 min for 0.7 s on an integrated one)
+VIDEO_STEP_S = 1.0  # how often a video's job is looked at
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
+
+
+async def trial_video(base_url: str, model_id: str, *, frames: int = 9) -> dict[str, Any]:
+    """A video model's trial (29.8а): a short video through vid_gen - {ok, seconds, frames} or {ok: False, error}."""
+    start = time.monotonic()
+    upstream = f"{base_url}/upstream/{model_id}/sdcpp/v1"
+    body = {"prompt": TRIAL_PROMPT, "width": 480, "height": 272, "video_frames": frames, "fps": FPS, "seed": 1,
+            "output_format": "webp"}  # fmt: skip
+    try:
+        async with httpx.AsyncClient(timeout=TRIAL_TIMEOUT_S) as http:
+            said = await http.post(f"{upstream}/vid_gen", json=body)
+            if said.status_code >= 300:
+                return {"ok": False, "error": _refused(said)}
+            video_job = said.json().get("id", "")
+            while time.monotonic() - start < TRIAL_TIMEOUT_S:
+                looked = await http.get(f"{upstream}/jobs/{video_job}")
+                state = looked.json() if looked.status_code < 300 else {"status": "failed", "error": looked.text}
+                if state.get("status") == "completed":
+                    data = base64.b64decode((state.get("result") or {}).get("b64_json") or "")
+                    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+                        return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
+                    return {"ok": False, "error": tr("ответ без видео")}
+                if state.get("status") in ("failed", "cancelled"):
+                    return {"ok": False, "error": tr("движок не снял видео: {error}",
+                                                     error=state.get("error") or state["status"])}  # fmt: skip
+                await asyncio.sleep(VIDEO_STEP_S)
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"ok": False, "error": _no_answer(exc)}
+    return {"ok": False, "error": tr("видео не готово и за {minutes} мин", minutes=round(TRIAL_TIMEOUT_S / 60))}
 
 
 GENERATE_IMAGE = {
@@ -339,18 +387,24 @@ def _flag(flags: list[str], name: str, default: float) -> float:
     return default
 
 
-def installed(conn) -> list[dict[str, Any]]:
-    """The picture models AFO installed (29.3): {model_id, name, tier, size, steps, cfg, cpu_id - its block on the
-    processor's build, or ""}."""
+def _text_flag(flags: list[str], name: str, default: str) -> str:
+    return flags[flags.index(name) + 1] if name in flags and flags.index(name) + 1 < len(flags) else default
+
+
+def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
+    """The picture models AFO installed (29.3) - or its video models (`kind` video, 29.8): {model_id, name, tier,
+    size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, flow_shift}."""
     out = []
     for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
         plan = json.loads(row["plan"] or "{}")
-        if plan.get("engine") != "sd":
+        if plan.get("engine") != "sd" or plan.get("kind", "image") != kind:
             continue
         flags = [str(f) for f in plan.get("flags") or []]
         out.append({"model_id": row["model_id"], "name": row["name"], "tier": plan.get("tier", "main"),
                     "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
-                    "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or ""})  # fmt: skip
+                    "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or "",
+                    "sampler": _text_flag(flags, "--sampling-method", "default"),
+                    "flow_shift": _flag(flags, "--flow-shift", 0.0)})  # fmt: skip
     return out
 
 
@@ -464,6 +518,8 @@ class Visual:
         self._watching: asyncio.Task | None = None  # its progress
         self._watch_stop: asyncio.Event | None = None  # tells the watch to end
         self._stopping: set[str] = set()  # jobs «Стоп» was pressed for
+        self._free = asyncio.Event()  # the card: not held by a video (29.8а)
+        self._free.set()
         self._more = False  # a job added since the worker last looked at the queue
 
     async def start(self) -> int:
@@ -494,7 +550,56 @@ class Visual:
             rule = here.get(model["model_id"]) or {}
             model["pixels"], model["instead"] = int(rule.get("pixels") or 0), rule.get("instead") or ""
         best = default_model(found, machine)
-        return {"models": found, "default": best["model_id"] if best else ""}
+        videos = await self._db.acall(lambda conn: installed(conn, "video"))
+        return {"models": found, "default": best["model_id"] if best else "", "videos": videos}
+
+    @property
+    def holding(self) -> bool:
+        """Whether a video holds the card now (29.8а)."""
+        return not self._free.is_set()
+
+    async def gpu_gate(self, cancel: asyncio.Event) -> bool:
+        """A local chat model's answer waits here while a video holds the card (the llama-swap provider asks before
+        each); whether it waited. The user's «Стоп» ends the wait."""
+        if self._free.is_set():
+            return False
+        stopping = asyncio.ensure_future(cancel.wait())
+        free = asyncio.ensure_future(self._free.wait())
+        await asyncio.wait({stopping, free}, return_when=asyncio.FIRST_COMPLETED)
+        for each in (stopping, free):
+            each.cancel()
+        return True
+
+    async def video(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
+        """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}."""
+        prompt = (spec.get("prompt") or "").strip()
+        if not prompt:
+            raise VisualError(tr("нужно описание видео"), 422)
+        found = await self._db.acall(lambda conn: installed(conn, "video"))
+        model = next((m for m in found if m["model_id"] == spec.get("model")), None) if spec.get("model") else (
+            found[0] if found else None)  # fmt: skip
+        if model is None:
+            raise VisualError(tr("модели видео нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
+        width, height = video_size(str(spec.get("shape") or "wide"), bool(spec.get("hd")))
+        frames = frames_for(float(spec.get("seconds") or 2.0))
+        seed = spec.get("seed")
+        seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
+        job_id = uuid.uuid4().hex[:12]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
+                "conversation_id, frames, fps) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
+                 spec.get("conversation_id"), frames, FPS),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        self._more = True
+        await self._publish(job_id)
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._work())
+        return await self._db.acall(lambda conn: job(conn, job_id))
 
     async def _source(self, spec: dict[str, Any]) -> bytes | None:
         """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None."""
@@ -663,7 +768,7 @@ class Visual:
                 return
             self._running = found["id"]
             try:
-                await self._run(found)
+                await (self._run_video(found) if found.get("kind") == "video" else self._run(found))
             except Exception:  # one picture's trouble must not stop the rest
                 log.exception("picture %s", found["id"])
                 await self._set(found["id"], status="failed", error=tr("внутренняя ошибка хаба — подробности в "
@@ -757,6 +862,74 @@ class Visual:
         if picture is not None and blank(picture):
             picture, error = None, _blank_words()
         return picture, error, gone, seconds
+
+    async def _run_video(self, found: dict[str, Any]) -> None:
+        """A video (29.8а): vid_gen through llama-swap's /upstream (it loads the model), then its job looked at until
+        it ends; the card held meanwhile. «Стоп» unloads the model: its job is gone."""
+        job_id, model_id = found["id"], found["model_id"]
+        model = next((m for m in await self._db.acall(lambda conn: installed(conn, "video"))
+                      if m["model_id"] == model_id), None)  # fmt: skip
+        if model is None:
+            await self._set(job_id, status="failed", error=tr("модель видео {model} удалена", model=model_id))
+            return
+        await self._set(job_id, status="running", error="")
+        upstream = f"{self._url}/upstream/{model_id}/sdcpp/v1"
+        params = {"sample_method": model["sampler"], "sample_steps": model["steps"],
+                  "guidance": {"txt_cfg": model["cfg"]},
+                  **({"flow_shift": model["flow_shift"]} if model["flow_shift"] else {})}  # fmt: skip
+        body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
+                "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
+                "output_format": "webp", "sample_params": params}  # fmt: skip
+        start, error, result = time.monotonic(), "", None
+        self._free.clear()  # the card is the video's: local chat models wait
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http:
+                said = await http.post(f"{upstream}/vid_gen", json=body, timeout=600.0)  # the model loads first
+                if said.status_code >= 300:
+                    error = _refused(said)
+                else:
+                    video_job = said.json().get("id", "")
+                    while job_id not in self._stopping and time.monotonic() - start < VIDEO_TIMEOUT_S:
+                        await asyncio.sleep(VIDEO_STEP_S)
+                        if job_id in self._stopping:
+                            break
+                        looked = await http.get(f"{upstream}/jobs/{video_job}")
+                        if looked.status_code >= 300:
+                            error = _refused(looked)
+                            break
+                        state = looked.json()
+                        if state.get("status") == "completed":
+                            result = state.get("result") or {}
+                            break
+                        if state.get("status") in ("failed", "cancelled"):
+                            error = tr("движок не снял видео: {error}", error=state.get("error") or state["status"])
+                            break
+                    else:
+                        error = error or tr("видео не готово и за час")
+        except (httpx.HTTPError, ValueError) as exc:
+            error = _no_answer(exc)
+        finally:
+            self._free.set()
+        seconds = round(time.monotonic() - start, 1)
+        if job_id in self._stopping:
+            await self._set(job_id, status="cancelled", error="", seconds=seconds)
+            return
+        data = None
+        if result is not None:
+            try:
+                data = base64.b64decode(result.get("b64_json") or "")
+            except ValueError:
+                data = None
+            if not data or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+                data, error = None, tr("ответ без видео")
+        tries = [{"model_id": model_id, "width": found["width"], "height": found["height"], "rung": "asked",
+                  "ok": data is not None, "error": error, "seconds": seconds}]  # fmt: skip
+        if data is None:
+            await self._set(job_id, status="failed", error=error, seconds=seconds, tries=tries)
+            return
+        name = f"{datetime.now(UTC):%Y-%m}/{job_id}.webp"
+        await asyncio.to_thread(_save, self.media / name, data)
+        await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
 
     async def _watch(self, job_id: str, model_id: str, stop: asyncio.Event) -> None:
         """The picture's step and preview to the window while it is drawn - until `stop`: a cancel alone is not

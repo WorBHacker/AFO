@@ -3486,6 +3486,12 @@ def test_tool_rows():
     assert rows.tool_label("delegate_tasks", batch) == "Поручаю 3 задачи: «Писатель», «Тестер»"  # 16.1, D50
     assert rows.tool_label("delegate_tasks", {}) == "Поручаю 0 задач"
     assert rows.tool_label("generate_image", {"prompt": "рыжая лиса в снегу"}) == "Рисую «рыжая лиса в снегу»"  # 29.6а
+    from app.ui.install_view import picture_rows
+
+    clip = {"id": "wan", "name": "Wan", "verdict": "no", "words": "видео на этом компьютере — только в облаке",
+            "installed": [], "size": 9_000_000_000}  # 29.8а: a video model where videos are only in the cloud
+    (shown,) = picture_rows([clip])
+    assert (shown["tone"], shown["canInstall"], shown["words"]) == ("error", False, clip["words"])
     from app.ui import agents as agent_view
 
     assert agent_view.TOOL_LABELS["delegate_tasks"] == "давать задачи пачкой, параллельно (координатор)"
