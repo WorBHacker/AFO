@@ -34,8 +34,12 @@ Sheet {
         id: saveDialog
         title: Visual.videoSource !== "" ? qsTr("Сохранить видео") : qsTr("Сохранить картинку")
         fileMode: FileDialog.SaveFile
-        nameFilters: Visual.videoSource !== "" ? [qsTr("Видео WebP (*.webp)")] : [qsTr("Картинка PNG (*.png)")]
-        defaultSuffix: Visual.videoSource !== "" ? "webp" : "png"
+        // a video: MP4 (made by ffmpeg in the hub, 29.8в) or the engine's WebP as it is
+        nameFilters: Visual.videoSource !== "" ? [qsTr("Видео MP4 (*.mp4)"), qsTr("Видео WebP (*.webp)")]
+                                              : [qsTr("Картинка PNG (*.png)")]
+        defaultSuffix: Visual.videoSource === "" ? "png"
+                                                 : (selectedNameFilter.extensions.length > 0
+                                                    ? selectedNameFilter.extensions[0] : "mp4")
         onAccepted: Visual.saveAs(selectedFile.toString())
     }
 

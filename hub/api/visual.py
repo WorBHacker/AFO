@@ -3,8 +3,8 @@
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
 POST /videos - a video (29.8а, Wan2.2; a job like a picture's); GET /jobs/<id>/file - the picture itself (PNG; a
-video - WebP); GET /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6:
-a model drew it). Events: visual.changed (a job), visual.progress (step and preview).
+video - WebP); GET /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg); GET /pictures/<sha256> - a picture a chat holds
+(data/blobs, 29.6: a model drew it). Events: visual.changed (a job), visual.progress (step and preview).
 """
 
 from __future__ import annotations
@@ -115,6 +115,16 @@ async def file(request: Request, job_id: str, client: Annotated[Client, Depends(
     if path is None:
         raise HTTPException(status_code=404, detail=tr("картинки ещё нет"))
     return FileResponse(path, media_type=v.picture_type(path) or "application/octet-stream")  # a video: WebP
+
+
+@router.get("/jobs/{job_id}/mp4")
+async def mp4(request: Request, job_id: str, client: Annotated[Client, Depends(require_app)]) -> FileResponse:
+    """A video's MP4 (29.8в): made the first time it is asked for - ffmpeg fetched first, ~86 MB, once."""
+    try:
+        path = await _visual(request).mp4(await _job(request, job_id))
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+    return FileResponse(path, media_type="video/mp4")
 
 
 @router.get("/pictures/{name}")

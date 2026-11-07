@@ -122,6 +122,7 @@
 | GET | `/v1/visual/jobs/{job_id}` | только окно | `one()` |  |
 | POST | `/v1/visual/jobs/{job_id}/cancel` | только окно | `cancel()` |  |
 | GET | `/v1/visual/jobs/{job_id}/file` | только окно | `file()` |  |
+| GET | `/v1/visual/jobs/{job_id}/mp4` | только окно | A video's MP4 (29.8в): made the first time it is asked for - ffmpeg fetched first, ~86 MB, once. |  |
 | GET | `/v1/visual/pictures/{name}` | только окно | A picture a chat holds (data/blobs, by its sha256; 29.6) - only a picture: other files sent with messages are not given here. |  |
 
 ### setup

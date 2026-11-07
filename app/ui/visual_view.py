@@ -532,7 +532,11 @@ class VisualView(QObject):
 
     @Slot(str)
     def saveAs(self, url: str) -> None:
-        video = self._video_file(self._job)  # a video: its WebP as it is (29.8б)
+        video = self._video_file(self._job)  # a video: its WebP as it is (29.8б), or MP4 from the hub (29.8в)
+        target = QUrl(url).toLocalFile() if url.startswith("file:") else url
+        if video is not None and target and not target.lower().endswith(".webp"):
+            self._save_mp4(self._job["id"], target if target.lower().endswith(".mp4") else target + ".mp4")
+            return
         data = video.read_bytes() if video is not None else self.provider.pictures.get(self._job.get("id", ""))
         path = QUrl(url).toLocalFile() if url.startswith("file:") else url
         if not data or not path:
@@ -546,6 +550,23 @@ class VisualView(QObject):
             self.app.show_error(tr("Не сохранить: {error}", error=exc.strerror or exc))
             return
         self.app.flash(tr("Сохранено: {path}", path=path))
+
+    def _save_mp4(self, job_id: str, path: str) -> None:
+        """MP4 (29.8в): made in the hub with ffmpeg - the first time it fetches ffmpeg, ~86 MB."""
+        self.app.flash(tr("Готовлю MP4… В первый раз AFO скачает ffmpeg (~86 МБ)"))
+
+        def keep(data: bytes) -> None:
+            try:
+                Path(path).write_bytes(data)
+            except OSError as exc:
+                self.app.show_error(tr("Не сохранить: {error}", error=exc.strerror or exc))
+                return
+            self.app.flash(tr("Сохранено: {path}", path=path))
+
+        def failed(error: Exception) -> None:
+            self.app.show_error(tr("Не сделать MP4: {error}", error=error))
+
+        self.app._call(lambda: self.app.client.visual_mp4(job_id), keep, failed)
 
     @Slot()
     def openFolder(self) -> None:

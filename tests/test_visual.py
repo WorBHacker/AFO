@@ -669,6 +669,45 @@ def test_a_video_drawn_in_the_background_and_kept(hub):
     assert not hub.app.state.visual.holding
 
 
+def test_a_videos_mp4_made_once_with_ffmpeg_fetched_once(hub, monkeypatch, tmp_path):
+    """29.8в: «Сохранить как…» MP4 - the hub turns the video's WebP into MP4 with ffmpeg (fetched the first time,
+    hub/ffmpeg.py), keeps it beside the WebP; a picture has none."""
+    from hub import ffmpeg
+
+    _install(hub, "clip", CLIP_PLAN)
+    _install(hub)
+    video = _wait(hub, hub.post("/v1/visual/videos", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+    fetched, made = [], []
+    tools = tmp_path / "tools"
+    hub.app.state.visual.tools = tools
+
+    async def latest(http):
+        return {"version": "9.0", "asset": {"name": ffmpeg.ASSET}}
+
+    def install(found, into, cancel):
+        fetched.append(into)
+        (into / "ffmpeg").mkdir(parents=True, exist_ok=True)
+        (into / "ffmpeg" / "ffmpeg.exe").write_bytes(b"MZ")
+        return into / "ffmpeg" / "ffmpeg.exe"
+
+    def to_mp4(program, source, target):
+        made.append((program, source.read_bytes()))
+        target.write_bytes(b"MP4 of " + source.read_bytes()[:4])
+
+    monkeypatch.setattr(ffmpeg, "latest", latest)
+    monkeypatch.setattr(ffmpeg, "install", install)
+    monkeypatch.setattr(ffmpeg, "to_mp4", to_mp4)
+    mp4 = hub.get(f"/v1/visual/jobs/{video['id']}/mp4")
+    assert mp4.status_code == 200 and mp4.headers["content-type"] == "video/mp4" and mp4.content == b"MP4 of RIFF"
+    assert fetched == [tools] and made == [(tools / "ffmpeg" / "ffmpeg.exe", WEBP)]
+    again = hub.get(f"/v1/visual/jobs/{video['id']}/mp4")
+    assert again.content == mp4.content and len(fetched) == 1 and len(made) == 1  # kept beside the WebP
+    assert (hub.app.state.visual.media / video["file"]).with_suffix(".mp4").is_file()
+    picture = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+    refused = hub.get(f"/v1/visual/jobs/{picture['id']}/mp4")
+    assert refused.status_code == 409 and "не видео" in refused.json()["detail"]
+
+
 def test_a_chat_model_films_a_video_and_the_chat_keeps_it(hub):
     """29.8б: generate_video - offered to a chat begun once a video model is here; drawn as any video, waited for,
     the WebP kept with the chat; the model hears its size and length in words."""

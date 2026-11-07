@@ -31,7 +31,9 @@
   its job looked at (`/sdcpp/v1/jobs/<id>`), through llama-swap's `/upstream/<model>/` (it loads the model) - and
   so llama-swap holds nothing meanwhile: a local chat model's request would swap the video's engine out under it
   (29.8 live). The hub holds the card itself: while a video is drawn its llama-swap provider waits before each
-  answer (`gpu_gate`; a «loading» line says why). The result is an animated WebP (the engine's own, 29.8 live).
+  answer (`gpu_gate`; a «loading» line says why). The result is an animated WebP (the engine's own, 29.8 live);
+  its MP4 (29.8в) is made once by ffmpeg when asked for - ffmpeg fetched the first time (hub/ffmpeg.py) - and kept
+  beside it.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -46,6 +48,7 @@ import json
 import logging
 import random
 import struct
+import threading
 import time
 import uuid
 import zlib
@@ -71,7 +74,9 @@ from common.picture_sizes import (
     video_size,
 )
 
+from . import ffmpeg, hf
 from .db import utc_now
+from .engines import EngineError
 
 log = logging.getLogger("hub.visual")
 
@@ -532,6 +537,8 @@ class Visual:
         self._watching: asyncio.Task | None = None  # its progress
         self._watch_stop: asyncio.Event | None = None  # tells the watch to end
         self._stopping: set[str] = set()  # jobs «Стоп» was pressed for
+        self.tools = ffmpeg.home()  # where ffmpeg is fetched to, for a video's MP4 (29.8в)
+        self._ffmpeg = asyncio.Lock()  # one fetch, one conversion at a time
         self._free = asyncio.Event()  # the card: not held by a video (29.8а)
         self._free.set()
         self._more = False  # a job added since the worker last looked at the queue
@@ -795,6 +802,31 @@ class Visual:
         return (f"Drawn and shown to the user in the chat: {done['width']}×{done['height']}, {name}, seed "
                 f"{done['seed']}, {done['seconds']} s. You cannot see the picture - do not describe it as seen; ask "
                 "whether it is what they wanted."), False, data  # fmt: skip
+
+    async def mp4(self, found: dict[str, Any]) -> Path:
+        """A video's MP4 (29.8в): made once with ffmpeg - fetched the first time - and kept beside its WebP."""
+        if found.get("kind") != "video":
+            raise VisualError(tr("это не видео — MP4 бывает только у видео"), 409)
+        source = self.file(found)
+        if source is None:
+            raise VisualError(tr("видео ещё нет"), 404)
+        target = source.with_suffix(".mp4")
+        async with self._ffmpeg:
+            if target.is_file():
+                return target
+            program = await asyncio.to_thread(ffmpeg.find, self.tools)
+            if program is None:
+                try:
+                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                        build = await ffmpeg.latest(http)
+                    program = await asyncio.to_thread(ffmpeg.install, build, self.tools, threading.Event())
+                except (EngineError, hf.HubError) as exc:
+                    raise VisualError(tr("ffmpeg не скачался: {error}", error=exc), 502) from exc
+            try:
+                await asyncio.to_thread(ffmpeg.to_mp4, program, source, target)
+            except EngineError as exc:
+                raise VisualError(str(exc), 502) from exc
+        return target
 
     def file(self, found: dict[str, Any]) -> Path | None:
         path = self.media / found["file"] if found.get("file") else None

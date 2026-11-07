@@ -78,10 +78,11 @@ class HubClient:
             raise HubError(str(detail or f"HTTP {response.status_code}"))
         return response.json() if response.content else None
 
-    def _raw(self, method: str, path: str) -> bytes:
+    def _raw(self, method: str, path: str, timeout: float | None = None) -> bytes:
         """A response's bytes as they are (a picture)."""
+        extra = {"timeout": httpx.Timeout(timeout, connect=3.0)} if timeout else {}
         try:
-            response = self._http.request(method, path, headers=self._headers)
+            response = self._http.request(method, path, headers=self._headers, **extra)
         except httpx.HTTPError as exc:
             raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
         if response.status_code >= 400:
@@ -184,6 +185,10 @@ class HubClient:
     def visual_video(self, spec: dict) -> dict:
         """A video asked for (29.8б): {prompt, model, shape, seconds, hd, seed, conversation_id}."""
         return self._call("POST", "/v1/visual/videos", json=spec)
+
+    def visual_mp4(self, job_id: str) -> bytes:
+        """A video's MP4 (29.8в): the first one fetches ffmpeg in the hub - minutes on a slow line."""
+        return self._raw("GET", f"/v1/visual/jobs/{job_id}/mp4", timeout=900)
 
     def visual_picture(self, blob: str) -> bytes:
         """A picture a chat holds (29.6), by its sha256."""

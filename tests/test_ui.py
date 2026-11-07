@@ -667,6 +667,10 @@ class FakeClient:
     def visual_file(self, job_id):
         return PICTURE
 
+    def visual_mp4(self, job_id):
+        self.visual_calls.append(("mp4", job_id))
+        return b"MP4 of " + job_id.encode()
+
     def visual_picture(self, blob):
         self.visual_calls.append(("picture", blob))
         return PICTURE
@@ -6694,8 +6698,11 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         app.on_event({"type": "visual.changed", "payload": {"job": finished}})
         assert view.done and view.videoSource == QUrl.fromLocalFile(str(clip)).toString()
         assert view.pictureSource == "" and view.statusText == "готово за 22 с"
-        view.saveAs(str(tmp_path / "лиса"))
+        view.saveAs(str(tmp_path / "лиса.webp"))
         assert (tmp_path / "лиса.webp").read_bytes() == clip.read_bytes()
+        view.saveAs(QUrl.fromLocalFile(str(tmp_path / "лиса")).toString())  # 29.8в: MP4 unless WebP is chosen
+        wait_until(lambda: not app.bg.busy and (tmp_path / "лиса.mp4").exists())
+        assert (tmp_path / "лиса.mp4").read_bytes() == b"MP4 of " + filmed["id"].encode()
         assert any(r["id"] == filmed["id"] and r["video"] for r in view.recent)
         view.setMode("picture")
 
