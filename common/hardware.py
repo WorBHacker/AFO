@@ -6,12 +6,17 @@ Windows only, without administrator rights and without extra packages: the displ
 (HKLM\\...\\Class\\{4d36e968-...}\\0000, 0001...) carry each card's name, vendor (PCI\\VEN_xxxx), driver version and
 memory (HardwareInformation.qwMemorySize - the true size, where WMI's AdapterRAM stops at 4 GB); NVIDIA's driver
 says through NVML which CUDA version it runs. Virtual adapters (no PCI vendor) are left out.
+
+Pictures and videos (stage 29.2, D55) need more: DXGI's dedicated and shared memory (an integrated card has little of
+the first and works in the second), NVIDIA's compute capability (stable-diffusion.cpp's CUDA build starts at Pascal,
+6.1), whether Vulkan's loader is installed, and the processor's vector units.
 """
 
 from __future__ import annotations
 
 import contextlib
 import ctypes
+import os
 import re
 import sys
 from typing import Any
@@ -81,9 +86,86 @@ def nvidia_driver() -> dict[str, Any] | None:
         if nvml.nvmlSystemGetCudaDriverVersion_v2(ctypes.byref(cuda)) != 0:
             return None
         nvml.nvmlSystemGetDriverVersion(version, 80)
-        return {"version": version.value.decode("ascii", "replace"), "cuda": cuda.value}
+        device, major, minor = ctypes.c_void_p(), ctypes.c_int(), ctypes.c_int()
+        found = nvml.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(device)) == 0
+        found = found and nvml.nvmlDeviceGetCudaComputeCapability(device, ctypes.byref(major), ctypes.byref(minor)) == 0
+        return {"version": version.value.decode("ascii", "replace"), "cuda": cuda.value,
+                "compute": [major.value, minor.value] if found else None}  # the first card's  # fmt: skip
     except OSError, AttributeError:
         return None
+
+
+class _AdapterDesc1(ctypes.Structure):
+    _fields_ = [("Description", ctypes.c_wchar * 128), ("VendorId", ctypes.c_uint), ("DeviceId", ctypes.c_uint),
+                ("SubSysId", ctypes.c_uint), ("Revision", ctypes.c_uint), ("DedicatedVideoMemory", ctypes.c_size_t),
+                ("DedicatedSystemMemory", ctypes.c_size_t), ("SharedSystemMemory", ctypes.c_size_t),
+                ("AdapterLuid", ctypes.c_uint * 2), ("Flags", ctypes.c_uint)]  # fmt: skip
+
+
+DXGI_SOFTWARE = 2  # DXGI_ADAPTER_FLAG_SOFTWARE: Windows' own renderer on the processor
+
+
+def _dxgi_card(name: str, vendor: int, dedicated: int, shared: int, flags: int) -> dict[str, Any] | None:
+    if flags & DXGI_SOFTWARE:
+        return None
+    return {"name": name, "vendor": VENDORS.get(f"{vendor:04x}", "other"), "dedicated_gib": round(dedicated / GIB, 1),
+            "shared_gib": round(shared / GIB, 1)}  # fmt: skip
+
+
+def _method(obj: ctypes.c_void_p, index: int, *argtypes):
+    """A COM object's method by its place in the vtable, called with the object as the first argument."""
+    vtable = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(vtable[index])
+
+
+def dxgi_adapters() -> list[dict[str, Any]]:
+    """The hardware adapters as DXGI sees them: name, vendor, dedicated video memory and the system memory each may
+    share, in GiB; [] where DXGI does not answer."""
+    if sys.platform != "win32":
+        return []
+    iid = (ctypes.c_byte * 16).from_buffer_copy(bytes.fromhex("78ae0a776ff2ba4da829253c83d1b387"))  # IDXGIFactory1
+    factory = ctypes.c_void_p()
+    try:
+        if ctypes.windll.dxgi.CreateDXGIFactory1(ctypes.byref(iid), ctypes.byref(factory)) != 0:
+            return []
+    except OSError, AttributeError:
+        return []
+    out, seen = [], set()
+    try:
+        for i in range(16):
+            adapter = ctypes.c_void_p()
+            if _method(factory, 12, ctypes.c_uint, ctypes.c_void_p)(factory, i, ctypes.byref(adapter)) != 0:
+                break  # DXGI_ERROR_NOT_FOUND: no more adapters
+            desc = _AdapterDesc1()
+            try:
+                if _method(adapter, 10, ctypes.c_void_p)(adapter, ctypes.byref(desc)) != 0:  # GetDesc1
+                    continue
+                card = _dxgi_card(desc.Description, desc.VendorId, desc.DedicatedVideoMemory, desc.SharedSystemMemory,
+                                  desc.Flags)  # fmt: skip
+                # One card can be listed twice under two LUIDs (seen here with the driver restarted); two cards of
+                # one model are then one entry too - an engine runs on one card.
+                model = (desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Revision)
+                if card and model not in seen:
+                    seen.add(model)
+                    out.append(card)
+            finally:
+                _method(adapter, 2)(adapter)  # Release
+    finally:
+        _method(factory, 2)(factory)
+    return out
+
+
+def vulkan_loader() -> bool:
+    """Whether Vulkan's loader is installed: the graphics drivers of NVIDIA, AMD and Intel put it in System32."""
+    system = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32")
+    return sys.platform == "win32" and os.path.isfile(os.path.join(system, "vulkan-1.dll"))
+
+
+def cpu_features() -> dict[str, bool]:
+    """The processor's vector units: the engines on the processor are several times faster with AVX2."""
+    present = ctypes.windll.kernel32.IsProcessorFeaturePresent if sys.platform == "win32" else (lambda _: 0)
+    # PF_AVX_INSTRUCTIONS_AVAILABLE, PF_AVX2_..., PF_AVX512F_...
+    return {"avx": bool(present(39)), "avx2": bool(present(40)), "avx512": bool(present(41))}
 
 
 def build_for(cards: list[dict[str, Any]], nvidia: dict[str, Any] | None) -> dict[str, str]:
