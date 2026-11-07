@@ -22,7 +22,7 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
-from common.picture_sizes import fit
+from common.picture_sizes import CPU_PIXELS, fit
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -188,8 +188,14 @@ class VisualView(QObject):
         model = pick_model(self._models, self._default, self._quality)
         if model is None:
             return None, 0, 0, ""
-        why = ""
-        instead = next((m for m in self._models if m["model_id"] == model.get("instead")), None)
+        why, wanted = "", model.get("instead")
+        base = next((m for m in self._models if wanted and m.get("cpu_id") == wanted), None)
+        if base is not None:  # the card draws nothing here: its block on the processor (29.4в)
+            width, height = fit(*size_for(self._shape, base["size"]), CPU_PIXELS)
+            why = tr("рисует процессор: видеокарта здесь не вышла") if base is model else tr(
+                "{model} здесь не выходит — рисует процессор", model=model["name"])  # fmt: skip
+            return {**base, "model_id": wanted}, width, height, why
+        instead = next((m for m in self._models if m["model_id"] == wanted), None)
         if instead is not None:
             why, model = tr("{model} здесь не выходит", model=model["name"]), instead
         width, height = size_for(self._shape, model["size"])
@@ -205,6 +211,11 @@ class VisualView(QObject):
         if not tries:
             return ""
         model_id, first = self._job.get("model_id"), tries[0]
+        base = next((m for m in self._models if model_id and m.get("cpu_id") == model_id), None)
+        if base is not None and model_id != first.get("model_id"):  # its block on the processor (29.4в)
+            if base["model_id"] == first.get("model_id"):
+                return tr("процессором")
+            return tr("моделью {name} на процессоре", name=base["name"])
         if model_id != first.get("model_id"):
             name = next((m["name"] for m in self._models if m["model_id"] == model_id), model_id)
             return tr("моделью {name}", name=name)

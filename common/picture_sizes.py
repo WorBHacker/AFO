@@ -7,6 +7,7 @@ import math
 
 SIDES = (256, 2048)  # a side, in pixels
 GRID = 16  # FLUX's latent grid (8 × 2); SD's 8 divides it
+CPU_PIXELS = 512 * 512  # on the processor no more: past it a picture takes minutes (29.1: FLUX.2-klein 512² - 92 s)
 
 
 def snap(side: float) -> int:

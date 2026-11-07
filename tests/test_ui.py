@@ -6004,6 +6004,8 @@ def test_installing_a_local_model_from_the_window(qapp):
     assert trial_text({"status": "done", "trial": {"seconds": 4.6, "tok_s": 85.4, "where": "gpu", "tries": [{}, {}]}}
                       ) == "загрузилась и ответила за 4,6 с · 85 ток/с · целиком в видеопамяти · с 2-й попытки — " \
                            "настройки уменьшены"  # fmt: skip
+    assert trial_text({"status": "done", "trial": {"seconds": 31.0, "size": 512, "where": "cpu"}}) == (  # 29.4в
+        "загрузилась и ответила за 31,0 с · на процессоре — видеокарта здесь не нарисовала")  # fmt: skip
     quick = QuickApp(qapp, data_paths().ensure(), connect=False)
     try:
         app = quick.controller
@@ -6570,6 +6572,21 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
                                                            "width": 672, "height": 384, "seed": 0}  # fmt: skip
         view.setQuality("fast")
         assert view.modelText == "FLUX.2 [klein] 4B · 672 × 384 — крупнее здесь не выходит"
+        # 29.4в: the card draws nothing here - the processor does, and the sheet says so before
+        client.visual_rungs = {"flux2-klein-4b": {"instead": "flux2-klein-4b-cpu", "cpu_id": "flux2-klein-4b-cpu"}}
+        view.load()
+        wait_until(lambda: not app.bg.busy and "процессор" in view.modelText)
+        assert view.modelText == "FLUX.2 [klein] 4B · 672 × 384 — рисует процессор: видеокарта здесь не вышла"
+        cpu_try = {**tries[1], "model_id": "flux2-klein-4b-cpu", "rung": "cpu"}
+        on_cpu = {**client.visual_jobs_list[0], "status": "done", "seconds": 12.0, "model_id": "flux2-klein-4b-cpu",
+                  "tries": [{**tries[0], "model_id": "flux2-klein-4b"}, cpu_try]}  # fmt: skip
+        app.on_event({"type": "visual.changed", "payload": {"job": on_cpu}})
+        assert view.statusText == "готово за 12 с — процессором"
+        view.again()
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 5)
+        assert client.visual_calls[-1][1] | {"seed": 0} == {"prompt": "рыжая лиса в снегу",
+                                                           "model": "flux2-klein-4b-cpu", "width": 672, "height": 384,
+                                                           "seed": 0}  # fmt: skip
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

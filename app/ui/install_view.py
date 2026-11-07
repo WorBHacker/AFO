@@ -35,7 +35,8 @@ ACTIONS = {
     "done": [("remove", N_("Удалить"), "danger")],
 }
 LIVE = ("queued", "downloading", "configuring", "trial")
-WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ")}
+WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
+         "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
 PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
 
 

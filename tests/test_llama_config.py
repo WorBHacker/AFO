@@ -155,7 +155,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     config = None
     frozen = None
     fail = False
-    blank = False  # a picture model answers «success» with a flat grey picture (29.3)
+    blank: ClassVar = False  # a picture model answers «success» with a flat grey picture (29.3): all, or those named
     asked: ClassVar[list] = []
 
     def log_message(self, *args):
@@ -187,7 +187,8 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             self._send(502, {"error": "upstream command exited prematurely"})
             return
         if self.path == "/v1/images/generations":  # a picture model's trial (29.3)
-            picture = GREY if self.blank else PICTURE
+            blank = self.blank is True or (isinstance(self.blank, set) and body.get("model") in self.blank)
+            picture = GREY if blank else PICTURE
             self._send(200, {"data": [{"b64_json": base64.b64encode(picture).decode()}]})
             return
         chunks = [

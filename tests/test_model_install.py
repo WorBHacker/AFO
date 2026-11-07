@@ -76,7 +76,9 @@ PICTURES = {"test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
             "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000}}  # fmt: skip
 ENGINE = {f"sd-master-{engines.SD_TAG.rsplit('-', 1)[1]}-bin-win-cuda12-x64.zip":
           _zip({"sd-server.exe": b"MZ server", "ggml-cuda.dll": b"MZ"}),
-          "cudart-sd-bin-win-cu12-x64.zip": _zip({"cudart64_12.dll": b"MZ"})}  # fmt: skip
+          "cudart-sd-bin-win-cu12-x64.zip": _zip({"cudart64_12.dll": b"MZ"}),
+          f"sd-master-{engines.SD_TAG.rsplit('-', 1)[1]}-bin-win-cpu-x64.zip":
+          _zip({"sd-server.exe": b"MZ cpu server", "ggml-cpu-x64.dll": b"MZ"})}  # fmt: skip
 
 
 class FakeHub(BaseHTTPRequestHandler):
@@ -555,7 +557,9 @@ MACHINE = {"build": "cuda12", "card": "RTX", "memory_gib": 15.6, "pictures": "ma
 
 def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkeypatch):
     """29.3 (D55): a picture model - files from three repositories - and, with the first one, the picture engine's
-    pinned build from GitHub; the trial is a picture through llama-swap, a blank one does not count."""
+    pinned build from GitHub; the trial is a picture through llama-swap, a blank one does not count. 29.4в: beside
+    the card's build, the processor's - and each model a second block on it, the ladder's last rung before the
+    cloud; a model whose trial does not come out on the card is tried on the processor."""
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
     catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
     catalog["pictures"] = [DRAW, {**DRAW, "id": "best", "tier": "quality", "name": "Best"}]
@@ -575,7 +579,9 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
         "recommended": {"quant": "", "size": 160_000, "verdict": "gpu", "words": "быстро"}}  # fmt: skip
 
     job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
-    assert [f["role"] for f in job["files"]] == ["engine", "engine", "diffusion-model", "llm", "vae"]
+    assert [(f["role"], f.get("build")) for f in job["files"]] == [
+        ("engine", "cuda12"), ("engine", "cuda12"), ("engine", "cpu"), ("diffusion-model", None), ("llm", None),
+        ("vae", None)]  # fmt: skip
     assert job["total_bytes"] == 160_000 + sum(len(d) for d in ENGINE.values())
     done = wait_for(hub, job["id"], "done", "failed")
     assert done["status"] == "done", done["error"]
@@ -584,7 +590,13 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     server = engines_home() / "stable-diffusion.cpp" / f"{engines.SD_TAG}-cuda12" / "sd-server.exe"
     assert server.read_bytes() == b"MZ server" and lc.macros(text)["sd_server"] == f'"{server.as_posix()}"'
     assert (server.parent / "cudart64_12.dll").exists()  # the CUDA runtime beside it
+    cpu = engines_home() / "stable-diffusion.cpp" / f"{engines.SD_TAG}-cpu" / "sd-server.exe"
+    assert cpu.read_bytes() == b"MZ cpu server" and lc.macros(text)["sd_server_cpu"] == f'"{cpu.as_posix()}"'
+    assert done["plan"]["cpu"] == "draw-cpu" and done["trial"].get("where") != "cpu"  # the card drew it
+    on_cpu = lc.model_view(text, "draw-cpu")
+    assert on_cpu["engine"] == lc.SD_ENGINE and on_cpu["command"].startswith(f'"{cpu.as_posix()}"')
     view = lc.model_view(text, "draw")
+    assert on_cpu["command"].replace(cpu.as_posix(), server.as_posix()) == view["command"]  # the same files
     folder = hub.tmp / "localchat-model" / "pictures" / "draw"
     assert view["engine"] == lc.SD_ENGINE and "--steps 4" in view["command"]
     assert f'--vae "{(folder / "vae.safetensors").as_posix()}"' in view["command"]
@@ -593,7 +605,10 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
                                                         "response_format": "b64_json"}  # fmt: skip
     assert FakeHub.picture_auth and set(FakeHub.picture_auth) == {"Bearer hf_good"}
     assert FakeHub.github_auth and not any(FakeHub.github_auth)
-    assert "llama-swap/draw" not in {m["id"] for m in hub.get("/v1/models").json()["models"]}  # not a chat model
+    chat = {m["id"] for m in hub.get("/v1/models").json()["models"]}
+    assert "llama-swap/draw" not in chat and "llama-swap/draw-cpu" not in chat  # not chat models
+    assert [(m["model_id"], m["cpu_id"]) for m in hub.get("/v1/visual/models").json()["models"]] == [
+        ("draw", "draw-cpu")]  # fmt: skip
     assert hub.get("/v1/install/pictures").json()["models"][0]["installed"] == ["draw"]
     again = hub.post("/v1/install/pictures", json={"id": "draw"})
     assert again.status_code == 409 and "уже установлена" in again.json()["detail"]
@@ -601,14 +616,24 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     gone = hub.delete("/v1/install/models/draw").json()["job"]
     assert gone["status"] == "removed" and not folder.exists() and server.exists()  # the engine stays for others
     text = hub.config.read_text(encoding="utf-8")
-    assert "draw" not in lc.model_blocks(text) and "sd_server" in lc.macros(text)
+    assert not {"draw", "draw-cpu"} & set(lc.model_blocks(text)) and "sd_server" in lc.macros(text)
 
-    FakeLlamaSwap.blank = True  # the next one: no engine to fetch; its trial picture comes out flat grey
+    FakeLlamaSwap.blank = {"draw"}  # the next one: no engine to fetch; on the card its trial comes out flat grey
     job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
     assert [f["role"] for f in job["files"]] == ["diffusion-model", "llm", "vae"]
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done" and done["trial"]["where"] == "cpu", done["error"]  # the processor drew it
+    assert [b["model"] for b in FakeLlamaSwap.asked[-2:]] == ["draw", "draw-cpu"]
+    models = hub.get("/v1/visual/models").json()["models"]
+    assert (models[0]["instead"], models[0]["cpu_id"]) == ("draw-cpu", "draw-cpu")  # pictures begin there
+    hub.delete("/v1/install/models/draw")
+
+    FakeLlamaSwap.blank = True  # grey on the processor too: it does not count
+    job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
     failed = wait_for(hub, job["id"], "failed", "done")
     assert failed["status"] == "failed" and "пустой" in failed["error"] and "Повторить" in failed["error"]
-    assert "draw" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))  # withdrawn; its files stay
+    text = hub.config.read_text(encoding="utf-8")
+    assert not {"draw", "draw-cpu"} & set(lc.model_blocks(text))  # withdrawn, both; its files stay
     assert (folder / "draw-Q4_0.gguf").exists()
     assert hub.post("/v1/install/pictures", json={"id": "nope"}).status_code == 404
 

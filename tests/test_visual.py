@@ -180,6 +180,25 @@ def test_the_ladder_goes_smaller_then_lighter():
         assert _rungs(FLUX, 1024, 1024, models, {"flux": odd})[0] == ("flux", 1024, 1024, "asked")
 
 
+def test_the_processor_is_the_last_rung():
+    """29.4в: where a model has a block on the processor's build, the lightest one there is the last rung - no more
+    pixels than CPU_PIXELS; remembered, a picture begins there."""
+    flux, sdxs = {**FLUX, "cpu_id": "flux-cpu"}, {**SDXS, "cpu_id": "sdxs-cpu"}
+    assert _rungs(flux, 1024, 1024, [sdxs, flux], {})[-2:] == [("sdxs", 256, 256, "smaller"),
+                                                              ("sdxs-cpu", 512, 512, "cpu")]  # fmt: skip
+    zimg = {**ZIMG, "cpu_id": "zimg-cpu"}
+    assert len(_rungs(zimg, 1024, 1024, [sdxs, flux, zimg], {})) == visual.MAX_TRIES + 1
+    assert _rungs(flux, 1344, 768, [flux], {}) == [("flux", 1344, 768, "asked"), ("flux", 672, 384, "smaller"),
+                                                   ("flux-cpu", 672, 384, "cpu")]  # fmt: skip
+    assert _rungs(flux, 1344, 768, [flux], {"flux": {"instead": "flux-cpu"}}) == [("flux-cpu", 672, 384, "asked")]
+    on_cpu = visual.on_cpu([sdxs, flux, FLUX])
+    assert [(m["model_id"], m["of"]) for m in on_cpu] == [("sdxs-cpu", "sdxs"), ("flux-cpu", "flux")]
+    assert _rungs(on_cpu[1], 1024, 1024, [sdxs, flux], {}) == [("flux-cpu", 512, 512, "asked")]  # asked for itself
+    tries = [{"model_id": m, "width": 512, "height": 512, "rung": r, "ok": ok} for m, r, ok in (
+        ("flux", "asked", False), ("sdxs", "lighter", False), ("sdxs-cpu", "cpu", True))]  # fmt: skip
+    assert visual.learned(tries, "flux") == {"flux": {"instead": "sdxs-cpu"}, "sdxs": {"instead": "sdxs-cpu"}}
+
+
 def test_what_the_ladder_learns():
     def tried(*rows):
         return [{"model_id": m, "width": w, "height": h, "rung": r, "ok": ok} for m, w, h, r, ok in rows]
@@ -394,12 +413,74 @@ def test_a_picture_that_fails_goes_a_rung_lower_and_the_rung_is_remembered(hub):
     assert (models["draw"]["pixels"], models["draw"]["instead"]) == (0, "")
 
 
+def test_where_the_card_draws_nothing_the_processor_does(hub):
+    """29.4в: blank on the card at every rung - the model's block on the processor's build draws it; remembered, the
+    next picture goes there at once; the window may ask for it by its own name."""
+    _install(hub, plan={**DRAW_PLAN, "cpu": "draw-cpu"})
+    FakeDrawSwap.answer = lambda body: "picture" if body["model"] == "draw-cpu" else "blank"
+    job = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done" and done["model_id"] == "draw-cpu"
+    assert [(t["model_id"], t["rung"], t["ok"]) for t in done["tries"]] == [
+        ("draw", "asked", False), ("draw", "smaller", False), ("draw-cpu", "cpu", True)]  # fmt: skip
+    assert FakeDrawSwap.asked[-1]["steps"] == 4  # the model's own steps on the processor too
+    models = hub.get("/v1/visual/models").json()["models"]
+    assert [(m["model_id"], m["cpu_id"], m["instead"]) for m in models] == [("draw", "draw-cpu", "draw-cpu")]
+    asked = len(FakeDrawSwap.asked)
+    again = _wait(hub, hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+    assert len(FakeDrawSwap.asked) == asked + 1 and again["model_id"] == "draw-cpu"
+    by_name = hub.post("/v1/visual/images", json={"prompt": "a fox", "model": "draw-cpu", "width": 256,
+                                                  "height": 256}).json()["job"]  # fmt: skip
+    assert _wait(hub, by_name["id"], "done")["model_id"] == "draw-cpu" and FakeDrawSwap.asked[-1]["width"] == 256
+
+
 def test_without_llama_swap_the_ladder_stops_at_once(hub):
     _install(hub)
     hub.app.state.visual._url = "http://127.0.0.1:9"  # nothing listens there
     job = hub.post("/v1/visual/images", json={"prompt": "a fox"}).json()["job"]
     failed = _wait(hub, job["id"], "failed", "done")
     assert len(failed["tries"]) == 1 and "llama-swap не ответил" in failed["error"]
+
+
+def test_the_progress_watch_ends_even_when_its_cancel_is_swallowed(monkeypatch, tmp_path):
+    """2026-11-07: a cancel that reaches httpx mid-request can come out as an HTTPError (anyio under it) - the watch
+    let that pass and went on asking for the progress, and the picture waited for it for ever (one test run in five
+    hung «рисую»). A stop flag ends it whatever the cancel became."""
+
+    class Swallowing:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                raise httpx.ReadError("cancelled mid-request") from None
+
+    class Bus:
+        async def publish(self, *args, **kw):
+            pass
+
+    monkeypatch.setattr(visual.httpx, "AsyncClient", Swallowing)
+    monkeypatch.setattr(visual, "STEP_S", 0.01)
+
+    async def run():
+        watcher = visual.Visual(None, Bus(), llama_swap_url="http://swap", media=tmp_path, machine=dict)
+        stop = asyncio.Event()
+        task = asyncio.create_task(watcher._watch("job", "draw", stop))
+        await asyncio.sleep(0.1)  # inside its request
+        stop.set()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=3.0)
+        return task in done
+
+    assert asyncio.run(run())
 
 
 def test_pictures_a_stopped_hub_left_going_fail(hub):

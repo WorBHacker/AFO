@@ -15,7 +15,9 @@
   the same shape, then smaller). The rung it came out on is remembered for that model on this computer (a settings
   row, by the build, the card and its memory - data moved to another computer does not take it along): the next
   picture begins there. The weights' place in memory and the VAE in tiles after running out are the engine's own
-  rungs (29.1); the cloud's card comes with 29.7.
+  rungs (29.1). The last rung (29.4в): where the engine is the card's build, each model has a second block on the
+  processor's (`<model>-cpu`, hub/model_install.py) - when nothing came out on the card, the lightest model there
+  draws it, no more than CPU_PIXELS; the cloud's card comes after it, with 29.7.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -41,7 +43,7 @@ from typing import Any
 import httpx
 
 from common.i18n import tr
-from common.picture_sizes import SIDES, fit, half, moved
+from common.picture_sizes import CPU_PIXELS, SIDES, fit, half, moved
 
 from .db import utc_now
 
@@ -234,6 +236,7 @@ async def trial(base_url: str, model_id: str, *, size: int = TRIAL_SIZE,
 # --- the pictures people ask for (29.4) ---
 
 STEP_S = 0.5  # how often the progress is asked while a picture is drawn
+WATCH_END_S = 15.0  # a progress watch told to stop ends within its request's timeout
 PICTURE_TIMEOUT_S = 1800.0  # half an hour at most: the processor and a big model (29.1)
 LIVE = ("queued", "running")
 SIZES = SIDES  # a side, in pixels; a multiple of 16 (the models' latent grid)
@@ -282,7 +285,8 @@ def _flag(flags: list[str], name: str, default: float) -> float:
 
 
 def installed(conn) -> list[dict[str, Any]]:
-    """The picture models AFO installed (29.3): {model_id, name, tier, size, steps, cfg}."""
+    """The picture models AFO installed (29.3): {model_id, name, tier, size, steps, cfg, cpu_id - its block on the
+    processor's build, or ""}."""
     out = []
     for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
         plan = json.loads(row["plan"] or "{}")
@@ -291,8 +295,13 @@ def installed(conn) -> list[dict[str, Any]]:
         flags = [str(f) for f in plan.get("flags") or []]
         out.append({"model_id": row["model_id"], "name": row["name"], "tier": plan.get("tier", "main"),
                     "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
-                    "cfg": _flag(flags, "--cfg-scale", 1.0)})  # fmt: skip
+                    "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or ""})  # fmt: skip
     return out
+
+
+def on_cpu(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The models' blocks on the processor's build (29.4в), each as a model of its own: `of` - whose it is."""
+    return [{**m, "model_id": m["cpu_id"], "cpu_id": "", "of": m["model_id"]} for m in models if m.get("cpu_id")]
 
 
 def _rank(model: dict[str, Any]) -> int:
@@ -303,11 +312,17 @@ def rungs(model: dict[str, Any], width: int, height: int, models: list[dict[str,
           remembered: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:  # fmt: skip
     """A picture's tries until one comes out (29.4б): as asked, then a quarter of the pixels, then each lighter model -
     its own size in the same shape, then smaller. Where it came out here before (`remembered`, by model) is where it
-    begins: the model that did instead of this one, no more pixels than came out."""
-    instead = next((m for m in models if m["model_id"] == (remembered.get(model["model_id"]) or {}).get("instead")),
-                   None)  # fmt: skip
+    begins: the model that did instead of this one, no more pixels than came out. The last rung is the processor's
+    (29.4в): the lightest model with a block there."""
+    cards, cpus = [m for m in models if not m.get("of")], on_cpu(models)
+    if model.get("of"):  # its block on the processor, asked for by name
+        return [_cpu_rung(model, model, width, height, remembered, "asked")]
+    instead = next((m for m in [*cards, *cpus] if m["model_id"] == (remembered.get(model["model_id"]) or {}).get(
+        "instead")), None)  # fmt: skip
+    if instead is not None and instead.get("of") and _rank(instead) <= _rank(model):
+        return [_cpu_rung(model, instead, width, height, remembered, "asked")]
     first = instead if instead is not None and _rank(instead) < _rank(model) else model
-    chain = [first, *sorted((m for m in models if _rank(m) < _rank(first)), key=_rank, reverse=True)]
+    chain = [first, *sorted((m for m in cards if _rank(m) < _rank(first)), key=_rank, reverse=True)]
     out = []
     for each in chain:
         w, h = moved(width, height, model["size"], each["size"])
@@ -315,7 +330,18 @@ def rungs(model: dict[str, Any], width: int, height: int, models: list[dict[str,
         out.append({"model_id": each["model_id"], "width": w, "height": h, "rung": "lighter" if out else "asked"})
         if smaller := half(w, h):
             out.append({"model_id": each["model_id"], "width": smaller[0], "height": smaller[1], "rung": "smaller"})
-    return out[:MAX_TRIES]
+    out = out[:MAX_TRIES]
+    last = min((m for m in cpus if _rank(m) <= _rank(first)), key=_rank, default=None)
+    if last is not None:
+        out.append(_cpu_rung(model, last, width, height, remembered, "cpu"))
+    return out
+
+
+def _cpu_rung(model: dict[str, Any], cpu: dict[str, Any], width: int, height: int,
+              remembered: dict[str, dict[str, Any]], rung: str) -> dict[str, Any]:  # fmt: skip
+    w, h = fit(*moved(width, height, model["size"], cpu["size"]), CPU_PIXELS)
+    w, h = fit(w, h, int((remembered.get(cpu["model_id"]) or {}).get("pixels") or 0))
+    return {"model_id": cpu["model_id"], "width": w, "height": h, "rung": rung}
 
 
 def learned(tries: list[dict[str, Any]], asked: str) -> dict[str, dict[str, Any]]:
@@ -378,7 +404,9 @@ class Visual:
         self._task: asyncio.Task | None = None
         self._running: str | None = None  # the job being drawn
         self._watching: asyncio.Task | None = None  # its progress
+        self._watch_stop: asyncio.Event | None = None  # tells the watch to end
         self._stopping: set[str] = set()  # jobs «Стоп» was pressed for
+        self._more = False  # a job added since the worker last looked at the queue
 
     async def start(self) -> int:
         """Pictures a stopped hub left going are failed: llama-swap let them go with it."""
@@ -416,8 +444,8 @@ class Visual:
         if not prompt:
             raise VisualError(tr("нужно описание картинки"), 422)
         found = await self._db.acall(installed)
-        if spec.get("model"):
-            model = next((m for m in found if m["model_id"] == spec["model"]), None)
+        if spec.get("model"):  # a model, or its block on the processor (29.4в)
+            model = next((m for m in [*found, *on_cpu(found)] if m["model_id"] == spec["model"]), None)
             if model is None:
                 raise VisualError(tr("нет модели картинок {model}", model=spec["model"]), 404)
         else:
@@ -442,6 +470,7 @@ class Visual:
             )  # fmt: skip
 
         await self._db.acall(add)
+        self._more = True
         await self._publish(job_id)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
@@ -456,6 +485,7 @@ class Visual:
         elif found["status"] == "running":
             self._stopping.add(job_id)
             if self._watching is not None:  # its next look at the progress would load the model again
+                self._watch_stop.set()
                 self._watching.cancel()
             with contextlib.suppress(httpx.HTTPError):
                 async with httpx.AsyncClient(timeout=30.0) as http:
@@ -483,8 +513,11 @@ class Visual:
                                      "LIMIT 1").fetchone()  # fmt: skip
                 return _row(found) if found else None
 
+            self._more = False
             found = await self._db.acall(oldest)
             if found is None:
+                if self._more:  # one asked for while the queue was looked at: draw() saw this still going
+                    continue
                 return
             self._running = found["id"]
             try:
@@ -500,7 +533,8 @@ class Visual:
     async def _run(self, found: dict[str, Any]) -> None:
         job_id = found["id"]
         models = await self._db.acall(installed)
-        model = next((m for m in models if m["model_id"] == found["model_id"]), None)
+        by_id = {m["model_id"]: m for m in [*models, *on_cpu(models)]}
+        model = by_id.get(found["model_id"])
         if model is None:
             await self._set(job_id, status="failed", error=tr("модель картинок {model} удалена",
                                                                model=found["model_id"]))  # fmt: skip
@@ -508,7 +542,6 @@ class Visual:
         here = computer(await asyncio.to_thread(self._machine))
         ladder = rungs(model, found["width"], found["height"], models, await self._db.acall(
             lambda conn: remembered(conn, here)))  # fmt: skip
-        by_id = {m["model_id"]: m for m in models}
         tries: list[dict[str, Any]] = []
         picture, start = None, time.monotonic()
         for rung in ladder:
@@ -547,7 +580,8 @@ class Visual:
                 "width": rung["width"], "height": rung["height"], "seed": found["seed"], "steps": model["steps"],
                 "cfg_scale": model["cfg"], "batch_size": 1}  # fmt: skip
         start = time.monotonic()
-        self._watching = asyncio.create_task(self._watch(job_id, rung["model_id"]))
+        self._watch_stop = asyncio.Event()
+        self._watching = asyncio.create_task(self._watch(job_id, rung["model_id"], self._watch_stop))
         response, error, gone = None, "", False
         try:
             async with httpx.AsyncClient(timeout=PICTURE_TIMEOUT_S) as http:
@@ -555,10 +589,10 @@ class Visual:
         except httpx.HTTPError as exc:
             error, gone = _no_answer(exc), isinstance(exc, httpx.ConnectError)
         finally:
+            self._watch_stop.set()
             self._watching.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._watching
-            self._watching = None
+            await asyncio.wait({self._watching}, timeout=WATCH_END_S)  # not `await`: it may outlive its cancel
+            self._watching = self._watch_stop = None
         seconds = round(time.monotonic() - start, 1)
         picture = None
         if response is not None and response.status_code != 200:
@@ -572,11 +606,15 @@ class Visual:
             picture, error = None, _blank_words()
         return picture, error, gone, seconds
 
-    async def _watch(self, job_id: str, model_id: str) -> None:
-        """The picture's step and preview to the window while it is drawn."""
+    async def _watch(self, job_id: str, model_id: str, stop: asyncio.Event) -> None:
+        """The picture's step and preview to the window while it is drawn - until `stop`: a cancel alone is not
+        enough, httpx (anyio under it) can turn one that comes mid-request into an HTTPError, which this lets pass;
+        the watch then went on for ever, and the picture waited for it (2026-11-07, one test run in five)."""
         async with httpx.AsyncClient(timeout=10.0) as http:
-            while True:
+            while not stop.is_set():
                 await asyncio.sleep(STEP_S)
+                if stop.is_set():
+                    return
                 with contextlib.suppress(httpx.HTTPError, ValueError):
                     said = (await http.get(f"{self._url}/upstream/{model_id}/sdapi/v1/progress")).json()
                     state = said.get("state") or {}

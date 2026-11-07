@@ -56,6 +56,7 @@ log = logging.getLogger("hub.install")
 CATALOG = Path(__file__).with_name("model_catalog.json")
 PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать")}
 SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
+SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -120,9 +121,9 @@ def this_computer() -> dict[str, Any]:
     return hardware.pictures_here((memory_sample() or {}).get("ram_total_gib") or 0)
 
 
-def sd_server(text: str) -> Path | None:
-    """The sd-server a config's `sd_server` macro names, when it is there."""
-    value = llama_config.macros(text).get(SD_MACRO)
+def sd_server(text: str, macro: str = SD_MACRO) -> Path | None:
+    """The sd-server a config's `sd_server` macro (or `sd_server_cpu`) names, when it is there."""
+    value = llama_config.macros(text).get(macro)
     path = Path(value.strip("'\"")) if value else None
     return path if path is not None and path.is_file() else None
 
@@ -463,20 +464,26 @@ class Installer:
         return listed
 
     async def _engine_files(self, build: str) -> list[dict[str, Any]]:
-        """The picture engine's archives when the config names no sd-server yet: its pinned build for this computer."""
-        if sd_server(await asyncio.to_thread(config_text)) is not None:
-            return []
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-                release = await engines.sd_cpp_release(http, build)
-        except engines.EngineError as exc:
-            raise InstallError(str(exc), 502) from exc
-        missing = [a["name"] for a in release["assets"] if not a["sha256"]]
-        if missing:  # as llama.cpp's (D46): nothing to run without it
-            raise InstallError(tr("GitHub не дал контрольную сумму для {files}: без неё программа не ставится",
-                                  files=", ".join(missing)), 502)  # fmt: skip
-        return [{"path": a["name"], "url": a["url"], "size": a["size"], "sha256": a["sha256"], "role": "engine",
-                 "tag": release["tag"], "build": build, "done": False} for a in release["assets"]]  # fmt: skip
+        """The picture engine's archives the config does not name yet: its pinned build for this computer and, beside
+        a card's, the processor's (29.4в: ~18 MB, the ladder's last rung)."""
+        text = await asyncio.to_thread(config_text)
+        builds = {SD_MACRO: build} | ({SD_CPU_MACRO: "cpu"} if build != "cpu" else {})
+        out = []
+        for macro, wanted in builds.items():
+            if sd_server(text, macro) is not None:
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                    release = await engines.sd_cpp_release(http, wanted)
+            except engines.EngineError as exc:
+                raise InstallError(str(exc), 502) from exc
+            missing = [a["name"] for a in release["assets"] if not a["sha256"]]
+            if missing:  # as llama.cpp's (D46): nothing to run without it
+                raise InstallError(tr("GitHub не дал контрольную сумму для {files}: без неё программа не ставится",
+                                      files=", ".join(missing)), 502)  # fmt: skip
+            out += [{"path": a["name"], "url": a["url"], "size": a["size"], "sha256": a["sha256"], "role": "engine",
+                     "tag": release["tag"], "build": wanted, "done": False} for a in release["assets"]]  # fmt: skip
+        return out
 
     # --- installs ---
 
@@ -722,11 +729,15 @@ class Installer:
             if going is not None:
                 raise InstallError(tr("«{name}» ещё не установлена — её установку можно отменить", name=going["name"]))
             raise InstallError(tr("«{model}» ставил не AFO — удалите её из config.yaml сами", model=model_id), 404)
-        await self._unload(model_id)
+        ids = [model_id, *([found["plan"]["cpu"]] if found["plan"].get("cpu") else [])]  # its block on the processor
+        for each in ids:
+            await self._unload(each)
         path = llama_config.config_path()
-        text = await asyncio.to_thread(config_text)
-        if model_id in llama_config.model_blocks(text):
-            new = llama_config.remove_model(text, model_id)
+        text = new = await asyncio.to_thread(config_text)
+        for each in ids:
+            if each in llama_config.model_blocks(new):
+                new = llama_config.remove_model(new, each)
+        if new != text:
             backup = await asyncio.to_thread(llama_config.write, path, new)
             ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
             if not ok and problem != tr(llama_config.NOT_ANSWERING):
@@ -957,64 +968,87 @@ class Installer:
         folder = Path(found["folder"])
         text = await asyncio.to_thread(config_text)
         engine = [f for f in found["files"] if f["role"] == "engine"]
-        if engine:
-            target = engines_home() / "stable-diffusion.cpp" / f"{engine[0]['tag']}-{engine[0]['build']}"
+        for build in dict.fromkeys(f["build"] for f in engine):  # the card's, the processor's (29.4в)
+            parts = [f for f in engine if f["build"] == build]
+            target = engines_home() / "stable-diffusion.cpp" / f"{parts[0]['tag']}-{build}"
             try:
-                for f in engine:
+                for f in parts:
                     await asyncio.to_thread(engines.unpack, _dest(folder, f), target)
                 server = engines.sd_server_in(target)
             except engines.EngineError as exc:
                 raise InstallError(str(exc), 502) from exc
-            text = llama_config.with_macro(text, SD_MACRO, "'\"" + str(server).replace("\\", "/") + "\"'")
-        elif sd_server(text) is None:
+            macro = SD_MACRO if build == found["plan"].get("build") else SD_CPU_MACRO
+            text = llama_config.with_macro(text, macro, "'\"" + str(server).replace("\\", "/") + "\"'")
+        if sd_server(text) is None:
             raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
-        model_id = found["model_id"]
-        if model_id in llama_config.model_blocks(text):
-            if _ours(text, model_id, job_id):
-                text = llama_config.remove_model(text, model_id)
-            else:
-                model_id = llama_config.free_id(text, model_id)
-        block = llama_config.sd_block(
-            model_id,
-            name=found["name"],
-            description=tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
-            server=f"${{{SD_MACRO}}}",
-            files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
-            flags=list(found["plan"].get("flags") or []),
-            metadata={
-                "source": f"huggingface.co/{found['repo']}",
-                "license": found["license"] or "?",
-                "localchat_install": job_id,
-            },
-        )
+        blocks = [(found["model_id"], SD_MACRO, tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
+                   found["name"])]  # fmt: skip
+        if found["plan"].get("build") != "cpu" and sd_server(text, SD_CPU_MACRO) is not None:
+            blocks.append((f"{found['model_id']}-cpu", SD_CPU_MACRO, tr(
+                "{name}, установлена AFO: рисует картинки процессором, когда видеокарта не может.", name=found["name"]),
+                tr("{name} — на процессоре", name=found["name"])))  # fmt: skip
+        ids = []
+        for wanted, macro, description, name in blocks:
+            block_id = wanted
+            if block_id in llama_config.model_blocks(text):
+                if _ours(text, block_id, job_id):
+                    text = llama_config.remove_model(text, block_id)
+                else:
+                    block_id = llama_config.free_id(text, block_id)
+            block = llama_config.sd_block(
+                block_id,
+                name=name,
+                description=description,
+                server=f"${{{macro}}}",
+                files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
+                flags=list(found["plan"].get("flags") or []),
+                metadata={
+                    "source": f"huggingface.co/{found['repo']}",
+                    "license": found["license"] or "?",
+                    "localchat_install": job_id,
+                },
+            )
+            text = llama_config.add_model(text, block_id, block)
+            ids.append(block_id)
+        model_id, cpu_id = ids[0], (ids[1] if len(ids) > 1 else "")
         path = llama_config.config_path()
-        new = llama_config.add_model(text, model_id, block)
+        new = text
         backup = await asyncio.to_thread(llama_config.write, path, new)
         ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
         if not ok and problem != tr(llama_config.NOT_ANSWERING):
             await asyncio.to_thread(llama_config.restore, path, backup)
             raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
                                   problem=problem), 502)  # fmt: skip
-        await self._set(job_id, model_id=model_id)
+        await self._set(job_id, model_id=model_id, plan={**found["plan"], "cpu": cpu_id})
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
         return ok
 
     async def _try_picture(self, found: dict[str, Any], reachable: bool) -> None:
-        """The trial picture: one small picture through llama-swap; a blank one does not count (hub/visual.py)."""
-        job_id, model_id = found["id"], found["model_id"]
+        """The trial picture: one small picture through llama-swap; a blank one does not count (hub/visual.py). Not on
+        the card - on the processor (29.4в): then the model's pictures begin there on this computer."""
+        job_id, model_id, cpu_id = found["id"], found["model_id"], found["plan"].get("cpu") or ""
         if not reachable:
             await self._set(job_id, status="done", trial={"skipped": tr("llama-swap не отвечает — модель проверится "
                                                                         "при первой картинке")})  # fmt: skip
             return
         await self._set(job_id, status="trial")
         result = await visual.trial(self._url, model_id)
-        if result["ok"]:
-            await self._set(job_id, status="done", trial={"seconds": result["seconds"], "size": result["size"]})
+        on_cpu = await visual.trial(self._url, cpu_id) if not result["ok"] and cpu_id else None
+        if result["ok"] or (on_cpu and on_cpu["ok"]):
+            # a picture on the card starts the ladder afresh; one only on the processor - pictures begin there
+            rules = {model_id: {}} if result["ok"] else {model_id: {"instead": cpu_id}}
+            here = visual.computer(await asyncio.to_thread(self.machine))
+            await self._db.acall(lambda conn: visual.remember(conn, here, rules))
+            drawn = result if result["ok"] else on_cpu
+            await self._set(job_id, status="done", trial={"seconds": drawn["seconds"], "size": drawn["size"],
+                                                          **({} if result["ok"] else {"where": "cpu"})})  # fmt: skip
             return
-        await self._withdraw(model_id)
+        await self._withdraw(model_id, cpu_id)
+        error = result["error"] if on_cpu is None else tr("{card}; на процессоре — тоже: {cpu}", card=result["error"],
+                                                          cpu=on_cpu["error"])  # fmt: skip
         await self._set(job_id, status="failed", trial={"seconds": result.get("seconds")},
                         error=tr("модель скачана, но пробная картинка не вышла: {error}. Файлы остались — "
-                                 "«Повторить» попробует снова; или удалите", error=result["error"]))  # fmt: skip
+                                 "«Повторить» попробует снова; или удалите", error=error))  # fmt: skip
 
     def _done(self, model_id: str) -> None:
         if self.on_done is not None:
@@ -1038,12 +1072,15 @@ class Installer:
         await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)), (model_id, plan["context"]))
         await self._sync()
 
-    async def _withdraw(self, model_id: str) -> None:
-        """A model that would not start leaves the config (its files stay)."""
+    async def _withdraw(self, *model_ids: str) -> None:
+        """A model that would not start leaves the config (its files stay) - a picture model with its block on the
+        processor."""
         path = llama_config.config_path()
-        text = await asyncio.to_thread(config_text)
-        if model_id in llama_config.model_blocks(text):
-            new = llama_config.remove_model(text, model_id)
+        text = new = await asyncio.to_thread(config_text)
+        for model_id in model_ids:
+            if model_id and model_id in llama_config.model_blocks(new):
+                new = llama_config.remove_model(new, model_id)
+        if new != text:
             await asyncio.to_thread(llama_config.write, path, new)
             await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
             await self._sync()
