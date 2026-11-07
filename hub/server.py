@@ -55,6 +55,7 @@ from .api import (
     system,
     terminals,
     tuning,
+    visual,
 )
 from .api import (
     autostart as autostart_api,
@@ -102,6 +103,7 @@ from .system_status import StatusMonitor
 from .telegram import TelegramBot
 from .terminals import TerminalManager
 from .tuning import Tuner
+from .visual import Visual
 from .watch import ProjectWatcher
 
 log = logging.getLogger("hub")
@@ -196,6 +198,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
         )  # the first-run wizard (10.2)
         app.state.setup.on_updated = lambda: app.state.tuner.request_all(auto=True)  # a newer llama.cpp: measured anew
+        app.state.visual = Visual(db, bus, llama_swap_url=settings.llama_swap_url, media=paths.media,
+                                  machine=lambda: app.state.installer.machine())  # pictures (29.4, D55)  # fmt: skip
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
@@ -235,6 +239,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         await app.state.releases.start()  # says how the last update went, then checks now and then
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
+        if await app.state.visual.start():
+            log.info("pictures left going by the last hub failed")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
@@ -276,6 +282,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.backup.stop()
             await app.state.scheduler.stop()
             await app.state.installer.stop()
+            await app.state.visual.stop()
             await app.state.setup.stop()
             await app.state.releases.stop()
             await app.state.scanner.stop()
@@ -304,6 +311,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(portable.router)
     app.include_router(llama.router)
     app.include_router(install.router)
+    app.include_router(visual.router)
     app.include_router(setup.router)
     app.include_router(release.router)
     app.include_router(tuning.router)

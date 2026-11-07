@@ -109,6 +109,19 @@
 | DELETE | `/v1/install/jobs/{job_id}` | только окно | `forget()` |  |
 | DELETE | `/v1/install/models/{model_id}` | только окно | `remove()` |  |
 
+### visual
+
+/v1/visual - pictures (D55, stage 29.4; hub/visual.py). The desktop app's, like the installs of picture models.
+
+| Метод | Путь | Кто | Что | Параметры |
+|---|---|---|---|---|
+| GET | `/v1/visual/models` | только окно | `models()` |  |
+| POST | `/v1/visual/images` | только окно | `image()` | тело `{prompt: str, negative: str = '', model: str = '', width: int = 0, height: int = 0, seed: int \| None = None, conversation_id: str \| None = None}` |
+| GET | `/v1/visual/jobs` | только окно | `jobs()` | `?limit: int = 50` |
+| GET | `/v1/visual/jobs/{job_id}` | только окно | `one()` |  |
+| POST | `/v1/visual/jobs/{job_id}/cancel` | только окно | `cancel()` |  |
+| GET | `/v1/visual/jobs/{job_id}/file` | только окно | `file()` |  |
+
 ### setup
 
 /v1/setup - the first-run wizard (stage 10.2, D37; hub/setup.py). The desktop app only: it puts programs on the computer.
@@ -666,3 +679,5 @@ conversation's text, an approval or a terminal's output.
 | `terminal.started` | да | `terminal` | hub/terminals.py |
 | `tools.fetched` | да | `tool`, `version`, `path` | hub/ripgrep.py |
 | `tune.changed` | да | `job` | hub/tuning.py |
+| `visual.changed` | да | `job` | hub/visual.py |
+| `visual.progress` | нет | `id`, `step`, `steps`, `preview` | hub/visual.py |

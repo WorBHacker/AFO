@@ -45,6 +45,11 @@ class DataPaths:
         return self.root / "blobs"
 
     @property
+    def media(self) -> Path:
+        """The pictures and videos the hub made (D55, 29.4)."""
+        return self.root / "media"
+
+    @property
     def backups(self) -> Path:
         return self.root / "backups"
 

@@ -5,19 +5,37 @@
 - A blank picture: stable-diffusion.cpp on Vulkan can answer «success» with a flat grey one when the memory ran out
   (#1220), and a NaN gives a black one. Such a PNG compresses to almost nothing - a real one keeps half its size and
   more (29.1) - so only then are its pixels decoded and their spread looked at.
+- The pictures people ask for (29.4): one job at a time, a synchronous `POST /sdapi/v1/txt2img` through llama-swap
+  (it holds the model while the picture is drawn - the asynchronous API lets go of it, and a chat's request could
+  swap sd-server out in the middle, 29.1); meanwhile `/upstream/<model>/sdapi/v1/progress` gives the step and a
+  preview, sent to the window as events; «Стоп» unloads the model - the picture ends within a fraction of a second.
+  The file goes to data/media/<year-month>/<job>.png.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
+import json
+import logging
+import random
 import struct
 import time
+import uuid
 import zlib
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from common.i18n import tr
+
+from .db import utc_now
+
+log = logging.getLogger("hub.visual")
 
 TRIAL_PROMPT = "a red fox sitting in fresh snow at sunrise, detailed photo"  # i18n: keep (the model reads it)
 TRIAL_SIZE = 512
@@ -110,6 +128,20 @@ def blank(data: bytes) -> bool:
     return (sum((v - mean) ** 2 for v in seen) / len(seen)) ** 0.5 < FLAT_SPREAD
 
 
+def _refused(response: httpx.Response) -> str:
+    said = " ".join(response.text.split())[:200]
+    return tr("движок ответил {status}: {said}", status=response.status_code, said=said)
+
+
+def _no_answer(exc: Exception) -> str:
+    return tr("llama-swap не ответил ({error})", error=exc.__class__.__name__)
+
+
+def _blank_words() -> str:
+    return tr("картинка вышла пустой, одного цвета: движку здесь не хватило памяти или он не работает с этой "
+              "видеокартой")  # fmt: skip
+
+
 async def trial(base_url: str, model_id: str, *, size: int = TRIAL_SIZE,
                 transport: httpx.AsyncBaseTransport | None = None) -> dict[str, Any]:  # fmt: skip
     """The trial picture: {ok, seconds, size} or {ok: False, error} - in words for the window."""
@@ -119,18 +151,273 @@ async def trial(base_url: str, model_id: str, *, size: int = TRIAL_SIZE,
         async with httpx.AsyncClient(timeout=TRIAL_TIMEOUT_S, transport=transport) as http:
             response = await http.post(f"{base_url}/v1/images/generations", json=body)
     except httpx.HTTPError as exc:
-        return {"ok": False, "error": tr("llama-swap не ответил ({error})", error=exc.__class__.__name__)}
+        return {"ok": False, "error": _no_answer(exc)}
     seconds = round(time.monotonic() - start, 1)
     if response.status_code != 200:
-        said = " ".join(response.text.split())[:200]
-        return {"ok": False, "seconds": seconds, "error": tr("движок ответил {status}: {said}",
-                                                             status=response.status_code, said=said)}  # fmt: skip
+        return {"ok": False, "seconds": seconds, "error": _refused(response)}
     try:
         picture = base64.b64decode(response.json()["data"][0]["b64_json"])
     except ValueError, KeyError, IndexError, TypeError:
         return {"ok": False, "seconds": seconds, "error": tr("ответ без картинки")}
     if blank(picture):
-        why = tr("картинка вышла пустой, одного цвета: движку здесь не хватило памяти или он не работает с этой "
-                 "видеокартой")  # fmt: skip
-        return {"ok": False, "seconds": seconds, "error": why}
+        return {"ok": False, "seconds": seconds, "error": _blank_words()}
     return {"ok": True, "seconds": seconds, "size": size}
+
+
+# --- the pictures people ask for (29.4) ---
+
+STEP_S = 0.5  # how often the progress is asked while a picture is drawn
+PICTURE_TIMEOUT_S = 1800.0  # half an hour at most: the processor and a big model (29.1)
+LIVE = ("queued", "running")
+SIZES = (256, 2048)  # a side, in pixels; a multiple of 16 (the models' latent grid)
+TIERS = ("main", "light", "quality")  # the picture a person gets unless they choose: the fast main one first
+
+
+class VisualError(Exception):
+    """A picture that cannot be asked for as it was; the message is for the window."""
+
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def _row(row) -> dict[str, Any]:
+    out = dict(row)
+    out["tries"] = json.loads(out["tries"] or "[]")
+    return out
+
+
+def jobs(conn, limit: int = 50) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM visual_jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [_row(r) for r in rows]
+
+
+def job(conn, job_id: str) -> dict[str, Any] | None:
+    found = conn.execute("SELECT * FROM visual_jobs WHERE id = ?", (job_id,)).fetchone()
+    return _row(found) if found else None
+
+
+def _update(conn, job_id: str, **fields: Any) -> None:
+    if "tries" in fields:
+        fields["tries"] = json.dumps(fields["tries"], ensure_ascii=False)
+    fields["updated_at"] = utc_now()
+    names = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE visual_jobs SET {names} WHERE id = ?", (*fields.values(), job_id))
+
+
+def _flag(flags: list[str], name: str, default: float) -> float:
+    with contextlib.suppress(ValueError, IndexError):
+        return float(flags[flags.index(name) + 1])
+    return default
+
+
+def installed(conn) -> list[dict[str, Any]]:
+    """The picture models AFO installed (29.3): {model_id, name, tier, size, steps, cfg}."""
+    out = []
+    for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
+        plan = json.loads(row["plan"] or "{}")
+        if plan.get("engine") != "sd":
+            continue
+        flags = [str(f) for f in plan.get("flags") or []]
+        out.append({"model_id": row["model_id"], "name": row["name"], "tier": plan.get("tier", "main"),
+                    "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
+                    "cfg": _flag(flags, "--cfg-scale", 1.0)})  # fmt: skip
+    return out
+
+
+def default_model(models: list[dict[str, Any]], machine: dict[str, Any]) -> dict[str, Any] | None:
+    """The model a picture is drawn with unless one is chosen: the main one where this computer draws it fast, else
+    the light one, else whatever there is."""
+    order = TIERS if machine.get("pictures") == "main" else ("light", "main", "quality")
+    return min(models, key=lambda m: order.index(m["tier"]) if m["tier"] in order else len(order), default=None)
+
+
+class Visual:
+    """The hub's pictures (29.4): asked for, drawn one at a time through llama-swap, shown as they go, kept."""
+
+    def __init__(self, db, bus, *, llama_swap_url: str, media: Path, machine: Callable[[], dict[str, Any]]):
+        self._db = db
+        self._bus = bus
+        self._url = llama_swap_url.rstrip("/")
+        self.media = media
+        self._machine = machine
+        self._task: asyncio.Task | None = None
+        self._running: str | None = None  # the job being drawn
+        self._watching: asyncio.Task | None = None  # its progress
+        self._stopping: set[str] = set()  # jobs «Стоп» was pressed for
+
+    async def start(self) -> int:
+        """Pictures a stopped hub left going are failed: llama-swap let them go with it."""
+
+        def fail(conn) -> int:
+            return conn.execute("UPDATE visual_jobs SET status = 'failed', error = ?, updated_at = ? WHERE status IN "
+                                "('queued', 'running')", (tr("хаб перезапускался — картинка не нарисована"),
+                                                          utc_now())).rowcount  # fmt: skip
+
+        return await self._db.acall(fail)
+
+    async def stop(self) -> None:
+        if self._running:
+            with contextlib.suppress(Exception):
+                await self.cancel(self._running)
+        if self._task is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._task, 10.0)
+
+    async def models(self) -> dict[str, Any]:
+        found = await self._db.acall(installed)
+        best = default_model(found, await asyncio.to_thread(self._machine))
+        return {"models": found, "default": best["model_id"] if best else ""}
+
+    async def draw(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
+        """A picture asked for: {prompt, negative, model, width, height, seed, conversation_id}."""
+        prompt = (spec.get("prompt") or "").strip()
+        if not prompt:
+            raise VisualError(tr("нужно описание картинки"), 422)
+        found = await self._db.acall(installed)
+        if spec.get("model"):
+            model = next((m for m in found if m["model_id"] == spec["model"]), None)
+            if model is None:
+                raise VisualError(tr("нет модели картинок {model}", model=spec["model"]), 404)
+        else:
+            model = default_model(found, await asyncio.to_thread(self._machine))
+            if model is None:
+                raise VisualError(tr("модели картинок ещё нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
+        width, height = int(spec.get("width") or model["size"]), int(spec.get("height") or model["size"])
+        for side in (width, height):
+            if not SIZES[0] <= side <= SIZES[1] or side % 16:
+                raise VisualError(tr("сторона картинки — от {low} до {high} точек, кратно 16", low=SIZES[0],
+                                     high=SIZES[1]), 422)  # fmt: skip
+        seed = spec.get("seed")
+        seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
+        job_id = uuid.uuid4().hex[:12]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO visual_jobs (id, prompt, negative, model_id, width, height, seed, status, client, "
+                "conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
+                 spec.get("conversation_id")),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        await self._publish(job_id)
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._work())
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def cancel(self, job_id: str) -> dict[str, Any]:
+        found = await self._db.acall(lambda conn: job(conn, job_id))
+        if found is None:
+            raise VisualError(tr("нет такой картинки"), 404)
+        if found["status"] == "queued":
+            await self._set(job_id, status="cancelled", error="")
+        elif found["status"] == "running":
+            self._stopping.add(job_id)
+            if self._watching is not None:  # its next look at the progress would load the model again
+                self._watching.cancel()
+            with contextlib.suppress(httpx.HTTPError):
+                async with httpx.AsyncClient(timeout=30.0) as http:
+                    await http.post(f"{self._url}/api/models/unload/{found['model_id']}")
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
+    def file(self, found: dict[str, Any]) -> Path | None:
+        path = self.media / found["file"] if found.get("file") else None
+        return path if path is not None and path.is_file() else None
+
+    async def _publish(self, job_id: str) -> None:
+        found = await self._db.acall(lambda conn: job(conn, job_id))
+        if found is not None:
+            await self._bus.publish("visual.changed", {"job": found})
+
+    async def _set(self, job_id: str, **fields: Any) -> None:
+        await self._db.acall(lambda conn: _update(conn, job_id, **fields))
+        await self._publish(job_id)
+
+    async def _work(self) -> None:
+        while True:
+
+            def oldest(conn):
+                found = conn.execute("SELECT * FROM visual_jobs WHERE status = 'queued' ORDER BY created_at "
+                                     "LIMIT 1").fetchone()  # fmt: skip
+                return _row(found) if found else None
+
+            found = await self._db.acall(oldest)
+            if found is None:
+                return
+            self._running = found["id"]
+            try:
+                await self._run(found)
+            except Exception:  # one picture's trouble must not stop the rest
+                log.exception("picture %s", found["id"])
+                await self._set(found["id"], status="failed", error=tr("внутренняя ошибка хаба — подробности в "
+                                                                        "журнале"))  # fmt: skip
+            finally:
+                self._running = None
+                self._stopping.discard(found["id"])
+
+    async def _run(self, found: dict[str, Any]) -> None:
+        job_id, model_id = found["id"], found["model_id"]
+        model = next((m for m in await self._db.acall(installed) if m["model_id"] == model_id), None)
+        if model is None:
+            await self._set(job_id, status="failed", error=tr("модель картинок {model} удалена", model=model_id))
+            return
+        await self._set(job_id, status="running", error="")
+        body = {"model": model_id, "prompt": found["prompt"], "negative_prompt": found["negative"],
+                "width": found["width"], "height": found["height"], "seed": found["seed"], "steps": model["steps"],
+                "cfg_scale": model["cfg"], "batch_size": 1}  # fmt: skip
+        start = time.monotonic()
+        self._watching = asyncio.create_task(self._watch(job_id, model_id))
+        response, error = None, ""
+        try:
+            async with httpx.AsyncClient(timeout=PICTURE_TIMEOUT_S) as http:
+                response = await http.post(f"{self._url}/sdapi/v1/txt2img", json=body)
+        except httpx.HTTPError as exc:
+            error = _no_answer(exc)
+        finally:
+            self._watching.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._watching
+            self._watching = None
+        seconds = round(time.monotonic() - start, 1)
+        if job_id in self._stopping:
+            await self._set(job_id, status="cancelled", error="", seconds=seconds)
+            return
+        picture = None
+        if response is not None and response.status_code != 200:
+            error = _refused(response)
+        elif response is not None:
+            try:
+                picture = base64.b64decode(response.json()["images"][0])
+            except ValueError, KeyError, IndexError, TypeError:
+                error = tr("ответ без картинки")
+        if picture is not None and blank(picture):
+            picture, error = None, _blank_words()
+        tries = [{"model_id": model_id, "width": found["width"], "height": found["height"], "ok": picture is not None,
+                  "error": error, "seconds": seconds}]  # fmt: skip
+        if picture is None:
+            await self._set(job_id, status="failed", error=error, seconds=seconds, tries=tries)
+            return
+        name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
+        await asyncio.to_thread(_save, self.media / name, picture)
+        await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
+
+    async def _watch(self, job_id: str, model_id: str) -> None:
+        """The picture's step and preview to the window while it is drawn."""
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            while True:
+                await asyncio.sleep(STEP_S)
+                with contextlib.suppress(httpx.HTTPError, ValueError):
+                    said = (await http.get(f"{self._url}/upstream/{model_id}/sdapi/v1/progress")).json()
+                    state = said.get("state") or {}
+                    if state.get("sampling_steps"):
+                        await self._bus.publish("visual.progress", {
+                            "id": job_id, "step": state.get("sampling_step") or 0, "steps": state["sampling_steps"],
+                            "preview": said.get("current_image") or ""}, persist=False)  # fmt: skip
+
+
+def _save(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    part.write_bytes(data)
+    part.replace(path)
