@@ -544,6 +544,8 @@ class ChatService:
             if tools is None:  # a new chat gets the outside MCP servers' tools ready now too (D42) - sized to its
                 # model's window (hub/compact.py; projects may come later in a chat: their tools stay)
                 pictures = [visual.GENERATE_IMAGE] if self.visual is not None and await self.visual.can_draw() else []
+                if self.visual is not None and await self.visual.can_film():  # a video model too (29.8б)
+                    pictures.append(visual.GENERATE_VIDEO)
                 current = compact.for_model([*CHAT_TOOLS, *pictures,
                                              *(self.mcp.definitions() if self.mcp is not None else [])],
                                             (model.get("capabilities") or {}).get("context"))  # fmt: skip
@@ -876,7 +878,7 @@ class ChatService:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             elif call["name"] == websearch.WEB_SEARCH["name"]:
                 output, error = await self._web_search(conversation_id, call, ctx, cancel)
-            elif call["name"] == visual.GENERATE_IMAGE["name"]:  # a picture, drawn here (29.6, D55)
+            elif call["name"] in (visual.GENERATE_IMAGE["name"], visual.GENERATE_VIDEO["name"]):  # here (29.6, 29.8б)
                 output, error, picture = await self._draw(conversation_id, call, cancel)
             elif call["name"] in agent_tools.TOOL_NAMES and self.toolbox is not None:  # beyond projects (9.4)
 
@@ -1097,11 +1099,13 @@ class ChatService:
         named by a message, kept as long as it, D30) - the model hears only words of it."""
         if self.visual is None:
             return "pictures are not available here", True, {}
-        output, error, data = await self.visual.handle(conversation_id, call, cancel)
+        video = call["name"] == visual.GENERATE_VIDEO["name"]  # a video's WebP (29.8б)
+        output, error, data = await (self.visual.handle_video if video else self.visual.handle)(
+            conversation_id, call, cancel)  # fmt: skip
         if data is None or self.blobs is None:
             return output, error, {}
         blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
-        return output, error, {"blob": blob, "media_type": "image/png", "size": len(data)}
+        return output, error, {"blob": blob, "media_type": "image/webp" if video else "image/png", "size": len(data)}
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is

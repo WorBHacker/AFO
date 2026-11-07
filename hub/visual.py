@@ -320,6 +320,20 @@ GENERATE_IMAGE = {
         "required": ["prompt"],
     },
 }
+GENERATE_VIDEO = {
+    "name": "generate_video",
+    "description": "Film a short video from a description with the user's local video model; it is shown to the user "
+    "in the chat. A minute or more. Describe the subject, its motion, the camera, light and style.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "What happens, in detail (English works best)"},
+            "shape": {"type": "string", "enum": list(SHAPES), "description": "wide (default), tall or square"},
+            "seconds": {"type": "number", "description": "1 to 4; 2 unless said"},
+        },
+        "required": ["prompt"],
+    },
+}
 INSTALL_HERE = "Установка моделей → Рисовать"  # the window's words, for a model to tell the user  # i18n: keep
 PICTURE_TYPES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"))
 
@@ -700,6 +714,55 @@ class Visual:
         """Whether a picture model is here: a new chat is offered generate_image (29.6)."""
         return bool(await self._db.acall(installed))
 
+    async def can_film(self) -> bool:
+        """Whether a video model is here: a new chat is offered generate_video (29.8б)."""
+        return bool(await self._db.acall(lambda conn: installed(conn, "video")))
+
+    async def _until_done(self, job_id: str, cancel: asyncio.Event) -> dict[str, Any] | None:
+        """A job waited for by a chat's tool: the answer stopped - the job is stopped."""
+        stopping = False
+        while (done := await self._db.acall(lambda conn: job(conn, job_id))) is not None and done["status"] in LIVE:
+            if cancel.is_set() and not stopping:
+                stopping = True
+                await self.cancel(job_id)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(cancel.wait(), STEP_S)
+        return done
+
+    async def handle_video(self, conversation_id: str, call: dict[str, Any],
+                           cancel: asyncio.Event) -> tuple[str, bool, bytes | None]:  # fmt: skip
+        """generate_video (29.8б): the video filmed and waited for - (what the model hears, whether it is an error,
+        the WebP)."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return "nothing filmed: `prompt` is empty - say what happens", True, None
+        if not await self.can_film():
+            return (f"no video model is installed here: the user can install one in the window ({INSTALL_HERE}) - "
+                    "say so"), True, None  # fmt: skip
+        try:
+            seconds = min(4.0, max(1.0, float(args.get("seconds") or 2.0)))
+        except TypeError, ValueError:
+            seconds = 2.0
+        spec = {"prompt": prompt[:4000], "shape": str(args.get("shape") or "wide"), "seconds": seconds,
+                "conversation_id": conversation_id}  # fmt: skip
+        try:
+            job_id = (await self.video(spec, "chat"))["id"]
+        except VisualError as exc:
+            return f"nothing filmed: {exc}", True, None
+        done = await self._until_done(job_id, cancel)
+        if done is None or done["status"] == "cancelled":
+            return "not filmed: the user stopped it", True, None
+        path = self.file(done) if done["status"] == "done" else None
+        if path is None:
+            return f"the video did not come out: {done['error'] or done['status']}", True, None
+        data = await asyncio.to_thread(path.read_bytes)
+        length = round(done["frames"] / done["fps"], 1)
+        return (f"Filmed and shown to the user in the chat: {done['width']}×{done['height']}, {length:g} s "
+                f"({done['frames']} frames at {done['fps']}/s), seed {done['seed']}, {done['seconds']} s to make. You "
+                "cannot see it - do not describe it as seen; ask whether it is what they wanted."), False, (
+                    data)  # fmt: skip
+
     async def handle(self, conversation_id: str, call: dict[str, Any],
                      cancel: asyncio.Event) -> tuple[str, bool, bytes | None]:  # fmt: skip
         """generate_image (29.6): the picture drawn with this computer's model and waited for - (what the model
@@ -720,13 +783,7 @@ class Visual:
             job_id = (await self.draw(spec, "chat"))["id"]
         except VisualError as exc:
             return f"nothing drawn: {exc}", True, None
-        stopping = False
-        while (done := await self._db.acall(lambda conn: job(conn, job_id))) is not None and done["status"] in LIVE:
-            if cancel.is_set() and not stopping:
-                stopping = True
-                await self.cancel(job_id)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(cancel.wait(), STEP_S)
+        done = await self._until_done(job_id, cancel)
         if done is None or done["status"] == "cancelled":
             return "not drawn: the user stopped it", True, None
         path = self.file(done) if done["status"] == "done" else None

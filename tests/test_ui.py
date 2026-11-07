@@ -385,6 +385,7 @@ class FakeClient:
         self.visual_calls = []  # «Нарисовать» (29.5)
         self.visual_jobs_list = []
         self.visual_rungs = {}  # the rung each model came out on here (29.4б)
+        self.visual_videos = []  # the video models (29.8)
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -638,7 +639,15 @@ class FakeClient:
                   {"model_id": "z-image-turbo", "name": "Z-Image-Turbo", "tier": "quality", "size": 1024,
                    "steps": 8, "cfg": 1.0}]  # fmt: skip
         return {"models": [{"pixels": 0, "instead": "", **m, **self.visual_rungs.get(m["model_id"], {})}
-                           for m in models], "default": "flux2-klein-4b"}  # fmt: skip
+                           for m in models], "default": "flux2-klein-4b", "videos": self.visual_videos}  # fmt: skip
+
+    def visual_video(self, spec):
+        self.visual_calls.append(("video", spec))
+        job = {"id": f"v{len(self.visual_calls)}", "kind": "video", "prompt": spec["prompt"], "model_id": spec["model"],
+               "status": "queued", "width": 832, "height": 480, "frames": 49, "fps": 24, "seed": 7, "error": "",
+               "seconds": None, "file": ""}  # fmt: skip
+        self.visual_jobs_list.insert(0, job)
+        return {"job": job}
 
     def visual_draw(self, spec):
         self.visual_calls.append(("draw", spec))
@@ -3486,6 +3495,12 @@ def test_tool_rows():
     assert rows.tool_label("delegate_tasks", batch) == "Поручаю 3 задачи: «Писатель», «Тестер»"  # 16.1, D50
     assert rows.tool_label("delegate_tasks", {}) == "Поручаю 0 задач"
     assert rows.tool_label("generate_image", {"prompt": "рыжая лиса в снегу"}) == "Рисую «рыжая лиса в снегу»"  # 29.6а
+    assert rows.tool_label("generate_video", {"prompt": "лиса бежит"}) == "Снимаю видео «лиса бежит»"  # 29.8б
+    film = {"id": "f1", "name": "generate_video", "input": {"prompt": "лиса"}, "state": "running"}
+    (filmed,) = rows.with_results([film], [{"type": "tool_result", "id": "f1", "name": "generate_video",
+                                            "output": "Filmed", "error": False, "blob": "ef" * 32,
+                                            "media_type": "image/webp"}])  # fmt: skip
+    assert (filmed["video"], filmed["picture"]) == ("ef" * 32, "")  # a video plays from its file, not a provider
     from app.ui.install_view import picture_rows
 
     # 29.8а: a video model where videos are only in the cloud
@@ -6648,6 +6663,41 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         wait_until(lambda: not app.bg.busy and "from_blob" in client.visual_calls[-1][1])
         assert client.visual_calls[-1][1]["from_blob"] == "ef" * 32
         view.clearSource()
+
+        # 29.8б: a video - «Видео» beside «Картинка» once a video model is here; it plays from the hub's file
+        assert not view.hasVideo
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0}]  # fmt: skip
+        view.load()
+        wait_until(lambda: not app.bg.busy and view.hasVideo)
+        assert [m["id"] for m in view.modes] == ["picture", "video"]
+        view.setMode("video")
+        view.setShape("wide")
+        view.setQuality("fast")
+        assert view.modelText == "Wan2.2 TI2V 5B Turbo · 832 × 480 · 2 с"
+        view.setLength("3")
+        view.setQuality("quality")
+        assert view.modelText == "Wan2.2 TI2V 5B Turbo · 1280 × 704 · 3 с"
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "video")
+        assert client.visual_calls[-1][1] == {"prompt": "рыжая лиса в снегу", "model": "wan", "shape": "wide",
+                                              "seconds": 3.0, "hd": True, "seed": -1}  # fmt: skip
+        filmed = client.visual_jobs_list[0]
+        app.on_event({"type": "visual.changed", "payload": {"job": {**filmed, "status": "running"}}})
+        assert view.statusText == "снимаю видео…" and view.busy
+        clip = app.paths.media / "2026-11" / f"{filmed['id']}.webp"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        frame = QImage(32, 32, QImage.Format.Format_RGB32)
+        frame.fill(Qt.GlobalColor.darkCyan)
+        assert frame.save(str(clip), "WEBP")  # one frame stands for the engine's animated WebP
+        finished = {**filmed, "status": "done", "seconds": 21.7, "file": f"2026-11/{filmed['id']}.webp"}
+        app.on_event({"type": "visual.changed", "payload": {"job": finished}})
+        assert view.done and view.videoSource == QUrl.fromLocalFile(str(clip)).toString()
+        assert view.pictureSource == "" and view.statusText == "готово за 22 с"
+        view.saveAs(str(tmp_path / "лиса"))
+        assert (tmp_path / "лиса.webp").read_bytes() == clip.read_bytes()
+        assert any(r["id"] == filmed["id"] and r["video"] for r in view.recent)
+        view.setMode("picture")
 
         # 29.6а: a picture a chat's model drew - in the chat, under its call
         blob = "cd" * 32

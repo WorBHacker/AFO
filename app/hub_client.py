@@ -181,6 +181,10 @@ class HubClient:
         """A picture's PNG."""
         return self._raw("GET", f"/v1/visual/jobs/{job_id}/file")
 
+    def visual_video(self, spec: dict) -> dict:
+        """A video asked for (29.8б): {prompt, model, shape, seconds, hd, seed, conversation_id}."""
+        return self._call("POST", "/v1/visual/videos", json=spec)
+
     def visual_picture(self, blob: str) -> bytes:
         """A picture a chat holds (29.6), by its sha256."""
         return self._raw("GET", f"/v1/visual/pictures/{blob}")

@@ -15,7 +15,7 @@ Column {
     Component.onCompleted: syncCalls()
     function syncCalls() {
         const list = calls.tools
-        const roles = ["id", "icon", "label", "project", "status", "summary", "output", "open", "picture"]
+        const roles = ["id", "icon", "label", "project", "status", "summary", "output", "open", "picture", "video"]
         for (let i = 0; i < list.length; ++i) {
             const entry = {}
             for (const role of roles) {
@@ -48,6 +48,7 @@ Column {
             required property string output
             required property bool open
             required property string picture
+            required property string video
             width: calls.width
             spacing: 4
 
@@ -120,6 +121,17 @@ Column {
                 ToolTip.visible: pictureMouse.containsMouse
                 ToolTip.delay: 600
                 ToolTip.text: qsTr("Щелчок — нарисовать по этой картинке")
+            }
+
+            AnimatedImage {  // a video a call filmed (29.8б): from its file - an image provider does not animate
+                objectName: "toolVideo"
+                visible: call.video !== ""
+                x: 28
+                width: Math.min(420, parent.width - 28)
+                height: implicitWidth > 0 ? width * implicitHeight / implicitWidth : 120
+                source: call.video !== "" ? Visual.blobUrl(call.video) : ""
+                fillMode: Image.PreserveAspectFit
+                playing: visible
             }
 
             Rectangle {

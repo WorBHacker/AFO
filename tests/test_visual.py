@@ -669,6 +669,34 @@ def test_a_video_drawn_in_the_background_and_kept(hub):
     assert not hub.app.state.visual.holding
 
 
+def test_a_chat_model_films_a_video_and_the_chat_keeps_it(hub):
+    """29.8б: generate_video - offered to a chat begun once a video model is here; drawn as any video, waited for,
+    the WebP kept with the chat; the model hears its size and length in words."""
+
+    def call(n, **args):
+        return [{"id": f"v{n}", "name": "generate_video", "input": {"prompt": "a fox running through snow", **args}}]
+
+    provider = OncePerTurn([call(1), call(2, shape="tall", seconds=1)])
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    _install(hub)  # a picture model only: no video tool
+    first = _chat(hub)
+    result = _drawn(_finished(hub, first))
+    assert "generate_video" not in [t["name"] for t in provider.calls[0][1]]
+    assert result["error"] and "no video model" in result["output"]
+
+    _install(hub, "clip", CLIP_PLAN)
+    filmed = _chat(hub)
+    result = _drawn(_finished(hub, filmed))
+    assert "generate_video" in [t["name"] for t in provider.calls[-2][1]]
+    assert not result["error"], result["output"]
+    assert "480×832" in result["output"] and "1 s" in result["output"] and result["media_type"] == "image/webp"
+    assert (hub.app.state.chat.blobs / result["blob"]).read_bytes() == WEBP
+    assert FakeDrawSwap.video[-1]["video_frames"] == 25
+    picture = hub.get(f"/v1/visual/pictures/{result['blob']}")
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/webp"
+
+
 def test_a_local_chat_model_waits_while_the_card_draws_a_video():
     """29.8а: the llama-swap provider asks the hub's gate before each answer: while a video holds the card it says so
     (a «loading» line, as llama-swap's own) and sends nothing until the video ends; the user may stop meanwhile."""

@@ -32,10 +32,10 @@ Sheet {
 
     FileDialog {
         id: saveDialog
-        title: qsTr("Сохранить картинку")
+        title: Visual.videoSource !== "" ? qsTr("Сохранить видео") : qsTr("Сохранить картинку")
         fileMode: FileDialog.SaveFile
-        nameFilters: [qsTr("Картинка PNG (*.png)")]
-        defaultSuffix: "png"
+        nameFilters: Visual.videoSource !== "" ? [qsTr("Видео WebP (*.webp)")] : [qsTr("Картинка PNG (*.png)")]
+        defaultSuffix: Visual.videoSource !== "" ? "webp" : "png"
         onAccepted: Visual.saveAs(selectedFile.toString())
     }
 
@@ -89,6 +89,20 @@ Sheet {
         Flow {
             width: parent.width
             spacing: 10
+            Segmented {  // 29.8б: once a video model is here
+                objectName: "visualMode"
+                visible: Visual.hasVideo
+                options: Visual.modes
+                value: Visual.mode
+                onPicked: (id) => Visual.setMode(id)
+            }
+            Segmented {
+                objectName: "visualLength"
+                visible: Visual.mode === "video"
+                options: Visual.lengths
+                value: Visual.length
+                onPicked: (id) => Visual.setLength(id)
+            }
             Segmented {
                 objectName: "visualShape"
                 visible: !Visual.hasSource  // from a picture: its shape
@@ -105,7 +119,7 @@ Sheet {
             }
             PlainButton {
                 objectName: "visualFromFile"
-                visible: !Visual.hasSource
+                visible: !Visual.hasSource && Visual.mode !== "video"
                 iconName: "image"
                 text: qsTr("По картинке…")
                 onClicked: sourceDialog.open()
@@ -115,7 +129,7 @@ Sheet {
                 kind: Visual.busy ? "danger" : "primary"
                 iconName: Visual.busy ? "stop" : "image"
                 enabled: Visual.busy || promptArea.text.trim() !== ""
-                text: Visual.busy ? qsTr("Стоп") : qsTr("Нарисовать")
+                text: Visual.busy ? qsTr("Стоп") : (Visual.mode === "video" ? qsTr("Снять видео") : qsTr("Нарисовать"))
                 onClicked: Visual.busy ? Visual.stop() : Visual.draw()
             }
         }
@@ -195,6 +209,16 @@ Sheet {
             radius: 8
             color: Theme.p.card
             border.color: Theme.p.hairline
+            AnimatedImage {  // a video (29.8б): from the hub's file
+                objectName: "visualVideo"
+                anchors.fill: parent
+                anchors.margins: 6
+                visible: Visual.videoSource !== ""
+                source: Visual.videoSource
+                fillMode: Image.PreserveAspectFit
+                playing: visible
+                cache: false
+            }
             Image {
                 objectName: "visualPicture"
                 anchors.fill: parent
@@ -208,8 +232,10 @@ Sheet {
             }
             Text {
                 anchors.centerIn: parent
-                visible: Visual.pictureSource === ""
-                text: Visual.busy ? qsTr("Загружаю модель…") : qsTr("Здесь появится картинка")
+                visible: Visual.pictureSource === "" && Visual.videoSource === ""
+                text: Visual.busy ? (Visual.mode === "video" ? qsTr("Снимаю видео — это минута или больше…")
+                                                               : qsTr("Загружаю модель…"))
+                                  : qsTr("Здесь появится картинка")
                 color: Theme.p.faint
                 font.family: Theme.uiFont
                 font.pixelSize: 13
@@ -226,6 +252,7 @@ Sheet {
             }
             PlainButton {
                 objectName: "visualFromThis"
+                visible: Visual.videoSource === ""
                 iconName: "image"
                 text: qsTr("По этой картинке")
                 onClicked: Visual.fromThis()

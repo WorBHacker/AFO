@@ -27,7 +27,7 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
-from common.picture_sizes import CPU_PIXELS, SHAPES, fit, size_for
+from common.picture_sizes import CPU_PIXELS, SHAPES, fit, size_for, video_size
 
 from ..hub_client import HubError
 
@@ -39,6 +39,8 @@ QUALITY = [("fast", N_("Быстрее")), ("quality", N_("Качественн�
 STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done": N_("готово"), "failed": N_("не вышло"),
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 12
+MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
+LENGTHS = [("1", N_("1 с")), ("2", N_("2 с")), ("3", N_("3 с"))]
 STRENGTHS = [("little", N_("Чуть"), 0.3), ("some", N_("Заметно"), 0.6), ("much", N_("Сильно"), 0.85)]
 _TIER = {"fast": ("main", "light", "quality"), "quality": ("quality", "main", "light")}
 
@@ -112,6 +114,9 @@ class VisualView(QObject):
         self._source: dict[str, str] = {}  # «По картинке»: {from_job | from_blob | from_png: value, shown: url}
         self._shown = 0  # bumped with each source: QML asks the provider again
         self._strength = "some"
+        self._mode = "picture"  # or video (29.8б)
+        self._videos: list[dict[str, Any]] = []
+        self._length = "2"
 
     # ================= for QML =================
 
@@ -137,8 +142,39 @@ class VisualView(QObject):
 
     @Property(bool, notify=changed)
     def choice(self) -> bool:
-        """«Быстрее ↔ Качественнее» only when there is something to choose between."""
-        return len(self._models) > 1
+        """«Быстрее ↔ Качественнее» only when there is something to choose between - a video: 832×480 or 1280×704."""
+        return self._mode == "video" or len(self._models) > 1
+
+    @Property(list, notify=changed)
+    def modes(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in MODES]
+
+    @Property(str, notify=changed)
+    def mode(self) -> str:
+        return self._mode
+
+    @Property(bool, notify=changed)
+    def hasVideo(self) -> bool:
+        return bool(self._videos)
+
+    @Property(list, notify=changed)
+    def lengths(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in LENGTHS]
+
+    @Property(str, notify=changed)
+    def length(self) -> str:
+        return self._length
+
+    @Property(str, notify=changed)
+    def videoSource(self) -> str:
+        """The video shown (29.8б): the hub's file - AnimatedImage plays a file, not a provider's picture."""
+        path = self._video_file(self._job)
+        return QUrl.fromLocalFile(str(path)).toString() if path is not None else ""
+
+    @Slot(str, result=str)
+    def blobUrl(self, blob: str) -> str:
+        """A video a chat holds (29.8б), as a file: the hub keeps it in data/blobs on this computer."""
+        return QUrl.fromLocalFile(str(self.app.paths.blobs / blob)).toString() if blob else ""
 
     @Property(bool, notify=changed)
     def hasSource(self) -> bool:
@@ -166,6 +202,12 @@ class VisualView(QObject):
 
     @Property(str, notify=changed)
     def modelText(self) -> str:
+        if self._mode == "video":
+            if not self._videos:
+                return ""
+            width, height = video_size(self._shape, self._quality == "quality")
+            return tr("{name} · {width} × {height} · {seconds} с", name=self._videos[0]["name"], width=width,
+                      height=height, seconds=self._length)  # fmt: skip
         model, width, height, why = self._plan()
         if model is None:
             return why
@@ -183,6 +225,8 @@ class VisualView(QObject):
         status, how = self._job.get("status", ""), self._how()
         if not status:
             return ""
+        if status == "running" and self._job.get("kind") == "video":
+            return tr("снимаю видео…")
         if status == "running" and self._step[1]:
             text = tr("рисую: шаг {step} из {steps}", step=self._step[0], steps=self._step[1])
             return tr("{text} — {how}", text=text, how=how) if how else text
@@ -211,13 +255,30 @@ class VisualView(QObject):
 
     @Property(bool, notify=changed)
     def done(self) -> bool:
+        if self._job.get("kind") == "video":
+            return self._video_file(self._job) is not None
         return self._job.get("status") == "done" and self._job.get("id", "") in self.provider.pictures
 
     @Property(list, notify=changed)
     def recent(self) -> list:
-        return [{"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
-                 "chosen": j["id"] == self._job.get("id")}
-                for j in self._recent if j["status"] == "done" and j["id"] in self.provider.pictures]  # fmt: skip
+        out = []
+        for j in self._recent:
+            if j["status"] != "done":
+                continue
+            if (video := self._video_file(j)) is not None:  # its first frame (29.8б)
+                out.append({"id": j["id"], "prompt": j["prompt"], "source": QUrl.fromLocalFile(str(video)).toString(),
+                            "chosen": j["id"] == self._job.get("id"), "video": True})  # fmt: skip
+            elif j["id"] in self.provider.pictures:
+                out.append({"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
+                            "chosen": j["id"] == self._job.get("id"), "video": False})  # fmt: skip
+        return out
+
+    def _video_file(self, found: dict[str, Any]) -> Path | None:
+        """A finished video's WebP: the hub's file on this computer (data/media)."""
+        if found.get("kind") != "video" or found.get("status") != "done" or not found.get("file"):
+            return None
+        path = self.app.paths.media / found["file"]
+        return path if path.is_file() else None
 
     def _plan(self) -> tuple[dict[str, Any] | None, int, int, str]:
         """What the next picture is drawn with: the model (the one that comes out here in place of the chosen), its
@@ -290,12 +351,15 @@ class VisualView(QObject):
 
         def models(data: dict[str, Any]) -> None:
             self._models, self._default, self._loaded = data.get("models", []), data.get("default", ""), True
+            self._videos = data.get("videos") or []
+            if not self._videos:
+                self._mode = "picture"
             self.changed.emit()
 
         def jobs(data: dict[str, Any]) -> None:
             self._recent = data.get("jobs", [])[:RECENT]
             for j in self._recent:
-                if j["status"] == "done":
+                if j["status"] == "done" and j.get("kind") != "video":  # a video plays from its file (29.8б)
                     self._fetch(j["id"])
             self.changed.emit()
 
@@ -334,6 +398,16 @@ class VisualView(QObject):
         self._quality = quality if quality in _TIER else "fast"
         self.changed.emit()
 
+    @Slot(str)
+    def setMode(self, mode: str) -> None:
+        self._mode = mode if mode == "video" and self._videos else "picture"
+        self.changed.emit()
+
+    @Slot(str)
+    def setLength(self, length: str) -> None:
+        self._length = length if length in {k for k, _n in LENGTHS} else "2"
+        self.changed.emit()
+
     @Slot()
     def draw(self) -> None:
         self._start(seed=-1)
@@ -344,6 +418,9 @@ class VisualView(QObject):
         self._start(seed=-1)
 
     def _start(self, *, seed: int) -> None:
+        if self._mode == "video":
+            self._film(seed=seed)
+            return
         model, width, height, _why = self._plan()
         if not self._prompt.strip() or model is None or self.busy:
             return
@@ -368,6 +445,28 @@ class VisualView(QObject):
             self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.visual_draw(spec), started, failed)
+
+    def _film(self, *, seed: int) -> None:
+        """A video (29.8б): the description, the shape, how long, «Качественнее» - Wan's own 1280×704."""
+        if not self._prompt.strip() or not self._videos or self.busy:
+            return
+        spec = {"prompt": self._prompt.strip(), "model": self._videos[0]["model_id"], "shape": self._shape,
+                "seconds": float(self._length), "hd": self._quality == "quality", "seed": seed}  # fmt: skip
+        if self.app.currentId:
+            spec["conversation_id"] = self.app.currentId
+        self._job, self._step = {"status": "queued", "kind": "video", "prompt": spec["prompt"]}, (0, 0)
+        self.changed.emit()
+
+        def started(result: dict[str, Any]) -> None:
+            self._job = result.get("job") or {}
+            self.changed.emit()
+
+        def failed(error: Exception) -> None:
+            self._job = {}
+            self.app.show_error(tr("Не снять видео: {error}", error=error))
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.visual_video(spec), started, failed)
 
     # ================= «По картинке» (29.6б) =================
 
@@ -433,12 +532,14 @@ class VisualView(QObject):
 
     @Slot(str)
     def saveAs(self, url: str) -> None:
-        data = self.provider.pictures.get(self._job.get("id", ""))
+        video = self._video_file(self._job)  # a video: its WebP as it is (29.8б)
+        data = video.read_bytes() if video is not None else self.provider.pictures.get(self._job.get("id", ""))
         path = QUrl(url).toLocalFile() if url.startswith("file:") else url
         if not data or not path:
             return
-        if not path.lower().endswith(".png"):
-            path += ".png"
+        suffix = ".webp" if video is not None else ".png"
+        if not path.lower().endswith(suffix):
+            path += suffix
         try:
             Path(path).write_bytes(data)
         except OSError as exc:
@@ -476,6 +577,6 @@ class VisualView(QObject):
             self._job = job
             if job["status"] != "running":
                 self._step = (0, 0)
-        if job["status"] == "done":
+        if job["status"] == "done" and job.get("kind") != "video":
             self._fetch(job["id"])
         self.changed.emit()

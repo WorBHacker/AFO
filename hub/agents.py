@@ -62,7 +62,7 @@ from .delegate import DELEGATE, DELEGATE_MANY, ROUNDS, BatchError, check_batch, 
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
-from .visual import GENERATE_IMAGE
+from .visual import GENERATE_IMAGE, GENERATE_VIDEO
 
 log = logging.getLogger("hub.agents")
 
@@ -71,11 +71,11 @@ STEPS = (1, 200)
 MINUTES = (1, 24 * 60)
 NAME_CHARS = 60
 INSTRUCTIONS_CHARS = 8000
-AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE, DELEGATE_MANY, GENERATE_IMAGE]  # what a profile may choose from
+AGENT_TOOLS = [*CHAT_TOOLS, DELEGATE, DELEGATE_MANY, GENERATE_IMAGE, GENERATE_VIDEO]  # what a profile chooses from
 TOOL_NAMES = [t["name"] for t in AGENT_TOOLS]
 COORDINATING = (DELEGATE["name"], DELEGATE_MANY["name"])
 # "all": a coordinator is chosen, not by default; so are pictures (29.6) - they take the card from a local model
-DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in (*COORDINATING, GENERATE_IMAGE["name"])]
+DEFAULT_TOOLS = [n for n in TOOL_NAMES if n not in (*COORDINATING, GENERATE_IMAGE["name"], GENERATE_VIDEO["name"])]
 CLOUD_AT_ONCE = 4  # a batch's cloud tasks running together: the providers' request limits
 ANSWER_CHARS = 6000  # of each answer on the coordinator's board
 CHANGED_SHOWN = 12  # files named per project on the board
