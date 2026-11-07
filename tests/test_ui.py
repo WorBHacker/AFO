@@ -657,6 +657,10 @@ class FakeClient:
     def visual_file(self, job_id):
         return PICTURE
 
+    def visual_picture(self, blob):
+        self.visual_calls.append(("picture", blob))
+        return PICTURE
+
     def install_pictures_start(self, spec):
         self.install_calls.append(("pictures", spec))
         job = {"id": "p1", "repo": "leejet/Z-Image-Turbo-GGUF", "quant": "Q4_K", "name": "Z-Image-Turbo",
@@ -3480,9 +3484,18 @@ def test_tool_rows():
                        {"task_id": "c", "agent_profile": "Писатель", "prompt": "z"}]}  # fmt: skip
     assert rows.tool_label("delegate_tasks", batch) == "Поручаю 3 задачи: «Писатель», «Тестер»"  # 16.1, D50
     assert rows.tool_label("delegate_tasks", {}) == "Поручаю 0 задач"
+    assert rows.tool_label("generate_image", {"prompt": "рыжая лиса в снегу"}) == "Рисую «рыжая лиса в снегу»"  # 29.6а
     from app.ui import agents as agent_view
 
     assert agent_view.TOOL_LABELS["delegate_tasks"] == "давать задачи пачкой, параллельно (координатор)"
+    assert agent_view.TOOL_LABELS["generate_image"] == "рисовать картинки"
+    call = {"id": "g1", "name": "generate_image", "input": {"prompt": "лиса"}, "state": "running"}
+    drawn = {"type": "tool_result", "id": "g1", "name": "generate_image", "output": "Drawn: 640×384", "error": False,
+             "blob": "ab" * 32, "media_type": "image/png", "size": 100}  # fmt: skip
+    (shown,) = rows.with_results([call], [drawn])
+    assert shown["picture"] == "image://pictures/blob/" + "ab" * 32 and shown["state"] == "ok"
+    (plain,) = rows.with_results([call], [{**drawn, "blob": "", "error": True}])
+    assert plain["picture"] == ""
     built = rows.rows_for(TOOL_HISTORY["messages"], {m["id"]: m for m in MODELS})
     assert [r["role"] for r in built] == ["user", "assistant", "assistant"]  # the results are not rows
     first, second = built[1]["tools"]
@@ -6587,6 +6600,24 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         assert client.visual_calls[-1][1] | {"seed": 0} == {"prompt": "рыжая лиса в снегу",
                                                            "model": "flux2-klein-4b-cpu", "width": 672, "height": 384,
                                                            "seed": 0}  # fmt: skip
+
+        # 29.6а: a picture a chat's model drew - in the chat, under its call
+        blob = "cd" * 32
+        client.histories["cp"] = {"id": "cp", "title": "Лиса", "busy": False, "projects": [], "messages": [
+            {"id": 21, "role": "user", "model_id": None, "usage": None,
+             "content": [{"type": "text", "text": "нарисуй лису"}]},
+            {"id": 22, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
+                {"type": "tool_call", "id": "g1", "name": "generate_image", "input": {"prompt": "a red fox"}}]},
+            {"id": 23, "role": "tool", "model_id": None, "usage": None, "content": [
+                {"type": "tool_result", "id": "g1", "name": "generate_image", "output": "Drawn: 640×384",
+                 "error": False, "blob": blob, "media_type": "image/png", "size": 100}]},
+            {"id": 24, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+             "content": [{"type": "text", "text": "Готово: лиса в снегу."}]}]}  # fmt: skip
+        app.openChat("cp")
+        wait_until(lambda: len(app.messages.rows) == 3)
+        assert app.messages.rows[1]["tools"][0]["picture"] == f"image://pictures/blob/{blob}"
+        wait_until(lambda: ("picture", blob) in client.visual_calls)  # the frame asked the hub for it
+        assert view.provider.requestImage(f"blob/{blob}", QSize(), QSize()).width() == 32
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

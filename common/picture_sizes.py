@@ -8,6 +8,14 @@ import math
 SIDES = (256, 2048)  # a side, in pixels
 GRID = 16  # FLUX's latent grid (8 × 2); SD's 8 divides it
 CPU_PIXELS = 512 * 512  # on the processor no more: past it a picture takes minutes (29.1: FLUX.2-klein 512² - 92 s)
+# a side of the model's own size (512 or 1024) and two shapes around it; each a multiple of 64
+SHAPES = {"square": (1.0, 1.0), "wide": (1.3125, 0.75), "tall": (0.75, 1.3125)}
+
+
+def size_for(shape: str, side: int) -> tuple[int, int]:
+    """The picture's width and height: the model's side in this shape, each a multiple of 64."""
+    w, h = SHAPES.get(shape, SHAPES["square"])
+    return max(64, round(side * w / 64) * 64), max(64, round(side * h / 64) * 64)
 
 
 def snap(side: float) -> int:

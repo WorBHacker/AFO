@@ -434,6 +434,110 @@ def test_where_the_card_draws_nothing_the_processor_does(hub):
     assert _wait(hub, by_name["id"], "done")["model_id"] == "draw-cpu" and FakeDrawSwap.asked[-1]["width"] == 256
 
 
+def _chat(hub):
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    said = hub.post(f"/v1/conversations/{conv}/messages", json={"content": "нарисуй лису", "model_id": "fake/echo"})
+    assert said.status_code == 202
+    return conv
+
+
+def _finished(hub, conv, timeout=20.0, *, stopped=False):
+    """The chat's messages once its answer ended: not busy, the last one the model's words (`stopped`: a result)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = hub.get(f"/v1/conversations/{conv}").json()
+        last = found["messages"][-1]
+        said = last["role"] == "assistant" and all(b["type"] != "tool_call" for b in last["content"])
+        if not found["busy"] and (said or (stopped and last["role"] == "tool")):
+            return found["messages"]
+        time.sleep(0.05)
+    raise AssertionError(f"{conv}: still answering")
+
+
+class OncePerTurn:
+    """A chat model that asks for one scripted call a turn, then answers in words once its result came."""
+
+    name = "fake"
+
+    def __init__(self, steps):
+        from tests.test_tools import ToolProvider
+
+        self.inner = ToolProvider(steps)
+        self.models, self.calls = self.inner.models, self.inner.calls
+
+    async def list_models(self):
+        return self.models
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        from hub.gateway.base import StreamEvent
+
+        if messages and messages[-1].get("role") == "tool":
+            self.calls.append((messages, tools))
+            yield StreamEvent("content", "Готово")
+            yield StreamEvent("end", usage={"input_tokens": 20, "output_tokens": 3}, stop_reason="end_turn")
+            return
+        async for event in self.inner.stream_chat(model_ref, messages, effort, cancel, tools):
+            yield event
+
+
+def _drawn(messages):
+    return next(m for m in messages if m["role"] == "tool")["content"][0]
+
+
+def test_a_chat_model_draws_a_picture_and_the_chat_keeps_it(hub):
+    """29.6а: generate_image - offered to a chat begun once a picture model is here (a chat's tools stay as they were
+    first sent, D14); the hub draws it with this computer's model, waits, keeps the PNG with the chat (data/blobs:
+    as long as the chat, D30) - the window shows it; the model hears what was drawn. Blank - said; «Стоп» stops it."""
+
+    def call(n, **args):
+        return [{"id": f"g{n}", "name": "generate_image", "input": {"prompt": "a red fox in snow", **args}}]
+
+    provider = OncePerTurn([call(1), call(2, shape="wide"), call(3), call(4)])
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+
+    first = _chat(hub)  # no picture model yet: not offered; asked for anyway - said why not
+    result = _drawn(_finished(hub, first))
+    assert "generate_image" not in [t["name"] for t in provider.calls[0][1]]
+    assert result["error"] and "no picture model" in result["output"] and "blob" not in result
+
+    _install(hub)
+    drawn = _chat(hub)
+    result = _drawn(_finished(hub, drawn))
+    tools = provider.calls[-2][1]
+    assert "generate_image" in [t["name"] for t in tools]
+    assert not result["error"], result["output"]
+    assert "640×384" in result["output"] and "cannot see" in result["output"]  # wide, at the model's 512
+    assert result["media_type"] == "image/png" and len(result["blob"]) == 64
+    kept = hub.app.state.chat.blobs / result["blob"]
+    picture = hub.get(f"/v1/visual/pictures/{result['blob']}")
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/png"
+    assert visual.pixels(picture.content) == visual.pixels(PICTURE) and "a red fox in snow" in visual.parameters(
+        picture.content)  # fmt: skip
+    assert kept.read_bytes() == picture.content
+    job = hub.get("/v1/visual/jobs").json()["jobs"][0]
+    assert (job["conversation_id"], job["client"], job["width"], job["height"]) == (drawn, "chat", 640, 384)
+    told = provider.calls[-1][0]  # the model's next request: the result in words, not the picture
+    assert any("640×384" in str(m.get("content")) for m in told if m.get("role") == "tool")
+    assert hub.get("/v1/visual/pictures/" + "0" * 64).status_code == 404
+    assert hub.get("/v1/visual/pictures/..%2Fhub.db").status_code in (404, 422)
+
+    FakeDrawSwap.answer = "blank"
+    result = _drawn(_finished(hub, _chat(hub)))
+    assert result["error"] and "did not come out" in result["output"] and "пустой" in result["output"]
+    assert "blob" not in result
+
+    FakeDrawSwap.answer, FakeDrawSwap.steps_s = "picture", 0.5  # a long one, stopped with the answer
+    stopped = _chat(hub)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and hub.get("/v1/visual/jobs").json()["jobs"][0]["status"] != "running":
+        time.sleep(0.05)
+    hub.post(f"/v1/conversations/{stopped}/cancel")
+    result = _drawn(_finished(hub, stopped, stopped=True))
+    assert result["error"] and "stopped" in result["output"]
+    assert hub.get("/v1/visual/jobs").json()["jobs"][0]["status"] == "cancelled" and FakeDrawSwap.unloaded
+
+
 def test_without_llama_swap_the_ladder_stops_at_once(hub):
     _install(hub)
     hub.app.state.visual._url = "http://127.0.0.1:9"  # nothing listens there

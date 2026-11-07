@@ -43,6 +43,7 @@ TOOL_LABELS = {
     "web_fetch": N_("читать страницы в сети"),
     "delegate_task": N_("давать задачи другим агентам (координатор)"),
     "delegate_tasks": N_("давать задачи пачкой, параллельно (координатор)"),
+    "generate_image": N_("рисовать картинки"),  # 29.6
 }
 BLANK = {"id": "", "name": "", "instructions": "", "model_id": "", "tools": [], "mode": "ask", "project_ids": [],
          "max_steps": 30, "max_minutes": 30, "budget_usd": None}  # fmt: skip

@@ -207,6 +207,7 @@ TOOL_ICONS = {
     "web_fetch": "cloud",
     "delegate_task": "agent",
     "delegate_tasks": "agent",
+    "generate_image": "image",  # 29.6
     # Claude Code's own tools (stage 4)
     "Read": "file",
     "Edit": "edit",
@@ -298,6 +299,9 @@ def tool_label(name: str, args: Any) -> str:
             return tr("Смотрю папку {path}", path=short_path(path))
         case "WebFetch" | "web_fetch":
             return tr("Открываю {url}", url=a.get("url", ""))
+        case "generate_image":  # 29.6
+            prompt = " ".join(str(a.get("prompt", "")).split())
+            return tr("Рисую «{prompt}»", prompt=prompt[:60] + ("…" if len(prompt) > 60 else ""))
         case "WebSearch":
             return tr("Ищу в сети «{query}»", query=a.get("query", ""))
         case "TodoWrite":
@@ -388,6 +392,8 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
             continue
         output = result.get("output", "")
         first = output.strip().splitlines()[0] if output.strip() else ""
+        shown = result.get("blob") and str(result.get("media_type", "")).startswith("image/")
+        picture = f"image://pictures/blob/{result['blob']}" if shown else ""  # a picture the call drew (29.6)
         if result.get("sub"):  # what a subagent did (21.3), then what it answered
             steps = [line for line in map(sub_line, result["sub"]) if line.strip()]
             output = "\n".join(steps) + "\n\n" + output
@@ -397,6 +403,7 @@ def with_results(tools: list[dict[str, Any]], results: list[dict[str, Any]]) -> 
                 "state": "error" if result.get("error") else "ok",
                 "summary": first if len(first) <= 120 else first[:119] + "…",
                 "output": output[:TOOL_OUTPUT_SHOWN] + ("\n…" if len(output) > TOOL_OUTPUT_SHOWN else ""),
+                "picture": picture,
             }
         )
     return out

@@ -73,6 +73,7 @@ from . import (
     notes,
     sandbox,
     store,
+    visual,
     web,
     websearch,
 )
@@ -149,6 +150,7 @@ class ChatService:
         self.sandboxes: Path | None = None  # data/worktrees: «Песочница» chats write there (D17, 9.4b)
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
+        self.visual: visual.Visual | None = None  # set by the server: pictures a model asks for (29.6, D55)
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
         self.guards: dict[str, guard.TurnGuard] = {}  # a goal's turn: its constraints, an investigation (11.4)
         self.compact = None  # a goal's stages done as one line each in the request (11.5; hub/goals.py sets it)
@@ -541,7 +543,9 @@ class ChatService:
             # even after the hub's tools changed
             if tools is None:  # a new chat gets the outside MCP servers' tools ready now too (D42) - sized to its
                 # model's window (hub/compact.py; projects may come later in a chat: their tools stay)
-                current = compact.for_model([*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])],
+                pictures = [visual.GENERATE_IMAGE] if self.visual is not None and await self.visual.can_draw() else []
+                current = compact.for_model([*CHAT_TOOLS, *pictures,
+                                             *(self.mcp.definitions() if self.mcp is not None else [])],
                                             (model.get("capabilities") or {}).get("context"))  # fmt: skip
                 tools = await self._db.acall(
                     lambda conn, current=current: store.conversation_tools(conn, conversation_id, current, FIRST_TOOLS)
@@ -845,6 +849,7 @@ class ChatService:
         (its plan standing still, D40)."""
         results = []
         for call in calls:
+            picture: dict[str, Any] = {}  # a picture the call drew (29.6): kept with the chat, shown under the call
             if (refuse and call["name"] not in let) or cancel.is_set():
                 results.append(tool_result_block(call["id"], call["name"], refuse or NOT_RUN, True))
                 continue
@@ -871,6 +876,8 @@ class ChatService:
                 output, error = await self._web_fetch(conversation_id, call, ctx, cancel)
             elif call["name"] == websearch.WEB_SEARCH["name"]:
                 output, error = await self._web_search(conversation_id, call, ctx, cancel)
+            elif call["name"] == visual.GENERATE_IMAGE["name"]:  # a picture, drawn here (29.6, D55)
+                output, error, picture = await self._draw(conversation_id, call, cancel)
             elif call["name"] in agent_tools.TOOL_NAMES and self.toolbox is not None:  # beyond projects (9.4)
 
                 async def ask(tool, data, cover, call=call):
@@ -907,7 +914,7 @@ class ChatService:
                     output, error = await give(conversation_id, args, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)
-            results.append(tool_result_block(call["id"], call["name"], output, error))
+            results.append(tool_result_block(call["id"], call["name"], output, error) | picture)
             if counted and self.autonomy is not None:
                 await self.autonomy.acted(conversation_id, call["name"])
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "tool", results))
@@ -1084,6 +1091,17 @@ class ChatService:
             return await web.fetch(args), False
         except ToolError as exc:
             return str(exc), True
+
+    async def _draw(self, conversation_id: str, call: dict, cancel) -> tuple[str, bool, dict[str, Any]]:
+        """generate_image (29.6): drawn on this computer - nothing to ask; the PNG kept with the chat (data/blobs:
+        named by a message, kept as long as it, D30) - the model hears only words of it."""
+        if self.visual is None:
+            return "pictures are not available here", True, {}
+        output, error, data = await self.visual.handle(conversation_id, call, cancel)
+        if data is None or self.blobs is None:
+            return output, error, {}
+        blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
+        return output, error, {"blob": blob, "media_type": "image/png", "size": len(data)}
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is

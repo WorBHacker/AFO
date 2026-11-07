@@ -181,6 +181,10 @@ class HubClient:
         """A picture's PNG."""
         return self._raw("GET", f"/v1/visual/jobs/{job_id}/file")
 
+    def visual_picture(self, blob: str) -> bytes:
+        """A picture a chat holds (29.6), by its sha256."""
+        return self._raw("GET", f"/v1/visual/pictures/{blob}")
+
     def install_search(self, query: str) -> dict:
         return self._call("GET", "/v1/install/search", params={"q": query}, timeout=60)
 

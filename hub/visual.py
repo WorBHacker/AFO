@@ -18,6 +18,10 @@
   rungs (29.1). The last rung (29.4в): where the engine is the card's build, each model has a second block on the
   processor's (`<model>-cpu`, hub/model_install.py) - when nothing came out on the card, the lightest model there
   draws it, no more than CPU_PIXELS; the cloud's card comes after it, with 29.7.
+- A chat's model draws too (29.6): the tool generate_image - offered to a chat begun once a picture model is here;
+  the picture is drawn as any other (this computer's model, the ladder), waited for, and its PNG kept with the chat
+  in data/blobs (as long as the chat, D30) - the window shows it under the call; the model hears what was drawn in
+  words, never the picture. Its answer stopped - the picture is stopped.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -43,7 +47,7 @@ from typing import Any
 import httpx
 
 from common.i18n import tr
-from common.picture_sizes import CPU_PIXELS, SIDES, fit, half, moved
+from common.picture_sizes import CPU_PIXELS, SHAPES, SIDES, fit, half, moved, size_for
 
 from .db import utc_now
 
@@ -244,6 +248,36 @@ TIERS = ("main", "light", "quality")  # the picture a person gets unless they ch
 RANK = {"light": 0, "main": 1, "quality": 2}  # how heavy a tier's models are: a rung lower is a lighter one
 MAX_TRIES = 5  # a picture's tries at most, the first among them
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
+
+
+GENERATE_IMAGE = {
+    "name": "generate_image",
+    "description": "Draw a picture from a description with the user's local picture model; it is shown to the user in "
+    "the chat. Seconds to minutes. Describe subject, setting, light, style.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string", "description": "What to draw, in detail (English draws best)"},
+            "shape": {"type": "string", "enum": list(SHAPES), "description": "square (default), wide or tall"},
+            "negative": {"type": "string", "description": "What should not be in it"},
+        },
+        "required": ["prompt"],
+    },
+}
+INSTALL_HERE = "Установка моделей → Рисовать"  # the window's words, for a model to tell the user  # i18n: keep
+PICTURE_TYPES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"))
+
+
+def picture_type(path: Path) -> str | None:
+    """A file's picture type by its first bytes; None - not a picture (or not there)."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(12)
+    except OSError:
+        return None
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return next((kind for magic, kind in PICTURE_TYPES if head.startswith(magic)), None)
 
 
 class VisualError(Exception):
@@ -491,6 +525,49 @@ class Visual:
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     await http.post(f"{self._url}/api/models/unload/{found['model_id']}")
         return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def can_draw(self) -> bool:
+        """Whether a picture model is here: a new chat is offered generate_image (29.6)."""
+        return bool(await self._db.acall(installed))
+
+    async def handle(self, conversation_id: str, call: dict[str, Any],
+                     cancel: asyncio.Event) -> tuple[str, bool, bytes | None]:  # fmt: skip
+        """generate_image (29.6): the picture drawn with this computer's model and waited for - (what the model
+        hears, whether it is an error, the PNG). The answer stopped - the picture is stopped."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        prompt = str(args.get("prompt") or "").strip()
+        if not prompt:
+            return "nothing drawn: `prompt` is empty - say what to draw", True, None
+        found = await self._db.acall(installed)
+        model = default_model(found, await asyncio.to_thread(self._machine))
+        if model is None:
+            return (f"no picture model is installed here: the user can install one in the window ({INSTALL_HERE}) - "
+                    "say so"), True, None  # fmt: skip
+        width, height = size_for(str(args.get("shape") or "square"), model["size"])
+        spec = {"prompt": prompt[:4000], "negative": str(args.get("negative") or "")[:2000], "width": width,
+                "height": height, "conversation_id": conversation_id}  # fmt: skip
+        try:
+            job_id = (await self.draw(spec, "chat"))["id"]
+        except VisualError as exc:
+            return f"nothing drawn: {exc}", True, None
+        stopping = False
+        while (done := await self._db.acall(lambda conn: job(conn, job_id))) is not None and done["status"] in LIVE:
+            if cancel.is_set() and not stopping:
+                stopping = True
+                await self.cancel(job_id)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(cancel.wait(), STEP_S)
+        if done is None or done["status"] == "cancelled":
+            return "not drawn: the user stopped it", True, None
+        path = self.file(done) if done["status"] == "done" else None
+        if path is None:
+            return f"the picture did not come out: {done['error'] or done['status']}", True, None
+        data = await asyncio.to_thread(path.read_bytes)
+        name = next((m["name"] for m in found if m["model_id"] in (done["model_id"], done["model_id"][:-4])),
+                    done["model_id"])  # fmt: skip
+        return (f"Drawn and shown to the user in the chat: {done['width']}×{done['height']}, {name}, seed "
+                f"{done['seed']}, {done['seconds']} s. You cannot see the picture - do not describe it as seen; ask "
+                "whether it is what they wanted."), False, data  # fmt: skip
 
     def file(self, found: dict[str, Any]) -> Path | None:
         path = self.media / found["file"] if found.get("file") else None

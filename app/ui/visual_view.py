@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,25 +23,19 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
-from common.picture_sizes import CPU_PIXELS, fit
+from common.picture_sizes import CPU_PIXELS, SHAPES, fit, size_for
+
+from ..hub_client import HubError
 
 if TYPE_CHECKING:
     from .controller import Controller
 
-# a side of the model's own size (512 or 1024) and two shapes around it; each a multiple of 64
-SHAPES = {"square": (1.0, 1.0), "wide": (1.3125, 0.75), "tall": (0.75, 1.3125)}
 SHAPE_NAMES = [("square", N_("Квадрат")), ("wide", N_("Широкая")), ("tall", N_("Высокая"))]
 QUALITY = [("fast", N_("Быстрее")), ("quality", N_("Качественнее"))]
 STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done": N_("готово"), "failed": N_("не вышло"),
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 12
 _TIER = {"fast": ("main", "light", "quality"), "quality": ("quality", "main", "light")}
-
-
-def size_for(shape: str, side: int) -> tuple[int, int]:
-    """The picture's width and height: the model's side in this shape, each a multiple of 64."""
-    w, h = SHAPES.get(shape, SHAPES["square"])
-    return max(64, round(side * w / 64) * 64), max(64, round(side * h / 64) * 64)
 
 
 def pick_model(models: list[dict[str, Any]], default: str, quality: str) -> dict[str, Any] | None:
@@ -60,16 +55,28 @@ def seconds_text(seconds: float | None) -> str:
 
 
 class PictureProvider(QQuickImageProvider):
-    """image://pictures/preview/<n> - the picture as it is drawn; image://pictures/job/<id> - a finished one."""
+    """image://pictures/preview/<n> - the picture as it is drawn; image://pictures/job/<id> - a finished one;
+    image://pictures/blob/<sha256> - one a chat holds (29.6: a model drew it), asked of the hub the first time - on
+    QML's loading thread, the chat's frame is asynchronous."""
 
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
         self.preview = b""
         self.pictures: dict[str, bytes] = {}
+        self.blobs: dict[str, bytes] = {}
+        self.fetch: Callable[[str], bytes] | None = None  # a chat's picture from the hub
 
     def requestImage(self, picture_id: str, size: QSize, requested: QSize) -> QImage:
         kind, _, key = picture_id.partition("/")
-        data = self.preview if kind == "preview" else self.pictures.get(key, b"")
+        if kind == "blob":
+            data = self.blobs.get(key, b"")
+            if not data and self.fetch is not None:
+                try:
+                    data = self.blobs[key] = self.fetch(key)
+                except HubError:
+                    data = b""
+        else:
+            data = self.preview if kind == "preview" else self.pictures.get(key, b"")
         image = QImage()
         image.loadFromData(data)
         return image
@@ -82,6 +89,7 @@ class VisualView(QObject):
         super().__init__(app)
         self.app = app
         self.provider = PictureProvider()
+        self.provider.fetch = self._picture
         self._prompt = ""
         self._shape = "square"
         self._quality = "fast"
@@ -223,6 +231,10 @@ class VisualView(QObject):
         if (width, height) != (first.get("width"), first.get("height")):
             return tr("меньшим размером, {width} × {height}", width=width, height=height)
         return ""
+
+    def _picture(self, blob: str) -> bytes:
+        client = self.app.client
+        return client.visual_picture(blob) if client is not None else b""
 
     # ================= loading =================
 

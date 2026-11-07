@@ -2,11 +2,14 @@
 
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
-GET /jobs/<id>/file - the picture itself (PNG). Events: visual.changed (a job), visual.progress (step and preview).
+GET /jobs/<id>/file - the picture itself (PNG); GET /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6:
+a model drew it). Events: visual.changed (a job), visual.progress (step and preview).
 """
 
 from __future__ import annotations
 
+import asyncio
+import re
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -84,3 +87,14 @@ async def file(request: Request, job_id: str, client: Annotated[Client, Depends(
     if path is None:
         raise HTTPException(status_code=404, detail=tr("картинки ещё нет"))
     return FileResponse(path, media_type="image/png")
+
+
+@router.get("/pictures/{name}")
+async def picture(request: Request, name: str, client: Annotated[Client, Depends(require_app)]) -> FileResponse:
+    """A picture a chat holds (data/blobs, by its sha256; 29.6) - only a picture: other files sent with messages are
+    not given here."""
+    path = request.app.state.chat.blobs / name if re.fullmatch(r"[0-9a-f]{64}", name) else None
+    kind = await asyncio.to_thread(v.picture_type, path) if path is not None else None
+    if kind is None:
+        raise HTTPException(status_code=404, detail=tr("нет такой картинки"))
+    return FileResponse(path, media_type=kind)

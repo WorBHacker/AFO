@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // What an answer looked at with the hub's tools: one line per call ("Читаю hub/chat.py"), its state (running, done,
-// failed) and, on a click, what the tool returned.
+// failed) and, on a click, what the tool returned; a picture a call drew (29.6) - under it, always.
 Column {
     id: calls
     property var tools: []
@@ -15,7 +15,7 @@ Column {
     Component.onCompleted: syncCalls()
     function syncCalls() {
         const list = calls.tools
-        const roles = ["id", "icon", "label", "project", "status", "summary", "output", "open"]
+        const roles = ["id", "icon", "label", "project", "status", "summary", "output", "open", "picture"]
         for (let i = 0; i < list.length; ++i) {
             const entry = {}
             for (const role of roles) {
@@ -47,6 +47,7 @@ Column {
             required property string summary
             required property string output
             required property bool open
+            required property string picture
             width: calls.width
             spacing: 4
 
@@ -98,6 +99,17 @@ Column {
                 ToolTip.visible: hovered && call.project !== ""
                 ToolTip.delay: 800
                 ToolTip.text: qsTr("Проект: %1 · щелчок — что вернул инструмент").arg(call.project)
+            }
+
+            Image {
+                objectName: "toolPicture"
+                visible: call.picture !== ""
+                x: 28
+                width: Math.min(420, parent.width - 28)
+                height: implicitWidth > 0 ? width * implicitHeight / implicitWidth : 120
+                source: call.picture
+                asynchronous: true  // the provider asks the hub the first time: not on the window's thread
+                fillMode: Image.PreserveAspectFit
             }
 
             Rectangle {
