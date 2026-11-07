@@ -26,6 +26,7 @@ ACTIONS: list[tuple[str, str, str, str, bool]] = [
     ("models", N_("Выбрать модель…"), "cpu", "", False),
     ("model-settings", N_("Настройка моделей: параметры, промпты, цены…"), "sliders", "", False),
     ("install-models", N_("Установить локальную модель…"), "download", "", False),
+    ("draw", N_("Нарисовать картинку…"), "image", "", False),
     ("setup", N_("Мастер первого запуска: движок и первая модель…"), "sparkle", "", False),
     ("check-system", N_("Проверить систему и собрать журналы…"), "activity", "", False),
     ("memory", N_("Память агента: факты и навыки…"), "layers", "", False),

@@ -490,6 +490,21 @@ Item {
                                              : qsTr("Режим «Цель»: модель работает ход за ходом, пока хаб не убедится, что цель достигнута. То же — «/цель …» в поле")
                 }
                 Chip {
+                    objectName: "drawChip"
+                    iconName: "image"
+                    menu: false
+                    text: qsTr("Нарисовать")
+                    onClicked: {  // what was typed becomes the picture's description (29.5)
+                        const wish = area.text
+                        area.text = ""
+                        Visual.open(wish)
+                        App.openUi("draw")
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: qsTr("Нарисовать картинку по описанию — локальной моделью картинок")
+                }
+                Chip {
                     id: refusalChip
                     objectName: "chatRefusal"
                     visible: App.chatRefusalShown

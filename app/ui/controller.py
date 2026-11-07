@@ -58,6 +58,7 @@ from .terminals import Terminals
 from .theme import Theme
 from .transfer_view import TransferView
 from .translator import LANGUAGE_KEY
+from .visual_view import VisualView
 
 log = logging.getLogger("app.ui")
 
@@ -264,6 +265,7 @@ class Controller(QObject):
         self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
         self.readers = Readers(self)  # the viewer's text and its colours (24.1)
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
+        self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
@@ -1334,6 +1336,7 @@ class Controller(QObject):
                 "memory",
                 "agent-access",
                 "install-models",
+                "draw",
                 "setup",
                 "check-system",
             ):
@@ -1775,6 +1778,8 @@ class Controller(QObject):
             self.programs.on_event(kind, payload)
         elif kind.startswith("install."):
             self.install_view.on_event(kind, payload)
+        elif kind.startswith("visual."):
+            self.visual_view.on_event(kind, payload)
         elif kind.startswith("setup."):
             self.setup_view.on_event(kind, payload)
         elif kind.startswith("release."):

@@ -30,6 +30,7 @@ TOPICS = [
     "goal.*",  # a chat's goal (D44)
     "proving.*",  # the proving ground and the models' exam (D45)
     "install.*",
+    "visual.*",  # pictures: a job, its step and preview (29.5)
     "setup.*",
     "release.*",  # AFO's own updates (10.4d)
     "tune.*",  # launch settings by measurement (15.2)

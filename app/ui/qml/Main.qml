@@ -254,6 +254,7 @@ Window {
     GoalSheet { id: goalSheet }
     ProvingSheet { id: provingSheet }
     InstallSheet { id: installSheet }
+    VisualSheet { id: visualSheet }
     WizardSheet { id: wizardSheet }
     CheckSheet { id: checkSheet }
     TransferSheet { id: transferSheet }
@@ -297,6 +298,7 @@ Window {
             else if (what === "programs") programsSheet.open()
             else if (what === "model-settings") modelsSheet.openFor("")
             else if (what === "install-models") installSheet.open()
+            else if (what === "draw") visualSheet.open()
             else if (what === "setup") wizardSheet.open()
             else if (what === "setup-first-run") root.openWizardWhenFree()
             else if (what === "check-system") checkSheet.open()

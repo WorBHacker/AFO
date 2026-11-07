@@ -78,6 +78,16 @@ class HubClient:
             raise HubError(str(detail or f"HTTP {response.status_code}"))
         return response.json() if response.content else None
 
+    def _raw(self, method: str, path: str) -> bytes:
+        """A response's bytes as they are (a picture)."""
+        try:
+            response = self._http.request(method, path, headers=self._headers)
+        except httpx.HTTPError as exc:
+            raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
+        if response.status_code >= 400:
+            raise HubError(f"HTTP {response.status_code}")
+        return response.content
+
     # --- models and the machine ---
 
     def models(self) -> list[dict]:
@@ -154,6 +164,22 @@ class HubClient:
 
     def install_pictures_start(self, spec: dict) -> dict:
         return self._call("POST", "/v1/install/pictures", spec, timeout=60)
+
+    def visual_models(self) -> dict:
+        return self._call("GET", "/v1/visual/models")
+
+    def visual_draw(self, spec: dict) -> dict:
+        return self._call("POST", "/v1/visual/images", spec)
+
+    def visual_jobs(self, limit: int = 30) -> dict:
+        return self._call("GET", "/v1/visual/jobs", params={"limit": limit})
+
+    def visual_cancel(self, job_id: str) -> dict:
+        return self._call("POST", f"/v1/visual/jobs/{job_id}/cancel")
+
+    def visual_file(self, job_id: str) -> bytes:
+        """A picture's PNG."""
+        return self._raw("GET", f"/v1/visual/jobs/{job_id}/file")
 
     def install_search(self, query: str) -> dict:
         return self._call("GET", "/v1/install/search", params={"q": query}, timeout=60)

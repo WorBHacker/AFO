@@ -1,6 +1,7 @@
 """The Qt Quick window: its controller against a fake hub client, its row builders, and the real QML loaded with
 history and a streamed answer (no QML warnings allowed). Offscreen, software scene graph."""
 
+import base64
 import copy
 import hashlib
 import json
@@ -11,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
 from PySide6.QtGui import QGuiApplication as QApplication  # a QML window needs no widgets
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
@@ -22,6 +23,7 @@ from app.ui.controller import Controller
 from app.ui.models import TREE_ROLES, RowModel
 from app.ui.theme import Theme, qml_colour
 from common.paths import data_paths
+from tests.test_visual import PICTURE
 
 QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
 
@@ -379,6 +381,8 @@ class FakeClient:
         self.schedule_calls = []
         self.install_calls = []
         self.install_jobs_list = []
+        self.visual_calls = []  # «Нарисовать» (29.5)
+        self.visual_jobs_list = []
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -625,6 +629,31 @@ class FakeClient:
             ],
             "machine": {"build": "cuda12", "pictures": "main"},
         }
+
+    def visual_models(self):
+        return {"models": [{"model_id": "flux2-klein-4b", "name": "FLUX.2 [klein] 4B", "tier": "main", "size": 1024,
+                            "steps": 4, "cfg": 1.0},
+                           {"model_id": "z-image-turbo", "name": "Z-Image-Turbo", "tier": "quality", "size": 1024,
+                            "steps": 8, "cfg": 1.0}],
+                "default": "flux2-klein-4b"}  # fmt: skip
+
+    def visual_draw(self, spec):
+        self.visual_calls.append(("draw", spec))
+        job = {"id": f"v{len(self.visual_calls)}", "prompt": spec["prompt"], "model_id": spec["model"],
+               "status": "queued", "width": spec["width"], "height": spec["height"], "seed": 7, "error": "",
+               "seconds": None, "file": ""}  # fmt: skip
+        self.visual_jobs_list.insert(0, job)
+        return {"job": job}
+
+    def visual_jobs(self, limit=30):
+        return {"jobs": list(self.visual_jobs_list)}
+
+    def visual_cancel(self, job_id):
+        self.visual_calls.append(("cancel", job_id))
+        return {"job": {"id": job_id, "status": "running"}}
+
+    def visual_file(self, job_id):
+        return PICTURE
 
     def install_pictures_start(self, spec):
         self.install_calls.append(("pictures", spec))
@@ -6450,6 +6479,67 @@ def test_the_refusal_switch_in_a_chat(qapp):
         assert app.chatRefusalName == "Снятие отказов: выкл"
         app.newChat()  # a new chat starts from the model's setting again
         assert app.chatRefusalName == "Снятие отказов: выкл" and app.chatRefusalItems[1]["selected"]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_drawing_a_picture_in_the_window(qapp, tmp_path):
+    """29.5 (D55): «Нарисовать» - the description from the chat's input, the shape, the picture as it is drawn,
+    «Стоп», the result, «Сохранить как…», «Качественнее» and «Ещё вариант»."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        sheet = quick.window.findChild(QObject, "visualSheet")
+        assert quick.window.findChild(QObject, "drawChip") is not None  # the chip in the chat's input
+        view.open("рыжая лиса в снегу")
+        app.openUi("draw")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.hasModels)
+        assert view.prompt == "рыжая лиса в снегу" and view.choice
+        assert view.modelText == "FLUX.2 [klein] 4B · 1024 × 1024"  # «Быстрее»: the hub's default
+        view.setShape("wide")
+        assert view.modelText.endswith("1344 × 768")
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        assert client.visual_calls[-1] == ("draw", {"prompt": "рыжая лиса в снегу", "model": "flux2-klein-4b",
+                                                    "width": 1344, "height": 768, "seed": -1})  # fmt: skip
+        assert view.busy and view.pictureSource == ""
+        job = {**client.visual_jobs_list[0], "status": "running"}
+        app.on_event({"type": "visual.changed", "payload": {"job": job}})
+        preview = base64.b64encode(PICTURE).decode()
+        app.on_event({"type": "visual.progress", "payload": {"id": job["id"], "step": 2, "steps": 4,
+                                                             "preview": preview}})  # fmt: skip
+        assert view.statusText == "рисую: шаг 2 из 4" and view.percent == 50.0
+        assert view.pictureSource.startswith("image://pictures/preview/")
+        view.stop()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "cancel")
+        assert client.visual_calls[-1] == ("cancel", job["id"])
+        done = {**job, "status": "done", "seconds": 4.5, "file": f"2026-11/{job['id']}.png"}
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
+        wait_until(lambda: not app.bg.busy and view.done)
+        assert view.pictureSource == f"image://pictures/job/{job['id']}" and view.statusText == "готово за 4,5 с"
+        assert [r["id"] for r in view.recent] == [job["id"]] and view.recent[0]["chosen"]
+        assert view.provider.requestImage(f"job/{job['id']}", QSize(), QSize()).width() == 32
+        view.saveAs(str(tmp_path / "fox"))
+        assert (tmp_path / "fox.png").read_bytes() == PICTURE
+        view.setQuality("quality")
+        assert view.modelText.startswith("Z-Image-Turbo")
+        view.again()  # the same description, a new seed, the quality model
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 3)
+        assert client.visual_calls[-1][1]["model"] == "z-image-turbo" and client.visual_calls[-1][1]["seed"] == -1
+        failed = {**client.visual_jobs_list[0], "status": "failed", "error": "картинка вышла пустой"}
+        app.on_event({"type": "visual.changed", "payload": {"job": failed}})
+        assert view.statusText == "не вышло: картинка вышла пустой" and not view.busy
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

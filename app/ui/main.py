@@ -89,6 +89,7 @@ class QuickApp:
         self.warnings: list[str] = []
         self.engine.warnings.connect(self._warned)
         self.engine.addImageProvider("icons", IconProvider())
+        self.engine.addImageProvider("pictures", self.controller.visual_view.provider)  # «Нарисовать» (29.5)
         context = self.engine.rootContext()
         context.setContextProperty("App", self.controller)
         context.setContextProperty("Projects", self.controller.projects)
@@ -112,6 +113,7 @@ class QuickApp:
         context.setContextProperty("Tasks", self.controller.tasks_view)
         context.setContextProperty("Proving", self.controller.proving_view)
         context.setContextProperty("Installer", self.controller.install_view)
+        context.setContextProperty("Visual", self.controller.visual_view)
         context.setContextProperty("Setup", self.controller.setup_view)
         context.setContextProperty("Release", self.controller.release_view)
         context.setContextProperty("Check", self.controller.check_view)
