@@ -3488,8 +3488,9 @@ def test_tool_rows():
     assert rows.tool_label("generate_image", {"prompt": "рыжая лиса в снегу"}) == "Рисую «рыжая лиса в снегу»"  # 29.6а
     from app.ui.install_view import picture_rows
 
+    # 29.8а: a video model where videos are only in the cloud
     clip = {"id": "wan", "name": "Wan", "verdict": "no", "words": "видео на этом компьютере — только в облаке",
-            "installed": [], "size": 9_000_000_000}  # 29.8а: a video model where videos are only in the cloud
+            "installed": [], "size": 9_000_000_000}  # fmt: skip
     (shown,) = picture_rows([clip])
     assert (shown["tone"], shown["canInstall"], shown["words"]) == ("error", False, clip["words"])
     from app.ui import agents as agent_view
