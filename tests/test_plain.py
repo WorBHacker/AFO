@@ -15,6 +15,11 @@ def test_an_error_card_says_what_to_do():
     said = install_view.with_hint("модель скачана, но не запустилась: llama-swap: 502 upstream command exited")
     assert said.startswith("модель скачана") and "Переустановите модель" in said.split("\n")[1]
     assert install_view.with_hint("") == "" and install_view.with_hint("неясно") == "неясно"
+    from hub.gateway.vertex_provider import NO_ROLE
+
+    role = rows.error_row("e3", f"vertex: {NO_ROLE}")  # stage 30: Google Cloud's role, not a wrong key
+    assert role["title"] == "У аккаунта Google Cloud нет роли" and "Vertex AI User" in role["hint"]
+    assert "IAM" in role["hint"]
 
 
 def test_faster_or_better_for_a_local_model():

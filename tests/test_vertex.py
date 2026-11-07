@@ -190,3 +190,6 @@ def test_the_key_file_through_the_connections(hub):  # noqa: F811 - the fixture
     google.role = False  # the role taken away in the console
     checked = hub.post(f"/v1/connections/{conns.VERTEX_ACCOUNT}/check", headers=headers).json()
     assert checked["ok"] is False and "Vertex AI User" in checked["detail"]
+    again = hub.put(f"/v1/connections/{conns.VERTEX_ACCOUNT}", json={"value": json.dumps(FILE)}, headers=headers)
+    said = again.json()["catalog"]["errors"]  # the window: «Сохранено, но список моделей не получен: …»
+    assert f"vertex: {NO_ROLE}" in said and "vertex: vertex:" not in said

@@ -79,8 +79,8 @@ class Gateway:
             await self._db.acall(write)
             total += len(models)
         result: dict[str, int | str] = {"synced": total, "providers": len(self._providers)}
-        if errors:
-            result["errors"] = "; ".join(f"{k}: {v}" for k, v in errors.items())
+        if errors:  # an adapter's words mostly start with its name already: once is enough
+            result["errors"] = "; ".join(v if v.startswith(f"{k}:") else f"{k}: {v}" for k, v in errors.items())
         return result
 
 

@@ -61,6 +61,15 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
             "каждый раз — переложите модель на SSD или выберите модель поменьше."
         ),
     ),
+    (  # Vertex AI (stage 30): the key file is right, the account has no right to call models
+        re.compile(r"Vertex AI User|aiplatform\.endpoints\.predict"),
+        N_("У аккаунта Google Cloud нет роли"),
+        N_(
+            "Сервисному аккаунту не дано право вызывать модели Vertex AI. Владелец проекта даёт его в консоли Google "
+            "Cloud: IAM → «Предоставить доступ» → адрес аккаунта → роль «Vertex AI User». Затем — «Проверить» в "
+            "«Подключениях»."
+        ),
+    ),
     (
         re.compile(
             r"(?i)\b401\b|invalid[_ ]api[_ ]key|authentication|unauthori[sz]ed|incorrect api key|"

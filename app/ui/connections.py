@@ -17,6 +17,8 @@ from PySide6.QtGui import QDesktopServices
 from common.i18n import tr
 from hub.connections import MIN_PASSWORD
 
+from .install_view import with_hint
+
 if TYPE_CHECKING:
     from .controller import Controller
 
@@ -266,7 +268,8 @@ class Connections(QObject):
 
         def saved(result: dict[str, Any]) -> None:
             errors = (result.get("catalog") or {}).get("errors")
-            text = tr("Сохранено, но список моделей не получен: {errors}", errors=errors) if errors else tr("Сохранено")
+            text = with_hint(tr("Сохранено, но список моделей не получен: {errors}", errors=errors)) if errors \
+                else tr("Сохранено")  # fmt: skip
             self._notes[name] = {"ok": not errors, "text": text}
             self.app.flash(tr("«{title}» сохранено в хабе", title=self._title(name)))
             self.load()
@@ -308,7 +311,8 @@ class Connections(QObject):
         self._notes[name] = {"ok": True, "text": tr("Проверяю…")}
 
         def checked(result: dict[str, Any]) -> None:
-            self._notes[name] = {"ok": bool(result.get("ok")), "text": str(result.get("detail", ""))}
+            ok, detail = bool(result.get("ok")), str(result.get("detail", ""))
+            self._notes[name] = {"ok": ok, "text": detail if ok else with_hint(detail)}
 
         self._run(lambda: self.app.client.check_connection(name, ticket), checked)
 

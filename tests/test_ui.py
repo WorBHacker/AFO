@@ -2479,6 +2479,14 @@ def test_a_key_file_goes_to_the_hub_as_it_is(app, tmp_path):
     conns.saveFile("vertex_service_account", (tmp_path / "big.json").as_uri())
     assert conns.error == "Это не файл ключа: он больше 64 КБ" and len(app.client.secret_calls) == 1
 
+    from hub.gateway.vertex_provider import NO_ROLE
+
+    app.client.check_connection = lambda name, ticket: {"name": name, "ok": False, "detail": f"vertex: {NO_ROLE}"}
+    conns.check("vertex_service_account")  # the hub's words, and under them what to do
+    note = lambda: next(r for r in conns.items if r["name"] == "anthropic_api_key")["note"]  # noqa: E731
+    wait_until(lambda: "Предоставить доступ" in conns._notes.get("vertex_service_account", {}).get("text", ""))
+    assert conns._notes["vertex_service_account"]["text"].startswith(f"vertex: {NO_ROLE}\n") and note() == ""
+
 
 def test_rename_and_delete_a_chat(app):
     opened(app)
