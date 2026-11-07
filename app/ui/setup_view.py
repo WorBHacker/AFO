@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 PURPOSES = [("chat", N_("Разговоры"), N_("отвечает на вопросы, пишет и переводит тексты")),
             ("code", N_("Код"), N_("пишет и объясняет программы")),
-            ("vision", N_("Картинки"), N_("понимает картинки и снимки экрана"))]  # fmt: skip
+            ("vision", N_("Понимать картинки"), N_("понимает картинки и снимки экрана"))]  # fmt: skip
 VENDORS = {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "other": ""}
 DISMISSED = "setup/dismissed"
 
@@ -123,6 +123,12 @@ class SetupView(QObject):
     @Property(str, notify=changed)
     def pageAdvice(self) -> str:
         return (self._state.get("page_file") or {}).get("advice", "")
+
+    @Property(str, notify=changed)
+    def picturesText(self) -> str:
+        """What pictures and videos this computer can make (29.2), before the engine is there."""
+        why = (self._state.get("pictures") or {}).get("why", "")
+        return tr("Картинки и видео: {what}", what=why) if why else ""
 
     @Property(str, notify=changed)
     def engineText(self) -> str:

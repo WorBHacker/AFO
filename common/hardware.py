@@ -161,6 +161,71 @@ def vulkan_loader() -> bool:
     return sys.platform == "win32" and os.path.isfile(os.path.join(system, "vulkan-1.dll"))
 
 
+PASCAL = (6, 1)  # stable-diffusion.cpp's CUDA build starts here (its arch list, 61-120)
+CUDA_12 = 12000  # the build's CUDA 12.8 runs on drivers from CUDA 12.0 on (528.33)
+INTEGRATED_GIB = 1.0  # less memory of its own than this: an integrated card, it works in shared memory
+# By 29.1's measurements (docs/visual.md §2a): FLUX.2-klein draws 512² from a 1 GB budget at a 2.1 GB peak - more
+# than a 2 GB card has - and 1024² from 2-3 GB; Z-Image-Turbo wants more; Wan2.2's Turbo video at 480p fits a 4 GB
+# budget, but a 4 GB card takes 10+ minutes, a 6 GB one minutes; the weights out of the card take up to 9 GB of RAM;
+# tiles are 4 times faster than a retry on a small budget and twice as slow on a whole big card.
+MAIN_GIB, QUALITY_GIB = 3.0, 6.0
+VIDEO_GIB, TRY_VIDEO_GIB, VIDEO_RAM_GIB = 6.0, 4.0, 16.0
+NO_TILES_GIB = 10.0
+
+
+def pictures_for(cards: list[dict[str, Any]], nvidia: dict[str, Any] | None, *, vulkan: bool,
+                 ram_gib: float) -> dict[str, Any]:  # fmt: skip
+    """What pictures and videos this computer can make, before its trial run (D55, 29.2): the engine's build
+    (cuda12 | vulkan | cpu), the card it runs on and its memory, the pictures' tier (main: FLUX.2-klein; light: SDXS
+    and the main one slowly), whether Z-Image-Turbo is offered, the video (local | slow | cloud), whether a video's
+    VAE goes in tiles. `cards` - dxgi_adapters()."""
+    discrete = sorted((c for c in cards if c["dedicated_gib"] >= INTEGRATED_GIB), key=lambda c: -c["dedicated_gib"])
+    green = next((c for c in discrete if c["vendor"] == "nvidia"), None)
+    compute = tuple((nvidia or {}).get("compute") or (0, 0))
+    if green and nvidia and compute >= PASCAL and nvidia["cuda"] >= CUDA_12:
+        build, card = "cuda12", green
+    elif vulkan and (discrete or cards):
+        build, card = "vulkan", (discrete or sorted(cards, key=lambda c: -c["shared_gib"]))[0]
+    else:
+        build, card = "cpu", None
+    on_card = card is not None and card["dedicated_gib"] >= INTEGRATED_GIB
+    memory = card["dedicated_gib"] if on_card else card["shared_gib"] if card else round(ram_gib, 1)
+    enough_ram = ram_gib >= VIDEO_RAM_GIB
+    if build == "cuda12" and memory >= VIDEO_GIB and enough_ram:
+        video = "local"
+    elif on_card and enough_ram and memory >= (TRY_VIDEO_GIB if build == "cuda12" else VIDEO_GIB):
+        video = "slow"
+    else:
+        video = "cloud"
+    plan = {"build": build, "card": card["name"] if card else "", "memory_gib": memory,
+            "pictures": "main" if on_card and memory >= MAIN_GIB else "light",
+            "quality": on_card and memory >= QUALITY_GIB, "video": video,
+            "tiles": build != "cuda12" or memory < NO_TILES_GIB}  # fmt: skip
+    return plan | {"why": _pictures_why(plan, card, compute, nvidia)}
+
+
+def _pictures_why(plan: dict[str, Any], card: dict[str, Any] | None, compute: tuple, nvidia: dict | None) -> str:
+    if plan["build"] == "cpu":
+        where = tr("подходящей видеокарты нет — картинки на процессоре: маленькая модель за секунды, большая — минуты")
+    elif plan["pictures"] == "light":
+        where = tr("{card} работает в общей памяти — маленькая модель за секунды, большая — минуты; пробная картинка "
+                   "решит, видеокарта это будет или процессор", card=plan["card"])  # fmt: skip
+    elif plan["build"] == "vulkan" and card and card["vendor"] == "nvidia":
+        old = compute < PASCAL if nvidia else False
+        where = tr("{card}: сборка Vulkan — {reason}", card=plan["card"],
+                   reason=tr("для CUDA карта слишком старая") if old else tr("драйвер NVIDIA старше нужного для CUDA "
+                                                                              "12 (от 528.33)"))  # fmt: skip
+    else:
+        where = tr("{card}: картинки 1024 × 1024 за секунды", card=plan["card"])
+    if plan["video"] == "local":
+        video = tr("видео — здесь, минуты на ролик")
+    elif plan["video"] == "slow":
+        video = tr("видео здесь — только попробовать: десятки минут на ролик")
+    else:
+        video = tr("видео — в облаке: здесь нужна видеокарта NVIDIA от 6 ГБ и 16 ГБ ОЗУ")
+    return f"{where}; {video}"
+
+
 def cpu_features() -> dict[str, bool]:
     """The processor's vector units: the engines on the processor are several times faster with AVX2."""
     present = ctypes.windll.kernel32.IsProcessorFeaturePresent if sys.platform == "win32" else (lambda _: 0)

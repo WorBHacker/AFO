@@ -56,7 +56,10 @@ models:
 """, encoding="utf-8")  # fmt: skip
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     monkeypatch.setattr(hardware, "adapters", lambda: [{"name": "RTX 4060", "vendor": "nvidia", "vram_gib": 8.0}])
-    monkeypatch.setattr(hardware, "nvidia_driver", lambda: {"version": "610.88", "cuda": 13030})
+    monkeypatch.setattr(hardware, "dxgi_adapters", lambda: [{"name": "RTX 4060", "vendor": "nvidia",
+                                                             "dedicated_gib": 8.0, "shared_gib": 7.9}])  # fmt: skip
+    monkeypatch.setattr(hardware, "vulkan_loader", lambda: True)
+    monkeypatch.setattr(hardware, "nvidia_driver", lambda: {"version": "610.88", "cuda": 13030, "compute": [8, 9]})
     monkeypatch.setattr(diagnostics, "memory_sample", lambda: {"ram_total_gib": 16.0, "ram_used_gib": 9.5,
                                                                "commit_limit_gib": 20.0})  # fmt: skip
     monkeypatch.setattr(diagnostics, "drives", lambda: [{"letter": "F", "kind": "hdd", "words": "жёсткий диск",
@@ -80,6 +83,9 @@ models:
     assert lines["gpu"]["ok"] is None and "сборка для процессора" in lines["gpu"]["advice"]
     assert "CUDA 13.3" in lines["gpu"]["text"] and "RTX 4060 (8 ГБ)" in lines["gpu"]["text"]
     assert lines["memory"]["ok"] is None and "файл подкачки ≈ 4 ГБ" in lines["memory"]["text"]
+    # pictures and videos (29.2): what this computer can make, before the engine is there
+    assert lines["pictures"]["ok"] is True
+    assert lines["pictures"]["text"] == "RTX 4060: картинки 1024 × 1024 за секунды; видео — здесь, минуты на ролик"
     assert (
         lines["disk-F"]["ok"] is None
         and "SSD" in lines["disk-F"]["advice"]

@@ -39,6 +39,7 @@ Sheet {
     Note { visible: Setup.why !== ""; text: Setup.why; color: Theme.p.muted }
     Note { visible: Setup.memoryText !== ""; text: Setup.memoryText; color: Theme.p.muted }
     Note { visible: Setup.pageAdvice !== ""; text: Setup.pageAdvice; color: Theme.p.warn; font.pixelSize: 12 }
+    Note { visible: Setup.picturesText !== ""; text: Setup.picturesText; color: Theme.p.muted }
 
     SectionTitle { text: qsTr("Движок") }
     Note { objectName: "wizardEngine"; text: Setup.engineText }

@@ -6075,7 +6075,10 @@ def test_the_first_run_wizard(qapp):
                         "builds": {"cuda-13": "NVIDIA, CUDA 13", "vulkan": "Vulkan (AMD, Intel, NVIDIA)",
                                    "cpu": "только процессор"},
                         "memory": {"ram_total_gib": 32.0, "commit_limit_gib": 36.0},
-                        "page_file": {"gib": 4.0, "advice": "Файл подкачки — 4 ГБ."}}  # fmt: skip
+                        "page_file": {"gib": 4.0, "advice": "Файл подкачки — 4 ГБ."},
+                        "pictures": {"build": "vulkan", "video": "slow",
+                                     "why": "Radeon RX 9070: картинки 1024 × 1024 за секунды; видео здесь — только "
+                                            "попробовать: десятки минут на ролик"}}  # fmt: skip
         app.attach(client, start_events=False)
         sheet = quick.window.findChild(QObject, "wizardSheet")
         wait_until(lambda: not app.bg.busy and sheet.property("opened"))  # opened by itself
@@ -6083,6 +6086,8 @@ def test_the_first_run_wizard(qapp):
         assert view.cards == ["Radeon RX 9070 — 16 ГБ видеопамяти", "Intel(R) Graphics — 2 ГБ видеопамяти"]
         assert view.build == "vulkan" and view.memoryText == "ОЗУ 32 ГБ · файл подкачки ≈ 4 ГБ"
         assert view.engineText.startswith("Движка для локальных моделей ещё нет") and view.pageAdvice
+        assert view.picturesText == ("Картинки и видео: Radeon RX 9070: картинки 1024 × 1024 за секунды; видео здесь "
+                                     "— только попробовать: десятки минут на ролик")  # fmt: skip
         view.setBuild("cpu")
         view.installEngine()
         wait_until(lambda: not app.bg.busy and view.jobStatus == "downloading")
@@ -6098,7 +6103,7 @@ def test_the_first_run_wizard(qapp):
         rows = view.models
         assert [(r["title"], r["offer"], r["canInstall"], r["installed"]) for r in rows] == [
             ("Разговоры", "Q8_0 · 8,0 ГБ", True, False), ("Код", "Q8_0 · 8,1 ГБ", True, True),
-            ("Картинки", "", False, False)]  # fmt: skip
+            ("Понимать картинки", "", False, False)]  # fmt: skip
         view.installModel("chat")
         wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
         assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"
