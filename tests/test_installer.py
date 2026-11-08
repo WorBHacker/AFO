@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hub import appcontainer
+from hub import appcontainer, autostart
 from installer import build
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,6 +70,72 @@ def test_a_folder_too_deep_for_the_programs_files_is_refused_in_words(tmp_path):
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+
+
+def test_the_release_is_built_on_github_from_this_source():
+    """20.6 (Q16), what SignPath Foundation asks: GitHub's Windows machine builds the installer from the repository -
+    the same `python -m installer.build`, the Python it insists on, the libraries of requirements.lock - and a tag
+    vX.Y.Z makes a draft release with the two files the hub's update looks for (hub/release.py)."""
+    flow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'tags: ["v*.*.*"]' in flow and "workflow_dispatch:" in flow  # a manual run only builds
+    assert f'python-version: "{build.PYTHON}"' in flow  # the build refuses any other Python
+    assert "python -m pip install --disable-pip-version-check -r requirements.lock" in flow
+    assert "python -m installer.build" in flow and "build/dist/AFO-Setup-*" in flow
+    assert "--draft" in flow and flow.count("contents: write") == 1  # only the job that makes the release may write
+    assert "the tag is not the code's version" in flow
+
+
+def test_the_installer_has_its_sha256_beside_it(tmp_path):
+    """The .sha256 next to the installer, in the form the hub's update reads (its first word)."""
+    made = tmp_path / "AFO-Setup-9.9.9.exe"
+    made.write_bytes(b"MZ installer")
+    written = build.checksum(made)
+    assert written == tmp_path / "AFO-Setup-9.9.9.exe.sha256"
+    digest, name = written.read_text(encoding="ascii").split()
+    assert re.fullmatch(r"[0-9a-f]{64}", digest) and name == made.name
+    assert digest == build._sha256(made)
+    assert build.main(["--checksum", str(made)]) == 0  # after signing: only the sum again
+
+
+def test_the_installers_name_and_version_are_what_signpath_asks():
+    """20.6: SignPath Foundation's metadata rules."""
+    iss = build.ISS.read_text(encoding="utf-8")
+    assert "VersionInfoProductName=AFO" in iss and "VersionInfoProductVersion={#AppVersion}" in iss
+
+
+def test_the_wizard_agrees_with_the_program():
+    """installer/afo.iss: for the current user, no administrator; Russian and English; the Start menu's shortcut is
+    the window's taskbar button (one app id); the login value is the one Settings turns on and off; an update replaces
+    the code, not the models; removing it asks about the data and leaves no login value behind."""
+    iss = build.ISS.read_text(encoding="utf-8")
+    assert "PrivilegesRequired=lowest" in iss and r"DefaultDirName={autopf}\AFO" in iss
+    assert 'MessagesFile: "compiler:Languages\\Russian.isl"' in iss and 'MessagesFile: "compiler:Default.isl"' in iss
+    assert "DisableWelcomePage=no" in iss and "ShowLanguageDialog=yes" in iss
+    from app.__main__ import APP_ID
+
+    assert iss.count(f'AppUserModelID: "{APP_ID}"') == 2  # the Start menu's and the desktop's shortcut
+    run = re.search(r'ValueName: "([^"]+)"; ValueData: "(.*?)"; Flags', iss)  # "" is a quote inside
+    assert run and run.group(1) == autostart.RUN_VALUE
+    assert run.group(2) == '""{app}\\python\\pythonw.exe"" -m hub'  # login_command()'s form: "<pythonw>" -m hub
+    assert autostart.login_command().endswith('" -m hub')
+    assert f"'{autostart.RUN_VALUE}', Login)" in iss  # removed on uninstall whoever set it - when it is this copy's
+    assert "Pos(Lowercase(ExpandConstant('{app}\\')), Lowercase(Login)) > 0" in iss
+    for folder in (*build.CODE, "python"):
+        assert f'Type: filesandordirs; Name: "{{app}}\\{folder}"' in iss
+    assert "{app}\\model" not in re.search(r"\[InstallDelete\](.*?)\n\[", iss, re.S).group(1)  # an update keeps models
+    assert "russian.DeleteData=" in iss and "english.DeleteData=" in iss and "MB_DEFBUTTON2" in iss  # «no» first
+    assert "-m hub stop" in iss  # the running hub lets its files go before they are replaced or removed
+    assert not re.search(r"all\s+for\s+one", iss, re.I)
+    # the wizard's language is the program's until Settings chooses one (10.5)
+    from common import i18n
+
+    assert (
+        f'Subkey: "{i18n.INSTALLER_KEY}"; ValueType: string; ValueName: "Language"; ValueData: "{{cm:LanguageCode}}"'
+        in iss
+    )
+    assert {re.search(rf"^{name}\.LanguageCode=(\w+)$", iss, re.M).group(1) for name in ("russian", "english")} == set(
+        i18n.LANGUAGES
+    )
 
 
 def test_the_icon_has_every_size_windows_asks_for():
