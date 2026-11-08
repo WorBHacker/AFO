@@ -730,7 +730,8 @@ class Uia:
             with contextlib.suppress(Exception):  # the focus there too: Enter after typing goes to this field
                 element.SetFocus()
             found.SetValue(text)
-            return "typed"
+            # a field may take SetValue and keep nothing (Telegram's message field, 33.3): then real keys
+            return "typed" if " ".join(text.split()) in " ".join(str(found.CurrentValue or "").split()) else ""
         if action == "toggle":
             found = pattern(U.UIA_TogglePatternId, U.IUIAutomationTogglePattern)
             if found is None:
@@ -766,8 +767,13 @@ class Uia:
         focused = self.uia.GetFocusedElement()
         return bool(focused and focused.CurrentIsPassword)
 
-    def focus_element(self, item: dict[str, Any]) -> None:
-        item["element"].SetFocus()
+    def focus_into(self, item: dict[str, Any]) -> bool:
+        """The focus put into the element: True when it is there now - keys typed next go into it."""
+        element = item["element"]
+        with contextlib.suppress(Exception):
+            element.SetFocus()
+        focused = self.uia.GetFocusedElement()
+        return bool(focused) and bool(self.uia.CompareElements(focused, element))
 
 
 def tree_text(window: dict[str, Any], items: list[dict[str, Any]], hidden: int = 0,
@@ -887,6 +893,9 @@ class Computer:
         self._holder: str | None = None  # the run controlling the computer now
         self._looks: dict[tuple[str, int], list[dict[str, Any]]] = {}  # (run, window) -> its last look's elements
         self._ours_at = 0.0  # when our own last real input was sent (time.monotonic)
+        # (run, window) -> the text the agent typed there, not sent yet: Enter sends it, though a field may not tell
+        # its text (Telegram's, 33.3); kept in memory only, as the journal keeps no typed text
+        self._typed: dict[tuple[str, int], str] = {}
 
     def _uia_now(self) -> Uia:
         if self._uia is None:
@@ -900,6 +909,7 @@ class Computer:
     async def release(self, run_id: str) -> None:
         """The run ended (or was stopped): its hold and its looks go."""
         self._looks = {k: v for k, v in self._looks.items() if k[0] != run_id}
+        self._typed = {k: v for k, v in self._typed.items() if k[0] != run_id}
         if self._holder == run_id:
             self._holder = None
             await self._bus.publish("computer.released", {"run_id": run_id}, persist=False)
@@ -1035,9 +1045,11 @@ class Computer:
             if field is None:
                 sends = True
                 shown = {**shown, "element": tr("окно не впереди — куда уйдёт Enter, не видно")}
-            elif field["text"] and field["value"] != "" and not SEARCHES.search(field["name"]):
+            elif field["text"] and not SEARCHES.search(field["name"]) and (
+                    field["value"] != "" or (run_id, window["id"]) in self._typed):  # fmt: skip
                 sends = True
-                shown = {**shown, "element": field["name"] or tr("поле ввода"), "text": str(field["value"] or "")[:300]}
+                said = field["value"] or self._typed.get((run_id, window["id"])) or ""
+                shown = {**shown, "element": field["name"] or tr("поле ввода"), "text": str(said)[:300]}
         why = await ask("screen_send" if sends else "screen_act", shown, not sends)
         if why is not None:
             raise ScreenError(why)
@@ -1085,6 +1097,12 @@ class Computer:
             "id": window["id"], "title": window["title"], "rect": list(rect)}, "program": window["program"],
             "action": action}, persist=False)  # fmt: skip
         result = await self._do(window, action, args, item)
+        key = (run_id, window["id"])
+        if action == "type" and args.get("text"):
+            self._typed[key] = str(args["text"])
+        elif (action == "keys" and enter_only(str(args.get("keys") or ""))) or (
+                action == "click" and SENDS.search((item or {}).get("name", ""))):  # fmt: skip
+            self._typed.pop(key, None)
         await self._journal(run_id, window, args, item, result)
         return f"{result}. Look again to see the window now."
 
@@ -1108,12 +1126,20 @@ class Computer:
             await asyncio.to_thread(press, codes)
             return f"pressed {args.get('keys')}"
         if action == "type":
-            if item is not None:
-                await uia.run(uia.focus_element, item)
+            text = str(args.get("text") or "")
+            if item is not None and not await uia.run(uia.focus_into, item):
+                raise ScreenError(f"not done: [{args['element']}] «{item['name']}» did not take the text, and the "
+                                  "focus did not go into it - click it, then type without `element`")  # fmt: skip
             if await self._focused_password():
                 raise ScreenError("not done: the focus is in a password field - the user's (D41)")
-            await asyncio.to_thread(type_text, str(args.get("text") or ""))
-            return "typed where the focus is"
+            if item is None:
+                await asyncio.to_thread(type_text, text)
+                return "typed where the focus is"
+            # the element did not take the text the quick way (Telegram's message field, 33.3): the keyboard, all of
+            # the field selected first - the text replaces what is there, as `type` says
+            await asyncio.to_thread(press, parse_keys("ctrl+a"))
+            await asyncio.to_thread(type_text, text)
+            return f"typed into [{args['element']}] «{item['name']}» with the keyboard (the quick way kept nothing)"
         _wx, _wy, ww, wh = window["rect"]
         if item is not None:  # the middle of what is in sight of it: a long list reaches far beyond the window
             px, py, pw, ph = item["place"]

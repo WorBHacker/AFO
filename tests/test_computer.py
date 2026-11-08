@@ -431,3 +431,103 @@ def test_what_the_screen_shows_is_secret_filtered(tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "screen_cloud", lambda conn, run_id: run_id == "r1")
     output, error = asyncio.run(computer.handle("r1", looked, None, None, cloud=True))
     assert not error and "[REDACTED]" in output
+
+
+class Field:
+    """A field's ValuePattern as UI Automation hands it; Telegram's message field takes SetValue and keeps nothing."""
+
+    def __init__(self, keeps):
+        self.keeps, self.CurrentValue, self.CurrentIsReadOnly = keeps, "", False
+        self.focused = False
+
+    def QueryInterface(self, iface):
+        return self
+
+    def GetCurrentPattern(self, pattern_id):
+        return self if pattern_id == 1 else None
+
+    def SetFocus(self):
+        self.focused = True
+
+    def SetValue(self, text):
+        if self.keeps:
+            self.CurrentValue = text
+
+
+class Hands:
+    """The UI Automation thread, stood in: a field that did not take the text, where the focus goes, what it says."""
+
+    def __init__(self, focus_goes=True):
+        self.focus_goes = focus_goes
+
+    async def run(self, fn, *args):
+        return fn(*args)
+
+    def act(self, item, action, text, direction, amount):
+        return ""
+
+    def focus_into(self, item):
+        return self.focus_goes
+
+    def focused_is_password(self):
+        return False
+
+    def focused_field(self, hwnd):
+        return {"text": True, "role": "edit", "name": "Сообщение...", "value": ""}  # it does not tell its text
+
+    def close(self):
+        pass
+
+
+def test_text_a_field_did_not_take_goes_in_with_the_keyboard(tmp_path, monkeypatch):
+    """33.3 (the user's Telegram, 2026-11-08): the message field took UI Automation's SetValue and kept nothing -
+    «typed» three times, an empty field, Enter sent nothing. Text the field does not hold after SetValue goes in with
+    real keys: the focus into the field, all of it selected, the text typed - it replaces, as `type` says. And Enter
+    after the agent's own text is sending (asked in «Авто»), though such a field does not tell its text."""
+    uia = pc.Uia()
+    uia.U = type("U", (), {"UIA_ValuePatternId": 1, "IUIAutomationValuePattern": object})
+    takes, ignores = Field(True), Field(False)
+    assert uia.act({"element": takes}, "type", "Привет") == "typed" and takes.CurrentValue == "Привет"
+    assert uia.act({"element": ignores}, "type", "Привет") == "" and ignores.focused  # the keyboard's turn
+    uia.close()
+
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    computer = pc.Computer(db, EventBus(db), tmp_path / "computer", watch_person=False)
+    run = db.call(lambda c: store.create_conversation(c, kind="agent_run", title="Тест"))
+    window = {"id": 7, "title": "33", "program": "Telegram", "rect": (0, 0, 800, 600)}
+    item = {"role": "edit", "name": "Сообщение...", "password": False, "element": object(), "place": (10, 500, 500, 30)}
+
+    async def the_window(hwnd, run_id=""):
+        return window
+
+    computer.window = the_window
+    computer._looks[(run, 7)] = [item]
+    pressed, typed, asked = [], [], []
+    monkeypatch.setattr(pc, "bring_to_front", lambda hwnd: True)
+    monkeypatch.setattr(pc, "press", pressed.append)
+    monkeypatch.setattr(pc, "type_text", typed.append)
+    monkeypatch.setattr(pc, "visible_rect", lambda hwnd: (0, 0, 800, 600))
+    monkeypatch.setattr(pc, "snapshot", lambda hwnd: b"\x89PNG")
+
+    async def ask(tool, shown, cover):
+        asked.append((tool, shown["text"]))
+        return None
+
+    def act(**args):
+        return asyncio.run(computer.handle(run, {"name": "screen_act", "input": {"window": 7, **args}}, asyncio.Event(),
+                                           ask))  # fmt: skip
+
+    computer._uia = Hands()
+    said, failed = act(action="type", element=1, text="Привет! 👋")
+    assert not failed and said.startswith("typed into [1] «Сообщение...» with the keyboard")
+    assert pressed == [pc.parse_keys("ctrl+a")] and typed == ["Привет! 👋"]
+    said, failed = act(action="keys", keys="enter")  # the agent's own text in the field: it sends
+    assert not failed and asked[-1] == ("screen_send", "Привет! 👋")
+    act(action="keys", keys="enter")  # sent: an Enter now is not the agent's message
+    assert asked[-1][0] == "screen_act"
+    computer._uia = Hands(focus_goes=False)
+    said, failed = act(action="type", element=1, text="ещё")
+    assert failed and "did not take the text, and the focus did not go into it" in said and typed == ["Привет! 👋"]
+    computer.close()
+    db.close()
