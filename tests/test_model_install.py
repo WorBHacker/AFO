@@ -822,6 +822,60 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
 
 
+def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
+    """34.4 (2026-11-08): «Подбор параметров» measured one model with llama-bench (past llama-swap) while an install's
+    trial loaded the next into llama-swap - two models at once filled the memory. The install waits, its files down,
+    while tuning measures - «ждёт пробного запуска» - and, before its trial, while a chat answers (its model would be
+    swapped out in the middle of an answer)."""
+    installer, tuner = hub.app.state.installer, hub.app.state.tuner
+    chatting = [False]
+    installer.chat_busy = lambda: chatting[0]
+    tuner.job = {"status": "measuring", "model_id": "big"}  # what the server's wiring tells the installer
+    asked = len(FakeLlamaSwap.asked)
+    job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False}).json()["job"]
+    waiting = wait_for(hub, job["id"], "trialwait")
+    assert waiting["percent"] == 100.0 and waiting["files"][0]["done"]  # its files are down
+    time.sleep(0.4)
+    assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked  # nothing loaded meanwhile
+    assert "tiny-q4_k_m" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+    assert tuner._installing()  # and tuning, for its part, waits while the installs have work
+    chatting[0] = True
+    tuner.job = {"status": "idle"}
+    time.sleep(0.4)
+    assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked
+    chatting[0] = False
+    assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
+    assert FakeLlamaSwap.asked[-1]["model"] == "tiny-q4_k_m"
+
+
+def test_the_installs_table_takes_the_new_states_and_keeps_its_rows(tmp_path, monkeypatch):
+    """Migration 052 (34.4): SQLite keeps a CHECK as it was made - the table is made again with «trialwait» and
+    «added», its rows kept."""
+    import sqlite3
+    import sys
+
+    from hub.db import Database, available_migrations, migrate
+
+    migrating = sys.modules["hub.db.migrate"]  # hub.db re-exports the function `migrate`, hiding the module
+    every = available_migrations()
+    monkeypatch.setattr(migrating, "available_migrations", lambda: [m for m in every if m[0] < 52])
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    row = ("INSERT INTO model_installs (id, repo, quant, files, folder, model_id, name, status, own_files) "
+           "VALUES ('j1', '', 'Q4_K_M', '[]', 'D:/m', 'mine', 'Mine', 'done', 0)")  # fmt: skip
+    db.call(lambda c: c.execute(row))
+    added = "UPDATE model_installs SET status = 'added' WHERE id = 'j1'"
+    with pytest.raises(sqlite3.IntegrityError):
+        db.call(lambda c: c.execute(added))
+    monkeypatch.setattr(migrating, "available_migrations", lambda: every)
+    assert 52 in db.call(migrate)
+    kept = db.call(lambda c: dict(c.execute("SELECT * FROM model_installs WHERE id = 'j1'").fetchone()))
+    assert (kept["model_id"], kept["status"], kept["own_files"], kept["folder"]) == ("mine", "done", 0, "D:/m")
+    for status in ("added", "trialwait"):
+        db.call(lambda c, s=status: c.execute("UPDATE model_installs SET status = ? WHERE id = 'j1'", (s,)))
+    db.close()
+
+
 def test_a_cancelled_install_takes_its_list_of_pieces_too(hub, pieces):
     """32.2: a big file's list of pieces (`.parts`) stayed after «Отменить» - and with it the model's folder."""
     FakeHub.slow = 0.05  # a piece ~0.2 s

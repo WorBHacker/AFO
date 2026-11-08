@@ -2,6 +2,7 @@
 must, a model file's header, the memory estimate, and the API - a copy first, llama-swap reading the file again, the
 copy back when it does not, or when the model does not start. A stand-in llama-swap reads the same file."""
 
+import asyncio
 import base64
 import json
 import random
@@ -315,3 +316,39 @@ def test_a_one_line_command_is_read_not_edited(tmp_path, monkeypatch):
         '  "m":\n    cmd: |\n      "D:/llama.cpp/llama-server.exe" -m "F:/m.gguf" --port ${PORT}\n'
     )
     assert lc.server_command(odd_first) == '"D:/llama.cpp/llama-server.exe"'  # no macro: a model's, past "odd"
+
+
+ADDED = '  "added":\n    cmd: |\n      ${llama_server} -m "F:/models/added.gguf"\n      --host 127.0.0.1 --port ${PORT}'
+
+
+def test_one_models_lines_put_back_and_what_others_changed_stays():
+    """34.4 (2026-11-08, the user's config): «Подбор параметров» took its change back by copying the whole file as it
+    was before its write - and an install's model, added meanwhile, was gone with it. Now only its model's lines go
+    back; a model that is not in the config any more stays out."""
+    changed = lc.edit(CONFIG, "big", {"ubatch": 1024, "threads": 16})
+    assert lc.with_block(changed, "big", CONFIG) == CONFIG  # nothing else changed: the file as it was
+    added = lc.add_model(changed, "added", ADDED)
+    back = lc.with_block(added, "big", CONFIG)
+    assert back == lc.add_model(CONFIG, "added", ADDED)  # its own lines as they were, the new model kept
+    gone = lc.remove_model(changed, "big")
+    assert lc.with_block(gone, "big", CONFIG) == gone
+
+
+def test_the_config_is_changed_by_one_writer_at_a_time():
+    """34.4: an install and «Подбор параметров» each read the file, changed it and wrote it - the second over the
+    first. One lock in the hub (per event loop: tests run several) - the second waits until the first is done."""
+    order = []
+
+    async def writer(name, hold):
+        async with lc.writing():
+            order.append(f"{name} in")
+            await asyncio.sleep(hold)
+            order.append(f"{name} out")
+
+    async def both():
+        assert lc.writing() is lc.writing()
+        await asyncio.gather(writer("install", 0.1), writer("tuning", 0))
+
+    asyncio.run(both())
+    assert order == ["install in", "install out", "tuning in", "tuning out"]
+    asyncio.run(both())  # another loop: a lock of its own

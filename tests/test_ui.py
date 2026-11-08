@@ -7276,6 +7276,28 @@ def test_a_models_file_shown_in_explorer(app, tmp_path, monkeypatch):
     assert started[-1] == ["explorer", "/select,", str(model)]
 
 
+def test_an_install_gone_from_the_config_and_one_waiting_for_the_card_say_so():
+    """34.4 (2026-11-08): «установлена», though tuning had written over the config and its block was gone - the row
+    says the model is not in the config and offers to write it again or remove it. An install whose trial waits for
+    the graphics card (tuning measures, a chat answers) - «ждёт пробного запуска», in the status bar too."""
+    from app.ui.install_view import job_rows, status_line
+
+    base = {"id": "j1", "name": "Gemma", "model_id": "gemma4-12b", "repo": "", "folder": "C:\\m",
+            "files": [{"path": "sha256-bb", "role": "model"}], "own_files": 0, "error": "", "trial": {},
+            "status": "done", "lost": True}  # fmt: skip
+    lost = job_rows([base])[0]
+    assert lost["statusWords"] == "нет в config.yaml" and "убрана из config.yaml" in lost["error"]
+    assert [(a["id"], a["label"]) for a in lost["actions"]] == [
+        ("resume", "Вернуть в llama-swap"), ("show", "Показать в проводнике"), ("remove", "Удалить")]  # fmt: skip
+    kept = job_rows([{**base, "lost": False}])[0]
+    assert kept["statusWords"] == "установлена" and kept["error"] == ""
+    waiting = {**base, "lost": False, "status": "trialwait", "own_files": 1, "total_bytes": 9, "done_bytes": 9}
+    row = job_rows([waiting])[0]
+    assert row["statusWords"] == "ждёт пробного запуска" and row["live"] and [a["id"] for a in row["actions"]] == [
+        "show"]  # fmt: skip
+    assert status_line([waiting])["text"] == "ждёт пробного запуска"
+
+
 def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
     """34.1 (2026-11-08, the user's screenshot): an Ollama model added under its blob's name («sha256-» and 64
     characters) - «в llama-swap: …» took all the width it wanted, the row's text was squeezed to the left, and the line

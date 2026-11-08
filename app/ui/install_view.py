@@ -25,8 +25,12 @@ PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own
 TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
 TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
-          "configuring": N_("записываю в llama-swap"), "trial": N_("пробный запуск"), "done": N_("установлена"),
-          "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
+          "trialwait": N_("ждёт пробного запуска"), "configuring": N_("записываю в llama-swap"),
+          "trial": N_("пробный запуск"), "done": N_("установлена"), "failed": N_("не вышло"),
+          "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
+LOST = N_("нет в config.yaml")  # 34.4: «установлена», but its block is gone from llama-swap's config
+LOST_WHY = N_("Модель убрана из config.yaml llama-swap: в чате её нет. «Вернуть в llama-swap» запишет её снова.")
+LOST_ACTIONS = [("resume", N_("Вернуть в llama-swap"), "primary"), ("remove", N_("Удалить"), "danger")]
 ACTIONS = {
     "queued": [("pause", N_("Пауза"), "plain"), ("cancel", N_("Отменить"), "danger")],
     "downloading": [("pause", N_("Пауза"), "plain"), ("cancel", N_("Отменить"), "danger")],
@@ -36,8 +40,8 @@ ACTIONS = {
     "done": [("remove", N_("Удалить"), "danger")],
 }
 SHOW = ("show", N_("Показать в проводнике"), "plain")  # 34.3: an install whose files are there
-SHOWN = ("done", "failed", "paused")
-LIVE = ("queued", "downloading", "configuring", "trial")
+SHOWN = ("done", "failed", "paused", "trialwait")
+LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
 PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
@@ -349,7 +353,7 @@ def job_file(job: dict[str, Any]) -> str:
 
 def job_actions(job: dict[str, Any], file: str) -> list[dict[str, str]]:
     """Its buttons; «Показать в проводнике» before the one that deletes or cancels, when its files are there."""
-    actions = list(ACTIONS.get(job["status"], []))
+    actions = list(LOST_ACTIONS if job.get("lost") else ACTIONS.get(job["status"], []))
     if file and job["status"] in SHOWN:
         at = next((i for i, a in enumerate(actions) if a[2] == "danger"), len(actions))
         actions.insert(at, SHOW)
@@ -359,10 +363,10 @@ def job_actions(job: dict[str, Any], file: str) -> list[dict[str, str]]:
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
              "ownFiles": bool(j.get("own_files", 1)),
-             "statusWords": status_words(j["status"]), "percent": j.get("percent") or 0.0,
-             "progress": progress_text(j), "error": with_hint(j.get("error") or ""), "trial": trial_text(j),
-             "live": j["status"] in ("queued", "downloading", "configuring", "trial"),
-             "file": (file := job_file(j)), "actions": job_actions(j, file)}
+             "statusWords": tr(LOST) if j.get("lost") else status_words(j["status"]),
+             "percent": j.get("percent") or 0.0, "progress": progress_text(j),
+             "error": tr(LOST_WHY) if j.get("lost") else with_hint(j.get("error") or ""), "trial": trial_text(j),
+             "live": j["status"] in LIVE, "file": (file := job_file(j)), "actions": job_actions(j, file)}
             for j in jobs if j["status"] != "removed"]  # fmt: skip
 
 
@@ -573,7 +577,7 @@ class InstallView(QObject):
 
     @Property(int, notify=changed)
     def activeCount(self) -> int:
-        return sum(1 for j in self._jobs if j["status"] in ("queued", "downloading", "configuring", "trial"))
+        return sum(1 for j in self._jobs if j["status"] in LIVE)
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:

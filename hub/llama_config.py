@@ -5,7 +5,8 @@ The hub changes only those, in the text itself, and leaves every other line - co
 it was. Each write is preceded by a copy beside the file (config.yaml.bak-<date-time>, the last ten kept); llama-swap
 reloads the file by itself (--watch-config), and the write counts only when llama-swap lists every model again -
 otherwise the copy comes back. Models served by Strata are only shown: their profiles are Strata's to write; their
-`ttl` is llama-swap's and can be set.
+`ttl` is llama-swap's and can be set. One writer at a time in the hub (`writing`, 34.4): an install, the tuning and
+the window each read the file, change it and write it under one lock - else the second writes over the first.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import os
 import re
 import shutil
 import time
+import weakref
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,19 @@ _MODEL_KEY = re.compile(r'^  (?:"([^"]+)"|\'([^\']+)\'|([^\s:#][^:]*)):\s*(?:#.*
 
 class ConfigError(ValueError):
     """The config cannot be read or changed as asked; the message says why, in words for the window."""
+
+
+_writers: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+def writing() -> asyncio.Lock:
+    """The lock a change of the config is made under (34.4): the file read, changed, written, and llama-swap's reading
+    it again (or the copy back). One for the hub's loop - tests run several loops."""
+    loop = asyncio.get_running_loop()
+    lock = _writers.get(loop)
+    if lock is None:
+        lock = _writers[loop] = asyncio.Lock()
+    return lock
 
 
 def config_path() -> Path:
@@ -520,6 +535,21 @@ def add_model(text: str, model_id: str, block: str) -> str:
     out = "\n".join(lines) + "\n"
     if set(model_blocks(out)) != {*model_blocks(text), model_id}:
         raise ConfigError(tr("новая модель задела другие — не записано"))
+    return out
+
+
+def with_block(text: str, model_id: str, source: str) -> str:
+    """The config with this model's lines as `source` has them (34.4: a change taken back while others changed the
+    file meanwhile); a model gone from either - the config as it is."""
+    blocks, theirs = model_blocks(text), model_blocks(source)
+    if model_id not in blocks or model_id not in theirs:
+        return text
+    lines = text.splitlines()
+    (start, end), (first, last) = blocks[model_id], theirs[model_id]
+    lines[start:end] = source.splitlines()[first:last]
+    out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    if set(model_blocks(out)) != set(blocks):
+        raise ConfigError(tr("правка задела другие модели — не записано"))
     return out
 
 

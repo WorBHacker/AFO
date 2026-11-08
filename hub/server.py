@@ -191,8 +191,12 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
         app.state.tuner = Tuner(db, bus, app.state.chat, url=settings.llama_swap_url, space=app.state.installer.space,
-                                gpu=lambda: (app.state.status.latest or {}).get("gpu"))  # fmt: skip
+                                gpu=lambda: (app.state.status.latest or {}).get("gpu"),
+                                installing=app.state.installer.busy)  # fmt: skip
         app.state.installer.on_done = lambda model_id: app.state.tuner.request(model_id, auto=True)
+        # one at a time on the graphics card (34.4): a trial waits while tuning measures, and for a chat's answer
+        app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
+        app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs

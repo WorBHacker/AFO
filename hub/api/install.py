@@ -4,7 +4,8 @@ app's alone, like the launch settings (hub/api/llama.py): it decides what runs o
 GET /system - this computer as an install sees it (video memory and RAM for a new model, the drives, how many
 parameters fit); GET /catalog - the curated list with the variant recommended here; GET /search - Hugging Face at
 large, by words, what for, size and order (32.5); GET /repo/<a>/<b> - one repository's variants judged. POST /
-starts an install; GET /jobs lists them; POST /jobs/<id>/<pause|resume|cancel>; DELETE /jobs/<id> takes an
+starts an install; GET /jobs lists them (`lost` - its block is gone from llama-swap's config, 34.4); POST
+/jobs/<id>/<pause|resume|cancel> (resume a lost one - its block written again); DELETE /jobs/<id> takes an
 unfinished one off the list (its files too); DELETE /models/<id> removes an installed model.
 GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
 (the picture engine comes with the first).
@@ -176,7 +177,7 @@ async def add_local(request: Request, body: Local, client: Annotated[Client, Dep
 @router.get("/jobs")
 async def jobs(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     installer = _installer(request)
-    found = await request.app.state.db.acall(mi.jobs)
+    found = await installer.mark_lost(await request.app.state.db.acall(mi.jobs))  # gone from the config (34.4)
     for job in found:
         job["speed"] = round(installer.speed.get(job["id"], 0.0))
     return {"jobs": found}

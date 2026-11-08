@@ -96,21 +96,22 @@ class Change(BaseModel):
 @router.put("/models/{model_id}")
 async def change(request: Request, model_id: str, body: Change, client: Annotated[Client, Depends(require_app)]):
     path = llama_config.config_path()
-    text = _read(path)
-    try:
-        new = llama_config.edit(text, model_id, body.changes)
-    except llama_config.ConfigError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if new == text:
-        return {"changed": False, "verified": True, "backup": "", **await _listing(request)}
-    backup = await asyncio.to_thread(llama_config.write, path, new)
-    ids = list(llama_config.model_blocks(new))
-    context = (model_id, body.changes["context"]) if body.changes.get("context") else None
-    verified, problem = await _verify(request, ids, context)
-    if not verified and problem != tr(llama_config.NOT_ANSWERING):  # it read the file and something is wrong: undo
-        await asyncio.to_thread(llama_config.restore, path, backup)
-        raise HTTPException(status_code=502, detail=tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
-                                                       problem=problem))  # fmt: skip
+    async with llama_config.writing():  # 34.4: an install or the tuning does not write in between
+        text = _read(path)
+        try:
+            new = llama_config.edit(text, model_id, body.changes)
+        except llama_config.ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if new == text:
+            return {"changed": False, "verified": True, "backup": "", **await _listing(request)}
+        backup = await asyncio.to_thread(llama_config.write, path, new)
+        ids = list(llama_config.model_blocks(new))
+        context = (model_id, body.changes["context"]) if body.changes.get("context") else None
+        verified, problem = await _verify(request, ids, context)
+        if not verified and problem != tr(llama_config.NOT_ANSWERING):  # it read the file, something is wrong: undo
+            await asyncio.to_thread(llama_config.restore, path, backup)
+            raise HTTPException(status_code=502, detail=tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                                           problem=problem))  # fmt: skip
     request.app.state.llama_trial = (model_id, backup)  # a failed trial of this model puts this copy back
     await request.app.state.bus.publish("llama.config", {"model_id": model_id, "changes": body.changes,
                                                          "backup": backup.name, "verified": verified})  # fmt: skip
@@ -135,9 +136,10 @@ async def trial(request: Request, model_id: str, client: Annotated[Client, Depen
     last = getattr(state, "llama_trial", None)
     if not result.get("ok") and last and last[0] == model_id:
         path = llama_config.config_path()
-        await asyncio.to_thread(llama_config.restore, path, last[1])
-        state.llama_trial = None
-        await _verify(request, list(llama_config.model_blocks(_read(path))), None)
+        async with llama_config.writing():
+            await asyncio.to_thread(llama_config.restore, path, last[1])
+            state.llama_trial = None
+            await _verify(request, list(llama_config.model_blocks(_read(path))), None)
         await state.bus.publish("llama.config", {"model_id": model_id, "restored": last[1].name})
         await state.gateway.sync_catalog()
         result["restored"] = last[1].name
@@ -170,8 +172,9 @@ async def restore(request: Request, body: Restore, client: Annotated[Client, Dep
     found = next((p for p in llama_config.backups(path) if p.name == body.backup), None)
     if found is None:
         raise HTTPException(status_code=404, detail=f"no copy {body.backup!r} beside the config")
-    await asyncio.to_thread(llama_config.write, path, found.read_text(encoding="utf-8"))  # the current one kept too
-    verified, problem = await _verify(request, list(llama_config.model_blocks(_read(path))), None)
+    async with llama_config.writing():
+        await asyncio.to_thread(llama_config.write, path, found.read_text(encoding="utf-8"))  # the current one kept
+        verified, problem = await _verify(request, list(llama_config.model_blocks(_read(path))), None)
     await request.app.state.bus.publish("llama.config", {"restored": body.backup, "verified": verified})
     await request.app.state.gateway.sync_catalog()
     return {"verified": verified, "problem": problem, **await _listing(request)}

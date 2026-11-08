@@ -212,7 +212,8 @@ class Tuner:
     def __init__(self, db, bus, chat, *, url: str, space: Callable[[], dict[str, Any]],
                  run: Callable[[list[str], Callable[[], None]], list[str]] | None = None,
                  check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
-                 gpu: Callable[[], dict[str, Any] | None] | None = None):  # fmt: skip
+                 gpu: Callable[[], dict[str, Any] | None] | None = None,
+                 installing: Callable[[], bool] | None = None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._chat = chat
@@ -227,7 +228,10 @@ class Tuner:
         self._process: subprocess.Popen | None = None
         self._quiet_since = time.monotonic()
         self._gpu = gpu or (lambda: None)  # the status monitor's latest look at the graphics card
-        self._halt = threading.Event()  # automatic measuring is to stop: a chat began
+        # the installs have work (34.4): llama-bench runs past llama-swap - beside an install's trial, two models at
+        # once filled the memory
+        self._installing = installing or (lambda: False)
+        self._halt = threading.Event()  # automatic measuring is to stop: a chat or an install began
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -282,10 +286,11 @@ class Tuner:
                 self._queue.append((model_id, True))  # measured again once all is quiet
 
     async def _wait(self, automatic: bool, model_id: str) -> None:
-        """Until no chat runs - and, for automatic tuning, none has for IDLE_S, nor has the graphics card worked."""
+        """Until no chat runs and the installs have no work (34.4) - and, for automatic tuning, neither has for IDLE_S,
+        nor has the graphics card worked."""
         while True:
             now = time.monotonic()
-            if self._chat.busy or (automatic and self._card_busy()):
+            if self._chat.busy or self._installing() or (automatic and self._card_busy()):
                 self._quiet_since = now
             elif not automatic or now - self._quiet_since >= IDLE_S:
                 return
@@ -299,9 +304,9 @@ class Tuner:
         return util is not None and util >= BUSY_PCT
 
     async def _watch(self) -> None:
-        """While automatic measuring goes on: a chat that starts stops it - llama-bench let go."""
+        """While automatic measuring goes on: a chat or an install that starts stops it - llama-bench let go."""
         while self.job.get("status") == "measuring":
-            if self._chat.busy:
+            if self._chat.busy or self._installing():
                 self._halt.set()
                 self._kill()
                 return
@@ -320,8 +325,8 @@ class Tuner:
         try:
             result = await self._tune(model_id)
         except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
-            if self._halt.is_set():  # stopped for a chat (llama-bench killed): not a result
-                log.info("tuning %s stopped: a chat began; measured again later", model_id)
+            if self._halt.is_set():  # stopped for a chat or an install (llama-bench killed): not a result
+                log.info("tuning %s stopped: a chat or an install began; measured again later", model_id)
                 self.job = {"status": "idle"}
                 await self._publish()
                 return {"status": "halted"}
@@ -370,22 +375,35 @@ class Tuner:
         if not measured:
             raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
         log.info("measured %s: %s", model_id, measured)
-        choice, before = best(measured), current(view, measured)
-        if same(view, choice) or not worth(choice, before):
-            return {"status": "same", "before": before, "after": before or choice, "settings": {}}
-        changes = changes_for(choice)
-        self.job.update(status="checking")
-        await self._publish()
-        new = llama_config.edit(text, model_id, changes)
-        backup = await asyncio.to_thread(llama_config.write, path, new)
-        await asyncio.sleep(WATCH_S)  # llama-swap has seen the new file: the check is not answered by the old one
-        ids = list(llama_config.model_blocks(new))
-        ok, problem = await llama_config.reloaded(self._url, ids, (model_id, view["context"]))
+        async with llama_config.writing():
+            # the file as it is now, not as it was before the measuring (34.4): an install may have written it since -
+            # a change over the old text took away three models added meanwhile (2026-11-08)
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            if model_id not in llama_config.model_blocks(text):
+                raise TuneError(tr("«{model}» убрали из config.yaml, пока шёл замер", model=model_id))
+            view = llama_config.model_view(text, model_id)
+            choice, before = best(measured), current(view, measured)
+            if same(view, choice) or not worth(choice, before):
+                return {"status": "same", "before": before, "after": before or choice, "settings": {}}
+            changes = changes_for(choice)
+            self.job.update(status="checking")
+            await self._publish()
+            new = llama_config.edit(text, model_id, changes)
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            await asyncio.sleep(WATCH_S)  # llama-swap has seen the new file: the check is not answered by the old one
+            ids = list(llama_config.model_blocks(new))
+            ok, problem = await llama_config.reloaded(self._url, ids, (model_id, view["context"]))
         checked = await self._check(model_id) if ok or problem == tr(llama_config.NOT_ANSWERING) else {
             "ok": False, "error": problem}  # fmt: skip
         if not checked.get("ok"):
-            await asyncio.to_thread(llama_config.restore, path, backup)
-            await llama_config.reloaded(self._url, list(llama_config.model_blocks(text)))
+            async with llama_config.writing():  # its own model's lines back; what others wrote meanwhile stays
+                now = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                back = text if now == new else llama_config.with_block(now, model_id, text)
+                if now == new:
+                    await asyncio.to_thread(llama_config.restore, path, backup)
+                else:
+                    await asyncio.to_thread(llama_config.write, path, back)
+                await llama_config.reloaded(self._url, list(llama_config.model_blocks(back)))
             raise TuneError(tr("с новыми настройками модель не запустилась ({error}) — конфиг возвращён",
                                error=checked.get("error") or tr("нет ответа")))  # fmt: skip
         log.info("tuned %s: %s -> %s tok/s with %s", model_id, (before or {}).get("tg"), choice["tg"], changes)

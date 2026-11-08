@@ -307,3 +307,92 @@ def test_the_window_asks_and_reads(hub, setup, monkeypatch):  # noqa: F811
     hub.post("/v1/tune/all")
     assert calls[0] == ("big", False) and {c[0] for c in calls[1:]} == {"big", "huge"}  # llama.cpp's only
     assert hub.post("/v1/tune/nope").status_code == 404
+
+
+def test_what_an_install_added_while_it_measured_stays(hub, setup):  # noqa: F811
+    """34.4 (2026-11-08, the user's config): tuning read the config before measuring and wrote its change over that
+    text minutes later - three models an install had added meanwhile were gone from it (gemma4:12b, deepseek-r1:8b,
+    qwen3.5:2b-bf16). It writes the file as it is when the measuring ends; a check that fails takes back only its own
+    model's lines."""
+    from tests.test_llama_config import ADDED
+
+    def add(model_id):
+        text = setup.read_text(encoding="utf-8")
+        setup.write_text(lc.add_model(text, model_id, ADDED.replace("added", model_id)), encoding="utf-8")
+
+    found = tuner(hub, measured={"q8_0": [(512, 900, 40), (2048, 1500, 52)]})
+    measure = found._run
+    found._run = lambda command, progress: (add("during") if "-ctk" in command and not found.job.get("done")
+                                            else None, measure(command, progress))[1]  # fmt: skip
+    assert asyncio.run(found.tune("big"))["status"] == "better"
+    text = setup.read_text(encoding="utf-8")
+    assert "during" in lc.model_blocks(text) and lc.model_view(text, "big")["ubatch"] == 2048
+
+    before = setup.read_text(encoding="utf-8")  # ubatch 2048 now: 512 measures faster this time
+    found = tuner(hub, measured={"q8_0": [(512, 1500, 60), (2048, 900, 40)]}, check_ok=False)
+    check = found._check
+
+    async def late(model_id):  # an install writes while the new settings are being checked
+        add("late")
+        return await check(model_id)
+
+    found._check = late
+    assert asyncio.run(found.tune("big"))["status"] == "failed"
+    assert setup.read_text(encoding="utf-8") == lc.add_model(before, "late", ADDED.replace("added", "late"))
+
+
+def test_tuning_waits_while_installs_have_work_and_gives_way_to_one(hub, setup, monkeypatch):  # noqa: F811
+    """34.4 (2026-11-08): llama-bench runs past llama-swap - it measured one model while an install's trial loaded the
+    next one into llama-swap, and the memory filled up. Tuning, by hand too, waits while the installs have work;
+    automatic measuring gives way to an install that begins, as it does to a chat, and is measured again later."""
+    monkeypatch.setattr(tuning, "IDLE_S", 0.2)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    installing = [True]
+    found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
+    found._installing = lambda: installing[0]
+
+    async def by_hand():
+        found.request("big")
+        await asyncio.sleep(0.4)
+        assert found.job["status"] == "waiting" and "big" not in found.results
+        installing[0] = False
+        started = time.monotonic()
+        while "big" not in found.results:
+            assert time.monotonic() - started < 10
+            await asyncio.sleep(0.05)
+
+    asyncio.run(by_hand())
+    assert found.results["big"]["status"] == "better"
+
+    runs = []
+
+    def run(command, progress):
+        runs.append(command)
+        if len(runs) == 1:  # the first: until an install begins and it is stopped
+            installing[0] = True
+            deadline = time.monotonic() + 10
+            while not found._halt.is_set():
+                assert time.monotonic() < deadline, "the measuring did not give way"
+                time.sleep(0.02)
+            return []
+        return [line(True, "q8_0", 512, 16, pp=1500), line(True, "q8_0", 512, 16, tg=60),  # 2048 is set by now
+                line(True, "q8_0", 2048, 16, pp=900), line(True, "q8_0", 2048, 16, tg=40)]  # fmt: skip
+
+    found = tuner(hub, measured={})
+    found._installing, found._run = (lambda: installing[0]), run
+    installing[0] = False
+
+    async def automatic():
+        found.request("big", auto=True)
+        started = time.monotonic()
+        while found.job.get("status") != "waiting" or not runs:
+            assert time.monotonic() - started < 10, found.job
+            await asyncio.sleep(0.02)
+        assert "big" not in found.results  # nothing by its numbers
+        installing[0] = False
+        while "big" not in found.results:
+            assert time.monotonic() - started < 10
+            await asyncio.sleep(0.05)
+
+    asyncio.run(automatic())
+    assert found.results["big"]["status"] == "better" and len(runs) >= 2

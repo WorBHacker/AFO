@@ -74,7 +74,9 @@ SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requ
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
 REPO_TTL_S = 3600.0  # Hugging Face's answers are kept this long
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
-LIVE = ("queued", "downloading", "configuring", "trial")
+CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
+LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
+IN_CONFIG = ("done", "added")  # an install whose block llama-swap's config has (34.5: added - not tried yet)
 VERDICTS = {
     "gpu": N_("помещается в видеопамять — быстро"),
     "split": N_("часть в ОЗУ — медленнее"),
@@ -336,6 +338,10 @@ class Installer:
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
         self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
+        # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
+        # filled the memory) and while a chat answers (its model would be swapped out); set by the server (34.4)
+        self.tuning: Callable[[], bool] = lambda: False
+        self.chat_busy: Callable[[], bool] = lambda: False
         self.machine: Callable[[], dict[str, Any]] = this_computer  # what pictures it can make (tests give their own)
         self._task: asyncio.Task | None = None
         self._cancel: dict[str, threading.Event] = {}
@@ -353,11 +359,26 @@ class Installer:
         def pause(conn) -> int:
             return conn.execute(
                 "UPDATE model_installs SET status = 'paused', error = ?, updated_at = ? WHERE status IN "
-                "('queued', 'downloading', 'configuring', 'trial')",
+                "('queued', 'downloading', 'trialwait', 'configuring', 'trial')",
                 (tr("хаб перезапускался — загрузка продолжится по кнопке «Продолжить»"), utc_now()),
             ).rowcount
 
         return await self._db.acall(pause)
+
+    def busy(self) -> bool:
+        """The installs have work: their worker goes on (34.4 - «Подбор параметров» waits for it)."""
+        return self._task is not None and not self._task.done()
+
+    async def mark_lost(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each install whose block should be in llama-swap's config says whether it is not (34.4: tuning wrote over
+        the file, and three models added meanwhile were gone - their rows said «установлена»)."""
+        try:
+            ids = llama_config.model_blocks(await asyncio.to_thread(config_text))
+        except InstallError, llama_config.ConfigError:
+            ids = None  # no config to read: nothing to say
+        for row in rows:
+            row["lost"] = ids is not None and row["status"] in IN_CONFIG and row["model_id"] not in ids
+        return rows
 
     async def stop(self) -> None:
         for event in self._cancel.values():
@@ -526,7 +547,7 @@ class Installer:
     async def _publish(self, job_id: str) -> None:
         found = await self._db.acall(lambda conn: job(conn, job_id))
         if found is not None:
-            await self._bus.publish("install.changed", {"job": found})
+            await self._bus.publish("install.changed", {"job": (await self.mark_lost([found]))[0]})
 
     async def _set(self, job_id: str, **fields: Any) -> None:
         await self._db.acall(lambda conn: _update(conn, job_id, **fields))
@@ -663,8 +684,11 @@ class Installer:
         rows = await self._db.acall(jobs)
         same = next((r for r in rows if r["status"] not in ("cancelled", "removed", "failed")
                      and Path(r["folder"]) / PurePosixPath(r["files"][0]["path"]).name == path), None)  # fmt: skip
-        if same is not None:
+        if same is not None and not (await self.mark_lost([same]))[0]["lost"]:
             raise InstallError(tr("эта модель уже добавлена — «{name}»", name=same["name"]))
+        if same is not None:  # gone from the config (34.4): its old row makes way - the files are this one's now
+            await self._db.acall(lambda conn: _update(conn, same["id"], status="removed", own_files=0))
+            await self._publish(same["id"])
         split = SPLIT.match(path.name)
         parts = sorted(path.parent.glob(f"{split['stem']}-*-of-{split['parts']}.gguf")) if split else [path]
         files = [{"path": p.name, "size": p.stat().st_size, "sha256": None, "role": "model", "done": True}
@@ -732,9 +756,12 @@ class Installer:
         return await self._get(job_id)
 
     async def resume(self, job_id: str, client: Any) -> dict[str, Any]:
+        """«Продолжить», «Повторить» - and «Вернуть в llama-swap» (34.4): a model whose block is gone from the config
+        goes through the config and the trial again; its files are there."""
         found = await self._get(job_id)
-        if found["status"] not in ("paused", "failed"):
-            raise InstallError(tr("продолжить можно приостановленную или неудачную установку"))
+        if found["status"] not in ("paused", "failed") and not (await self.mark_lost([found]))[0]["lost"]:
+            raise InstallError(tr("продолжить можно приостановленную или неудачную установку, а вернуть в llama-swap — "
+                                  "модель, которой нет в config.yaml"))  # fmt: skip
         self._clients[job_id] = client
         await self._set(job_id, status="queued", error="")
         self._kick()
@@ -777,17 +804,18 @@ class Installer:
         for each in ids:
             await self._unload(each)
         path = llama_config.config_path()
-        text = new = await asyncio.to_thread(config_text)
-        for each in ids:
-            if each in llama_config.model_blocks(new):
-                new = llama_config.remove_model(new, each)
-        if new != text:
-            backup = await asyncio.to_thread(llama_config.write, path, new)
-            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-            if not ok and problem != tr(llama_config.NOT_ANSWERING):
-                await asyncio.to_thread(llama_config.restore, path, backup)
-                raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён", problem=problem),
-                                   502)  # fmt: skip
+        async with llama_config.writing():
+            text = new = await asyncio.to_thread(config_text)
+            for each in ids:
+                if each in llama_config.model_blocks(new):
+                    new = llama_config.remove_model(new, each)
+            if new != text:
+                backup = await asyncio.to_thread(llama_config.write, path, new)
+                ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+                if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                    await asyncio.to_thread(llama_config.restore, path, backup)
+                    raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                          problem=problem), 502)  # fmt: skip
         await asyncio.to_thread(_delete_files, found)
         await self._set(found["id"], status="removed", error="")
         await self._sync()
@@ -837,6 +865,7 @@ class Installer:
         self._wanted.pop(job_id, None)
         try:
             await self._download(found, cancel)
+            await self._card(job_id, cancel)
             found = await self._get(job_id)
             if found["plan"].get("engine") == "sd":
                 reachable = await self._configure_pictures(found)
@@ -857,6 +886,17 @@ class Installer:
         finally:
             self._cancel.pop(job_id, None)
             self.speed.pop(job_id, None)
+
+    async def _card(self, job_id: str, cancel: threading.Event) -> None:
+        """Until the graphics card is free for the trial (34.4): «Подбор параметров» measures - llama-bench runs past
+        llama-swap, and two models at once filled the memory (2026-11-08) - or a chat answers - its model would be
+        swapped out in the middle of the answer. Meanwhile «ждёт пробного запуска»."""
+        while self.tuning() or self.chat_busy():
+            if cancel.is_set():
+                raise hf.Cancelled()
+            if (await self._get(job_id))["status"] != "trialwait":
+                await self._set(job_id, status="trialwait", error="")
+            await asyncio.sleep(CARD_WAIT_S)
 
     def _reporter(self, job_id: str, base: int, total: int) -> Callable[[int], None]:
         loop = asyncio.get_running_loop()
@@ -941,21 +981,22 @@ class Installer:
         size = sum(f["size"] for f in found["files"] if f["role"] == "model")
         plan = launch_plan(info, size, self.space(), mmproj=lens["size"] if lens else 0)
         path = llama_config.config_path()
-        text = await asyncio.to_thread(config_text)
-        model_id = found["model_id"]
-        if model_id in llama_config.model_blocks(text):
-            if _ours(text, model_id, job_id):
-                text = llama_config.remove_model(text, model_id)  # an earlier try of this install: written anew
-            else:
-                model_id = llama_config.free_id(text, model_id)  # someone else's model took the name meanwhile
-        block = _block(found, model_id, llama_config.server_command(text), model_file, lens_file, plan)
-        new = llama_config.add_model(text, model_id, block)
-        backup = await asyncio.to_thread(llama_config.write, path, new)
-        ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-        if not ok and problem != tr(llama_config.NOT_ANSWERING):
-            await asyncio.to_thread(llama_config.restore, path, backup)
-            raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
-                                  problem=problem), 502)  # fmt: skip
+        async with llama_config.writing():  # 34.4: no other writer between this read and llama-swap's reread
+            text = await asyncio.to_thread(config_text)
+            model_id = found["model_id"]
+            if model_id in llama_config.model_blocks(text):
+                if _ours(text, model_id, job_id):
+                    text = llama_config.remove_model(text, model_id)  # an earlier try of this install: written anew
+                else:
+                    model_id = llama_config.free_id(text, model_id)  # someone else's model took the name meanwhile
+            block = _block(found, model_id, llama_config.server_command(text), model_file, lens_file, plan)
+            new = llama_config.add_model(text, model_id, block)
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
         await self._set(job_id, model_id=model_id, plan={**plan, "info": info})
         await self._sync()
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
@@ -1010,60 +1051,61 @@ class Installer:
         job_id = found["id"]
         await self._set(job_id, status="configuring", error="")
         folder = Path(found["folder"])
-        text = await asyncio.to_thread(config_text)
-        engine = [f for f in found["files"] if f["role"] == "engine"]
-        for build in dict.fromkeys(f["build"] for f in engine):  # the card's, the processor's (29.4в)
-            parts = [f for f in engine if f["build"] == build]
-            target = engines_home() / "stable-diffusion.cpp" / f"{parts[0]['tag']}-{build}"
-            try:
-                for f in parts:
-                    await asyncio.to_thread(engines.unpack, _dest(folder, f), target)
-                server = engines.sd_server_in(target)
-            except engines.EngineError as exc:
-                raise InstallError(str(exc), 502) from exc
-            macro = SD_MACRO if build == found["plan"].get("build") else SD_CPU_MACRO
-            text = llama_config.with_macro(text, macro, "'\"" + str(server).replace("\\", "/") + "\"'")
-        if sd_server(text) is None:
-            raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
-        blocks = [(found["model_id"], SD_MACRO, tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
-                   found["name"])]  # fmt: skip
-        video = found["plan"].get("kind") == "video"  # a video on the processor: hours - no block there (29.8)
-        if not video and found["plan"].get("build") != "cpu" and sd_server(text, SD_CPU_MACRO) is not None:
-            blocks.append((f"{found['model_id']}-cpu", SD_CPU_MACRO, tr(
-                "{name}, установлена AFO: рисует картинки процессором, когда видеокарта не может.", name=found["name"]),
-                tr("{name} — на процессоре", name=found["name"])))  # fmt: skip
-        ids = []
-        for wanted, macro, description, name in blocks:
-            block_id = wanted
-            if block_id in llama_config.model_blocks(text):
-                if _ours(text, block_id, job_id):
-                    text = llama_config.remove_model(text, block_id)
-                else:
-                    block_id = llama_config.free_id(text, block_id)
-            block = llama_config.sd_block(
-                block_id,
-                name=name,
-                description=description,
-                server=f"${{{macro}}}",
-                files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
-                flags=list(found["plan"].get("flags") or []),
-                metadata={
-                    "source": f"huggingface.co/{found['repo']}",
-                    "license": found["license"] or "?",
-                    "localchat_install": job_id,
-                },
-            )
-            text = llama_config.add_model(text, block_id, block)
-            ids.append(block_id)
-        model_id, cpu_id = ids[0], (ids[1] if len(ids) > 1 else "")
-        path = llama_config.config_path()
-        new = text
-        backup = await asyncio.to_thread(llama_config.write, path, new)
-        ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-        if not ok and problem != tr(llama_config.NOT_ANSWERING):
-            await asyncio.to_thread(llama_config.restore, path, backup)
-            raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
-                                  problem=problem), 502)  # fmt: skip
+        async with llama_config.writing():  # 34.4: no other writer between this read and llama-swap's reread
+            text = await asyncio.to_thread(config_text)
+            engine = [f for f in found["files"] if f["role"] == "engine"]
+            for build in dict.fromkeys(f["build"] for f in engine):  # the card's, the processor's (29.4в)
+                parts = [f for f in engine if f["build"] == build]
+                target = engines_home() / "stable-diffusion.cpp" / f"{parts[0]['tag']}-{build}"
+                try:
+                    for f in parts:
+                        await asyncio.to_thread(engines.unpack, _dest(folder, f), target)
+                    server = engines.sd_server_in(target)
+                except engines.EngineError as exc:
+                    raise InstallError(str(exc), 502) from exc
+                macro = SD_MACRO if build == found["plan"].get("build") else SD_CPU_MACRO
+                text = llama_config.with_macro(text, macro, "'\"" + str(server).replace("\\", "/") + "\"'")
+            if sd_server(text) is None:
+                raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
+            blocks = [(found["model_id"], SD_MACRO, tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
+                       found["name"])]  # fmt: skip
+            video = found["plan"].get("kind") == "video"  # a video on the processor: hours - no block there (29.8)
+            if not video and found["plan"].get("build") != "cpu" and sd_server(text, SD_CPU_MACRO) is not None:
+                blocks.append((f"{found['model_id']}-cpu", SD_CPU_MACRO, tr(
+                    "{name}, установлена AFO: рисует картинки процессором, когда видеокарта не может.",
+                    name=found["name"]), tr("{name} — на процессоре", name=found["name"])))  # fmt: skip
+            ids = []
+            for wanted, macro, description, name in blocks:
+                block_id = wanted
+                if block_id in llama_config.model_blocks(text):
+                    if _ours(text, block_id, job_id):
+                        text = llama_config.remove_model(text, block_id)
+                    else:
+                        block_id = llama_config.free_id(text, block_id)
+                block = llama_config.sd_block(
+                    block_id,
+                    name=name,
+                    description=description,
+                    server=f"${{{macro}}}",
+                    files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
+                    flags=list(found["plan"].get("flags") or []),
+                    metadata={
+                        "source": f"huggingface.co/{found['repo']}",
+                        "license": found["license"] or "?",
+                        "localchat_install": job_id,
+                    },
+                )
+                text = llama_config.add_model(text, block_id, block)
+                ids.append(block_id)
+            model_id, cpu_id = ids[0], (ids[1] if len(ids) > 1 else "")
+            path = llama_config.config_path()
+            new = text
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
         await self._set(job_id, model_id=model_id, plan={**found["plan"], **({"cpu": cpu_id} if cpu_id else {})})
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
         return ok
@@ -1120,25 +1162,28 @@ class Installer:
 
     async def _relaunch(self, model_id: str, plan: dict[str, Any]) -> None:
         path = llama_config.config_path()
-        text = await asyncio.to_thread(config_text)
-        changes = {"context": plan["context"], "gpu_layers": plan["gpu_layers"], "ttl": plan["ttl"]}
-        new = llama_config.edit(text, model_id, changes)
-        await asyncio.to_thread(llama_config.write, path, new)
-        await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)), (model_id, plan["context"]))
+        async with llama_config.writing():
+            text = await asyncio.to_thread(config_text)
+            changes = {"context": plan["context"], "gpu_layers": plan["gpu_layers"], "ttl": plan["ttl"]}
+            new = llama_config.edit(text, model_id, changes)
+            await asyncio.to_thread(llama_config.write, path, new)
+            await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)), (model_id, plan["context"]))
         await self._sync()
 
     async def _withdraw(self, *model_ids: str) -> None:
         """A model that would not start leaves the config (its files stay) - a picture model with its block on the
         processor."""
         path = llama_config.config_path()
-        text = new = await asyncio.to_thread(config_text)
-        for model_id in model_ids:
-            if model_id and model_id in llama_config.model_blocks(new):
-                new = llama_config.remove_model(new, model_id)
-        if new != text:
+        async with llama_config.writing():
+            text = new = await asyncio.to_thread(config_text)
+            for model_id in model_ids:
+                if model_id and model_id in llama_config.model_blocks(new):
+                    new = llama_config.remove_model(new, model_id)
+            if new == text:
+                return
             await asyncio.to_thread(llama_config.write, path, new)
             await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-            await self._sync()
+        await self._sync()
 
 
 def config_text() -> str:

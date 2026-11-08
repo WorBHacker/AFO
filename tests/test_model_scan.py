@@ -148,3 +148,35 @@ def test_an_ollama_model_is_named_by_ollama_not_by_its_file(hub, tmp_path):  # n
     for each in (job, plain):
         assert wait_for(hub, each["id"], "done", "failed")["status"] == "done"
     assert {"saiga_nemo_12b-gguf-q4_k_m", "tiny"} <= set(lc.model_blocks(hub.config.read_text(encoding="utf-8")))
+
+
+def test_a_model_gone_from_the_config_shows_it_and_comes_back(hub, tmp_path):  # noqa: F811
+    """34.4 (2026-11-08): tuning wrote over the config, and three models added meanwhile were gone from it -
+    «установлена» in «Установки», and «Добавить» on their files said «эта модель уже добавлена». Such an install says
+    it is not in the config; «Вернуть в llama-swap» writes it again; «Добавить» its file works - the old row goes."""
+    model = put(tmp_path / "E" / "LLM" / "Mine-Q8_0.gguf", tiny_gguf(340_000))
+
+    def drop(model_id):
+        hub.config.write_text(lc.remove_model(hub.config.read_text(encoding="utf-8"), model_id), encoding="utf-8")
+
+    def listed(job_id):
+        return next((j for j in hub.get("/v1/install/jobs").json()["jobs"] if j["id"] == job_id), None)
+
+    job = hub.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"}).json()["job"]
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done" and done["lost"] is False
+    drop(done["model_id"])
+    assert listed(job["id"])["lost"] is True
+    hub.post(f"/v1/install/jobs/{job['id']}/resume")  # «Вернуть в llama-swap»
+    back = wait_for(hub, job["id"], "done", "failed")
+    assert back["status"] == "done" and not back["lost"]
+    assert back["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+
+    drop(back["model_id"])
+    again = hub.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"})
+    assert again.status_code == 200, again.json()
+    new = wait_for(hub, again.json()["job"]["id"], "done", "failed")
+    assert new["status"] == "done" and new["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+    assert listed(job["id"]) is None and model.exists()  # the old row is gone from the list; the file stays
+    refused = hub.post(f"/v1/install/jobs/{new['id']}/resume")  # in the config: nothing to bring back
+    assert refused.status_code == 409

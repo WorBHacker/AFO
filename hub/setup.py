@@ -172,18 +172,20 @@ class Setup:
             await asyncio.to_thread(self._fetch, cpp["assets"], engines_home() / "downloads", folder, 0, report)
             server = engines.server_in(folder)
             path = llama_config.config_path()
-            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-            command = llama_config.server_command(text)
-            if not command.startswith("${"):
-                raise engines.EngineError(tr("в config.yaml llama-server указан в каждой модели, а не в макросе — "
-                                             "поменяйте путь на {server} сами", server=server))  # fmt: skip
-            new = llama_config.set_macro(text, command.strip("${}"), "'\"" + str(server).replace("\\", "/") + "\"'")
-            backup = await asyncio.to_thread(llama_config.write, path, new)
-            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
-            if not ok and problem != tr(llama_config.NOT_ANSWERING):
-                await asyncio.to_thread(llama_config.restore, path, backup)
-                raise engines.EngineError(tr("llama-swap не принял новый конфиг ({problem}) — возвращён прежний",
-                                             problem=problem))  # fmt: skip
+            async with llama_config.writing():  # 34.4: an install or the tuning does not write in between
+                text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                command = llama_config.server_command(text)
+                if not command.startswith("${"):
+                    raise engines.EngineError(tr("в config.yaml llama-server указан в каждой модели, а не в макросе — "
+                                                 "поменяйте путь на {server} сами", server=server))  # fmt: skip
+                new = llama_config.set_macro(text, command.strip("${}"),
+                                             "'\"" + str(server).replace("\\", "/") + "\"'")  # fmt: skip
+                backup = await asyncio.to_thread(llama_config.write, path, new)
+                ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+                if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                    await asyncio.to_thread(llama_config.restore, path, backup)
+                    raise engines.EngineError(tr("llama-swap не принял новый конфиг ({problem}) — возвращён прежний",
+                                                 problem=problem))  # fmt: skip
             self.job.update(status="done", step="", backup=backup.name)
             if self.on_updated is not None:
                 self.on_updated()
