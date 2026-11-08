@@ -194,8 +194,11 @@ class HubClient:
         """A picture a chat holds (29.6), by its sha256."""
         return self._raw("GET", f"/v1/visual/pictures/{blob}")
 
-    def install_search(self, query: str) -> dict:
-        return self._call("GET", "/v1/install/search", params={"q": query}, timeout=60)
+    def install_search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
+                       plain: bool = False) -> dict:  # fmt: skip
+        """Hugging Face at large (32.5): words (none: the most popular), what for, size, order, none unrestricted."""
+        params = {"q": query, "task": task, "size": size, "sort": sort, "plain": "true" if plain else "false"}
+        return self._call("GET", "/v1/install/search", params=params, timeout=60)
 
     def install_repo(self, repo: str) -> dict:
         return self._call("GET", f"/v1/install/repo/{repo}", timeout=60)

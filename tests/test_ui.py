@@ -706,6 +706,7 @@ class FakeClient:
                 {"letter": "D", "kind": "nvme", "words": "NVMe", "free_gib": 456.5},
                 {"letter": "F", "kind": "hdd", "words": "жёсткий диск (медленно)", "free_gib": 233.0},
             ],
+            "fits_params": 22_400_000_000,
             "server": "${llama_server}",
             "problem": "",
             "folder": "D:\\AI model\\LocalChat\\model",
@@ -751,14 +752,17 @@ class FakeClient:
             ]
         }
 
-    def install_search(self, query):
-        self.install_calls.append(("search", query))
+    def install_search(self, query, *, task="", size="", sort="downloads", plain=False):
+        self.install_calls.append(("search", {"q": query, "task": task, "size": size, "sort": sort, "plain": plain}))
+        if query == "nothing":
+            return {"models": []}
         return {
             "models": [
                 {
                     "repo": "someone/Tiny-abliterated-GGUF",
                     "downloads": 1_234_567,
                     "likes": 12,
+                    "params": 27_320_000_000,
                     "license": "mit",
                     "unrestricted": True,
                     "gated": False,
@@ -6213,7 +6217,36 @@ def test_installing_a_local_model_from_the_window(qapp):
         view.setTab("search")
         view.search("tiny")
         wait_until(lambda: not app.bg.busy and view.found)
+        assert client.install_calls[-1] == ("search", {"q": "tiny", "task": "", "size": "", "sort": "downloads",
+                                                       "plain": False})  # fmt: skip
         assert view.found[0]["badges"] == ["снятые ограничения"] and view.found[0]["note"].startswith("↓ 1,2 млн")
+        assert "27,3 млрд параметров" in view.found[0]["note"]
+        # the filters (32.6): a pick searches again with the words in the field, sent or not
+        assert [t["name"] for t in view.searchTasks] == ["Все", "Разговоры", "Код", "Понимать картинки"]
+        assert [s["name"] for s in view.searchSizes][:3] == ["Любой", "Поместится в видеопамять (до 22 млрд)",
+                                                             "до 4 млрд"]  # fmt: skip
+        assert view.searchSort == "downloads" and len(view.searchSorts) == 4
+        view.setQuery("tiny coder")
+        view.setSearchTask("code")
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][1]["task"] == "code")
+        view.setSearchSize("fits")
+        view.setSearchSort("likes")
+        view.setSearchPlain(True)
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][1]["plain"])
+        assert client.install_calls[-1] == ("search", {"q": "tiny coder", "task": "code", "size": "fits",
+                                                       "sort": "likes", "plain": True})  # fmt: skip
+        assert (view.searchTask, view.searchSize, view.searchSort, view.searchPlain) == ("code", "fits", "likes", True)
+        for _ in range(10):
+            QApplication.processEvents()
+        for name in ("installSearchTask", "installSearchSize", "installSearchSort", "installSearchPlain"):
+            assert quick.window.findChild(QObject, name).property("visible"), name
+        assert not view.nothingFound
+        view.search("nothing")
+        wait_until(lambda: not app.bg.busy and not view.searching)
+        assert view.found == [] and view.nothingFound
+        view.search("")  # no words: the most popular, by the filters
+        wait_until(lambda: not app.bg.busy and view.found)
+        assert client.install_calls[-1][1]["q"] == "" and not view.nothingFound
         view.openRepo("ggml-org/gemma-4-E4B-it-GGUF")
         wait_until(lambda: not app.bg.busy and view.variants)
         assert quick.window.findChild(QObject, "installRepo").property("visible")

@@ -85,6 +85,60 @@ Sheet {
         font.pixelSize: 12
         lineHeight: 1.25
     }
+    // an on/off of the search (32.6), as the settings sheets draw theirs
+    component Switch: AbstractButton {
+        id: toggle
+        checkable: true
+        implicitHeight: 30
+        implicitWidth: label.implicitWidth + 40
+        hoverEnabled: true
+        background: Rectangle {
+            radius: 6
+            color: toggle.checked ? Theme.p.item_selected : (toggle.hovered ? Theme.p.item_hover : "transparent")
+            border.color: toggle.checked ? Theme.p.accent : Theme.p.hairline_strong
+        }
+        contentItem: Item {
+            Icon {
+                x: 8
+                anchors.verticalCenter: parent.verticalCenter
+                name: toggle.checked ? "check" : "close"
+                size: 13
+                tint: toggle.checked ? Theme.p.accent : Theme.p.faint
+            }
+            Text {
+                id: label
+                x: 26
+                anchors.verticalCenter: parent.verticalCenter
+                text: toggle.text
+                color: toggle.checked ? Theme.p.text : Theme.p.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
+        }
+    }
+    // a filter of the search (32.6): its name, then the choice
+    component FilterRow: Row {
+        id: filterRow
+        property alias label: filterLabel.text
+        property alias options: filterChoice.options
+        property alias value: filterChoice.value
+        signal picked(string id)
+        width: parent ? parent.width : 600
+        spacing: 8
+        Text {
+            id: filterLabel
+            width: 84
+            topPadding: 7
+            color: Theme.p.muted
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+        }
+        Segmented {
+            id: filterChoice
+            width: filterRow.width - filterLabel.width - filterRow.spacing
+            onPicked: (id) => filterRow.picked(id)
+        }
+    }
     component Badge: Rectangle {
         property alias text: badgeText.text
         property color tint: Theme.p.muted
@@ -229,12 +283,41 @@ Sheet {
         Field {
             objectName: "installQuery"
             width: parent.width
-            placeholderText: qsTr("Название модели, например qwen coder")
+            placeholderText: qsTr("Название модели, например qwen coder; пусто — самые популярные")
+            onTextChanged: Installer.setQuery(text)
             onAccepted: Installer.search(text)
         }
+        FilterRow {
+            objectName: "installSearchTask"
+            label: qsTr("Для чего")
+            options: Installer.searchTasks
+            value: Installer.searchTask
+            onPicked: (id) => Installer.setSearchTask(id)
+        }
+        FilterRow {
+            objectName: "installSearchSize"
+            label: qsTr("Размер")
+            options: Installer.searchSizes
+            value: Installer.searchSize
+            onPicked: (id) => Installer.setSearchSize(id)
+        }
+        FilterRow {
+            objectName: "installSearchSort"
+            label: qsTr("Сначала")
+            options: Installer.searchSorts
+            value: Installer.searchSort
+            onPicked: (id) => Installer.setSearchSort(id)
+        }
+        Switch {
+            objectName: "installSearchPlain"
+            text: qsTr("Скрыть модели со снятыми ограничениями")
+            checked: Installer.searchPlain
+            onToggled: Installer.setSearchPlain(checked)
+        }
         Note {
-            visible: Installer.searching || Installer.searchError !== ""
-            text: Installer.searching ? qsTr("Ищу на Hugging Face…") : Installer.searchError
+            visible: Installer.searching || Installer.searchError !== "" || Installer.nothingFound
+            text: Installer.searching ? qsTr("Ищу на Hugging Face…") : Installer.searchError !== "" ? Installer.searchError
+                  : qsTr("Ничего не нашлось — попробуйте другие слова или фильтры")
             color: Installer.searchError !== "" ? Theme.p.error : Theme.p.faint
         }
         Repeater {

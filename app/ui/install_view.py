@@ -38,6 +38,12 @@ LIVE = ("queued", "downloading", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
 PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
+# the search's filters (32.6; the hub's /v1/install/search): what for - the curated list's purposes but pictures
+SEARCH_TASKS = [p for p in PURPOSES if p[0] != "image"]
+SEARCH_SIZES = [("", N_("Любой")), ("fits", ""), ("small", N_("до 4 млрд")), ("medium", N_("4–15 млрд")),
+                ("large", N_("15–40 млрд")), ("huge", N_("больше 40 млрд"))]  # fmt: skip
+SEARCH_SORTS = [("downloads", N_("Популярные")), ("trending", N_("В тренде")), ("likes", N_("Больше ♥")),
+                ("updated", N_("Недавно обновлённые"))]  # fmt: skip
 
 
 def status_words(status: str) -> str:
@@ -140,10 +146,28 @@ def picture_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def billions(params: float) -> str:
+    """A parameter count in billions as people read it: «27,3», a small one «0,8»."""
+    return decimal(f"{params / 1e9:.1f}")
+
+
+def size_rows(system: dict[str, Any]) -> list[dict[str, Any]]:
+    """The search's sizes; «fits» says where and how much: «Поместится в видеопамять (до 22 млрд)»."""
+    where = tr("Поместится в видеопамять") if (system.get("space") or {}).get("vram_total_gib") else \
+        tr("Поместится в ОЗУ")  # fmt: skip
+    fits = (system.get("fits_params") or 0) / 1e9
+    if fits:
+        most = decimal(f"{fits:.0f}" if fits >= 10 else f"{fits:.1f}")
+        where = tr("{where} (до {count} млрд)", where=where, count=most)
+    return [{"id": sid, "name": where if sid == "fits" else tr(name)} for sid, name in SEARCH_SIZES]
+
+
 def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for m in models:
         note = [f"↓ {count(m.get('downloads') or 0)}", f"♥ {count(m.get('likes') or 0)}"]
+        if m.get("params"):
+            note.append(tr("{count} млрд параметров", count=billions(m["params"])))
         if m.get("license"):
             note.append(tr("лицензия {license}", license=m["license"]))
         if m.get("updated"):
@@ -340,6 +364,8 @@ class InstallView(QObject):
         self._purpose = ""
         self._tab = "catalog"
         self._query = ""
+        self._task, self._size, self._sort, self._plain = "", "", "downloads", False  # the search's filters (32.6)
+        self._asked: tuple | None = None  # the last search sent: an older answer is not shown over it
         self._found: list[dict[str, Any]] = []
         self._searching = False
         self._search_error = ""
@@ -413,6 +439,39 @@ class InstallView(QObject):
     def searching(self) -> bool:
         return self._searching
 
+    @Property(bool, notify=changed)
+    def nothingFound(self) -> bool:
+        """A search came back empty: the sheet says so (with filters it may well)."""
+        return self._asked is not None and not self._searching and not self._search_error and not self._found
+
+    @Property(list, notify=changed)
+    def searchTasks(self) -> list:
+        return [{"id": tid, "name": tr(name)} for tid, name in SEARCH_TASKS]
+
+    @Property(list, notify=changed)
+    def searchSizes(self) -> list:
+        return size_rows(self._system)
+
+    @Property(list, notify=changed)
+    def searchSorts(self) -> list:
+        return [{"id": sid, "name": tr(name)} for sid, name in SEARCH_SORTS]
+
+    @Property(str, notify=changed)
+    def searchTask(self) -> str:
+        return self._task
+
+    @Property(str, notify=changed)
+    def searchSize(self) -> str:
+        return self._size
+
+    @Property(str, notify=changed)
+    def searchSort(self) -> str:
+        return self._sort
+
+    @Property(bool, notify=changed)
+    def searchPlain(self) -> bool:
+        return self._plain
+
     @Property(str, notify=changed)
     def searchError(self) -> str:
         return self._search_error
@@ -436,7 +495,7 @@ class InstallView(QObject):
             return {}
         notes = [tr("лицензия {license}", license=r["license"]) if r.get("license") else tr("лицензия не указана")]
         if r.get("params"):
-            notes.append(tr("{count} млрд параметров", count=decimal(f"{r['params'] / 1e9:.1f}")))
+            notes.append(tr("{count} млрд параметров", count=billions(r["params"])))
         if r.get("context_trained"):
             notes.append(tr("контекст до {size}K", size=r["context_trained"] // 1024))
         if r.get("moe"):
@@ -626,25 +685,53 @@ class InstallView(QObject):
 
     @Slot(str)
     def search(self, query: str) -> None:
+        """The words sent (Enter); none - the most popular by the filters (32.6)."""
         self._query = query.strip()
-        if not self._query:
-            self._found = []
-            self.changed.emit()
-            return
+        self._search()
+
+    @Slot(str)
+    def setQuery(self, query: str) -> None:
+        """The words as they are typed, not sent: a filter picked searches with them."""
+        self._query = query.strip()
+
+    @Slot(str)
+    def setSearchTask(self, task: str) -> None:
+        self._task = task
+        self._search()
+
+    @Slot(str)
+    def setSearchSize(self, size: str) -> None:
+        self._size = size
+        self._search()
+
+    @Slot(str)
+    def setSearchSort(self, sort: str) -> None:
+        self._sort = sort
+        self._search()
+
+    @Slot(bool)
+    def setSearchPlain(self, plain: bool) -> None:
+        self._plain = plain
+        self._search()
+
+    def _search(self) -> None:
+        asked = self._asked = (self._query, self._task, self._size, self._sort, self._plain)
         self._searching, self._search_error = True, ""
         self.changed.emit()
-        asked = self._query
+        query, task, size, sort, plain = asked
 
         def show(data: dict[str, Any]) -> None:
-            if asked == self._query:
+            if asked == self._asked:
                 self._found, self._searching = data.get("models", []), False
                 self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self._searching, self._search_error = False, tr("Поиск не удался: {error}", error=error)
-            self.changed.emit()
+            if asked == self._asked:
+                self._searching, self._search_error = False, tr("Поиск не удался: {error}", error=error)
+                self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.install_search(asked), show, failed)
+        self.app.call_or_fail(lambda: self.app.client.install_search(query, task=task, size=size, sort=sort,
+                                                                     plain=plain), show, failed)  # fmt: skip
 
     @Slot(str)
     def openRepo(self, repo: str) -> None:
