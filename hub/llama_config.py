@@ -553,6 +553,32 @@ def with_block(text: str, model_id: str, source: str) -> str:
     return out
 
 
+def rename_model(text: str, model_id: str, new_id: str, name: str) -> str:
+    """The config with a model under a new id and name (36.1), its description saying the new name too; every other
+    line as it was."""
+    blocks = model_blocks(text)
+    if model_id not in blocks:
+        raise ConfigError(tr("в config.yaml нет модели {model}", model=model_id))
+    if new_id in blocks:
+        raise ConfigError(tr("модель {model} в config.yaml уже есть", model=new_id))
+    lines = text.splitlines()
+    if _in_groups(lines, model_id):
+        raise ConfigError(tr("модель {model} входит в группу (groups:) — уберите её оттуда в config.yaml сами",
+                             model=model_id))  # fmt: skip
+    start, end = blocks[model_id]
+    before = model_view(text, model_id)["name"]
+    lines[start] = f"  {quoted(new_id)}:"
+    for i in range(start + 1, end):
+        if re.match(r"^\s{4}name:", lines[i]):
+            lines[i] = f"    name: {quoted(name)}"
+        elif re.match(r"^\s{4}description:", lines[i]):
+            lines[i] = lines[i].replace(before, quoted(name)[1:-1], 1)
+    out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    if set(model_blocks(out)) != (set(blocks) - {model_id}) | {new_id}:
+        raise ConfigError(tr("правка задела другие модели — не записано"))
+    return out
+
+
 def remove_model(text: str, model_id: str) -> str:
     """The config without this model's block (and the blank line before it)."""
     blocks = model_blocks(text)

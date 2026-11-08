@@ -266,6 +266,12 @@ class Tuner:
             self.request(model_id, auto)
         return self.state_job()
 
+    async def rename(self, model_id: str, new_id: str) -> None:
+        """A model under a new id (36.1): what was measured stays its own."""
+        if model_id in self.results:
+            self.results[new_id] = self.results.pop(model_id)
+            await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
+
     def cancel(self) -> dict[str, Any]:
         self._queue.clear()
         self._kill()

@@ -155,10 +155,9 @@ def scan(roots: list[Path], *, min_bytes: int | None = None, cancel: threading.E
     return sorted(group(files), key=lambda m: m["name"].lower())
 
 
-def ollama(home: Path) -> list[dict[str, Any]]:
-    """Ollama's models: each manifest (`manifests/<host>/<namespace>/<model>/<tag>`) names its model's blob and its
-    projector's; the name is Ollama's own (`gemma3:4b`, `hf.co/unsloth/Qwen3-GGUF:Q4_K_M`)."""
-    out = []
+def _manifests(home: Path) -> Iterator[tuple[str, str, Path, dict[str, Path]]]:
+    """Each model Ollama has: its own name (`gemma3:4b`, `hf.co/unsloth/Qwen3-GGUF:Q4_K_M`), its tag, its file and its
+    layers' files by kind, from `manifests/<host>/<namespace>/<model>/<tag>`."""
     for manifest in sorted(p for p in (home / "manifests").rglob("*") if p.is_file()):
         try:
             layers = json.loads(manifest.read_text(encoding="utf-8")).get("layers") or []
@@ -173,6 +172,25 @@ def ollama(home: Path) -> list[dict[str, Any]]:
         *where, tag = rest
         name = (f"{where[-1]}:{tag}" if host == "registry.ollama.ai" and where[0] == "library"
                 else f"{host}/{'/'.join(where)}:{tag}")  # fmt: skip
+        yield name, tag, model, blob
+
+
+def ollama_names() -> dict[str, str]:
+    """Each model file of Ollama's (its normalised path) -> Ollama's own name for it (36.1): a file is named by its
+    sha256 and its header may say anything («Source»). Several tags of one file: not «latest» when there is another."""
+    home = ollama_home()
+    if home is None:
+        return {}
+    names: dict[str, list[str]] = {}
+    for name, _tag, model, _blob in _manifests(home):
+        names.setdefault(os.path.normcase(os.path.normpath(model)), []).append(name)
+    return {path: min(found, key=lambda n: (n.endswith(":latest"), n)) for path, found in names.items()}
+
+
+def ollama(home: Path) -> list[dict[str, Any]]:
+    """Ollama's models: each manifest names its model's blob and its projector's; the name is Ollama's own."""
+    out = []
+    for name, tag, model, blob in _manifests(home):
         lens = blob.get("projector")
         found = _model(model, [model], name, "ollama", str(lens) if lens is not None and lens.is_file() else "")
         if found is not None:

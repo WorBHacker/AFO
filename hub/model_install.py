@@ -50,7 +50,7 @@ from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
 from .db import utc_now
-from .model_scan import SPLIT
+from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
 
 log = logging.getLogger("hub.install")
@@ -345,6 +345,8 @@ class Installer:
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
         self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
+        self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
+        self._naming: asyncio.Task | None = None
         # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
         # filled the memory) and while a chat answers (its model would be swapped out); set by the server (34.4)
         self.tuning: Callable[[], bool] = lambda: False
@@ -378,7 +380,59 @@ class Installer:
                 (tr("хаб перезапускался — загрузка продолжится по кнопке «Продолжить»"), utc_now()),
             ).rowcount
 
-        return await self._db.acall(pause)
+        left = await self._db.acall(pause)
+        self._naming = asyncio.create_task(self.name_ollama_models())  # in the background: llama-swap may not be up
+        return left
+
+    async def name_ollama_models(self) -> list[tuple[str, str]]:
+        """Models of Ollama's added under the file's name (`sha256-…`; before 34.2, and «Вернуть в llama-swap» brought
+        them back so): each gets Ollama's own name - in the config, with a copy of it beside, in its install and in
+        all that names it (36.1). [(old id, new id)]; one Ollama does not know keeps what it has."""
+        rows = await self._db.acall(lambda conn: [r for r in jobs(conn) if BLOB.fullmatch(r["model_id"])
+                                                  and not r["own_files"] and r["status"] not in LIVE])  # fmt: skip
+        names = await asyncio.to_thread(ollama_names) if rows else {}
+
+        def file_of(row: dict[str, Any]) -> str:  # as ollama_names() has it
+            return os.path.normcase(os.path.normpath(Path(row["folder"]) / row["files"][0]["path"]))
+
+        wanted = [(r, names[file_of(r)]) for r in rows if file_of(r) in names]
+        if not wanted:
+            return []
+        path = llama_config.config_path()
+        new_ids: list[tuple[dict[str, Any], str, str]] = []
+        async with llama_config.writing():
+            text = new = await asyncio.to_thread(config_text)
+            for row, name in wanted:
+                model_id = llama_config.free_id(new, local_id(name))
+                try:
+                    if row["model_id"] in llama_config.model_blocks(new):
+                        new = llama_config.rename_model(new, row["model_id"], model_id, name)
+                except llama_config.ConfigError as exc:
+                    log.info("model %s keeps its id: %s", row["model_id"], exc)
+                    continue
+                new_ids.append((row, model_id, name))
+            if new != text:
+                backup = await asyncio.to_thread(llama_config.write, path, new)
+                ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+                if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                    await asyncio.to_thread(llama_config.restore, path, backup)
+                    log.warning("the models' own names: llama-swap did not take the config (%s)", problem)
+                    return []
+
+        def apply(conn) -> None:
+            for row, model_id, name in new_ids:
+                _update(conn, row["id"], model_id=model_id, name=name)
+                store.rename_model_references(conn, f"llama-swap/{row['model_id']}", f"llama-swap/{model_id}")
+
+        await self._db.acall(apply)
+        for row, model_id, _name in new_ids:
+            if self.on_renamed is not None:
+                await self.on_renamed(row["model_id"], model_id)
+            await self._publish(row["id"])
+        await self._sync()
+        await self._bus.publish("llama.config", {"renamed": len(new_ids)})
+        log.info("models named by Ollama: %s", [model_id for _row, model_id, _name in new_ids])
+        return [(row["model_id"], model_id) for row, model_id, _name in new_ids]
 
     def busy(self) -> bool:
         """The installs have work: their worker goes on (34.4 - «Подбор параметров» waits for it)."""
@@ -396,6 +450,10 @@ class Installer:
         return rows
 
     async def stop(self) -> None:
+        if self._naming is not None:
+            self._naming.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._naming
         for event in self._cancel.values():
             event.set()
         for job_id in self._cancel:
@@ -799,9 +857,11 @@ class Installer:
         quant = hf.quant_of(path.name) or ""
         text = config_text()
         llama_config.server_command(text)  # no llama.cpp in the config: nothing to add into
-        named = spec.get("name") or (info.get("name") if BLOB.fullmatch(stem) else "") or stem  # a blob: its header's
+        # a blob added as a file, no name from the list: Ollama's own (36.1), else its header's
+        ollama = ollama_names().get(os.path.normcase(os.path.normpath(path)), "") if BLOB.fullmatch(stem) else ""
+        named = spec.get("name") or ollama or (info.get("name") if BLOB.fullmatch(stem) else "") or stem
         model_id = llama_config.free_id(text, local_id(named))
-        name = spec.get("name") or info.get("name") or stem
+        name = spec.get("name") or ollama or info.get("name") or stem
         total = sum(f["size"] for f in files)
         job_id = uuid.uuid4().hex[:12]
 

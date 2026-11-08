@@ -4,6 +4,7 @@ it, Ollama's models through its manifests - listed, and added to llama-swap wher
 such a model takes its config entry away and never its file."""
 
 import json
+import os
 import sys
 import threading
 import time
@@ -242,3 +243,86 @@ def test_models_added_are_tried_by_the_button_one_at_a_time_in_order(hub, tmp_pa
     db.call(lambda c: c.execute("UPDATE model_installs SET status = 'trialwait' WHERE id = ?", (late[1]["id"],)))
     hub.portal.call(installer.start)  # the hub stopped while it waited: added again, not «на паузе»
     assert status(late[1]) == "added"
+
+
+def manifest_of(digest: str) -> bytes:
+    return json.dumps({"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": digest}]}).encode()
+
+
+def test_ollamas_own_name_of_each_model_file(tmp_path, monkeypatch):
+    home = tmp_path / ".ollama" / "models"
+    monkeypatch.setenv(model_scan.OLLAMA_ENV, str(home))
+    assert model_scan.ollama_names() == {}  # no Ollama here
+    one, two = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    library = home / "manifests" / "registry.ollama.ai" / "library"
+    for digest in (one, two):
+        put(home / "blobs" / digest.replace(":", "-"), b"GGUF")
+    put(library / "gemma4" / "latest", manifest_of(one))
+    put(library / "gemma4" / "12b", manifest_of(one))  # two tags of one file: not «latest» when there is another
+    put(library / "mistral-nemo" / "latest", manifest_of(two))
+
+    def at(digest):
+        return os.path.normcase(os.path.normpath(home / "blobs" / digest.replace(":", "-")))
+
+    assert model_scan.ollama_names() == {at(one): "gemma4:12b", at(two): "mistral-nemo:latest"}
+
+
+def test_ollama_models_added_under_their_files_get_their_own_names(hub, tmp_path, monkeypatch):  # noqa: F811
+    """36.1 (2026-11-08, the user's word: «имя модели не становится собой а остаётся их имена из файла»): models added
+    before 34.2 kept the file's sha256 as their id, or the header's word for a name («Source»), and «Вернуть в
+    llama-swap» brought them back the same. At the hub's start each gets Ollama's own name - in the config (a copy of it
+    beside), its install, and all that names it: usage, settings, tuning's results. Its file stays where it is."""
+    home = tmp_path / ".ollama" / "models"
+    monkeypatch.setenv(model_scan.OLLAMA_ENV, str(home))
+    installer, tuner, db = hub.app.state.installer, hub.app.state.tuner, hub.app.state.db
+    digests = {"gemma4/12b": "a", "mistral-nemo/latest": "b", "gone-from-ollama/1": "c"}
+    blobs, library = {}, home / "manifests" / "registry.ollama.ai" / "library"
+    for tag, c in digests.items():
+        blobs[tag] = put(home / "blobs" / ("sha256-" + c * 64), tiny_gguf(120_000))
+        put(library / tag, manifest_of("sha256:" + c * 64))
+
+    def added(tag):  # as before 34.2: under the file's name
+        job = hub.post("/v1/install/local", json={"path": str(blobs[tag]), "name": blobs[tag].name}).json()["job"]
+        assert wait_for(hub, job["id"], "added", "failed")["status"] == "added"
+        return job
+
+    def row(job):
+        return next(j for j in hub.get("/v1/install/jobs").json()["jobs"] if j["id"] == job["id"])
+
+    def config():
+        return hub.config.read_text(encoding="utf-8")
+
+    gemma, mistral, unknown = (added(tag) for tag in digests)
+    old = gemma["model_id"]
+    assert old == blobs["gemma4/12b"].name
+    (library / "gone-from-ollama" / "1").unlink()  # Ollama no longer knows this one: it keeps what it has
+    hub.config.write_text(lc.remove_model(config(), mistral["model_id"]), encoding="utf-8")  # gone from the config
+    db.call(lambda c: c.execute("INSERT INTO usage (model_id, input_tokens) VALUES (?, 5)", (f"llama-swap/{old}",)))
+    tuner.results[old] = {"status": "better"}
+
+    renamed = hub.portal.call(installer.name_ollama_models)
+    assert sorted(renamed) == sorted([(old, "gemma4-12b"), (mistral["model_id"], "mistral-nemo")])
+    assert (row(gemma)["model_id"], row(gemma)["name"]) == ("gemma4-12b", "gemma4:12b")
+    blocks, view = lc.model_blocks(config()), lc.model_view(config(), "gemma4-12b")
+    assert "gemma4-12b" in blocks and old not in blocks and view["name"] == "gemma4:12b"
+    assert view["file"] == blobs["gemma4/12b"].as_posix() and blobs["gemma4/12b"].exists()
+    assert old in lc.backups(hub.config)[-1].read_text(encoding="utf-8")  # a copy of the config as it was, beside it
+    assert db.call(lambda c: c.execute("SELECT model_id FROM usage").fetchone()[0]) == "llama-swap/gemma4-12b"
+    assert tuner.results == {"gemma4-12b": {"status": "better"}}
+    assert unknown["model_id"] in lc.model_blocks(config()) and row(unknown)["model_id"] == unknown["model_id"]
+    listed = {m["id"] for m in hub.get("/v1/models").json()["models"]}
+    assert "llama-swap/gemma4-12b" in listed and f"llama-swap/{old}" not in listed
+
+    assert (row(mistral)["model_id"], row(mistral)["lost"]) == ("mistral-nemo", True)  # no block: only its row
+    hub.post(f"/v1/install/jobs/{mistral['id']}/resume")  # «Вернуть в llama-swap» - under its own name now
+    back = wait_for(hub, mistral["id"], "added", "failed")
+    assert back["status"] == "added" and lc.model_view(config(), "mistral-nemo")["name"] == "mistral-nemo:latest"
+
+    backups = len(lc.backups(hub.config))
+    assert hub.portal.call(installer.name_ollama_models) == []  # all named: the config is not touched
+    assert len(lc.backups(hub.config)) == backups
+
+    fresh = put(home / "blobs" / ("sha256-" + "d" * 64), tiny_gguf(120_000))
+    put(library / "qwen3.5" / "2b", manifest_of("sha256:" + "d" * 64))
+    job = hub.post("/v1/install/local", json={"path": str(fresh)}).json()["job"]  # «Добавить файл…»: no list's name
+    assert (job["model_id"], job["name"]) == ("qwen3.5-2b", "qwen3.5:2b")  # Ollama's, not the header's «Tiny»

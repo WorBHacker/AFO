@@ -352,3 +352,23 @@ def test_the_config_is_changed_by_one_writer_at_a_time():
     asyncio.run(both())
     assert order == ["install in", "install out", "tuning in", "tuning out"]
     asyncio.run(both())  # another loop: a lock of its own
+
+
+def test_a_model_under_a_new_id_and_name():
+    """36.1 (2026-11-08): a model added under its file's name gets its own: the block's key, its name and the name in
+    its description; every other line as it was."""
+    block = ('  "sha256-aa":\n    name: "Source"\n    description: "Source: файл на этом компьютере, добавлен AFO."\n'
+             '    cmd: |\n      ${llama_server} -m "C:/b/sha256-aa"\n'
+             '      --host 127.0.0.1 --port ${PORT}')  # fmt: skip
+    text = lc.add_model(CONFIG, "sha256-aa", block)
+    new = lc.rename_model(text, "sha256-aa", "gemma4-12b", "gemma4:12b")
+    assert new == text.replace('"sha256-aa":', '"gemma4-12b":').replace('name: "Source"', 'name: "gemma4:12b"').replace(
+        '"Source: файл', '"gemma4:12b: файл')  # fmt: skip
+    assert lc.model_view(new, "gemma4-12b")["file"] == "C:/b/sha256-aa"
+    with pytest.raises(lc.ConfigError):
+        lc.rename_model(text, "nope", "x", "x")
+    with pytest.raises(lc.ConfigError):
+        lc.rename_model(text, "sha256-aa", "big", "x")  # taken
+    grouped = text + 'groups:\n  main:\n    members:\n      - "sha256-aa"\n'
+    with pytest.raises(lc.ConfigError):
+        lc.rename_model(grouped, "sha256-aa", "x", "x")  # llama-swap would refuse a group with a member gone

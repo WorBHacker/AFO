@@ -197,6 +197,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                 gpu=lambda: (app.state.status.latest or {}).get("gpu"),
                                 installing=app.state.installer.busy)  # fmt: skip
         app.state.installer.on_done = lambda model_id: app.state.tuner.request(model_id, auto=True)
+        app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # one at a time on the graphics card (34.4): a trial waits while tuning measures, and for a chat's answer
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
         app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)

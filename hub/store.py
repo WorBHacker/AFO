@@ -76,6 +76,16 @@ def get_model(conn: sqlite3.Connection, model_id: str) -> dict[str, Any] | None:
     return model_settings.overlay(_model_row(row), settings, number)
 
 
+def rename_model_references(conn: sqlite3.Connection, model_id: str, new_id: str) -> None:
+    """A model under a new id (36.1): every column that names a model - its settings, usage, messages, agents, goals -
+    follows it. The catalog's own row is replaced by the next sync."""
+    tables = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchall()
+    for (table,) in tables:
+        for column in (c[1] for c in conn.execute(f'PRAGMA table_info("{table}")').fetchall()):
+            if column.endswith("model_id"):
+                conn.execute(f'UPDATE "{table}" SET "{column}" = ? WHERE "{column}" = ?', (new_id, model_id))
+
+
 def _model_row(row: sqlite3.Row) -> dict[str, Any]:
     """A stored row - its price as of today: a dated change it carries switches on its day (stage 20.1)."""
     return on_day({

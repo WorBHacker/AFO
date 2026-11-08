@@ -396,3 +396,16 @@ def test_tuning_waits_while_installs_have_work_and_gives_way_to_one(hub, setup, 
 
     asyncio.run(automatic())
     assert found.results["big"]["status"] == "better" and len(runs) >= 2
+
+
+def test_a_renamed_model_keeps_what_was_measured(hub, setup):  # noqa: F811
+    """36.1: tuning's results are by a model's id, in memory and in the database."""
+    found = tuner(hub, measured={"q8_0": [(512, 900, 40), (2048, 1500, 52)]})
+    assert asyncio.run(found.tune("big"))["status"] == "better"
+
+    async def renamed():
+        await found.rename("big", "bigger")
+        await found.rename("nothing", "else")  # nothing measured: nothing to move
+
+    asyncio.run(renamed())
+    assert list(found.results) == ["bigger"] and list(hub.app.state.db.call(tuning.load_results)) == ["bigger"]
