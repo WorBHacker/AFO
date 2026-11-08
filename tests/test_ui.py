@@ -6476,7 +6476,7 @@ def test_the_agent_input_as_a_chat(qapp):
     from app.ui.autonomy import AUTONOMY, LEVEL_KEY
     from app.ui.main import QuickApp
 
-    assert [name for _id, name, _hint in AUTONOMY] == ["Авто", "Сначала план", "Каждый шаг"]
+    assert [name for _id, name, _hint in AUTONOMY] == ["Полный", "Авто", "Сначала план", "Каждый шаг"]
     quick = QuickApp(qapp, data_paths().ensure(), connect=False)
     try:
         app = quick.controller
@@ -6492,8 +6492,19 @@ def test_the_agent_input_as_a_chat(qapp):
             QApplication.processEvents()
         assert not view.running and view.modeName == "Авто" and view.modeHint.startswith("Работает сам")
         modes = view.modes
-        assert modes[0]["section"] and [m["name"] for m in modes[1:]] == ["Авто", "Сначала план", "Каждый шаг"]
-        assert modes[1]["selected"] and all(m["note"] for m in modes[1:])  # each mode explained
+        assert modes[0]["section"] and [m["name"] for m in modes[1:]] == ["Полный", "Авто", "Сначала план",
+                                                                           "Каждый шаг"]  # fmt: skip
+        assert modes[2]["selected"] and all(m["note"] for m in modes[1:])  # each mode explained; «Авто» at first
+        # «Полный» asks nothing (33.4, D56): a bolt, and what it never does said in its hint
+        assert modes[1]["icon"] == "bolt" and {m["icon"] for m in modes[2:]} == {"shield"}
+        assert modes[1]["note"].startswith("Ничего не спрашивает") and "удаляющее и необратимое" in modes[1]["note"]
+        assert "о новой программе спросит один раз" in modes[2]["note"]
+        assert quick.window.findChild(QObject, "agentMode").property("iconName") == "shield"
+        view.chooseMode("full")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert view.modeName == "Полный" and quick.window.findChild(QObject, "agentMode").property("iconName") == "bolt"
+        view.chooseMode("free")
         limits = view.limitFields
         assert [f["id"] for f in limits] == ["done_when", "max_steps", "max_minutes", "budget_usd", "max_replans"]
         assert all(f["hint"] for f in limits)

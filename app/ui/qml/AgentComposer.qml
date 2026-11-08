@@ -275,7 +275,7 @@ Item {
                 Chip {
                     id: modeChip
                     objectName: "agentMode"
-                    iconName: "shield"
+                    iconName: Autonomy.modeIcon
                     text: Autonomy.modeName
                     onClicked: { modeMenu.anchor = modeChip; modeMenu.open() }
                     ToolTip.visible: hovered && !modeMenu.visible

@@ -26,10 +26,14 @@ from .rows import model_name, model_vector, refusal_items, refusal_name
 if TYPE_CHECKING:
     from .controller import Controller
 
-# the modes, as the person reads them: who decides what (named so «Сам» can no longer read as "I do it myself")
-AUTONOMY = [("free", N_("Авто"), N_("Работает сам: план не утверждается, в разрешённых программах действует без "
-                                     "вопросов. Спрашивает только о рискованном — отправка сообщений, запись в "
-                                     "проекты, команды, сеть.")),
+# the modes, as the person reads them: who decides what (named so «Сам» can no longer read as "I do it myself");
+# «Полный» asks nothing (33.4, D56)
+AUTONOMY = [("full", N_("Полный"), N_("Ничего не спрашивает: пишет в проекты, запускает команды, ходит в сеть, "
+                                      "отправляет сообщения, управляет любой программой, которую вы не запретили. "
+                                      "Не делает вовсе: удаляющее и необратимое, ключи и базу AFO, пароли и оплату.")),
+            ("free", N_("Авто"), N_("Работает сам: план не утверждается, в программах действует без вопросов, о "
+                                     "новой программе спросит один раз. Спрашивает только о рискованном — отправка "
+                                     "сообщений, запись в проекты, команды, сеть.")),
             ("plan", N_("Сначала план"), N_("Покажет план — вы его утверждаете. Дальше работает сам; первое действие "
                                             "в каждой программе спросит один раз.")),
             ("each_step", N_("Каждый шаг"), N_("Утверждаете план и каждый шаг перед его началом. Медленнее всего, но "
@@ -68,6 +72,11 @@ BLANK: dict[str, Any] = {"goal": "", "done_when": "", "model_id": "", "planner_m
                          "screen_cloud": None}  # None: as «Папки и сайты для агента» says (22.3)  # fmt: skip
 REFUSAL_SAID = {1: N_("снятие отказов вкл"), 0: N_("снятие отказов выкл")}
 FILES_SHOWN = 10  # of a step's changed files, named on its card
+
+
+def mode_icon(autonomy: str) -> str:
+    """«Полный» asks nothing - a bolt, not the shield of the modes that ask (D56)."""
+    return "bolt" if autonomy == "full" else "shield"
 
 
 def utc_now() -> str:
@@ -279,8 +288,13 @@ class AutonomyView(QObject):
         """The mode chip's menu: each mode with what it means."""
         current = self._mode()
         return [{"section": tr("Режим — кто что решает"), "id": ""}] + [
-            {"id": a, "name": tr(n), "note": tr(h), "icon": "shield", "selected": a == current} for a, n, h in AUTONOMY
+            {"id": a, "name": tr(n), "note": tr(h), "icon": mode_icon(a), "selected": a == current}
+            for a, n, h in AUTONOMY
         ]
+
+    @Property(str, notify=changed)
+    def modeIcon(self) -> str:
+        return mode_icon(self._mode())
 
     @Property(str, notify=changed)
     def modeName(self) -> str:
