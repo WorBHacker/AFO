@@ -70,7 +70,10 @@ Column {
                     }
                     Text {
                         id: label
+                        objectName: "toolLabel"
                         x: 28
+                        width: Math.max(0, Math.min(implicitWidth, parent.width - x - 40))
+                        elide: Text.ElideRight
                         anchors.verticalCenter: parent.verticalCenter
                         text: call.label
                         color: Theme.p.text_soft

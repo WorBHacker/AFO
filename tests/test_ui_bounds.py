@@ -2,8 +2,10 @@
 
 import pytest
 from PySide6.QtCore import QMetaObject, QObject, QRectF
+from PySide6.QtTest import QTest
 
 from common.paths import data_paths
+from tests import test_ui as T
 from tests.test_ui import FakeClient, item_named, opened, qapp, wait_until  # noqa: F401 - the qapp fixture
 
 LONG = "Автономный агент: открой телеграм и жди ответа от чатов в папке личные " * 3
@@ -92,3 +94,127 @@ def test_a_button_given_a_limit_ends_its_long_label_in_dots(quick):
     assert box(button.parentItem()).contains(box(button))
     label = texts_in(button)[0]
     assert label.property("truncated") and box(button).contains(ink(label))
+
+
+SPACED = " — очень длинное название, которое никто не сокращал и которое никак не помещается в одну строку окна"
+SOLID = "-очень_длинное_имя_без_единого_пробела/и/ещё/вложенная/папка/которая/не/переносится/совсем.ext"
+SPACED_KEYS = {"title", "name", "label", "goal", "summary", "description", "detail", "text"}
+SOLID_KEYS = {"path", "exe", "folder", "command", "cwd", "branch", "root", "file"}
+SAME = {"role", "status", "kind", "type", "id", "state"}
+
+
+def stretch(value, key=None):
+    if isinstance(value, dict):
+        return {k: stretch(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [stretch(v, key) for v in value]
+    if isinstance(value, str) and value and key not in SAME:
+        return value + (SOLID if key in SOLID_KEYS else SPACED if key in SPACED_KEYS else "")
+    return value
+
+
+def plain(value):
+    if isinstance(value, str):
+        return value.replace(SOLID, "").replace(SPACED, "")
+    if isinstance(value, list):
+        return [plain(v) for v in value]
+    return {k: plain(v) for k, v in value.items()} if isinstance(value, dict) else value
+
+
+class LongNames:
+    """The tests' client, every name and path it hands the window made long."""
+
+    def __init__(self, real):
+        object.__setattr__(self, "real", real)
+
+    def __getattr__(self, name):
+        found = getattr(self.real, name)
+        if not callable(found):
+            return found
+        return lambda *args, **kwargs: stretch(found(*plain(list(args)), **plain(kwargs)))
+
+    def __setattr__(self, name, value):
+        setattr(self.real, name, value)
+
+
+@pytest.fixture(params=[(1280, 820), (900, 560)], ids=["roomy", "narrowest"])
+def long_named(qapp, request):  # noqa: F811
+    from app.ui.main import QuickApp
+
+    window = QuickApp(qapp, data_paths().ensure(), connect=False)
+    real = T.FakeClient()
+    real.run_list = [dict(T.AUTO_RUN), dict(T.RUN)]
+    for program in real.program_list:
+        program["fresh"] = False  # the question about a new program would cover the screens
+    window.controller.attach(LongNames(real), start_events=False)
+    wait_until(lambda: not window.controller.bg.busy)
+    window.window.resize(*request.param)
+    yield window, request.param[0]
+    window.close()
+
+
+def settle(quick):
+    wait_until(lambda: not quick.controller.bg.busy)
+    QTest.qWait(150)
+    quick.window.grabWindow()
+
+
+def scrolls_sideways(item):
+    while item is not None:
+        if item.inherits("QQuickFlickable") and item.property("contentWidth") > item.width() + 1:
+            return True
+        item = item.parentItem()
+    return False
+
+
+def outside(item, right, found):
+    if not item.isVisible():
+        return found
+    is_text = item.metaObject().className().startswith("QQuickText") and item.property("text")
+    if is_text and ink(item).right() > right + 1 and not scrolls_sideways(item):
+        found.append(item.property("text")[:40])
+    for child in item.childItems():
+        outside(child, right, found)
+    return found
+
+
+def test_no_long_name_pushes_text_out_of_the_window(long_named):
+    quick, width = long_named
+    app, root = quick.controller, quick.window.contentItem()
+
+    def show(step):
+        step()
+        settle(quick)
+        assert outside(root, width, []) == []
+
+    show(app.newChat)
+    show(lambda: app.openChat("c1"))
+    show(lambda: app.openChat("ct"))
+    label = item_named(root, "toolLabel")
+    assert ink(label).right() <= box(label.parentItem()).right() - 30  # the status icon has its place
+    show(lambda: app.setMode("projects"))
+    show(lambda: app.projects.openProject("p1"))
+    name, ports = item_named(root, "procName"), item_named(root, "procPorts")
+    assert ink(name).right() <= box(ports).left()
+    show(lambda: app.setMode("agent"))
+    show(app.autonomy_view.newTask)
+    show(lambda: app.autonomy_view.select("auto1"))
+
+
+def test_the_status_bar_gives_way_on_the_left_and_keeps_its_right_side(long_named):
+    quick, width = long_named
+    root = quick.window.contentItem()
+    settle(quick)
+    name, right = item_named(root, "statusModel"), item_named(root, "statusRight")
+    assert ink(name).right() <= box(right).left()
+    assert box(right).right() <= width
+
+
+def test_the_search_box_stays_clear_of_the_buttons_in_the_title_bar(long_named):
+    quick, _ = long_named
+    root = quick.window.contentItem()
+    settle(quick)
+    search, buttons = item_named(root, "titleSearch"), item_named(root, "titleButtons")
+    assert box(search).right() <= box(buttons).left()
+    for text in texts_in(search):
+        assert box(search).contains(ink(text)), text.property("text")

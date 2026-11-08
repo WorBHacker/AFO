@@ -29,12 +29,16 @@ Rectangle {
         x: 12
         height: parent.height
         spacing: 10
+        // the right side of the bar stays whole: here the model's name gives way first, then the session's words
+        readonly property real room: right.x - x - 16 - 82 - hubLabel.implicitWidth
+                                     - (App.subscriptionText !== "" ? 21 + subscriptionLabel.implicitWidth : 0)
         Rectangle {
             width: 7; height: 7; radius: 3.5
             color: bar.hubColour(App.hubState)
             anchors.verticalCenter: parent.verticalCenter
         }
         Small {
+            id: hubLabel
             text: qsTr("Хаб %1").arg(App.hubPort)
             HoverHandler { id: hubHover }
             ToolTip.visible: hubHover.hovered
@@ -42,9 +46,21 @@ Rectangle {
         }
         Separator { anchors.verticalCenter: parent.verticalCenter }
         Icon { name: App.modelCloud ? "cloud" : "cpu"; size: 13; anchors.verticalCenter: parent.verticalCenter }
-        Small { text: App.modelName }
+        Small {
+            id: modelLabel
+            objectName: "statusModel"
+            width: Math.max(0, Math.min(implicitWidth, left.room - sessionLabel.implicitWidth))
+            elide: Text.ElideRight
+            text: App.modelName
+            HoverHandler { id: modelHover }
+            ToolTip.visible: modelHover.hovered && truncated
+            ToolTip.text: text
+        }
         Separator { anchors.verticalCenter: parent.verticalCenter }
         Small {
+            id: sessionLabel
+            width: Math.max(0, Math.min(implicitWidth, left.room))
+            elide: Text.ElideRight
             text: App.sessionText
             color: App.sessionWarn ? Theme.p.warn : Theme.p.muted
             HoverHandler { id: sessionHover; cursorShape: Qt.PointingHandCursor }
@@ -54,6 +70,7 @@ Rectangle {
         }
         Separator { visible: App.subscriptionText !== ""; anchors.verticalCenter: parent.verticalCenter }
         Small {
+            id: subscriptionLabel
             objectName: "statusSubscription"
             visible: App.subscriptionText !== ""
             text: App.subscriptionText
@@ -112,6 +129,7 @@ Rectangle {
 
     Row {
         id: right
+        objectName: "statusRight"
         anchors.right: parent.right
         anchors.rightMargin: 12
         height: parent.height
@@ -120,7 +138,7 @@ Rectangle {
         ToolTip.visible: machineHover.hovered && App.status.details !== ""
         ToolTip.text: App.status.details
         Icon { name: "cpu"; size: 13; anchors.verticalCenter: parent.verticalCenter }
-        Small { text: App.status.local }
+        Small { text: App.status.local; width: Math.min(implicitWidth, bar.width * 0.14); elide: Text.ElideRight }
         Separator { anchors.verticalCenter: parent.verticalCenter }
         Meter {
             label: "VRAM"

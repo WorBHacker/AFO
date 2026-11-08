@@ -99,6 +99,7 @@ Sheet {
         PlainButton {
             id: chooser
             objectName: "chooseModelToSet"
+            maxWidth: parent.width * 0.6
             iconName: ModelSetup.general ? "layers" : "cpu"
             text: ModelSetup.title + "  ▾"
             onClicked: { menu.anchor = chooser; menu.open() }

@@ -30,6 +30,9 @@ Column {
             }
         }
         Text {
+            objectName: "answerAuthor"
+            width: Math.max(0, Math.min(implicitWidth, answer.width - 30 - (answering.visible ? answering.implicitWidth + 8 : 0)))
+            elide: Text.ElideRight
             text: answer.row?.author || ""
             color: Theme.p.text
             font.family: Theme.uiFont
@@ -38,6 +41,7 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            id: answering
             visible: !!answer.row?.streaming
             text: qsTr("· отвечает")
             color: Theme.p.muted

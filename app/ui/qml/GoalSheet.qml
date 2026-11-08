@@ -122,6 +122,7 @@ Sheet {
                 PlainButton {
                     id: project
                     visible: crit.c.kind === "command"
+                    maxWidth: 200
                     x: parent.width - code.width - width - 46
                     implicitHeight: 34
                     text: crit.c.project || qsTr("проект?")

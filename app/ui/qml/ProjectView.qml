@@ -290,6 +290,7 @@ Item {
                 }
                 PlainButton {
                     visible: cardBox.card.state === "none"
+                    maxWidth: parent.width
                     iconName: "sparkle"
                     text: cardBox.card.writer ? qsTr("Составить черновик (%1)").arg(cardBox.card.writer) : qsTr("Составить черновик")
                     onClicked: Projects.draftCard()
@@ -779,7 +780,10 @@ Item {
                         }
                         Text {
                             id: procName
+                            objectName: "procName"
                             x: procIcon.x + 22
+                            width: Math.max(0, Math.min(implicitWidth, ports.x - x - 12))
+                            elide: Text.ElideRight
                             anchors.verticalCenter: parent.verticalCenter
                             text: proc.modelData.name
                             color: Theme.p.text
@@ -798,6 +802,7 @@ Item {
                         }
                         Row {
                             id: ports
+                            objectName: "procPorts"
                             anchors.right: stats.left
                             anchors.rightMargin: 12
                             anchors.verticalCenter: parent.verticalCenter

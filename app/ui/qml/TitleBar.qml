@@ -53,7 +53,10 @@ Item {
 
     AbstractButton {
         id: search
-        anchors.centerIn: parent
+        objectName: "titleSearch"
+        // centred in the bar, as long as the buttons on the right leave room for that
+        x: Math.min((parent.width - width) / 2, buttons.x - width - 12)
+        anchors.verticalCenter: parent.verticalCenter
         width: Math.min(360, parent.width - 520)
         height: 32
         hoverEnabled: true
@@ -70,6 +73,8 @@ Item {
                 spacing: 8
                 Icon { name: "search"; size: 15; anchors.verticalCenter: parent.verticalCenter }
                 Text {
+                    width: Math.max(0, Math.min(implicitWidth, search.width - 41 - (hint.visible ? hint.width + 6 : 0)))
+                    elide: Text.ElideRight
                     text: qsTr("Поиск и команды")
                     color: Theme.p.faint
                     font.family: Theme.uiFont
@@ -77,11 +82,13 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                 }
             }
-            Kbd { text: "Ctrl K"; anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter }
+            Kbd { id: hint; visible: search.width >= 190; text: "Ctrl K"; anchors.right: parent.right; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter }
         }
     }
 
     Row {
+        id: buttons
+        objectName: "titleButtons"
         anchors.right: parent.right
         anchors.rightMargin: 4
         anchors.verticalCenter: parent.verticalCenter

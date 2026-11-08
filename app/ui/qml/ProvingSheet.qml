@@ -323,6 +323,7 @@ Sheet {
                 delegate: PlainButton {
                     required property var modelData
                     implicitHeight: 26
+                    maxWidth: 220
                     text: modelData.name
                     kind: modelData.selected ? "primary" : "plain"
                     onClicked: Proving.showExam(modelData.id)

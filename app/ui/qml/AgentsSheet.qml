@@ -106,6 +106,7 @@ Sheet {
         PlainButton {
             id: modelButton
             objectName: "agentModel"
+            maxWidth: parent.width
             iconName: "cpu"
             text: Agents.draft.modelName
             onClicked: { modelMenu.anchor = modelButton; modelMenu.open() }
