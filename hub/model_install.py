@@ -276,6 +276,17 @@ def id_base(repo: str, quant: str) -> str:
     return f"{repo_name(repo)}-{quant}"
 
 
+BLOB = re.compile(r"sha256-[0-9a-f]{64}")  # how Ollama names a model's file
+
+
+def local_id(name: str) -> str:
+    """A model's id in the config from its name in the list (34.2): Ollama's by its own name
+    (`hf.co/IlyaGusev/saiga_nemo_12b-GGUF:Q4_K_M` -> `saiga_nemo_12b-gguf-q4_k_m`, `mistral-nemo:latest` ->
+    `mistral-nemo`), not by its file - a blob's `sha256-…`."""
+    base = name.rsplit("/", 1)[-1].removesuffix(":latest")
+    return re.sub(r"[^a-z0-9._-]+", "-", base.lower()).strip("-") or "model"
+
+
 # --- the rows ---
 
 
@@ -639,8 +650,9 @@ class Installer:
 
     async def add_local(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
         """A model already on this computer (15.1, D49): {path (its file; the first part of a split one), projector
-        (a file, or ''), name} - written into llama-swap's config where it lies, without a copy, and tried as an
-        install is. Its files stay the person's: removing it never deletes them."""
+        (a file, or ''), name (the list's, its id comes from it - 34.2)} - written into llama-swap's config where it
+        lies, without a copy, and tried as an install is. Its files stay the person's: removing it never deletes
+        them."""
         path = Path(spec["path"]).expanduser()
         if not path.is_absolute() or not path.is_file() or path.suffix.lower() not in (".gguf", ""):
             raise InstallError(tr("нет такого файла модели: {path}", path=spec["path"]), 422)
@@ -667,7 +679,8 @@ class Installer:
         quant = hf.quant_of(path.name) or ""
         text = config_text()
         llama_config.server_command(text)  # no llama.cpp in the config: nothing to add into
-        model_id = llama_config.free_id(text, re.sub(r"[^a-z0-9._-]+", "-", stem.lower()).strip("-") or "model")
+        named = spec.get("name") or (info.get("name") if BLOB.fullmatch(stem) else "") or stem  # a blob: its header's
+        model_id = llama_config.free_id(text, local_id(named))
         name = spec.get("name") or info.get("name") or stem
         total = sum(f["size"] for f in files)
         job_id = uuid.uuid4().hex[:12]

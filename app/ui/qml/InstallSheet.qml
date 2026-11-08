@@ -477,7 +477,8 @@ Sheet {
                         anchors.right: parent.right
                         visible: local.modelData.inConfig === ""
                         text: qsTr("Добавить")
-                        onClicked: Installer.addLocal(local.modelData.path, local.modelData.projector)
+                        onClicked: Installer.addLocal(local.modelData.path, local.modelData.projector,
+                                                      local.modelData.name)
                     }
                     Text {
                         id: inConfig

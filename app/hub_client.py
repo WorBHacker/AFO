@@ -226,9 +226,10 @@ class HubClient:
     def install_scan_cancel(self) -> dict:
         return self._call("POST", "/v1/install/found/cancel")
 
-    def install_local(self, path: str, projector: str = "") -> dict:
-        """A model already on this computer into llama-swap's config, where it lies."""
-        return self._call("POST", "/v1/install/local", {"path": path, "projector": projector})
+    def install_local(self, path: str, projector: str = "", name: str = "") -> dict:
+        """A model already on this computer into llama-swap's config, where it lies; `name` - the list's (Ollama's own,
+        34.2), its id comes from it."""
+        return self._call("POST", "/v1/install/local", {"path": path, "projector": projector, "name": name[:120]})
 
     # --- launch settings by measurement (15.2) ---
 

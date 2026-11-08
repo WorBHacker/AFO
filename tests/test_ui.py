@@ -847,8 +847,8 @@ class FakeClient:
         self.found["job"] = {"status": "cancelled"}
         return self.install_found()
 
-    def install_local(self, path, projector=""):
-        self.install_calls.append(("local", path, projector))
+    def install_local(self, path, projector="", name=""):
+        self.install_calls.append(("local", path, projector, name))
         name = path.replace("\\", "/").rsplit("/", 1)[-1].removesuffix(".gguf")
         return {"job": {"id": "l1", "name": name, "model_id": "mine", "repo": "", "status": "queued", "files": [],
                         "own_files": 0, "total_bytes": 1, "done_bytes": 1}}  # fmt: skip
@@ -7225,11 +7225,14 @@ def test_models_found_on_the_drives_are_listed_and_added(app):
         "",
     )
     assert gemma["note"] == "3,3 ГБ · понимает картинки · Ollama" and gemma["inConfig"] == "gemma3"
-    view.addLocal(qwen["path"], qwen["projector"])
-    wait_until(lambda: ("local", qwen["path"], "") in app.client.install_calls)
+    view.addLocal(qwen["path"], qwen["projector"], qwen["name"])
+    wait_until(lambda: ("local", qwen["path"], "", "Qwen3-8B-Q4_K_M") in app.client.install_calls)
     wait_until(lambda: "Добавляю «Qwen3-8B-Q4_K_M»" in app._flash)
-    view.addFile("file:///D:/LLM/other.gguf")  # «Добавить файл…»: any GGUF on this computer
-    wait_until(lambda: any(c[0] == "local" and c[1].endswith("other.gguf") for c in app.client.install_calls))
+    view.addLocal(gemma["path"], gemma["projector"], gemma["name"])  # 34.2: its id comes from Ollama's name
+    wait_until(lambda: ("local", gemma["path"], gemma["projector"], "gemma3:4b") in app.client.install_calls)
+    view.addFile("file:///D:/LLM/other.gguf")  # «Добавить файл…»: any GGUF on this computer, by its file's name
+    wait_until(lambda: any(c[0] == "local" and c[1].endswith("other.gguf") and c[3] == ""
+                           for c in app.client.install_calls))  # fmt: skip
 
 
 def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):

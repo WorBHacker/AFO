@@ -646,21 +646,24 @@ class InstallView(QObject):
     def stopScan(self) -> None:
         self.app.call_or_fail(lambda: self.app.client.install_scan_cancel(), self._set_local, lambda _e: None)
 
-    @Slot(str, str)
-    def addLocal(self, path: str, projector: str) -> None:
+    @Slot(str, str, str)
+    def addLocal(self, path: str, projector: str, name: str) -> None:
+        """«Добавить»: the model where it lies; `name` - the list's, its id in the config comes from it (34.2: an
+        Ollama model's file is named by its sha256)."""
+
         def done(result: dict[str, Any]) -> None:
             job = result.get("job") or {}
             self._upsert(job)
             self.app.flash(tr("Добавляю «{name}» — пробный запуск на вкладке «Установки»", name=job.get("name", "")))
             self.loadLocal()
 
-        self.app.call_or_fail(lambda: self.app.client.install_local(path, projector), done,
+        self.app.call_or_fail(lambda: self.app.client.install_local(path, projector, name), done,
                               lambda e: self.app.show_error(tr("Не добавить: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def addFile(self, url: str) -> None:
-        """A model file chosen in the dialog (any GGUF on this computer)."""
-        self.addLocal(QUrl(url).toLocalFile() if url.startswith("file:") else url, "")
+        """A model file chosen in the dialog (any GGUF on this computer): no name - the hub takes the file's."""
+        self.addLocal(QUrl(url).toLocalFile() if url.startswith("file:") else url, "", "")
 
     @Slot(str)
     def setPurpose(self, purpose: str) -> None:

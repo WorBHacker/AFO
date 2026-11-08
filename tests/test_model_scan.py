@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from hub import llama_config as lc
+from hub import model_install as mi
 from hub import model_scan
 from tests.test_model_install import CONFIG, fake_hub, hub, tiny_gguf, wait_for  # noqa: F401 - the fixtures
 
@@ -127,3 +128,23 @@ def test_found_models_are_listed_and_added_where_they_lie(hub, tmp_path, monkeyp
     hub.app.state.scanner.models = []
     hub.app.state.scanner.load(hub.app.state.db.call(model_scan.saved))
     assert [m["name"] for m in hub.get("/v1/install/found").json()["models"]] == ["Mine-Q8_0"]
+
+
+def test_an_ollama_model_is_named_by_ollama_not_by_its_file(hub, tmp_path):  # noqa: F811
+    """34.2 (2026-11-08, the user's screenshot): Ollama keeps a model as a blob named by its sha256, and an id made of
+    the file's name was «sha256-» and 64 characters - in llama-swap's config and in the window. The id comes from the
+    name the list shows; a blob added as a file (no name from the list) - from the name in its header."""
+    assert mi.local_id("hf.co/IlyaGusev/saiga_nemo_12b-GGUF:Q4_K_M") == "saiga_nemo_12b-gguf-q4_k_m"
+    assert mi.local_id("mistral-nemo:latest") == "mistral-nemo" and mi.local_id("gemma3:4b") == "gemma3-4b"
+    assert mi.local_id("Qwen3-8B-Q4_K_M") == "qwen3-8b-q4_k_m" and mi.local_id("··") == "model"
+    blobs = tmp_path / ".ollama" / "models" / "blobs"
+    saiga = put(blobs / ("sha256-" + "a" * 64), tiny_gguf(120_000))
+    other = put(blobs / ("sha256-" + "b" * 64), tiny_gguf(120_000))
+    name = "hf.co/IlyaGusev/saiga_nemo_12b-GGUF:Q4_K_M"
+    job = hub.post("/v1/install/local", json={"path": str(saiga), "name": name}).json()["job"]
+    assert (job["model_id"], job["name"]) == ("saiga_nemo_12b-gguf-q4_k_m", name)
+    plain = hub.post("/v1/install/local", json={"path": str(other)}).json()["job"]  # «Добавить файл…»: no name
+    assert plain["model_id"] == "tiny"  # the header's name, not «sha256-…»
+    for each in (job, plain):
+        assert wait_for(hub, each["id"], "done", "failed")["status"] == "done"
+    assert {"saiga_nemo_12b-gguf-q4_k_m", "tiny"} <= set(lc.model_blocks(hub.config.read_text(encoding="utf-8")))
