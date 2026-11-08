@@ -1,8 +1,10 @@
 """What a model is told about the projects (stage 3, D22): layers of context, stored in the conversation.
 
-Layers (D22): L0 - a map of every project (name, one line, stack); L1 - the attached projects (stack, structure,
-the start of the README, the agents' own notes such as CLAUDE.md); L2 - what is happening: git changes, processes
-and ports, terminals, events since the previous message. L3 is the tools (hub/tools.py); L4, notes, comes later.
+Layers (D22): L0 - a map of every project (name, one line, stack) and the links between them; L1 - the attached
+projects: the confirmed card (hub/cards.py), else what the hub sees itself (stack, structure, the start of the
+README, the agents' own notes such as CLAUDE.md), and the linked projects briefly; L2 - what is happening: git
+changes, processes and ports, terminals, events since the previous message; L3 is the tools (hub/tools.py); L4 - the
+user's notes on the project (hub/notes.py).
 
 The context is not rebuilt for each request. When a message goes out in a chat with projects, the hub stores a
 message of role "system" right after it, holding the layers that changed since the last such message (L0 and L1
