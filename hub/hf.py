@@ -45,8 +45,9 @@ INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "gguf", "sha")
 QUANT = re.compile(r"(?i)(?<![A-Z0-9])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|MXFP4(?:_MOE)?|NVFP4|BF16|F16|FP16|F32))"
                    r"(?![A-Z0-9])")  # fmt: skip
 SPLIT = re.compile(r"-(\d{5})-of-(\d{5})$")
-# files beside the model that are not a variant of it: vision projectors (offered apart), speculative drafts
-NOT_MODEL = re.compile(r"(?i)^(mmproj|mtp-|dflash-|eagle\d*-|draft|imatrix)|imatrix")
+# files beside the model that are not a variant of it: vision projectors (offered apart), speculative drafts, imatrix
+# data (imatrix.gguf, model.imatrix.gguf) - a model's own name may say «imatrix» too (32.3: …-iMatrix-NVFP4.gguf)
+NOT_MODEL = re.compile(r"(?i)^(mmproj|mtp-|dflash-|eagle\d*-|draft|imatrix)|[._-]imatrix\.gguf$")
 UNRESTRICTED = re.compile(r"(?i)abliterat|uncensor|heretic|unfilter|unrestrict|refusal")
 SIXTEEN_BITS = {"BF16", "F16", "FP16", "F32"}
 

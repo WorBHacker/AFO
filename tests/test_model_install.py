@@ -256,6 +256,19 @@ def test_a_repositorys_files_as_variants_and_their_names():
     assert not hf.summary({"id": "ggml-org/gemma-4-E4B-it-GGUF", "tags": ["license:apache-2.0"]})["unrestricted"]
 
 
+def test_a_model_file_named_imatrix_is_a_model():
+    """32.3: «imatrix» anywhere in a file's name threw the model away as imatrix data ("no GGUF files in this
+    repository" for cdiamond/Qwen3.8-27B-iMatrix-NVFP4-MTP-GGUF) - only the data goes now."""
+    files = [{"path": path, "size": size} for path, size in (
+        ("Qwen3.8-27B-iMatrix-NVFP4-MTP.gguf", 17_130_000_000), ("Model-IQ4_XS-imatrix-fromq8.gguf", 15_000_000_000),
+        ("imatrix-agentic-v2.gguf", 9_000_000), ("imatrix.gguf", 8_000_000), ("Model.imatrix.gguf", 8_000_000),
+        ("Model-imatrix.gguf", 8_000_000), ("mmproj-Qwen3.8-27B-F16.gguf", 930_000_000))]  # fmt: skip
+    found, projectors = hf.variants(files)
+    assert [(v["quant"], v["files"][0]["path"]) for v in found] == [
+        ("IQ4_XS", "Model-IQ4_XS-imatrix-fromq8.gguf"), ("NVFP4", "Qwen3.8-27B-iMatrix-NVFP4-MTP.gguf")]  # fmt: skip
+    assert [p["file"] for p in projectors] == ["mmproj-Qwen3.8-27B-F16.gguf"]
+
+
 def test_this_computer_against_a_model():
     space = mi.room(SPACE)
     assert (space["vram_gib"], space["ram_gib"]) == (14.7, 44.0)  # free video memory; RAM over Windows' share
