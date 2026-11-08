@@ -20,7 +20,9 @@ downloaded models stay unless you ask to delete them.
 
 Updates: Settings → About. AFO looks on GitHub twice a day for a newer version (you can turn that off), downloads
 the installer on a click (checking its sha256) and, after asking, installs it over itself: the window closes and
-opens again on the new version, your data and models stay. A checkout of the code is updated with `git pull`.
+opens again on the new version, your data and models stay. A checkout of the code is updated with `git pull`. What AFO
+learned about this computer stays too: `computer.json` (the graphics card and memory) and `hf_answers.json` (what
+Hugging Face said about the models offered) are in the data folder; deleting them is safe - they are written again.
 
 On a computer with no local models yet, the window opens the setup wizard by itself: it shows the graphics card and
 memory, downloads a suitable build of llama.cpp and llama-swap from GitHub (checking their sha256), starts them and

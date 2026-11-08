@@ -457,7 +457,7 @@ def test_a_big_file_comes_in_pieces_over_several_connections(fake_hub, pieces, t
     limit): a big file comes in pieces, several at once, each written at its place; the sha256 runs behind them."""
     name = "BF16/Tiny-BF16-00001-of-00002.gguf"  # 320 000 bytes: five pieces
     data = FILES[name]
-    FakeHub.slow = 0.002  # long enough for the pieces to overlap
+    FakeHub.slow = 0.02  # long enough for the pieces to overlap, on a computer busy with the whole test run too
     seen = []
     dest = tmp_path / "Tiny-BF16-00001-of-00002.gguf"
     hf.download(hf.file_url("test/Tiny-GGUF", name), dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
