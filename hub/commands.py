@@ -36,7 +36,7 @@ from common.i18n import tr
 from .limits import limit
 from .projects import Project, ProjectError, resolve_inside
 from .secret_filter import clean
-from .tools import TERMINAL_LINES, ToolError, plain_terminal_text
+from .tools import PROJECT, TERMINAL_LINES, ToolError, plain_terminal_text
 
 DEFAULT_TIMEOUT_S = 120
 MAX_TIMEOUT_S = 600
@@ -83,7 +83,7 @@ RUN_COMMAND: dict[str, Any] = {
     "parameters": {
         "type": "object",
         "properties": {
-            "project": {"type": "string", "description": "The project's name, as listed in the system prompt."},
+            "project": PROJECT,
             "command": {"type": "string", "description": "The command line, as typed in PowerShell."},
             "path": {"type": "string", "description": "A folder inside the project to run it in (default: its root)."},
             "timeout_s": {"type": "integer", "description": f"How long to wait for it (default {DEFAULT_TIMEOUT_S})."},

@@ -21,7 +21,9 @@ allow the cloud and sees the others by name (D10); it gets no chat where a local
 
 The model may also write files of the chat's projects (stage 5, D17): write_file and edit_file are asked in the
 approval queue with a diff, unless the chat is trusted or an answer "for this chat" / a rule of the project covers
-them; a read-only chat refuses them. Each write is kept as a change that can be undone (hub/changes.py). And it may
+them; a read-only chat refuses them. Each write is kept as a change that can be undone (hub/changes.py). In a chat
+with no project a project tool makes the hub ask the user which of their projects (31.2, the user's choice); the one
+picked is attached, as the chip does, and the model gets its context before the next step. And it may
 run commands (run_command, hub/commands.py) in a hub terminal: asked unless the project's whitelist or an answer for
 the chat covers that very command - destructive and network commands always. A trusted chat asks nothing but a
 destructive action (the user's word 2026-10-28: commands, the network and sending too) - until it reads the web
@@ -116,6 +118,15 @@ READING = frozenset(
     }
 )
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
+# the tools that work in a project: in a chat with none, the hub asks the user which (31.2, the user's choice)
+PROJECT_TOOLS = frozenset(t["name"] for t in (*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND)
+                          if "project" in (t.get("parameters") or {}).get("properties", {}))  # fmt: skip
+NO_PROJECT_CHOSEN = ("not done: the user chose no project for this chat{said}. Give the code or the result in your "
+                     "answer instead, and do not use the project tools again in this answer.")  # fmt: skip
+NO_PROJECTS = ("not done: there are no projects in AFO yet - the user adds a folder in «Проекты» → «Добавить "
+               "проект…». Give the code or the result in your answer instead.")  # fmt: skip
+NO_CLOUD_PROJECTS = ("not done: no project of the user allows cloud models (D10), so none can be attached to this "
+                     "chat. Give the code or the result in your answer instead.")  # fmt: skip
 # a run of the proving ground (D45): nobody watches it - what would be asked is refused, a question answered at once
 PROVING_NO = ("not done: on the proving ground nobody approves this (it is destructive, goes to the network, or "
               "comes after reading the web) - do the task another way")  # fmt: skip
@@ -160,6 +171,8 @@ class ChatService:
         self.sandbox_broken: dict[str, dict[str, str]] = {}
         # what each chat's model read: "<project id>:<path>" -> sha256 (D46; tools.ToolContext.seen)
         self.seen_files: dict[str, dict[str, str]] = {}
+        # chats whose user answered «Без проекта» in the answer going on: not asked again in it (31.2)
+        self._no_project: set[str] = set()
         # what waits for a chat's turn to end, in order: «Применить» in its sandbox asked while the model wrote (19.7)
         self.after_turn: dict[str, list[Callable[[], Awaitable[None]]]] = {}
 
@@ -493,11 +506,13 @@ class ChatService:
                     log.exception("the goal of %s did not take the turn's end", conversation_id)
 
     async def _steps(self, conversation_id, model: dict, effort: str, cancel, client_id, limits: Limits, outcome):
-        attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
+        self._no_project.discard(conversation_id)  # «Без проекта» holds for one answer (31.2)
 
         async def setup(model: dict):
-            """What answering with this model takes: its provider, the projects it may see, the system prompt and
-            the answer's parameters the user set (D39)."""
+            """What answering with this model takes: its provider, the projects it may see (read again: one may have
+            been attached while the answer went on, 31.2), the system prompt and the answer's parameters the user
+            set (D39)."""
+            attached = await self._db.acall(lambda conn: _attached(conn, conversation_id))
             provider, model_ref = self._gateway.resolve(model["id"])
             await self._use_limits(model["id"])  # the tools' portions of this model (D22, D39)
             cloud = model.get("locality") == "cloud"
@@ -850,11 +865,20 @@ class ChatService:
         stopped) and stores the results as one message. `counted`: an autonomous run's - each call is counted
         (its plan standing still, D40)."""
         results = []
+        had_projects = bool(ctx.projects)
         for call in calls:
             picture: dict[str, Any] = {}  # a picture the call drew (29.6): kept with the chat, shown under the call
             if (refuse and call["name"] not in let) or cancel.is_set():
                 results.append(tool_result_block(call["id"], call["name"], refuse or NOT_RUN, True))
                 continue
+            if call["name"] in PROJECT_TOOLS and not ctx.projects:  # a chat with no project: which one (31.2)
+                said = await self._pick_project(conversation_id, call, ctx, cloud, cancel)
+                if said is not None:
+                    results.append(tool_result_block(call["id"], call["name"], said, True))
+                    continue
+                if ctx.projects:  # the one picked, whatever name the model guessed
+                    args = call["input"] if isinstance(call["input"], dict) else {}
+                    call = {**call, "input": {**args, "project": ctx.projects[0].name}}
             await self._bus.publish(
                 "chat.tool",
                 {"conversation_id": conversation_id, "name": call["name"], "input": call["input"]},
@@ -921,6 +945,61 @@ class ChatService:
                 await self.autonomy.acted(conversation_id, call["name"])
         message = await self._db.acall(lambda conn: store.add_message(conn, conversation_id, "tool", results))
         await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": message.to_json()})
+        if ctx.projects and not had_projects:  # the user picked a project: its context, before the next step (D22)
+            await self._store_context(conversation_id)
+
+    async def _pick_project(
+        self, conversation_id: str, call: dict, ctx: ToolContext, cloud: bool, cancel
+    ) -> str | None:
+        """A project tool in a chat with no project (31.2; the user's choice «Спросить проект», 2026-11-08): the hub
+        asks in the chat which of the user's projects - a cloud model is offered only those that allow the cloud
+        (D10), the one the model named first - and attaches the one picked, as the chip does; the call then runs in
+        it. None: attached (or not asked: an agent's task, whose projects its form gave, D16; nobody to answer) - the
+        call goes on as before; else what the model is told."""
+        task = "SELECT 1 FROM agent_runs WHERE conversation_id = ?"
+        if await self._db.acall(lambda conn: conn.execute(task, (conversation_id,)).fetchone()) is not None:
+            return None
+        if conversation_id in self._no_project:
+            return NO_PROJECT_CHOSEN.format(said="")
+        everything = await self._db.acall(list_projects)
+        offered = [p for p in everything if p.cloud_ok or not cloud]
+        if not offered:
+            return NO_CLOUD_PROJECTS if everything else NO_PROJECTS
+        if self.autonomy is None or conversation_id in self.proving:
+            return None
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        named = str(args.get("project") or "").strip().casefold()
+        offered.sort(key=lambda p: p.name.casefold() != named)  # stable: the rest stay in the list's order
+        none = tr("Без проекта")
+        doing = (tr("создать или изменить файлы") if call["name"] in changes.WRITE_TOOL_NAMES
+                 else tr("выполнить команду") if call["name"] == commands.RUN_COMMAND["name"]
+                 else tr("посмотреть файлы проекта"))  # fmt: skip
+        question = tr("Модель хочет {doing}, а у этого чата нет проекта. В каком проекте?", doing=doing)
+        options = [p.name for p in offered[: autonomous.MAX_OPTIONS - 1]] + [none]
+        answer = await self.autonomy.ask_question(conversation_id, question, options, cancel)
+        if answer is None:
+            return NOT_RUN
+        chosen = _named_project(offered, answer)
+        if chosen is None:
+            self._no_project.add(conversation_id)
+            said = "" if answer.strip() == none else f" (they answered: {answer.strip()[:300]})"
+            return NO_PROJECT_CHOSEN.format(said=said)
+
+        def attach(conn):
+            ids = [*store.conversation_projects(conn, conversation_id), chosen.id]
+            return store.set_conversation_projects(conn, conversation_id, ids), store.context_settings(
+                conn, conversation_id
+            )["mode"]
+
+        attached, mode = await self._db.acall(attach)
+        await self._bus.publish("chat.projects", {"conversation_id": conversation_id, "projects": attached},
+                                persist=False)  # fmt: skip
+        visible = [chosen]
+        if mode == "sandbox" and self.sandboxes is not None:  # its tools see the project's worktree (9.4b)
+            broken = self.sandbox_broken.setdefault(conversation_id, {})
+            visible = await asyncio.to_thread(_sandboxed, self.sandboxes, conversation_id, visible, broken)
+        ctx.add(*visible)
+        return None
 
     def claude_guarded(self, conversation_id: str, tool_name: str, data: dict, root: Path | None) -> str | None:
         """Claude Code's edit or command in a goal's turn (11.7), asked through its permission tool: the guard of
@@ -1508,6 +1587,17 @@ def _sandboxed(folder: Path, conversation_id: str, projects: list, broken: dict[
             broken[project.id] = str(exc)
             out.append(project)
     return out
+
+
+def _named_project(offered: list, answer: str):
+    """The project the user's answer names (31.2): a button gives its name; a typed answer may hold it among other
+    words («в calc») - then the only one it holds. None: no project (or which one is unclear)."""
+    text = " ".join(answer.split()).casefold()
+    exact = next((p for p in offered if p.name.casefold() == text), None)
+    if exact is not None:
+        return exact
+    found = [p for p in offered if p.name.casefold() in text]
+    return found[0] if len(found) == 1 else None
 
 
 def _no_sandbox(project, why: str) -> str:

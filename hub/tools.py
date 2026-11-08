@@ -36,7 +36,8 @@ SYMBOL_MATCHES = 30
 SYMBOL_KINDS = ("function", "method", "class", "interface", "type", "module", "constant", "macro", "impl")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78DEHM]")
 
-PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt."}
+PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt (the chat's only one "
+           "when left out; in a chat with none, the hub asks the user which)."}  # fmt: skip
 ANY_PROJECT = {"type": "string", "description": "The project's name, as listed in the system prompt; leave it out to "
                "look through all of this chat's projects."}  # fmt: skip
 
@@ -203,6 +204,11 @@ class ToolContext:
 
     def __post_init__(self) -> None:
         self.by_name = {p.name.casefold(): p for p in self.projects} | {p.id: p for p in self.projects}
+
+    def add(self, *projects: Project) -> None:
+        """Projects attached while the answer goes on (31.2: the user picked one when the model asked for files)."""
+        self.projects.extend(projects)
+        self.__post_init__()
 
     def project(self, value: Any) -> Project:
         """The project a call names; none named - the chat's only one (31.1: a model left it out and lost a step)."""

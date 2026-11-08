@@ -39,6 +39,7 @@ from .db import utc_now
 from .projects import Project, ProjectError, linked_secret, resolve_inside
 from .secret_filter import is_secret_file
 from .symbols import CONTAINER_KINDS, language_of, parse
+from .tools import PROJECT
 
 MAX_BYTES = 2 * 1024 * 1024
 DIFF_LINES = 400
@@ -58,7 +59,7 @@ WRITE_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project": {"type": "string", "description": "The project's name, as listed in the system prompt."},
+                "project": PROJECT,
                 "path": {"type": "string", "description": "The file, relative to the project's root."},
                 "old_text": {"type": "string", "description": "The exact text to replace."},
                 "new_text": {"type": "string", "description": "What to put in its place."},
@@ -75,7 +76,7 @@ WRITE_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "project": {"type": "string", "description": "The project's name, as listed in the system prompt."},
+                "project": PROJECT,
                 "path": {"type": "string", "description": "The file, relative to the project's root."},
                 "content": {"type": "string", "description": "The whole new content of the file."},
             },

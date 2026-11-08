@@ -487,6 +487,93 @@ def test_a_chat_without_projects_has_tools_and_cloud_models_see_only_cloud_proje
     assert "src/app.py" not in shown  # neither its files nor its live state
 
 
+def chat_with_questions(hub, provider, answers, *, mode="trusted", text="создай index.html"):
+    """A chat with no project: each question the hub asks is answered with the next of `answers`."""
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    hub.put(f"/v1/conversations/{conv}/context", json={"mode": mode})
+    answers, events = list(answers), []
+    with hub.websocket_connect("/v1/events", headers={**dict(hub.headers), **WS_HOST}) as ws:
+        ws.receive_json()
+        hub.post(f"/v1/conversations/{conv}/messages", json={"content": text, "model_id": "fake/echo"})
+        while not events or events[-1]["type"] not in ("chat.done", "chat.error"):
+            events.append(ws.receive_json())
+            if events[-1]["type"] == "run.question":
+                asked = events[-1]["payload"]
+                hub.post(f"/v1/runs/{conv}/questions/{asked['id']}", json={"answer": answers.pop(0)})
+    return conv, events
+
+
+def test_a_chat_without_a_project_asks_which_one(hub, repo, tmp_path):
+    """31.2 (live, 2026-11-08; the user's choice «Спросить проект»): in a chat with no project `coder` guessed project
+    names, got «no project ... none» three times and lost its way. Now a project tool there makes the hub ask in the
+    chat which of the user's projects; the one picked is attached as with the chip (`chat.projects`), the call runs
+    in it, and the model gets the project's context before its next step."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    other = tmp_path / "site"
+    other.mkdir()
+    hub.post("/v1/projects", json={"path": str(other)})
+    write = {"id": "c1", "name": "write_file", "input": {"project": "my-website", "path": "index.html",
+                                                          "content": "<h1>Привет</h1>\n"}}  # fmt: skip
+    provider = ToolProvider([[write]])
+    conv, events = chat_with_questions(hub, provider, ["proj"])
+
+    asked = [e["payload"] for e in events if e["type"] == "run.question"]
+    assert len(asked) == 1 and "В каком проекте" in asked[0]["question"]
+    assert [o["label"] for o in asked[0]["options"]] == ["proj", "site", "Без проекта"]
+    assert (repo / "index.html").read_text(encoding="utf-8") == "<h1>Привет</h1>\n"
+    assert [e["payload"]["projects"] for e in events if e["type"] == "chat.projects"] == [[pid]]
+    saved = hub.get(f"/v1/conversations/{conv}").json()
+    assert saved["projects"] == [pid]
+    assert [m["role"] for m in saved["messages"]] == ["user", "assistant", "tool", "system", "assistant"]
+    assert "index.html created" in saved["messages"][2]["content"][0]["output"]
+    last = provider.calls[-1][0]
+    assert '<project name="proj">' in last[-1]["content"]  # its context, after the tool's result
+
+    # «Без проекта»: nothing is written, and the next call of the same answer is not asked again
+    (repo / "index.html").unlink()
+    again = ToolProvider([[write], [{"id": "c2", "name": "list_files", "input": {"project": "proj"}}]])
+    hub.app.state.gateway._providers.pop("fake", None)
+    conv, events = chat_with_questions(hub, again, ["Без проекта"])
+    assert len([e for e in events if e["type"] == "run.question"]) == 1 and not (repo / "index.html").exists()
+    results = [m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool"]
+    assert [r["content"][0]["error"] for r in results] == [True, True]
+    assert "the user chose no project" in results[0]["content"][0]["output"]
+    assert hub.get(f"/v1/conversations/{conv}").json()["projects"] == []
+
+
+def test_a_cloud_model_is_offered_only_projects_that_allow_the_cloud(hub, repo, tmp_path):
+    """D10: a cloud model's question offers only the projects it may see; with none, it is told so and nobody is
+    asked. With no projects at all, the same."""
+    hub.post("/v1/projects", json={"path": str(repo)})  # local only by default
+    write = {"id": "c1", "name": "write_file", "input": {"path": "a.txt", "content": "x"}}
+    cloud = ToolProvider([[write]], locality="cloud")
+    conv, events = chat_with_questions(hub, cloud, [])
+    assert not [e for e in events if e["type"] == "run.question"]
+    said = next(m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool")
+    assert "no project of the user allows cloud models" in said["content"][0]["output"]
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    sid = hub.post("/v1/projects", json={"path": str(shared)}).json()["id"]
+    hub.patch(f"/v1/projects/{sid}", json={"cloud_ok": True})
+    cloud = ToolProvider([[write]], locality="cloud")
+    hub.app.state.gateway._providers.pop("fake", None)
+    conv, events = chat_with_questions(hub, cloud, ["shared"])
+    asked = [e["payload"] for e in events if e["type"] == "run.question"]
+    assert [o["label"] for o in asked[0]["options"]] == ["shared", "Без проекта"]
+    assert (shared / "a.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_with_no_projects_at_all_nobody_is_asked(hub):
+    provider = ToolProvider([[{"id": "c1", "name": "list_files", "input": {}}]])
+    conv, events = chat_with_questions(hub, provider, [])
+    assert not [e for e in events if e["type"] == "run.question"]
+    said = next(m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool")
+    assert "no projects in AFO yet" in said["content"][0]["output"]
+
+
 def test_a_cloud_model_may_not_take_over_a_chat_with_local_only_data(hub, repo):
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local only
     local = ToolProvider([[{"id": "c1", "name": "read_file", "input": {"project": "proj", "path": "README.md"}}]])
