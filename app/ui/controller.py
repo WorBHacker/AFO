@@ -10,6 +10,8 @@ import base64
 import json
 import logging
 import re
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -804,6 +806,18 @@ class Controller(QObject):
     def openFolder(self, path: str) -> None:
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    @Slot(str)
+    def showFile(self, path: str) -> None:
+        """«Показать в проводнике» (34.3): Explorer with the file picked out; a file not there (a download on pause
+        has only its .part) - its folder; neither - words."""
+        file = Path(path)
+        if file.is_file() and sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(file)])
+        elif file.is_file() or file.parent.is_dir():
+            self.openFolder(str(file.parent))
+        else:
+            self.show_error(tr("Файла нет на этом компьютере: {path}", path=path))
 
     def _set_claude_code(self, status: dict[str, Any]) -> None:
         self._claude_code = status

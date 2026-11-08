@@ -1685,6 +1685,7 @@
  "Файл удалён с диска.": "The file was deleted from disk.",
  "Файла больше нет на диске.": "The file is no longer on disk.",
  "Файла больше нет на диске. Его удаление — во вкладке «Изменения».": "The file is no longer on disk. Its deletion is in the “Changes” tab.",
+ "Файла нет на этом компьютере: {path}": "The file is not on this computer: {path}",
  "Файлы": "Files",
  "Файлы и картинки для модели": "Files and pictures for the model",
  "Файлы моделей": "Model files",

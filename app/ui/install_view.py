@@ -8,6 +8,7 @@ The hub does the work (hub/model_install.py); this only shows it and asks. Words
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
@@ -34,6 +35,8 @@ ACTIONS = {
     "cancelled": [("forget", N_("Убрать"), "plain")],
     "done": [("remove", N_("Удалить"), "danger")],
 }
+SHOW = ("show", N_("Показать в проводнике"), "plain")  # 34.3: an install whose files are there
+SHOWN = ("done", "failed", "paused")
 LIVE = ("queued", "downloading", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
@@ -338,14 +341,28 @@ def scan_text(found: dict[str, Any]) -> str:
               "копии.")  # fmt: skip
 
 
+def job_file(job: dict[str, Any]) -> str:
+    """An install's model file (34.3): its folder and the first of its files that is not the picture engine."""
+    first = next((f for f in job.get("files") or [] if f.get("role") != "engine"), None)
+    return str(Path(job["folder"]) / PurePosixPath(first["path"]).name) if first and job.get("folder") else ""
+
+
+def job_actions(job: dict[str, Any], file: str) -> list[dict[str, str]]:
+    """Its buttons; «Показать в проводнике» before the one that deletes or cancels, when its files are there."""
+    actions = list(ACTIONS.get(job["status"], []))
+    if file and job["status"] in SHOWN:
+        at = next((i for i, a in enumerate(actions) if a[2] == "danger"), len(actions))
+        actions.insert(at, SHOW)
+    return [{"id": a, "label": tr(label), "kind": kind} for a, label, kind in actions]
+
+
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
              "ownFiles": bool(j.get("own_files", 1)),
              "statusWords": status_words(j["status"]), "percent": j.get("percent") or 0.0,
              "progress": progress_text(j), "error": with_hint(j.get("error") or ""), "trial": trial_text(j),
              "live": j["status"] in ("queued", "downloading", "configuring", "trial"),
-             "actions": [{"id": a, "label": tr(label), "kind": kind}
-                         for a, label, kind in ACTIONS.get(j["status"], [])]}
+             "file": (file := job_file(j)), "actions": job_actions(j, file)}
             for j in jobs if j["status"] != "removed"]  # fmt: skip
 
 
@@ -832,6 +849,9 @@ class InstallView(QObject):
     def act(self, job_id: str, action: str) -> None:
         job = next((j for j in self._jobs if j["id"] == job_id), None)
         if job is None:
+            return
+        if action == "show":
+            self.app.showFile(job_file(job))
             return
         if action == "remove":
             own = job.get("own_files", 1)

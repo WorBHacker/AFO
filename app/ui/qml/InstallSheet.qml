@@ -420,7 +420,7 @@ Sheet {
                     id: localColumn
                     x: 12
                     y: 8
-                    width: parent.width - 24 - localAction.width - 12
+                    width: parent.width - 24 - localAction.width - 12 - localShow.width - 6
                     spacing: 2
                     Text {
                         width: parent.width
@@ -462,6 +462,16 @@ Sheet {
                         font.family: Theme.uiFont
                         font.pixelSize: 11
                     }
+                }
+                IconButton {
+                    id: localShow
+                    objectName: "localShow_" + local.modelData.name
+                    anchors.right: localAction.left
+                    anchors.rightMargin: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    iconName: "folder"
+                    tip: qsTr("Показать в проводнике")
+                    onClicked: App.showFile(local.modelData.path)
                 }
                 Item {
                     id: localAction

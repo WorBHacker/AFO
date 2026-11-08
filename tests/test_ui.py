@@ -7235,6 +7235,47 @@ def test_models_found_on_the_drives_are_listed_and_added(app):
                            for c in app.client.install_calls))  # fmt: skip
 
 
+def test_a_models_file_shown_in_explorer(app, tmp_path, monkeypatch):
+    """34.3 (2026-11-08, the user's word: «показать этот файл в проводнике (это касается и для уже загруженных модели и
+    найденных)»): Explorer opens with the file picked out - a model on the drives, one added, one downloaded; a file
+    not whole yet (a download on pause: only its .part) - its folder; nothing there - words."""
+    from pathlib import Path
+
+    from app.ui import controller as ui_controller
+    from app.ui.install_view import job_rows
+
+    started, opened = [], []
+    monkeypatch.setattr(ui_controller.subprocess, "Popen", lambda args, **_: started.append(args))
+    monkeypatch.setattr(ui_controller.QDesktopServices, "openUrl", lambda url: opened.append(Path(url.toLocalFile())))
+    model = tmp_path / "LLM" / "Mine Q8_0.gguf"
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF")
+    app.showFile(str(model))
+    assert started == [["explorer", "/select,", str(model)]] and opened == []
+    app.showFile(str(tmp_path / "LLM" / "half.gguf"))
+    assert opened == [tmp_path / "LLM"] and len(started) == 1
+    app.showFile(str(tmp_path / "gone" / "x.gguf"))
+    assert app.flashError and str(tmp_path / "gone" / "x.gguf") in app.flashText and len(opened) == 1
+
+    # «Установки»: a model downloaded or added - «Показать в проводнике» beside its other buttons
+    base = {"id": "j1", "name": "Tiny", "model_id": "tiny", "repo": "test/Tiny-GGUF", "folder": str(model.parent),
+            "files": [{"path": "BF16/Mine Q8_0.gguf", "role": "model"}, {"path": "mmproj.gguf", "role": "mmproj"}],
+            "own_files": 1, "error": "", "trial": {}}  # fmt: skip
+    engine, drawn = {"path": "sd.zip", "role": "engine"}, {"path": "Mine Q8_0.gguf", "role": "diffusion-model"}
+    picture = {**base, "id": "p1", "status": "done", "files": [engine, drawn]}
+    jobs = [{**base, "status": s} for s in ("done", "failed", "paused", "downloading")] + [picture]
+    rows = {r["id"] + r["status"]: r for r in job_rows(jobs)}
+    assert [a["id"] for a in rows["j1done"]["actions"]] == ["show", "remove"]
+    assert [a["id"] for a in rows["j1failed"]["actions"]] == ["resume", "show", "forget"]
+    assert [a["id"] for a in rows["j1paused"]["actions"]] == ["resume", "show", "cancel"]
+    assert "show" not in [a["id"] for a in rows["j1downloading"]["actions"]]  # still coming: nothing to show yet
+    assert rows["j1done"]["file"] == rows["p1done"]["file"] == str(model)  # in its folder; a picture's - not the engine
+    assert rows["j1done"]["actions"][0]["label"] == "Показать в проводнике"
+    app.install_view._jobs = [{**base, "status": "done"}]
+    app.install_view.act("j1", "show")
+    assert started[-1] == ["explorer", "/select,", str(model)]
+
+
 def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
     """34.1 (2026-11-08, the user's screenshot): an Ollama model added under its blob's name («sha256-» and 64
     characters) - «в llama-swap: …» took all the width it wanted, the row's text was squeezed to the left, and the line
@@ -7265,7 +7306,8 @@ def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
             QApplication.processEvents()
         name = view.localModels[0]["name"]
         listed = quick.window.findChild(QQuickItem, "installLocal")
-        row, said, note = (item_named(listed, f"{part}_{name}") for part in ("localRow", "localInConfig", "localNote"))
+        row, said, note, show = (item_named(listed, f"{part}_{name}")
+                                 for part in ("localRow", "localInConfig", "localNote", "localShow"))  # fmt: skip
 
         def left(item):
             return item.mapToScene(QPointF(0, 0)).x()
@@ -7275,7 +7317,10 @@ def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
         shown = [t for t in note.childItems() if t.isVisible()]
         assert [t.property("text") for t in shown] == ["7,5 ГБ · Q4_K_M · Ollama",
                                                        "· помещается в видеопамять — быстро"]  # fmt: skip
-        assert all(left(t) + t.width() <= left(said) - 6 for t in shown)  # nothing runs under the id
+        # 34.3: «Показать в проводнике» between the text and the id; nothing runs under either
+        assert show.isVisible() and show.property("tip") == "Показать в проводнике"
+        assert left(show) + show.width() <= left(said)
+        assert all(left(t) + t.width() <= left(show) - 6 for t in shown)
         assert quick.warnings == []
     finally:
         quick.close()
