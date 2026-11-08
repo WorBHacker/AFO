@@ -98,6 +98,7 @@ def test_a_button_given_a_limit_ends_its_long_label_in_dots(quick):
     assert box(button.parentItem()).contains(box(button))
     label = texts_in(button)[0]
     assert label.property("truncated") and box(button).contains(ink(label))
+    assert ink(label).left() >= box(button).left() + 12  # cut, it keeps the button's usual margin
 
 
 SPACED = " — очень длинное название, которое никто не сокращал и которое никак не помещается в одну строку окна"

@@ -36,7 +36,8 @@ AbstractButton {
             }
             Text {
                 id: label
-                width: Math.max(0, Math.min(implicitWidth, button.width - button.around + 20))  // a tight button keeps its word
+                // a tight button keeps its word whole; one that has to be cut keeps its margins
+                width: Math.max(0, implicitWidth <= button.width - button.around + 20 ? implicitWidth : button.width - button.around)
                 elide: Text.ElideRight
                 text: button.text
                 color: button.kind === "primary" ? Theme.p.on_accent : button.kind === "danger" ? Theme.p.error : Theme.p.text
