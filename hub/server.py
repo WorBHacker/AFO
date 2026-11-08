@@ -187,6 +187,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             llama_swap_url=settings.llama_swap_url,
             status=lambda: app.state.status.latest or app.state.status.machine,
             computer=paths.computer,
+            answers=paths.hf_answers,
         )  # local models (10.1, D37)
         app.state.status.on_machine = app.state.installer.note_machine  # computer.json (35.2, D58)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)

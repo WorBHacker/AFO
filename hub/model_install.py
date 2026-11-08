@@ -36,7 +36,7 @@ import shutil
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -74,7 +74,7 @@ RAM_RESERVE_GIB = 4.0  # Windows and the browser keep this much of the RAM
 DISK_MARGIN_GIB = 2.0
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
-REPO_TTL_S = 3600.0  # Hugging Face's answers are kept this long
+REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
@@ -331,7 +331,8 @@ class Installer:
     """The hub's model installs: Hugging Face asked and cached, one download at a time, the config and the trial."""
 
     def __init__(self, db, bus, gateway, secrets, *, llama_swap_url: str, status: Callable[[], dict[str, Any] | None],
-                 drives: Callable[[], list[dict]] = disks.drives, computer: Path | None = None):  # fmt: skip
+                 drives: Callable[[], list[dict]] = disks.drives, computer: Path | None = None,
+                 answers: Path | None = None):  # fmt: skip
         self._computer_file = computer  # which computer this is, between runs (computer.json, 35.2, D58)
         self._computer = kept_json.read(computer) if computer is not None else {}
         self._db = db
@@ -355,6 +356,11 @@ class Installer:
         self._clients: dict[str, Any] = {}  # job -> who started it (the trial is recorded as theirs)
         self._repos: dict[str, tuple[float, dict[str, Any]]] = {}
         self._headers: dict[tuple[str, str], dict[str, Any] | None] = {}
+        self._answers_file = answers  # what Hugging Face said, between runs (hf_answers.json, 35.3, D58)
+        self._answers_new = False  # something to write
+        self._answers_lock = asyncio.Lock()
+        self._renewing: set[str] = set()  # answers older than REPO_TTL_S on their way in the background
+        self._load_answers()
         self._shown: dict[str, tuple[float, int]] = {}  # job -> (when, bytes) of the last progress sent
         self._sending: set[asyncio.Task] = set()  # progress on its way (kept: a task nobody holds may vanish)
         self.speed: dict[str, float] = {}  # job -> bytes a second
@@ -403,13 +409,63 @@ class Installer:
 
     # --- Hugging Face, cached ---
 
+    def _load_answers(self) -> None:
+        """hf_answers.json into memory, with how old each answer is; anything odd in it is left out: only a memory."""
+        kept = kept_json.read(self._answers_file) if self._answers_file is not None else {}
+        shift = time.time() - time.monotonic()  # the file's clock against this run's
+        with contextlib.suppress(AttributeError, KeyError, TypeError):
+            repos = {key: (entry["at"] - shift, entry["found"]) for key, entry in kept.get("repos", {}).items()}
+            headers = {(entry["repo"], entry["path"]): entry["info"] for entry in kept.get("headers", [])}
+            self._repos, self._headers = repos, headers
+
+    async def _keep_answers(self) -> None:
+        """What Hugging Face said, on the disk: the next start has it at once (35.3, D58)."""
+        if self._answers_file is None:
+            return
+        async with self._answers_lock:
+            if not self._answers_new:
+                return
+            self._answers_new = False
+            shift = time.time() - time.monotonic()
+            data = {"repos": {key: {"at": when + shift, "found": found} for key, (when, found) in self._repos.items()},
+                    "headers": [{"repo": repo, "path": path, "info": info}
+                                for (repo, path), info in self._headers.items()]}  # fmt: skip
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(kept_json.write, self._answers_file, data)
+
+    def _renew(self, key: str, answer: Coroutine[Any, Any, Any]) -> None:
+        """An answer older than REPO_TTL_S was given: Hugging Face's new one comes for the next look (35.3)."""
+        if key in self._renewing:
+            answer.close()
+            return
+        self._renewing.add(key)
+
+        async def renew() -> None:
+            try:
+                await answer
+                await self._keep_answers()
+            except Exception as exc:  # no network: the old answer stays, the next look tries again
+                log.info("Hugging Face's newer answer on %s: %s", key, exc)
+            finally:
+                self._renewing.discard(key)
+
+        task = asyncio.create_task(renew())
+        self._sending.add(task)
+        task.add_done_callback(self._sending.discard)
+
     async def repository(self, repo: str, *, fresh: bool = False) -> dict[str, Any]:
         kept = self._repos.get(repo)
-        if kept and not fresh and time.monotonic() - kept[0] < REPO_TTL_S:
+        if kept and not fresh:
+            if time.monotonic() - kept[0] >= REPO_TTL_S:
+                self._renew(repo, self._ask_repository(repo))
             return kept[1]
+        return await self._ask_repository(repo)
+
+    async def _ask_repository(self, repo: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30.0) as http:
             found = await hf.repository(http, repo, self.token())
         self._repos[repo] = (time.monotonic(), found)
+        self._answers_new = True
         return found
 
     async def header(self, repo: str, path: str) -> dict[str, Any] | None:
@@ -420,6 +476,7 @@ class Installer:
             except (hf.HubError, GGUFError) as exc:
                 log.info("no header of %s/%s: %s", repo, path, exc)
                 return None  # not kept: the next look tries again
+            self._answers_new = True
         return self._headers[repo, path]
 
     def space(self) -> dict[str, Any]:
@@ -466,6 +523,7 @@ class Installer:
                   "pick": "fast" if v["quant"] == ends["fast"] and ends["fast"] != best else
                   "quality" if v["quant"] == ends["quality"] and ends["quality"] != best else ""}
                  for v in variants]  # fmt: skip
+        await self._keep_answers()
         return {**found, "variants": shown, "recommended": best, "projector": lens, "space": space,
                 "header": info, "moe": moe, "drives": await asyncio.to_thread(self.drives)}  # fmt: skip
 
@@ -507,12 +565,19 @@ class Installer:
     # --- picture models (29.3) ---
 
     async def _listed(self, repo: str) -> dict[str, Any]:
-        kept = self._repos.get(f"files:{repo}")
-        if kept and time.monotonic() - kept[0] < REPO_TTL_S:
+        key = f"files:{repo}"
+        kept = self._repos.get(key)
+        if kept:
+            if time.monotonic() - kept[0] >= REPO_TTL_S:
+                self._renew(key, self._ask_files(repo))
             return kept[1]
+        return await self._ask_files(repo)
+
+    async def _ask_files(self, repo: str) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=30.0) as http:
             found = await hf.files(http, repo, self.token())
         self._repos[f"files:{repo}"] = (time.monotonic(), found)
+        self._answers_new = True
         return found
 
     async def picture_files(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -548,6 +613,7 @@ class Installer:
             except (hf.HubError, InstallError) as exc:
                 shown["error"] = str(exc)
             listed.append(shown)
+        await self._keep_answers()
         return listed
 
     async def _engine_files(self, build: str) -> list[dict[str, Any]]:

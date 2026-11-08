@@ -854,6 +854,79 @@ def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
     assert broken.space()["gpu"] == "" and broken.space()["vram_total_gib"] == 0
 
 
+def test_what_hugging_face_said_is_kept_for_the_next_start(hub, monkeypatch):
+    """35.3 (D58): what Hugging Face said about the models offered lived in the hub's memory - after each update every
+    model was asked again over the network (2-3 s, without a network «Каталог не загрузился»). Now it is in a file: the
+    list comes at once and without a network, judged against the memory as it is now; an answer older than an hour is
+    shown at once, and a newer one comes in the background for the next look."""
+    installer, file = hub.app.state.installer, data_paths().hf_answers
+    first = hub.get("/v1/install/catalog").json()["models"]
+    assert first[0]["recommended"]["quant"] == "Q8_0" and file.exists()
+
+    def restart():
+        installer._repos.clear()
+        installer._headers.clear()
+        installer._load_answers()
+
+    asked, real = [], hf.repository
+
+    async def no_network(http, repo, token):
+        asked.append(repo)
+        raise hf.HubError("no network")
+
+    def no_header(*_args):
+        raise AssertionError("the header is kept: not read again")
+
+    monkeypatch.setattr(hf, "repository", no_network)
+    monkeypatch.setattr(hf, "header", no_header)
+    restart()
+    again = hub.get("/v1/install/catalog").json()["models"]
+    assert again[0]["recommended"]["quant"] == "Q8_0" and "error" not in again[0] and asked == []
+
+    hub.app.state.status.latest = {**SPACE, "gpu": {**SPACE["gpu"], "vram_used_mib": 16000}}  # judged as it is now
+    busy = hub.get("/v1/install/catalog").json()["models"][0]
+    assert (busy.get("recommended") or {}).get("verdict") != "gpu" or busy["recommended"]["quant"] != "Q8_0"
+    hub.app.state.status.latest = SPACE
+
+    def aged():
+        old = json.loads(file.read_text(encoding="utf-8"))
+        for entry in old["repos"].values():
+            entry["at"] -= 7200
+        file.write_text(json.dumps(old), encoding="utf-8")
+        restart()
+
+    def until(condition):
+        deadline = time.monotonic() + 10
+        while not condition():
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+
+    aged()
+    shown = hub.get("/v1/install/catalog").json()["models"]  # no network, an old answer: still the list
+    assert shown[0]["recommended"]["quant"] == "Q8_0" and "error" not in shown[0]
+    until(lambda: asked == ["test/Tiny-GGUF"])
+
+    async def counted(http, repo, token):
+        asked.append(repo)
+        return await real(http, repo, token)
+
+    before = json.loads(file.read_text(encoding="utf-8"))["repos"]["test/Tiny-GGUF"]["at"]
+    monkeypatch.setattr(hf, "repository", counted)
+    asked.clear()
+    assert hub.get("/v1/install/catalog").json()["models"][0]["recommended"]["quant"] == "Q8_0"
+    until(lambda: json.loads(file.read_text(encoding="utf-8"))["repos"]["test/Tiny-GGUF"]["at"] > before + 3600)
+    assert asked == ["test/Tiny-GGUF"]  # once: the next look has the new answer
+    hub.get("/v1/install/catalog")
+    assert asked == ["test/Tiny-GGUF"]
+
+    file.write_text('{"repos": {"x": 1}, "headers": [2]}', encoding="utf-8")  # only a memory
+    restart()
+    assert installer._repos == {} and installer._headers == {}
+    file.write_text("{not json", encoding="utf-8")
+    restart()
+    assert installer._repos == {}
+
+
 def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     """34.4 (2026-11-08): «Подбор параметров» measured one model with llama-bench (past llama-swap) while an install's
     trial loaded the next into llama-swap - two models at once filled the memory. The install waits, its files down,
