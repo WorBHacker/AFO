@@ -35,7 +35,11 @@ Popup {
     contentItem: Column {
         spacing: 14
         Text {
+            width: dialog.availableWidth
             text: App.question.title || ""
+            wrapMode: Text.Wrap
+            maximumLineCount: 4
+            elide: Text.ElideRight
             color: Theme.p.text
             font.family: Theme.uiFont
             font.pixelSize: 16
@@ -50,26 +54,24 @@ Popup {
             font.pixelSize: 13
             lineHeight: 1.35
         }
-        Row {
-            anchors.right: parent.right
+        Flow {  // from the right edge, the last answer first: they wrap when one line is not enough
+            width: dialog.availableWidth
+            layoutDirection: Qt.RightToLeft
             spacing: 8
             AbstractButton {
-                id: cancel
-                width: cancelText.implicitWidth + 28
+                id: confirm
+                width: confirmText.implicitWidth + 28
                 height: 32
                 hoverEnabled: true
-                onClicked: App.answer(false)
-                background: Rectangle {
-                    radius: 6
-                    color: cancel.hovered ? Theme.p.item_hover : "transparent"
-                    border.color: Theme.p.hairline_strong
-                }
+                onClicked: App.answer(true)
+                background: Rectangle { radius: 6; color: confirm.hovered ? Theme.p.accent_hover : Theme.p.accent }
                 contentItem: Text {
-                    id: cancelText
-                    text: qsTr("Отмена")
-                    color: Theme.p.text
+                    id: confirmText
+                    text: App.question.confirm || qsTr("Да")
+                    color: Theme.p.on_accent
                     font.family: Theme.uiFont
                     font.pixelSize: 13
+                    font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
@@ -98,19 +100,22 @@ Popup {
                 }
             }
             AbstractButton {
-                id: confirm
-                width: confirmText.implicitWidth + 28
+                id: cancel
+                width: cancelText.implicitWidth + 28
                 height: 32
                 hoverEnabled: true
-                onClicked: App.answer(true)
-                background: Rectangle { radius: 6; color: confirm.hovered ? Theme.p.accent_hover : Theme.p.accent }
+                onClicked: App.answer(false)
+                background: Rectangle {
+                    radius: 6
+                    color: cancel.hovered ? Theme.p.item_hover : "transparent"
+                    border.color: Theme.p.hairline_strong
+                }
                 contentItem: Text {
-                    id: confirmText
-                    text: App.question.confirm || qsTr("Да")
-                    color: Theme.p.on_accent
+                    id: cancelText
+                    text: qsTr("Отмена")
+                    color: Theme.p.text
                     font.family: Theme.uiFont
                     font.pixelSize: 13
-                    font.weight: Font.DemiBold
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }

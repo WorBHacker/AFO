@@ -33,6 +33,7 @@ Drawer {
             width: parent.width
             height: 60
             Row {
+                id: headRow
                 x: sheet.backTo ? 10 : 24
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 10
@@ -46,6 +47,8 @@ Drawer {
                 }
                 Icon { name: sheet.iconName; size: 18; tint: Theme.p.text; anchors.verticalCenter: parent.verticalCenter }
                 Text {
+                    width: Math.max(0, Math.min(implicitWidth, closeButton.x - headRow.x - x - 8))
+                    elide: Text.ElideRight
                     text: sheet.title
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -55,6 +58,8 @@ Drawer {
                 }
             }
             IconButton {
+                id: closeButton
+                objectName: "sheetClose"
                 iconName: "close"
                 tip: qsTr("Закрыть (Esc)")
                 anchors.right: parent.right

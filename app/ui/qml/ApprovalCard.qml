@@ -289,6 +289,7 @@ FocusScope {
             spacing: 8
             PlainButton {
                 objectName: "approveOnce"
+                maxWidth: parent.width
                 kind: "primary"
                 iconName: "check"
                 text: card.request.allowText || qsTr("Разрешить")
@@ -297,12 +298,14 @@ FocusScope {
             }
             PlainButton {
                 objectName: "approveChat"
+                maxWidth: parent.width
                 visible: (card.request.alwaysAsk || "") === "" && (card.request.conversationId || "") !== "" && !card.partial
                 text: qsTr("Разрешить: %1").arg(card.request.chatScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "chat", "")
             }
             PlainButton {
                 objectName: "approveProject"
+                maxWidth: parent.width
                 visible: (card.request.projectScope || "") !== "" && !card.partial
                 text: qsTr("Разрешить %1").arg(card.request.projectScope || "")
                 onClicked: Approvals.answer(card.requestId, true, "project", "")
