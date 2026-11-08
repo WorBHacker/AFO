@@ -85,7 +85,7 @@ Popup {
             id: list
             x: 8
             width: palette.width - 16
-            height: Math.min(contentHeight + 12, 430)
+            height: Math.min(contentHeight + 12, 430, palette.parent.height - palette.y - 74)  // ends inside the window
             topMargin: 6
             bottomMargin: 6
             clip: true

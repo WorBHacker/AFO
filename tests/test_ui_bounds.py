@@ -301,3 +301,11 @@ def test_ordinary_names_leave_every_button_its_whole_label(quick, size):
         assert cut_labels(sheet.property("contentItem"), []) == [], sheet.metaObject().className()
         QMetaObject.invokeMethod(sheet, "close")
         wait_until(lambda s=sheet: not s.property("visible"))
+
+
+def test_the_command_palette_ends_inside_the_narrowest_window(quick):
+    quick.window.resize(900, 560)
+    palette = quick.window.findChild(QObject, "palette")
+    open_popup(quick, palette)
+    settle(quick)
+    assert box(palette.property("background")).bottom() <= 560
