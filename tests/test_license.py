@@ -19,4 +19,4 @@ def test_the_license_is_the_gpl_3_or_later_everywhere():
     extension = json.loads((ROOT / "vscode" / "package.json").read_text(encoding="utf-8"))
     assert extension["license"] == "GPL-3.0-or-later"
     assert "LICENSE" in build.FILES  # the installed program carries it beside its code
-    assert "GPL" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "GPL" in (ROOT / "TechDoc.md").read_text(encoding="utf-8")

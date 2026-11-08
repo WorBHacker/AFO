@@ -1,12 +1,6 @@
-"""docs/API.md is made from the code (hub/api_reference.py, Q5): it must say what the code does now."""
+"""The API reference is made from the code (hub/api_reference.py, Q5): it must say what the code does now."""
 
 from hub import api_reference
-
-
-def test_the_api_reference_is_current():
-    made = api_reference.render()
-    written = api_reference.TARGET.read_text(encoding="utf-8") if api_reference.TARGET.exists() else ""
-    assert made == written, "docs/API.md is behind the code: python -m hub.api_reference"
 
 
 def test_what_the_reference_says():

@@ -46,9 +46,9 @@ def test_people_see_only_afo():
     script = re.sub(r"(^|\s)//.*$", "", (ROOT / "vscode" / "extension.js").read_text(encoding="utf-8"), flags=re.M)
     assert "LocalChat" not in script
     assert (ROOT / "AFO.cmd").is_file() and not (ROOT / "LocalChat.cmd").exists()
-    assert (ROOT / "README.md").read_text(encoding="utf-8").startswith("# AFO\n")
+    assert (ROOT / "TechDoc.md").read_text(encoding="utf-8").startswith("# AFO\n")
     everything = [*sources, *(ROOT / "app" / "ui" / "qml").glob("*.qml"), *(ROOT / "vscode").glob("*.js*"),
-                  ROOT / "README.md", ROOT / "README.en.md", ROOT / "vscode" / "README.md",
+                  ROOT / "TechDoc.md",
                   ROOT / "AFO.cmd"]  # fmt: skip
     assert [p.name for p in everything if SPELLED.search(p.read_text(encoding="utf-8"))] == []  # AFO, not the words
 

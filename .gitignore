@@ -19,6 +19,6 @@ data/
 # third-party programs fetched for the hub (ripgrep); not part of the repository
 tools/
 
-# the VS Code extension's package (built with vsce, see vscode/README.md)
+# the VS Code extension's package (built with vsce)
 vscode/*.vsix
 vscode/node_modules/

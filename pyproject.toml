@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 name = "localchat"
 version = "0.1.10"
 description = "Local AI ecosystem: a hub for projects, terminals, models and agents, plus a light Qt app"
-readme = "README.md"
 license = "GPL-3.0-or-later"  # the user's word 2026-11-04
 license-files = ["LICENSE"]
 requires-python = ">=3.14"

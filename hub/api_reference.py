@@ -2,7 +2,7 @@
 
 Made from the code itself, so it cannot drift: the routes FastAPI knows (their body and query parameters, the first
 line of each handler's docstring, who may call it), the event types found where the code publishes them (with the
-payload's keys when they are written out in place). A test compares docs/API.md with what this makes now.
+payload's keys when they are written out in place). The file is made on demand and is not kept in the repository.
 
     python -m hub.api_reference      (writes docs/API.md)
 """
