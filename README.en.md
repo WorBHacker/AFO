@@ -30,7 +30,8 @@ offers a first model for chat, code and images. Open it again with Settings → 
 
 - **Local models**: Settings → Install a local model… (or the last item of the model picker). In “Picks” each model
   already has the variant that runs best on this computer, with whether it fits in VRAM; “Search Hugging Face” finds
-  any GGUF model. The hub downloads it to the fastest disk with room (a big file in pieces over several connections,
+  any GGUF model - by name and by filters: what for (chats, code, pictures), size (“fits in VRAM” among them), order,
+  and without the models whose restrictions were removed. The hub downloads it to the fastest disk with room (a big file in pieces over several connections,
   resuming, checking sha256), writes it into llama-swap's `config.yaml` (a copy of the old one next to it) and tries
   to start it.
 - **Cloud models and keys**: API keys (Anthropic, OpenAI, Google Gemini, DeepSeek, OpenRouter, Tavily, Brave Search),
