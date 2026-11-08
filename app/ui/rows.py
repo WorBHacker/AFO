@@ -541,15 +541,32 @@ def error_row(key: str, text: str) -> dict[str, Any]:
             "title": plain[0] if plain else tr("Ошибка"), "hint": plain[1] if plain else ""}  # fmt: skip
 
 
+STEP_LIMIT_SAID = "the step limit for one answer"  # in the hub's refusal (hub/chat.py STEP_LIMIT)
+
+
+def limit_row(key: str) -> dict[str, Any]:
+    """An answer cut at its step limit (31.3): what happened and «продолжай», in plain words."""
+    return error_row(key, f"not run: {STEP_LIMIT_SAID} was reached")
+
+
+def cut_at_limit(message: dict[str, Any]) -> bool:
+    return message["role"] == "tool" and any(
+        b.get("type") == "tool_result" and b.get("error") and STEP_LIMIT_SAID in str(b.get("output") or "")
+        for b in message["content"]
+    )
+
+
 def rows_for(messages: list[dict[str, Any]], models: dict[str, dict]) -> list[dict[str, Any]]:
-    """A conversation's rows. Tool results are not rows of their own: they join the answer that asked for them."""
+    """A conversation's rows. Tool results are not rows of their own: they join the answer that asked for them. An
+    answer that ended on a call refused at the step limit, with no word after it, gets a card saying so (31.3)."""
     out: list[dict[str, Any]] = []
-    for m in messages:
-        if m["role"] == "system":  # the hub's context for the model (D22): the inspector shows it, not the chat
-            continue
+    shown = [m for m in messages if m["role"] != "system"]  # the hub's context for the model (D22): the inspector's
+    for n, m in enumerate(shown):
         if m["role"] == "tool":
             for index, tools in answered(out, m["content"]).items():
                 out[index]["tools"] = tools
+            if cut_at_limit(m) and (n + 1 == len(shown) or shown[n + 1]["role"] != "assistant"):
+                out.append(limit_row(f"limit{m['id']}"))
             continue
         out.append(message_row(m, models))
     return out

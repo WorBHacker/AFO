@@ -590,6 +590,9 @@ def test_a_cloud_model_may_not_take_over_a_chat_with_local_only_data(hub, repo):
 
 
 def test_the_step_limit(hub, repo, monkeypatch):
+    """31.3 (live, 2026-11-08): `coder` makes one call a step, and 12 steps did not hold an app of a few files with
+    its tests - a chat's answer has 30 now, as a goal's turn has; one cut there says so (`limited`), for the window."""
+    assert chat_module.Limits().max_steps == 30
     monkeypatch.setattr(chat_module, "MAX_TOOL_STEPS", 3)
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
 
@@ -599,7 +602,7 @@ def test_the_step_limit(hub, repo, monkeypatch):
     # three steps run their tools; the fourth call is answered "answer now", and the model then answers
     provider = ToolProvider(asks(4))
     conv, events = run_chat(hub, provider, attach=[pid])
-    assert events[-1]["payload"]["steps"] == 5
+    assert events[-1]["payload"]["steps"] == 5 and not events[-1]["payload"].get("limited")  # it answered
     assert all(tools is not None for _m, tools in provider.calls)  # the tool list never changes in a chat
     results = [m for m in hub.get(f"/v1/conversations/{conv}").json()["messages"] if m["role"] == "tool"]
     assert results[-1]["content"][0]["output"] == chat_module.STEP_LIMIT and len(results) == 4
@@ -609,6 +612,7 @@ def test_the_step_limit(hub, repo, monkeypatch):
     hub.app.state.gateway._providers.pop("fake", None)
     _conv, events = run_chat(hub, stubborn, attach=[pid])
     assert events[-1]["type"] == "chat.done" and events[-1]["payload"]["steps"] == 5 and len(stubborn.calls) == 5
+    assert events[-1]["payload"]["limited"] is True
 
 
 def test_context_settings_shape_the_next_context(hub, repo):

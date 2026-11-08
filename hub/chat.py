@@ -15,9 +15,10 @@ With projects attached to the chat (stage 3, D27) each user message is followed 
 the context (hub/context.py, D22), and the model gets the hub's reading tools (hub/tools.py). A run may then take
 several steps: an answer that asks for tools is stored as its own assistant message (with its usage and cost),
 the hub runs the tools and stores their results as a message of role "tool", and the model is asked again - up to
-MAX_TOOL_STEPS times. chat.done ends the run with its totals. Nothing stored is ever rewritten, and the tool list
-of a conversation does not change, so Claude's thinking stays valid (D14). A cloud model reaches only projects that
-allow the cloud and sees the others by name (D10); it gets no chat where a local model worked with such a project.
+MAX_TOOL_STEPS times (an answer cut there says so: `limited`). chat.done ends the run with its totals. Nothing
+stored is ever rewritten, and the tool list of a conversation does not change, so Claude's thinking stays valid
+(D14). A cloud model reaches only projects that allow the cloud and sees the others by name (D10); it gets no chat
+where a local model worked with such a project.
 
 The model may also write files of the chat's projects (stage 5, D17): write_file and edit_file are asked in the
 approval queue with a diff, unless the chat is trusted or an answer "for this chat" / a rule of the project covers
@@ -94,7 +95,7 @@ log = logging.getLogger("hub.chat")
 
 DEFAULT_EFFORT = "medium"
 TITLE_LENGTH = 60
-MAX_TOOL_STEPS = 12
+MAX_TOOL_STEPS = 30  # 31.3: coder makes one call a step - 12 did not hold an app of a few files with its tests
 NOT_RUN = "not run: the run stopped before this call"
 READ_ONLY = "not done: this chat is read-only - the user did not allow changes. Say what you would change instead."
 CHAT_TOOLS = [
@@ -123,8 +124,10 @@ PROJECT_TOOLS = frozenset(t["name"] for t in (*TOOLS, *changes.WRITE_TOOLS, comm
                           if "project" in (t.get("parameters") or {}).get("properties", {}))  # fmt: skip
 NO_PROJECT_CHOSEN = ("not done: the user chose no project for this chat{said}. Give the code or the result in your "
                      "answer instead, and do not use the project tools again in this answer.")  # fmt: skip
-NO_PROJECTS = ("not done: there are no projects in AFO yet - the user adds a folder in «Проекты» → «Добавить "
-               "проект…». Give the code or the result in your answer instead.")  # fmt: skip
+NO_PROJECTS = (
+    "not done: there are no projects in AFO yet - the user adds a folder in «Проекты» "  # i18n: keep
+    "→ «Добавить проект…». Give the code or the result in your answer instead."  # i18n: keep
+)
 NO_CLOUD_PROJECTS = ("not done: no project of the user allows cloud models (D10), so none can be attached to this "
                      "chat. Give the code or the result in your answer instead.")  # fmt: skip
 # a run of the proving ground (D45): nobody watches it - what would be asked is refused, a question answered at once
@@ -638,8 +641,9 @@ class ChatService:
                                          let=autonomous.LAST_WORDS if last else frozenset())  # fmt: skip
                 if step > limits.max_steps + last_words:
                     outcome.status, outcome.detail = "error", f"the step limit ({limits.max_steps}) was reached"
-                    outcome.limited = True
-                    await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion))
+                    outcome.limited = True  # the window says so under the answer (31.3)
+                    await self._bus.publish("chat.done", {**run.done(conversation_id, message_id, completion),
+                                                          "limited": True})  # fmt: skip
                     return
                 continue
             await self._answer_tools(conversation_id, completion.tool_calls, ctx, cancel, cloud=cloud,

@@ -1702,6 +1702,8 @@ class Controller(QObject):
                     if think and "think_s" in stats:
                         changes["thinking"] = {**think, "seconds": presenter.seconds(stats["think_s"])}
                     self.messages.update(index, **changes)
+                if payload.get("limited"):  # cut at the step limit (31.3): said under it, as when opened again
+                    self.messages.append(rows.limit_row(f"limit{payload.get('message_id')}"))
             self.sessionChanged.emit()
             self.refresh_usage()
             self.load_conversations()  # the chat moved to the top of its day

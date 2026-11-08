@@ -573,12 +573,12 @@ conversation's text, an approval or a terminal's output.
 | `card.failed` | да | `project_id`, `detail` | hub/api/cards.py |
 | `chat.context` | нет | `conversation_id`, `message_id`, `tokens` | hub/chat.py |
 | `chat.delta` | нет | `conversation_id`, `kind`, `text` | hub/chat.py, hub/claude_code.py |
-| `chat.done` | да | `conversation_id`, `message_id`, `usage`, `stats`, `cost_usd`, `steps`, `stop_reason`, `cancelled` | hub/chat.py, hub/claude_code.py |
+| `chat.done` | да | `limited`, `conversation_id`, `message_id`, `usage`, `stats`, `cost_usd`, `steps`, `stop_reason`, `cancelled` | hub/chat.py, hub/claude_code.py |
 | `chat.error` | да | `conversation_id`, `detail`, `refusal`, `model_id`, `usage`, `cost_usd` | hub/chat.py, hub/claude_code.py |
 | `chat.fallback` | да | `conversation_id`, `model_id`, `name`, `from`, `from_name`, `reason`, `planned` | hub/chat.py |
 | `chat.loading` | нет | `conversation_id`, `text` | hub/chat.py |
 | `chat.message` | да | `conversation_id`, `message` | hub/chat.py, hub/claude_code.py |
-| `chat.projects` | нет | `conversation_id`, `projects` | hub/api/conversations.py |
+| `chat.projects` | нет | `conversation_id`, `projects` | hub/api/conversations.py, hub/chat.py |
 | `chat.run_started` | нет | `conversation_id`, `model_id` | hub/chat.py |
 | `chat.subagent` | нет | `conversation_id` | hub/claude_code.py |
 | `chat.titled` | да | `conversation_id`, `title` | hub/api/conversations.py, hub/chat.py |

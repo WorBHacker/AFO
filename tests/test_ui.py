@@ -1812,6 +1812,32 @@ def test_parallel_calls_each_get_their_result(app):
     assert states == ["ok", "ok"]
 
 
+def test_an_answer_cut_at_the_step_limit_says_so(app):
+    """31.3 (live, 2026-11-08): `coder` building an app hit the step limit mid-work - the answer ended on a refused
+    call, with no text, and the window said nothing. A card says so in plain words now, live and when the chat is
+    opened again; an answer the model went on to give after the refusal needs none."""
+    from hub.chat import STEP_LIMIT
+
+    block = {"type": "tool_call", "id": "a", "name": "run_command", "input": {"command": "x"}}
+    call = {"id": 10, "role": "assistant", "model_id": "llama-swap/coder", "content": [block]}
+    refused = {"id": 11, "role": "tool", "model_id": None, "content": [
+        {"type": "tool_result", "id": "a", "name": "run_command", "output": STEP_LIMIT, "error": True}]}  # fmt: skip
+    shown = rows.rows_for([call, refused], {})
+    assert [r["role"] for r in shown] == ["assistant", "error"]
+    assert shown[-1]["title"] == "Модель остановилась на пределе шагов" and "продолжай" in shown[-1]["hint"]
+    answer = {"id": 12, "role": "assistant", "model_id": "llama-swap/coder",
+              "content": [{"type": "text", "text": "Готово"}]}  # fmt: skip
+    assert [r["role"] for r in rows.rows_for([call, refused, answer], {})] == ["assistant", "assistant"]
+
+    opened(app)  # live: chat.done says the answer was cut
+    app.on_event(event("chat.run_started", model_id="llama-swap/coder"))
+    app.on_event(event("chat.message", message=call))
+    app.on_event(event("chat.message", message=refused))
+    app.on_event(event("chat.done", message_id=10, limited=True, usage={}, stats={}))
+    last = app.messages.rows[-1]
+    assert last["role"] == "error" and last["title"] == "Модель остановилась на пределе шагов"
+
+
 def test_a_new_message_is_not_a_chat_switch(app):
     """The line under the title changes with every message; only another chat resets the view's place (the
     reader scrolled up was pulled to the bottom by each step) and the composer's suggestions."""
