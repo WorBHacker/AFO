@@ -49,6 +49,8 @@ SPLIT = re.compile(r"-(\d{5})-of-(\d{5})$")
 # data (imatrix.gguf, model.imatrix.gguf) - a model's own name may say «imatrix» too (32.3: …-iMatrix-NVFP4.gguf)
 NOT_MODEL = re.compile(r"(?i)^(mmproj|mtp-|dflash-|eagle\d*-|draft|imatrix)|[._-]imatrix\.gguf$")
 UNRESTRICTED = re.compile(r"(?i)abliterat|uncensor|heretic|unfilter|unrestrict|refusal")
+# a model's size in its repository's name: 27B, 0.8B, 135M - not the active 3B of «30B-A3B», not «E4B» or «8x7B»
+NAMED_SIZE = re.compile(r"(?i)(?<![A-Z0-9.])(\d+(?:\.\d+)?)([BM])(?![A-Z0-9])")
 SIXTEEN_BITS = {"BF16", "F16", "FP16", "F32"}
 
 
@@ -129,6 +131,20 @@ def _license(info: dict[str, Any]) -> str:
     return str(found or "")
 
 
+def named_params(repo: str) -> int:
+    """The parameter count a repository's name says - the largest («7B-Instruct-1M» is 7B) - or 0."""
+    found = [float(n) * (1e9 if unit.upper() == "B" else 1e6) for n, unit in NAMED_SIZE.findall(repo.split("/")[-1])]
+    return round(max(found)) if found else 0
+
+
+def params_of(info: dict[str, Any]) -> int:
+    """A model's parameter count: Hugging Face's, read from one of the repository's GGUF files - unless the name says
+    more than twice as many: then it read the vision projector or a draft (32.4: «…-27B-…-MTP-GGUF», 0.46 billion)."""
+    read = int((info.get("gguf") or {}).get("total") or 0)
+    named = named_params(info.get("id") or info.get("modelId") or "")
+    return named if named > 2 * read else read
+
+
 def summary(info: dict[str, Any]) -> dict[str, Any]:
     """A repository as a search lists it."""
     repo = info.get("id") or info.get("modelId") or ""
@@ -205,7 +221,7 @@ async def repository(http: httpx.AsyncClient, repo: str, token: str | None = Non
              for f in tree if isinstance(f, dict) and f.get("type") == "file"]  # fmt: skip
     found, projectors = variants(files)
     gguf = info.get("gguf") or {}
-    params = int(gguf.get("total") or 0)
+    params = params_of({**info, "id": info.get("id") or repo})
     for v in found:
         v["bits"] = round(v["size"] * 8 / params, 1) if params else None  # bits per weight: how much was kept
     return {**summary({**info, "id": info.get("id") or repo}), "revision": info.get("sha") or "main",

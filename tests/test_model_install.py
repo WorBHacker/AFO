@@ -3,6 +3,7 @@ against the computer's memory, the download that goes on after a broken connecti
 sha256, the model's block in the config, the trial run that tries smaller settings, and removal. A stand-in
 Hugging Face serves a tiny GGUF model; the stand-in llama-swap of the 8.5 tests reads the same config."""
 
+import asyncio
 import contextlib
 import hashlib
 import io
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
@@ -267,6 +269,35 @@ def test_a_model_file_named_imatrix_is_a_model():
     assert [(v["quant"], v["files"][0]["path"]) for v in found] == [
         ("IQ4_XS", "Model-IQ4_XS-imatrix-fromq8.gguf"), ("NVFP4", "Qwen3.8-27B-iMatrix-NVFP4-MTP.gguf")]  # fmt: skip
     assert [p["file"] for p in projectors] == ["mmproj-Qwen3.8-27B-F16.gguf"]
+
+
+def test_the_parameter_count_by_the_name_when_hugging_face_read_a_projector():
+    """32.4: Hugging Face reads a repository's parameter count from one of its GGUF files - for some, the vision
+    projector or a draft (cdiamond/Qwen3.8-27B-iMatrix-NVFP4-MTP-GGUF: 0.46 billion, architecture «clip»): «≈ 297 bits
+    a weight», and the choice by bits went off. When the name says more than twice as many, the name is taken."""
+    repo = "cdiamond/Qwen3.8-27B-iMatrix-NVFP4-MTP-GGUF"
+    files = [("Qwen3.8-27B-iMatrix-NVFP4-MTP.gguf", 17_130_000_000), ("mmproj-Qwen3.8-27B-F16.gguf", 930_000_000)]
+
+    def answer(request):
+        if request.url.path.endswith("/tree/main"):
+            return httpx.Response(200, json=[{"type": "file", "path": p, "size": s, "lfs": {"oid": "0" * 64}}
+                                             for p, s in files])  # fmt: skip
+        return httpx.Response(200, json={"id": repo, "gguf": {"total": 460_730_096, "architecture": "clip"}})
+
+    async def look():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+            return await hf.repository(http, repo)
+
+    found = asyncio.run(look())
+    assert found["params"] == 27_000_000_000 and [v["bits"] for v in found["variants"]] == [5.1]
+    names = {"unsloth/Qwen3.8-27B-GGUF": 27_000_000_000, "ggml-org/Qwen3.5-0.8B-GGUF": 800_000_000,
+             "x/SmolLM2-135M-Instruct-GGUF": 135_000_000, "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF": 30_000_000_000,
+             "x/Qwen2.5-7B-Instruct-1M-GGUF": 7_000_000_000, "ggml-org/gpt-oss-20b-GGUF": 20_000_000_000,
+             "ggml-org/gemma-4-E4B-it-GGUF": 0, "x/Mixtral-8x7B-GGUF": 0}  # fmt: skip
+    assert {name: hf.named_params(name) for name in names} == names
+    assert hf.params_of({"id": "x/Qwen3-30B-A3B-GGUF", "gguf": {"total": 30_532_122_624}}) == 30_532_122_624
+    assert hf.params_of({"id": "ggml-org/gemma-4-E4B-it-GGUF", "gguf": {"total": 7_518_000_000}}) == 7_518_000_000
+    assert hf.params_of({"id": "x/SmolLM2-135M-GGUF"}) == 135_000_000 and hf.params_of({"id": "x/y"}) == 0
 
 
 def test_this_computer_against_a_model():
