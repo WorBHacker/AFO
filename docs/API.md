@@ -497,7 +497,7 @@
 | POST | `/v1/runs/{run_id}/pause` | только окно | The run stops before its next model call; what it runs now finishes. |  |
 | POST | `/v1/runs/{run_id}/resume` | только окно | `resume_run()` |  |
 | POST | `/v1/runs/{run_id}/message` | только окно | The user writes to a running task, as in a chat: the answer to the question it waits on, or else a word it reads before its next step (another limit, a hint, a change of mind). | тело `{text: str}` |
-| PUT | `/v1/runs/{run_id}/autonomy` | только окно | The run's level changes on the way; «Сам» also answers what it waits on now (its plan, a step, acting in a program); sending is still asked. | тело `{autonomy: str}` |
+| PUT | `/v1/runs/{run_id}/autonomy` | только окно | The run's level changes on the way; «Авто» also answers what it waits on now (its plan, a step, acting in a program) - sending is still asked; «Полный» (D56) answers all it waits on but what it never does unasked. | тело `{autonomy: str}` |
 | PUT | `/v1/runs/{run_id}/plan` | только окно | The user's own plan for the run: a new version; the agent hears it before its next step. | тело `{steps: list[Any], reason: str = ''}` |
 | GET | `/v1/agent/access` | только окно | `agent_access()` |  |
 | GET | `/v1/agent/keys` | только окно | The user's API keys for http_request: name, host, header - and whether set; never a key. |  |

@@ -3,9 +3,14 @@ failures that call for another way, the user approving the plan (or each step), 
 when the model stops before its report, a pause, the user's own plan, the planner handing over to the run's model."""
 
 import json
+import sqlite3
+import sys
 import time
 
-from hub import autonomous
+import pytest
+
+from hub import autonomous, store
+from hub.db import Database, available_migrations, migrate
 from hub.gateway.base import Model, StreamEvent
 from tests.test_changes import wait
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
@@ -397,3 +402,84 @@ def test_questions_come_with_answers_to_pick_in_a_task_and_in_a_chat(hub):  # no
     hub.post(f"/v1/runs/{cid}/questions/{waiting['id']}", json={"answer": "README.md"})
     wait(lambda: not hub.get(f"/v1/conversations/{cid}").json().get("busy") and len(chat.prompts) == 2)
     assert results(chat)[0] == "The user answered: README.md"
+
+
+def test_full_asks_nothing_and_refuses_what_is_never_done_unasked(hub, repo):  # noqa: F811
+    """«Полный» (33.1, D56; the user's word 2026-11-08: «не должен спросить о разрешение даже когда оно пишет или
+    что-то делает»): a write, a command, a personal fact - done with no card, each kept in the approvals as allowed by
+    the level; what deletes or cannot be undone, and a command that reaches the hub's own data, are refused - not
+    asked (the user's choice)."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    agent = use(hub, Scripted("agent", [
+        [PLAN], [step(1, "running")],
+        [("write_file", {"project": "proj", "path": "count.txt", "content": "12\n"})],
+        [("run_command", {"project": "proj", "command": "Add-Content count.txt '13'"})],
+        [("run_command", {"project": "proj", "command": "git push origin main"})],
+        [("run_command", {"project": "proj", "command": "Get-Content ..\\data\\hub.db"})],
+        [("remember", {"fact": "Телефон Анны +998 90 123 45 67", "personal": True})],
+        [("finish", {"summary": "Записал и запомнил.", "goal_met": True})],
+        "Готово.",
+    ]))  # fmt: skip
+    run_id = start(hub, autonomy="full", project_ids=[pid])
+    run = ended(hub, run_id)
+    said = results(agent)
+    assert run["status"] == "done" and run["autonomy"] == "full"
+    assert "the user can undo it" in said[2] and not said[3].startswith("not done")
+    assert (repo / "count.txt").read_text(encoding="utf-8").split() == ["12", "13"]
+    assert said[4].startswith("not done: «Полный» asks nothing") and "deletes or cannot be undone" in said[4]
+    assert said[5].startswith("not done: «Полный» asks nothing") and "the hub's own data" in said[5]
+    assert said[6].startswith("Kept for good")
+    rows = hub.app.state.db.call(lambda c: [dict(r) for r in c.execute(
+        "SELECT tool, status, scope, decided_by FROM approvals WHERE conversation_id = ? ORDER BY created_at",
+        (run_id,))])  # fmt: skip
+    assert [r["tool"] for r in rows] == ["write_file", "run_command", "remember"]
+    assert all((r["status"], r["scope"], r["decided_by"]) == ("allowed", "auto", "full") for r in rows)
+    told = json.dumps(agent.prompts[0], ensure_ascii=False)
+    assert "Autonomy: nothing is asked" in told and "never ask the user for permission" in told
+
+
+def test_switched_to_full_the_card_it_waits_on_is_answered(hub, repo):  # noqa: F811
+    """«Авто» asks a write; switched to «Полный» on the way, the card it waits on is answered and the rest goes
+    unasked."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    use(hub, Scripted("agent", [
+        [PLAN], [step(1, "running")],
+        [("write_file", {"project": "proj", "path": "count.txt", "content": "12\n"})],  # «Авто»: a card
+        [("write_file", {"project": "proj", "path": "more.txt", "content": "13\n"})],  # «Полный»: none
+        [("finish", {"summary": "Записал.", "goal_met": True})],
+        "Готово.",
+    ]))  # fmt: skip
+    run_id = start(hub, autonomy="free", project_ids=[pid])
+    write = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "write_file"])[0]
+    changed = hub.put(f"/v1/runs/{run_id}/autonomy", json={"autonomy": "full"}).json()
+    assert changed == {"autonomy": "full", "answered": [write["id"]]}
+    assert ended(hub, run_id)["status"] == "done"
+    assert (repo / "count.txt").exists() and (repo / "more.txt").exists()
+
+
+def test_the_runs_table_takes_full_and_keeps_its_rows(tmp_path, monkeypatch):
+    """Migration 051: SQLite keeps a CHECK as it was made - the table is made again, its runs kept."""
+    migrating = sys.modules["hub.db.migrate"]  # hub.db re-exports the function `migrate`, hiding the module
+    every = available_migrations()
+    monkeypatch.setattr(migrating, "available_migrations", lambda: [m for m in every if m[0] < 51])
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+
+    def run(conn):
+        cid = store.create_conversation(conn, kind="agent_run", title="Задача")
+        conn.execute("INSERT INTO agent_runs (conversation_id, profile_name, model_id, max_steps, max_minutes, task,"
+                     " kind, goal, autonomy) VALUES (?, 'Агент', 'agent/m', 100, 60, 'Цель: x', 'autonomous', 'x',"
+                     " 'free')", (cid,))  # fmt: skip
+        return cid
+
+    cid = db.call(run)
+    full = "UPDATE agent_runs SET autonomy = 'full' WHERE conversation_id = ?"
+    with pytest.raises(sqlite3.IntegrityError):
+        db.call(lambda c: c.execute(full, (cid,)))
+    monkeypatch.setattr(migrating, "available_migrations", lambda: every)
+    assert 51 in db.call(migrate)
+    kept = db.call(lambda c: dict(c.execute("SELECT * FROM agent_runs WHERE conversation_id = ?", (cid,)).fetchone()))
+    assert (kept["goal"], kept["autonomy"], kept["kind"], kept["max_steps"]) == ("x", "free", "autonomous", 100)
+    db.call(lambda c: c.execute(full, (cid,)))
+    assert db.call(lambda c: c.execute("SELECT autonomy FROM agent_runs").fetchone()[0]) == "full"
+    db.close()

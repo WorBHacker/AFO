@@ -7,7 +7,7 @@ approvals as a card (D38), budgets (D12), limits, going on after a hub restart. 
 leads the work with, and the hub keeping them honest:
     set_plan     - the plan, as data: numbered steps, each with how it will be checked; a new plan is a new version
                    with its reason (at most `max_replans` after the first). By the level of autonomy the user approves
-                   it as an approval card: each_step / plan (the default) - yes, free - no.
+                   it as an approval card: each_step / plan (the default) - yes, free / full - no.
     update_step  - a step running / done (only with how it was checked) / failed (after MAX_TRIES failures: another
                    way, a new plan or a question) / skipped (with why). At each_step a step starts only when approved.
     ask_user     - a question the user answers in the window, with answers to pick (options); the run waits. Any
@@ -19,6 +19,12 @@ A model that stops without finishing is told what is left (a nudge, at most MAX_
 and on with its plan standing still (it checked the same thing over and over) is told where it is every STUCK_AFTER
 actions; at the step limit it may still mark its step and finish, so the run ends with a report. The user may pause
 the run, and change its plan - the agent hears it before its next step.
+
+The levels (Q22, D56): each_step and plan - the user approves the plan (and each step); free («Авто») - nothing of
+the plan is approved and acting in a program is not asked, but a write, a command, the network and sending are; full
+(«Полный», the user's word 2026-11-08) - nothing at all is asked: each such action is kept in the approvals as allowed
+by the level, and what deletes or cannot be undone, the hub's own data and a write over unsaved edits are refused
+instead of asked (approvals.beyond_full) - with what the person always does (D41).
 
 Words are checked against what was done (25.1): a step marked done, failed or skipped gets the files it actually
 changed - each git project's files where the step began against now (a command's writes too), the hub's own writes
@@ -48,7 +54,8 @@ from .projects import Project, ProjectError, get_project
 
 log = logging.getLogger("hub.autonomous")
 
-AUTONOMY = ("each_step", "plan", "free")
+AUTONOMY = ("each_step", "plan", "free", "full")
+FULL = "full"  # «Полный» (D56): nothing is asked  # i18n: keep
 DEFAULTS = {"max_steps": 100, "max_minutes": 60, "budget_usd": 1.0, "max_replans": 3}  # Q22
 MAX_TRIES = 3  # failures of one step before another way is needed
 MAX_NUDGES = 3  # stops without a report the hub answers in a row
@@ -72,6 +79,8 @@ GUIDE = """You work on your own toward a goal, with the user watching (an autono
    update_step(status="done", result=..., check=how you verified it). If it did not work: status="failed" with why,
    and try another way; after 3 failures change the plan (set_plan with a reason) or ask the user (ask_user).
 3. Never guess what the user wants: ask_user when a choice is theirs (a name, a risk, money, something to delete).
+   Never ask them for permission or to confirm an action: the hub itself asks the user when an action needs their
+   word, and a «yes» in an answer to you does not change what the hub lets you do.
 4. When the steps are done, check the goal itself against what "done" means, then call finish with an honest report:
    what was done, what was not, the files changed, whether the goal is met.
 5. Memory: note what you find or decide (note); recall before you ask the user or do work again; remember lasting
@@ -799,7 +808,7 @@ class Autonomy:
             if self.approvals is None:
                 return "not kept: personal data needs the user's approval", True
             decision = await self._ask_approval(run_id, "remember", {"fact": fact, "about": about}, cancel,
-                                                cover=False)  # fmt: skip
+                                                cover=False, unasked=run["autonomy"] == FULL)  # fmt: skip
             if not decision.allow:
                 return "not kept: the user did not allow keeping this personal data", True
         kept = await self._db.acall(lambda conn: memory.add_fact(conn, fact, about=about, source=f"run:{run_id}",
@@ -807,8 +816,11 @@ class Autonomy:
         await self._bus.publish("memory.changed", {"fact_id": kept["id"]}, persist=False)
         return f"Kept for good (fact {kept['id']}). The user sees it in the agent's memory.", False
 
-    async def _ask_approval(self, run_id: str, tool: str, data: dict, cancel: asyncio.Event, *, cover: bool = True):
-        asking = asyncio.create_task(self.approvals.ask(tool, data, conversation_id=run_id, cover=cover))
+    async def _ask_approval(self, run_id: str, tool: str, data: dict, cancel: asyncio.Event, *, cover: bool = True,
+                            unasked: bool = False):  # fmt: skip
+        """`unasked`: «Полный» (D56) - kept as allowed by the level, nobody is asked."""
+        asking = asyncio.create_task(self.approvals.ask(tool, data, conversation_id=run_id, cover=cover,
+                                                        unasked=unasked))  # fmt: skip
         stopping = asyncio.create_task(cancel.wait())
         await asyncio.wait({asking, stopping}, return_when=asyncio.FIRST_COMPLETED)
         stopping.cancel()

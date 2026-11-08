@@ -80,7 +80,7 @@ from . import (
     web,
     websearch,
 )
-from .approvals import Decision, trusted_skips
+from .approvals import Decision, beyond_full, trusted_skips
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -1267,15 +1267,19 @@ class ChatService:
 
         return await self._db.acall(read)
 
-    async def _on_its_own(self, conversation_id: str) -> bool:
-        """An autonomous run the user let go on by itself («Сам», autonomy "free")."""
+    async def _level(self, conversation_id: str) -> str:
+        """An autonomous run's level of autonomy (Q22, D56); '' for anything else."""
 
         def level(conn) -> str:
             row = conn.execute("SELECT autonomy FROM agent_runs WHERE conversation_id = ? AND kind = 'autonomous'",
                                (conversation_id,)).fetchone()  # fmt: skip
-            return row["autonomy"] if row else ""
+            return (row["autonomy"] or "") if row else ""
 
-        return await self._db.acall(level) == "free"
+        return await self._db.acall(level)
+
+    async def _on_its_own(self, conversation_id: str) -> bool:
+        """An autonomous run the user let go on by itself: «Авто» (autonomy "free") or «Полный» ("full")."""
+        return await self._level(conversation_id) in ("free", autonomous.FULL)
 
     async def _ask_user(
         self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
@@ -1291,14 +1295,19 @@ class ChatService:
         self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
     ) -> Decision | str:
         """_ask_user's answer as it is - a write may be allowed in part (17.2): the hunks chosen, and the user's
-        word with them; or what the model should read when there is no «yes»."""
+        word with them; or what the model should read when there is no «yes». An autonomous run in «Полный» (D56)
+        asks nothing: done, and kept as allowed by the level - or refused, what it never does unasked."""
         if conversation_id in self.proving:  # nobody watches a run of the proving ground to say yes (D45)
             return PROVING_NO
         if self.approvals is None:
             return "not done: the hub has no approval queue to ask the user"
+        root = project.root if project else None
+        unasked = await self._level(conversation_id) == autonomous.FULL
+        if unasked and (never := beyond_full(tool, args, root, unsaved=self.approvals.unsaved.holds(tool, args, root))):
+            return never
         asking = asyncio.create_task(self.approvals.ask(
-            tool, args, conversation_id=conversation_id, project_id=project.id if project else None,
-            root=project.root if project else None, cover=cover))  # fmt: skip
+            tool, args, conversation_id=conversation_id, project_id=project.id if project else None, root=root,
+            cover=cover, unasked=unasked))  # fmt: skip
         stopping = asyncio.create_task(cancel.wait())
         await asyncio.wait({asking, stopping}, return_when=asyncio.FIRST_COMPLETED)
         stopping.cancel()
@@ -1559,7 +1568,12 @@ def _instructions(conn, conversation_id: str) -> str:
         level = {
             "each_step": "the user approves your plan and each step before it starts",
             "plan": "the user approves your plan; then you go on by yourself under the usual rights",
-            "free": "you go on by yourself under the usual rights",
+            "free": "you go on by yourself: acting in a program is not asked; before a write, a command, the network "
+            "or sending a message the hub asks the user itself",
+            autonomous.FULL: "nothing is asked - you act by yourself: writes, commands, the network, sending "
+            "messages, programs; never ask the user for permission or to confirm. What "
+            "deletes or cannot be undone, the hub's own data, passwords, payments and accepting terms are refused - "
+            "say so in your report",
         }.get(row["autonomy"] or "plan", "")
         text += f"\n\n{autonomous.GUIDE}\n\nThe goal: {row['goal']}"
         hint = memory.skill_hint(conn, row["goal"])  # a skill kept from a task like this one (9.3)

@@ -198,7 +198,7 @@ class Goal(BaseModel):
     model_id: str | None = None  # the profile's model when left out
     planner_model_id: str | None = None  # plans first, then the run's model carries the plan out
     project_ids: list[str] | None = None
-    autonomy: str = "plan"  # each_step / plan / free (Q22)
+    autonomy: str = "plan"  # each_step / plan / free / full (Q22, D56)
     max_steps: int = autonomous.DEFAULTS["max_steps"]
     max_minutes: int = autonomous.DEFAULTS["max_minutes"]
     max_replans: int = autonomous.DEFAULTS["max_replans"]
@@ -316,8 +316,8 @@ class Level(BaseModel):
 @router.put("/runs/{run_id}/autonomy")
 async def set_autonomy(run_id: str, body: Level, request: Request,
                        client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
-    """The run's level changes on the way; «Сам» also answers what it waits on now (its plan, a step, acting in a
-    program); sending is still asked."""
+    """The run's level changes on the way; «Авто» also answers what it waits on now (its plan, a step, acting in a
+    program) - sending is still asked; «Полный» (D56) answers all it waits on but what it never does unasked."""
     _app_only(client)
     if body.autonomy not in autonomous.AUTONOMY:
         raise HTTPException(status_code=422, detail=f"autonomy: one of {', '.join(autonomous.AUTONOMY)}")
@@ -326,11 +326,14 @@ async def set_autonomy(run_id: str, body: Level, request: Request,
     await state.db.acall(lambda conn: conn.execute("UPDATE agent_runs SET autonomy = ? WHERE conversation_id = ?",
                                                    (body.autonomy, run_id)))  # fmt: skip
     answered = []
-    if body.autonomy == "free":
-        for waiting in await state.approvals.pending():
-            if waiting["conversation_id"] == run_id and waiting["tool"] in ("screen_act", "start_step", "set_plan"):
-                await state.approvals.decide(waiting["id"], allow=True, by=client.name)
-                answered.append(waiting["id"])
+    for waiting in await state.approvals.pending():
+        if waiting["conversation_id"] != run_id:
+            continue
+        if (body.autonomy == "free" and waiting["tool"] in ("screen_act", "start_step", "set_plan")) or (
+            body.autonomy == autonomous.FULL and not (waiting["destructive"] or waiting["hub_data"]
+                                                      or waiting["unsaved"])):  # fmt: skip
+            await state.approvals.decide(waiting["id"], allow=True, by=client.name)
+            answered.append(waiting["id"])
     await state.bus.publish("agent.run", {"run_id": run_id, "autonomy": body.autonomy})
     return {"autonomy": body.autonomy, "answered": answered}
 

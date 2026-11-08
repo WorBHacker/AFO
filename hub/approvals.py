@@ -132,6 +132,9 @@ SEARCHES = {"web_search", "WebSearch"}  # a query leaves this computer: asked ev
 SELECT = "SELECT a.*, c.name AS client FROM approvals a LEFT JOIN clients c ON c.id = a.client_id"
 DENIED = "the user denied this"
 EXPIRED = "nobody answered: the run ended before the user did"
+FULL_BY = "full"  # who allowed what an autonomous run in «Полный» did unasked (D56)
+FULL_NEVER = ("not done: «Полный» asks nothing, and this {why} - the hub does not do that unasked (D56). "
+              "Say so in your report: the user does it, or gives the task in another mode.")  # fmt: skip  # i18n: keep
 
 
 class ApprovalError(Exception):
@@ -239,6 +242,21 @@ def trusted_skips(tool: str, data: dict[str, Any], root: Path | None = None) -> 
     2026-10-28 - all but a destructive action, which is asked every time and allowed by its button only (D38), and a
     command that reaches into the hub's own data (D46)."""
     return not destructive(tool, data) and not hub_data(tool, data, root)
+
+
+def beyond_full(tool: str, data: dict[str, Any], root: Path | None = None, *, unsaved: bool = False) -> str | None:
+    """What «Полный» (D56) does not do, since it asks nothing - the user's choice 2026-11-08: what deletes or cannot
+    be undone (a command that runs what its line does not name too), what reaches the hub's own data, a write over the
+    user's unsaved edits are refused, not asked. None: done unasked."""
+    if destructive(tool, data):
+        why = "deletes or cannot be undone, or runs what its line does not name"
+    elif hub_data(tool, data, root):
+        why = "reaches the hub's own data (its keys, its database)"
+    elif unsaved:
+        why = "would write over the user's unsaved edits in the window's editor"
+    else:
+        return None
+    return FULL_NEVER.format(why=why)
 
 
 def written(tool: str, data: dict[str, Any], root: Path | None) -> Path | None:
@@ -532,10 +550,12 @@ class ApprovalQueue:
         client_id: str | None = None,
         root: Path | None = None,
         cover: bool = True,
+        unasked: bool = False,
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
         chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19; nor over
-        the user's unsaved edits, D47)."""
+        the user's unsaved edits, D47). `unasked`: an autonomous run in «Полный» (D56) - kept as allowed by the level,
+        nobody waits; what it may not do unasked the caller refused before (beyond_full)."""
         unsaved = self.unsaved.holds(tool, data, root)
         key = grant_key(tool, data, root) if cover and not unsaved else None
         approval_id = uuid.uuid4().hex[:12]
@@ -547,11 +567,12 @@ class ApprovalQueue:
             covered = key is not None and (
                 key in SAFE_COMMANDS or _chat_allows(conn, conversation_id, key) or _rule_allows(conn, project_id, key)
             )
+            by = FULL_BY if unasked else "hub" if covered else None
             conn.execute(
                 "INSERT INTO approvals (id, conversation_id, project_id, client_id, tool, input, grant_key, status,"
                 " scope, decided_at, decided_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (approval_id, conversation_id, project_id, client_id, tool, json.dumps(data, ensure_ascii=False), key,
-                 *(("allowed", "auto", utc_now(), "hub") if covered else ("pending", None, None, None))),
+                 *(("allowed", "auto", utc_now(), by) if by else ("pending", None, None, None))),
             )  # fmt: skip
             return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
