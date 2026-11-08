@@ -7308,6 +7308,36 @@ def test_an_install_gone_from_the_config_and_one_waiting_for_the_card_say_so():
     assert status_line([waiting])["text"] == "ждёт пробного запуска"
 
 
+def test_the_install_sheet_opened_before_the_hub_is_up_loads_when_it_comes(app, monkeypatch):
+    """35.1 (2026-11-08, the user's screenshot after an update: «почему при каждом обновлением такое сообщение»): an
+    update restarts the hub, and the window is up 16 s before it. The sheet opened meanwhile asked nothing and never
+    asked again - «Смотрю, что умеет этот компьютер…» stayed. It loads when the hub connects; a request that fails
+    (the hub still starting) is asked again."""
+    from app.ui import install_view
+
+    view, client = app.install_view, app.client
+    app.client = None  # the window is up, the hub is not
+    view.load()
+    assert view.systemText == "Смотрю, что умеет этот компьютер…" and not view.catalog
+    app.attach(client, start_events=False)
+    wait_until(lambda: not app.bg.busy and view.catalog and view.systemText.startswith("RTX 5080"))
+
+    monkeypatch.setattr(install_view, "RETRY_MS", 10)
+    view._system = {}
+    answer, tries = client.install_system, []
+
+    def starting():
+        tries.append(1)
+        if len(tries) < 3:
+            raise HubError("the hub is starting")
+        return answer()
+
+    client.install_system = starting
+    view.load()
+    wait_until(lambda: view.systemText.startswith("RTX 5080"))
+    assert len(tries) == 3
+
+
 def test_models_added_are_tried_by_the_button(app):
     """34.5 (2026-11-08, the user's word): «Добавить» without the trial - «добавлена, не проверена», with its own
     «Пробный запуск» in «Установки»; «Пробный запуск (N)» beside «Добавить файл…» asks the hub to try them all in the

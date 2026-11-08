@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
 from common.i18n import N_, decimal, language, tr
 from common.plain_errors import explain
@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Понимать картинки")),
             ("image", N_("Рисовать"))]  # fmt: skip
 PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own - a set of files from several
+RETRY_MS, RETRIES = 2000, 15  # the hub still starting: what it knows of this computer is asked again (35.1)
 TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
 TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
@@ -388,6 +389,8 @@ class InstallView(QObject):
         super().__init__(app)
         self.app = app
         self._system: dict[str, Any] = {}
+        self._opened = False  # the sheet has been opened: it loads again when the hub connects (35.1)
+        self._system_tries = 0
         self._catalog: list[dict[str, Any]] = []
         self._catalog_loading = False
         self._catalog_error = ""
@@ -632,17 +635,34 @@ class InstallView(QObject):
 
     @Slot()
     def load(self) -> None:
+        self._opened = True
         if self.app.client is None:
-            return
+            return  # the window came up before the hub (after an update: by 16 s): `connected` loads it (35.1)
+        self._system_tries = 0
+        self._load_system()
+        self._load_jobs()
+        if not self._catalog and not self._catalog_loading:
+            self._load_catalog()
 
+    def connected(self) -> None:
+        """The hub is up: what the status bar shows - and all of the sheet, once it has been opened (35.1)."""
+        if self._opened:
+            self.load()
+        else:
+            self.load_jobs()
+
+    def _load_system(self) -> None:
         def system(data: dict[str, Any]) -> None:
             self._system = data  # no drive chosen: LocalChat's own `model` folder (2026-10-28, the user's word)
             self.changed.emit()
 
-        self.app._call(lambda: self.app.client.install_system(), system, lambda _e: None)
-        self._load_jobs()
-        if not self._catalog and not self._catalog_loading:
-            self._load_catalog()
+        def failed(_error: Exception) -> None:  # the hub still starting: its word is asked again
+            self._system_tries += 1
+            if not self._system and self._system_tries < RETRIES:
+                QTimer.singleShot(RETRY_MS, self._load_system)
+
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.install_system(), system, failed)
 
     def _load_jobs(self) -> None:
         def show(data: dict[str, Any]) -> None:

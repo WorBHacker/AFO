@@ -712,7 +712,7 @@ class Controller(QObject):
         self.programs.load()
         self.autonomy_view.load()
         self.schedules_view.load()
-        self.install_view.load_jobs()  # an install going on: in the status bar before the sheet is opened
+        self.install_view.connected()  # an install going on: in the status bar before the sheet is opened
         self.loadRetention()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
         self._call(lambda: self.client.autostart(), self._set_autostart, lambda _e: None)
