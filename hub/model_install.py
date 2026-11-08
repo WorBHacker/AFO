@@ -1169,8 +1169,8 @@ def _check_room(folder: Path, size: int) -> None:
 
 
 def _delete_files(found: dict[str, Any]) -> None:
-    """This install's files (and their parts) gone, then its folder and the author's folder if they are empty - only
-    files AFO downloaded: a model found on the drives keeps its files whatever happens (15.1)."""
+    """This install's files (their parts and lists of pieces too) gone, then its folder and the author's folder if
+    they are empty - only files AFO downloaded: a model found on the drives keeps its files whatever happens (15.1)."""
     if not found.get("own_files", 1):
         return
     folder = Path(found["folder"])
@@ -1178,7 +1178,7 @@ def _delete_files(found: dict[str, Any]) -> None:
         if f["role"] == "engine":
             continue  # the picture engine stays: the other picture models run on it
         dest = folder / PurePosixPath(f["path"]).name
-        for path in (dest, dest.with_name(dest.name + ".part")):
+        for path in (dest, dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")):
             for _ in range(10):  # a server that just let go of the file: Windows may hold it a moment longer
                 try:
                     path.unlink(missing_ok=True)

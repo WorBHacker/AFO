@@ -762,6 +762,20 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
 
 
+def test_a_cancelled_install_takes_its_list_of_pieces_too(hub, pieces):
+    """32.2: a big file's list of pieces (`.parts`) stayed after «Отменить» - and with it the model's folder."""
+    FakeHub.slow = 0.05  # a piece ~0.2 s
+    folder = hub.tmp / "cancel" / "test" / "Tiny-GGUF"
+    job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False,
+                                        "folder": str(hub.tmp / "cancel")}).json()["job"]  # fmt: skip
+    deadline = time.monotonic() + 10.0
+    while not (folder / "Tiny-Q4_K_M.gguf.parts").exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    hub.post(f"/v1/install/jobs/{job['id']}/cancel")
+    assert wait_for(hub, job["id"], "cancelled")["status"] == "cancelled"
+    assert not folder.exists()
+
+
 def test_a_gated_model_wants_the_token_and_the_hub_checks_it(hub):
     refused = hub.get("/v1/install/repo/test/Gated-GGUF")
     assert refused.status_code == 403 and "лицензию" in refused.json()["detail"]
