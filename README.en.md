@@ -33,7 +33,10 @@ offers a first model for chat, code and images. Open it again with Settings → 
   any GGUF model - by name and by filters: what for (chats, code, pictures), size (“fits in VRAM” among them), order,
   and without the models whose restrictions were removed. The hub downloads it to the fastest disk with room (a big file in pieces over several connections,
   resuming, checking sha256), writes it into llama-swap's `config.yaml` (a copy of the old one next to it) and tries
-  to start it.
+  to start it. Models already on your drives (LM Studio's, Ollama's, ones you downloaded) are in “On this computer”:
+  “Add” writes a model into `config.yaml` right where its file lies, with no copy and nothing loaded; “Trial run”
+  checks those added one at a time, in the order they were added, while no chat answers and no tuning measures - one
+  model on the graphics card at a time. “Show in Explorer” is beside each; “Remove” takes only its entry away.
 - **Cloud models and keys**: API keys (Anthropic, OpenAI, Google Gemini, DeepSeek, OpenRouter, Tavily, Brave Search),
   your own SearXNG and a Telegram bot's token go in Connections (Ctrl+Shift+K), behind a connections password; keys
   live in the Windows Credential Manager and never leave the hub.
