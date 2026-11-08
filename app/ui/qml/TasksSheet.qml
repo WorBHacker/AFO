@@ -38,6 +38,8 @@ Sheet {
                 height: 28
                 Text {
                     id: name
+                    width: Math.max(0, Math.min(implicitWidth, parent.width * 0.55))
+                    elide: Text.ElideRight
                     anchors.verticalCenter: parent.verticalCenter
                     text: "[" + entry.modelData.id + "] «" + entry.modelData.agent + "»"
                     color: Theme.p.text

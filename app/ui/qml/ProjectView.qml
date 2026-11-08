@@ -297,6 +297,8 @@ Item {
                 }
                 Text {
                     id: drafting
+                    width: parent.width
+                    elide: Text.ElideRight
                     visible: cardBox.card.state === "drafting"
                     text: qsTr("Модель «%1» составляет черновик…").arg(cardBox.card.writer)
                     color: Theme.p.muted
@@ -313,6 +315,8 @@ Item {
                     border.color: Theme.p.accent
                     Text {
                         x: 14
+                        width: Math.max(0, Math.min(implicitWidth, parent.width * 0.5))
+                        elide: Text.ElideRight
                         anchors.verticalCenter: parent.verticalCenter
                         text: qsTr("Черновик от «%1» готов — проверьте и подтвердите").arg(cardBox.card.draftModel)
                         color: Theme.p.text
@@ -583,6 +587,8 @@ Item {
                             Text {
                                 id: goneName
                                 x: 32
+                                width: Math.max(0, Math.min(implicitWidth, parent.width * 0.5))
+                                elide: Text.ElideRight
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: gone.modelData.name
                                 color: Theme.p.text
@@ -704,6 +710,8 @@ Item {
                             width: parent.width - 24
                             spacing: 6
                             Text {
+                                width: parent.width
+                                wrapMode: Text.Wrap
                                 text: qsTr("Похоже на связь: %1").arg(proposal.modelData.title)
                                 color: Theme.p.text
                                 font.family: Theme.uiFont
@@ -901,6 +909,8 @@ Item {
                             Text {
                                 id: changeName
                                 x: 32
+                                width: Math.max(0, Math.min(implicitWidth, parent.width * 0.5))
+                                elide: Text.ElideRight
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: change.modelData.name
                                 color: Theme.p.text
@@ -1099,6 +1109,8 @@ Item {
                         spacing: 6
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
+                            width: Math.max(0, Math.min(implicitWidth, 200))
+                            elide: Text.ElideRight
                             text: tabItem.name
                             color: tabItem.shown ? Theme.p.text : Theme.p.muted
                             font.family: Theme.uiFont

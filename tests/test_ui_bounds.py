@@ -218,3 +218,21 @@ def test_the_search_box_stays_clear_of_the_buttons_in_the_title_bar(long_named):
     assert box(search).right() <= box(buttons).left()
     for text in texts_in(search):
         assert box(search).contains(ink(text)), text.property("text")
+
+
+def test_no_long_name_runs_past_any_sheet(long_named):
+    quick, _ = long_named
+    settle(quick)
+    drawers = [o for o in quick.window.findChildren(QObject) if o.inherits("QQuickDrawer")]
+    assert len(drawers) > 15
+    for sheet in drawers:
+        name = sheet.metaObject().className().split("_QML")[0]
+        if name == "HistorySheet":  # opened for one file, by the editor
+            continue
+        open_popup(quick, sheet)
+        settle(quick)
+        edge = box(sheet.property("background")).right()
+        assert outside(sheet.property("contentItem"), edge, []) == [], name
+        QMetaObject.invokeMethod(sheet, "close")
+        wait_until(lambda s=sheet: not s.property("visible"))
+    assert quick.warnings == []  # the limits above make no binding loops

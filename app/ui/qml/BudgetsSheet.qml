@@ -82,6 +82,8 @@ Sheet {
                     width: parent.width
                     height: 22
                     Text {
+                        width: Math.max(0, Math.min(implicitWidth, parent.width - 170))
+                        elide: Text.ElideRight
                         text: card.modelData.title
                         color: Theme.p.text
                         font.family: Theme.uiFont
@@ -153,6 +155,8 @@ Sheet {
                     }
                 }
                 Text {
+                    width: parent.width
+                    wrapMode: Text.Wrap
                     text: card.modelData.note
                     color: Theme.p.faint
                     font.family: Theme.uiFont

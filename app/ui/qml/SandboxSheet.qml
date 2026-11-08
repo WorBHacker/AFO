@@ -19,7 +19,7 @@ Sheet {
         property string mark: "all"
         property string label: ""
         implicitHeight: 24
-        implicitWidth: tickLabel.implicitWidth + 30
+        implicitWidth: Math.min(tickLabel.implicitWidth + 30, parent && parent.width > 0 ? parent.width : Infinity)
         hoverEnabled: true
         enabled: !Sandbox.busy
         background: Rectangle {
@@ -54,6 +54,8 @@ Sheet {
             Text {
                 id: tickLabel
                 x: 26
+                width: Math.max(0, Math.min(implicitWidth, tick.width - x))
+                elide: Text.ElideMiddle
                 anchors.verticalCenter: parent.verticalCenter
                 text: tick.label
                 color: tick.mark !== "none" ? Theme.p.text_soft : Theme.p.faint
@@ -74,6 +76,8 @@ Sheet {
         Row {
             spacing: 8
             Text {
+                width: Math.max(0, Math.min(implicitWidth, entry.width * 0.5))
+                elide: Text.ElideRight
                 text: entry.modelData.name
                 color: Theme.p.text
                 font.family: Theme.uiFont

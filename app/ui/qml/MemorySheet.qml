@@ -114,6 +114,8 @@ Sheet {
                     Row {
                         spacing: 6
                         Text {
+                            width: Math.max(0, Math.min(implicitWidth, 260))
+                            elide: Text.ElideRight
                             text: factRow.modelData.meta
                             color: Theme.p.faint
                             font.family: Theme.uiFont
@@ -197,6 +199,8 @@ Sheet {
                         font.pixelSize: 12
                     }
                     Text {
+                        width: parent.width
+                        elide: Text.ElideRight
                         text: modelData.meta
                         color: Theme.p.faint
                         font.family: Theme.uiFont

@@ -94,6 +94,8 @@ Sheet {
             height: 32
             Text {
                 anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(0, Math.min(implicitWidth, parent.width - 130))
+                elide: Text.ElideRight
                 text: version.modelData.model_id
                       ? qsTr("версия %1 · %2 · черновик %3").arg(version.modelData.version).arg(version.modelData.when).arg(version.modelData.model_id)
                       : qsTr("версия %1 · %2 · вручную").arg(version.modelData.version).arg(version.modelData.when)

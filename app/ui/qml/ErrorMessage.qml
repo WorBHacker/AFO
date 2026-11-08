@@ -16,6 +16,8 @@ Rectangle {
         width: parent.width - 32
         spacing: 4
         Text {
+            width: parent.width
+            wrapMode: Text.Wrap
             text: card.row?.title || qsTr("Ошибка")
             color: Theme.p.error
             font.family: Theme.uiFont

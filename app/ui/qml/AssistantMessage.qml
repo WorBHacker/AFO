@@ -53,6 +53,8 @@ Column {
 
     Text {
         visible: !!answer.row?.notice
+        width: parent.width
+        wrapMode: Text.Wrap
         text: answer.row?.notice || ""
         color: Theme.p.faint
         font.family: Theme.uiFont
@@ -115,6 +117,8 @@ Column {
         visible: !answer.row?.streaming && !!answer.row?.footer
         spacing: 8
         Text {
+            width: Math.max(0, Math.min(implicitWidth, answer.width - 60))
+            elide: Text.ElideRight
             text: answer.row?.footer || ""
             color: Theme.p.faint
             font.family: Theme.uiFont

@@ -124,6 +124,8 @@ Sheet {
                 width: parent.width - 28
                 spacing: 6
                 Text {
+                    width: parent.width
+                    wrapMode: Text.Wrap
                     text: card.modelData.title + " — " + card.modelData.what
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -134,6 +136,8 @@ Sheet {
                     spacing: 6
                     Rectangle { width: 8; height: 8; radius: 4; color: sheet.tone(card.modelData.tone); anchors.verticalCenter: parent.verticalCenter }
                     Text {
+                        width: Math.max(0, Math.min(implicitWidth, cardColumn.width - 14))
+                        elide: Text.ElideRight
                         text: [card.modelData.name, card.modelData.offer, card.modelData.words].filter(s => s).join(" · ")
                         color: Theme.p.text_soft
                         font.family: Theme.uiFont

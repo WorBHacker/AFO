@@ -15,7 +15,7 @@ Sheet {
         id: check
         property bool on: false
         implicitHeight: 28
-        implicitWidth: checkLabel.implicitWidth + 30
+        implicitWidth: Math.min(checkLabel.implicitWidth + 30, parent && parent.width > 0 ? parent.width : Infinity)
         hoverEnabled: true
         background: Rectangle { radius: 6; color: check.hovered ? Theme.p.item_hover : "transparent" }
         contentItem: Item {
@@ -32,6 +32,8 @@ Sheet {
             Text {
                 id: checkLabel
                 x: 26
+                width: Math.max(0, Math.min(implicitWidth, check.width - 30))
+                elide: Text.ElideRight
                 anchors.verticalCenter: parent.verticalCenter
                 text: check.text
                 color: check.on ? Theme.p.text : Theme.p.muted
@@ -42,6 +44,8 @@ Sheet {
     }
 
     component Label: Text {
+        width: parent ? parent.width : implicitWidth
+        elide: Text.ElideRight
         color: Theme.p.faint
         font.family: Theme.uiFont
         font.pixelSize: 12
@@ -106,7 +110,7 @@ Sheet {
         PlainButton {
             id: modelButton
             objectName: "agentModel"
-            maxWidth: parent.width
+            maxWidth: 240
             iconName: "cpu"
             text: Agents.draft.modelName
             onClicked: { modelMenu.anchor = modelButton; modelMenu.open() }

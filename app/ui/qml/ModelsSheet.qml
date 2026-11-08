@@ -142,6 +142,8 @@ Sheet {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 1
                     Text {
+                        width: parent.width
+                        elide: Text.ElideRight
                         text: modelData.name
                         color: Theme.p.text
                         font.family: Theme.uiFont

@@ -31,6 +31,8 @@ Column {
             anchors.verticalCenter: parent.verticalCenter
         }
         Text {
+            width: Math.max(0, Math.min(implicitWidth, section.width - 15))
+            elide: Text.ElideRight
             text: Mail.connected ? Mail.address + " · " + Mail.servers : qsTr("не подключена")
             color: Theme.p.text_soft
             font.family: Theme.uiFont

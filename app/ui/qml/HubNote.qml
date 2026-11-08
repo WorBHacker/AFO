@@ -27,6 +27,9 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
             }
             Text {
+                id: noteTitle
+                width: Math.max(0, Math.min(implicitWidth, parent.width * 0.5))
+                elide: Text.ElideRight
                 text: note.row?.title || ""
                 color: line.hovered ? Theme.p.text_soft : Theme.p.faint
                 font.family: Theme.uiFont
@@ -35,6 +38,8 @@ Item {
             }
             Text {
                 visible: !!note.row?.note
+                width: Math.max(0, Math.min(implicitWidth, parent.width - noteTitle.width - 60))
+                elide: Text.ElideRight
                 text: "· " + (note.row?.note || "")
                 color: Theme.p.faint
                 font.family: Theme.uiFont

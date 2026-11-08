@@ -124,6 +124,9 @@ Sheet {
             Row {
                 spacing: 8
                 Text {
+                    id: entryTitle
+                    width: Math.max(0, Math.min(implicitWidth, entry.width * 0.7))
+                    elide: Text.ElideRight
                     text: entry.modelData.title
                     color: Theme.p.text
                     font.family: Theme.uiFont
@@ -136,6 +139,8 @@ Sheet {
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Text {
+                    width: Math.max(0, Math.min(implicitWidth, entry.width - entryTitle.width - 23))
+                    elide: Text.ElideRight
                     text: entry.modelData.status
                     color: Theme.p.text_soft
                     font.family: Theme.uiFont

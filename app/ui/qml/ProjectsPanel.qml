@@ -204,6 +204,8 @@ Item {
                     id: hitName
                     visible: hit.isFile
                     x: 26
+                    width: Math.max(0, Math.min(implicitWidth, parent.width * 0.6))
+                    elide: Text.ElideRight
                     anchors.verticalCenter: parent.verticalCenter
                     text: hit.modelData.name
                     color: Theme.p.text

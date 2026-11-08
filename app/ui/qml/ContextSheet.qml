@@ -165,6 +165,8 @@ Sheet {
             Text {
                 x: 22
                 anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(0, parent.width - x - 36)
+                elide: Text.ElideMiddle
                 text: pin.modelData.name
                 color: Theme.p.text_soft
                 font.family: Theme.monoFont
@@ -208,6 +210,8 @@ Sheet {
                     }
                     Text {
                         x: 26
+                        width: Math.max(0, Math.min(implicitWidth, parent.width - x - 130))
+                        elide: Text.ElideRight
                         anchors.verticalCenter: parent.verticalCenter
                         text: block.modelData.label + (block.modelData.local ? qsTr("  · только локальным моделям") : "")
                         color: Theme.p.text

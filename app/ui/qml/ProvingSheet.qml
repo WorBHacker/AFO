@@ -27,6 +27,7 @@ Sheet {
         id: tick
         property bool on: false
         implicitHeight: 28
+        readonly property real room: parent && parent.width > 0 ? parent.width : Infinity
         implicitWidth: tickRow.implicitWidth + 8
         hoverEnabled: true
         contentItem: Row {
@@ -42,6 +43,8 @@ Sheet {
                 Icon { anchors.centerIn: parent; visible: tick.on; name: "check"; size: 12; tint: Theme.p.on_accent }
             }
             Text {
+                width: Math.max(0, Math.min(implicitWidth, tick.room - 32))
+                elide: Text.ElideRight
                 text: tick.text
                 color: Theme.p.text
                 font.family: Theme.uiFont
@@ -56,7 +59,7 @@ Sheet {
     }
 
     // ---------- the tasks ----------
-    SectionTitle { text: qsTr("Задания — пробует «%1» (модель чата)").arg(Proving.workerName) }
+    SectionTitle { width: parent.width; elide: Text.ElideRight; text: qsTr("Задания — пробует «%1» (модель чата)").arg(Proving.workerName) }
     Repeater {
         model: Proving.tasks
         delegate: Rectangle {

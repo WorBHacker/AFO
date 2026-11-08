@@ -52,6 +52,8 @@ Sheet {
         }
         Text {
             visible: !!jb.job.id && !jb.job.primary && !jb.job.dismiss
+            width: Math.max(0, Math.min(implicitWidth, 260))
+            elide: Text.ElideRight
             text: jb.job.installed ? qsTr("✓ установлена") : (jb.job.line || "")
             color: jb.job.installed ? Theme.p.ok : Theme.p.muted
             font.family: Theme.uiFont
@@ -212,6 +214,9 @@ Sheet {
                         width: parent.width
                         spacing: 8
                         Text {
+                            id: cardName
+                            width: Math.max(0, Math.min(implicitWidth, parent.width * 0.6))
+                            elide: Text.ElideRight
                             text: card.modelData.name
                             color: Theme.p.text
                             font.family: Theme.uiFont
@@ -220,20 +225,24 @@ Sheet {
                             anchors.verticalCenter: parent.verticalCenter
                         }
                         Text {
+                            width: Math.max(0, Math.min(implicitWidth, parent.width - cardName.width - 16 - (installedBadge.visible ? installedBadge.width + 8 : 0) - (gatedBadge.visible ? gatedBadge.width + 8 : 0)))
+                            elide: Text.ElideRight
                             text: card.modelData.purposes
                             color: Theme.p.muted
                             font.family: Theme.uiFont
                             font.pixelSize: 12
                             anchors.verticalCenter: parent.verticalCenter
                         }
-                        Badge { visible: card.modelData.installed; text: qsTr("установлена"); tint: Theme.p.ok; anchors.verticalCenter: parent.verticalCenter }
-                        Badge { visible: card.modelData.gated; text: qsTr("лицензия на сайте"); tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
+                        Badge { id: installedBadge; visible: card.modelData.installed; text: qsTr("установлена"); tint: Theme.p.ok; anchors.verticalCenter: parent.verticalCenter }
+                        Badge { id: gatedBadge; visible: card.modelData.gated; text: qsTr("лицензия на сайте"); tint: Theme.p.warn; anchors.verticalCenter: parent.verticalCenter }
                     }
                     Note { text: card.modelData.about; color: Theme.p.text_soft }
                     Row {
                         spacing: 6
                         Rectangle { width: 8; height: 8; radius: 4; color: sheet.tone(card.modelData.tone); anchors.verticalCenter: parent.verticalCenter }
                         Text {
+                            width: Math.max(0, Math.min(implicitWidth, parent.parent.width - 14))
+                            elide: Text.ElideRight
                             text: (card.modelData.offer ? card.modelData.offer + " — " : "")
                                   + (card.modelData.job.live ? card.modelData.job.line : card.modelData.words)
                             color: card.modelData.job.live ? Theme.p.accent : Theme.p.text_soft
@@ -345,6 +354,8 @@ Sheet {
                     Row {
                         spacing: 8
                         Text {
+                            width: Math.max(0, Math.min(implicitWidth, parent.parent.width * 0.7))
+                            elide: Text.ElideRight
                             text: hit.modelData.repo
                             color: Theme.p.text
                             font.family: Theme.uiFont
@@ -360,6 +371,8 @@ Sheet {
                         }
                     }
                     Text {
+                        width: parent.width
+                        elide: Text.ElideRight
                         text: hit.modelData.note
                         color: Theme.p.faint
                         font.family: Theme.uiFont
@@ -538,6 +551,8 @@ Sheet {
             spacing: 8
             PlainButton { iconName: "back"; text: qsTr("Назад"); onClicked: Installer.closeRepo() }
             Text {
+                width: Math.max(0, Math.min(implicitWidth, sheet.width - 170))
+                elide: Text.ElideRight
                 text: Installer.repoName
                 color: Theme.p.text
                 font.family: Theme.uiFont
@@ -707,6 +722,8 @@ Sheet {
                     Row {
                         spacing: 8
                         Text {
+                            width: Math.max(0, Math.min(implicitWidth, parent.parent.width * 0.6))
+                            elide: Text.ElideRight
                             text: job.modelData.name
                             color: Theme.p.text
                             font.family: Theme.uiFont

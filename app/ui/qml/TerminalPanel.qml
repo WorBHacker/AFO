@@ -114,6 +114,8 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 rightPadding: 8
                 visible: !!panel.current && !panel.current.running
+                width: Math.max(0, Math.min(implicitWidth, 220))
+                elide: Text.ElideRight
                 text: panel.current ? panel.current.note : ""
                 color: Theme.p.faint
                 font.family: Theme.uiFont

@@ -53,6 +53,9 @@ Column {
                         anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
+                        id: serverName
+                        width: Math.max(0, Math.min(implicitWidth, parent.width * 0.6))
+                        elide: Text.ElideRight
                         text: server.modelData.name
                         color: Theme.p.text
                         font.family: Theme.uiFont
@@ -67,6 +70,8 @@ Column {
                              : server.modelData.state === "error" ? Theme.p.error : Theme.p.faint
                     }
                     Text {
+                        width: Math.max(0, Math.min(implicitWidth, parent.width - serverName.width - 49))
+                        elide: Text.ElideRight
                         text: server.modelData.status
                         color: Theme.p.text_soft
                         font.family: Theme.uiFont

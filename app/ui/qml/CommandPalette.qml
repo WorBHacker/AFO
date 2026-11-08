@@ -151,7 +151,7 @@ Popup {
                 }
                 Text {
                     x: 40
-                    width: Math.min(implicitWidth, parent.width - 52 - note.implicitWidth - hint.width)
+                    width: Math.min(implicitWidth, parent.width - 52 - note.width - hint.width)
                     anchors.verticalCenter: parent.verticalCenter
                     text: entry.info.name || ""
                     textFormat: Text.StyledText
@@ -162,6 +162,8 @@ Popup {
                 }
                 Text {
                     id: note
+                    width: Math.min(implicitWidth, parent.width * 0.4)
+                    elide: Text.ElideRight
                     anchors.right: hint.left
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
