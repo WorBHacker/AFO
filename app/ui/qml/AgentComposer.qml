@@ -403,7 +403,7 @@ Item {
                     onClicked: composer.submit()
                     background: Rectangle {
                         radius: 6
-                        color: send.enabled ? (send.hovered ? Theme.p.accent_hover : Theme.p.accent) : Theme.p.item_hover
+                        color: send.enabled ? (send.hovered ? Theme.p.accent_hover : Theme.p.accent_fill) : Theme.p.item_hover
                     }
                     contentItem: Item {
                         Icon { anchors.centerIn: parent; name: "send"; tint: send.enabled ? Theme.p.on_accent : Theme.p.faint }

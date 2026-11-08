@@ -38,12 +38,13 @@ class Palette:
     text: str
     text_soft: str  # long-form answer text
     muted: str  # secondary text, reasoning
-    faint: str  # placeholders, footers
+    faint: str  # placeholders, footers, small headings: still 4.5:1 on the window, panels and cards
     link: str
     inline_code_bg: str
     # accents and states
-    accent: str
-    accent_hover: str
+    accent: str  # words, icons and lines on the surfaces
+    accent_fill: str  # the ground of a primary button: on_accent reads on it at 4.5:1
+    accent_hover: str  # that ground under the mouse
     on_accent: str
     selection: str
     find_match: str  # every match of the editor's find on screen (14.3), behind the text
@@ -74,12 +75,13 @@ DARK = Palette(
     scroll_handle_hover="rgba(255, 255, 255, 0.24)",
     text="#e4e5e9",
     text_soft="#c9cbd1",
-    muted="#8b8e96",
-    faint="#5f626a",
+    muted="#95989f",
+    faint="#838790",
     link="#7cb7ff",
     inline_code_bg="#2a2b30",
     accent="#4f8cff",
-    accent_hover="#6a9dff",
+    accent_fill="#2f6fec",
+    accent_hover="#2860d1",
     on_accent="#ffffff",
     selection="#264f78",
     find_match="rgba(234, 160, 60, 0.25)",
@@ -110,19 +112,20 @@ LIGHT = Palette(
     scroll_handle_hover="rgba(0, 0, 0, 0.32)",
     text="#1d2025",
     text_soft="#2f333a",
-    muted="#686d76",
-    faint="#9da1a9",
+    muted="#5d616a",
+    faint="#666b75",
     link="#0a63d1",
     inline_code_bg="#eceef2",
-    accent="#2f6fec",
-    accent_hover="#255fd4",
+    accent="#155be4",
+    accent_fill="#155be4",
+    accent_hover="#124fc7",
     on_accent="#ffffff",
     selection="#cfe0ff",
     find_match="rgba(255, 196, 0, 0.35)",
     find_current="rgba(255, 150, 0, 0.55)",
-    ok="#1a7f37",
-    warn="#9a6700",
-    error="#c4501a",
+    ok="#187533",
+    warn="#8b5d00",
+    error="#ad4617",
     error_line="rgba(196, 80, 26, 0.45)",
     code_styles=("xcode", "default"),
 )

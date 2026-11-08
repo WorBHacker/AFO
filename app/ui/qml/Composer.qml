@@ -571,7 +571,7 @@ Item {
                     background: Rectangle {
                         radius: 6
                         color: send.stops ? "transparent"
-                               : (send.enabled ? (send.hovered ? Theme.p.accent_hover : Theme.p.accent) : Theme.p.item_hover)
+                               : (send.enabled ? (send.hovered ? Theme.p.accent_hover : Theme.p.accent_fill) : Theme.p.item_hover)
                         border.color: send.stops ? Theme.p.error : "transparent"
                     }
                     contentItem: Item {

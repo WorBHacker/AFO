@@ -17,7 +17,7 @@ AbstractButton {
     opacity: enabled ? 1 : 0.5
     background: Rectangle {
         radius: 6
-        color: button.kind === "primary" ? (button.hovered ? Theme.p.accent_hover : Theme.p.accent)
+        color: button.kind === "primary" ? (button.hovered ? Theme.p.accent_hover : Theme.p.accent_fill)
                : (button.hovered ? Theme.p.item_hover : "transparent")
         border.color: button.kind === "primary" ? "transparent"
                       : button.kind === "danger" ? Theme.p.error_line : Theme.p.hairline_strong
@@ -36,7 +36,7 @@ AbstractButton {
             }
             Text {
                 id: label
-                width: Math.max(0, Math.min(implicitWidth, button.width - button.around))
+                width: Math.max(0, Math.min(implicitWidth, button.width - button.around + 20))  // a tight button keeps its word
                 elide: Text.ElideRight
                 text: button.text
                 color: button.kind === "primary" ? Theme.p.on_accent : button.kind === "danger" ? Theme.p.error : Theme.p.text

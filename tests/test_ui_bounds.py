@@ -1,9 +1,13 @@
 """Long words do not break the window (stage 37): a name from the data wraps or ends in «…» inside what holds it."""
 
+import re
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import QMetaObject, QObject, QRectF
 from PySide6.QtTest import QTest
 
+from app.palette import DARK, LIGHT
 from common.paths import data_paths
 from tests import test_ui as T
 from tests.test_ui import FakeClient, item_named, opened, qapp, wait_until  # noqa: F401 - the qapp fixture
@@ -236,3 +240,63 @@ def test_no_long_name_runs_past_any_sheet(long_named):
         QMetaObject.invokeMethod(sheet, "close")
         wait_until(lambda s=sheet: not s.property("visible"))
     assert quick.warnings == []  # the limits above make no binding loops
+
+
+def contrast(one, other):
+    def light(colour):
+        channels = [int(colour[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        r, g, b = (v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in channels)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    high, low = sorted((light(one), light(other)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+def test_every_colour_of_small_text_reads_on_the_surfaces_it_is_drawn_on(palette):
+    for ink in ("text", "text_soft", "muted", "faint", "accent", "warn", "error", "ok"):
+        for surface in ("window", "panel", "popup", "card"):
+            found = contrast(getattr(palette, ink), getattr(palette, surface))
+            assert found >= 4.5, f"{ink} on {surface}: {found:.1f}"
+    assert contrast(palette.on_accent, palette.accent_fill) >= 4.5
+    assert contrast(palette.on_accent, palette.accent_hover) >= 4.5
+
+
+def test_a_control_of_qts_own_is_not_left_with_its_colours():
+    """Qt's Switch paints its words in the system's colour: near black, unreadable on the dark theme."""
+    for path in Path("app/ui/qml").glob("*.qml"):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*Switch \{", source, re.MULTILINE):
+            assert "component Switch" in source, path.name
+
+
+def cut_labels(item, found):
+    if item.isVisible():
+        if item.metaObject().className().startswith(("PlainButton", "Chip")):
+            found += [t.property("text") for t in texts_in(item) if t.property("truncated")]
+        for child in item.childItems():
+            cut_labels(child, found)
+    return found
+
+
+@pytest.mark.parametrize("size", [(1280, 820), (900, 560)], ids=["roomy", "narrowest"])
+def test_ordinary_names_leave_every_button_its_whole_label(quick, size):
+    app, root = quick.controller, quick.window.contentItem()
+    quick.window.resize(*size)
+    for step in (
+        app.newChat,
+        lambda: app.openChat("c1"),
+        lambda: app.setMode("projects"),
+        lambda: app.setMode("agent"),
+    ):
+        step()
+        settle(quick)
+        assert cut_labels(root, []) == []
+    for sheet in [o for o in quick.window.findChildren(QObject) if o.inherits("QQuickDrawer")]:
+        if sheet.metaObject().className().startswith("HistorySheet"):
+            continue
+        open_popup(quick, sheet)
+        settle(quick)
+        assert cut_labels(sheet.property("contentItem"), []) == [], sheet.metaObject().className()
+        QMetaObject.invokeMethod(sheet, "close")
+        wait_until(lambda s=sheet: not s.property("visible"))

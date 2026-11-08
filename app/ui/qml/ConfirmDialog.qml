@@ -64,7 +64,7 @@ Popup {
                 height: 32
                 hoverEnabled: true
                 onClicked: App.answer(true)
-                background: Rectangle { radius: 6; color: confirm.hovered ? Theme.p.accent_hover : Theme.p.accent }
+                background: Rectangle { radius: 6; color: confirm.hovered ? Theme.p.accent_hover : Theme.p.accent_fill }
                 contentItem: Text {
                     id: confirmText
                     text: App.question.confirm || qsTr("Да")

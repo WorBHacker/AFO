@@ -97,12 +97,41 @@ Sheet {
     }
 
     SectionTitle { text: qsTr("Окна программ") }
-    Switch {
+    AbstractButton {  // Qt's own Switch draws its words in the system's colour, unreadable on the dark theme
+        id: screenCloud
         objectName: "accessScreenCloud"
         width: parent.width
+        implicitHeight: Math.max(30, screenCloudWords.implicitHeight + 12)
+        checkable: true
+        hoverEnabled: true
         text: qsTr("Новая задача: облачная модель видит окна разрешённых программ (их надписи и поля текстом; снимки — только локальной). В задаче это можно поменять")
         checked: Autonomy.screenCloud
         onToggled: Autonomy.setScreenCloud(checked)
+        background: Rectangle {
+            radius: 6
+            color: screenCloud.checked ? Theme.p.item_selected : (screenCloud.hovered ? Theme.p.item_hover : "transparent")
+            border.color: screenCloud.checked ? Theme.p.accent : Theme.p.hairline_strong
+        }
+        contentItem: Item {
+            Icon {
+                x: 8
+                anchors.verticalCenter: parent.verticalCenter
+                name: screenCloud.checked ? "check" : "close"
+                size: 13
+                tint: screenCloud.checked ? Theme.p.accent : Theme.p.faint
+            }
+            Text {
+                id: screenCloudWords
+                x: 26
+                width: parent.width - x - 8
+                anchors.verticalCenter: parent.verticalCenter
+                wrapMode: Text.Wrap
+                text: screenCloud.text
+                color: screenCloud.checked ? Theme.p.text : Theme.p.muted
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
+        }
     }
 
     SectionTitle { text: qsTr("Сайты без вопроса") }
