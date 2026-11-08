@@ -257,13 +257,27 @@ def _git_visible(root: Path) -> set[str] | None:
     return {p for p in result.stdout.decode("utf-8", "replace").split("\0") if p}
 
 
+def _git_tracked(root: Path) -> set[str]:
+    """The files git keeps (posix paths)."""
+    result = git(root, "ls-files", "--cached", "-z")
+    return {p for p in result.stdout.decode("utf-8", "replace").split("\0") if p} if result.returncode == 0 else set()
+
+
+def _in_cache(path: str) -> bool:
+    return any(part in CACHES for part in path.split("/")[:-1])
+
+
 def tree(root: Path, rel: str = "") -> list[dict[str, Any]]:
     """One folder's entries, folders first: name, path (relative, posix), dir, size. What .gitignore hides is left
-    out; outside git, well-known noise (node_modules, .venv, caches) is."""
+    out, and so is a cache folder git keeps nothing of (31.4: a project with no .gitignore showed `__pycache__`);
+    outside git, well-known noise (node_modules, .venv, caches) is."""
     folder = resolve_inside(root, rel)
     if not folder.is_dir():
         raise ProjectError(f"not a folder: {rel or '.'}")
     visible = _git_visible(root)
+    if visible is not None and any(_in_cache(p) for p in visible):
+        tracked = _git_tracked(root)
+        visible = {p for p in visible if p in tracked or not _in_cache(p)}
     prefix = _rel(root, folder)
     prefix = f"{prefix}/" if prefix else ""
     shown_dirs: set[str] = set()  # sub-folders that hold at least one file git shows

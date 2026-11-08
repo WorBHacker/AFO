@@ -4,12 +4,13 @@ import pytest
 from starlette.testclient import TestClient
 
 from common.paths import data_paths
-from hub import projects
+from hub import cards, projects
 from hub.auth import create_client
 from hub.db import Database, migrate
 from hub.projects import ProjectError
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.conftest import run_git
 
 BASE = "http://127.0.0.1:8765"
 
@@ -68,6 +69,26 @@ def test_tree_follows_gitignore(repo):
     assert [e["path"] for e in projects.tree(root, "src")] == ["src/app.py"]
     with pytest.raises(ProjectError):
         projects.tree(root, "README.md")
+
+
+def test_a_git_tree_hides_caches_git_does_not_keep(repo):
+    """31.4 (live, 2026-11-08): a git project with no .gitignore showed `__pycache__` and `.pytest_cache` in its tree,
+    and coder's card draft described them. A cache folder git keeps nothing of is left out there too; one whose
+    files git tracks (a committed `.idea/`) stays."""
+    root = repo.resolve()
+    (root / "__pycache__").mkdir()
+    (root / "__pycache__" / "app.cpython-314.pyc").write_bytes(b"\0pyc")
+    (root / "src" / "__pycache__").mkdir()
+    (root / "src" / "__pycache__" / "app.cpython-314.pyc").write_bytes(b"\0pyc")
+    (root / ".pytest_cache" / "v").mkdir(parents=True)
+    (root / ".pytest_cache" / "v" / "nodeids").write_text("[]", encoding="utf-8")
+    (root / ".idea").mkdir()
+    (root / ".idea" / "project.xml").write_text("<project/>\n", encoding="utf-8")
+    run_git(root, "add", ".idea/project.xml")
+    run_git(root, "commit", "-q", "-m", "ide settings")
+    assert [e["name"] for e in projects.tree(root) if e["dir"]] == [".idea", "src"]
+    assert [e["path"] for e in projects.tree(root, "src")] == ["src/app.py"]
+    assert "__pycache__/" not in "\n".join(cards._tree(root))
 
 
 def test_tree_without_git_hides_noise(tmp_path):
