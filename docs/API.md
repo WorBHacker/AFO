@@ -106,6 +106,8 @@
 | POST | `/v1/install/local` | только окно | A model already on this computer into llama-swap's config, where it lies (15.1). | тело `{path: str, projector: str = '', name: str = ''}` |
 | GET | `/v1/install/jobs` | только окно | `jobs()` |  |
 | POST | `/v1/install/jobs/{job_id}/{action}` | только окно | `act()` |  |
+| POST | `/v1/install/trial` | только окно | «Пробный запуск» (34.5, D57): the models added and not tried, one after another in the order they were added. |  |
+| POST | `/v1/install/trial/stop` | только окно | «Остановить»: those whose trial has not begun are added and not tried again; one being tried finishes. |  |
 | DELETE | `/v1/install/jobs/{job_id}` | только окно | `forget()` |  |
 | DELETE | `/v1/install/models/{model_id}` | только окно | `remove()` |  |
 

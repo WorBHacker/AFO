@@ -5,8 +5,10 @@ GET /system - this computer as an install sees it (video memory and RAM for a ne
 parameters fit); GET /catalog - the curated list with the variant recommended here; GET /search - Hugging Face at
 large, by words, what for, size and order (32.5); GET /repo/<a>/<b> - one repository's variants judged. POST /
 starts an install; GET /jobs lists them (`lost` - its block is gone from llama-swap's config, 34.4); POST
-/jobs/<id>/<pause|resume|cancel> (resume a lost one - its block written again); DELETE /jobs/<id> takes an
-unfinished one off the list (its files too); DELETE /models/<id> removes an installed model.
+/jobs/<id>/<pause|resume|cancel|trial> (resume a lost one - its block written again; trial - one model added and not
+tried); DELETE /jobs/<id> takes an unfinished one off the list (its files too); DELETE /models/<id> removes an
+installed model. POST /trial tries the models added from the drives, one after another in the order added (34.5);
+POST /trial/stop takes back those not begun.
 GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
 (the picture engine comes with the first).
 """
@@ -193,9 +195,23 @@ async def act(request: Request, job_id: str, action: str, client: Annotated[Clie
             return {"job": await installer.resume(job_id, client)}
         if action == "cancel":
             return {"job": await installer.cancel(job_id)}
+        if action == "trial":  # one model added and not tried (34.5)
+            return {"job": (await installer.try_added(client, job_id))[0]}
     except mi.InstallError as exc:
         raise _refusal(exc) from exc
-    raise HTTPException(status_code=404, detail="pause, resume or cancel")
+    raise HTTPException(status_code=404, detail="pause, resume, cancel or trial")
+
+
+@router.post("/trial")
+async def trial(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """«Пробный запуск» (34.5, D57): the models added and not tried, one after another in the order they were added."""
+    return {"jobs": await _installer(request).try_added(client)}
+
+
+@router.post("/trial/stop")
+async def stop_trials(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """«Остановить»: those whose trial has not begun are added and not tried again; one being tried finishes."""
+    return {"jobs": await _installer(request).stop_trials()}
 
 
 @router.delete("/jobs/{job_id}")

@@ -14,7 +14,9 @@
   context that fits the video memory with an 8-bit KV cache, else llama.cpp's --fit with a timer to unload.
 - The trial: the model loads and answers one question (the «Проверить» of 8.1); when it does not start, the
   settings get smaller (half the context, then --fit) and it is tried again; still no start - its block goes, the
-  files stay for «Повторить» or removal.
+  files stay for «Повторить» or removal. A model from the drives is not tried when added: «Пробный запуск» tries
+  those added one after another, in the order added (34.5, D57). A trial waits while «Подбор параметров» measures
+  and while a chat answers - one model at a time on the graphics card (34.4).
 - Removal: the model unloaded, its block out of the config, its files deleted - only what this installer put there.
 - Picture models (D55, 29.3): the catalog's `pictures`, each a set of files from several repositories (diffusion
   model, text encoder, VAE), for stable-diffusion.cpp's sd-server. The engine comes with the first one - its pinned
@@ -320,7 +322,9 @@ def _update(conn, job_id: str, **fields: Any) -> None:
 
 
 def installed(conn) -> list[dict[str, Any]]:
-    return [_row(r) for r in conn.execute("SELECT * FROM model_installs WHERE status = 'done' ORDER BY name")]
+    """The models in llama-swap's config by AFO - tried, or added and not tried yet (34.5)."""
+    return [_row(r) for r in conn.execute("SELECT * FROM model_installs WHERE status IN ('done', 'added') ORDER BY "
+                                          "name")]  # fmt: skip
 
 
 class Installer:
@@ -354,9 +358,12 @@ class Installer:
         self.speed: dict[str, float] = {}  # job -> bytes a second
 
     async def start(self) -> int:
-        """Installs a stopped hub left going wait for «Продолжить» (their parts stay on disk)."""
+        """Installs a stopped hub left going wait for «Продолжить» (their parts stay on disk); a model from the drives
+        whose trial it left waiting or going is «добавлена, не проверена» again (34.5) - it is in the config."""
 
         def pause(conn) -> int:
+            conn.execute("UPDATE model_installs SET status = 'added', updated_at = ? WHERE own_files = 0 AND status IN "
+                         "('trialwait', 'trial')", (utc_now(),))  # fmt: skip
             return conn.execute(
                 "UPDATE model_installs SET status = 'paused', error = ?, updated_at = ? WHERE status IN "
                 "('queued', 'downloading', 'trialwait', 'configuring', 'trial')",
@@ -672,8 +679,8 @@ class Installer:
     async def add_local(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
         """A model already on this computer (15.1, D49): {path (its file; the first part of a split one), projector
         (a file, or ''), name (the list's, its id comes from it - 34.2)} - written into llama-swap's config where it
-        lies, without a copy, and tried as an install is. Its files stay the person's: removing it never deletes
-        them."""
+        lies, without a copy: «добавлена, не проверена» - its trial is the person's «Пробный запуск» (34.5, D57). Its
+        files stay the person's: removing it never deletes them."""
         path = Path(spec["path"]).expanduser()
         if not path.is_absolute() or not path.is_file() or path.suffix.lower() not in (".gguf", ""):
             raise InstallError(tr("нет такого файла модели: {path}", path=spec["path"]), 422)
@@ -767,10 +774,51 @@ class Installer:
         self._kick()
         return await self._get(job_id)
 
+    async def try_added(self, client: Any, job_id: str = "") -> list[dict[str, Any]]:
+        """«Пробный запуск» (34.5, D57): the models added and not tried - or one of them - wait for their trial, which
+        goes one after another in the order they were added."""
+
+        def queue(conn) -> list[str]:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM model_installs WHERE status = 'added' AND (? = '' OR "
+                                                 "id = ?) ORDER BY created_at", (job_id, job_id))]  # fmt: skip
+            for each in ids:
+                _update(conn, each, status="trialwait", error="")
+            return ids
+
+        ids = await self._db.acall(queue)
+        if job_id and not ids:
+            raise InstallError(tr("пробный запуск — у добавленной и ещё не проверенной модели"))
+        for each in ids:
+            self._clients[each] = client
+            await self._publish(each)
+        self._kick()
+        return [await self._get(each) for each in ids]
+
+    async def stop_trials(self) -> list[dict[str, Any]]:
+        """«Остановить» (34.5): the models whose trial has not begun are «добавлена, не проверена» again; one being
+        tried finishes."""
+
+        def back(conn) -> list[str]:
+            ids = [r["id"] for r in conn.execute("SELECT id FROM model_installs WHERE status = 'trialwait' AND "
+                                                 "own_files = 0 ORDER BY created_at")]  # fmt: skip
+            for each in ids:
+                if each not in self._cancel:  # the one going waits for the card: it is stopped below
+                    _update(conn, each, status="added", error="")
+            return ids
+
+        ids = await self._db.acall(back)
+        for each in ids:
+            if each in self._cancel:
+                self._wanted[each] = "added"
+                self._cancel[each].set()
+            else:
+                await self._publish(each)
+        return [{**await self._get(each), "status": "added"} for each in ids]
+
     async def cancel(self, job_id: str) -> dict[str, Any]:
         """Stops an install and throws its files away; an installed model is removed with `remove`."""
         found = await self._get(job_id)
-        if found["status"] == "done":
+        if found["status"] in IN_CONFIG:
             raise InstallError(tr("модель уже установлена — её можно удалить"))
         if found["status"] in ("cancelled", "removed"):
             return found
@@ -785,7 +833,7 @@ class Installer:
     async def forget(self, job_id: str) -> None:
         """An install that did not finish off the list - with its files."""
         found = await self._get(job_id)
-        if found["status"] in (*LIVE, "done"):
+        if found["status"] in (*LIVE, *IN_CONFIG):
             raise InstallError(tr("эта установка ещё идёт или модель установлена"))
         await asyncio.to_thread(_delete_files, found)
         await self._db.acall(lambda conn: conn.execute("DELETE FROM model_installs WHERE id = ?", (job_id,)))
@@ -843,9 +891,9 @@ class Installer:
     async def _work(self) -> None:
         while True:
 
-            def oldest(conn):
-                found = conn.execute("SELECT * FROM model_installs WHERE status = 'queued' ORDER BY updated_at "
-                                     "LIMIT 1").fetchone()  # fmt: skip
+            def oldest(conn):  # in the order they were added (34.5: by the last change, a retried one jumped)
+                found = conn.execute("SELECT * FROM model_installs WHERE status IN ('queued', 'trialwait') ORDER BY "
+                                     "created_at LIMIT 1").fetchone()  # fmt: skip
                 return _row(found) if found else None
 
             found = await self._db.acall(oldest)
@@ -864,7 +912,16 @@ class Installer:
         cancel = self._cancel[job_id] = threading.Event()
         self._wanted.pop(job_id, None)
         try:
+            if found["status"] == "trialwait":  # «Пробный запуск» of a model added (34.5): in the config already
+                await self._card(job_id, cancel)
+                await self._try(await self._get(job_id), True)
+                return
             await self._download(found, cancel)
+            if not found.get("own_files", 1):  # from the drives (34.5, D57): into the config only, nothing loaded -
+                await self._configure(await self._get(job_id))  # the trial is the person's button
+                await self._sync()
+                await self._set(job_id, status="added", error="")
+                return
             await self._card(job_id, cancel)
             found = await self._get(job_id)
             if found["plan"].get("engine") == "sd":
@@ -878,8 +935,8 @@ class Installer:
             if wanted == "cancelled":
                 await asyncio.to_thread(_delete_files, await self._get(job_id))
                 await self._set(job_id, status="cancelled", error="")
-            else:
-                await self._set(job_id, status="paused", error="")
+            else:  # paused - or, a trial stopped before it began (34.5), added again
+                await self._set(job_id, status=wanted, error="")
         except (hf.HubError, InstallError, llama_config.ConfigError, GGUFError, OSError) as exc:
             log.info("install %s failed: %s", job_id, exc)
             await self._set(job_id, status="failed", error=str(exc))

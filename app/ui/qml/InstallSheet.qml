@@ -397,7 +397,23 @@ Sheet {
                 text: qsTr("Добавить файл…")
                 onClicked: modelFile.open()
             }
+            // the models added and not tried (34.5, D57): one after another, in the order they were added
+            PlainButton {
+                objectName: "tryAdded"
+                visible: Installer.untried > 0
+                kind: "primary"
+                iconName: "play"
+                text: qsTr("Пробный запуск (%1)").arg(Installer.untried)
+                onClicked: Installer.tryAll()
+            }
+            PlainButton {
+                objectName: "stopTrials"
+                visible: Installer.trialText !== ""
+                text: qsTr("Остановить")
+                onClicked: Installer.stopTrials()
+            }
         }
+        Note { visible: Installer.trialText !== ""; text: Installer.trialText; color: Theme.p.accent }
         FileDialog {
             id: modelFile
             title: qsTr("Файл модели GGUF")

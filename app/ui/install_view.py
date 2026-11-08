@@ -26,8 +26,8 @@ TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no":
 TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
           "trialwait": N_("ждёт пробного запуска"), "configuring": N_("записываю в llama-swap"),
-          "trial": N_("пробный запуск"), "done": N_("установлена"), "failed": N_("не вышло"),
-          "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
+          "trial": N_("пробный запуск"), "added": N_("добавлена, не проверена"), "done": N_("установлена"),
+          "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
 LOST = N_("нет в config.yaml")  # 34.4: «установлена», but its block is gone from llama-swap's config
 LOST_WHY = N_("Модель убрана из config.yaml llama-swap: в чате её нет. «Вернуть в llama-swap» запишет её снова.")
 LOST_ACTIONS = [("resume", N_("Вернуть в llama-swap"), "primary"), ("remove", N_("Удалить"), "danger")]
@@ -38,9 +38,10 @@ ACTIONS = {
     "failed": [("resume", N_("Повторить"), "primary"), ("forget", N_("Убрать"), "danger")],
     "cancelled": [("forget", N_("Убрать"), "plain")],
     "done": [("remove", N_("Удалить"), "danger")],
+    "added": [("trial", N_("Пробный запуск"), "primary"), ("remove", N_("Удалить"), "danger")],  # 34.5
 }
 SHOW = ("show", N_("Показать в проводнике"), "plain")  # 34.3: an install whose files are there
-SHOWN = ("done", "failed", "paused", "trialwait")
+SHOWN = ("done", "added", "failed", "paused", "trialwait")
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
@@ -284,6 +285,16 @@ def status_line(jobs: list[dict[str, Any]]) -> dict[str, Any]:
              state=progress_text(job) or status_words(job["status"]))  # fmt: skip
     short = f"{pct:.0f} %" if job["status"] == "downloading" else text  # a narrow status bar
     return {"name": f"{job['name']}{more}", "text": text, "short": short, "percent": pct / 100, "tip": tip}
+
+
+def trial_line(jobs: list[dict[str, Any]]) -> str:
+    """«Пробный запуск» of the models from the drives going (34.5): which one, and how many wait after it; '' - none."""
+    going = sorted((j for j in jobs if not j.get("own_files", 1) and j["status"] in ("trialwait", "trial")),
+                   key=lambda j: (j["status"] != "trial", j.get("created_at") or ""))  # fmt: skip
+    if not going:
+        return ""
+    more = tr(" · ещё в очереди: {count}", count=len(going) - 1) if len(going) > 1 else ""
+    return tr("Пробный запуск: «{name}»", name=going[0]["name"]) + more
 
 
 def with_hint(error: str) -> str:
@@ -579,6 +590,40 @@ class InstallView(QObject):
     def activeCount(self) -> int:
         return sum(1 for j in self._jobs if j["status"] in LIVE)
 
+    @Property(int, notify=changed)
+    def untried(self) -> int:
+        """Models added and not tried (34.5): «Пробный запуск (N)»."""
+        return sum(1 for j in self._jobs if j["status"] == "added" and not j.get("lost"))
+
+    @Property(str, notify=changed)
+    def trialText(self) -> str:
+        return trial_line(self._jobs)
+
+    @Slot()
+    def tryAll(self) -> None:
+        """«Пробный запуск»: those added, one after another in the order added - the hub's queue (34.5, D57)."""
+
+        def done(result: dict[str, Any]) -> None:
+            for job in result.get("jobs") or []:
+                self._upsert(job)
+            count = len(result.get("jobs") or [])
+            self.app.flash(tr("Пробный запуск: {count} — по одной, в порядке добавления", count=count) if count
+                           else tr("Непроверенных моделей нет"))  # fmt: skip
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.install_trial(), done,
+                              lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
+
+    @Slot()
+    def stopTrials(self) -> None:
+        def done(result: dict[str, Any]) -> None:
+            for job in result.get("jobs") or []:
+                self._upsert(job)
+            self.changed.emit()
+
+        self.app.call_or_fail(lambda: self.app.client.install_trial_stop(), done,
+                              lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
+
     @Property(bool, notify=changed)
     def busy(self) -> bool:
         return self._busy
@@ -675,7 +720,8 @@ class InstallView(QObject):
         def done(result: dict[str, Any]) -> None:
             job = result.get("job") or {}
             self._upsert(job)
-            self.app.flash(tr("Добавляю «{name}» — пробный запуск на вкладке «Установки»", name=job.get("name", "")))
+            self.app.flash(tr("«{name}» добавляется в llama-swap; проверить её — «Пробный запуск»",
+                              name=job.get("name", "")))  # fmt: skip
             self.loadLocal()
 
         self.app.call_or_fail(lambda: self.app.client.install_local(path, projector, name), done,
@@ -933,6 +979,9 @@ class InstallView(QObject):
                 self._load_catalog()
             elif job.get("status") == "failed" and before != "failed":
                 self.app.flash(tr("«{name}»: {error}", name=job.get("name"), error=job.get("error")), error=True)
+            elif job.get("status") == "added" and before not in ("added", "trialwait"):  # in the config now (34.5)
+                self.app.load_models()
+                self.loadLocal()  # its row says «в llama-swap: …»
             self.changed.emit()
         elif kind == "install.progress":
             if not any(j["id"] == payload.get("id") for j in self._jobs) and not self._jobs_loading:

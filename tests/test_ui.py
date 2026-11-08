@@ -827,8 +827,18 @@ class FakeClient:
 
     def install_act(self, job_id, action):
         self.install_calls.append((action, job_id))
-        job = {**self.install_jobs_list[0], "status": {"pause": "paused", "resume": "queued"}.get(action, "cancelled")}
-        return {"job": job}
+        job = next((j for j in self.install_jobs_list if j["id"] == job_id), self.install_jobs_list[0])
+        status = {"pause": "paused", "resume": "queued", "trial": "trialwait"}.get(action, "cancelled")
+        return {"job": {**job, "status": status}}
+
+    def install_trial(self):  # «Пробный запуск» (34.5): those added, in the order added
+        self.install_calls.append(("trial",))
+        added = sorted((j for j in self.install_jobs_list if j["status"] == "added"), key=lambda j: j["created_at"])
+        return {"jobs": [{**j, "status": "trialwait"} for j in added]}
+
+    def install_trial_stop(self):  # those the list has as waiting go back
+        self.install_calls.append(("trial-stop",))
+        return {"jobs": [{**j, "status": "added"} for j in self.install_jobs_list if j["status"] == "trialwait"]}
 
     def install_forget(self, job_id):
         self.install_calls.append(("forget", job_id))
@@ -7227,7 +7237,7 @@ def test_models_found_on_the_drives_are_listed_and_added(app):
     assert gemma["note"] == "3,3 ГБ · понимает картинки · Ollama" and gemma["inConfig"] == "gemma3"
     view.addLocal(qwen["path"], qwen["projector"], qwen["name"])
     wait_until(lambda: ("local", qwen["path"], "", "Qwen3-8B-Q4_K_M") in app.client.install_calls)
-    wait_until(lambda: "Добавляю «Qwen3-8B-Q4_K_M»" in app._flash)
+    wait_until(lambda: "«Qwen3-8B-Q4_K_M» добавляется в llama-swap" in app._flash)  # 34.5: no trial said
     view.addLocal(gemma["path"], gemma["projector"], gemma["name"])  # 34.2: its id comes from Ollama's name
     wait_until(lambda: ("local", gemma["path"], gemma["projector"], "gemma3:4b") in app.client.install_calls)
     view.addFile("file:///D:/LLM/other.gguf")  # «Добавить файл…»: any GGUF on this computer, by its file's name
@@ -7298,6 +7308,42 @@ def test_an_install_gone_from_the_config_and_one_waiting_for_the_card_say_so():
     assert status_line([waiting])["text"] == "ждёт пробного запуска"
 
 
+def test_models_added_are_tried_by_the_button(app):
+    """34.5 (2026-11-08, the user's word): «Добавить» without the trial - «добавлена, не проверена», with its own
+    «Пробный запуск» in «Установки»; «Пробный запуск (N)» beside «Добавить файл…» asks the hub to try them all in the
+    order added, the line beside says which one goes and how many wait, «Остановить» takes back those not begun."""
+    from app.ui.install_view import job_rows
+
+    view = app.install_view
+    first = {"id": "a1", "name": "A", "model_id": "a", "repo": "", "folder": "D:\\m", "own_files": 0, "error": "",
+             "files": [{"path": "A.gguf", "role": "model"}], "trial": {}, "status": "added",
+             "created_at": "2026-11-08T13:00:00.000Z"}  # fmt: skip
+    second = {**first, "id": "a2", "name": "B", "model_id": "b", "created_at": "2026-11-08T13:01:00.000Z"}
+    row = job_rows([first])[0]
+    assert row["statusWords"] == "добавлена, не проверена" and not row["live"]
+    assert [(a["id"], a["label"]) for a in row["actions"]] == [
+        ("trial", "Пробный запуск"), ("show", "Показать в проводнике"), ("remove", "Удалить")]  # fmt: skip
+    app.client.install_jobs_list = [second, first]  # the hub lists newest first
+    view._load_jobs()
+    wait_until(lambda: not app.bg.busy and view.untried == 2)
+    assert view.trialText == "" and view.activeCount == 0
+    view.tryAll()
+    wait_until(lambda: not app.bg.busy and app.client.install_calls[-1] == ("trial",))
+    assert view.untried == 0 and view.trialText == "Пробный запуск: «A» · ещё в очереди: 1"
+    assert "Пробный запуск: 2" in app.flashText
+    send(app, "install.changed", {"job": {**first, "status": "trial"}})
+    assert view.trialText == "Пробный запуск: «A» · ещё в очереди: 1"
+    send(app, "install.changed", {"job": {**first, "status": "done", "trial": {"seconds": 2.0}}})
+    assert view.trialText == "Пробный запуск: «B»"
+    app.client.install_jobs_list = [{**second, "status": "trialwait"}]  # what the hub has waiting now
+    view.stopTrials()
+    wait_until(lambda: not app.bg.busy and app.client.install_calls[-1] == ("trial-stop",))
+    assert view.trialText == "" and view.untried == 1
+    view.act("a2", "trial")  # one model's own button in «Установки»
+    wait_until(lambda: not app.bg.busy and app.client.install_calls[-1] == ("trial", "a2"))
+    assert view.trialText == "Пробный запуск: «B»"
+
+
 def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
     """34.1 (2026-11-08, the user's screenshot): an Ollama model added under its blob's name («sha256-» and 64
     characters) - «в llama-swap: …» took all the width it wanted, the row's text was squeezed to the left, and the line
@@ -7317,6 +7363,9 @@ def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
             {"name": "hf.co/IlyaGusev/saiga_nemo_12b-GGUF:Q4_K_M", "path": "C:\\Users\\u\\.ollama\\models\\blobs\\"
              + blob, "size": 7_500_000_000, "quant": "Q4_K_M", "projector": "", "source": "ollama", "verdict": "gpu",
              "words": "помещается в видеопамять — быстро", "in_config": blob}]}  # fmt: skip
+        added = {"id": "a1", "name": "A", "model_id": "a", "repo": "", "folder": "D:\\m", "own_files": 0, "error": "",
+                 "files": [], "trial": {}, "status": "added", "created_at": "2026-11-08T13:00:00.000Z"}  # fmt: skip
+        client.install_jobs_list = [added, {**added, "id": "a2", "name": "B"}]  # 34.5: two not tried yet
         app.attach(client, start_events=False)
         wait_until(lambda: not app.bg.busy)
         view = app.install_view
@@ -7343,6 +7392,9 @@ def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
         assert show.isVisible() and show.property("tip") == "Показать в проводнике"
         assert left(show) + show.width() <= left(said)
         assert all(left(t) + t.width() <= left(show) - 6 for t in shown)
+        # 34.5: «Пробный запуск (N)» beside «Добавить файл…» for the models added and not tried
+        trial, stop = (quick.window.findChild(QQuickItem, name) for name in ("tryAdded", "stopTrials"))
+        assert trial.isVisible() and trial.property("text") == "Пробный запуск (2)" and not stop.isVisible()
         assert quick.warnings == []
     finally:
         quick.close()

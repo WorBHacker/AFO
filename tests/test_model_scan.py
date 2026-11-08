@@ -14,6 +14,7 @@ import pytest
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub import model_scan
+from tests.test_llama_config import FakeLlamaSwap
 from tests.test_model_install import CONFIG, fake_hub, hub, tiny_gguf, wait_for  # noqa: F401 - the fixtures
 
 
@@ -108,18 +109,25 @@ def test_found_models_are_listed_and_added_where_they_lie(hub, tmp_path, monkeyp
     entry = shown["models"][0]
     assert entry["verdict"] == "gpu" and entry["in_config"] == "" and entry["path"] == str(model)
 
+    asked = len(FakeLlamaSwap.asked)
     job = hub.post("/v1/install/local", json={"path": str(model)}).json()["job"]
     assert job["files"][0]["done"] and not job["own_files"]
-    done = wait_for(hub, job["id"], "done", "failed")
-    assert done["status"] == "done", done["error"]
-    assert done["trial"]["tries"][0]["ok"]
-    view = lc.model_view(hub.config.read_text(encoding="utf-8"), done["model_id"])
+    added = wait_for(hub, job["id"], "added", "failed")
+    assert added["status"] == "added", added["error"]
+    assert added["trial"] == {} and len(FakeLlamaSwap.asked) == asked  # 34.5: nothing loaded until it is asked
+    view = lc.model_view(hub.config.read_text(encoding="utf-8"), added["model_id"])
     assert view["file"] == str(model).replace("\\", "/")  # where it lies: no copy
-    assert hub.get("/v1/install/found").json()["models"][0]["in_config"] == done["model_id"]
+    assert hub.get("/v1/install/found").json()["models"][0]["in_config"] == added["model_id"]
+    assert "llama-swap/" + added["model_id"] in {m["id"] for m in hub.get("/v1/models").json()["models"]}
     again = hub.post("/v1/install/local", json={"path": str(model)})
     assert again.status_code == 409 and "уже" in again.json()["detail"]
     for wrong in (str(drive / "LLM" / "notes.txt"), str(drive / "none.gguf"), "relative.gguf"):
         assert hub.post("/v1/install/local", json={"path": wrong}).status_code == 422
+    assert hub.post(f"/v1/install/jobs/{job['id']}/trial").json()["job"]["status"] == "trialwait"  # its own button
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert done["trial"]["tries"][0]["ok"] and FakeLlamaSwap.asked[-1]["model"] == done["model_id"]
+    assert hub.post(f"/v1/install/jobs/{job['id']}/trial").status_code == 409  # tried already
 
     gone = hub.delete(f"/v1/install/models/{done['model_id']}").json()["job"]
     assert gone["status"] == "removed" and model.read_bytes()[:4] == b"GGUF"  # the person's file stays
@@ -146,7 +154,7 @@ def test_an_ollama_model_is_named_by_ollama_not_by_its_file(hub, tmp_path):  # n
     plain = hub.post("/v1/install/local", json={"path": str(other)}).json()["job"]  # «Добавить файл…»: no name
     assert plain["model_id"] == "tiny"  # the header's name, not «sha256-…»
     for each in (job, plain):
-        assert wait_for(hub, each["id"], "done", "failed")["status"] == "done"
+        assert wait_for(hub, each["id"], "added", "failed")["status"] == "added"
     assert {"saiga_nemo_12b-gguf-q4_k_m", "tiny"} <= set(lc.model_blocks(hub.config.read_text(encoding="utf-8")))
 
 
@@ -163,20 +171,74 @@ def test_a_model_gone_from_the_config_shows_it_and_comes_back(hub, tmp_path):  #
         return next((j for j in hub.get("/v1/install/jobs").json()["jobs"] if j["id"] == job_id), None)
 
     job = hub.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"}).json()["job"]
-    done = wait_for(hub, job["id"], "done", "failed")
-    assert done["status"] == "done" and done["lost"] is False
+    done = wait_for(hub, job["id"], "added", "failed")
+    assert done["status"] == "added" and done["lost"] is False
     drop(done["model_id"])
     assert listed(job["id"])["lost"] is True
     hub.post(f"/v1/install/jobs/{job['id']}/resume")  # «Вернуть в llama-swap»
-    back = wait_for(hub, job["id"], "done", "failed")
-    assert back["status"] == "done" and not back["lost"]
+    back = wait_for(hub, job["id"], "added", "failed")
+    assert back["status"] == "added" and not back["lost"]
     assert back["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
 
     drop(back["model_id"])
     again = hub.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"})
     assert again.status_code == 200, again.json()
-    new = wait_for(hub, again.json()["job"]["id"], "done", "failed")
-    assert new["status"] == "done" and new["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+    new = wait_for(hub, again.json()["job"]["id"], "added", "failed")
+    assert new["status"] == "added" and new["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
     assert listed(job["id"]) is None and model.exists()  # the old row is gone from the list; the file stays
     refused = hub.post(f"/v1/install/jobs/{new['id']}/resume")  # in the config: nothing to bring back
     assert refused.status_code == 409
+
+
+def test_models_added_are_tried_by_the_button_one_at_a_time_in_order(hub, tmp_path):  # noqa: F811
+    """34.5 (2026-11-08, the user's word: «когда я добавляю модели они сразу начинают процесс пробного запуска это
+    неправильно ведь я могу что-то делать во время этого … чтобы пробный запуск шёл по тем кого первым я добавил по
+    порядку»): «Добавить» only writes a model into the config - «добавлена, не проверена», nothing loaded, nothing
+    measured. «Пробный запуск» tries those added one after another, in the order they were added (the queue went by
+    the row's last change), each after a chat's answer; «Остановить» takes back those not begun; a hub that stopped
+    meanwhile finds them added again."""
+    installer, db = hub.app.state.installer, hub.app.state.db
+
+    def add(*names):
+        jobs = [hub.post("/v1/install/local", json={"path": str(put(tmp_path / "E" / f"{n}-Q8_0.gguf",
+                tiny_gguf(120_000))), "name": f"{n}-Q8_0"}).json()["job"] for n in names]  # fmt: skip
+        for job in jobs:
+            assert wait_for(hub, job["id"], "added", "failed")["status"] == "added"
+        return jobs
+
+    def status(job):
+        return next(j for j in hub.get("/v1/install/jobs").json()["jobs"] if j["id"] == job["id"])["status"]
+
+    asked = len(FakeLlamaSwap.asked)
+    jobs = add("A", "B", "C")
+    assert len(FakeLlamaSwap.asked) == asked and not installer.busy() and not hub.app.state.tuner.state_job()["queue"]
+    chatting = [True]
+    installer.chat_busy = lambda: chatting[0]  # a chat answers: the trials wait for it
+    queued = hub.post("/v1/install/trial").json()["jobs"]
+    assert [(j["id"], j["status"]) for j in queued] == [(j["id"], "trialwait") for j in jobs]
+    db.call(lambda c: c.execute("UPDATE model_installs SET updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?",
+                                (jobs[0]["id"],)))  # the first added, changed last  # fmt: skip
+    time.sleep(0.5)
+    assert len(FakeLlamaSwap.asked) == asked
+    chatting[0] = False
+    for job in jobs:
+        assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
+    assert [a["model"] for a in FakeLlamaSwap.asked[asked:]] == [j["model_id"] for j in jobs]  # in the order added
+    assert hub.post("/v1/install/trial").json()["jobs"] == []  # none left untried
+
+    late = add("D", "E")
+    chatting[0] = True
+    hub.post("/v1/install/trial")
+    assert wait_for(hub, late[0]["id"], "trialwait")
+    asked = len(FakeLlamaSwap.asked)
+    stopped = hub.post("/v1/install/trial/stop").json()["jobs"]
+    assert {j["id"] for j in stopped} == {j["id"] for j in late}
+    for job in late:
+        assert wait_for(hub, job["id"], "added", "failed")["status"] == "added"
+    chatting[0] = False
+    time.sleep(0.5)
+    assert len(FakeLlamaSwap.asked) == asked and [status(j) for j in late] == ["added", "added"]
+
+    db.call(lambda c: c.execute("UPDATE model_installs SET status = 'trialwait' WHERE id = ?", (late[1]["id"],)))
+    hub.portal.call(installer.start)  # the hub stopped while it waited: added again, not «на паузе»
+    assert status(late[1]) == "added"

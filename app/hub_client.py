@@ -212,6 +212,13 @@ class HubClient:
     def install_act(self, job_id: str, action: str) -> dict:
         return self._call("POST", f"/v1/install/jobs/{job_id}/{action}")
 
+    def install_trial(self) -> dict:
+        """«Пробный запуск» (34.5): the models added and not tried, one after another in the order added."""
+        return self._call("POST", "/v1/install/trial")
+
+    def install_trial_stop(self) -> dict:
+        return self._call("POST", "/v1/install/trial/stop")
+
     def install_forget(self, job_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/jobs/{job_id}")
 
