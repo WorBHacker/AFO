@@ -410,6 +410,7 @@ Sheet {
             delegate: Rectangle {
                 id: local
                 required property var modelData
+                objectName: "localRow_" + modelData.name
                 width: parent ? parent.width : 600
                 height: localColumn.height + 16
                 radius: 6
@@ -429,15 +430,22 @@ Sheet {
                         font.family: Theme.uiFont
                         font.pixelSize: 13
                     }
-                    Row {
+                    // in its column (34.1): what does not fit goes to the next line, each part cut if still too long
+                    Flow {
+                        objectName: "localNote_" + local.modelData.name
+                        width: parent.width
                         spacing: 6
                         Text {
+                            width: Math.min(implicitWidth, parent.width)
+                            elide: Text.ElideRight
                             text: local.modelData.note
                             color: Theme.p.faint
                             font.family: Theme.uiFont
                             font.pixelSize: 11
                         }
                         Text {
+                            width: Math.min(implicitWidth, parent.width)
+                            elide: Text.ElideRight
                             visible: local.modelData.words !== ""
                             text: "· " + local.modelData.words
                             color: local.modelData.tone === "ok" ? Theme.p.ok : local.modelData.tone === "error"
@@ -460,7 +468,8 @@ Sheet {
                     anchors.right: parent.right
                     anchors.rightMargin: 12
                     anchors.verticalCenter: parent.verticalCenter
-                    width: Math.max(addButton.implicitWidth, inConfig.implicitWidth)
+                    // a long id (an Ollama blob's: «sha256-» and 64 characters) - at most 40 % of the row (34.1)
+                    width: Math.min(Math.max(addButton.implicitWidth, inConfig.implicitWidth), local.width * 0.4)
                     height: addButton.implicitHeight
                     PlainButton {
                         id: addButton
@@ -472,13 +481,20 @@ Sheet {
                     }
                     Text {
                         id: inConfig
+                        objectName: "localInConfig_" + local.modelData.name
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, parent.width)
+                        elide: Text.ElideMiddle
                         visible: local.modelData.inConfig !== ""
                         text: qsTr("в llama-swap: %1").arg(local.modelData.inConfig)
                         color: Theme.p.ok
                         font.family: Theme.uiFont
                         font.pixelSize: 12
+                        HoverHandler { id: inConfigHover }
+                        ToolTip.visible: inConfig.truncated && inConfigHover.hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: local.modelData.inConfig
                     }
                 }
             }

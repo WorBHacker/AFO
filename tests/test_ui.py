@@ -7232,6 +7232,52 @@ def test_models_found_on_the_drives_are_listed_and_added(app):
     wait_until(lambda: any(c[0] == "local" and c[1].endswith("other.gguf") for c in app.client.install_calls))
 
 
+def test_a_long_llama_swap_id_stays_out_of_the_rows_text(qapp):
+    """34.1 (2026-11-08, the user's screenshot): an Ollama model added under its blob's name («sha256-» and 64
+    characters) - «в llama-swap: …» took all the width it wanted, the row's text was squeezed to the left, and the line
+    «7,5 ГБ · Q4_K_M · Ollama · помещается…», which had no width of its own, ran under it. The id takes at most 40 %
+    of the row, cut in the middle; the line under the name stays in its column."""
+    from PySide6.QtCore import QObject, QPointF
+    from PySide6.QtQuick import QQuickItem
+
+    from app.ui.main import QuickApp
+
+    blob = "sha256-" + "4efb729a" * 8
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.found = {"job": {"status": "done"}, "at": "2026-11-08T13:00:00Z", "models": [
+            {"name": "hf.co/IlyaGusev/saiga_nemo_12b-GGUF:Q4_K_M", "path": "C:\\Users\\u\\.ollama\\models\\blobs\\"
+             + blob, "size": 7_500_000_000, "quant": "Q4_K_M", "projector": "", "source": "ollama", "verdict": "gpu",
+             "words": "помещается в видеопамять — быстро", "in_config": blob}]}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = quick.window.findChild(QObject, "installSheet")
+        app.openUi("install-models")
+        view.setTab("local")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.localModels)
+        for _ in range(10):
+            QApplication.processEvents()
+        name = view.localModels[0]["name"]
+        listed = quick.window.findChild(QQuickItem, "installLocal")
+        row, said, note = (item_named(listed, f"{part}_{name}") for part in ("localRow", "localInConfig", "localNote"))
+
+        def left(item):
+            return item.mapToScene(QPointF(0, 0)).x()
+
+        assert said.property("text") == f"в llama-swap: {blob}" and said.property("truncated")
+        assert said.width() <= 0.4 * row.width() + 1 and left(said) + said.width() <= left(row) + row.width()
+        shown = [t for t in note.childItems() if t.isVisible()]
+        assert [t.property("text") for t in shown] == ["7,5 ГБ · Q4_K_M · Ollama",
+                                                       "· помещается в видеопамять — быстро"]  # fmt: skip
+        assert all(left(t) + t.width() <= left(said) - 6 for t in shown)  # nothing runs under the id
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_a_finished_install_is_not_undone_by_a_stale_list(app):
     """2026-10-28 (a flaky test found it): the jobs list loading while «установлена» arrives - the list's answer was
     read before, says «загружается», and used to overwrite the event: the status bar would keep a finished install
