@@ -63,6 +63,16 @@ FILES = {
     "README.md": b"# Tiny\n",
 }
 PARAMS = 320_000  # bits a weight: Q4_K_M 4.5, Q8_0 8.5, BF16 16
+SEARCH = [  # what the stand-in Hugging Face's search finds: its tags, and gguf.total - the count it read (32.5)
+    {"id": "test/Tiny-GGUF", "downloads": 10, "likes": 2, "trendingScore": 1,
+     "lastModified": "2026-10-01T00:00:00.000Z", "tags": ["license:mit", "gguf", "conversational", "code"],
+     "gguf": {"total": PARAMS}},
+    {"id": "someone/Big-27B-MTP-GGUF", "downloads": 7, "likes": 1, "trendingScore": 3,
+     "lastModified": "2026-10-02T00:00:00.000Z", "tags": ["gguf", "conversational", "image-text-to-text"],
+     "gguf": {"total": 460_730_096}},  # the count read from its projector (32.4)
+    {"id": "someone/Tiny-abliterated-GGUF", "downloads": 5, "likes": 9, "trendingScore": 2,
+     "lastModified": "2026-10-03T00:00:00.000Z", "tags": ["gguf", "conversational"], "gguf": {"total": 2_000_000_000}},
+]  # fmt: skip
 
 
 def _zip(files: dict[str, bytes]) -> bytes:
@@ -100,6 +110,7 @@ class FakeHub(BaseHTTPRequestHandler):
     no_ranges = False  # a server that ignores Range: the whole file, 200
     overlong = 0  # bytes a piece's answer goes on past the end asked for (32.1)
     active = peak = 0  # CDN requests being served at once
+    searches: ClassVar[list] = []  # the query of each search (32.5)
     picture_auth: ClassVar[list] = []  # the Authorization header of each picture file's request
     github_auth: ClassVar[list] = []  # and of each engine archive's (GitHub's: never Hugging Face's token)
     lock = threading.Lock()
@@ -119,12 +130,17 @@ class FakeHub(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path = unquote(url.path)
         repo = "test/Tiny-GGUF"
-        if path == "/api/models":
+        if path == "/api/models":  # as Hugging Face filters: every tag, the words in the id, the count it read
             query = parse_qs(url.query)
-            assert query["filter"] == ["gguf"]
-            self._json([{"id": repo, "downloads": 10, "likes": 2, "tags": ["license:mit", "gguf"],
-                         "lastModified": "2026-10-01T00:00:00.000Z"},
-                        {"id": "someone/Tiny-abliterated-GGUF", "downloads": 5, "tags": []}])  # fmt: skip
+            FakeHub.searches.append(query)
+            words = query.get("search", [""])[0].lower()
+            found = [m for m in SEARCH if all(t in m["tags"] for t in query["filter"]) and words in m["id"].lower()]
+            if "num_parameters" in query:
+                bounds = dict(b.split(":") for b in query["num_parameters"][0].split(","))
+                low, high = int(bounds.get("min", 0)), int(bounds.get("max", 10**15))
+                found = [m for m in found if low <= m["gguf"]["total"] <= high]
+            found.sort(key=lambda m: m[query["sort"][0]], reverse=True)
+            self._json(found[: int(query["limit"][0])])
         elif path == "/api/whoami-v2":
             ok = self.headers.get("Authorization") == "Bearer hf_good"
             self._json({"name": "tester"} if ok else {"error": "Invalid credentials"}, 200 if ok else 401)
@@ -224,7 +240,7 @@ class QuietServer(ThreadingHTTPServer):
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
     FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak, FakeHub.overlong = [], False, 0, 0, 0
-    FakeHub.picture_auth, FakeHub.github_auth = [], []
+    FakeHub.picture_auth, FakeHub.github_auth, FakeHub.searches = [], [], []
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -826,3 +842,40 @@ def test_a_gated_model_wants_the_token_and_the_hub_checks_it(hub):
     hub.app.state.secrets.set(hf.TOKEN, "hf_good")
     assert hub.get("/v1/install/repo/test/Gated-GGUF").status_code == 200
     assert hub.get("/v1/install/system").json()["token"]
+
+
+def test_the_search_narrowed_by_what_for_size_and_order(hub):
+    """32.5: the search on Hugging Face was by name only. Now: what for (Hugging Face's tags), how big (its parameter
+    count - and «fits», as much as this computer holds), in what order, without the models whose refusals were taken
+    out; with no words - the most popular."""
+
+    def look(**params):
+        return [m["repo"] for m in hub.get("/v1/install/search", params=params).json()["models"]]
+
+    tiny, big, free = "test/Tiny-GGUF", "someone/Big-27B-MTP-GGUF", "someone/Tiny-abliterated-GGUF"
+    assert look() == [tiny, big, free]  # no words: the most downloaded
+    asked = FakeHub.searches[-1]
+    assert asked["filter"] == ["gguf"] and "search" not in asked and "gguf" in asked["expand[]"]
+    assert look(task="code") == [tiny] and FakeHub.searches[-1]["filter"] == ["gguf", "code"]
+    assert look(task="vision") == [big] and FakeHub.searches[-1]["filter"] == ["gguf", "image-text-to-text"]
+    assert look(task="chat", sort="likes") == [free, tiny, big]
+    assert (FakeHub.searches[-1]["filter"], FakeHub.searches[-1]["sort"]) == (["gguf", "conversational"], ["likes"])
+    assert look(sort="trending") == [big, free, tiny] and FakeHub.searches[-1]["sort"] == ["trendingScore"]
+    assert look(sort="updated") == [free, big, tiny] and FakeHub.searches[-1]["sort"] == ["lastModified"]
+
+    # Hugging Face read the 27B model's count from its projector: it comes under «up to 4 billion», the hub drops it
+    assert look(size="small") == [tiny, free]
+    assert FakeHub.searches[-1]["num_parameters"] == ["min:0,max:4000000000"]
+    assert look(size="medium") == [] and FakeHub.searches[-1]["num_parameters"] == ["min:4000000000,max:15000000000"]
+    assert look(size="huge") == [] and FakeHub.searches[-1]["num_parameters"] == ["min:40000000000"]
+    fits = hub.get("/v1/install/system").json()["fits_params"]
+    assert 22e9 < fits < 24e9  # 14.7 GB of video memory, a model of about Q4_K_M with a context of 8K
+    assert look(size="fits") == [tiny, free] and FakeHub.searches[-1]["num_parameters"] == [f"min:0,max:{fits}"]
+    assert mi.fits_params(mi.room({"memory": SPACE["memory"]})) > fits  # no graphics card: the 44 GB of RAM
+
+    assert look(plain="true") == [tiny, big]  # no models with their refusals taken out
+    assert look(q="tiny", plain="true", task="chat") == [tiny] and FakeHub.searches[-1]["search"] == ["tiny"]
+    shown = hub.get("/v1/install/search", params={"q": "big"}).json()["models"][0]
+    assert (shown["params"], shown["pipeline"]) == (27_000_000_000, "")  # by its name (32.4)
+    assert hub.get("/v1/install/search", params={"task": "pictures"}).status_code == 422
+    assert hub.get("/v1/install/search", params={"sort": "name"}).status_code == 422

@@ -1,10 +1,11 @@
 """/v1/install - local models from Hugging Face into llama-swap (stage 10.1, D37; hub/model_install.py). The desktop
 app's alone, like the launch settings (hub/api/llama.py): it decides what runs on the user's computer.
 
-GET /system - this computer as an install sees it (video memory and RAM for a new model, the drives); GET /catalog -
-the curated list with the variant recommended here; GET /search - Hugging Face at large; GET /repo/<a>/<b> - one
-repository's variants judged. POST / starts an install; GET /jobs lists them; POST /jobs/<id>/<pause|resume|cancel>;
-DELETE /jobs/<id> takes an unfinished one off the list (its files too); DELETE /models/<id> removes an installed model.
+GET /system - this computer as an install sees it (video memory and RAM for a new model, the drives, how many
+parameters fit); GET /catalog - the curated list with the variant recommended here; GET /search - Hugging Face at
+large, by words, what for, size and order (32.5); GET /repo/<a>/<b> - one repository's variants judged. POST /
+starts an install; GET /jobs lists them; POST /jobs/<id>/<pause|resume|cancel>; DELETE /jobs/<id> takes an
+unfinished one off the list (its files too); DELETE /models/<id> removes an installed model.
 GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
 (the picture engine comes with the first).
 """
@@ -13,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -49,7 +50,9 @@ async def system(request: Request, client: Annotated[Client, Depends(require_app
         server, problem = "", str(exc)
     home = mi.models_home()
     on = next((d for d in drives if str(home).upper().startswith(str(d["root"]).upper()[:2])), None)
-    return {"space": installer.space(), "drives": [{**d, "folder": str(mi.models_root(d))} for d in drives],
+    space = installer.space()
+    return {"space": space, "fits_params": mi.fits_params(space),  # the search's «поместится» (32.5)
+            "drives": [{**d, "folder": str(mi.models_root(d))} for d in drives],
             "server": server, "problem": problem, "folder": str(home),  # where a model goes unless told otherwise
             "home": {"folder": str(home), "letter": on["letter"] if on else "", "words": on.get("words", "") if on
                      else "", "kind": on.get("kind", "") if on else "", "free_gib": on["free_gib"] if on else None},
@@ -62,13 +65,18 @@ async def catalog(request: Request, client: Annotated[Client, Depends(require_ap
 
 
 @router.get("/search")
-async def search(request: Request, q: str, client: Annotated[Client, Depends(require_app)]) -> dict:
-    if not q.strip():
-        return {"models": []}
+async def search(request: Request, client: Annotated[Client, Depends(require_app)], q: str = "",
+                 task: Literal["", "chat", "code", "vision"] = "",
+                 size: Literal["", "fits", "small", "medium", "large", "huge"] = "",
+                 sort: Literal["downloads", "trending", "likes", "updated"] = "downloads",
+                 plain: bool = False) -> dict:  # fmt: skip
+    """GGUF models on Hugging Face (32.5): by words (none: the most popular), what for, size («fits» - what this
+    computer holds), order, and `plain` - none whose refusals were taken out."""
     try:
-        return {"models": await _installer(request).search(q.strip()[:100])}
+        found = await _installer(request).search(q.strip()[:100], task=task, size=size, sort=sort, plain=plain)
     except hf.HubError as exc:
         raise _refusal(exc) from exc
+    return {"models": found}
 
 
 @router.get("/repo/{author}/{name}")

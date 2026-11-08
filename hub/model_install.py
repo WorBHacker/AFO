@@ -63,6 +63,10 @@ FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
 MAX_BITS = 8.6  # above Q8_0 the quality is the same and the model only slower
 GOOD_BITS = 4.5  # from about Q4_K_M on a quantization keeps nearly all of the model
+FIT_BITS = 4.9  # a search's «поместится» (32.5): a model taken as it usually is, about Q4_K_M
+# a search's sizes (32.5): parameters from - to (0: no bound); "fits" - as much as this computer holds (fits_params)
+SIZES = {"small": (0, 4 * 10**9), "medium": (4 * 10**9, 15 * 10**9), "large": (15 * 10**9, 40 * 10**9),
+         "huge": (40 * 10**9, 0)}  # fmt: skip
 OTHER_VRAM_GIB = 1.0  # what the desktop and other programs hold of the video memory while a model is swapped
 RAM_RESERVE_GIB = 4.0  # Windows and the browser keep this much of the RAM
 DISK_MARGIN_GIB = 2.0
@@ -171,6 +175,13 @@ def verdict(size: int, info: dict[str, Any] | None, space: dict[str, Any], *, co
     if not space["vram_gib"]:
         return "cpu"
     return "split_moe" if moe else "split"
+
+
+def fits_params(space: dict[str, Any]) -> int:
+    """The most parameters a model of about Q4_K_M (FIT_BITS) may have and still be judged «gpu» here with the context
+    a variant is judged with - or, with no graphics card, «cpu» (verdict)."""
+    room_gib = space["vram_gib"] - COMPUTE_GIB if space["vram_gib"] else space["ram_gib"]
+    return max(int((room_gib - _kv_gib(None, FIT_CONTEXT)) * GIB * 8 / FIT_BITS), 0)
 
 
 def recommend(found: list[dict[str, Any]], judged: dict[str, str], *, moe: bool = False) -> str | None:
@@ -420,9 +431,16 @@ class Installer:
                 item["installed_recommended"] = (item["repo"], best["quant"]) in mine
         return listed
 
-    async def search(self, query: str) -> list[dict[str, Any]]:
+    async def search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
+                     plain: bool = False) -> list[dict[str, Any]]:  # fmt: skip
+        """Hugging Face at large (32.5): the words, what for (hf.TASKS), how big (SIZES, or "fits": what this computer
+        holds), in what order (hf.SORTS), and `plain` - none whose refusals were taken out."""
+        fewest, most = (0, fits_params(self.space())) if size == "fits" else SIZES.get(size, (0, 0))
+        if size == "fits" and not most:
+            return []  # nothing fits here
         async with httpx.AsyncClient(timeout=30.0) as http:
-            return await hf.search(http, query, token=self.token())
+            return await hf.search(http, query, token=self.token(), task=task, fewest=fewest, most=most, sort=sort,
+                                   plain=plain)  # fmt: skip
 
     # --- picture models (29.3) ---
 

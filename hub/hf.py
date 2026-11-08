@@ -39,8 +39,11 @@ SEGMENT = 64 << 20  # a piece of a big file: what one connection asks for; a bre
 PARALLEL_MIN = 2 * SEGMENT  # smaller files come over one connection
 SEGMENT_TRIES = 3  # a piece whose connection breaks is asked again this many times in all
 RETRY_S = 1.0
-SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag")
-INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "gguf", "sha")
+SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag", "gguf")
+INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "sha")
+# a search's «для чего» (32.5): Hugging Face's tags - many chat models have no pipeline tag, but all have this one
+TASKS = {"chat": "conversational", "code": "code", "vision": "image-text-to-text"}
+SORTS = {"downloads": "downloads", "trending": "trendingScore", "likes": "likes", "updated": "lastModified"}
 # a variant's quantization in its file name: Q4_K_M, IQ3_XXS, UD-Q4_K_XL, Q8_0, MXFP4, BF16...
 QUANT = re.compile(r"(?i)(?<![A-Z0-9])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|MXFP4(?:_MOE)?|NVFP4|BF16|F16|FP16|F32))"
                    r"(?![A-Z0-9])")  # fmt: skip
@@ -156,16 +159,39 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
         "license": _license(info),
         "updated": (info.get("lastModified") or "")[:10],
         "pipeline": info.get("pipeline_tag") or "",
+        "params": params_of({**info, "id": repo}),
         "unrestricted": bool(UNRESTRICTED.search(repo)) or any(UNRESTRICTED.search(t) for t in info.get("tags") or []),
         "page": f"{base_url()}/{repo}",
     }
 
 
-async def search(http: httpx.AsyncClient, query: str, *, limit: int = 30, token: str | None = None) -> list[dict]:
-    """GGUF repositories matching the words, the most downloaded first."""
-    found = await _get(http, "/api/models", tr("Поиск"), token, search=query, filter="gguf", sort="downloads",
-                       direction="-1", limit=str(limit), **{"expand[]": list(SEARCH_FIELDS)})  # fmt: skip
-    return [summary(info) for info in found if isinstance(info, dict)]
+async def search(http: httpx.AsyncClient, query: str = "", *, limit: int = 30, token: str | None = None,
+                 task: str = "", fewest: int = 0, most: int = 0, sort: str = "downloads",
+                 plain: bool = False) -> list[dict]:  # fmt: skip
+    """GGUF repositories matching the words (none: all of them), the most downloaded first - or as `sort` says;
+    `task` (TASKS), a parameter count from `fewest` to `most` (0: no bound) and `plain` (none whose refusals were
+    taken out) narrow it (32.5). Hugging Face bounds the count it read - some it read from a projector - so the hub
+    bounds params_of again, asking for more than it shows when some may drop."""
+    narrowed = bool(plain or fewest or most)
+    params: dict[str, Any] = {"filter": ["gguf", *([TASKS[task]] if task in TASKS else [])],
+                              "sort": SORTS.get(sort, "downloads"), "direction": "-1",
+                              "limit": str(limit * 2 if narrowed else limit),
+                              "expand[]": list(SEARCH_FIELDS)}  # fmt: skip
+    if query:
+        params["search"] = query
+    if fewest or most:
+        params["num_parameters"] = f"min:{fewest}" + (f",max:{most}" if most else "")
+    found = await _get(http, "/api/models", tr("Поиск"), token, **params)
+    out = []
+    for info in found:
+        if not isinstance(info, dict):
+            continue
+        shown = summary(info)
+        count = shown["params"]
+        if (plain and shown["unrestricted"]) or (count and (count < fewest or (most and count > most))):
+            continue
+        out.append(shown)
+    return out[:limit]
 
 
 def quant_of(path: str) -> str:

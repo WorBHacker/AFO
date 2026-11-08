@@ -95,7 +95,7 @@
 |---|---|---|---|---|
 | GET | `/v1/install/system` | только окно | `system()` |  |
 | GET | `/v1/install/catalog` | только окно | `catalog()` |  |
-| GET | `/v1/install/search` | только окно | `search()` | `?q: str` |
+| GET | `/v1/install/search` | только окно | GGUF models on Hugging Face (32.5): by words (none: the most popular), what for, size («fits» - what this computer holds), order, and `plain` - none whose refusals were taken out. | `?q: str = ''`<br>`?task: Literal['', 'chat', 'code', 'vision'] = ''`<br>`?size: Literal['', 'fits', 'small', 'medium', 'large', 'huge'] = ''`<br>`?sort: Literal['downloads', 'trending', 'likes', 'updated'] = 'downloads'`<br>`?plain: bool = False` |
 | GET | `/v1/install/repo/{author}/{name}` | только окно | `repository()` | `?fresh: bool = False` |
 | POST | `/v1/install` | только окно | `install()` | тело `{repo: str, quant: str, projector: bool \| None = None, drive: str = '', folder: str = '', name: str = ''}` |
 | GET | `/v1/install/pictures` | только окно | `pictures()` |  |
