@@ -40,10 +40,14 @@ offers a first model for chat, code and images. Open it again with Settings → 
 - **MCP servers**: outside MCP servers connect by command (`npx -y @modelcontextprotocol/server-…`, `uvx …`) or
   address; what only reads runs without a question, everything else needs your approval.
 - **The autonomous agent**: works toward a goal on its own; can control the windows of programs you allow
-  (Settings → Programs for the agent…) through UI Automation, after your approval, never touching password fields or
-  payments. A frame and a “Stop” bar surround the window while it acts; Ctrl+Alt+End stops it from anywhere. Tasks can
-  run on a timer or on an event (a new file in a folder, a message to your Telegram bot); nothing starts in the quiet
-  hours.
+  (Settings → Programs for the agent…) through UI Automation, with your approval as the task's mode says, never
+  touching password fields or payments. A frame and a “Stop” bar surround the window while it acts; Ctrl+Alt+End stops
+  it from anywhere. Tasks can run on a timer or on an event (a new file in a folder, a message to your Telegram bot);
+  nothing starts in the quiet hours. The task's mode says how much it decides itself: “Every step” and “Plan first” —
+  you approve the plan (and each step); “Auto” — it works on its own and asks before sending messages, writing to
+  projects, commands and the network, and once about a program you have not allowed yet; “Full” — it asks nothing:
+  writes, runs commands, goes online, sends messages, controls any program you have not denied, and never does what
+  deletes or cannot be undone (git push, rm -r, disks, the registry), AFO's keys and database, passwords or payments.
 - **A coordinator and its workers**: an agent whose profile may “give batches of tasks, in parallel” hands parts of a
   task to other agents at once — cloud ones together, local ones one at a time (one graphics card); a task that waits
   for others starts from their result. Each writing agent edits its own copy of the project, and a task may carry
