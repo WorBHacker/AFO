@@ -9,7 +9,8 @@ import time
 
 import pytest
 
-from hub import autonomous, store
+from hub import autonomous, programs, store
+from hub import computer as pc
 from hub.db import Database, available_migrations, migrate
 from hub.gateway.base import Model, StreamEvent
 from tests.test_changes import wait
@@ -455,6 +456,95 @@ def test_switched_to_full_the_card_it_waits_on_is_answered(hub, repo):  # noqa: 
     assert changed == {"autonomy": "full", "answered": [write["id"]]}
     assert ended(hub, run_id)["status"] == "done"
     assert (repo / "count.txt").exists() and (repo / "more.txt").exists()
+
+
+TELEGRAM = "C:\\Users\\u\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe"
+SIGNAL = "C:\\Users\\u\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe"
+VIBER = "C:\\Users\\u\\AppData\\Local\\Viber\\Viber.exe"
+
+
+def three_programs(hub):  # noqa: F811
+    """Telegram and Signal decided by no one, Viber denied; the window open (its frame and «stop», D41)."""
+
+    def add(conn):
+        for exe, name in ((TELEGRAM, "Telegram"), (SIGNAL, "Signal"), (VIBER, "Viber")):
+            found, _new = programs.add_manual(conn, exe, name, "2026-11-08T00:00:00Z")
+            if name == "Viber":
+                programs.decide(conn, found["id"], "deny", "app", "2026-11-08T00:00:00Z")
+
+    hub.app.state.db.call(add)
+    hub.app.state.computer._watched = lambda: True
+
+
+def decision(hub, name):  # noqa: F811
+    return hub.app.state.db.call(lambda c: dict(c.execute("SELECT decision, decided_by FROM programs WHERE name = ?",
+                                                          (name,)).fetchone()))  # fmt: skip
+
+
+def test_a_program_not_allowed_yet_is_asked_by_the_hub_itself(hub, monkeypatch):  # noqa: F811
+    """33.2 (D56, D43): in «Авто» Telegram was refused until the user allowed it in the settings by hand - their
+    «разрешаю программу» in an answer to the agent changed nothing. Now the hub asks itself, once, with buttons:
+    «Разрешить» writes the decision where the settings keep it, «Не разрешать» is the agent's no; a denied program is
+    never asked about."""
+    three_programs(hub)
+    opened = []
+    monkeypatch.setattr(pc.os, "startfile", opened.append, raising=False)
+    agent = use(hub, Scripted("agent", [
+        [PLAN], [step(1, "running")],
+        [("open_program", {"program": "Telegram"})], [("open_program", {"program": "Signal"})],
+        [("open_program", {"program": "Viber"})], [("open_program", {"program": "Skype"})],
+        [("finish", {"summary": "Открыл Telegram.", "goal_met": True})], "Готово.",
+    ]))  # fmt: skip
+    run_id = start(hub, autonomy="free")
+
+    def waiting():
+        return wait(lambda: [q for q in hub.get(f"/v1/runs/{run_id}/plan").json()["questions"]
+                             if q["status"] == "pending"])[0]  # fmt: skip
+
+    asked = waiting()
+    assert "«Telegram»" in asked["question"] and "Программы для агента" in asked["question"]
+    assert [o["label"] for o in asked["options"]] == ["Разрешить «Telegram»", "Не разрешать"]
+    hub.post(f"/v1/runs/{run_id}/questions/{asked['id']}", json={"answer": "Разрешить «Telegram»"})
+    asked = waiting()
+    assert "«Signal»" in asked["question"]
+    hub.post(f"/v1/runs/{run_id}/questions/{asked['id']}", json={"answer": "Не разрешать"})
+    assert ended(hub, run_id)["status"] == "done"
+    said = results(agent)
+    assert said[2].startswith("started «Telegram»") and opened == [TELEGRAM]
+    assert said[3].startswith("not done: the user did not allow «Signal»")
+    assert "«Viber»: the user denied it" in said[4] and "no program «Skype» on this computer" in said[5]
+    assert decision(hub, "Telegram") == {"decision": "allow", "decided_by": "app"}
+    assert decision(hub, "Signal") == {"decision": None, "decided_by": None}
+    assert len(hub.get(f"/v1/runs/{run_id}/plan").json()["questions"]) == 2  # Viber and Skype: no question
+
+
+def test_full_controls_any_program_the_user_did_not_deny(hub, monkeypatch):  # noqa: F811
+    """«Полный» (33.2, D56): a program nobody decided opens with no question - its decision stays the user's to make;
+    its window is seen; a denied one is neither opened nor seen."""
+    three_programs(hub)
+    opened = []
+    monkeypatch.setattr(pc.os, "startfile", opened.append, raising=False)
+    shown = [{"id": 7, "title": "Signal", "exe": SIGNAL.lower(), "aumid": "", "pid": 70, "minimized": False},
+             {"id": 8, "title": "Viber", "exe": VIBER.lower(), "aumid": "", "pid": 80, "minimized": False}]  # fmt: skip
+    monkeypatch.setattr(pc, "top_windows", lambda: shown)
+    monkeypatch.setattr(pc, "is_localchat", lambda pid: False)
+    agent = use(hub, Scripted("agent", [
+        [PLAN], [step(1, "running")], [("screen_windows", {})],
+        [("open_program", {"program": "Signal"})], [("open_program", {"program": "Viber"})],
+        [("finish", {"summary": "Открыл Signal.", "goal_met": True})], "Готово.",
+    ]))  # fmt: skip
+    run_id = start(hub, autonomy="full")
+    assert ended(hub, run_id)["status"] == "done"
+    said = results(agent)
+    assert "7: «Signal» - Signal" in said[2] and "Viber" not in said[2]
+    assert said[3].startswith("started «Signal»") and "«Viber»: the user denied it" in said[4]
+    assert opened == [SIGNAL] and not hub.get(f"/v1/runs/{run_id}/plan").json()["questions"]
+    assert decision(hub, "Signal") == {"decision": None, "decided_by": None}  # «Полный» decides nothing for the user
+    other = start(hub, model_id="agent/m")  # «Авто»: a window of a program nobody allowed is not seen
+    ended(hub, other)
+    windows, _error = hub.portal.call(hub.app.state.computer.handle, other, {"name": "screen_windows", "input": {}},
+                                      None, None)  # fmt: skip
+    assert "Signal" not in windows and "No window of a program you may control" in windows
 
 
 def test_the_runs_table_takes_full_and_keeps_its_rows(tmp_path, monkeypatch):

@@ -700,12 +700,15 @@ def dismiss_offer(conn) -> None:
     conn.execute("DELETE FROM settings WHERE key = ?", (OFFER,))
 
 
-def allowed_program(conn, *, exe: str = "", aumid: str = "") -> dict[str, Any] | None:
+def allowed_program(conn, *, exe: str = "", aumid: str = "", undecided: bool = False) -> dict[str, Any] | None:
     """The allowed program a window belongs to, by its process's .exe or its AppUserModelID; None - not allowed.
     A desktop program by its exact .exe (not a host of others: HOSTS); a Store app by its package folder (not one of
-    Windows' own), a Steam game by its folder."""
+    Windows' own), a Steam game by its folder. `undecided`: a program nobody decided counts too (an autonomous task in
+    «Полный», D56) - an allowed one first; a denied one never."""
     rows = conn.execute(
-        "SELECT * FROM programs WHERE decision = 'allow' AND (removed_at IS NULL OR kind = 'manual')"
+        "SELECT * FROM programs WHERE (decision = 'allow' OR (? AND decision IS NULL))"
+        " AND (removed_at IS NULL OR kind = 'manual') ORDER BY decision IS NULL",
+        (int(undecided),),
     ).fetchall()
     target = norm(exe)
     windows = norm(os.environ.get("WINDIR") or "C:\\Windows")

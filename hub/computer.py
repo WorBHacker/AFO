@@ -6,10 +6,12 @@ The agent's tools: `screen_windows` - the windows of allowed programs open now; 
 numbered, and with a question a snapshot of it shown to the model with vision (the role «vision», a local one) for
 an answer in words; `screen_act` - click, type, toggle, select, expand, collapse, scroll an element (through UI
 Automation's own patterns: no mouse, no keys, whatever is in front), keys or a click at a point (real input: only
-with the window in front), focus, wait; `open_program` - start an allowed one. Looking goes without a question (an
-autonomous run may look before its plan); acting in a program is asked once per task (the answer "for this task"
-covers that program) - not at all in a run the user let go on by itself («Сам») - and a click on what sends, posts
-or publishes - every time.
+with the window in front), focus, wait; `open_program` - start a program: one not allowed yet the hub asks the user
+about itself, once, and «Разрешить» is the same decision as in the settings (33.2, D56). Looking goes without a
+question (an autonomous run may look before its plan); acting in a program is asked once per task (the answer "for
+this task" covers that program) - not at all in a run the user let go on by itself («Авто», «Полный») - and a click
+on what sends, posts or publishes - every time, but in «Полный», which asks nothing and controls any program the
+user did not deny.
 
 Never by the agent (D41): a password field (UIA IsPassword) - not read, not typed in; what looks like card or bank
 details, a purchase, a payment or a transfer, accepting terms - the person does it. A window of a program not
@@ -47,7 +49,7 @@ import psutil
 from common.i18n import tr
 
 from . import model_settings, programs, store
-from .db import Database
+from .db import Database, utc_now
 from .events import EventBus
 from .secret_filter import clean
 
@@ -64,8 +66,9 @@ WINDOW = {"type": "integer", "description": "the window's id from screen_windows
 TOOLS = [
     {
         "name": "screen_windows",
-        "description": "The open windows of the programs the user allowed you to control: id, title, program. "
-        "Windows of other programs are not shown and cannot be touched.",
+        "description": "The open windows of the programs you may control (those the user allowed; at the level "
+        "full - any they did not deny): id, title, program. Windows of other programs are not shown and cannot be "
+        "touched.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -129,7 +132,8 @@ TOOLS = [
     },
     {
         "name": "open_program",
-        "description": "Start a program the user allowed, by its name as screen_windows or the user calls it - or "
+        "description": "Start a program of this computer, by its name as screen_windows or the user calls it (one "
+        "the user has not allowed yet, the hub asks them about first) - or "
         "have it open a link of its own kind (`link`): when the goal gives an @username, Telegram opens "
         "tg://resolve?domain=NAME as the chat of exactly @NAME. A name is not a username: never make one up from it - "
         "find the name in the program (screen_look find=). Web pages and files are not links here.",
@@ -148,6 +152,7 @@ TOOLS = [
 ]
 TOOL_NAMES = frozenset(t["name"] for t in TOOLS)
 READING = frozenset({"screen_windows", "screen_look"})
+ALLOW_PROGRAM = "allow_program"  # what open_program asks of a program not allowed yet: the user's, in the window
 
 # what the agent never does itself (D41): the person does
 FORBIDDEN = re.compile(
@@ -206,6 +211,23 @@ def screen_cloud(conn: sqlite3.Connection, run_id: str) -> bool:
     began. Anything but an agent's task: no."""
     row = conn.execute("SELECT screen_cloud FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
     return bool(row and row["screen_cloud"])
+
+
+def full_task(conn: sqlite3.Connection, run_id: str) -> bool:
+    """An autonomous task in «Полный» (D56): it controls any program the user did not deny, nobody asked."""
+    row = conn.execute("SELECT autonomy FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
+    return bool(row and row["autonomy"] == "full")
+
+
+def program_named(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any] | None:
+    """The program a name means: the same name before a part of one; of those, an allowed one, then one nobody
+    decided, a denied one last (it is refused, saying so)."""
+    rank = {"allow": 0, None: 1, "deny": 2}
+    for fits in (lambda name: name == wanted, lambda name: wanted in name):
+        found = sorted((p for p in rows if fits(p["name"].casefold())), key=lambda p: rank.get(p["decision"], 1))
+        if found:
+            return found[0]
+    return None
 
 
 # ---------------------------------------------------------------- Win32
@@ -884,30 +906,32 @@ class Computer:
 
     # --- what the agent may see ---
 
-    async def windows(self) -> list[dict[str, Any]]:
-        """The windows of allowed programs, each with its program's name."""
+    async def windows(self, run_id: str = "") -> list[dict[str, Any]]:
+        """The windows of the programs the run may control, each with its program's name: allowed ones - in
+        «Полный» (D56) any the user did not deny."""
         found = await asyncio.to_thread(top_windows)
 
         found = await asyncio.to_thread(lambda: [w for w in found if not is_localchat(w["pid"])])
 
         def allowed(conn) -> list[dict[str, Any]]:
+            undecided = full_task(conn, run_id)
             out = []
             for w in found:
-                program = programs.allowed_program(conn, exe=w["exe"], aumid=w["aumid"])
+                program = programs.allowed_program(conn, exe=w["exe"], aumid=w["aumid"], undecided=undecided)
                 if program is not None:
                     out.append({**w, "program": program["name"], "program_id": program["id"]})
             return out
 
         return await self._db.acall(allowed)
 
-    async def window(self, hwnd: Any) -> dict[str, Any]:
+    async def window(self, hwnd: Any, run_id: str = "") -> dict[str, Any]:
         try:
             hwnd = int(hwnd)
         except (TypeError, ValueError) as exc:
             raise ScreenError("window: the id from screen_windows") from exc
-        found = next((w for w in await self.windows() if w["id"] == hwnd), None)
+        found = next((w for w in await self.windows(run_id) if w["id"] == hwnd), None)
         if found is None:
-            raise ScreenError(f"no window {hwnd} of an allowed program is open now: see screen_windows")
+            raise ScreenError(f"no window {hwnd} of a program you may control is open now: see screen_windows")
         return found
 
     # --- the tools ---
@@ -924,7 +948,8 @@ class Computer:
         try:
             match call["name"]:
                 case "screen_windows":  # what another program shows may hold a key or a password (D10, D46)
-                    return clean(self._list(await self.windows())), False
+                    full = await self._db.acall(lambda conn: full_task(conn, run_id))
+                    return clean(self._list(await self.windows(run_id), full)), False
                 case "screen_look":
                     return clean(await self._look(run_id, args)), False
                 case "screen_act":
@@ -940,16 +965,19 @@ class Computer:
             return f"not done: the window changed or closed ({type(exc).__name__}); look again", True
         return f"unknown tool {call['name']}", True
 
-    def _list(self, found: list[dict[str, Any]]) -> str:
+    def _list(self, found: list[dict[str, Any]], full: bool = False) -> str:
+        if not found and full:
+            return ("No window of a program you may control is open. open_program starts any program of this "
+                    "computer the user did not deny.")  # fmt: skip
         if not found:
-            return ("No window of an allowed program is open. open_program starts one the user allowed; the user "
-                    "decides which programs you may control (Settings → Programs for the agent).")  # fmt: skip
+            return ("No window of a program you may control is open. open_program starts a program of this computer "
+                    "by its name; one the user has not allowed yet, the hub asks them about first.")  # fmt: skip
         lines = [f"- {w['id']}: «{w['title']}» - {w['program']}" + (" (minimized)" if w["minimized"] else "")
                  for w in found]  # fmt: skip
         return "Windows you may control (id: title - program):\n" + "\n".join(lines)
 
     async def _look(self, run_id: str, args: dict[str, Any]) -> str:
-        window = await self.window(args.get("window"))
+        window = await self.window(args.get("window"), run_id)
         part = self._item(run_id, window, {"element": args.get("part")})
         uia = self._uia_now()
         items, hidden = await uia.run(uia.elements, window["id"], part)
@@ -1037,7 +1065,7 @@ class Computer:
             await asyncio.wait({with_cancel}, timeout=seconds)
             with_cancel.cancel()
             return f"waited {seconds:g} s"
-        window = await self.window(args.get("window"))
+        window = await self.window(args.get("window"), run_id)
         item = self._item(run_id, window, args)
         if (
             action in ("click", "toggle", "select", "expand", "collapse", "scroll")
@@ -1129,17 +1157,28 @@ class Computer:
             raise ScreenError("open_program: the program's name")
 
         def find(conn):
-            rows = [p for p in programs.list_programs(conn) if p.get("decision") == "allow"]
-            return next((p for p in rows if p["name"].casefold() == wanted), None) or next(
-                (p for p in rows if wanted in p["name"].casefold()), None)  # fmt: skip
+            rows = [p for p in programs.list_programs(conn) if not p["removed"] or p["kind"] == "manual"]
+            return program_named(rows, wanted), full_task(conn, run_id)
 
-        program = await self._db.acall(find)
+        program, full = await self._db.acall(find)
         if program is None:
-            raise ScreenError(f"no allowed program «{args.get('program')}»: the user decides which (D43)")
+            raise ScreenError(f"no program «{args.get('program')}» on this computer: the user may add it by hand "
+                              "(Settings → Programs for the agent)")  # fmt: skip
+        if program["decision"] == "deny":
+            raise ScreenError(f"not done: «{program['name']}»: the user denied it to the agent (D43) - do the task "
+                              "without it")  # fmt: skip
         link = str(args.get("link") or "").strip()
         if link:
             check_link(link, program, await asyncio.to_thread(link_handler, link.split(":", 1)[0]))
         await self._hold(run_id)
+        if program["decision"] != "allow" and not full:  # the hub asks the user itself, once (33.2, D56)
+            why = await ask(ALLOW_PROGRAM, {"program": program["name"]}, False)
+            if why is not None:
+                raise ScreenError(why)
+            now = utc_now()
+            await self._db.acall(lambda conn: programs.decide(conn, program["id"], "allow", "app", now))
+            await self._bus.publish("program.decided", {"id": program["id"], "name": program["name"],
+                                                        "decision": "allow"})  # fmt: skip
         why = await ask("screen_act", {"program": program["name"], "window": "", "action": "open", "element": "",
                                        "text": link, "keys": ""}, True)  # fmt: skip
         if why is not None:

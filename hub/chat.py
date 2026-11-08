@@ -45,6 +45,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -139,6 +140,8 @@ PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the
 # the hub's tools and Claude Code's: a chat that used one asks its writes and commands every time (D19)
 OUTSIDE = (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], *sorted(mail.READING), "http_request", "screen_look",
            "WebFetch", "WebSearch")  # fmt: skip
+# a «yes» typed in answer to the hub's own question (33.2), not a button
+YES = re.compile(r"\s*(да|yes|ok|ок|разрешаю|разрешить)\b", re.IGNORECASE)  # i18n: keep
 
 
 class ChatService:
@@ -918,8 +921,10 @@ class ChatService:
             elif call["name"] in computer.TOOL_NAMES and self.computer is not None:  # the desktop (9.6, D41)
 
                 async def ask(tool, shown, cover, call=call):
+                    if tool == computer.ALLOW_PROGRAM:  # a program not allowed yet: the hub asks (33.2, D56)
+                        return await self._allow_program(conversation_id, shown["program"], cancel)
                     if tool == "screen_act" and await self._on_its_own(conversation_id):
-                        return None  # «Сам»: in an allowed program without a card; sending is still asked
+                        return None  # «Авто», «Полный»: in a program without a card; sending is still asked in «Авто»
                     allowed, said = await self._ask_user(conversation_id, tool, shown, None, cancel, cover=cover)
                     return None if allowed else said
 
@@ -1281,6 +1286,23 @@ class ChatService:
         """An autonomous run the user let go on by itself: «Авто» (autonomy "free") or «Полный» ("full")."""
         return await self._level(conversation_id) in ("free", autonomous.FULL)
 
+    async def _allow_program(self, conversation_id: str, name: str, cancel) -> str | None:
+        """A program the user has not allowed yet (33.2, D56): in «Авто» Telegram stayed refused while the user said
+        «разрешаю программу» to the agent - only the settings' decision counts. The hub asks itself, once, with
+        buttons; None: allowed (the caller keeps the decision there); else what the model reads."""
+        if self.autonomy is None or conversation_id in self.proving:
+            return f"not done: «{name}» is not among the programs the user allowed (D43), and nobody here can allow it"
+        allow = tr("Разрешить «{name}»", name=name)
+        question = tr("Агенту нужна программа «{name}», а её нет среди разрешённых. Разрешить агенту управлять ею? "
+                      "Решение сохранится в «Программы для агента».", name=name)  # fmt: skip
+        answer = await self.autonomy.ask_question(conversation_id, question, [allow, tr("Не разрешать")], cancel)
+        if answer is None:
+            return NOT_RUN
+        if answer.strip() == allow or YES.match(answer):
+            return None
+        return (f"not done: the user did not allow «{name}» (they answered: {answer.strip()[:300]}) - do the task "
+                "without it, or finish with an honest report")  # fmt: skip
+
     async def _ask_user(
         self, conversation_id: str, tool: str, args: dict, project, cancel, *, cover: bool = True
     ) -> tuple[bool, str | None]:
@@ -1571,9 +1593,9 @@ def _instructions(conn, conversation_id: str) -> str:
             "free": "you go on by yourself: acting in a program is not asked; before a write, a command, the network "
             "or sending a message the hub asks the user itself",
             autonomous.FULL: "nothing is asked - you act by yourself: writes, commands, the network, sending "
-            "messages, programs; never ask the user for permission or to confirm. What "
-            "deletes or cannot be undone, the hub's own data, passwords, payments and accepting terms are refused - "
-            "say so in your report",
+            "messages, any program of this computer the user did not deny; never ask the user for permission or to "
+            "confirm. What deletes or cannot be undone, the hub's own data, passwords, payments and accepting terms "
+            "are refused - say so in your report",
         }.get(row["autonomy"] or "plan", "")
         text += f"\n\n{autonomous.GUIDE}\n\nThe goal: {row['goal']}"
         hint = memory.skill_hint(conn, row["goal"])  # a skill kept from a task like this one (9.3)

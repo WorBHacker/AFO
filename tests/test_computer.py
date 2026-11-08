@@ -96,7 +96,7 @@ def test_the_agents_own_test_window(tmp_path, test_window):
         assert not failed and test_window["title"] not in said  # not allowed yet: not seen
         assert "not done" not in said and "No window" in said
         assert asyncio.run(go("screen_look", window=hwnd)) == (
-            f"no window {hwnd} of an allowed program is open now: see screen_windows", True)  # fmt: skip
+            f"no window {hwnd} of a program you may control is open now: see screen_windows", True)  # fmt: skip
         db.call(lambda c: allow(c, test_window["window"]["exe"]))
         said, failed = asyncio.run(go("screen_windows"))
         assert f"{hwnd}: «{test_window['title']}» - Python (тест)" in said

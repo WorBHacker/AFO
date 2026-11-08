@@ -630,7 +630,7 @@ conversation's text, an approval or a terminal's output.
 | `port.opened` | да | `project_id`, `port`, `pid`, `name`, `args` | hub/processes.py |
 | `process.stopped` | да | `pid`, `name`, `cmdline`, `pids`, `by` | hub/api/processes.py |
 | `processes.changed` | нет | `projects` | hub/processes.py |
-| `program.decided` | да | `id`, `name`, `decision` | hub/api/programs.py |
+| `program.decided` | да | `id`, `name`, `decision` | hub/api/programs.py, hub/computer.py |
 | `programs.found` | да | `programs` | hub/programs.py |
 | `programs.scanned` | нет | `removed_manual`, `added`, `first`, `count`, `new`, `removed`, `failed`, `error` | hub/api/programs.py, hub/programs.py |
 | `programs.scanning` | нет | — | hub/programs.py |
