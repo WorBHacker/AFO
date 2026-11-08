@@ -616,7 +616,7 @@ conversation's text, an approval or a terminal's output.
 | `link.confirmed` | да | `a_name`, `b_name`, `kind`, `description` | hub/api/links.py |
 | `links.changed` | нет | — | hub/api/links.py, hub/links.py |
 | `links.proposed` | да | `added`, `links` | hub/links.py |
-| `llama.config` | да | `model_id`, `changes`, `backup`, `verified`, `restored`, `installed` | hub/api/llama.py, hub/model_install.py |
+| `llama.config` | да | `model_id`, `changes`, `backup`, `verified`, `restored`, `renamed`, `installed` | hub/api/llama.py, hub/model_install.py |
 | `llama_swap.started` | да | `ready` | hub/server.py |
 | `mail.connected` | да | `address` | hub/api/mail.py |
 | `mail.disconnected` | да | — | hub/api/mail.py |
