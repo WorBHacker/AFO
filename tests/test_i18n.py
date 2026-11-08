@@ -209,6 +209,15 @@ def test_the_vscode_extension_speaks_vs_codes_language():
     assert keys and not i18n_catalog.RUSSIAN.search(manifest + script)
 
 
+def test_the_readme_in_both_languages():
+    """GitHub shows README.md (Russian); README.en.md is the English one; each links the other."""
+    russian = (i18n_catalog.ROOT / "README.md").read_text(encoding="utf-8")
+    english = (i18n_catalog.ROOT / "README.en.md").read_text(encoding="utf-8")
+    assert russian.startswith("# AFO\n") and english.startswith("# AFO\n")
+    assert "(README.en.md)" in russian and "(README.md)" in english
+    assert "python -m common.i18n_catalog" in english  # how a new text gets its English
+
+
 def test_the_proving_grounds_tasks_in_both_languages():
     """People read a task's title, level, about and each hidden check's why in the window's language; the objective
     and the constraints are the model's task and stay the same in every language, so exams stay comparable (10.5c)."""

@@ -70,6 +70,8 @@ def test_a_folder_too_deep_for_the_programs_files_is_refused_in_words(tmp_path):
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+SIGNPATH = ("Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by "
+            "[SignPath Foundation](https://signpath.org)")  # their terms' words, as they are  # fmt: skip
 
 
 def test_the_release_is_built_on_github_from_this_source():
@@ -97,8 +99,20 @@ def test_the_installer_has_its_sha256_beside_it(tmp_path):
     assert build.main(["--checksum", str(made)]) == 0  # after signing: only the sum again
 
 
-def test_the_installers_name_and_version_are_what_signpath_asks():
-    """20.6: SignPath Foundation's metadata rules."""
+def test_the_code_signing_policy_and_the_privacy_policy_are_where_signpath_asks():
+    """20.6: SignPath Foundation's terms - «Code signing policy» on the home page and the download page, their words,
+    the team's roles, a privacy policy; the installer's product name and version for their metadata rules."""
+    for readme in ("README.md", "README.en.md"):
+        text = (ROOT / readme).read_text(encoding="utf-8")
+        policy = text.split("Code signing policy\n", 1)[1].split("\n## ", 1)[0]
+        assert SIGNPATH in policy and "Committers and reviewers:" in policy and "Approvers:" in policy
+        assert "(PRIVACY.md)" in policy
+        install = re.search(r"\n## (Install|Установка)\n(.*?)\n## ", text, re.S).group(2)
+        assert "Code signing policy" in install and "/releases" in install  # the download says it too
+    privacy = (ROOT / "PRIVACY.md").read_text(encoding="utf-8")
+    said = ("telemetry", "Credential Manager", "127.0.0.1", "Check for updates by itself", "Anthropic", "OpenAI",
+            "Gemini", "DeepSeek", "OpenRouter", "Telegram", "Hugging Face", "Brave", "Tavily", "SearXNG")  # fmt: skip
+    assert [word for word in said if word not in privacy] == []
     iss = build.ISS.read_text(encoding="utf-8")
     assert "VersionInfoProductName=AFO" in iss and "VersionInfoProductVersion={#AppVersion}" in iss
 
