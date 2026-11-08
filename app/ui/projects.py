@@ -330,8 +330,11 @@ class Projects(QObject):
         self.cardChanged.emit()
         self._notes = []
         self.notesChanged.emit()
-        self._changes, self._rules = [], []
+        # «Удалённые файлы» and a file's outline are the project's too (31.5: they stayed the last project's)
+        self._changes, self._rules, self._history = [], [], []
         self.changesChanged.emit()
+        self._outline = {"path": "", "rows": [], "state": ""}
+        self.outlineChanged.emit()
         self._tree_gen += 1
         self._search_gen += 1
         self._search, self._searching, self._search_args = None, False, ("", False, False)

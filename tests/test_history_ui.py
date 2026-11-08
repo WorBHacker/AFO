@@ -126,6 +126,45 @@ def test_the_sheet_reads_compares_and_takes_back(qapp):  # noqa: F811
         quick.close()
 
 
+def test_another_project_shows_none_of_the_last_ones_lists(qapp):  # noqa: F811
+    """31.5: after another project was opened, «Удалённые файлы» stayed the last project's until the new one's came -
+    and for good when that failed (the error is not shown); a file's outline was that of the last project's file of
+    the same path."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = HistoryClient()
+        client.project_list.append({"id": "p2", "name": "web", "path": "C:/web", "exists": True})
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.setMode("projects")
+        app.projects.openProject("p1")
+        wait_until(lambda: app.projects.deletedFiles)
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
+        app.projects.loadOutline()
+        wait_until(lambda: app.projects.outline["state"] == "ready")
+
+        def history(project_id, path=""):
+            if project_id == "p2":
+                raise HubError("the hub is busy")
+            return HistoryClient.history(client, project_id, path)
+
+        client.history = history
+        app.projects.openProject("p2")
+        assert app.projects.deletedFiles == []
+        wait_until(lambda: not app.bg.busy)
+        assert app.projects.deletedFiles == []
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
+        assert app.projects.outline == {"rows": [], "state": ""}
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def coloured(quick, item) -> int:
     """Pixels of the item on screen that are a colour, not a grey: the text's colours drawn."""
     shot = quick.window.grabWindow()
