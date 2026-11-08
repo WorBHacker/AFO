@@ -13,7 +13,7 @@
 - `.gitignore` — что не попадает в git
 - `.github/workflows/release.yml` — сборка установщика на GitHub по тегу vX.Y.Z и черновик выпуска
 - `AFO.cmd` — запуск окна двойным щелчком, без консоли
-- `Claude.md` — указание Claude Code: работать строго по TechDoc.md и сначала задавать вопросы
+- `CLAUDE.md` — инструкции Claude Code: работать по TechDoc.md, протокол взаимодействия
 - `LICENSE` — лицензия GNU GPL 3
 - `PRIVACY.md` — политика конфиденциальности, её требует подпись SignPath
 - `README.md` — страница проекта на GitHub, в ней политика подписи кода
