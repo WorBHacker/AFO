@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hub import appcontainer, autostart
+from hub import appcontainer
 from installer import build
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,6 +70,8 @@ def test_a_folder_too_deep_for_the_programs_files_is_refused_in_words(tmp_path):
 
 
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+
+
 def test_the_icon_has_every_size_windows_asks_for():
     from PySide6.QtWidgets import QApplication
 
