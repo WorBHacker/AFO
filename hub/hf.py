@@ -344,6 +344,9 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
         progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in progress.pieces)
         progress.hasher, progress.hashed = hashlib.sha256(), 0
     if not part.exists() or part.stat().st_size != size:
+        # the list first: a part as long as the file and no list would read next time as one that came whole over one
+        # connection - its zeros as pieces done (32.1)
+        marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
         with open(part, "ab") as f:
             f.truncate(size)
     lock, wake, stop = threading.Lock(), threading.Condition(), threading.Event()
@@ -444,6 +447,7 @@ def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, toke
            lock: threading.Lock) -> None:  # fmt: skip
     """One piece at its place in the part, asked again when the connection breaks (SEGMENT_TRIES)."""
     first, last = _span(index, size)
+    need = last + 1 - first
     for attempt in range(SEGMENT_TRIES):
         got = 0
         try:
@@ -457,11 +461,13 @@ def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, toke
                     for chunk in response.iter_bytes(CHUNK):
                         if cancel.is_set() or stop.is_set():
                             raise Cancelled()
-                        f.write(chunk[: last + 1 - first - got])
+                        f.write(chunk[: need - got])
                         got += len(chunk)
                         with lock:
-                            coming[index] = min(got, last + 1 - first)
-            if got >= last + 1 - first:
+                            coming[index] = min(got, need)
+                        if got >= need:  # what a server sends past the end asked for is the next piece's place
+                            break
+            if got >= need:
                 return
         except httpx.HTTPError:
             pass

@@ -3,6 +3,7 @@ against the computer's memory, the download that goes on after a broken connecti
 sha256, the model's block in the config, the trial run that tries smaller settings, and removal. A stand-in
 Hugging Face serves a tiny GGUF model; the stand-in llama-swap of the 8.5 tests reads the same config."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -95,6 +96,7 @@ class FakeHub(BaseHTTPRequestHandler):
     ranges: ClassVar[list] = []
     spans: ClassVar[list] = []  # (file, start, end) of each Range request with an end (a piece, 2026-11-05)
     no_ranges = False  # a server that ignores Range: the whole file, 200
+    overlong = 0  # bytes a piece's answer goes on past the end asked for (32.1)
     active = peak = 0  # CDN requests being served at once
     picture_auth: ClassVar[list] = []  # the Authorization header of each picture file's request
     github_auth: ClassVar[list] = []  # and of each engine archive's (GitHub's: never Hugging Face's token)
@@ -186,7 +188,7 @@ class FakeHub(BaseHTTPRequestHandler):
             first, _, last = self.headers["Range"].split("=")[1].partition("-")
             start = int(first)
             if last:
-                end = min(int(last), len(data) - 1)
+                end = min(int(last) + self.overlong, len(data) - 1)
                 FakeHub.spans.append((name, start, end))
             else:
                 FakeHub.ranges.append((name, start))
@@ -219,7 +221,7 @@ class QuietServer(ThreadingHTTPServer):
 @pytest.fixture
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
-    FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak = [], False, 0, 0
+    FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak, FakeHub.overlong = [], False, 0, 0, 0
     FakeHub.picture_auth, FakeHub.github_auth = [], []
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
@@ -425,8 +427,9 @@ def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_pa
     marks = tmp_path / "two.gguf.parts"
 
     def stop_once_a_piece_is_done(_n):  # the user stops it (or the hub goes down) half way
-        if marks.exists():
-            cancel.set()
+        with contextlib.suppress(OSError, ValueError):  # the list is there from the start (32.1), a piece in it later
+            if json.loads(marks.read_text(encoding="utf-8")):
+                cancel.set()
 
     with pytest.raises(hf.Cancelled):
         hf.download(url, later, size=len(data), sha256=digest, token=None, report=stop_once_a_piece_is_done,
@@ -440,6 +443,43 @@ def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_pa
     assert later.read_bytes() == data and not marks.exists()
     asked = {s // (64 * 1024) for _, s, _ in FakeHub.spans}
     assert asked == set(range(5)) - set(done)  # only the pieces that were not there
+
+
+def test_pieces_stopped_before_the_first_one_is_whole_go_on_from_the_start(fake_hub, pieces, tmp_path):
+    """32.1: a stop before any piece was whole (a pause in the first seconds, the hub going down) left the part as
+    long as the file and no list of pieces - and the next try took it for a part that came over one connection: its
+    zeros as pieces done, the progress near the end, the sha256 wrong and the whole file again."""
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"
+    data = FILES[name]
+    url = hf.file_url("test/Tiny-GGUF", name)
+    digest = hashlib.sha256(data).hexdigest()
+    FakeHub.slow = 0.05  # a piece ~0.2 s
+    cancel, dest = threading.Event(), tmp_path / "early.gguf"
+    with pytest.raises(hf.Cancelled):
+        hf.download(url, dest, size=len(data), sha256=digest, token=None, report=lambda _n: cancel.set(),
+                    cancel=cancel)  # fmt: skip
+    FakeHub.spans.clear()
+    FakeHub.slow = 0.0
+    seen = []
+    hf.download(url, dest, size=len(data), sha256=digest, token=None, report=seen.append,
+                cancel=threading.Event())  # fmt: skip
+    assert dest.read_bytes() == data and seen[0] < 64 * 1024  # it starts from nothing, as it is
+    assert sorted(s // (64 * 1024) for _, s, _ in FakeHub.spans) == [0, 1, 2, 3, 4]
+
+
+def test_a_piece_takes_only_its_own_bytes(fake_hub, pieces, tmp_path, monkeypatch):
+    """32.1: a server that answers a piece with more than was asked - what comes past its end is not written over the
+    next piece."""
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"
+    data = FILES[name]
+    dest = tmp_path / "long.gguf"
+    (tmp_path / "long.gguf.part").write_bytes(b"\0" * 65536 + data[65536:])  # all but the first piece on disk
+    (tmp_path / "long.gguf.parts").write_text("[1, 2, 3, 4]", encoding="utf-8")
+    monkeypatch.setattr(hf, "CHUNK", 20_000)  # chunks that do not end where the piece does
+    FakeHub.overlong = 30_000
+    hf.download(hf.file_url("test/Tiny-GGUF", name), dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                token=None, report=lambda _n: None, cancel=threading.Event())  # fmt: skip
+    assert dest.read_bytes() == data
 
 
 def test_pieces_fall_back_to_one_connection_and_a_wrong_file_is_thrown_away(fake_hub, pieces, tmp_path):
