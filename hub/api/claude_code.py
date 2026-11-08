@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .. import projects
+from .. import claude_code, projects, store
 from ..auth import APP_CLIENT, Client
 from ..gateway import GatewayError
 from ..projects import ProjectError
@@ -45,6 +45,26 @@ async def limits(request: Request, client: Annotated[Client, Depends(require_cli
     reached one resets (null: none is reached). The event `claude_code.limits` says the same when it changes."""
     runner = request.app.state.claude_code
     return {"limits": await runner.limits(), "limited_until": await runner.limited_until()}
+
+
+@router.get("/conversations/{conversation_id}/folder")
+async def chat_folder(
+    conversation_id: str, request: Request, client: Annotated[Client, Depends(require_client)]
+) -> dict:
+    """What Claude Code made in a chat with no project, in that chat's own folder (31.7; the user's choice
+    2026-11-08: the window shows it): {path, files [{path, size}] newest first, count, truncated}. The window's alone
+    - the folder lies in the hub's data; a chat with a project, or one Claude Code never worked in, has none."""
+    if client.name != APP_CLIENT:
+        raise HTTPException(status_code=403, detail="only the desktop app may see a chat's folder")
+
+    def read(conn):
+        return store.get_title(conn, conversation_id), store.conversation_projects(conn, conversation_id)
+
+    title, attached = await request.app.state.db.acall(read)
+    if title is None:
+        raise HTTPException(status_code=404, detail="no such conversation")
+    folder = None if attached else request.app.state.claude_code.folder_of(conversation_id)  # else: in the project
+    return await asyncio.to_thread(claude_code.folder_listing, folder)
 
 
 @router.post("/projects/{project_id}/claude-code/terminal", status_code=201)

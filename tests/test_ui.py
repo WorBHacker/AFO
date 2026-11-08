@@ -856,6 +856,10 @@ class FakeClient:
     def sandbox(self, conversation_id):
         return {"projects": [dict(x) for x in self.sandboxed], "tasks": [dict(x) for x in self.task_sandboxes]}
 
+    def chat_folder(self, conversation_id):  # Claude Code's folder in a chat with no project (31.7)
+        found = getattr(self, "folders", {}).get(conversation_id)
+        return dict(found) if found else {"path": "", "files": [], "count": 0, "truncated": False}
+
     def run_tasks(self, run_id):  # a coordinator's board (16.4); another run or a chat - none
         if run_id not in self.boards:
             raise HubError(f"no such run: {run_id}")
@@ -1836,6 +1840,30 @@ def test_an_answer_cut_at_the_step_limit_says_so(app):
     app.on_event(event("chat.done", message_id=10, limited=True, usage={}, stats={}))
     last = app.messages.rows[-1]
     assert last["role"] == "error" and last["title"] == "Модель остановилась на пределе шагов"
+
+
+def test_claude_codes_folder_shows_over_the_composer(app):
+    """31.7 (the user's choice, 2026-11-08): what Claude Code made in a chat with no project lay in a folder the
+    window never showed. A bar over the composer says how many files, the newest by name, and opens the folder;
+    it is read again when an answer ends, and another chat has its own (or none)."""
+    from app.ui import chat_folder
+
+    folder = "C:/data/claude-code/chats/c1"
+    files = [{"path": p, "size": 10} for p in ("site/index.html", "style.css", "README.md", "logo.svg")]
+    app.client.folders = {"c1": {"path": folder, "files": files[:1], "count": 1, "truncated": False}}
+    opened(app)
+    wait_until(lambda: app.chat_folder.shown)
+    assert app.chat_folder.summary == "Папка чата · 1 файл: index.html" and app.chat_folder.path == folder
+    app.client.folders["c1"] = {"path": folder, "files": files, "count": 4, "truncated": False}
+    app.on_event(event("chat.done", message_id=2, usage={}, stats={}))
+    wait_until(lambda: "4 файла" in app.chat_folder.summary)
+    assert app.chat_folder.summary == "Папка чата · 4 файла: index.html, style.css, README.md…"
+    five = chat_folder.summary({"count": 5, "files": files})
+    assert five == "Папка чата · 5 файлов: index.html, style.css, README.md…"
+    app.chat_folder.copyPath()
+    assert app._clipboard().text() == folder
+    app.newChat()  # another chat: not this folder
+    assert not app.chat_folder.shown
 
 
 def test_a_new_message_is_not_a_chat_switch(app):
@@ -5957,6 +5985,32 @@ def test_a_busy_window_thread_is_written_down(qapp, caplog):
         assert len(watch.told) == 1
     finally:
         watch.stop()
+
+
+def test_claude_codes_folder_bar_in_the_window(qapp):
+    """31.7: the bar is drawn over the composer when the chat's folder holds files, and the chat leaves it room."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        bar = quick.window.findChild(QObject, "chatFolderBar")
+        opened(app)
+        wait_until(lambda: not app.bg.busy)
+        assert not bar.property("visible")
+        made = {"path": "C:/f", "files": [{"path": "a.py", "size": 1}], "count": 1, "truncated": False}
+        client.folders = {"c1": made}
+        app.on_event(event("chat.done", message_id=2, usage={}, stats={}))
+        wait_until(lambda: bar.property("visible"))
+        assert quick.window.findChild(QObject, "chatFolderOpen") is not None
+        assert quick.warnings == []
+    finally:
+        quick.close()
 
 
 def test_a_sandbox_chat_in_the_window(qapp):

@@ -635,6 +635,35 @@ def goal_settled(hub, cid, *statuses, timeout=90):
         time.sleep(0.1)
 
 
+def test_the_folder_of_a_chat_with_no_project_is_listed(hub):
+    """31.7 (the user's choice, 2026-11-08: «показывать его папку в окне»): what Claude Code made in a chat with no
+    project lay in a folder of the hub's data that the window never showed. The hub lists it for the window - newest
+    first, caches left out; a chat Claude Code has not worked in, or one with a project, has none."""
+    import os
+
+    cid = hub.http.post("/v1/conversations", json={}).json()["id"]
+    empty = {"path": "", "files": [], "count": 0, "truncated": False}
+    assert hub.http.get(f"/v1/conversations/{cid}/folder").json() == empty
+    send(hub, cid, "hello")
+    hub.wait_idle(cid)
+    folder = data_paths().root / "claude-code" / "chats" / cid
+    assert hub.http.get(f"/v1/conversations/{cid}/folder").json() == {**empty, "path": str(folder)}
+    (folder / "site").mkdir()
+    (folder / "site" / "index.html").write_text("<h1>Привет</h1>\n", encoding="utf-8")
+    (folder / "README.md").write_text("# сайт\n", encoding="utf-8")
+    os.utime(folder / "README.md", (1_700_000_000, 1_700_000_000))  # the older one
+    (folder / "node_modules" / "x").mkdir(parents=True)
+    (folder / "node_modules" / "x" / "index.js").write_text("", encoding="utf-8")
+    found = hub.http.get(f"/v1/conversations/{cid}/folder").json()
+    assert found["path"] == str(folder) and found["count"] == 2 and not found["truncated"]
+    newest_first = ["site/index.html", "README.md"]
+    assert [(f["path"], f["size"]) for f in found["files"]] == [(p, (folder / p).stat().st_size) for p in newest_first]
+
+    with_project = chat_with_project(hub)
+    assert hub.http.get(f"/v1/conversations/{with_project}/folder").json() == empty
+    assert hub.http.get("/v1/conversations/nope/folder").status_code == 404
+
+
 def set_goal(hub, cid, **fields):
     body = {"objective": "edit every x in conf.py", "criteria": [{"command": X_IS_2}],
             "model_id": "claude-code/default", **fields}  # fmt: skip

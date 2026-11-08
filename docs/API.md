@@ -446,6 +446,7 @@
 |---|---|---|---|---|
 | GET | `/v1/claude-code` | только окно | `status()` |  |
 | GET | `/v1/claude-code/limits` | только окно | The subscription's limits as Claude Code last told them (20.3), per window, those not reset yet: {status, window, used (0-1 or null), resets_at (seconds since the epoch or null), seen_at}; `limited_until` - when a reached one resets (null: none is reached). The event `claude_code.limits` says the same when it changes. |  |
+| GET | `/v1/conversations/{conversation_id}/folder` | только окно | What Claude Code made in a chat with no project, in that chat's own folder (31.7; the user's choice 2026-11-08: the window shows it): {path, files [{path, size}] newest first, count, truncated}. The window's alone - the folder lies in the hub's data; a chat with a project, or one Claude Code never worked in, has none. |  |
 | POST | `/v1/projects/{project_id}/claude-code/terminal` | только окно | `open_terminal()` | тело `{cols: int = 120, rows: int = 30}` |
 
 ### changes

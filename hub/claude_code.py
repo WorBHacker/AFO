@@ -16,7 +16,8 @@ so it reads the ecosystem through the same tools as any MCP client, and asks for
 The same CLI can run interactively in a hub terminal (`terminal_command`): then it asks in its own window.
 
 A chat with no project (2026-10-28, the user's word) works too: Claude Code starts in an empty folder of that chat's
-own (`<data>/claude-code/chats/<chat>`), the user's files elsewhere. The chat's rights apply to what it asks (D17):
+own (`<data>/claude-code/chats/<chat>`), the user's files elsewhere; what it makes there the window shows over the
+composer (31.7, `folder_listing`). The chat's rights apply to what it asks (D17):
 «Только чтение» refuses its edits and commands, «Доверенный» lets its edits through without a card; its own questions
 (AskUserQuestion) come to the chat with their options to pick (`autonomous.Autonomy.ask_question`).
 
@@ -407,6 +408,27 @@ def effort_for(effort: str | None, session_model: str | None) -> str | None:
     return effort
 
 
+FOLDER_LISTED = 50  # files of a chat's folder named to the window (31.7); the rest are counted
+
+
+def folder_listing(folder: Path | None) -> dict[str, Any]:
+    """What is in a chat's own folder (31.7): {path, files [{path, size}] newest first, count, truncated} - caches
+    (node_modules, .venv, ...) left out; no folder (None: the chat has a project) - an empty path."""
+    if folder is None or not folder.is_dir():
+        return {"path": "", "files": [], "count": 0, "truncated": False}
+    found = []
+    for place, dirs, names in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in projects.CACHES]
+        for name in names:
+            path = Path(place) / name
+            with contextlib.suppress(OSError):
+                stat = path.stat()
+                found.append((stat.st_mtime, path.relative_to(folder).as_posix(), stat.st_size))
+    found.sort(key=lambda f: (-f[0], f[1]))
+    return {"path": str(folder), "files": [{"path": p, "size": s} for _m, p, s in found[:FOLDER_LISTED]],
+            "count": len(found), "truncated": len(found) > FOLDER_LISTED}  # fmt: skip
+
+
 def error_text(result: dict[str, Any]) -> str:
     """What went wrong, from a result with is_error: its text, or its list of errors, or its kind."""
     errors = result.get("errors")
@@ -580,9 +602,13 @@ class ClaudeCodeRunner:
 
     def chat_folder(self, conversation_id: str) -> Path:
         """Where Claude Code works for a chat with no project: an empty folder of that chat's own."""
-        folder = self._paths.root / "claude-code" / "chats" / conversation_id
+        folder = self.folder_of(conversation_id)
         folder.mkdir(parents=True, exist_ok=True)
         return folder
+
+    def folder_of(self, conversation_id: str) -> Path:
+        """The chat's folder, made or not (31.7: the window shows what is in it)."""
+        return self._paths.root / "claude-code" / "chats" / conversation_id
 
     async def _turn(self, turn, argv, model, text, cancel, client_id) -> dict[str, Any]:
         loop = asyncio.get_running_loop()

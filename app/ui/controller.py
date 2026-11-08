@@ -31,6 +31,7 @@ from .agent_keys_view import AgentKeys
 from .agents import Agents
 from .approvals import Approvals
 from .autonomy import AutonomyView
+from .chat_folder import ChatFolder
 from .check_view import CheckView
 from .composer import Mentions
 from .computer_view import ComputerView
@@ -257,6 +258,7 @@ class Controller(QObject):
         self.mail_view = MailView(self)  # the agent's mailbox, a section of Connections (9.4b, Q21)
         self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
+        self.chat_folder = ChatFolder(self)  # Claude Code's folder in a chat with no project (31.7)
         self.install_view = InstallView(self)  # local models from Hugging Face (10.1, D37)
         self.setup_view = SetupView(self)  # the first-run wizard (10.2)
         self.release_view = ReleaseView(self)  # AFO's own updates (10.4d)
@@ -270,6 +272,7 @@ class Controller(QObject):
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
         self.currentChanged.connect(self.goal_view.load)
+        self.currentChanged.connect(self.chat_folder.load)
         self.tasks_view = TasksView(self)  # a coordinator's board: its tasks, live (16.4, D50)
         self.currentChanged.connect(self.tasks_view.load)
         self.modelChanged.connect(self.goal_view.editorChanged)  # the card names the model, its price; Claude Code
@@ -1649,6 +1652,7 @@ class Controller(QObject):
         kind = event.get("type", "")
         payload = event.get("payload") or {}
         cid = payload.get("conversation_id")
+        self.chat_folder.on_event(kind, payload)
         if kind == "chat.run_started":
             self.busy.add(cid)
             self.live[cid] = LiveRun(payload.get("model_id", ""))

@@ -86,27 +86,35 @@ Window {
             y: titleBar.height
             width: parent.width
             height: parent.height - titleBar.height - composer.height - (sandboxBar.visible ? sandboxBar.height : 0)
+                    - (folderBar.visible ? folderBar.height : 0)
                     - (goalBar.visible ? goalBar.height : 0) - (tasksBar.visible ? tasksBar.height : 0)
         }
         TasksBar {
             id: tasksBar
             visible: (App.mode === "chats" || App.showProjectChat) && Tasks.shown
-            anchors.bottom: goalBar.visible ? goalBar.top : sandboxBar.visible ? sandboxBar.top : composer.top
+            anchors.bottom: goalBar.visible ? goalBar.top : sandboxBar.visible ? sandboxBar.top : folderBar.visible
+                            ? folderBar.top : composer.top
             width: parent.width
             onBoardRequested: tasksSheet.open()
         }
         GoalBar {
             id: goalBar
             visible: (App.mode === "chats" || App.showProjectChat) && Goal.shown
-            anchors.bottom: sandboxBar.visible ? sandboxBar.top : composer.top
+            anchors.bottom: sandboxBar.visible ? sandboxBar.top : folderBar.visible ? folderBar.top : composer.top
             width: parent.width
         }
         SandboxBar {
             id: sandboxBar
             visible: (App.mode === "chats" || App.showProjectChat) && Sandbox.active
-            anchors.bottom: composer.top
+            anchors.bottom: folderBar.visible ? folderBar.top : composer.top
             width: parent.width
             onReviewRequested: sandboxSheet.open()
+        }
+        ChatFolderBar {  // what Claude Code made in a chat with no project (31.7)
+            id: folderBar
+            visible: (App.mode === "chats" || App.showProjectChat) && ChatFolder.shown
+            anchors.bottom: composer.top
+            width: parent.width
         }
         AgentView {
             visible: App.mode === "agent"

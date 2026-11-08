@@ -338,6 +338,10 @@ class HubClient:
     def sandbox(self, conversation_id: str) -> dict:
         return self._call("GET", f"/v1/conversations/{conversation_id}/sandbox")
 
+    def chat_folder(self, conversation_id: str) -> dict:
+        """What Claude Code made in a chat with no project (31.7): {path, files, count, truncated}."""
+        return self._call("GET", f"/v1/conversations/{conversation_id}/folder")
+
     def apply_sandbox(self, conversation_id: str, project_id: str, files: list[str] | None = None,
                       hunks: dict[str, list[int]] | None = None) -> dict:  # fmt: skip
         """All the sandbox's files, or only those ticked (17.1) - of a file in `hunks`, those hunks (17.4)."""
