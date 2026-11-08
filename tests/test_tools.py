@@ -171,6 +171,24 @@ def test_search_and_find_symbol_go_through_all_the_projects_without_one_named(re
         assert "project" not in names[name]["parameters"]["required"]
 
 
+def test_the_chats_only_project_needs_no_name(ctx, repo, tmp_path):
+    """31.1 (live, 2026-11-08): `coder` left `project` out of an edit_file in a chat with one project and lost a step
+    to «`project` must be a project's name». With one project the hub takes it, as a goal's criterion does; with
+    several the name is still needed, and an unknown name is still refused."""
+    text, error = tool("read_file", {"path": "README.md"}, ctx)
+    assert not error and "# Проект" in text
+    text, error = tool("list_files", {"project": "  "}, ctx)
+    assert not error and "README.md" in text
+
+    other = tmp_path / "web"
+    other.mkdir()
+    both = ToolContext([project(repo.resolve()), project(other.resolve(), "web", "p2")])
+    said, error = tool("read_file", {"path": "README.md"}, both)
+    assert error and "`project` must be a project's name: proj, web" in said
+    said, error = tool("read_file", {"project": "nope", "path": "README.md"}, ctx)
+    assert error and "no project 'nope'" in said
+
+
 def test_an_idea_is_searched_by_several_words_of_the_code_at_once(ctx, repo):
     """18.1 (D52): «where are rights checked?» is no word in the code - the description tells a model to look once
     for several words the code would use, in English, as a regular expression; a small window's short description

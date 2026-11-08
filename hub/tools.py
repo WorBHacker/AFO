@@ -205,8 +205,12 @@ class ToolContext:
         self.by_name = {p.name.casefold(): p for p in self.projects} | {p.id: p for p in self.projects}
 
     def project(self, value: Any) -> Project:
+        """The project a call names; none named - the chat's only one (31.1: a model left it out and lost a step)."""
         if not isinstance(value, str) or not value.strip():
-            raise ToolError("`project` must be a project's name")
+            if len(self.projects) == 1:
+                return self.projects[0]
+            names = ", ".join(p.name for p in self.projects) or "none"
+            raise ToolError(f"`project` must be a project's name: {names}")
         found = self.by_name.get(value.strip().casefold()) or self.by_name.get(value.strip())
         if found is None:
             names = ", ".join(p.name for p in self.projects) or "none"
