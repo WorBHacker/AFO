@@ -67,6 +67,26 @@ def test_monitor_publishes_only_changes_and_does_not_store_them(monkeypatch):
     assert latest["local"]["reachable"] is False
 
 
+def test_the_machine_is_known_before_llama_swap_answers(monkeypatch):
+    """35.2 (a cold start, 2026-11-08): the first sample waited for llama-swap - for 2-3 s the hub said there was no
+    card and no memory. The card and the memory are known at once, and told to whoever keeps them."""
+    monkeypatch.setattr("hub.system_status.memory_sample", lambda: {"ram_used_gib": 1.0, "ram_total_gib": 64.0})
+    told = []
+    monitor = StatusMonitor(FakeBus(), "http://127.0.0.1:9", interval_s=0, gpu=FixedGpu())
+    monitor.on_machine = told.append
+    seen = {}
+
+    async def slow_llama_swap(_url):
+        seen["machine"], seen["latest"] = monitor.machine, monitor.latest
+        return {"reachable": False, "running": []}
+
+    monkeypatch.setattr("hub.system_status.llama_swap_sample", slow_llama_swap)
+    assert monitor.machine is None
+    asyncio.run(monitor.sample())
+    assert seen["latest"] is None and seen["machine"]["gpu"]["name"] == "GPU"
+    assert seen["machine"]["memory"]["ram_total_gib"] == 64.0 and told == [seen["machine"]]
+
+
 def test_who_holds_llama_swaps_port_and_llama_swap_once_it_is_free(monkeypatch):
     """23.4: the status line says who holds the port; when that program lets it go, llama-swap starts."""
     holder = {"port": 8080, "pid": 4242, "name": "strata.exe", "exe": ""}

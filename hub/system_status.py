@@ -158,14 +158,20 @@ class StatusMonitor:
         self._task: asyncio.Task | None = None
         self._again: asyncio.Task | None = None
         self.latest: dict[str, Any] | None = None
+        self.machine: dict[str, Any] | None = None  # the card and the memory: at once, llama-swap may be slow (35.2)
+        self.on_machine: Callable[[dict[str, Any]], Any] | None = None  # who keeps them (computer.json)
 
     async def sample(self) -> dict[str, Any]:
         if self._gpu is None:
             self._gpu = await asyncio.to_thread(GpuProbe)
         gpu = await asyncio.to_thread(self._gpu.sample)
+        memory = await asyncio.to_thread(memory_sample)
+        self.machine = {"gpu": gpu, "memory": memory}
+        if self.on_machine is not None:
+            self.on_machine(self.machine)
         status = {
             "gpu": gpu,
-            "memory": await asyncio.to_thread(memory_sample),
+            "memory": memory,
             "local": await llama_swap_sample(self._llama_swap_url),
         }
         held = ((self.latest or {}).get("local") or {}).get("taken_by")

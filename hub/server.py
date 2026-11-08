@@ -185,8 +185,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             gateway,
             secrets_store,
             llama_swap_url=settings.llama_swap_url,
-            status=lambda: app.state.status.latest,
+            status=lambda: app.state.status.latest or app.state.status.machine,
+            computer=paths.computer,
         )  # local models (10.1, D37)
+        app.state.status.on_machine = app.state.installer.note_machine  # computer.json (35.2, D58)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word

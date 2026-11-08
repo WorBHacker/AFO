@@ -42,7 +42,7 @@ from typing import Any
 
 import httpx
 
-from common import disks, hardware
+from common import disks, hardware, kept_json
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
 from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
@@ -331,7 +331,9 @@ class Installer:
     """The hub's model installs: Hugging Face asked and cached, one download at a time, the config and the trial."""
 
     def __init__(self, db, bus, gateway, secrets, *, llama_swap_url: str, status: Callable[[], dict[str, Any] | None],
-                 drives: Callable[[], list[dict]] = disks.drives):  # fmt: skip
+                 drives: Callable[[], list[dict]] = disks.drives, computer: Path | None = None):  # fmt: skip
+        self._computer_file = computer  # which computer this is, between runs (computer.json, 35.2, D58)
+        self._computer = kept_json.read(computer) if computer is not None else {}
         self._db = db
         self._bus = bus
         self._gateway = gateway
@@ -421,7 +423,28 @@ class Installer:
         return self._headers[repo, path]
 
     def space(self) -> dict[str, Any]:
-        return room(self._status())
+        return room(self._status() or self._kept_machine())
+
+    def _kept_machine(self) -> dict[str, Any] | None:
+        """computer.json as a sample (35.2): a hub just started, before its first look at the machine - the whole
+        memory counted free for those seconds."""
+        kept = self._computer
+        if not kept.get("ram_total_gib") and not kept.get("vram_total_gib"):
+            return None
+        gpu = {"name": kept.get("gpu") or "", "vram_total_mib": (kept.get("vram_total_gib") or 0) * 1024}
+        return {"gpu": gpu, "memory": {"ram_total_gib": kept.get("ram_total_gib") or 0.0}}
+
+    def note_machine(self, machine: dict[str, Any]) -> None:
+        """The card and the memory as sampled: into computer.json when they are others than it says (35.2, D58) -
+        what changes by the minute is not kept."""
+        space = room(machine)
+        known = {key: space[key] for key in ("gpu", "vram_total_gib", "ram_total_gib")}
+        if self._computer_file is None or not (known["vram_total_gib"] or known["ram_total_gib"]):
+            return  # nothing sampled: what is known stays
+        if {key: self._computer.get(key) for key in known} != known:
+            self._computer = {**known, "at": utc_now()}
+            with contextlib.suppress(OSError):
+                kept_json.write(self._computer_file, self._computer)
 
     async def details(self, repo: str, entry: dict[str, Any] | None = None) -> dict[str, Any]:
         """A repository as the window shows it: each variant judged against this computer, the one recommended,

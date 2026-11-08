@@ -7338,6 +7338,28 @@ def test_the_install_sheet_opened_before_the_hub_is_up_loads_when_it_comes(app, 
     assert len(tries) == 3
 
 
+def test_the_install_sheet_says_what_it_remembers_until_the_hub_answers(app):
+    """35.2 (D58): the window reads computer.json itself - while the hub starts after an update it already says which
+    computer this is; a file not there or broken - as before."""
+    view, client, file = app.install_view, app.client, app.paths.computer
+    file.write_text(json.dumps({"gpu": "NVIDIA GeForce RTX 5080", "vram_total_gib": 15.9, "ram_total_gib": 63.4,
+                                "at": "2026-11-08T15:00:00Z"}), encoding="utf-8")  # fmt: skip
+    app.client = None
+    view.load()
+    assert view.systemText == "NVIDIA GeForce RTX 5080: 15,9 ГБ видеопамяти · ОЗУ 63,4 ГБ — хаб запускается…"
+    app.attach(client, start_events=False)
+    wait_until(lambda: not app.bg.busy and view.systemText.startswith("RTX 5080: для новой модели"))
+    view._system = {}
+    file.write_text(json.dumps({"gpu": "", "vram_total_gib": 0, "ram_total_gib": 31.9}), encoding="utf-8")
+    app.client = None
+    view.load()
+    assert view.systemText == "ОЗУ 31,9 ГБ — хаб запускается…"
+    file.write_text("{not json", encoding="utf-8")
+    view.load()
+    assert view.systemText == "Смотрю, что умеет этот компьютер…"
+    app.client = client
+
+
 def test_models_added_are_tried_by_the_button(app):
     """34.5 (2026-11-08, the user's word): «Добавить» without the trial - «добавлена, не проверена», with its own
     «Пробный запуск» in «Установки»; «Пробный запуск (N)» beside «Добавить файл…» asks the hub to try them all in the

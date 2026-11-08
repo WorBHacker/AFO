@@ -822,6 +822,38 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
 
 
+def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
+    """35.2 (2026-11-08, the user's word: «сделать документ для приложение чтобы каждый раз не провести замеры»): the
+    graphics card and the memory go into computer.json in the data folder, which an update leaves alone - only when
+    they are different ones, not with what changes by the minute. A hub just started, before its first sample, judges
+    by it: in its first seconds it said there was no card and no memory."""
+    installer, file = hub.app.state.installer, data_paths().computer
+    assert not file.exists()
+    installer.note_machine(SPACE)
+    saved = json.loads(file.read_text(encoding="utf-8"))
+    assert (saved["gpu"], saved["vram_total_gib"], saved["ram_total_gib"]) == ("RTX", 16.0, 64.0) and saved["at"]
+    written = file.read_bytes()
+    busy = {"gpu": {**SPACE["gpu"], "vram_used_mib": 9000}, "memory": {**SPACE["memory"], "ram_used_gib": 50.0}}
+    file.write_bytes(written + b" ")  # a write would take this space away
+    installer.note_machine(busy)
+    assert file.read_bytes() == written + b" "
+
+    hub.app.state.status.latest = None  # no sample yet
+    space = hub.get("/v1/install/system").json()["space"]
+    assert (space["gpu"], space["vram_total_gib"], space["vram_gib"], space["ram_gib"]) == ("RTX", 16.0, 15.7, 60.0)
+    started = mi.Installer(None, None, None, None, llama_swap_url="", status=lambda: None, computer=file)  # restarted
+    assert started.space()["gpu"] == "RTX" and started.space()["ram_total_gib"] == 64.0
+
+    other = {**SPACE, "gpu": {**SPACE["gpu"], "name": "RTX 6090", "vram_total_mib": 32768}}
+    installer.note_machine(other)  # another card: the file says so
+    assert json.loads(file.read_text(encoding="utf-8"))["gpu"] == "RTX 6090"
+    installer.note_machine({"gpu": None, "memory": None})  # nothing sampled: nothing forgotten
+    assert json.loads(file.read_text(encoding="utf-8"))["gpu"] == "RTX 6090"
+    file.write_text("{not json", encoding="utf-8")  # only a memory: never a reason to fail
+    broken = mi.Installer(None, None, None, None, llama_swap_url="", status=lambda: None, computer=file)
+    assert broken.space()["gpu"] == "" and broken.space()["vram_total_gib"] == 0
+
+
 def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     """34.4 (2026-11-08): «Подбор параметров» measured one model with llama-bench (past llama-swap) while an install's
     trial loaded the next into llama-swap - two models at once filled the memory. The install waits, its files down,

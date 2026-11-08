@@ -54,6 +54,16 @@ class DataPaths:
         return self.root / "backups"
 
     @property
+    def computer(self) -> Path:
+        """Which computer this is (D58, 35.2): the window reads it before the hub is up."""
+        return self.root / "computer.json"
+
+    @property
+    def hf_answers(self) -> Path:
+        """What Hugging Face said about the models offered (D58, 35.3)."""
+        return self.root / "hf_answers.json"
+
+    @property
     def tokens(self) -> Path:
         """Client token files the hub hands to local clients (the app reads tokens/app.token)."""
         return self.root / "tokens"

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QTimer, QUrl, Signal, Slot
 
+from common import kept_json
 from common.i18n import N_, decimal, language, tr
 from common.plain_errors import explain
 
@@ -108,6 +109,17 @@ def system_text(system: dict[str, Any]) -> str:
         parts.append(tr("сейчас загружена «{models}» — на время работы новой она выгрузится",
                         models=", ".join(space["loaded"])))  # fmt: skip
     return " · ".join(parts)
+
+
+def kept_text(computer: dict[str, Any]) -> str:
+    """What computer.json says, while the hub starts (35.2, D58); '' - nothing kept."""
+    if not computer.get("ram_total_gib"):
+        return ""
+    memory = tr("ОЗУ {size}", size=gb(computer["ram_total_gib"], of_bytes=False))
+    card = (tr("{gpu}: {size} видеопамяти · ", gpu=computer.get("gpu") or tr("Видеокарта"),
+               size=gb(computer["vram_total_gib"], of_bytes=False))
+            if computer.get("vram_total_gib") else "")  # fmt: skip
+    return tr("{card}{memory} — хаб запускается…", card=card, memory=memory)
 
 
 def verdict_of(variant: dict[str, Any] | None) -> tuple[str, str]:
@@ -389,6 +401,7 @@ class InstallView(QObject):
         super().__init__(app)
         self.app = app
         self._system: dict[str, Any] = {}
+        self._kept: dict[str, Any] = {}  # computer.json, until the hub answers (35.2)
         self._opened = False  # the sheet has been opened: it loads again when the hub connects (35.1)
         self._system_tries = 0
         self._catalog: list[dict[str, Any]] = []
@@ -423,7 +436,9 @@ class InstallView(QObject):
 
     @Property(str, notify=changed)
     def systemText(self) -> str:
-        return system_text(self._system) if self._system else tr("Смотрю, что умеет этот компьютер…")
+        if self._system:
+            return system_text(self._system)
+        return kept_text(self._kept) or tr("Смотрю, что умеет этот компьютер…")
 
     @Property(str, notify=changed)
     def problem(self) -> str:
@@ -636,6 +651,9 @@ class InstallView(QObject):
     @Slot()
     def load(self) -> None:
         self._opened = True
+        if not self._system:  # which computer this is, before the hub says (35.2, D58)
+            self._kept = kept_json.read(self.app.paths.computer)
+            self.changed.emit()
         if self.app.client is None:
             return  # the window came up before the hub (after an update: by 16 s): `connected` loads it (35.1)
         self._system_tries = 0
