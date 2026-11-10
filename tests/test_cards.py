@@ -8,13 +8,16 @@ from starlette.testclient import TestClient
 
 from common.paths import data_paths
 from hub import cards, context
+from hub.api import cards as cards_api
 from hub.auth import create_client
 from hub.cards import CardError
 from hub.db import Database, migrate
 from hub.gateway.base import Model, StreamEvent
+from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.projects import Project
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.test_gateway import stalled  # noqa: F401 - the stalled fixture
 
 CARD = "## Назначение\nДемо.\n## Ключевые папки и файлы\n- `src/app.py` - вход\n- `lib/old.py` - старое\n- `pytest`"
 
@@ -303,3 +306,19 @@ def test_what_in_a_dependency_file_is_worth_a_look_at_the_card(repo):
     loud = cards.changes_since(p, then)
     assert loud["dependencies"] == sorted(files) and loud["significant"]
     assert cards.facts("package.json", b"{not json") == "{not json"  # unreadable: its text, so any change counts
+
+
+def test_a_draft_whose_model_went_silent_is_given_up(hub, repo, stalled, monkeypatch):  # noqa: F811
+    """The card's model stopped answering midway. Nothing could stop the draft: the card said «drafting» for ever and
+    another draft was refused. A draft has a limit now: past it the stream is cut, the connection let go, and the
+    card fails with why."""
+    monkeypatch.setattr(cards_api, "DRAFT_LIMIT_S", 1.0, raising=False)
+    hub.app.state.gateway.register(OpenAICompatProvider("stalled", stalled.url))
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    assert hub.post(f"/v1/projects/{pid}/card/draft", json={"model_id": "stalled/coder"}).status_code == 202
+    state = wait(hub, lambda: not (s := hub.get(f"/v1/projects/{pid}/card").json())["drafting"] and s)
+    assert state["draft"] is None
+    failed = hub.get("/v1/feed", params={"types": "card.failed"}).json()["events"]
+    assert "did not finish" in failed[0]["payload"]["detail"]
+    assert stalled.closed.wait(5), "the silent connection was kept"

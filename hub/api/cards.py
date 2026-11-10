@@ -16,6 +16,7 @@ CLAUDE.md, AGENTS.md or .clinerules would do to each file, `POST .../card/export
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Annotated
 
@@ -30,13 +31,14 @@ from ..auth import APP_CLIENT, Client
 from ..cards import CardError
 from ..export import ExportError
 from ..gateway import GatewayError
-from ..gateway.base import cost_usd
+from ..gateway.base import cost_usd, until_cancelled
 from ..projects import ProjectError
 from .deps import require_client
 
 log = logging.getLogger("hub.cards")
 router = APIRouter(prefix="/v1")
 DRAFT_EFFORT = "medium"
+DRAFT_LIMIT_S = 30 * 60  # a draft not written by then is given up: a silent model keeps no card «drafting»
 
 
 class DraftRequest(BaseModel):
@@ -171,8 +173,11 @@ async def draft_card(
 
 
 async def _write_draft(app, project: projects.Project, model: dict, client_id: str | None, current=None) -> None:
-    """`current`: (the confirmed card, its baseline) for an update; None for a card written anew."""
+    """`current`: (the confirmed card, its baseline) for an update; None for a card written anew. A draft
+    not done in DRAFT_LIMIT_S is given up: its stream is cut, and the card fails with why."""
     bus, db = app.state.bus, app.state.db
+    cancel = asyncio.Event()  # the limit's: nothing else stops a draft
+    limit = asyncio.get_running_loop().call_later(DRAFT_LIMIT_S, cancel.set)
     try:
         symbols = getattr(app.state, "symbols", None)  # the code's definitions for «Ключевые механизмы» (18.2)
         if current is None:
@@ -185,11 +190,14 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
         params = model_settings.clean_params(own.get("params") or {}, app.state.gateway.accepts(model["id"]))
         extra = {"params": params} if params else {}
         text, end = [], None
-        async for event in provider.stream_chat(model_ref, messages, DRAFT_EFFORT, asyncio.Event(), **extra):
-            if event.kind == "content":
-                text.append(event.text)
-            elif event.kind == "end":
-                end = event
+        stream = until_cancelled(provider.stream_chat(model_ref, messages, DRAFT_EFFORT, cancel, **extra), cancel)
+        async with contextlib.aclosing(stream):
+            async for event in stream:
+                if event.kind == "content":
+                    text.append(event.text)
+                elif event.kind == "end":
+                    end = event
+        cut = cancel.is_set()
         usage = (end.usage if end else None) or {}
         cost = cost_usd(usage, model["prices"])
 
@@ -197,7 +205,7 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
             meta = {"purpose": "card", "project_id": project.id}
             store.record_usage(conn, client_id=client_id, conversation_id=None, message_id=None, model_id=model["id"],
                                usage=usage, cost_usd=cost, meta=meta)  # fmt: skip
-            if end is not None and end.refusal:
+            if cut or (end is not None and end.refusal):
                 return None
             # an update: the sections the model rewrote, merged into the confirmed card
             draft = "".join(text).strip() if current is None else cards.merge_update(current[0], "".join(text))
@@ -207,7 +215,9 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
 
         draft = await db.acall(write)
         if not draft:
-            if end is not None and end.refusal:
+            if cut:
+                reason = f"the model did not finish the draft in {DRAFT_LIMIT_S / 60:g} min"
+            elif end is not None and end.refusal:
                 reason = end.refusal
             elif current is not None and "".join(text).strip():
                 reason = tr("модель не нашла, что менять в карточке")
@@ -223,6 +233,7 @@ async def _write_draft(app, project: projects.Project, model: dict, client_id: s
         log.exception("drafting the card of %s failed", project.id)
         await bus.publish("card.failed", {"project_id": project.id, "detail": "internal error"}, project_id=project.id)
     finally:
+        limit.cancel()
         app.state.card_drafts.discard(project.id)
 
 

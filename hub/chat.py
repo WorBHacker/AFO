@@ -87,7 +87,7 @@ from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
-from .gateway.base import cost_usd, tool_result_block
+from .gateway.base import cost_usd, tool_result_block, until_cancelled
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
 from .symbols import SymbolIndex
@@ -1356,34 +1356,37 @@ class ChatService:
         extra: dict[str, Any] = {"tools": tools} if tools else {}
         if params:  # only when set: a provider (or a test's stand-in) without them is called as before
             extra["params"] = params
-        async for event in provider.stream_chat(model_ref, prompt, effort, cancel, **extra):
-            if event.kind == "loading":
-                clock_from = time.monotonic()
-                await self._bus.publish(
-                    "chat.loading", {"conversation_id": conversation_id, "text": event.text}, persist=False
-                )
-            elif event.kind == "reasoning":
-                reasoning.append(event.text)
-                await self._bus.publish(
-                    "chat.delta",
-                    {"conversation_id": conversation_id, "kind": "reasoning", "text": event.text},
-                    persist=False,
-                )
-            elif event.kind == "content":
-                answer_at = answer_at or time.monotonic()
-                content.append(event.text)
-                await self._bus.publish(
-                    "chat.delta",
-                    {"conversation_id": conversation_id, "kind": "content", "text": event.text},
-                    persist=False,
-                )
-            elif event.kind == "end":
-                completion.usage = event.usage or {}
-                completion.stats = dict(event.stats or {})
-                completion.stop_reason = event.stop_reason
-                completion.raw = event.raw
-                completion.refusal = event.refusal
-                completion.tool_calls = list(event.tool_calls or [])
+        # beside the stop: a stream whose socket went silent ends at «Стоп» all the same (until_cancelled)
+        stream = until_cancelled(provider.stream_chat(model_ref, prompt, effort, cancel, **extra), cancel)
+        async with contextlib.aclosing(stream):
+            async for event in stream:
+                if event.kind == "loading":
+                    clock_from = time.monotonic()
+                    await self._bus.publish(
+                        "chat.loading", {"conversation_id": conversation_id, "text": event.text}, persist=False
+                    )
+                elif event.kind == "reasoning":
+                    reasoning.append(event.text)
+                    await self._bus.publish(
+                        "chat.delta",
+                        {"conversation_id": conversation_id, "kind": "reasoning", "text": event.text},
+                        persist=False,
+                    )
+                elif event.kind == "content":
+                    answer_at = answer_at or time.monotonic()
+                    content.append(event.text)
+                    await self._bus.publish(
+                        "chat.delta",
+                        {"conversation_id": conversation_id, "kind": "content", "text": event.text},
+                        persist=False,
+                    )
+                elif event.kind == "end":
+                    completion.usage = event.usage or {}
+                    completion.stats = dict(event.stats or {})
+                    completion.stop_reason = event.stop_reason
+                    completion.raw = event.raw
+                    completion.refusal = event.refusal
+                    completion.tool_calls = list(event.tool_calls or [])
         completion.reasoning = "".join(reasoning)
         completion.text = "".join(content)
         completion.cancelled = cancel.is_set()

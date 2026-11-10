@@ -91,6 +91,9 @@ class OpenAICompatProvider:
         "stop": "stop",
     }
     thinking_switch = True  # thinking can be turned off (llama.cpp: the chat template's enable_thinking)
+    # how long the stream may say nothing before it is given up: llama.cpp is silent while it reads a long
+    # prompt - minutes, with layers on the CPU - so a local server is given long; the cloud ones less
+    READ_TIMEOUT_S: ClassVar[float] = 30 * 60
     # Strata's per-request switch of the control vector it was started with: here a refusal-direction projection
     # (abliteration at runtime), off = the stock model; llama-swap's metadata says which models have one
     VECTOR_FIELD = "experimental_speed_projection"
@@ -187,8 +190,8 @@ class OpenAICompatProvider:
                                   stats=_stats({}, {}, started, None), stop_reason=None, tool_calls=[],
                                   raw=self.kept("", []))  # fmt: skip
                 return
-        # read has no timeout: a local model can be slow between tokens; connect/write still bounded
-        timeout = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)
+        # read: a local model can be slow between tokens, and silent over a long prompt (READ_TIMEOUT_S)
+        timeout = httpx.Timeout(connect=10.0, read=self.READ_TIMEOUT_S, write=30.0, pool=10.0)
         try:
             async with (
                 httpx.AsyncClient(timeout=timeout, transport=self._transport) as client,
@@ -238,6 +241,8 @@ class OpenAICompatProvider:
                         yield StreamEvent("reasoning", think)
                     if text:
                         yield StreamEvent("content", text)
+        except httpx.ReadTimeout as exc:  # the socket went silent: a hung server, a half-open connection
+            raise ProviderError(f"{self.name}: nothing came for {self.READ_TIMEOUT_S:g} s") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"{self.name}: {exc}") from exc
         if held := banner.flush():  # it ended while still looking like the banner's start: the model's own

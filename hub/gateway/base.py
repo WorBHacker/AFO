@@ -12,6 +12,7 @@ Each provider adapter turns these into its own wire format and back. A tool is d
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import date
@@ -236,3 +237,50 @@ class Provider(Protocol):
         (even when cancelled), so the caller always gets final usage and stats.
         """
         ...
+
+
+STOP_GRACE_S = 1.0  # after a stop: the time a provider has to see it at its next piece and end with its own count
+
+
+async def until_cancelled(
+    events: AsyncIterator[StreamEvent], cancel: asyncio.Event, *, grace: float = STOP_GRACE_S
+) -> AsyncIterator[StreamEvent]:
+    """A provider's stream (its `stream_chat`) that ends soon after `cancel` is set - even while the provider waits on
+    a socket that says nothing, a hung llama-server or a half-open connection to the cloud: the provider looks at
+    `cancel` only when a piece comes. The stream is read in a task of its own. After the stop the provider has
+    `grace` to end by itself, with its own end and count; one that does not is cancelled in that task - its HTTP
+    stream is closed in the task that opened it - and its end is made here: the pieces that came counted as the
+    answer's tokens, an estimate, as llama-swap's count of a stopped stream is. A caller that leaves before the end
+    closes it (`contextlib.aclosing`), and the provider's task goes with it."""
+    queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async with contextlib.aclosing(events):
+                async for event in events:
+                    queue.put_nowait(event)
+        finally:
+            queue.put_nowait(None)
+
+    async def stop() -> None:
+        await cancel.wait()
+        await asyncio.wait({reading}, timeout=grace)
+        reading.cancel()
+
+    reading = asyncio.create_task(pump())
+    stopping = asyncio.create_task(stop())
+    pieces, ended = 0, False
+    try:
+        while (event := await queue.get()) is not None:
+            pieces += event.kind in ("reasoning", "content")
+            ended = ended or event.kind == "end"
+            yield event
+        await asyncio.wait({reading})
+        if not reading.cancelled():
+            reading.result()  # the provider's own error goes on to the caller
+        elif not ended:
+            yield StreamEvent("end", usage={"output_tokens": pieces, "estimated": 1}, stats={})
+    finally:
+        stopping.cancel()
+        reading.cancel()
+        await asyncio.wait({reading, stopping})

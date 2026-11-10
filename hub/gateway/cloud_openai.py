@@ -53,6 +53,7 @@ class CloudOpenAIProvider(OpenAICompatProvider):
     """The shared part: a key, a name, a cloud locality, errors said briefly."""
 
     title = "cloud"
+    READ_TIMEOUT_S: ClassVar[float] = 600.0  # as Anthropic's, Gemini's and the Responses API's own
 
     def __init__(self, name: str, base_url: str, key_getter: Callable[[], str | None],
                  transport: httpx.AsyncBaseTransport | None = None):  # fmt: skip

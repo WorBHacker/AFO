@@ -24,10 +24,12 @@ from hub.auth import create_client
 from hub.chat import Limits
 from hub.claude_code import ClaudeCodeProvider
 from hub.events import matches
+from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.projects import get_project
 from tests import test_claude_code as cc
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
+from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -404,3 +406,27 @@ def test_a_background_task_that_breaks_leaves_its_error_in_the_log(served, caplo
 
     crash = wait(logged)
     assert "ChatService._run" in crash.getMessage()
+
+
+# --- «Стоп» while the model's socket says nothing (2026-11-10, the user's word)
+
+
+def test_stop_ends_an_answer_whose_stream_went_silent(served, stalled):  # noqa: F811
+    """A llama-server that hung, a half-open connection to the cloud: the answer stopped midway and nothing more came.
+    The provider looked at the stop only when a piece came, so «Стоп» did nothing - the chat stayed busy for ever and
+    a new message was refused. Now the stop ends it: what came is kept, the window hears `chat.done`, the connection
+    is let go."""
+    served.app.state.gateway.register(OpenAICompatProvider("stalled", stalled.url))
+    assert served.http.post("/v1/models/sync").status_code == 200
+    cid = served.http.post("/v1/conversations", json={}).json()["id"]
+    token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+    with window_listening(served, token) as (events, _links):
+        body = {"content": "go", "model_id": "stalled/coder"}
+        assert served.http.post(f"/v1/conversations/{cid}/messages", json=body).status_code == 202
+        wait(lambda: of_kind(events, "chat.delta"))
+        assert served.http.post(f"/v1/conversations/{cid}/cancel").json()["cancelled"] is True
+        done = wait(lambda: of_kind(events, "chat.done"), timeout=10)
+    assert done[-1]["payload"]["cancelled"] is True
+    assert stalled.closed.wait(5), "the hub kept the silent connection open"
+    saved = served.wait_idle(cid, timeout=5)["messages"][-1]
+    assert [b["text"] for b in saved["content"] if b["type"] == "text"] == [Stalled.PIECE]

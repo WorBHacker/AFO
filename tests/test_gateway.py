@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -22,6 +24,62 @@ async def collect(provider, cancel=None):
 
 def provider_with(handler) -> OpenAICompatProvider:
     return OpenAICompatProvider("llama-swap", "http://x", transport=httpx.MockTransport(handler))
+
+
+class Stalled:
+    """llama-swap whose answer stops midway and never goes on - a llama-server that hung, a half-open connection to
+    the cloud: its one model, and a chat stream that sends one piece and then holds the connection without a word.
+    `closed` is set once the hub lets the connection go."""
+
+    PIECE = "Начало ответа"
+
+    def __init__(self):
+        self.closed = threading.Event()
+        stalled = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"  # the end of a stream is the closed connection
+
+            def log_message(self, *_args) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                data = json.dumps({"data": [{"id": "coder"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                piece = {"choices": [{"delta": {"content": Stalled.PIECE}}]}
+                self.wfile.write(f"data: {json.dumps(piece)}\n\n".encode())
+                self.wfile.flush()
+                try:  # not a word more: only the hub closing the connection ends this
+                    while self.connection.recv(1024):
+                        pass
+                except OSError:
+                    pass
+                stalled.closed.set()
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def stalled():
+    server = Stalled()
+    yield server
+    server.close()
 
 
 def test_list_models_maps_fields():
@@ -139,6 +197,24 @@ def test_cancel_stops_the_stream_but_still_ends():
     events = asyncio.run(collect(provider_with(handler), cancel))
     assert events[-1].kind == "end"
     assert not [e for e in events if e.kind == "content"]
+
+
+def test_a_stream_that_went_silent_is_given_up_after_its_read_timeout(stalled, monkeypatch):
+    """A llama-server that hung, a half-open connection to the cloud: the answer stops midway and the socket says
+    nothing more. There was no read timeout, so whoever read the stream waited for ever - a goal's turn with nobody
+    to press «Стоп», the judge. Now it fails as the provider's error after READ_TIMEOUT_S (the spare model may
+    answer), and the connection is let go."""
+    from hub.gateway.base import ProviderError
+
+    monkeypatch.setattr(OpenAICompatProvider, "READ_TIMEOUT_S", 0.5, raising=False)
+    provider = OpenAICompatProvider("llama-swap", stalled.url)
+
+    async def read():
+        return await asyncio.wait_for(collect(provider), 10)
+
+    with pytest.raises(ProviderError, match="nothing came"):
+        asyncio.run(read())
+    assert stalled.closed.wait(5), "the silent connection was kept"
 
 
 @pytest.mark.parametrize(
