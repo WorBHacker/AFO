@@ -43,6 +43,7 @@ from typing import Any
 
 from common import i18n
 from common.i18n import tr
+from common.logging_setup import log_task_exception
 
 from . import commands, projects, store
 from .db import Database, utc_now
@@ -264,7 +265,7 @@ class ProvingGround:
         run = await self._prepare(run, spec, judge=True)
         if run["status"] == "running":
             task_ = asyncio.create_task(self._finish_when_done(run, spec))
-            task_.add_done_callback(lambda t: t.cancelled() or t.exception())
+            task_.add_done_callback(log_task_exception)
         return run
 
     # ---------- the exam ----------
@@ -297,7 +298,7 @@ class ProvingGround:
         exam = await self._db.acall(lambda conn: get_exam(conn, exam_id))
         await self._bus.publish("proving.exam", {"exam": exam})
         task_ = self._exams[exam_id] = asyncio.create_task(self._go(exam_id, judge))
-        task_.add_done_callback(lambda t: t.cancelled() or t.exception())
+        task_.add_done_callback(log_task_exception)
         return exam
 
     async def stop_exam(self, exam_id: str) -> dict[str, Any]:

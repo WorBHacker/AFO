@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
+from common.logging_setup import log_task_exception
 
 from . import (
     agent_tools,
@@ -241,7 +242,7 @@ class ChatService:
             task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # surface a crash to the loop's handler
+        task.add_done_callback(log_task_exception)
         return user_msg.to_json()
 
     async def _attached_files(self, model: dict, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -348,7 +349,7 @@ class ChatService:
                 conversation_id, model, effort, cancel, client_id, limits=limits, outcome=Outcome(), on_end=on_end
             )
         )
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        task.add_done_callback(log_task_exception)
 
     async def go_on(
         self,
@@ -394,7 +395,7 @@ class ChatService:
                                                        max_turns=limits.max_steps, effort=effort))  # fmt: skip
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        task.add_done_callback(log_task_exception)
 
     async def tool_projects(self, conversation_id: str) -> list:
         """The chat's projects as its tools see them: in «Песочница» a git project is its worktree (D17, 9.4b)."""

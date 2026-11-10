@@ -21,11 +21,12 @@ from common.paths import data_paths
 from hub import goals
 from hub.api_reference import event_types
 from hub.auth import create_client
+from hub.chat import Limits
 from hub.claude_code import ClaudeCodeProvider
 from hub.events import matches
 from hub.projects import get_project
 from tests import test_claude_code as cc
-from tests.test_autonomous import use
+from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
@@ -377,3 +378,29 @@ def test_the_window_subscribes_to_every_event_the_hub_sends_for_it():
         "settings.imported",  # the window that asked for the import has the result in the answer
     }
     assert {kind for kind in event_types() if not matches(kind, tuple(TOPICS))} == not_for_the_window
+
+
+# --- a background task that breaks: its error in the log, not lost (2026-11-10, the user's word)
+
+
+def test_a_background_task_that_breaks_leaves_its_error_in_the_log(served, caplog):
+    """A chat run's task raised past its own `except`s - from its `on_end`, where an agent's `_finish` comes in. The
+    done-callback meant to surface it read `task.exception()` and so marked the error as seen: asyncio said nothing,
+    and the hub's log had no line of it. Now the crash is in the log, with its traceback and the task's name."""
+    served.app.state.gateway.register(Scripted("agent", ["Готово."]))
+    assert served.http.post("/v1/models/sync").status_code == 200
+    cid = served.http.post("/v1/conversations", json={}).json()["id"]
+
+    async def broken(_outcome):
+        raise RuntimeError("the run's end broke")
+
+    loop = served.server.servers[0].get_loop()
+    start = served.app.state.chat.start(cid, "agent/m", "Привет", limits=Limits(), on_end=broken)
+    asyncio.run_coroutine_threadsafe(start, loop).result(10)
+
+    def logged():
+        found = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+        return next((r for r in found if str(r.exc_info[1]) == "the run's end broke"), None)
+
+    crash = wait(logged)
+    assert "ChatService._run" in crash.getMessage()

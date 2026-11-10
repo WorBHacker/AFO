@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
+from common.logging_setup import log_task_exception
 
 from . import (
     agent_tools,
@@ -1000,7 +1001,7 @@ class AgentRunner:
         task = asyncio.create_task(self._go(run, local=local, resume=resume, text=text))
         if local:
             self._waiting[run_id] = task
-        task.add_done_callback(lambda t: t.cancelled() or t.exception())
+        task.add_done_callback(log_task_exception)
 
     async def _go(self, run: dict[str, Any], *, local: bool, resume: bool, text: str | None = None) -> None:
         run_id = run["conversation_id"]

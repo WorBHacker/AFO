@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from common.i18n import tr
+from common.logging_setup import log_task_exception
 
 from .. import budgets, cards, export, model_settings, notes, projects, store
 from ..auth import APP_CLIENT, Client
@@ -162,7 +163,7 @@ async def draft_card(
             raise HTTPException(status_code=409, detail="there is no confirmed card to bring up to date")
     _drafting(request).add(project.id)
     task = asyncio.create_task(_write_draft(request.app, project, model, client.id, current))
-    task.add_done_callback(lambda t: t.exception())
+    task.add_done_callback(log_task_exception)
     await request.app.state.bus.publish(
         "card.drafting", {"project_id": project.id, "model_id": model["id"]}, project_id=project.id, persist=False
     )

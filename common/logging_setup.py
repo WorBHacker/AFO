@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import threading
@@ -85,3 +86,15 @@ def setup_logging(
     sys.excepthook = log_uncaught
     threading.excepthook = log_uncaught_in_thread
     return log
+
+
+def log_task_exception(task: asyncio.Task) -> None:
+    """A done-callback for a task nobody awaits: what broke it goes to the log, with its traceback and the task's
+    coroutine named. Reading `task.exception()` alone marks the error as seen, and asyncio then says nothing of it. A
+    cancelled task did not break."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        name = getattr(task.get_coro(), "__qualname__", None) or task.get_name()
+        logging.getLogger("tasks").error("background task %s crashed", name, exc_info=exc)
