@@ -515,7 +515,7 @@ class AgentRunner:
         self._chat = chat
         self._gpu = asyncio.Semaphore(1)
         self._held: set[str] = set()  # runs holding the GPU now
-        self._waiting: dict[str, asyncio.Task] = {}  # runs queued for the GPU
+        self._waiting: dict[str, asyncio.Task] = {}  # runs not under way yet: queued for the GPU, or getting ready
         self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
         self.goals = None  # set by the server: the goals' checks check a batch's tasks too (16.3)
 
@@ -625,7 +625,10 @@ class AgentRunner:
             if gave_up:
                 await self._gpu.acquire()
                 self._held.add(parent_id)
-        run, answer = await self._db.acall(lambda conn: (get_run(conn, child_id), _last_answer(conn, child_id)))
+        try:
+            run, answer = await self._db.acall(lambda conn: (get_run(conn, child_id), _last_answer(conn, child_id)))
+        except AgentError:  # its chat was deleted meanwhile, and the run with it
+            return "the sub-run's chat was deleted: it was stopped, and its answer is gone", True
         how = {"done": "finished", "error": "failed", "cancelled": "was stopped"}.get(run["status"], run["status"])
         head = f"agent «{run['profile_name']}» {how}" + (f" ({run['detail']})" if run.get("detail") else "")
         return f"{head}. Its answer:\n{answer}" if answer else head, run["status"] != "done"
@@ -987,7 +990,7 @@ class AgentRunner:
 
     async def cancel(self, run_id: str) -> bool:
         queued = self._waiting.pop(run_id, None)
-        if queued is not None:  # still waiting for the GPU: it never starts
+        if queued is not None:  # not under way yet - waiting for the GPU, or getting ready: it never starts
             queued.cancel()
             await self._finish(run_id, Outcome(status="cancelled"))
             return True
@@ -999,16 +1002,27 @@ class AgentRunner:
         model = await self._db.acall(lambda conn: store.get_model(conn, run["model_id"]))
         local = model is not None and model["locality"] == "local"
         task = asyncio.create_task(self._go(run, local=local, resume=resume, text=text))
-        if local:
-            self._waiting[run_id] = task
+        self._waiting[run_id] = task  # till its chat run is under way, a stop cancels this task
         task.add_done_callback(log_task_exception)
 
     async def _go(self, run: dict[str, Any], *, local: bool, resume: bool, text: str | None = None) -> None:
+        """The run begins (`_begin`). Whatever fails before its chat run is under way ends it here, so the GPU it
+        took goes on to the next run (`_finish`); a stop till then cancels this task (`cancel`)."""
+        run_id = run["conversation_id"]
+        try:
+            await self._begin(run, local=local, resume=resume, text=text)
+        except GatewayError as exc:
+            await self._finish(run_id, Outcome(status="error", detail=str(exc)))
+        except Exception:
+            log.exception("run %s did not start", run_id)
+            await self._finish(run_id, Outcome(status="error", detail="internal error"))
+
+    async def _begin(self, run: dict[str, Any], *, local: bool, resume: bool, text: str | None) -> None:
+        """Its turn for the GPU (a local run), then its chat run - under way."""
         run_id = run["conversation_id"]
         await self._status(run_id, "queued")
         if local:
             await self._gpu.acquire()  # one local run at a time: the GPU holds one model (D16)
-            self._waiting.pop(run_id, None)
             self._held.add(run_id)
         auto = run.get("kind") == "autonomous"
         if auto and (rules := autonomous.conditions(run.get("done_when"))):  # refused at the call, as a goal's (25.1)
@@ -1025,16 +1039,22 @@ class AgentRunner:
         current = await self._db.acall(lambda conn: get_run(conn, run_id))
         await self._bus.publish("run.started", {"run": current, "resumed": resume})
         text = RESUMED if resume else text or run["task"]
-        try:
-            await self._chat.start(run_id, model_id, text, limits=limits,
-                                   on_end=lambda outcome: self._finish(run_id, outcome))  # fmt: skip
-        except GatewayError as exc:
-            await self._finish(run_id, Outcome(status="error", detail=str(exc)))
-        except Exception:
-            log.exception("run %s did not start", run_id)
-            await self._finish(run_id, Outcome(status="error", detail="internal error"))
+        await self._chat.start(run_id, model_id, text, limits=limits,
+                               on_end=lambda outcome: self._finish(run_id, outcome))  # fmt: skip
+        self._waiting.pop(run_id, None)  # under way: a stop goes to its chat run now
 
     async def _finish(self, run_id: str, outcome: Outcome) -> None:
+        """How the run ended, written and told (`_record_end`). Whoever waits for it (`_ended`: a coordinator) hears
+        of it whatever happens there - a run whose chat was deleted has no row left to write into."""
+        self._waiting.pop(run_id, None)  # it ended before it was under way: nothing to cancel now
+        try:
+            await self._record_end(run_id, outcome)
+        finally:
+            ended = self._ended.get(run_id)
+            if ended is not None:
+                ended.set()
+
+    async def _record_end(self, run_id: str, outcome: Outcome) -> None:
         if run_id in self._held:
             self._held.discard(run_id)
             self._gpu.release()
@@ -1066,15 +1086,17 @@ class AgentRunner:
                  run_id),
             )  # fmt: skip
             board_of = conn.execute("SELECT coordinator FROM delegated_tasks WHERE run_id = ?", (run_id,)).fetchone()
-            return get_run(conn, run_id), board_of[0] if board_of else None
+            try:
+                run = get_run(conn, run_id)
+            except AgentError:  # its chat was deleted, and the run with it: nothing to tell the window
+                run = None
+            return run, board_of[0] if board_of else None
 
         run, coordinator = await self._db.acall(write)
-        await self._bus.publish("run.finished", {"run": run})
+        if run is not None:
+            await self._bus.publish("run.finished", {"run": run})
         if coordinator:
             await self._told(coordinator)
-        ended = self._ended.get(run_id)
-        if ended is not None:
-            ended.set()
 
     async def _status(self, run_id: str, status: str) -> None:
         await self._db.acall(

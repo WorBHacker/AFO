@@ -190,7 +190,8 @@ async def delete_conversation(
     await own_conversation(request, client, conversation_id)
     chat = request.app.state.chat
     chat.after_turn.pop(conversation_id, None)  # nothing waits for its turn now (19.7)
-    chat.cancel(conversation_id)
+    # an agent's run stops first: one waiting for the GPU would take it with its row gone, and keep it
+    await request.app.state.agents.cancel(conversation_id)
     attached = await request.app.state.db.acall(lambda conn: _attached(conn, conversation_id))
     deleted = await request.app.state.db.acall(lambda conn: store.delete_conversation(conn, conversation_id))
     if not deleted:

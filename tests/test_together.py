@@ -27,11 +27,12 @@ from hub.events import matches
 from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.projects import get_project
 from tests import test_claude_code as cc
+from tests.test_agents import delegate, ended, profile, register, run_of
 from tests.test_autonomous import Scripted, use
-from tests.test_changes import wait
+from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
-from tests.test_tools import hub  # noqa: F401 - the hub fixture
+from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 
 A_TXT = "if (Test-Path a.txt) { exit 0 } else { exit 1 }"
 
@@ -430,3 +431,44 @@ def test_stop_ends_an_answer_whose_stream_went_silent(served, stalled):  # noqa:
     assert stalled.closed.wait(5), "the hub kept the silent connection open"
     saved = served.wait_idle(cid, timeout=5)["messages"][-1]
     assert [b["text"] for b in saved["content"] if b["type"] == "text"] == [Stalled.PIECE]
+
+
+# --- an agent's chat deleted while it waits or works (2026-11-10, the user's word)
+
+
+def test_deleting_a_queued_runs_chat_lets_the_gpu_go_on(hub, repo):  # noqa: F811
+    """A local run waits for the graphics card, and the user deletes its chat. Deleting stopped only a chat's answer,
+    and this run had none yet: its row went with the chat, and once the card was free the run took it, could not
+    read itself back and fell holding it - every local run after it stayed «queued» until the hub restarted. Now
+    deleting the chat stops the run first, and the card goes on to the next one."""
+    register(hub, ToolProvider([[{"id": "w1", "name": "edit_file", "input": edit()}]]))
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    made = profile(hub, project_ids=[pid])
+    first = hub.post(f"/v1/agents/{made['id']}/runs", json={"task": "первая"}).json()["id"]
+    wait(lambda: hub.get("/v1/approvals").json()["approvals"])  # the first holds the card, waiting for the user
+    second = hub.post(f"/v1/agents/{made['id']}/runs", json={"task": "вторая"}).json()["id"]
+    wait(lambda: run_of(hub, second)["status"] == "queued")
+    assert hub.delete(f"/v1/conversations/{second}").status_code == 204
+    assert hub.post(f"/v1/runs/{first}/cancel").json() == {"cancelled": True}
+    assert ended(hub, first)["status"] == "cancelled"
+    third = hub.post(f"/v1/agents/{made['id']}/runs", json={"task": "третья"}).json()["id"]
+    assert ended(hub, third, timeout=10)["status"] == "done"
+
+
+def test_a_coordinator_goes_on_when_its_sub_runs_chat_is_deleted(hub, repo):  # noqa: F811
+    """A coordinator waits for its sub-run, and the user deletes the sub-run's chat. The sub-run's end found no row
+    to write into and fell before it told the coordinator, who waited for ever - a stop could not end it. Now the
+    coordinator hears that its sub-run is gone, and goes on."""
+    register(
+        hub, ToolProvider([[delegate("Правщик", "Поправь")], [{"id": "w1", "name": "edit_file", "input": edit()}]])
+    )
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_task"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]  # the sub-run waits for the user
+    assert hub.delete(f"/v1/conversations/{asked['conversation_id']}").status_code == 204
+    assert ended(hub, run_id, timeout=10)["status"] == "done"
+    messages = hub.get(f"/v1/conversations/{run_id}").json()["messages"]
+    said = [b for m in messages if m["role"] == "tool" for b in m["content"]]
+    assert said[0]["error"], said[0]["output"]  # the coordinator heard its sub-run did not do it
