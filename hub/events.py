@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from typing import Any
@@ -21,6 +22,8 @@ log = logging.getLogger("hub.events")
 
 QUEUE_SIZE = 1000
 REPLAY_LIMIT = 5000
+PLAIN_DEPTH = 100  # a payload deeper than this is cut here, well before Python's own limit
+CANNOT_SAY = (TypeError, ValueError, OverflowError, RecursionError)  # what JSON and UTF-8 raise over a value
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,52 @@ class Event:
 
 def matches(event_type: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatchcase(event_type, pattern) for pattern in patterns)
+
+
+def _text(value: Any) -> str:
+    return str(value).encode("utf-8", "replace").decode("utf-8")
+
+
+def _plain(value: Any, within: frozenset[int] = frozenset()) -> Any:
+    """`value` as JSON and UTF-8 can say it, in the shape its readers count on: a mapping stays an object, a list,
+    tuple or set an array, any other value becomes its text. What holds itself, goes too deep or breaks when read is
+    None - the window's `payload.get(...) or {}` takes that, a text where an object was it does not."""
+    try:
+        if value is None or isinstance(value, bool | float):
+            return value
+        if isinstance(value, int):
+            int.__repr__(value)  # an int too long for text breaks here, not in json.dumps
+            return value
+        if isinstance(value, Mapping | list | tuple | set | frozenset):
+            if id(value) in within or len(within) == PLAIN_DEPTH:
+                return None
+            within = within | {id(value)}
+            if isinstance(value, Mapping):
+                return {_text(k): _plain(v, within) for k, v in value.items()}
+            return [_plain(v, within) for v in value]
+        return _text(value)
+    except Exception:  # its items(), its str(): whatever it raises
+        return None
+
+
+def in_plain_words(payload: dict[str, Any]) -> dict[str, Any]:
+    """A payload JSON or UTF-8 cannot say - its publisher's bug, and no reason to lose the event: a window may wait
+    for it to end an answer or a run. Its other fields go as they were, the odd part in plain words (`_plain`); a
+    payload that breaks when read as a whole goes as {"unsayable": true}."""
+    plain = _plain(payload)
+    return plain if isinstance(plain, dict) else {"unsayable": True}
+
+
+def _storable(event_type: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """The payload and its text for the `events` table, in plain words when it has to be."""
+    try:
+        text = json.dumps(payload, ensure_ascii=False)
+        text.encode("utf-8")  # the database takes only what UTF-8 can say
+        return payload, text
+    except CANNOT_SAY as exc:
+        log.error("events: %s goes out in plain words, its payload cannot be stored: %s", event_type, exc)
+    plain = in_plain_words(payload)
+    return plain, json.dumps(plain, ensure_ascii=False)
 
 
 @dataclass(eq=False)
@@ -66,7 +115,7 @@ class EventBus:
         ts = utc_now()
         event_id = None
         if persist:
-            text = json.dumps(payload, ensure_ascii=False)
+            payload, text = _storable(event_type, payload)
             event_id = await self._db.acall(
                 lambda conn: (
                     conn.execute(

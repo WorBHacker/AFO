@@ -7,7 +7,8 @@ Protocol (JSON text frames):
   only matching events arrive, and stored events with id > since are sent first, so a reconnecting client
   misses nothing;
 - `{"op": "ping"}` gets `{"type": "pong"}`.
-If the client reads too slowly its queue overflows and the hub closes with code 1013: reconnect with `since`.
+If the client reads too slowly its queue overflows, or the hub's sending to it breaks, and the hub closes with code
+1013: reconnect with `since`. A payload JSON cannot say goes in plain words, its other fields as they were.
 
 The window gets every event. Another client (D31, D46) gets the hub's and the projects' state (OUTSIDE_EVENTS) - a
 cloud one only of the projects that allow the cloud - and the events of the conversations it began; never another
@@ -18,8 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -28,7 +30,7 @@ from common import __version__
 from .. import store
 from ..auth import APP_CLIENT, Client
 from ..db import utc_now
-from ..events import Event, EventBus, Subscription, matches
+from ..events import CANNOT_SAY, Event, EventBus, Subscription, in_plain_words, matches
 from .deps import client_from_headers
 
 log = logging.getLogger("hub.ws")
@@ -167,20 +169,42 @@ async def _resubscribe(websocket: WebSocket, bus: EventBus, stream: _Stream, mes
         )
 
 
+def _frame(event: Event) -> str:
+    """The event as a text frame. A payload JSON or UTF-8 cannot say (half an emoji from a stream, a window's title)
+    goes in plain words, as a stored one does: only a live event comes here so, and lost, it would be lost for good."""
+    try:
+        text = json.dumps(event.to_json(), separators=(",", ":"), ensure_ascii=False)
+        text.encode("utf-8")
+        return text
+    except CANNOT_SAY as exc:
+        log.error("events: %s goes out in plain words, its payload cannot be sent: %s", event.type, exc)
+    plain = replace(event, payload=in_plain_words(event.payload))
+    return json.dumps(plain.to_json(), separators=(",", ":"), ensure_ascii=False)
+
+
 async def _send_live(websocket: WebSocket, stream: _Stream) -> None:
-    while True:
-        subscription = stream.subscription
-        try:
-            event = await asyncio.wait_for(subscription.queue.get(), timeout=0.5)
-        except TimeoutError:
-            if subscription.overflowed:
-                await websocket.close(code=CLOSE_TRY_AGAIN)
-                return
-            continue
-        async with stream.lock:
-            if subscription is not stream.subscription:
-                continue  # left over from a subscription that was just replaced
-            if event.id is not None and event.id <= stream.skip_until:
-                continue  # already sent by the replay
-            if await stream.gate.allows(event):
-                await websocket.send_json(event.to_json())
+    """Sends what comes until the connection ends. Sending that breaks closes it: left open with nobody sending, it
+    would look healthy to the client (pings are answered) and tell it nothing more."""
+    try:
+        while True:
+            subscription = stream.subscription
+            try:
+                event = await asyncio.wait_for(subscription.queue.get(), timeout=0.5)
+            except TimeoutError:
+                if subscription.overflowed:
+                    await websocket.close(code=CLOSE_TRY_AGAIN)
+                    return
+                continue
+            async with stream.lock:
+                if subscription is not stream.subscription:
+                    continue  # left over from a subscription that was just replaced
+                if event.id is not None and event.id <= stream.skip_until:
+                    continue  # already sent by the replay
+                if await stream.gate.allows(event):
+                    await websocket.send_text(_frame(event))
+    except WebSocketDisconnect:
+        pass  # the client went away: `events` is ending this connection
+    except Exception:
+        log.exception("events: sending failed, the client is told to reconnect (1013)")
+        with contextlib.suppress(Exception):  # a connection already gone cannot be closed
+            await websocket.close(code=CLOSE_TRY_AGAIN)

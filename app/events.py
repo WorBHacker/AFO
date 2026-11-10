@@ -58,6 +58,7 @@ TOPICS = [
     "approval.*",
     "claude_code.*",
     "file.*",
+    "history.*",  # a project file's new versions (hub/history.py)
     "rules.*",
     "run.*",
     "agents.*",

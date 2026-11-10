@@ -6,13 +6,23 @@ in part; the symbol index of a sandbox and of its project.
 One passed at first, six showed one part breaking another: each became a step of stage 19 (D53), and each passes
 since its step."""
 
+import asyncio
+import json
+import logging
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from PySide6.QtCore import Qt
 
+from app.events import TOPICS, EventThread
+from common.paths import data_paths
 from hub import goals
+from hub.api_reference import event_types
+from hub.auth import create_client
 from hub.claude_code import ClaudeCodeProvider
+from hub.events import matches
 from hub.projects import get_project
 from tests import test_claude_code as cc
 from tests.test_autonomous import use
@@ -211,3 +221,159 @@ def test_claude_codes_goal_with_its_edit_allowed_in_part(live):
     assert done["goal"]["status"] == "achieved", done["goal"]["detail"]
     now = (live.repo / "conf.py").read_text(encoding="utf-8").splitlines()
     assert (now[0], now[19], now[39]) == ("x = 2", "x = 1", "x = 2")
+
+
+# --- the hub's events on their way to the window: a real socket, the window's own thread (2026-11-10, the user's word)
+
+
+@pytest.fixture
+def served():
+    server = cc.LiveHub()
+    try:
+        yield server
+    finally:
+        server.close()
+
+
+def say(server, kind, payload, **how):
+    """An event published on the served hub's own loop, as its modules do it."""
+    loop = server.server.servers[0].get_loop()
+    asyncio.run_coroutine_threadsafe(server.app.state.bus.publish(kind, payload, **how), loop).result(10)
+
+
+def of_kind(events, kind):
+    return [e for e in events if e["type"] == kind]
+
+
+@contextmanager
+def window_listening(server, token):
+    """The window's EventThread, connected and subscribed: what it hands over, and its connection's ups and downs."""
+    events, links = [], []
+    thread = EventThread(f"ws://127.0.0.1:{server.server.config.port}/v1/events", token)
+    thread.event.connect(events.append, Qt.ConnectionType.DirectConnection)
+    thread.connected.connect(links.append, Qt.ConnectionType.DirectConnection)
+    thread.start()
+    try:
+        wait(lambda: links)
+        say(server, "hub.listening", {})  # stored: once it has come, replayed or live, the subscription is in place
+        wait(lambda: of_kind(events, "hub.listening"))
+        yield events, links
+    finally:
+        thread.stop()
+        assert thread.wait(10_000), "the window's event thread did not end"
+
+
+IN_A_CIRCLE: dict = {}
+IN_A_CIRCLE["self"] = IN_A_CIRCLE
+
+
+def errors_about(caplog, kind):
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and kind in r.getMessage()]
+
+
+class Unreadable(dict):
+    """A value that breaks when it is read, with an error JSON's own checks do not raise."""
+
+    def items(self):
+        raise OverflowError("too big to read")
+
+
+def nested(levels, inside):
+    for _ in range(levels):
+        inside = {"in": inside}
+    return inside
+
+
+# each one as the window gets it, stored or live: an object stays an object and a set an array; what holds itself,
+# goes too deep or breaks when read is None - the window's `payload.get(...) or {}` takes that, not a text
+SAID_AS = [pytest.param({1, 2}, [1, 2], id="a set"), pytest.param(object(), str, id="object()"),
+             pytest.param("\ud83d", "?", id="half an emoji"),
+             pytest.param(IN_A_CIRCLE, {"self": None}, id="in a circle"),
+             pytest.param(nested(150, {1}), nested(99, None), id="too deep"),
+             pytest.param(Unreadable(a=1), None, id="breaks when read"),
+             pytest.param(10**5000, None, id="an int with no text")]  # fmt: skip
+
+
+@pytest.mark.parametrize(("unsayable", "said"), SAID_AS)
+def test_a_stored_event_that_cannot_be_said_goes_out_in_plain_words(served, caplog, unsayable, said):
+    """Such a payload raised in the publisher, whatever it was doing. The event is what matters - `chat.done` is what
+    ends an answer in the window - so it is stored and sent: the rest of its payload as it was, the odd part in plain
+    words."""
+    token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+    with window_listening(served, token) as (events, links):
+        say(served, "chat.done", {"conversation_id": "c", "message_id": 7, "odd": unsayable})
+        wait(lambda: of_kind(events, "chat.done"), timeout=5)
+        assert links == [True], "one event is no reason to drop the connection"
+    payload = of_kind(events, "chat.done")[0]["payload"]
+    assert (payload["conversation_id"], payload["message_id"]) == ("c", 7)
+    assert isinstance(payload["odd"], said) if isinstance(said, type) else payload["odd"] == said
+    stored = served.app.state.db.call(
+        lambda conn: conn.execute("SELECT payload FROM events WHERE type = 'chat.done'").fetchone()[0]
+    )
+    assert json.loads(stored) == payload, "a window that reconnects must read what the live one got"
+    assert errors_about(caplog, "chat.done"), "an error in the log must say which event it was"
+
+
+@pytest.mark.parametrize("persist", [True, False], ids=["stored", "live"])
+def test_a_payload_that_breaks_when_read_as_a_whole_still_goes_out(served, caplog, persist):
+    """Nothing of it can be read, not even which chat it is about: the event still goes - as {"unsayable": true}, and
+    stored when it is a stored one - rather than being lost without a trace, and its publisher goes on."""
+    token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+    with window_listening(served, token) as (events, links):
+        say(served, "chat.done", Unreadable(conversation_id="c"), persist=persist)  # raises if publish does
+        wait(lambda: of_kind(events, "chat.done"), timeout=5)
+        assert links == [True]
+    assert of_kind(events, "chat.done")[0]["payload"] == {"unsayable": True}
+    if persist:
+        stored = served.app.state.db.call(
+            lambda conn: conn.execute("SELECT payload FROM events WHERE type = 'chat.done'").fetchone()[0]
+        )
+        assert json.loads(stored) == {"unsayable": True}
+    assert any("too big to read" in line for line in errors_about(caplog, "chat.done")), caplog.text[:2000]
+
+
+@pytest.mark.parametrize(("unsayable", "said"), SAID_AS)
+def test_a_live_event_goes_out_in_plain_words_and_the_stream_goes_on(served, caplog, unsayable, said):
+    """One such event took the sending task with it: the connection stayed up and answered pings, the window said
+    «подключён» - and chats, agents and projects heard nothing more until a restart (the audit of 2026-11-09). Left
+    out instead, it is lost for good: a live event is not stored, and an agent's frame over a window, a process list or
+    a file's history would stand as they were. So it goes as a stored one does, its other fields as they were."""
+    token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+    with window_listening(served, token) as (events, links):
+        say(served, "chat.delta", {"conversation_id": "c", "kind": "content", "text": unsayable}, persist=False)
+        say(served, "chat.delta", {"conversation_id": "c", "kind": "content", "text": "дальше"}, persist=False)
+        wait(lambda: len(of_kind(events, "chat.delta")) == 2, timeout=5)
+        assert links == [True], "one event is no reason to drop the connection"
+    first, then = (e["payload"] for e in of_kind(events, "chat.delta"))
+    assert (first["conversation_id"], first["kind"], then["text"]) == ("c", "content", "дальше")
+    assert isinstance(first["text"], said) if isinstance(said, type) else first["text"] == said
+    assert errors_about(caplog, "chat.delta"), "an error in the log must say which event it was"
+
+
+def test_a_stream_that_breaks_tells_the_window_to_come_back_for_what_it_missed(served, caplog):
+    """Not one event's fault: the hub closes with 1013 instead of going silent, and the window's thread reconnects with
+    `since` and reads the stored event. The breakage is real: the table the check of who may see an event reads is
+    away for a moment - only an outside client's events go through that check."""
+    db = served.app.state.db
+    token = db.call(lambda conn: create_client(conn, "outside", cloud=False))
+    made = served.http.post("/v1/conversations", headers={"Authorization": f"Bearer {token}"}, json={"title": ""})
+    assert made.status_code == 201
+    with caplog.at_level(logging.INFO, logger="app.events"), window_listening(served, token) as (events, links):
+        db.call(lambda conn: conn.execute("ALTER TABLE conversations RENAME TO conversations_away"))
+        say(served, "chat.done", {"conversation_id": made.json()["id"], "message_id": 1})
+        wait(lambda: False in links, timeout=5)
+        db.call(lambda conn: conn.execute("ALTER TABLE conversations_away RENAME TO conversations"))
+        wait(lambda: of_kind(events, "chat.done"))
+        assert links[:2] == [True, False] and links[-1] is True
+    assert len(of_kind(events, "chat.done")) == 1
+    assert "1013" in caplog.text, "the window must have been told to try again"
+
+
+def test_the_window_subscribes_to_every_event_the_hub_sends_for_it():
+    """TOPICS is kept by hand, and what it misses never arrives, without a word: `history.changed` did not, and
+    «История файла» stood still. A new event: a topic for it in app/events.py, or a place in this list, with why."""
+    not_for_the_window = {
+        "editor.focus",  # an outside editor's place in a file, read by GET /v1/editor
+        "settings.imported",  # the window that asked for the import has the result in the answer
+    }
+    assert {kind for kind in event_types() if not matches(kind, tuple(TOPICS))} == not_for_the_window
