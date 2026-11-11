@@ -246,9 +246,9 @@ def test_logs_are_kept_within_limits(db, tmp_path):
     add("mid", "exited", 20, 400)
     add("new", "exited", 1, 400)
     add("live", "running", 200, 400)  # running: never pruned, however old
-    removed = db.call(lambda c: prune_logs(c, tmp_path, keep_days=90, max_total_bytes=1000, now=now))
+    removed = prune_logs(db, tmp_path, keep_days=90, max_total_bytes=1000, now=now)
     assert removed == 3  # too old, then the oldest until the rest fits
     assert sorted(p.stem for p in tmp_path.glob("*.log")) == ["live", "new"]
     deleted = db.call(lambda c: [r["id"] for r in c.execute("SELECT id FROM terminals WHERE log_deleted = 1")])
     assert sorted(deleted) == ["lost", "mid", "old"]
-    assert db.call(lambda c: prune_logs(c, tmp_path, keep_days=90, max_total_bytes=1000, now=now)) == 0
+    assert prune_logs(db, tmp_path, keep_days=90, max_total_bytes=1000, now=now) == 0

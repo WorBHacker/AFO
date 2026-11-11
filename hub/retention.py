@@ -9,6 +9,10 @@ pictures «Нарисовать» keeps (data/media/<year-month>, 29.4б) - one 
 The limits are the user's (`settings` row "retention", the window's «Настройки → Хаб → Хранение»); the hub prunes at
 its start and every PRUNE_EVERY_S. A snapshot still needed by a change younger than `days` stays; when it goes, the
 change can no longer be undone (changes.py says so), its row stays.
+
+Pruning walks the folders with the database free (#7, 2026-11-11): it held the database's only lock throughout, and
+on a big data folder or a slow disk nothing of the hub's reached the database for seconds - answers being saved,
+events, the window's requests. Only reading the rows and deleting them holds the lock now.
 """
 
 from __future__ import annotations
@@ -92,26 +96,29 @@ def _thin(found: list[tuple[Path, int, float]], cutoff: float, max_bytes: int) -
     return removed
 
 
-def prune_snapshots(conn: sqlite3.Connection, folder: Path, *, days: int, max_bytes: int,
-                    now: float | None = None) -> int:  # fmt: skip
+def prune_snapshots(db: Database, folder: Path, *, days: int, max_bytes: int, now: float | None = None) -> int:
     """The changed files' snapshots: each is as old as the youngest change or version of the files' history (stage
     26) that needs it (a card's export, or one nothing refers to, as its file). The history's rows past the term go
     with them."""
     now = time.time() if now is None else now
+    cutoff = now - days * 86400
+    since = datetime.fromtimestamp(cutoff, UTC).strftime("%Y-%m-%dT%H:%M:%S")
+
+    def uses(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        rows = conn.execute(
+            "SELECT before_hash, after_hash, created_at FROM file_changes UNION ALL"
+            " SELECT hash, NULL, created_at FROM file_versions WHERE hash IS NOT NULL"
+        ).fetchall()
+        conn.execute("DELETE FROM file_versions WHERE created_at < ?", (since,))
+        return rows
+
     used: dict[str, float] = {}
-    rows = conn.execute(
-        "SELECT before_hash, after_hash, created_at FROM file_changes UNION ALL"
-        " SELECT hash, NULL, created_at FROM file_versions WHERE hash IS NOT NULL"
-    ).fetchall()
-    for row in rows:
+    for row in db.call(uses):
         at = _seconds(row["created_at"])
         for name in (row["before_hash"], row["after_hash"]):
             if name and at > used.get(name, 0.0):
                 used[name] = at
     found = [(path, size, max(used.get(path.name, 0.0), 0.0) or mtime) for path, size, mtime in _files(folder, "*")]
-    cutoff = now - days * 86400
-    since = datetime.fromtimestamp(cutoff, UTC).strftime("%Y-%m-%dT%H:%M:%S")
-    conn.execute("DELETE FROM file_versions WHERE created_at < ?", (since,))
     return _thin(found, cutoff, max_bytes)
 
 
@@ -127,13 +134,14 @@ def prune_screens(folder: Path, *, days: int, max_bytes: int, now: float | None 
     return removed
 
 
-def prune_blobs(conn: sqlite3.Connection, folder: Path, *, days: int, now: float | None = None) -> int:
+def prune_blobs(db: Database, folder: Path, *, days: int, now: float | None = None) -> int:
     """Files and pictures sent with messages (data/blobs): kept while a message names them - conversations are kept
     always (D30), and a picture goes with every request of its chat; one no message names (a send that was refused,
     a deleted chat) goes after `days`."""
     now = time.time() if now is None else now
     named: set[str] = set()
-    for (content,) in conn.execute("SELECT content FROM messages WHERE content LIKE '%\"blob\"%'"):
+    query = "SELECT content FROM messages WHERE content LIKE '%\"blob\"%'"
+    for (content,) in db.call(lambda conn: conn.execute(query).fetchall()):  # parsed with the database free
         with contextlib.suppress(ValueError, TypeError):
             named |= {b["blob"] for b in json.loads(content) if isinstance(b, dict) and b.get("blob")}
     removed = 0
@@ -173,16 +181,17 @@ def usage(root: Path) -> dict[str, dict[str, int]]:
     return {kind: {"bytes": sum(f[1] for f in found), "files": len(found)} for kind, found in kinds.items()}
 
 
-def prune_all(conn: sqlite3.Connection, root: Path, now: float | None = None) -> dict[str, int]:
-    """Every kind within the user's limits now: how many files each lost."""
-    limits = current(conn)
+def prune_all(db: Database, root: Path, now: float | None = None) -> dict[str, int]:
+    """Every kind within the user's limits now: how many files each lost. Run off the event loop: it walks the disk,
+    taking the database's lock only for the rows."""
+    limits = db.call(current)
     days, max_bytes = int(limits["days"]), int(float(limits["max_gb"]) * GIB)
     moment = datetime.fromtimestamp(now, UTC) if now is not None else None
     return {
-        "snapshots": prune_snapshots(conn, root / "snapshots", days=days, max_bytes=max_bytes, now=now),
+        "snapshots": prune_snapshots(db, root / "snapshots", days=days, max_bytes=max_bytes, now=now),
         "screens": prune_screens(root / "computer", days=days, max_bytes=max_bytes, now=now),
-        "terminals": prune_logs(conn, root / "terminals", keep_days=days, max_total_bytes=max_bytes, now=moment),
-        "files": prune_blobs(conn, root / "blobs", days=days, now=now),
+        "terminals": prune_logs(db, root / "terminals", keep_days=days, max_total_bytes=max_bytes, now=moment),
+        "files": prune_blobs(db, root / "blobs", days=days, now=now),
         "copies": prune_copies(root / "attachments", "*/*/*", days=days, max_bytes=max_bytes, now=now)
         + prune_copies(root / "pasted", "*", days=days, max_bytes=max_bytes, now=now),
         "pictures": prune_copies(root / "media", "*/*", days=days, max_bytes=max_bytes, now=now),
@@ -206,6 +215,7 @@ class Keeper:
         self._db = db
         self._root = root
         self._task: asyncio.Task | None = None
+        self._pruning = asyncio.Lock()  # «Очистить сейчас» while the timer's prune runs: one after the other
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -217,11 +227,12 @@ class Keeper:
                 await self._task
 
     async def prune(self) -> dict[str, int]:
-        removed = await self._db.acall(lambda conn: prune_all(conn, self._root))
-        roots, live = await self._db.acall(goals_kept)
-        removed["goal_refs"] = await asyncio.to_thread(
-            lambda: sum(len(checkpoints.prune(root, live)) for root in roots))  # fmt: skip
-        return removed
+        async with self._pruning:
+            removed = await asyncio.to_thread(prune_all, self._db, self._root)
+            roots, live = await self._db.acall(goals_kept)
+            removed["goal_refs"] = await asyncio.to_thread(
+                lambda: sum(len(checkpoints.prune(root, live)) for root in roots))  # fmt: skip
+            return removed
 
     async def _loop(self) -> None:
         while True:

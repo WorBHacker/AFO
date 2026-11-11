@@ -36,7 +36,7 @@ import winpty
 
 from common.i18n import N_, tr
 
-from .db import utc_now
+from .db import Database, utc_now
 from .processes import stop_tree
 
 log = logging.getLogger("hub.terminals")
@@ -438,7 +438,7 @@ class TerminalManager:
     async def _prune_loop(self) -> None:
         while True:
             try:
-                removed = await self._db.acall(lambda conn: prune_logs(conn, self._folder))
+                removed = await asyncio.to_thread(prune_logs, self._db, self._folder)
                 if removed:
                     log.info("terminal logs removed: %d", removed)
             except Exception:
@@ -459,7 +459,7 @@ def _read_tail(path: Path, max_chars: int) -> str:
 
 
 def prune_logs(
-    conn: sqlite3.Connection,
+    db: Database,
     folder: Path,
     *,
     keep_days: int = LOG_KEEP_DAYS,
@@ -467,25 +467,34 @@ def prune_logs(
     now: datetime | None = None,
 ) -> int:
     """Deletes the logs of ended terminals older than `keep_days`, then the oldest ones until all logs fit in
-    `max_total_bytes`. Running terminals keep theirs. Returns how many were deleted."""
+    `max_total_bytes`. Running terminals keep theirs. Returns how many were deleted. The logs are measured and
+    deleted with the database free: only reading the rows and marking them holds its lock (#7, 2026-11-11)."""
     now = now or datetime.now(UTC)
     cutoff = (now - timedelta(days=keep_days)).strftime("%Y-%m-%dT%H:%M:%S")
-    ended = conn.execute(
-        "SELECT id, COALESCE(ended_at, created_at) AS at FROM terminals"
-        " WHERE status != 'running' AND log_deleted = 0 ORDER BY at"
-    ).fetchall()
+
+    def rows(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], list[str]]:
+        ended = conn.execute(
+            "SELECT id, COALESCE(ended_at, created_at) AS at FROM terminals"
+            " WHERE status != 'running' AND log_deleted = 0 ORDER BY at"
+        ).fetchall()
+        return ended, [r["id"] for r in conn.execute("SELECT id FROM terminals WHERE log_deleted = 0")]
+
+    ended, logged = db.call(rows)
     sizes = {}
-    for row in conn.execute("SELECT id FROM terminals WHERE log_deleted = 0").fetchall():
+    for terminal_id in logged:
         with contextlib.suppress(OSError):
-            sizes[row["id"]] = (folder / f"{row['id']}.log").stat().st_size
+            sizes[terminal_id] = (folder / f"{terminal_id}.log").stat().st_size
     total = sum(sizes.values())
-    removed = 0
-    for row in ended:
-        if row["at"] >= cutoff and total <= max_total_bytes:
-            break
-        with contextlib.suppress(FileNotFoundError):
-            (folder / f"{row['id']}.log").unlink()
-        total -= sizes.get(row["id"], 0)
-        conn.execute("UPDATE terminals SET log_deleted = 1 WHERE id = ?", (row["id"],))
-        removed += 1
-    return removed
+    gone: list[tuple[str]] = []
+    try:
+        for row in ended:
+            if row["at"] >= cutoff and total <= max_total_bytes:
+                break
+            with contextlib.suppress(FileNotFoundError):
+                (folder / f"{row['id']}.log").unlink()
+            total -= sizes.get(row["id"], 0)
+            gone.append((row["id"],))
+    finally:  # those deleted are marked, even when one could not be
+        if gone:
+            db.call(lambda conn: conn.executemany("UPDATE terminals SET log_deleted = 1 WHERE id = ?", gone))
+    return len(gone)

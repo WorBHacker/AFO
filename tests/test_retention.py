@@ -2,8 +2,10 @@
 younger than the term needs them, the screen snapshots and the terminal logs go past it, every kind stays within its
 size (the oldest first); the limits are the user's, through the API and the window."""
 
+import asyncio
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -52,10 +54,10 @@ def test_snapshots_live_as_long_as_the_changes_that_need_them(tmp_path):
                      " VALUES ('p', 'b.txt', NULL, 'stale', 'write_file', '2026-01-01T00:00:00.000Z')")  # fmt: skip
 
     db.call(write)
-    removed = db.call(lambda c: retention.prune_snapshots(c, folder, days=90, max_bytes=10**9))
+    removed = retention.prune_snapshots(db, folder, days=90, max_bytes=10**9)
     # «stale» is needed by a fresh change (its «before»): it stays with it
     assert removed == 1 and sorted(p.name for p in folder.iterdir()) == ["fresh", "orphan_new", "stale"]
-    removed = db.call(lambda c: retention.prune_snapshots(c, folder, days=90, max_bytes=250))  # 300 bytes: one goes
+    removed = retention.prune_snapshots(db, folder, days=90, max_bytes=250)  # 300 bytes: one goes
     assert removed == 1 and sorted(p.name for p in folder.iterdir()) == ["fresh", "stale"]  # the oldest by use
     db.close()
 
@@ -77,7 +79,7 @@ def test_screens_and_logs_go_past_the_term_and_over_the_size(tmp_path):
                                 " created_at, ended_at) VALUES ('t1', 'T', 'D:/', 'cmd', 80, 24, 'exited', 'app',"
                                 " '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"))  # fmt: skip
     aged(tmp_path / "snapshots" / "x", 1)
-    removed = db.call(lambda c: retention.prune_all(c, tmp_path))
+    removed = retention.prune_all(db, tmp_path)
     # 90 days by default
     assert removed == {"snapshots": 0, "screens": 0, "terminals": 1, "files": 0, "copies": 0,
                        "pictures": 0}  # fmt: skip
@@ -98,7 +100,7 @@ def test_files_sent_with_messages_stay_while_a_message_names_them(tmp_path):
                                 " ('c1', 1, 'user', ?, '2025-01-01T00:00:00Z')", (content,)))  # fmt: skip
     copy = aged(tmp_path / "attachments" / "c1" / "7" / "plan.txt", 400)
     pasted = aged(tmp_path / "pasted" / "картинка.png", 400)
-    removed = db.call(lambda c: retention.prune_all(c, tmp_path))
+    removed = retention.prune_all(db, tmp_path)
     assert removed["files"] == 1 and removed["copies"] == 2  # the orphan, old; the old copies
     assert sorted(p.name for p in (tmp_path / "blobs").iterdir()) == [named, fresh]
     assert not copy.exists() and not pasted.exists() and not (tmp_path / "attachments" / "c1").exists()
@@ -112,9 +114,48 @@ def test_pictures_drawn_go_past_the_term_and_over_the_size(tmp_path):
     db.call(migrate)
     old = aged(tmp_path / "media" / "2026-01" / "old.png", 120)
     fresh = aged(tmp_path / "media" / "2026-11" / "new.png", 2)
-    assert db.call(lambda c: retention.prune_all(c, tmp_path))["pictures"] == 1
+    assert retention.prune_all(db, tmp_path)["pictures"] == 1
     assert not old.exists() and not old.parent.exists() and fresh.exists()  # a month left empty goes too
     assert retention.usage(tmp_path)["pictures"] == {"bytes": 100, "files": 1}
+    db.close()
+
+
+def test_the_database_answers_while_the_hub_walks_its_folders(tmp_path, monkeypatch):
+    """#7 (2026-11-11): pruning walked every kind's folder holding the database's only lock - on a big data folder
+    or a slow disk, seconds to tens of seconds in which none of the hub's calls reached the database: answers being
+    saved, events, the window's requests (30 s and it gives up). Now each folder is walked with the database free."""
+    db = Database(tmp_path / "hub.db")
+    db.call(migrate)
+    for kept in ("snapshots/x", "computer/run/s.png", "blobs/" + "a" * 64, "attachments/c1/7/plan.txt",
+                 "pasted/p.png", "media/2026-01/old.png", "terminals/t1.log"):  # fmt: skip
+        aged(tmp_path / kept, 400)
+    db.call(lambda c: c.execute("INSERT INTO terminals (id, title, cwd, command, cols, rows, status, created_by,"
+                                " created_at, ended_at) VALUES ('t1', 'T', 'D:/', 'cmd', 80, 24, 'exited', 'app',"
+                                " '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')"))  # fmt: skip
+    walked, held, others = [], [], []
+    files = retention._files
+
+    def answered() -> bool:  # another of the hub's calls to the database, from a thread of its own
+        other = threading.Thread(target=db.call, args=(lambda c: c.execute("SELECT 1").fetchone(),))
+        others.append(other)
+        other.start()
+        other.join(2.0)
+        return not other.is_alive()
+
+    def walk(folder, pattern):
+        walked.append(folder.name)
+        if not held and not answered():  # the first one held is enough to tell
+            held.append(folder.name)
+        return files(folder, pattern)
+
+    monkeypatch.setattr(retention, "_files", walk)
+    removed = asyncio.run(retention.Keeper(db, tmp_path).prune())
+    for other in others:
+        other.join()
+    assert not held, f"the database waited while the hub walked data/{held[0]}"
+    assert sorted(walked) == ["attachments", "blobs", "computer", "media", "pasted", "snapshots"]
+    assert removed == {"snapshots": 1, "screens": 1, "terminals": 1, "files": 1, "copies": 2, "pictures": 1,
+                       "goal_refs": 0}  # fmt: skip
     db.close()
 
 

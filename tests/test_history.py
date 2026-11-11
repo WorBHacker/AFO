@@ -168,10 +168,10 @@ def test_versions_live_within_the_term_and_the_size(tmp_path):
         return [v["hash"] for v in db.call(lambda c: history.versions(c, folder, "p", "a.txt"))]
 
     assert kept() == ["newer", "fresh", "old"]
-    removed = db.call(lambda c: retention.prune_snapshots(c, folder, days=90, max_bytes=10**9))
+    removed = retention.prune_snapshots(db, folder, days=90, max_bytes=10**9)
     assert removed == 1 and kept() == ["newer", "fresh"]  # past the term: the row and its content
     assert sorted(p.name for p in folder.iterdir()) == ["fresh", "newer"]  # «fresh» is as young as its version
-    removed = db.call(lambda c: retention.prune_snapshots(c, folder, days=90, max_bytes=150))
+    removed = retention.prune_snapshots(db, folder, days=90, max_bytes=150)
     assert removed == 1 and kept() == ["newer"]  # over the size: its content went, so it is not offered
     db.close()
 
