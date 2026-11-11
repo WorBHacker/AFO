@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 from common.paths import data_paths
 from hub.auth import create_client
 from hub.db import Database, migrate
+from hub.processes import stop_tree
 from hub.server import create_app
 from hub.settings import HubSettings
 from hub.terminals import TerminalError, TerminalManager, find_shell, prune_logs, shell_args
@@ -103,6 +104,38 @@ def test_an_interactive_terminal(db, tmp_path):
         await terminals.stop()
 
     asyncio.run(scenario())
+
+
+def running(pid):
+    return psutil.pid_exists(pid) and psutil.Process(pid).is_running()
+
+
+def test_no_terminal_outlives_the_hub_stopping(db, tmp_path):
+    """The hub stops while a model's command starts its terminal, or asks for one after (2026-11-11). stop() ended
+    the terminals it knew: one starting meanwhile became live after it, one asked for later started as ever - and
+    their programs outlived the hub, with nobody to end them. Now the one starting ends with the rest, and none
+    starts once the hub stops."""
+    long = "ping -n 30 127.0.0.1 > nul"
+
+    async def scenario():
+        terminals = TerminalManager(Bus(), db, data_paths().terminals)
+        await terminals.start(prune=False)
+        starting = asyncio.create_task(terminals.create(cwd=tmp_path, by="model", command=long, shell="cmd"))
+        await asyncio.sleep(0)  # it has begun: its program is being started
+        await terminals.stop()
+        started = await starting  # it became live before the stop took hold
+        assert (await terminals.get(started["id"]))["status"] == "exited"  # and ended with the rest
+        assert not running(started["pid"])
+        with pytest.raises(TerminalError, match="the hub is stopping"):
+            await terminals.create(cwd=tmp_path, by="model", command=long, shell="cmd")
+        assert len(await terminals.list()) == 1
+
+    try:
+        asyncio.run(scenario())
+    finally:  # what got away from the hub, ended here
+        for row in db.call(lambda conn: conn.execute("SELECT pid FROM terminals").fetchall()):
+            if running(row["pid"]):
+                stop_tree(row["pid"], 2.0)
 
 
 def test_a_flood_of_output_wakes_the_hub_rarely(db, tmp_path, monkeypatch):

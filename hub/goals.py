@@ -1496,7 +1496,7 @@ class Goals:
             self._counted.discard(conversation_id)
             self._chat.guards.pop(conversation_id, None)
             self._began.pop(conversation_id, None)
-            if conversation_id in self._chat.busy:
+            if conversation_id in self._chat.busy or self._chat.stopping:  # the hub stops: at work after the restart
                 return
             current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
             if current["status"] == "active":

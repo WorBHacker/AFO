@@ -614,3 +614,22 @@ def test_an_agents_run_cut_off_by_the_hub_stopping_is_left_to_go_on(served, capl
     with closing(sqlite3.connect(data_paths().db)) as conn:
         row = conn.execute("SELECT status, ended_at FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
     assert row == ("running", None)
+
+
+def test_a_goal_checking_its_turn_while_the_hub_stops_is_not_blocked(served, repo):
+    """A turn ends just before the hub stops, and its goal checks it meanwhile. The check found work left and
+    started the next turn, which the stopping hub refused - and the goal went to «blocked», waiting for the human
+    after the restart. Now a turn the stopping hub refuses leaves the goal at work: it goes on after the restart."""
+    served.app.state.gateway.register(Scripted("agent", ["Ещё не готово."]))
+    assert served.http.post("/v1/models/sync").status_code == 200
+    pid = served.http.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    cid = served.http.post("/v1/conversations", json={}).json()["id"]
+    assert served.http.put(f"/v1/conversations/{cid}/projects", json={"project_ids": [pid]}).status_code == 200
+    body = {"objective": "Дождаться проверки", "model_id": "agent/m",
+            "criteria": [{"command": "Start-Sleep -Seconds 5; exit 1"}]}  # fmt: skip
+    assert served.http.put(f"/v1/conversations/{cid}/goal", json=body).status_code == 201
+    wait(lambda: served.http.get(f"/v1/conversations/{cid}/goal").json()["checking"])  # its first turn is checked
+    served.close()
+    with closing(sqlite3.connect(data_paths().db)) as conn:
+        status, detail = conn.execute("SELECT status, detail FROM goals WHERE conversation_id = ?", (cid,)).fetchone()
+    assert status == "active", detail

@@ -107,6 +107,8 @@ class TerminalManager:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tasks: set[asyncio.Task] = set()
         self._prune_task: asyncio.Task | None = None
+        self._starting = asyncio.Lock()  # a terminal starting: stop() waits till it is one of the live ones
+        self._closed = False  # stopped: no terminal starts any more (the hub stops, 2026-11-11)
 
     # --- life of the manager ---
 
@@ -125,7 +127,10 @@ class TerminalManager:
             self._prune_task = asyncio.create_task(self._prune_loop())
 
     async def stop(self) -> None:
-        """Ends every terminal (and what runs in it): nothing the hub started outlives it."""
+        """Ends every terminal (and what runs in it): nothing the hub started outlives it - one starting now ends
+        with the rest, and none starts after."""
+        async with self._starting:
+            self._closed = True
         if self._prune_task is not None:
             self._prune_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -218,38 +223,41 @@ class TerminalManager:
         else:
             kind, program = find_shell(shell)
             args = shell_args(kind, command)
-        terminal_id = uuid.uuid4().hex[:12]
-        pty = winpty.PTY(cols, rows)
-        block = "".join(f"{k}={v}\0" for k, v in {**os.environ, **env}.items()) if env else None
-        try:
-            spawned = await asyncio.to_thread(
-                pty.spawn, program, cmdline=" " + subprocess.list2cmdline(args), cwd=str(cwd), env=block
+        async with self._starting:  # from here till it is live, stop() waits: it ends this one with the rest
+            if self._closed:
+                raise TerminalError("the hub is stopping: no terminal starts now")
+            terminal_id = uuid.uuid4().hex[:12]
+            pty = winpty.PTY(cols, rows)
+            block = "".join(f"{k}={v}\0" for k, v in {**os.environ, **env}.items()) if env else None
+            try:
+                spawned = await asyncio.to_thread(
+                    pty.spawn, program, cmdline=" " + subprocess.list2cmdline(args), cwd=str(cwd), env=block
+                )
+            except winpty.WinptyError as exc:
+                raise TerminalError(f"the terminal did not start: {exc}") from exc
+            if not spawned:
+                raise TerminalError("the terminal did not start")
+            shown = subprocess.list2cmdline([program, *args])
+            self._folder.mkdir(parents=True, exist_ok=True)
+            live = _Live(
+                id=terminal_id,
+                project_id=project_id,
+                pty=pty,
+                pid=pty.pid,
+                log=self.log_path(terminal_id).open("a", encoding="utf-8", newline=""),
             )
-        except winpty.WinptyError as exc:
-            raise TerminalError(f"the terminal did not start: {exc}") from exc
-        if not spawned:
-            raise TerminalError("the terminal did not start")
-        shown = subprocess.list2cmdline([program, *args])
-        self._folder.mkdir(parents=True, exist_ok=True)
-        live = _Live(
-            id=terminal_id,
-            project_id=project_id,
-            pty=pty,
-            pid=pty.pid,
-            log=self.log_path(terminal_id).open("a", encoding="utf-8", newline=""),
-        )
-        await self._db.acall(
-            lambda conn: conn.execute(
-                "INSERT INTO terminals (id, project_id, title, command, cwd, cols, rows, pid, created_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (terminal_id, project_id, title or command or kind, shown, str(cwd), cols, rows, live.pid, by),
+            await self._db.acall(
+                lambda conn: conn.execute(
+                    "INSERT INTO terminals (id, project_id, title, command, cwd, cols, rows, pid, created_by)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (terminal_id, project_id, title or command or kind, shown, str(cwd), cols, rows, live.pid, by),
+                )
             )
-        )
-        self._live[terminal_id] = live
-        live.thread = threading.Thread(
-            target=self._read_loop, args=(live,), name=f"terminal-{terminal_id}", daemon=True
-        )
-        live.thread.start()
+            self._live[terminal_id] = live
+            live.thread = threading.Thread(
+                target=self._read_loop, args=(live,), name=f"terminal-{terminal_id}", daemon=True
+            )
+            live.thread.start()
         info = await self.get(terminal_id)
         await self._bus.publish("terminal.started", {"terminal": info}, project_id=project_id)
         log.info("terminal %s started (pid %s): %s in %s", terminal_id, live.pid, shown, cwd)
