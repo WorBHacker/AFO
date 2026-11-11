@@ -206,39 +206,45 @@ class ChatService:
         """
         if conversation_id in self._runs:
             raise GatewayError("this conversation already has a run in progress")
-        model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
-        if model is None:
-            raise GatewayError(f"unknown model {model_id!r}")
-        if not model["enabled"]:
-            raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
-        if model["locality"] == "cloud":
-            await self._check_cloud(conversation_id)
-        sent = await self._attached_files(model, files or [])  # kept once by their content: a resend takes the same
-        user_blocks = [*([{"type": "text", "text": text}] if text.strip() or not sent else []), *sent]
-        if model["prices"]:  # local models are free and never held back
-            estimate = await self._upper_cost(conversation_id, model, user_blocks)
-            await self._check_budgets(model_id, confirm_over_budget, client_id, estimate)
+        cancel = self._runs[conversation_id] = asyncio.Event()  # taken at once: a message sent meanwhile is refused
+        try:
+            model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
+            if model is None:
+                raise GatewayError(f"unknown model {model_id!r}")
+            if not model["enabled"]:
+                raise GatewayError(f"model {model_id!r} is not available now (its provider no longer lists it)")
+            if model["locality"] == "cloud":
+                await self._check_cloud(conversation_id)
+            sent = await self._attached_files(model, files or [])  # kept once by their content: a resend reuses them
+            user_blocks = [*([{"type": "text", "text": text}] if text.strip() or not sent else []), *sent]
+            if model["prices"]:  # local models are free and never held back
+                estimate = await self._upper_cost(conversation_id, model, user_blocks)
+                await self._check_budgets(model_id, confirm_over_budget, client_id, estimate)
 
-        def write(conn):
-            title = None
-            if not store.get_title(conn, conversation_id):  # an untitled chat is named after its first message
-                title = _title_from(text if text.strip() else ", ".join(b["name"] for b in sent))
-                store.set_title(conn, conversation_id, title)
-            return store.add_message(conn, conversation_id, "user", user_blocks), title
+            def write(conn):
+                title = None
+                if not store.get_title(conn, conversation_id):  # an untitled chat is named after its first message
+                    title = _title_from(text if text.strip() else ", ".join(b["name"] for b in sent))
+                    store.set_title(conn, conversation_id, title)
+                return store.add_message(conn, conversation_id, "user", user_blocks), title
 
-        user_msg, title = await self._db.acall(write)
-        if title:
-            await self._bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
-        await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
-        agent = model["provider"] == CLAUDE_CODE
-        if not agent:
-            await self._use_limits(model_id)  # its context is stored within the model's own budgets (D39)
-            await self._store_context(conversation_id)
-        cancel = asyncio.Event()
-        self._runs[conversation_id] = cancel
+            user_msg, title = await self._db.acall(write)
+            if title:
+                await self._bus.publish("chat.titled", {"conversation_id": conversation_id, "title": title})
+            await self._bus.publish("chat.message", {"conversation_id": conversation_id, "message": user_msg.to_json()})
+            agent = model["provider"] == CLAUDE_CODE
+            if not agent:
+                await self._use_limits(model_id)  # its context is stored within the model's own budgets (D39)
+                await self._store_context(conversation_id)
+            elif sent:  # Claude Code reads the files itself, from where they are put for it
+                try:
+                    text = await asyncio.to_thread(self._files_for_agent, conversation_id, user_msg.id, text, sent)
+                except OSError as exc:  # a full disk, a folder another program holds
+                    raise GatewayError(f"the files were not put where Claude Code reads them: {exc}") from exc
+        except BaseException:  # nothing began: the chat is free again
+            self._runs.pop(conversation_id, None)
+            raise
         if agent:
-            if sent:  # Claude Code reads the files itself, from where they are put for it
-                text = await asyncio.to_thread(self._files_for_agent, conversation_id, user_msg.id, text, sent)
             task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
         else:
             task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
@@ -267,9 +273,9 @@ class ChatService:
         folder = self.blobs.parent / "attachments" / conversation_id / str(message_id)  # type: ignore[union-attr]
         folder.mkdir(parents=True, exist_ok=True)
         paths = []
-        for block in sent:
+        for block, name in zip(sent, attachments.file_names([b["name"] for b in sent]), strict=True):
             data = attachments.load(self.blobs, block["blob"]) or b""  # type: ignore[arg-type]
-            target = folder / (Path(block["name"]).name or "file")
+            target = folder / name
             target.write_bytes(data)
             paths.append(str(target))
         listed = "\n".join(f"- {p}" for p in paths)

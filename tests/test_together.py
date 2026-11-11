@@ -24,10 +24,12 @@ from hub.auth import create_client
 from hub.chat import Limits
 from hub.claude_code import ClaudeCodeProvider
 from hub.events import matches
+from hub.gateway import GatewayError
 from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.projects import get_project
 from tests import test_claude_code as cc
 from tests.test_agents import delegate, ended, profile, register, run_of
+from tests.test_attachments import b64
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
@@ -472,3 +474,60 @@ def test_a_coordinator_goes_on_when_its_sub_runs_chat_is_deleted(hub, repo):  # 
     messages = hub.get(f"/v1/conversations/{run_id}").json()["messages"]
     said = [b for m in messages if m["role"] == "tool" for b in m["content"]]
     assert said[0]["error"], said[0]["output"]  # the coordinator heard its sub-run did not do it
+
+
+# --- a message into a chat: taken at once; its files under names Windows takes (2026-11-10, the user's word)
+
+
+def test_two_messages_at_once_into_one_chat_start_one_answer(served):
+    """Two messages into one chat at the same moment - a second Enter while the first one's files go up, the window
+    and VS Code together. `send` asked whether the chat was busy and took it a dozen awaits later: both passed, two
+    answers ran in one chat, and the second's stop took the first's place - the first could not be stopped. Now the
+    chat is taken at once, and the second is refused as busy."""
+    served.app.state.gateway.register(Scripted("agent", ["Раз."]))
+    assert served.http.post("/v1/models/sync").status_code == 200
+    cid = served.http.post("/v1/conversations", json={}).json()["id"]
+    chat = served.app.state.chat
+
+    async def both():
+        sending = (chat.send(cid, "раз", "agent/m"), chat.send(cid, "два", "agent/m"))
+        return await asyncio.gather(*sending, return_exceptions=True)
+
+    first, second = asyncio.run_coroutine_threadsafe(both(), served.server.servers[0].get_loop()).result(10)
+    assert first["role"] == "user", first
+    assert isinstance(second, GatewayError) and "already has a run" in str(second), second
+    assert [m["role"] for m in served.wait_idle(cid)["messages"]] == ["user", "assistant"]
+
+
+def test_a_message_whose_files_were_not_put_leaves_the_chat_free(live):
+    """Claude Code reads a message's files from a folder of the chat. Putting them there failed - here a file stands
+    where the folder goes; a full disk, a folder another program holds - after the chat was taken, and the chat stayed
+    busy until the hub restarted: every next message was refused. Now the failure is said, and the chat is free."""
+    cid = cc.chat_with_project(live)
+    blocker = data_paths().root / "attachments" / cid
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_text("not a folder", encoding="utf-8")
+    url = f"/v1/conversations/{cid}/messages"
+    files = [{"name": "plan.txt", "data": b64(b"plan")}]
+    failed = live.http.post(url, json={"content": "Посмотри", "model_id": "claude-code/default", "files": files})
+    blocker.unlink()
+    again = live.http.post(url, json={"content": "Ещё раз", "model_id": "claude-code/default"})
+    assert again.status_code == 202, again.text  # the chat was not left busy
+    assert failed.status_code == 409 and "Claude Code reads them" in failed.json()["detail"], failed.text
+    live.wait_idle(cid)
+
+
+def test_claude_code_gets_files_whose_names_windows_refuses(live):
+    """A file sent from outside the window (VS Code, the API) may be named as Windows names no file - «a<b>?.txt»,
+    «con.txt» - or two alike. Writing it for Claude Code failed, and the chat stayed busy; now each is written under a
+    name Windows takes, one file each."""
+    cid = cc.chat_with_project(live)
+    names = ["a<b>?.txt", "con.txt", "отчёт.txt", "отчёт.txt"]
+    files = [{"name": name, "data": b64(f"файл {n}".encode())} for n, name in enumerate(names)]
+    sent = live.http.post(f"/v1/conversations/{cid}/messages",
+                          json={"content": "Посмотри", "model_id": "claude-code/default", "files": files})  # fmt: skip
+    assert sent.status_code == 202, sent.text
+    live.wait_idle(cid)
+    folder = data_paths().root / "attachments" / cid / str(sent.json()["user_message"]["id"])
+    assert {p.name: p.read_text(encoding="utf-8") for p in folder.iterdir()} == {
+        "a_b__.txt": "файл 0", "_con.txt": "файл 1", "отчёт.txt": "файл 2", "отчёт (2).txt": "файл 3"}  # fmt: skip

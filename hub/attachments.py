@@ -18,6 +18,8 @@ import base64
 import binascii
 import hashlib
 import io
+import ntpath
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -32,6 +34,9 @@ MAX_BYTES = 20 * 1024 * 1024  # one file
 MAX_TOTAL = 40 * 1024 * 1024  # one message's
 MAX_FILES = 10
 TEXT_CHARS = 200_000  # of one file's text the model reads
+NAME_CHARS = 100  # of a file's name written for Claude Code: with the data folder's path, within Windows' 260
+EXTENSION_CHARS = 16
+REFUSED = re.compile(r'[<>:"/\\|?*\x00-\x1f]')  # what Windows takes in no file's name
 PICTURES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF87a", "image/gif"),
             (b"GIF89a", "image/gif"))  # fmt: skip
 WORD = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -66,6 +71,30 @@ def load(folder: Path, name: str) -> bytes | None:
         return (folder / name).read_bytes()
     except OSError:
         return None
+
+
+def file_names(names: list[str]) -> list[str]:
+    """The names the files sent with a message are written under for Claude Code: each one's own, as Windows takes a
+    file's name - its last part (no way out of the folder), a character Windows refuses as «_», no dot or space at the
+    end, not a device's (CON, NUL, COM1...), at most NAME_CHARS with its extension - and two alike told apart:
+    «отчёт (2).txt»."""
+    taken: set[str] = set()
+    out = []
+    for name in names:
+        base = REFUSED.sub("_", name.replace("\\", "/").rsplit("/", 1)[-1]).rstrip(". ") or "file"
+        root, ext = os.path.splitext(base)
+        if len(ext) > EXTENSION_CHARS:  # a dot inside a long name, not an extension
+            root, ext = base, ""
+        root = root[: NAME_CHARS - len(ext)].rstrip(". ") or "file"
+        if ntpath.isreserved(root + ext):
+            root = "_" + root
+        made, n = root + ext, 1
+        while made.casefold() in taken:  # Windows does not tell «A.txt» from «a.txt»
+            n += 1
+            made = f"{root} ({n}){ext}"
+        taken.add(made.casefold())
+        out.append(made)
+    return out
 
 
 def docx_text(data: bytes) -> str:
