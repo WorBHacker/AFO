@@ -9,8 +9,9 @@ since its step."""
 import asyncio
 import json
 import logging
+import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,7 +19,7 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import goals
+from hub import claude_code, goals
 from hub.api_reference import event_types
 from hub.auth import create_client
 from hub.chat import Limits
@@ -563,3 +564,53 @@ def test_an_autonomous_run_stopped_while_paused_tells_the_window_it_ended(served
     assert len(done) == 1 and done[0]["payload"]["cancelled"] is True, done
     wait(lambda: served.http.get(f"/v1/runs/{paused}").json()["status"] == "cancelled")
     assert len(agent.prompts) == 1  # only the holder asked the model: the paused run was stopped before it did
+
+
+# --- the hub stops while answers go on (2026-11-11, the user's word)
+
+
+def errors_in(caplog):
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_a_claude_code_goal_cut_off_by_the_hub_stopping_goes_on_after_the_restart(live, caplog, monkeypatch):
+    """The hub stops - closed from the window, or for an update - while Claude Code works a goal's turn. It killed
+    the CLI and did not stop the turn: the turn failed («ended without an answer») and the goal went to «blocked»,
+    or what it wrote came after the database had closed. Now the hub stops the turn as «Стоп» does, before the
+    rest; the goal does not hear of it, and after the restart it goes on."""
+    monkeypatch.setattr(claude_code, "_runnable", lambda path: cc.FAKE)  # the next hub finds the stand-in CLI too
+    cid = cc.chat_with_project(live)
+    cc.set_goal(live, cid, objective="hang on until the hub stops")
+    wait(lambda: live.log.is_file() and len(live.log.read_text(encoding="utf-8").splitlines()) == 1)  # its turn
+    with caplog.at_level(logging.ERROR):
+        live.close()
+    assert errors_in(caplog) == []
+    after = cc.LiveHub()
+    try:
+        wait(lambda: len(live.log.read_text(encoding="utf-8").splitlines()) == 2, timeout=30)  # its next turn
+        goal = after.http.get(f"/v1/conversations/{cid}/goal").json()["goal"]
+        assert goal["status"] == "active", goal
+        assert "The hub restarted" in json.loads(live.log.read_text(encoding="utf-8").splitlines()[1])["text"]
+    finally:
+        after.close()
+
+
+def test_an_agents_run_cut_off_by_the_hub_stopping_is_left_to_go_on(served, caplog):
+    """A run the hub was running when it stopped goes on after the restart (AgentRunner.start), so the hub's stop
+    must not end it as the user's «Стоп» does. It never ended it only because its end came after the database had
+    closed - with errors in the log. Now the hub stops its answer first and leaves the run as it was."""
+    worker = Gated("agent", ["Готово."])
+    worker.gate.clear()  # its answer waits
+    served.app.state.gateway.register(worker)
+    assert served.http.post("/v1/models/sync").status_code == 200
+    body = {"name": "Ждун", "instructions": "Работаешь.", "model_id": "agent/m", "mode": "ask",
+            "tools": ["read_file"], "project_ids": [], "max_steps": 10}  # fmt: skip
+    made = served.http.post("/v1/agents", json=body).json()
+    run_id = served.http.post(f"/v1/agents/{made['id']}/runs", json={"task": "долгая задача"}).json()["id"]
+    assert worker.waiting.wait(10)  # its model is answering
+    with caplog.at_level(logging.ERROR):
+        served.close()
+    assert errors_in(caplog) == []
+    with closing(sqlite3.connect(data_paths().db)) as conn:
+        row = conn.execute("SELECT status, ended_at FROM agent_runs WHERE conversation_id = ?", (run_id,)).fetchone()
+    assert row == ("running", None)

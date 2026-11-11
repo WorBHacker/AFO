@@ -1058,6 +1058,8 @@ class AgentRunner:
         if run_id in self._held:
             self._held.discard(run_id)
             self._gpu.release()
+        if self._chat.stopping:  # the hub stops, not the run: it goes on after the restart as it was left (start)
+            return
         totals = outcome.totals
         status = outcome.status if outcome.status in ("done", "error", "cancelled") else "done"
         if self._chat.computer is not None:  # its hold on the desktop goes with it (D41)

@@ -280,6 +280,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                 await goals_on
             with contextlib.suppress(asyncio.CancelledError):
                 await sweep
+            # the answers first, as «Стоп» ends them, while their tools, terminals and the database still work
+            # (2026-11-11): their goals and agents go on after the restart; the goals' resuming is cancelled above,
+            # so none of them is refused a turn and blocked
+            await app.state.chat.stop()
             await app.state.mcp.stop()
             await app.state.keeper.stop()
             app.state.computer.close()

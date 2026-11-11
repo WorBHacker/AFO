@@ -37,6 +37,10 @@ its tool calls belong to Claude Code's tools, not the hub's.
 
 A chat with a goal (D44, hub/goals.py) works turn after turn: when a turn ends, the goal checks its criteria and
 either stops or starts the next turn itself (go_on) with a note of the hub - what is missing, what the user added.
+
+When the hub stops (2026-11-11) nothing new starts here, and the answers going on are stopped as by «Стоп» - what
+came is kept - and waited for, before the services they use go and the database closes (stop). Their goals and
+agents do not hear of this end: they go on after the restart as the hub left them.
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -121,6 +125,8 @@ READING = frozenset(
     }
 )
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
+STOP_WAIT_S = 10.0  # the hub stops: how long its answers get to end as stopped ones
+CUT_WAIT_S = 2.0  # and how long one that did not gets once it is cut off
 # the tools that work in a project: in a chat with none, the hub asks the user which (31.2, the user's choice)
 PROJECT_TOOLS = frozenset(t["name"] for t in (*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND)
                           if "project" in (t.get("parameters") or {}).get("properties", {}))  # fmt: skip
@@ -151,6 +157,8 @@ class ChatService:
         self._bus = bus
         self._gateway = gateway
         self._runs: dict[str, asyncio.Event] = {}  # conversation_id -> cancel flag of its active run
+        self._tasks: set[asyncio.Task] = set()  # the answers going on: the hub waits for them when it stops
+        self.stopping = False  # the hub stops: nothing new starts, and what is stopped is not the user's «Стоп»
         self.terminals = None  # set by the server: the tools read terminals and processes through them
         self.processes = None
         self.symbols = SymbolIndex()  # the server's shared one replaces it
@@ -204,8 +212,7 @@ class ChatService:
         such budget allows asking and the user confirmed (`confirm_over_budget`); the override is logged.
         `files`: files and pictures sent with the message ({name, data (base64)}, hub/attachments.py).
         """
-        if conversation_id in self._runs:
-            raise GatewayError("this conversation already has a run in progress")
+        self._check_free(conversation_id)
         cancel = self._runs[conversation_id] = asyncio.Event()  # taken at once: a message sent meanwhile is refused
         try:
             model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
@@ -245,11 +252,24 @@ class ChatService:
             self._runs.pop(conversation_id, None)
             raise
         if agent:
-            task = asyncio.create_task(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
+            self._launch(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
         else:
-            task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id))
-        task.add_done_callback(log_task_exception)
+            self._launch(self._run(conversation_id, model, effort, cancel, client_id))
         return user_msg.to_json()
+
+    def _check_free(self, conversation_id: str) -> None:
+        """Nothing starts in a chat with an answer going on, nor in any while the hub stops."""
+        if self.stopping:
+            raise GatewayError("the hub is stopping: send it again once the hub is back")
+        if conversation_id in self._runs:
+            raise GatewayError("this conversation already has a run in progress")
+
+    def _launch(self, run: Coroutine[Any, Any, None]) -> None:
+        """An answer under way: kept till it ends, so that the hub stopping waits for it (stop)."""
+        task = asyncio.create_task(run)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(log_task_exception)
 
     async def _attached_files(self, model: dict, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """The blocks of the files sent with a message - refused (GatewayError) when one cannot be read, or when
@@ -318,6 +338,22 @@ class ChatService:
         cancel.set()
         return True
 
+    async def stop(self, wait_s: float = STOP_WAIT_S) -> None:
+        """The hub stops: first of all, while what the answers use still works. Nothing new starts; those going on
+        are stopped as by «Стоп» and waited for - one that does not end within `wait_s` is cut off. `stopping` tells
+        their ends from the user's stop: their goals and agents go on after the restart (hub/goals.py, agents.py)."""
+        self.stopping = True
+        for cancel in self._runs.values():
+            cancel.set()
+        deadline = time.monotonic() + wait_s
+        while self._tasks and (left := deadline - time.monotonic()) > 0:  # one still getting ready starts stopped
+            await asyncio.wait(set(self._tasks), timeout=left)
+        if self._tasks:
+            log.warning("%d answer(s) did not end when the hub stopped: cut off", len(self._tasks))
+            for task in self._tasks:
+                task.cancel()
+            await asyncio.wait(set(self._tasks), timeout=CUT_WAIT_S)
+
     async def start(
         self,
         conversation_id: str,
@@ -331,8 +367,7 @@ class ChatService:
     ) -> None:
         """An agent's run (stage 5, D16): its task - or nothing new, when a run goes on after the hub restarted - and
         then the same loop as a chat's, within the run's limits; `on_end` hears how it ended."""
-        if conversation_id in self._runs:
-            raise GatewayError("this conversation already has a run in progress")
+        self._check_free(conversation_id)
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
         if model is None or not model["enabled"]:
             raise GatewayError(f"model {model_id!r} is not available now")
@@ -350,12 +385,11 @@ class ChatService:
         await self._store_context(conversation_id)
         cancel = asyncio.Event()
         self._runs[conversation_id] = cancel
-        task = asyncio.create_task(
+        self._launch(
             self._run(
                 conversation_id, model, effort, cancel, client_id, limits=limits, outcome=Outcome(), on_end=on_end
             )
         )
-        task.add_done_callback(log_task_exception)
 
     async def go_on(
         self,
@@ -373,8 +407,7 @@ class ChatService:
         or Claude Code's turn, within `limits.max_steps` of its own (11.7); the goal hears how the turn ended, like
         any turn of that chat. Raises GatewayError when it cannot start (busy, the model gone, the cloud or a budget
         says no)."""
-        if conversation_id in self._runs:
-            raise GatewayError("this conversation already has a run in progress")
+        self._check_free(conversation_id)
         cancel = self._runs[conversation_id] = asyncio.Event()  # taken at once: nothing starts in between
         try:
             model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
@@ -397,11 +430,10 @@ class ChatService:
             self._runs.pop(conversation_id, None)
             raise
         if agent:
-            task = asyncio.create_task(self._run_agent(conversation_id, model, note, cancel, client_id,
-                                                       max_turns=limits.max_steps, effort=effort))  # fmt: skip
+            self._launch(self._run_agent(conversation_id, model, note, cancel, client_id, max_turns=limits.max_steps,
+                                         effort=effort))  # fmt: skip
         else:
-            task = asyncio.create_task(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
-        task.add_done_callback(log_task_exception)
+            self._launch(self._run(conversation_id, model, effort, cancel, client_id, limits=limits))
 
     async def tool_projects(self, conversation_id: str) -> list:
         """The chat's projects as its tools see them: in «Песочница» a git project is its worktree (D17, 9.4b)."""
@@ -450,7 +482,7 @@ class ChatService:
                 if self.autonomy is not None:
                     await self.autonomy.expire_all(conversation_id)  # its questions too: nobody waits for them now
                 await on_end(outcome)
-            elif self.goals is not None and not _stopping():  # a chat's turn: its goal checks it, goes on or not
+            elif self.goals is not None and not self.stopping:  # a chat's turn: its goal checks it, goes on or not
                 # (D44) - not when the hub stops: the goal goes on after the restart
                 try:
                     await self.goals.turn_ended(conversation_id, outcome)
@@ -512,7 +544,7 @@ class ChatService:
                 await self.approvals.expire(conversation_id)  # nobody waits for its open requests now
             if self.autonomy is not None:
                 await self.autonomy.expire_all(conversation_id)
-            if self.goals is not None and not _stopping():  # its goal checks the turn, as any (11.7)
+            if self.goals is not None and not self.stopping:  # its goal checks the turn, as any (11.7)
                 try:
                     await self.goals.turn_ended(conversation_id, outcome)
                 except Exception:
@@ -1502,12 +1534,6 @@ class BudgetReached(GatewayError):
         super().__init__(budgets.held_back(over, "the request"))
         self.budgets = over
         self.can_confirm = can_confirm
-
-
-def _stopping() -> bool:
-    """This run's task is being cancelled - the hub stops."""
-    task = asyncio.current_task()
-    return task is not None and task.cancelling() > 0
 
 
 def _title_from(text: str) -> str:
