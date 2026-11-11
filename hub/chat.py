@@ -552,10 +552,13 @@ class ChatService:
         tools = None
         scale, squeezed = 1.0, 0  # how far the length guess falls short for this model; requests sent shorter again
         last_words = 2 if limits.autonomous and self.autonomy is not None else 0  # turns to mark a step and report
+        message_id, completion = None, None  # its last step stored, its last model call: none before the first
         for step in range(limits.max_steps + 2 + last_words):
             if limits.autonomous and self.autonomy is not None:  # paused by the user; what it should hear first
                 await self.autonomy.wait_resumed(conversation_id, cancel)
-                if cancel.is_set():
+                if cancel.is_set():  # stopped while paused, or between steps: the window hears the answer ended
+                    await self._bus.publish("chat.done", run.done(conversation_id, message_id, completion,
+                                                                  cancelled=True))  # fmt: skip
                     outcome.status = "cancelled"
                     return
                 for notice in self.autonomy.take_notices(conversation_id):
@@ -636,7 +639,7 @@ class ChatService:
                 if limits.autonomous and self.autonomy is not None and not completion.cancelled:
                     nudge = await self.autonomy.nudge(conversation_id)  # it stopped before its report (D40)
                 if nudge:
-                    await self._save_step(conversation_id, model, completion, client_id, run)
+                    message_id = await self._save_step(conversation_id, model, completion, client_id, run)
                     await self._hub_note(conversation_id, nudge)
                     continue
                 await self._save(conversation_id, model, completion, client_id, run)
@@ -1551,7 +1554,11 @@ class RunTotals:
         if usage.get("estimated"):
             self.usage["estimated"] = 1
 
-    def done(self, conversation_id: str, message_id: int, last: Completion, *, cancelled: bool = False) -> dict:
+    def done(
+        self, conversation_id: str, message_id: int | None, last: Completion | None, *, cancelled: bool = False
+    ) -> dict:
+        """`last`: the run's last model call - none when it was stopped before its first (a paused agent)."""
+        last = last or Completion()
         return {
             "conversation_id": conversation_id,
             "message_id": message_id,

@@ -30,7 +30,7 @@ from hub.projects import get_project
 from tests import test_claude_code as cc
 from tests.test_agents import delegate, ended, profile, register, run_of
 from tests.test_attachments import b64
-from tests.test_autonomous import Scripted, use
+from tests.test_autonomous import PLAN, Scripted, use
 from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
@@ -531,3 +531,35 @@ def test_claude_code_gets_files_whose_names_windows_refuses(live):
     folder = data_paths().root / "attachments" / cid / str(sent.json()["user_message"]["id"])
     assert {p.name: p.read_text(encoding="utf-8") for p in folder.iterdir()} == {
         "a_b__.txt": "файл 0", "_con.txt": "файл 1", "отчёт.txt": "файл 2", "отчёт (2).txt": "файл 3"}  # fmt: skip
+
+
+# --- an autonomous run stopped while paused (2026-11-11, the user's word)
+
+
+def of_run(events, kind, run_id):
+    return [e for e in of_kind(events, kind) if e["payload"].get("conversation_id") == run_id]
+
+
+def test_an_autonomous_run_stopped_while_paused_tells_the_window_it_ended(served):
+    """The user pauses an autonomous run, then stops it. The run heard the stop between its steps and left without
+    `chat.done` or `chat.error` - the only events that end an answer for the window: the chat stayed «busy» there
+    until the window reconnected, and Enter in it was a «Стоп» to nothing. Now the window hears that it ended."""
+    agent = Scripted("agent", [[PLAN]])
+    served.app.state.gateway.register(agent)
+    assert served.http.post("/v1/models/sync").status_code == 200
+    body = {"goal": "Посчитать строки в README", "done_when": "число строк названо", "model_id": "agent/m",
+            "autonomy": "plan", "project_ids": []}  # fmt: skip
+    token = (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+    with window_listening(served, token) as (events, _links):
+        holder = served.http.post("/v1/runs/autonomous", json=body).json()["id"]
+        served.wait_approval()  # its plan waits for the user: it holds the graphics card
+        paused = served.http.post("/v1/runs/autonomous", json=body).json()["id"]
+        wait(lambda: served.http.get(f"/v1/runs/{paused}").json()["status"] == "queued")
+        assert served.http.post(f"/v1/runs/{paused}/pause").status_code == 202  # paused before its first step
+        assert served.http.post(f"/v1/runs/{holder}/cancel").json() == {"cancelled": True}
+        wait(lambda: of_run(events, "chat.run_started", paused))  # the card is its now: it waits, paused
+        assert served.http.post(f"/v1/runs/{paused}/cancel").json() == {"cancelled": True}
+        done = wait(lambda: of_run(events, "chat.done", paused), timeout=10)
+    assert len(done) == 1 and done[0]["payload"]["cancelled"] is True, done
+    wait(lambda: served.http.get(f"/v1/runs/{paused}").json()["status"] == "cancelled")
+    assert len(agent.prompts) == 1  # only the holder asked the model: the paused run was stopped before it did
