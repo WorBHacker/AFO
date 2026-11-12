@@ -652,6 +652,8 @@ class ChatService:
                 continue
             completion.settings_version = version
             completion.fallback = fallback
+            completion.window = (model.get("capabilities") or {}).get("context")  # how full it is (stage 40)
+            completion.shortened = shortened
             used = completion.usage or {}
             counted = sum(int(used.get(k) or 0) for k in ("input_tokens", "cache_read", "cache_write"))
             if counted and not used.get("estimated"):  # the model's own count corrects the guess for the next step
@@ -1489,6 +1491,7 @@ class ChatService:
                 **({"params": completion.params} if completion.params else {}),
                 **({"settings_version": completion.settings_version} if completion.settings_version else {}),
                 **({"fallback": completion.fallback} if completion.fallback else {}),
+                **({"shortened": completion.shortened} if completion.shortened else {}),  # how full (stage 40)
             },
         )
         return message, cost, budgets.crossed(conn, model["id"], cost)
@@ -1613,6 +1616,8 @@ class RunTotals:
             "steps": self.steps,
             "stop_reason": last.stop_reason,
             "cancelled": cancelled or last.cancelled,
+            # how full the model's window is now: by the run's last request, not the sum of its steps (stage 40)
+            "fill": fit.filled(last.usage, last.window, last.shortened),
         }
 
 

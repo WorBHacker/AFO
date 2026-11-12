@@ -86,6 +86,8 @@ class Completion:
     params: dict[str, Any] = field(default_factory=dict)  # the answer's parameters it was asked with (D39)
     settings_version: int = 0  # the version of the model's settings in force then
     fallback: dict[str, Any] | None = None  # the spare answered instead of {from, from_name, reason} (D39)
+    window: int | None = None  # the context window of the model asked (stage 40)
+    shortened: int = 0  # old messages the request was shortened by to fit that window (hub/fit.py)
 
     def blocks(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

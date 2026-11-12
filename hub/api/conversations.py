@@ -91,18 +91,20 @@ async def get_conversation(
             messages,
             store.conversation_projects(conn, conversation_id),
             store.context_settings(conn, conversation_id),
+            store.context_fill(conn, conversation_id),
         )
 
     found = await request.app.state.db.acall(read)
     if found is None:
         raise HTTPException(status_code=404, detail="no such conversation")
-    title, messages, attached, settings = found
+    title, messages, attached, settings, fill = found
     return {
         "id": conversation_id,
         "title": title,
         "messages": messages,
         "projects": attached,
         "context": settings,
+        "fill": fill,  # how full the model's window is after the last answer (stage 40)
         "busy": conversation_id in request.app.state.chat.busy,
     }
 

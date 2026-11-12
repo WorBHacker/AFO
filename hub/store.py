@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from . import model_settings
+from . import fit, model_settings
 from .db import utc_now
 from .gateway import Model
 from .gateway.base import on_day
@@ -358,6 +358,22 @@ def usage_by_message(conn: sqlite3.Connection, conversation_id: str) -> dict[int
         }
         for r in rows
     }
+
+
+def context_fill(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any] | None:
+    """How full the model's window is in a chat opened again (stage 40): its last model call that made a message of
+    it, with the window of the model that answered - a goal's judge and a declined request make none, they are not
+    the chat's. None before the first answer."""
+    row = conn.execute(
+        "SELECT model_id, input_tokens, output_tokens, estimated, meta FROM usage"
+        " WHERE conversation_id = ? AND message_id IS NOT NULL AND input_tokens > 0 ORDER BY id DESC LIMIT 1",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    model = get_model(conn, row["model_id"]) or {}
+    usage = {"input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"], "estimated": row["estimated"]}
+    return fit.filled(usage, (model.get("capabilities") or {}).get("context"), json.loads(row["meta"]).get("shortened"))
 
 
 def usage_totals(conn: sqlite3.Connection, *, today_since: str | None = None) -> dict[str, Any]:

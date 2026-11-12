@@ -101,6 +101,18 @@ def room(window: int) -> int:
     return window - max(2048, window // 8)
 
 
+def filled(usage: dict[str, Any], window: int | None, shortened: int = 0) -> dict[str, Any] | None:
+    """How full the model's window is after an answer (stage 40), for the window under its input: what the last
+    request carried and the answer to it - the next request carries both (a model's reasoning may stay out of it:
+    the figure is a little over, the next count corrects it). `shortened`: that request was already fitted here.
+    None when the model said nothing of its count (a cancelled answer)."""
+    used = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+    if not used:
+        return None
+    return {"used": used, "window": window or None, "shortened": bool(shortened),
+            "estimated": bool(usage.get("estimated"))}  # fmt: skip
+
+
 def fit(prompt: list[dict[str, Any]], *, window: int | None, tools: list[dict] | None = None, scale: float = 1.0
         ) -> tuple[list[dict[str, Any]], int]:  # fmt: skip
     """The prompt with its stale looks as notes and shortened to fit `window` tokens (see the module's text), and how

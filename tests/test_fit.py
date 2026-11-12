@@ -118,13 +118,60 @@ def test_a_chat_past_its_window_still_asks_the_model(hub):  # noqa: F811
         hub.post(
             f"/v1/conversations/{conv}/messages", headers=auth(hub), json={"content": "и?", "model_id": "fake/echo"}
         )
-        drain_until(ws, "chat.done")
+        done = drain_until(ws, "chat.done")[-1]["payload"]
     sent = provider.last_prompt
     assert sum(fit.tokens(m) for m in sent) <= fit.room(12000)  # with the tool definitions: within the window
     assert sent[-2]["content"].startswith("строка кода")  # the very last result stays whole
     assert any("убран, чтобы разговор поместился" in str(m.get("content")) for m in sent)
-    stored = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["messages"]
-    assert any(b.get("output", "").startswith("строка кода") for m in stored for b in m["content"])  # kept whole
+    opened = hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()
+    assert any(b.get("output", "").startswith("строка кода") for m in opened["messages"] for b in m["content"])
+    assert done["fill"]["shortened"] is True  # the window says the old part is already shortened (stage 40)
+    assert opened["fill"]["shortened"] is True  # and so does the chat opened again
+
+
+class ToolThenAnswer:
+    """A model that runs a tool and then answers: each request with its own count, as llama-swap reports it."""
+
+    name = "steps"
+
+    def __init__(self, window: int):
+        self.window = window
+        self.calls = 0
+
+    async def list_models(self):
+        return [Model("steps/m", "steps", "m", "Steps", "local", {"context": self.window}, {})]
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield StreamEvent("end", usage={"input_tokens": 9000, "output_tokens": 40}, stop_reason="tool_use",
+                              tool_calls=[{"id": "n1", "name": "nothing", "input": {}}])  # fmt: skip
+            return
+        yield StreamEvent("content", "готово")
+        yield StreamEvent("end", usage={"input_tokens": 9100, "output_tokens": 300})
+
+
+def test_the_window_hears_how_full_the_models_context_is(hub):  # noqa: F811
+    provider = ToolThenAnswer(32768)
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    conv = hub.post("/v1/conversations", headers=auth(hub), json={"title": "t"}).json()["id"]
+    with hub.websocket_connect("/v1/events", headers={**auth(hub), **WS_HOST}) as ws:
+        ws.receive_json()
+        hub.post(f"/v1/conversations/{conv}/messages", headers=auth(hub), json={"content": "и?", "model_id": "steps/m"})
+        done = drain_until(ws, "chat.done")[-1]["payload"]
+    # the last request and its answer - the next request carries both; not the run's sum of two requests
+    filled = {"used": 9400, "window": 32768, "shortened": False, "estimated": False}
+    assert provider.calls == 2 and done["fill"] == filled
+
+    def judged(conn):  # a goal's judge counts under the chat too, with no message of it: not the chat's fill
+        store.record_usage(conn, client_id=None, conversation_id=conv, message_id=None, model_id="steps/m",
+                           usage={"input_tokens": 500, "output_tokens": 20}, cost_usd=0.0)  # fmt: skip
+
+    hub.app.state.db.call(judged)
+    assert hub.get(f"/v1/conversations/{conv}", headers=auth(hub)).json()["fill"] == filled  # opened again
+    fresh = hub.post("/v1/conversations", headers=auth(hub), json={"title": "t"}).json()["id"]
+    assert hub.get(f"/v1/conversations/{fresh}", headers=auth(hub)).json()["fill"] is None  # nothing answered yet
 
 
 class Strict:
