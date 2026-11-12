@@ -45,7 +45,7 @@ import httpx
 from common import disks, hardware, kept_json
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
-from common.llama_memory import COMPUTE_GIB, GIB, RAM_RESERVE_GIB, RESERVE_GIB, kv_bytes
+from common.llama_memory import COMPUTE_GIB, GIB, RAM_RESERVE_GIB, RESERVE_GIB, estimate, kv_bytes, short_now
 from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
@@ -542,6 +542,31 @@ class Installer:
             return None
         gpu = {"name": kept.get("gpu") or "", "vram_total_mib": (kept.get("vram_total_gib") or 0) * 1024}
         return {"gpu": gpu, "memory": {"ram_total_gib": kept.get("ram_total_gib") or 0.0}}
+
+    async def memory_now(self, provider: str, model_id: str) -> str:
+        """Words for a local model starting to load when other programs hold the memory it needs (38.2), by the last
+        sample; '' when enough is free - or when it cannot be told: no sample, the model or one of llama-swap's
+        loaded ones not estimated (not llama.cpp's, its file not read), the model already among them."""
+        status = self._status()
+        if provider != "llama-swap" or not status:
+            return ""
+        running = [r.get("model", "") for r in ((status.get("local") or {}).get("running") or [])]
+        if model_id in running:
+            return ""
+        total = (status.get("gpu") or {}).get("vram_total_mib")
+
+        def judged() -> tuple[dict[str, Any] | None, list[dict[str, Any] | None]]:
+            text = config_text()
+            return _estimated(text, model_id, total), [_estimated(text, other, total) for other in running]
+
+        try:
+            need, held = await asyncio.to_thread(judged)
+        except InstallError:
+            return ""
+        if need is None or any(h is None for h in held):
+            return ""
+        own = {"vram_gb": sum(h["vram_gb"] for h in held), "ram_gb": sum(h["ram_gb"] for h in held)}
+        return short_now(need, status, own)
 
     def note_machine(self, machine: dict[str, Any]) -> None:
         """The card and the memory as sampled: into computer.json when they are others than it says (35.2, D58) -
@@ -1393,6 +1418,22 @@ def config_text() -> str:
     except OSError as exc:
         raise InstallError(tr("нет конфига llama-swap ({path}): сначала нужен llama-swap (мастер первого запуска)",
                               path=path), 409) from exc  # fmt: skip
+
+
+def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str, Any] | None:
+    """estimate() of a model as the config launches it, its file's header read (blocking: in a thread); None when it
+    cannot be told - not llama.cpp's, not in the config, its file not read."""
+    try:
+        view = llama_config.model_view(text, model_id)
+        if view["engine"] != "llama.cpp" or not view.get("file"):
+            return None
+        info = model_info(Path(view["file"]))
+        mmproj = Path(view["mmproj"]).stat().st_size if view.get("mmproj") else 0
+    except llama_config.ConfigError, OSError, GGUFError:
+        return None
+    return estimate(info, context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
+                    gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=mmproj,
+                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=vram_total_mib)  # fmt: skip
 
 
 def _ours(text: str, model_id: str, job_id: str) -> bool:

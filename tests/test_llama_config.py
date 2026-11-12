@@ -159,6 +159,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     blank: ClassVar = False  # a picture model answers «success» with a flat grey picture (29.3): all, or those named
     asked: ClassVar[list] = []
     video: ClassVar[list] = []  # a video model's trial (29.8): vid_gen, then its job
+    banner: ClassVar[list] = []  # the pieces of llama-swap's «loading model» lines before an answer (38.2)
 
     def log_message(self, *args):
         pass
@@ -204,6 +205,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             self._send(200, {"data": [{"b64_json": base64.b64encode(picture).decode()}]})
             return
         chunks = [
+            *({"choices": [{"delta": {"reasoning_content": piece}}]} for piece in self.banner),
             {"choices": [{"delta": {"content": "на связи"}}]},
             {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": 3}},
         ]

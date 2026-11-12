@@ -190,6 +190,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             answers=paths.hf_answers,
         )  # local models (10.1, D37)
         app.state.status.on_machine = app.state.installer.note_machine  # computer.json (35.2, D58)
+        app.state.chat.memory_now = app.state.installer.memory_now  # «сейчас свободно…» while a model loads (38.2)
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word

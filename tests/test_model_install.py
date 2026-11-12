@@ -30,6 +30,7 @@ from hub import model_install as mi
 from hub.auth import create_client
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.test_chat import WS_HOST, drain_until
 from tests.test_llama_config import CONFIG, FakeLlamaSwap
 
 GIB = 1024**3
@@ -845,6 +846,64 @@ def test_a_model_is_judged_by_this_computer_not_by_what_is_busy_now(hub):
     hub.app.state.status.latest = {**laptop, "local": {"reachable": True, "running": [{"model": "a"}]}}
     assert hub.get("/v1/install/system").json()["space"]["vram_gib"] == 5.0  # llama-swap's own model: the same room
     assert tuning.COMPUTE_GIB == llama_memory.COMPUTE_GIB  # one figure for llama.cpp's buffers
+
+
+SMALL_BLOCK = """
+  "{name}":
+    name: "{name}"
+    cmd: |
+      ${{llama_server}}
+      -m "{path}"
+      -ngl 99 -c 4096
+      --host 127.0.0.1 --port ${{PORT}}
+"""
+
+
+def test_a_model_loading_while_other_programs_hold_the_memory_says_so(hub, monkeypatch):
+    """38.2 (2026-11-12): what fits is judged by the computer (38.1), so a model loads even while another program
+    holds the memory - Ollama's 14B on the laptop - and the driver lends it shared memory, several times slower. Not
+    a refusal: words while it loads, «сейчас свободно … — закройте лишние программы». None when the memory is free,
+    and none for what llama-swap's own models hold: they unload for it."""
+    model = hub.tmp / "small.gguf"
+    model.write_bytes(tiny_gguf(180_000))
+    blocks = "".join(SMALL_BLOCK.format(name=name, path=model.as_posix()) for name in ("small", "other"))
+    hub.config.write_text(hub.config.read_text(encoding="utf-8") + blocks, encoding="utf-8")
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    monkeypatch.setattr(FakeLlamaSwap, "banner", ["llama-swap loading model: small\n", "Done! (0.4s)\n"])
+
+    def loading(status):
+        hub.app.state.status.latest = status
+        conv = hub.post("/v1/conversations", json={}).json()["id"]
+        with hub.websocket_connect(
+            "/v1/events", headers={"Authorization": hub.headers["Authorization"], **WS_HOST}
+        ) as ws:
+            ws.receive_json()
+            sent = hub.post(
+                f"/v1/conversations/{conv}/messages", json={"content": "привет", "model_id": "llama-swap/small"}
+            )
+            assert sent.status_code == 202
+            seen = drain_until(ws, "chat.done")
+        said = [m["payload"] for m in seen if m["type"] == "chat.loading"]
+        assert said  # llama-swap's banner came as loading
+        return {payload.get("memory", "") for payload in said}
+
+    gpu, memory = {"name": "RTX 3060 Laptop", "vram_total_mib": 6144}, {"ram_total_gib": 16.0, "ram_used_gib": 8.0}
+    ollama = {"gpu": {**gpu, "vram_used_mib": 5734}, "memory": memory, "local": {"reachable": True, "running": []}}
+    (words,) = loading(ollama)
+    assert words.startswith("сейчас свободно 0.4 ГБ видеопамяти из 6") and "закройте лишние программы" in words
+    assert loading({**ollama, "gpu": {**gpu, "vram_used_mib": 600}}) == {""}  # the memory is free
+    ours = {
+        **ollama,
+        "gpu": {**gpu, "vram_used_mib": 5632},
+        "local": {"reachable": True, "running": [{"model": "other"}]},
+    }
+    assert loading(ours) == {""}  # 5.5 GB taken, 0.8 of it llama-swap's «other», which unloads: enough is free
+
+    split = {"vram_gb": 3.0, "ram_gb": 6.0}  # a model partly in RAM, with 2 GB of RAM free now
+    words = llama_memory.short_now(
+        split, {**ollama, "gpu": {**gpu, "vram_used_mib": 0}, "memory": {**memory, "ram_used_gib": 14.0}}
+    )
+    assert words.startswith("сейчас свободно 2.0 ГБ ОЗУ") and "видеопамяти" not in words
 
 
 def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):

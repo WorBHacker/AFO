@@ -81,3 +81,27 @@ def estimate(
         }[out["verdict"]]
     )
     return out
+
+
+def short_now(need: dict[str, Any], status: dict[str, Any] | None, own: dict[str, float] | None = None) -> str:
+    """Words when the memory free right now is less than a model about to load needs (38.2): what fits is judged by
+    the computer, and other programs hold more than the reserve counts on. Not a refusal - the model loads all the
+    same, slower. `need` is estimate()'s; `own` - what llama-swap's models hold that unload for this one; '' - enough
+    is free, or nothing sampled."""
+    own = own or {}
+    gpu = (status or {}).get("gpu") or {}
+    memory = (status or {}).get("memory") or {}
+    parts = []
+    if gpu.get("vram_total_mib") and need.get("vram_gb"):
+        total = gpu["vram_total_mib"] / 1024
+        free = total - (gpu.get("vram_used_mib") or 0) / 1024 + own.get("vram_gb", 0.0)
+        if need["vram_gb"] > free:
+            parts.append(tr("{free} ГБ видеопамяти из {total:g}", free=round(max(free, 0.0), 1), total=round(total, 1)))
+    if memory.get("ram_total_gib") and need.get("ram_gb", 0.0) >= 0.1:
+        free = memory["ram_total_gib"] - (memory.get("ram_used_gib") or 0.0) + own.get("ram_gb", 0.0)
+        if need["ram_gb"] > free:
+            parts.append(tr("{free} ГБ ОЗУ", free=round(max(free, 0.0), 1)))
+    if not parts:
+        return ""
+    return tr("сейчас свободно {what} — закройте лишние программы, иначе модель будет работать медленно",
+              what=", ".join(parts))  # fmt: skip

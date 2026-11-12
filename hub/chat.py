@@ -127,6 +127,7 @@ READING = frozenset(
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 STOP_WAIT_S = 10.0  # the hub stops: how long its answers get to end as stopped ones
 CUT_WAIT_S = 2.0  # and how long one that did not gets once it is cut off
+MEMORY_WAIT_S = 3.0  # a loading model's memory read from its file's header (38.2): no longer than this
 # the tools that work in a project: in a chat with none, the hub asks the user which (31.2, the user's choice)
 PROJECT_TOOLS = frozenset(t["name"] for t in (*TOOLS, *changes.WRITE_TOOLS, commands.RUN_COMMAND)
                           if "project" in (t.get("parameters") or {}).get("properties", {}))  # fmt: skip
@@ -177,6 +178,8 @@ class ChatService:
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.visual: visual.Visual | None = None  # set by the server: pictures a model asks for (29.6, D55)
+        # set by the server: words when other programs hold the memory a loading model needs (38.2, the installer's)
+        self.memory_now: Callable[[str, str], Awaitable[str]] | None = None
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
         self.guards: dict[str, guard.TurnGuard] = {}  # a goal's turn: its constraints, an investigation (11.4)
         self.compact = None  # a goal's stages done as one line each in the request (11.5; hub/goals.py sets it)
@@ -1385,6 +1388,17 @@ class ChatService:
             return f"not done: the user said no - {decision.comment}"
         return decision
 
+    async def _memory_now(self, provider: str, model_ref: str) -> str:
+        """The installer's words when other programs hold the memory a loading model needs (38.2); '' when there is
+        nothing to say or it cannot be told in time - only words, the answer goes on."""
+        if self.memory_now is None:
+            return ""
+        try:
+            return await asyncio.wait_for(self.memory_now(provider, model_ref), MEMORY_WAIT_S)
+        except Exception:
+            log.warning("the memory free for %s/%s not told", provider, model_ref, exc_info=True)
+            return ""
+
     async def _consume(
         self, conversation_id, provider, model_ref, prompt, effort, cancel, tools=None, params=None
     ) -> Completion:
@@ -1399,12 +1413,17 @@ class ChatService:
             extra["params"] = params
         # beside the stop: a stream whose socket went silent ends at «Стоп» all the same (until_cancelled)
         stream = until_cancelled(provider.stream_chat(model_ref, prompt, effort, cancel, **extra), cancel)
+        memory: str | None = None  # other programs hold the memory the loading model needs (38.2): once a request
         async with contextlib.aclosing(stream):
             async for event in stream:
                 if event.kind == "loading":
                     clock_from = time.monotonic()
+                    if memory is None:
+                        memory = await self._memory_now(provider.name, model_ref)
                     await self._bus.publish(
-                        "chat.loading", {"conversation_id": conversation_id, "text": event.text}, persist=False
+                        "chat.loading",
+                        {"conversation_id": conversation_id, "text": event.text, "memory": memory},
+                        persist=False,
                     )
                 elif event.kind == "reasoning":
                     reasoning.append(event.text)
