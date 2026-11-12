@@ -149,6 +149,7 @@ Window {
             onEffortMenuRequested: (anchor) => effortMenu.openAt(anchor)
             onProjectMenuRequested: (anchor) => chatProjectMenu.openAt(anchor)
             onContextRequested: contextSheet.open()
+            onFillRequested: modelsSheet.openAtContext(App.modelId)
         }
         // the open chat's requests: a card over the top of its conversation (D38)
         ApprovalBanner {

@@ -5,10 +5,12 @@ import QtQuick.Dialogs
 // The input card: text that grows with what you type, the model and effort chips, send / stop.
 Item {
     id: composer
+    objectName: "composer"
     signal modelMenuRequested(Item anchor)
     signal effortMenuRequested(Item anchor)
     signal projectMenuRequested(Item anchor)
     signal contextRequested()
+    signal fillRequested()  // the line under the card: the model's context setting (stage 40)
     readonly property int column: Math.min(780, width - 48)
     property alias text: area.text
     property alias modelChip: modelChip
@@ -254,6 +256,27 @@ Item {
                 font.pixelSize: 11
             }
         }
+    }
+
+    // how full the chosen model's context is after the chat's last answer (stage 40); a click - its context setting
+    Text {
+        id: fillLine
+        objectName: "contextFill"
+        visible: !!App.contextFill.text
+        anchors.top: card.bottom
+        anchors.topMargin: 3
+        anchors.right: card.right
+        anchors.rightMargin: 10
+        text: App.contextFill.text || ""
+        color: App.contextFill.tone === "error" ? Theme.p.error
+               : App.contextFill.tone === "warn" ? Theme.p.warn : (fillMouse.hovered ? Theme.p.muted : Theme.p.faint)
+        font.family: Theme.uiFont
+        font.pixelSize: 11
+        HoverHandler { id: fillMouse; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: composer.fillRequested() }
+        ToolTip.visible: fillMouse.hovered
+        ToolTip.delay: 400
+        ToolTip.text: App.contextFill.tip || ""
     }
 
     FileDialog {
@@ -536,7 +559,7 @@ Item {
                     visible: App.chatProjects.length > 0 && App.currentId !== ""
                     iconName: "layers"
                     menu: false
-                    text: App.contextTokens > 0 ? qsTr("Контекст ≈ %1").arg(App.contextTokens) : qsTr("Контекст")
+                    text: App.contextTokens > 0 ? qsTr("О проектах ≈ %1").arg(App.contextTokensText) : qsTr("О проектах")
                     onClicked: composer.contextRequested()
                     ToolTip.visible: hovered
                     ToolTip.delay: 600

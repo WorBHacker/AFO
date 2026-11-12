@@ -160,6 +160,7 @@ class Controller(QObject):
     modeChanged = Signal()
     chatProjectsChanged = Signal()
     contextChanged = Signal()
+    fillChanged = Signal()  # how full the chosen model's window is, under the input (stage 40)
     chatRefusalChanged = Signal()  # the chat's model or its own choice of Strata's refusal vector
     chatQuestionChanged = Signal()  # the open chat's model asks (ask_user, Claude Code's AskUserQuestion)
     projectChatChanged = Signal()  # «Проекты»: the project's sessions, and whether one is open in the main area
@@ -229,6 +230,7 @@ class Controller(QObject):
         self.feed = Feed(self)
         self._chat_projects: list[str] = []  # the open chat's projects (a new chat's, until its first message)
         self._context_messages: list[dict[str, Any]] = []  # the open chat's stored context (system messages)
+        self._fill: dict[str, Any] | None = None  # how full the model's window is after the chat's last answer (40)
         self._context_settings: dict[str, Any] = {"map": True, "live": True, "pinned": []}
         self._context_sent = 0  # changes of a chat's settings sent so far, and the last one to send each setting
         self._context_latest: dict[str, int] = {}
@@ -243,6 +245,7 @@ class Controller(QObject):
             signal.connect(self.projectChatChanged)
         self.projects.projectChanged.connect(self._project_switched)
         self.modelChanged.connect(self.chatRefusalChanged)  # the refusal switch: only a model with Strata's vector
+        self.modelChanged.connect(self.fillChanged)  # another model: another window («из»)
         self.contextChanged.connect(self.chatRefusalChanged)
         self.projects.listChanged.connect(self.chatProjectsChanged)
         self.projects.projectChanged.connect(lambda: self.feed.set_project(self.projects.currentId))
@@ -624,6 +627,19 @@ class Controller(QObject):
     @Property(int, notify=contextChanged)
     def contextTokens(self) -> int:
         return rows.context_total(self._context_messages)
+
+    @Property(str, notify=contextChanged)
+    def contextTokensText(self) -> str:
+        return presenter.tokens_words(rows.context_total(self._context_messages))
+
+    @Property("QVariantMap", notify=fillChanged)
+    def contextFill(self) -> dict:
+        """The line under the input (stage 40): {text, tone, tip}, {} - none."""
+        return presenter.context_fill(self._fill, self.models.get(self._model_id))
+
+    def _set_fill(self, fill: dict[str, Any] | None) -> None:
+        self._fill = fill
+        self.fillChanged.emit()
 
     @Property("QVariantMap", notify=contextChanged)
     def contextSettings(self) -> dict:
@@ -1044,6 +1060,7 @@ class Controller(QObject):
         self._think_timer.stop()
         self._set_chat_projects([], push=False)
         self._set_context([], None)
+        self._set_fill(None)
         self._set_chat_question(None)
         self.currentChanged.emit()
         self.headerChanged.emit()
@@ -1188,6 +1205,7 @@ class Controller(QObject):
         if conversation_id != self.current:
             self.current = conversation_id
             self.messages.reset([])
+            self._set_fill(None)  # the other chat's figure until this one's comes
             title = next((c["title"] for c in self.conversations if c["id"] == conversation_id), "")
             self._title, self._meta = title or tr("Новый чат"), ""
             self.currentChanged.emit()
@@ -1223,6 +1241,7 @@ class Controller(QObject):
         self._interrupted.discard(conversation_id)
         self._set_chat_projects(data.get("projects") or [], push=False)
         self._set_context(data["messages"], data.get("context"))
+        self._set_fill(data.get("fill"))
         last_model = next((m["model_id"] for m in reversed(data["messages"]) if m["role"] == "assistant"), None)
         self._count = sum(1 for m in data["messages"] if m["role"] in ("user", "assistant"))
         self._spent = sum((m.get("usage") or {}).get("cost_usd", 0) for m in data["messages"])
@@ -1710,6 +1729,8 @@ class Controller(QObject):
             if cid == self.current:
                 self._spent += payload.get("cost_usd") or 0
                 self._update_meta()
+                if payload.get("fill"):  # how full the window is now (a stopped answer may say nothing of it)
+                    self._set_fill(payload["fill"])
                 index = self.messages.find(f"m{payload.get('message_id')}")
                 if index >= 0:
                     stats = payload.get("stats") or {}

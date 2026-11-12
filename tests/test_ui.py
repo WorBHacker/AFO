@@ -7274,6 +7274,97 @@ def test_the_memory_reserves_in_the_models_settings(qapp):
         quick.close()
 
 
+def test_how_full_the_models_context_is_under_the_input(qapp):
+    """40.2 (2026-11-12, the user's word): under the input, how much of the chosen model's context the chat fills -
+    by its last answer, as the hub says it (`fill`). From 80 % - or where hub/fit.py starts shortening, when that is
+    lower (a window of 8K) - yellow, with what happens then; past the window - red. Another model chosen: only «из»
+    changes. A model whose window nobody knows: the figure alone; Claude Code keeps its own context: no line. A click
+    opens the model's settings at its context: llama-swap's for a local model, the window the hub takes for a cloud
+    one. The projects' chip says «О проектах» now: two «Контекст» side by side would be confusing."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        local = {"locality": "local", "prices": {}, "provider": "llama-swap"}
+        models = [*MODELS, {**local, "id": "llama-swap/big", "model_ref": "big", "name": "Big",
+                            "capabilities": {"context": 32768}},
+                  {**local, "id": "llama-swap/small", "model_ref": "small", "name": "Small",
+                   "capabilities": {"context": 8192}},
+                  {**local, "id": "llama-swap/own", "model_ref": "own", "name": "Own", "capabilities": {}},
+                  {"id": "claude-code/default", "name": "Claude Code", "locality": "cloud", "model_ref": "default",
+                   "provider": "claude-code", "capabilities": {"subscription": True}}]  # fmt: skip
+        client.models = lambda: models
+        answered = {"id": 2, "role": "assistant", "model_id": "llama-swap/big", "usage": {"output_tokens": 300},
+                    "content": [{"type": "text", "text": "готово"}]}  # fmt: skip
+        client.histories["cf"] = {
+            **HISTORY,
+            "id": "cf",
+            "messages": [HISTORY["messages"][0], answered],
+            "fill": {"used": 12400, "window": 32768, "shortened": False, "estimated": False},
+        }
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        line = quick.window.findChild(QObject, "contextFill")
+        assert app.contextFill == {} and not line.property("visible")  # a new chat: nothing answered yet
+        app.openChat("cf")
+        wait_until(lambda: not app.bg.busy and app.modelId == "llama-swap/big")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert app.contextFill["text"] == "Контекст: 12,4 тыс. из 32 тыс." and app.contextFill["tone"] == ""
+        assert line.property("visible") and line.property("text") == app.contextFill["text"]
+
+        def done(used, **fill):
+            send(app, "chat.done", {"conversation_id": "cf", "message_id": 2, "usage": {}, "cost_usd": 0,
+                                    "fill": {"used": used, "window": 32768, "shortened": False, "estimated": False,
+                                             **fill}})  # fmt: skip
+            wait_until(lambda: not app.bg.busy)
+
+        done(27000)  # 82 %: before fit's own threshold (87.5 % of 32K), the window warns
+        assert app.contextFill["tone"] == "warn" and "сожмёт" in app.contextFill["tip"]
+        app.chooseModel("llama-swap/small")  # the next request goes to a smaller model
+        assert app.contextFill["text"] == "Контекст: 27 тыс. из 8 тыс." and app.contextFill["tone"] == "error"
+        done(6200)  # 76 % of 8K: fit shortens from 6144 already - the warning comes before it, not after
+        assert app.contextFill["tone"] == "warn"
+        done(6200, shortened=True)
+        assert "уже сжаты" in app.contextFill["tip"]
+        app.chooseModel("llama-swap/own")
+        assert app.contextFill["text"] == "Контекст: 6,2 тыс." and "укажите" in app.contextFill["tip"]
+        app.chooseModel("claude-code/default")
+        assert app.contextFill == {}
+        # a click: the model's settings, at its context - llama-swap's launch of a local model
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        app.chooseModel("llama-swap/big")
+        QMetaObject.invokeMethod(quick.window.findChild(QObject, "composer"), "fillRequested")
+        wait_until(lambda: sheet.property("opened") and sheet.property("contextShown"))
+        assert sheet.property("contextShown") == "launch_context"
+        QMetaObject.invokeMethod(sheet, "close")
+        wait_until(lambda: not sheet.property("visible"))
+        app.chooseModel("anthropic/claude-opus-5-5")  # a cloud model: the window the hub takes for it
+        QMetaObject.invokeMethod(quick.window.findChild(QObject, "composer"), "fillRequested")
+        wait_until(lambda: sheet.property("opened") and sheet.property("contextShown"))
+        assert sheet.property("contextShown") == "field_context"
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_tokens_and_the_projects_chip_in_words():
+    """40.2: tokens as people read them - llama.cpp names its windows by 1024s (32768 - «32 тыс.»), the providers by
+    thousands (200 000 - «200 тыс.»); the projects' chip under its new name."""
+    from pathlib import Path
+
+    from app import presenter
+
+    said = [presenter.tokens_words(n) for n in (980, 12400, 32768, 131072, 200_000, 1_048_576, 2_000_000)]
+    assert said == ["980", "12,4 тыс.", "32 тыс.", "128 тыс.", "200 тыс.", "1 млн", "2 млн"]
+    chip = (Path(__file__).parents[1] / "app/ui/qml/Composer.qml").read_text(encoding="utf-8")
+    assert 'qsTr("О проектах ≈ %1")' in chip and 'qsTr("Контекст ≈ %1")' not in chip
+
+
 def test_a_projects_folder_moved_gone_and_back_in_the_feed():
     """2026-10-28: the feed says when a project's folder was renamed (and the hub followed it), went, came back."""
     from app.ui.feed_rows import describe

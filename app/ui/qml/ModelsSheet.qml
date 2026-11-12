@@ -13,6 +13,28 @@ Sheet {
     width: Math.min(760, (parent ? parent.width : 960) * 0.92)
 
     function openFor(modelId) { ModelSetup.open(modelId); open() }
+    // the line under the input (stage 40): the model's settings, at its context - llama-swap's launch of a local
+    // model, the window the hub takes for any other; once the sheet knows which it is
+    property bool revealContext: false
+    property string contextShown: ""  // the field it was shown at (the tests read it)
+    function openAtContext(modelId) { contextShown = ""; revealContext = true; openFor(modelId) }
+    function showContextIfAsked() {
+        if (!revealContext || !opened || !ModelSetup.contextPlace) return
+        revealContext = false
+        const launch = ModelSetup.contextPlace === "launch"
+        const place = launch ? (launchContext.visible ? launchContext : launchSection) : capabilityContext
+        Qt.callLater(() => {
+            sheet.reveal(place)
+            const field = place === launchSection ? null : place.field
+            if (field) field.forceActiveFocus()
+            contextShown = field ? field.objectName : "launchSection"
+        })
+    }
+    onOpened: showContextIfAsked()
+    Connections {
+        target: ModelSetup
+        function onChanged() { sheet.showContextIfAsked() }
+    }
 
     component Label: Text {
         color: Theme.p.faint
@@ -52,10 +74,12 @@ Sheet {
         property string fieldId
         property string label
         property string hint
+        property alias field: launchInput
         width: 150
         spacing: 4
         Label { text: launchField.label }
         Field {
+            id: launchInput
             objectName: "launch_" + launchField.fieldId
             width: parent.width
             placeholderText: launchField.hint
@@ -257,7 +281,7 @@ Sheet {
         Flow {
             width: parent.width
             spacing: 12
-            Labelled { fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("как у поставщика") }
+            Labelled { id: capabilityContext; fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("как у поставщика") }
             Column {
                 spacing: 4
                 Label { text: qsTr("Инструменты") }
@@ -419,6 +443,7 @@ Sheet {
 
         // ---------- how llama-swap starts it (local models) ----------
         Column {
+            id: launchSection
             objectName: "launchSection"
             visible: ModelSetup.launch.engine !== undefined
             width: parent.width
@@ -453,7 +478,7 @@ Sheet {
                 visible: ModelSetup.launch.editable === true
                 width: parent.width
                 spacing: 12
-                LaunchField { fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("например 32768") }
+                LaunchField { id: launchContext; fieldId: "context"; label: qsTr("Контекст, токенов"); hint: qsTr("например 32768") }
                 LaunchField { fieldId: "parallel"; label: qsTr("Параллельных запросов"); hint: "1" }
                 Column {
                     spacing: 4

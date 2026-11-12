@@ -385,7 +385,7 @@
 - `app/ui/qml/CodePieces.qml` — просмотр слишком большого файла
 - `app/ui/qml/CodeView.qml` — просмотр файла или diff
 - `app/ui/qml/CommandPalette.qml` — палитра команд Ctrl+K
-- `app/ui/qml/Composer.qml` — поле ввода чата
+- `app/ui/qml/Composer.qml` — поле ввода чата; под ним — сколько контекста модели занято (этап 40)
 - `app/ui/qml/ComputerFrame.qml` — рамка и «Стоп» вокруг окна, которым управляет агент
 - `app/ui/qml/ConfirmDialog.qml` — диалог подтверждения
 - `app/ui/qml/ConnectionsSheet.qml` — лист подключений
@@ -734,11 +734,16 @@
   у остановленного без счёта. Claude Code ведёт свой контекст сам — у его `chat.done` поля нет. Тест —
   `test_the_window_hears_how_full_the_models_context_is` (и `shortened` в
   `test_a_chat_past_its_window_still_asks_the_model`).
-- 40.2 Под полем ввода «Контекст: 12,4 тыс. из 32 тыс.»; от 80 % — жёлтым, с пояснением, что старые результаты
+- 40.2 ✓ Под полем ввода «Контекст: 12,4 тыс. из 32 тыс.»; от 80 % — жёлтым, с пояснением, что старые результаты
   инструментов сожмутся (`hub/fit.py`); щелчок открывает настройку контекста модели. Файлы: `app/ui/controller.py`,
   `Composer.qml`. Порог — 80 % или `fit.room`, если он ниже (окно 8 тыс.); «из» — окно выбранной сейчас модели. Чип
   проектов «Контекст ≈ N» становится «О проектах ≈ N» (слово пользователя 2026-11-12: две надписи «Контекст» рядом
-  путали бы).
+  путали бы). Сделано: строка `contextFill` (`presenter.context_fill`: текст, цвет, подсказка; больше окна — красным,
+  `shortened` — «уже сжаты»; окно неизвестно — число без «из» и «укажите в настройках»; Claude Code — без строки),
+  `fill` — из `chat.done` и открытого чата; числа — `presenter.tokens_words` (окна llama.cpp — по 1024: 32768 —
+  «32 тыс.»). Щелчок — `ModelsSheet.openAtContext`: поле `-c` запуска локальной модели (Strata — её раздел запуска)
+  или окно среди возможностей облачной, курсор в поле (`ModelSetup.contextPlace`). Тесты —
+  `test_how_full_the_models_context_is_under_the_input`, `test_tokens_and_the_projects_chip_in_words`.
 
 ### Этап 41. Поиск на Hugging Face
 

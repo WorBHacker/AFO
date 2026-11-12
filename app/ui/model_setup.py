@@ -406,6 +406,7 @@ class ModelSetup(QObject):
         self._reserve_gib: float | None = None  # the video memory a model may not count on, the hub's (38.3)
         self._launch_status = ""
         self._launch_failed = False  # the launch's status says it went wrong: red
+        self._launch_asked = False  # llama-swap's config is being read for this model (stage 40: where its context is)
         self._launch_busy = False
         app.modelChanged.connect(self.choicesChanged)
 
@@ -534,7 +535,8 @@ class ModelSetup(QObject):
     def _load_launch(self, model_id: str) -> None:
         model = self.app.models.get(model_id) or {}
         self._launch, self._launch_draft, self._launch_status, self._launch_failed = {}, {}, "", False
-        if model.get("provider", model_id.partition("/")[0]) != "llama-swap":
+        self._launch_asked = model.get("provider", model_id.partition("/")[0]) == "llama-swap"
+        if not self._launch_asked:
             return
         ref = model_id.partition("/")[2]
 
@@ -545,9 +547,15 @@ class ModelSetup(QObject):
             self._launch_draft = launch_draft(self._launch) if self._launch else {}
             self._vram_mib = listing.get("vram_total_mib")
             self._reserve_gib = listing.get("vram_reserve_gib")
+            self._launch_asked = False
             self.changed.emit()
 
-        self.app._call(lambda: self.app.client.llama_models(), show, lambda _e: None)
+        def failed(_error: Exception) -> None:
+            if self._model == model_id:
+                self._launch_asked = False
+                self.changed.emit()
+
+        self.app._call(lambda: self.app.client.llama_models(), show, failed)
 
     @Slot(str, str)
     def setLaunch(self, name: str, value: str) -> None:
@@ -812,6 +820,14 @@ class ModelSetup(QObject):
     @Property(bool, notify=changed)
     def loading(self) -> bool:
         return self._loading
+
+    @Property(str, notify=changed)
+    def contextPlace(self) -> str:
+        """Where this model's context is set (stage 40: the line under the input leads there): «launch» - llama-swap's
+        `-c` of a local model, «capabilities» - the window the hub takes the provider's for; '' - not known yet."""
+        if self._loading or self._launch_asked:
+            return ""
+        return "launch" if self._launch else "capabilities"
 
     # ================= the hub =================
 

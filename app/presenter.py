@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from common.i18n import N_, plural, tr
+from common.i18n import N_, decimal, plural, tr
+from hub.fit import room
 
 __all__ = ["plural"]  # presenter.plural: the views' plural forms (common.i18n)
 
@@ -203,6 +204,55 @@ def tokens_short(count: int) -> str:
     if count < 1_000_000:
         return f"{count / 1000:.1f}K"
     return f"{count / 1_000_000:.2f}M"
+
+
+def tokens_words(count: int) -> str:
+    """Tokens as people read them: «980», «12,4 тыс.», «200 тыс.», «1 млн» - a window of 32768 is «32 тыс.»:
+    llama.cpp names its contexts by 1024s, the providers theirs by thousands."""
+    if count < 1000:
+        return str(count)
+    unit = 1024 if count % 1024 == 0 else 1000
+    value, words = (count / unit**2, N_("{count} млн")) if count >= unit * 1000 else (count / unit, N_("{count} тыс."))
+    text = f"{value:.0f}" if value >= 100 else f"{value:.1f}".removesuffix(".0")
+    return tr(words, count=decimal(text))
+
+
+FILL_WARN = 0.8  # the line under the input turns yellow from here - or where hub/fit.py starts shortening, if lower
+
+
+def context_fill(fill: dict[str, Any] | None, model: dict[str, Any] | None) -> dict[str, str]:
+    """The line under the input (stage 40): how much of the chosen model's window the chat fills after its last
+    answer (`fill`, the hub's) - the next request goes to that model, so another model chosen changes only «из».
+    {} - no line: nothing answered yet, or Claude Code, which keeps its own context."""
+    if not fill or not fill.get("used") or not model:
+        return {}
+    if model.get("provider", model.get("id", "").partition("/")[0]) == "claude-code":
+        return {}
+    used = int(fill["used"])
+    about = "≈ " if fill.get("estimated") else ""
+    window = int((model.get("capabilities") or {}).get("context") or 0)
+    if not window:
+        return {"text": tr("Контекст: {about}{used}", about=about, used=tokens_words(used)), "tone": "",
+                "tip": tr("Сколько контекста модели занимает этот чат. Сколько модель вмещает, хаб не знает — "
+                          "укажите это в настройках модели (щелчок).")}  # fmt: skip
+    text = tr("Контекст: {about}{used} из {window}", about=about, used=tokens_words(used), window=tokens_words(window))
+    if used > window:
+        return {"text": text, "tone": "error",
+                "tip": tr("Разговор длиннее контекста этой модели: хаб сожмёт в запросе старые результаты "
+                          "инструментов и длинные старые сообщения, а если не хватит — модель откажет. Выберите "
+                          "модель с большим контекстом или увеличьте его (щелчок).")}  # fmt: skip
+    if fill.get("shortened"):
+        return {"text": text, "tone": "warn",
+                "tip": tr("Разговор не помещается целиком: старые результаты инструментов в запросе уже сжаты до "
+                          "строки — сам чат остаётся целым. Больше контекста — щелчок.")}  # fmt: skip
+    if used >= min(window * FILL_WARN, room(window)):
+        return {"text": text, "tone": "warn",
+                "tip": tr("Скоро разговор перерастёт контекст модели: хаб сожмёт в запросе старые результаты "
+                          "инструментов, потом длинные старые сообщения — сам чат останется целым. Больше "
+                          "контекста — щелчок.")}  # fmt: skip
+    return {"text": text, "tone": "",
+            "tip": tr("Сколько контекста модели занимает этот чат: последний запрос и ответ. Щелчок — настройка "
+                      "контекста модели.")}  # fmt: skip
 
 
 @dataclass
