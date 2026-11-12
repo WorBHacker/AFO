@@ -817,7 +817,7 @@
   Qwen2.5-Coder-7B и Qwen2.5-VL-7B (словарь 152064 и 151936 — разница ровно 128). Без пары: Qwen3-Coder-30B-A3B от
   unsloth и Qwen3.6/3.8 — другой bos; у Gemma 4 словарь свой (`gemma4`), её черновики — MTP и DFlash («Потом»).
   Тесты — `test_a_draft_model_is_paired_by_its_tokenizer`, `test_the_catalogs_drafts`.
-- 42.4 Замер самим llama-server: без угадывания, ngram, черновик (не помещается — «черновик + часть слоёв в ОЗУ»,
+- 42.4 ✓ Замер самим llama-server: без угадывания, ngram, черновик (не помещается — «черновик + часть слоёв в ОЗУ»,
   решение пользователя выше); при температуре из настроек модели. Победитель
   пишется, если быстрее больше чем на 3 %, затем проверочный запуск, как сейчас. Ручной «Подобрать» тоже ждёт видео и
   останавливается, если начался чат. Файл `hub/tuning.py`; тесты — `tests/test_tuning.py` и `tests/test_together.py`.
@@ -833,8 +833,20 @@
     (`_kill` через psutil: у `.cmd` и обёрток — дочерний процесс). Тесты —
     `test_guessing_ahead_is_measured_by_llama_server_itself` (подставной llama-server — настоящий процесс на своём
     порту), `test_what_guessing_ahead_is_measured`.
-  - 42.4б Подбор: после замера llama-bench — замер угадывания, выбор, запись под замком, проверочный запуск; ручной
-    «Подобрать» ждёт видеокарту и останавливается чатом.
+  - 42.4б ✓ Подбор: после замера llama-bench — замер угадывания, выбор, запись под замком, проверочный запуск; ручной
+    «Подобрать» ждёт видеокарту и останавливается чатом. Сделано: `_tune` = `_tune_bench` + `_tune_spec`, общая
+    запись с проверкой — `_write` (файл как он есть после замера, свои строки назад). `_tune_spec`: сборка без
+    `--spec-type` — `unsupported`; черновик — от `draft` (42.5) или из команды (`_find_draft`); перед замером модели
+    снова выгружаются (проверка llama-bench её загрузила); вариант, что не запустился, пропускается (без угадывания не
+    запустился — ошибка этапа); `spec_choice`: каждый дороже (ngram, черновик, черновик с меньшими слоями) — только если
+    быстрее каждого дешевле больше чем на 3 %; выбранное пишется именами сборки и проверяется; не встало — свои строки
+    назад, а то, что записал llama-bench, остаётся (`spec` — `failed`). Итог — `result["spec"]`: status, kind,
+    spec_type, before/after, accepted, measured, short, draft. Ручной подбор ждёт тихую видеокарту и останавливается
+    чатом или установкой (`_watch` всегда), снова в очередь — своего вида. Тесты —
+    `test_the_fastest_guessing_ahead_goes_into_the_config_and_is_checked`,
+    `test_guessing_ahead_that_does_not_start_is_passed_over_or_taken_back`,
+    `test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat`, в `test_together.py` —
+    `test_a_chat_that_begins_stops_tuning_by_hand_and_it_goes_on_after` (настоящий чат хаба).
 - 42.5 Черновая модель качается сама; не дала выигрыша — файл удаляется, если им никто не пользуется. Кнопка
   «Ускорить». Файлы: `hub/model_install.py`, `hub/api/install.py`.
 - 42.6 Окно: какое ускорение стоит и сколько дало. Файлы: `app/ui/model_setup.py`, `ModelsSheet.qml`.

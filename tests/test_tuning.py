@@ -5,16 +5,18 @@ back). Automatic tuning waits until no chat uses a model. No model is loaded her
 stand-ins."""
 
 import asyncio
+import contextlib
 import json
 import socket
 import sys
 import time
 
 import httpx
+import psutil
 import pytest
 
 from hub import llama_config as lc
-from hub import tuning
+from hub import model_settings, tuning
 from tests.test_llama_config import CONFIG, gguf
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -154,7 +156,11 @@ class Chat:
         self.busy: list[str] = []
 
 
-def tuner(db_hub, *, measured, check_ok=True, asked=None):
+def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_draft=False):
+    """A Tuner with llama-bench and the check as stand-ins: `measured` - llama-bench's numbers by KV cache type;
+    `draft` - the draft model's file found for any model (42.4); `refuse_draft` - the check fails only for a model
+    whose command has a draft model (llama-swap: «speculative decoding not supported by this context»)."""
+
     def run(command, progress):
         asked is not None and asked.append(command)
         cache = command[command.index("-ctk") + 1]
@@ -166,10 +172,17 @@ def tuner(db_hub, *, measured, check_ok=True, asked=None):
         return out
 
     async def check(model_id):
-        return {"ok": check_ok, "error": "" if check_ok else "out of memory", "seconds": 3.0}
+        ok = check_ok
+        if refuse_draft:
+            ok = not lc.model_view(lc.config_path().read_text(encoding="utf-8"), model_id)["spec"]["draft"]
+        return {"ok": ok, "error": "" if ok else "out of memory", "seconds": 3.0}
+
+    async def find(model_id, file):
+        return draft
 
     return tuning.Tuner(db_hub.app.state.db, Bus(), Chat(), url="http://127.0.0.1:9",
-                        space=lambda: {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check)  # fmt: skip
+                        space=lambda: {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check,
+                        draft=find)  # fmt: skip
 
 
 def test_the_fastest_goes_into_the_config_and_is_checked(hub, setup):  # noqa: F811
@@ -473,7 +486,7 @@ HTTPServer(("127.0.0.1", int(flag("--port"))), Handler).serve_forever()
 
 
 @pytest.fixture
-def served(setup, tmp_path):
+def spec_server(setup, tmp_path):
     """The config's llama-server is a stand-in that runs (a .cmd: Windows starts it as a program) with b11899's
     --help; a draft model's file beside the model's."""
     from tests.test_llama_config import HELP
@@ -494,11 +507,11 @@ def served(setup, tmp_path):
     return folder
 
 
-def speeds(folder, by_kind, *, fewer=0.0, crash=()):
+def speeds(folder, by_kind, *, fewer=0.0, crash=(), load_s=0.3):
     """How fast the stand-in llama-server answers: by --spec-type; with fewer layers on the card; which kinds of
-    guessing it cannot start with."""
-    (folder / "speeds.json").write_text(json.dumps({"speeds": by_kind, "fewer": fewer, "crash": list(crash)}),
-                                        encoding="utf-8")  # fmt: skip
+    guessing it cannot start with; how long it «loads the model»."""
+    (folder / "speeds.json").write_text(json.dumps({"speeds": by_kind, "fewer": fewer, "crash": list(crash),
+                                                    "load_s": load_s}), encoding="utf-8")  # fmt: skip
 
 
 def listening(port):
@@ -507,29 +520,29 @@ def listening(port):
         return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
-def test_guessing_ahead_is_measured_by_llama_server_itself(hub, setup, served):  # noqa: F811
+def test_guessing_ahead_is_measured_by_llama_server_itself(hub, setup, spec_server):  # noqa: F811
     """42.4: llama-bench has no draft model, so guessing ahead is measured by llama-server of the config's build:
     the model's own command as the config would have it (its macros in, a port of the measuring's own, past
     llama-swap), each answer's tokens a second from llama.cpp's own timings, at the model's own sampling; then the
     server is let go - its port free, no program left (a .cmd's child too)."""
     text = setup.read_text(encoding="utf-8")
-    build = lc.server_flags(served / "llama-server.cmd")
+    build = lc.server_flags(spec_server / "llama-server.cmd")
     port = tuning.free_port()
     argv = tuning.spec_command(text, "big", {"spec_type": "ngram-mod"}, build, port)
-    assert argv[0] == (served / "llama-server.cmd").as_posix() and argv[argv.index("-m") + 1].endswith("big.gguf")
+    assert argv[0] == (spec_server / "llama-server.cmd").as_posix() and argv[argv.index("-m") + 1].endswith("big.gguf")
     assert argv[argv.index("--port") + 1] == str(port) and argv[argv.index("--spec-type") + 1] == "ngram-mod"
     assert "-c" in argv and "--mmproj" in argv  # the model as it runs: its context, its vision projector
 
     found = tuner(hub, measured={})
     measured = found._serve(argv, port, {"temperature": 0.3, "top_k": 20})
     assert measured == {"tg": 44.0, "accepted": 0.7}
-    asked = [json.loads(line) for line in (served / "asked.txt").read_text(encoding="utf-8").splitlines()]
+    asked = [json.loads(line) for line in (spec_server / "asked.txt").read_text(encoding="utf-8").splitlines()]
     assert len(asked) == 1 + len(tuning.SPEC_PROMPTS)  # a short warm-up first: not counted
     assert all(a["temperature"] == 0.3 and a["top_k"] == 20 and a["seed"] == tuning.SEED for a in asked)
     assert {a["max_tokens"] for a in asked[1:]} == {tuning.SPEC_TOKENS} and not any(a.get("stream") for a in asked)
     assert not listening(port)  # let go
 
-    speeds(served, {}, crash=["draft-simple"])
+    speeds(spec_server, {}, crash=["draft-simple"])
     port = tuning.free_port()
     crashed = tuning.spec_command(text, "big", {"spec_type": "draft-simple", "draft_model": "D:/d.gguf"}, build, port)
     with pytest.raises(tuning.TuneError, match="not supported by this context"):  # its own words, from its log
@@ -566,3 +579,112 @@ def test_what_guessing_ahead_is_measured(tmp_path):
     old = lc.parse_help(HELP.replace(",ngram-mod", ""))  # a build without ngram-mod
     assert tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, None)[0][1]["changes"] == {
         "spec_type": "ngram-simple"}  # fmt: skip
+
+
+def launched(folder):
+    """The kinds of guessing each launch of the stand-in llama-server was started with."""
+    launches = [json.loads(line) for line in (folder / "launches.txt").read_text(encoding="utf-8").splitlines()]
+    return [a[a.index("--spec-type") + 1] if "--spec-type" in a else "none" for a in launches]
+
+
+def test_the_fastest_guessing_ahead_goes_into_the_config_and_is_checked(hub, setup, spec_server):  # noqa: F811
+    """42.4: after llama-bench's settings - guessing ahead: none, ngram and the draft model measured by llama-server
+    at the model's own sampling; the fastest by more than 3 % is written in the build's names and checked by loading
+    the model; measured again, it stays; within the noise - guessing goes off."""
+    hub.app.state.db.call(lambda conn: model_settings.save(conn, "llama-swap/big", {"params": {"temperature": 0.2}},
+                                                           by="test"))  # fmt: skip
+    draft = setup.parent / "draft.gguf"
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    assert result["status"] == "same"  # llama-bench: the config's own settings are the fastest
+    spec = result["spec"]
+    assert (spec["status"], spec["kind"], spec["spec_type"], spec["before"], spec["after"], spec["accepted"]) == (
+        "better", "draft", "draft-simple", 40.0, 60.0, 0.7)  # fmt: skip
+    assert [m["name"] for m in spec["measured"]] == ["none", "ngram", "draft"] and spec["draft"] == "draft.gguf"
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-simple"] and spec["short"] == {}
+    asked = [json.loads(line) for line in (spec_server / "asked.txt").read_text(encoding="utf-8").splitlines()]
+    assert {a["temperature"] for a in asked} == {0.2}  # the model's own sampling
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"] == {
+        "type": "draft-simple", "draft": draft.as_posix(), "draft_gpu_layers": "all", "draft_max": 0,
+        "draft_cache_type": "q8_0"}  # fmt: skip
+    assert hub.app.state.db.call(tuning.load_results)["big"]["spec"]["kind"] == "draft"  # kept
+
+    written = setup.read_text(encoding="utf-8")
+    again = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    assert again["spec"]["status"] == "same" and setup.read_text(encoding="utf-8") == written
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-simple": 41.1})  # within the measurement's noise
+    off = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    assert (off["spec"]["status"], off["spec"]["kind"]) == ("better", "none")
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["type"] == ""
+    assert "draft" not in setup.read_text(encoding="utf-8").split('"big"')[1].split('"huge"')[0]
+
+
+def test_guessing_ahead_that_does_not_start_is_passed_over_or_taken_back(hub, setup, spec_server):  # noqa: F811
+    """42.4: a kind of guessing llama-server cannot start with in the measuring («speculative decoding not supported
+    by this context») is passed over; one that starts there but not in llama-swap - the check finds it, the model's
+    lines come back, and what llama-bench wrote stays. A build that knows no guessing - nothing measured."""
+    draft = setup.parent / "draft.gguf"
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, crash=["draft-simple"])
+    passed = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    spec = passed["spec"]
+    assert spec["kind"] == "ngram" and "not supported" in spec["measured"][2]["error"]
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["type"] == "ngram-mod"
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 40.0, "draft-simple": 60.0})
+    before = setup.read_text(encoding="utf-8")
+    refused = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40), (2048, 1500, 52)]}, draft=draft,
+                                refuse_draft=True).tune("big"))  # fmt: skip
+    assert refused["status"] == "better" and refused["spec"]["status"] == "failed"  # llama-bench's change stays
+    assert "конфиг возвращён" in refused["spec"]["error"]
+    now = lc.model_view(setup.read_text(encoding="utf-8"), "big")
+    assert now["ubatch"] == 2048 and now["spec"] == lc.model_view(before, "big")["spec"]  # its own lines back
+
+    knows = "-m,    --model FNAME                    model path to load\n"  # and no guessing ahead
+    (spec_server / "help.txt").write_text(knows, encoding="utf-8")
+    server = spec_server / "llama-server.cmd"  # another build: its --help is read anew
+    server.write_text(server.read_text(encoding="utf-8") + "rem a build that knows no guessing\n", encoding="utf-8")
+    old = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    assert old["spec"] == {"status": "unsupported"}
+
+
+def test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat(hub, setup, spec_server, monkeypatch):  # noqa: F811
+    """42.4: «Подобрать» by hand measured beside a game or another program's work (their numbers in it), and a chat
+    that began while llama-server measured put a second model on the card. By hand too, it waits for the card to be
+    quiet, and a chat stops it - llama-server let go - and it is measured again after."""
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, load_s=1.5)
+    found = tuner(hub, measured={"q8_0": [(512, 900, 40)]})
+    card = {"util_pct": 90}
+    found._gpu = lambda: card
+
+    async def scenario():
+        found.request("big")
+        await asyncio.sleep(0.4)
+        assert found.job["status"] == "waiting" and not (spec_server / "launches.txt").exists()
+        card["util_pct"] = 2
+        started = time.monotonic()
+        while not (spec_server / "launches.txt").exists():
+            assert time.monotonic() - started < 20, found.job
+            await asyncio.sleep(0.05)
+        found._chat.busy = ["c1"]  # a chat begins while llama-server loads
+        while found.job.get("status") != "waiting":
+            assert time.monotonic() - started < 20, found.job
+            await asyncio.sleep(0.05)
+        assert "big" not in found.results and not stand_ins()  # nothing by its numbers, the server let go
+        found._chat.busy = []
+        while "big" not in found.results:
+            assert time.monotonic() - started < 30, found.job
+            await asyncio.sleep(0.05)
+
+    asyncio.run(scenario())
+    assert found.results["big"]["spec"]["kind"] == "ngram"
+
+
+def stand_ins():
+    """The stand-in llama-servers still running."""
+    alive = []
+    for process in psutil.process_iter(["cmdline"]):
+        with contextlib.suppress(psutil.Error, TypeError):
+            if any(part.endswith("server.py") for part in process.info["cmdline"] or []):
+                alive.append(process.pid)
+    return alive

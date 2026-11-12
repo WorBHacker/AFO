@@ -19,7 +19,8 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import claude_code, goals
+from hub import claude_code, goals, tuning
+from hub import llama_config as lc
 from hub.api_reference import event_types
 from hub.auth import create_client
 from hub.chat import Limits
@@ -36,6 +37,7 @@ from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
+from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
 
 A_TXT = "if (Test-Path a.txt) { exit 0 } else { exit 1 }"
 
@@ -633,3 +635,39 @@ def test_a_goal_checking_its_turn_while_the_hub_stops_is_not_blocked(served, rep
     with closing(sqlite3.connect(data_paths().db)) as conn:
         status, detail = conn.execute("SELECT status, detail FROM goals WHERE conversation_id = ?", (cid,)).fetchone()
     assert status == "active", detail
+
+
+# --- tuning by hand meets a chat (42.4) ---
+
+
+def test_a_chat_that_begins_stops_tuning_by_hand_and_it_goes_on_after(hub, setup, spec_server, monkeypatch):  # noqa: F811
+    """42.4 × the chat: «Подобрать» by hand measures guessing ahead with llama-server past llama-swap; a chat that
+    begins on the hub meanwhile (its answer held at a gate) would load a second model on the card - the measuring
+    stops, the server is let go, nothing is written by its numbers; once the answer is done the model is measured
+    again and the pick written."""
+    from tests.test_tuning import line, speeds, stand_ins
+
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, load_s=1.5)
+    tuner = hub.app.state.tuner
+
+    def bench(command, progress):  # llama-bench: the config's own settings are the fastest
+        return [line(True, "q8_0", 512, 16, pp=900), line(True, "q8_0", 512, 16, tg=40)]
+
+    async def loads(model_id):
+        return {"ok": True, "error": "", "seconds": 1.0}
+
+    monkeypatch.setattr(tuner, "_run", bench)
+    monkeypatch.setattr(tuner, "_check", loads)
+    worker = use(hub, Gated("agent", ["Ответ."]))
+    worker.gate.clear()
+    assert hub.post("/v1/tune/big").status_code == 200
+    wait(lambda: (spec_server / "launches.txt").exists(), timeout=30)
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    hub.post(f"/v1/conversations/{conv}/messages", json={"content": "привет", "model_id": "agent/m"})
+    wait(lambda: hub.get("/v1/tune").json()["job"]["status"] == "waiting", timeout=30)
+    assert "big" not in hub.get("/v1/tune").json()["results"] and not stand_ins()
+    worker.gate.set()  # the answer goes on and ends
+    spec = wait(lambda: hub.get("/v1/tune").json()["results"].get("big", {}).get("spec"), timeout=60)
+    assert spec["status"] == "better" and spec["kind"] == "ngram"
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["type"] == "ngram-mod"

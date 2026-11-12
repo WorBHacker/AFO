@@ -257,6 +257,17 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
                  "context": next((c for c in smaller if need(view["gpu_layers"], c) <= room), 0)}  # fmt: skip
 
 
+def spec_choice(measured: list[dict[str, Any]]) -> dict[str, Any]:
+    """The guessing ahead to write (42.4): the variants come cheapest first (none, ngram, the draft, the draft with
+    the model's layers fewer on the card); a costlier one only when faster than each cheaper one by more than CLOSE -
+    less is the measurement's noise, and a draft takes memory."""
+    pick = measured[0]
+    for at, variant in enumerate(measured[1:], 1):
+        if variant["tg"] > max(m["tg"] for m in measured[:at]) * (1 + CLOSE):
+            pick = variant
+    return pick
+
+
 def sampling(conn, model_id: str) -> dict[str, Any]:
     """The model's own sampling, as the hub's model settings have it (llama-swap's id): a guess is right more often
     when the answer is surer - measured as it will be used."""
@@ -304,8 +315,10 @@ class Tuner:
                  run: Callable[[list[str], Callable[[], None]], list[str]] | None = None,
                  check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
                  gpu: Callable[[], dict[str, Any] | None] | None = None,
-                 installing: Callable[[], bool] | None = None):  # fmt: skip
+                 installing: Callable[[], bool] | None = None,
+                 draft: Callable[[str, Path], Awaitable[Path | None]] | None = None):  # fmt: skip
         self._db = db
+        self._draft = draft  # a draft model's file for a model (42.5: found and downloaded); None - none
         self._bus = bus
         self._chat = chat
         self._url = url.rstrip("/")
@@ -322,7 +335,7 @@ class Tuner:
         # the installs have work (34.4): llama-bench runs past llama-swap - beside an install's trial, two models at
         # once filled the memory
         self._installing = installing or (lambda: False)
-        self._halt = threading.Event()  # automatic measuring is to stop: a chat or an install began
+        self._halt = threading.Event()  # measuring is to stop: a chat or an install began
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -388,14 +401,14 @@ class Tuner:
             await self._wait(automatic, model_id)
             self._queue.pop(0)
             if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
-                self._queue.append((model_id, True))  # measured again once all is quiet
+                self._queue.append((model_id, automatic))  # measured again once all is quiet
 
     async def _wait(self, automatic: bool, model_id: str) -> None:
-        """Until no chat runs and the installs have no work (34.4) - and, for automatic tuning, neither has for IDLE_S,
-        nor has the graphics card worked."""
+        """Until no chat runs, the installs have no work (34.4) and the graphics card is quiet (by hand too, 42.4: a
+        game or another program's work is in its numbers) - and, for automatic tuning, all this for IDLE_S."""
         while True:
             now = time.monotonic()
-            if self._chat.busy or self._installing() or (automatic and self._card_busy()):
+            if self._chat.busy or self._installing() or self._card_busy():
                 self._quiet_since = now
             elif not automatic or now - self._quiet_since >= IDLE_S:
                 return
@@ -409,7 +422,8 @@ class Tuner:
         return util is not None and util >= BUSY_PCT
 
     async def _watch(self) -> None:
-        """While automatic measuring goes on: a chat or an install that starts stops it - llama-bench let go."""
+        """While measuring goes on (by hand too, 42.4): a chat or an install that starts stops it - llama-bench or
+        llama-server let go; it is measured again once all is quiet."""
         while self.job.get("status") == "measuring":
             if self._chat.busy or self._installing():
                 self._halt.set()
@@ -421,11 +435,11 @@ class Tuner:
         await self._bus.publish("tune.changed", {"job": self.state_job()}, persist=persist)
 
     async def tune(self, model_id: str, *, automatic: bool = False) -> dict[str, Any]:
-        """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Automatic
-        measuring a chat stops is not a result: {"status": "halted"}, nothing kept."""
+        """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Measuring a
+        chat or an install stops is not a result: {"status": "halted"}, nothing kept."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
         self._halt.clear()
-        watch = asyncio.create_task(self._watch()) if automatic else None
+        watch = asyncio.create_task(self._watch())
         await self._publish()
         try:
             result = await self._tune(model_id)
@@ -438,8 +452,7 @@ class Tuner:
             result = {"status": "failed", "error": str(exc)}
             log.info("tuning %s: %s", model_id, exc)
         finally:
-            if watch is not None:
-                watch.cancel()
+            watch.cancel()
         result["at"] = utc_now()
         self.results[model_id] = result
         await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
@@ -448,6 +461,110 @@ class Tuner:
         return result
 
     async def _tune(self, model_id: str) -> dict[str, Any]:
+        """llama-bench's settings, then guessing ahead with them (42.4): its result is `spec` - its failure is its
+        own, what llama-bench gave stays."""
+        result = await self._tune_bench(model_id)
+        try:
+            result["spec"] = await self._tune_spec(model_id)
+        except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+            if self._halt.is_set():
+                raise
+            log.info("guessing ahead for %s: %s", model_id, exc)
+            result["spec"] = {"status": "failed", "error": str(exc)}
+        return result
+
+    async def _tune_spec(self, model_id: str) -> dict[str, Any]:
+        """Guessing ahead (42.4), with the settings llama-bench left: each variant (spec_variants) measured by
+        llama-server itself, the pick (spec_choice) written and checked as the rest. {status: better (written) |
+        same | unsupported (the build has no --spec-type), kind, spec_type, before (tokens a second without it),
+        after, accepted, measured, short (what a draft lacks), draft (its file's name)}."""
+        text = await asyncio.to_thread(llama_config.config_path().read_text, encoding="utf-8")
+        build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
+        if build is None or llama_config.spelled("spec_type", build)[1] is None:
+            return {"status": "unsupported"}
+        view = llama_config.model_view(text, model_id)
+        info = await asyncio.to_thread(model_info, Path(view["file"]))
+        draft = await self._find_draft(model_id, view)
+        variants, short = spec_variants(view, info, self._space(), build, draft)
+        params = await self._db.acall(lambda conn: sampling(conn, model_id))
+        self.job.update(status="measuring", step="spec", done=0, total=len(variants))
+        await self._publish()
+        await self._unload()  # the check of llama-bench's settings loaded the model in llama-swap
+        measured: list[dict[str, Any]] = []
+        for variant in variants:
+            port = free_port()
+            try:
+                argv = spec_command(text, model_id, variant["changes"], build, port)
+                found = await asyncio.to_thread(self._serve, argv, port, params)
+            except (TuneError, llama_config.ConfigError) as exc:
+                if variant["name"] == "none":  # nothing to compare with
+                    raise
+                log.info("guessing ahead for %s, %s: %s", model_id, variant["name"], exc)
+                measured.append({"name": variant["name"], "error": str(exc)})
+                continue
+            finally:
+                self.job["done"] = self.job.get("done", 0) + 1
+                await self._publish(False)
+            measured.append({**variant, **found})
+        log.info("guessing ahead for %s measured: %s", model_id, measured)
+        pick = spec_choice([m for m in measured if "tg" in m])
+        out = {"kind": pick["name"], "spec_type": pick["changes"]["spec_type"], "before": measured[0]["tg"],
+               "after": pick["tg"], "accepted": pick.get("accepted"), "short": short,
+               "draft": draft["path"].name if draft else "",
+               "measured": [{key: m[key] for key in ("name", "tg", "accepted", "error") if key in m}
+                            for m in measured]}  # fmt: skip
+        backup = await self._write(model_id, lambda now: llama_config.edit(now, model_id, pick["changes"], build=build))
+        return {"status": "better", **out, "backup": backup} if backup else {"status": "same", **out}
+
+    async def _find_draft(self, model_id: str, view: dict[str, Any]) -> dict[str, Any] | None:
+        """The draft model to measure: the one found for this model (42.5: paired, downloaded), else the one its
+        command has; with its file's header (the memory estimate)."""
+        path = await self._draft(model_id, Path(view["file"])) if self._draft is not None else None
+        if path is None and view["spec"]["draft"] and Path(view["spec"]["draft"]).is_file():
+            path = Path(view["spec"]["draft"])
+        if path is None:
+            return None
+        try:
+            return {"path": path, "info": await asyncio.to_thread(model_info, path)}
+        except (OSError, GGUFError) as exc:
+            log.info("the draft %s for %s: %s", path, model_id, exc)
+            return None
+
+    async def _write(self, model_id: str, edit: Callable[[str], str | None]) -> str | None:
+        """The config changed under the writers' lock - `edit` of the file as it is now, not as it was before the
+        measuring (34.4: an install may have written it since - a change over the old text took away three models added
+        meanwhile, 2026-11-08); then the model loaded with it (the check). It does not start - its own lines back
+        (what others wrote meanwhile stays) and TuneError. The copy's name; None - nothing to change."""
+        path = llama_config.config_path()
+        async with llama_config.writing():
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            if model_id not in llama_config.model_blocks(text):
+                raise TuneError(tr("«{model}» убрали из config.yaml, пока шёл замер", model=model_id))
+            new = edit(text)
+            if new is None or new == text:
+                return None
+            self.job.update(status="checking")
+            await self._publish()
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            await asyncio.sleep(WATCH_S)  # llama-swap has seen the new file: the check is not answered by the old one
+            ids, context = list(llama_config.model_blocks(new)), llama_config.model_view(new, model_id)["context"]
+            ok, problem = await llama_config.reloaded(self._url, ids, (model_id, context))
+        checked = await self._check(model_id) if ok or problem == tr(llama_config.NOT_ANSWERING) else {
+            "ok": False, "error": problem}  # fmt: skip
+        if not checked.get("ok"):
+            async with llama_config.writing():  # its own model's lines back; what others wrote meanwhile stays
+                now = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                back = text if now == new else llama_config.with_block(now, model_id, text)
+                if now == new:
+                    await asyncio.to_thread(llama_config.restore, path, backup)
+                else:
+                    await asyncio.to_thread(llama_config.write, path, back)
+                await llama_config.reloaded(self._url, list(llama_config.model_blocks(back)))
+            raise TuneError(tr("с новыми настройками модель не запустилась ({error}) — конфиг возвращён",
+                               error=checked.get("error") or tr("нет ответа")))  # fmt: skip
+        return backup.name
+
+    async def _tune_bench(self, model_id: str) -> dict[str, Any]:
         path = llama_config.config_path()
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         view = llama_config.model_view(text, model_id)
@@ -480,39 +597,23 @@ class Tuner:
         if not measured:
             raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
         log.info("measured %s: %s", model_id, measured)
-        async with llama_config.writing():
-            # the file as it is now, not as it was before the measuring (34.4): an install may have written it since -
-            # a change over the old text took away three models added meanwhile (2026-11-08)
-            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-            if model_id not in llama_config.model_blocks(text):
-                raise TuneError(tr("«{model}» убрали из config.yaml, пока шёл замер", model=model_id))
-            view = llama_config.model_view(text, model_id)
+        judged: dict[str, Any] = {}
+
+        def edit(now: str) -> str | None:  # by the config as it is when the measuring ends
+            view = llama_config.model_view(now, model_id)
             choice, before = best(measured), current(view, measured)
+            judged.update(choice=choice, before=before)
             if same(view, choice) or not worth(choice, before):
-                return {"status": "same", "before": before, "after": before or choice, "settings": {}}
-            changes = changes_for(choice)
-            self.job.update(status="checking")
-            await self._publish()
-            new = llama_config.edit(text, model_id, changes)
-            backup = await asyncio.to_thread(llama_config.write, path, new)
-            await asyncio.sleep(WATCH_S)  # llama-swap has seen the new file: the check is not answered by the old one
-            ids = list(llama_config.model_blocks(new))
-            ok, problem = await llama_config.reloaded(self._url, ids, (model_id, view["context"]))
-        checked = await self._check(model_id) if ok or problem == tr(llama_config.NOT_ANSWERING) else {
-            "ok": False, "error": problem}  # fmt: skip
-        if not checked.get("ok"):
-            async with llama_config.writing():  # its own model's lines back; what others wrote meanwhile stays
-                now = await asyncio.to_thread(path.read_text, encoding="utf-8")
-                back = text if now == new else llama_config.with_block(now, model_id, text)
-                if now == new:
-                    await asyncio.to_thread(llama_config.restore, path, backup)
-                else:
-                    await asyncio.to_thread(llama_config.write, path, back)
-                await llama_config.reloaded(self._url, list(llama_config.model_blocks(back)))
-            raise TuneError(tr("с новыми настройками модель не запустилась ({error}) — конфиг возвращён",
-                               error=checked.get("error") or tr("нет ответа")))  # fmt: skip
+                return None
+            return llama_config.edit(now, model_id, changes_for(choice))
+
+        backup = await self._write(model_id, edit)
+        choice, before = judged["choice"], judged["before"]
+        if backup is None:
+            return {"status": "same", "before": before, "after": before or choice, "settings": {}}
+        changes = changes_for(choice)
         log.info("tuned %s: %s -> %s tok/s with %s", model_id, (before or {}).get("tg"), choice["tg"], changes)
-        return {"status": "better", "before": before, "after": choice, "settings": changes, "backup": backup.name}
+        return {"status": "better", "before": before, "after": choice, "settings": changes, "backup": backup}
 
     async def _unload(self) -> None:
         """The graphics card free for measuring: llama-swap lets its models go."""
