@@ -28,7 +28,7 @@ from common import hardware
 from common.i18n import N_, decimal, tr
 from common.paths import engines_home
 
-from . import autostart, engines, llama_config
+from . import autostart, engines, llama_config, resources
 from . import model_install as mi
 from .system_status import memory_sample
 
@@ -100,9 +100,10 @@ class Setup:
         memory = await asyncio.to_thread(memory_sample)
         pictures = await asyncio.to_thread(hardware.pictures_here, (memory or {}).get("ram_total_gib") or 0)
         engine = await asyncio.to_thread(self._engine)
-        answering = await autostart.answers(self._url)
-        ready = answering or bool(engine["server"] and engine["start_found"])
-        return {"needed": not ready, "answering": answering, "engine": engine, "cards": cards,
+        found = await asyncio.to_thread(resources.scan)  # the files, not who answers on the port (39.1)
+        answering = await resources.llama_swap_answers(self._url)
+        ready = found["ready"] or answering
+        return {"needed": not ready, "answering": answering, "resources": found, "engine": engine, "cards": cards,
                 "nvidia": nvidia, "build": build, "builds": {k: tr(v) for k, v in BUILDS.items()}, "memory": memory,
                 "page_file": page_file(memory), "pictures": pictures, "job": dict(self.job),
                 "folder": str(engines_home())}  # fmt: skip
@@ -243,8 +244,9 @@ class Setup:
             if not exe.is_file():
                 raise engines.EngineError(tr("в архиве llama-swap нет llama-swap.exe ({folder})", folder=swap_folder))
             config = swap_folder / "config.yaml"
-            if not config.exists():
-                engines.write_config(config, server)
+            async with llama_config.writing():  # 39.1: as every write of the config - an install does not meet it
+                if not config.exists():
+                    await asyncio.to_thread(engines.write_config, config, server)
             self.job.update(status="starting", step=tr("запускаю llama-swap"))
             await self._publish()
 

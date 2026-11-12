@@ -149,6 +149,50 @@ def test_the_engine_for_a_computer_that_has_none(hub, github, monkeypatch, tmp_p
     assert failed["status"] == "failed" and "порт 8080 занят: strata.exe (pid 4242)" in failed["error"]
 
 
+class Tomcat(BaseHTTPRequestHandler):
+    """Another program on llama-swap's port (Tomcat in IntelliJ on 8080): it answers - 404 to all."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.send_response(404)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
+
+class OwnSwap(Tomcat):
+    """The person's own llama-swap, run in a way AFO does not know (in Docker, say): its /running answers."""
+
+    def do_GET(self):
+        if self.path != "/running":
+            return super().do_GET()
+        data = json.dumps({"running": []}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def test_the_engine_is_judged_by_its_files_not_by_who_answers_on_its_port(hub, monkeypatch):  # noqa: F811
+    """39.1 (2026-11-12, the plan's finding 1): on a laptop with Tomcat on 8080 and no llama-swap at all, the wizard
+    said the engine was there - Tomcat answers 404, below 500, and that was taken for llama-swap; no «Установить
+    движок». Now the files on the disk say it: llama-swap's program, its config, llama-server. A llama-swap that
+    answers as llama-swap counts as there too - the person's own; any other program on its port does not."""
+    for handler, needed in ((Tomcat, True), (OwnSwap, False)):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            monkeypatch.setattr(hub.app.state.setup, "_url", f"http://127.0.0.1:{server.server_port}")
+            state = hub.get("/v1/setup").json()
+        finally:
+            server.shutdown()
+        assert (state["needed"], state["answering"]) == (needed, not needed), handler.__name__
+        assert {m["what"] for m in state["resources"]["missing"]} == {"llama-swap", "config"}  # nothing on the disk
+        assert not state["resources"]["ready"]
+
+
 def test_which_build_runs_and_the_macro_it_lives_in(tmp_path):
     cuda = tmp_path / "llama.cpp" / "b11899"
     cuda.mkdir(parents=True)

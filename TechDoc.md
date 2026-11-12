@@ -104,6 +104,7 @@
 - `hub/projects.py` — реестр проектов, дерево, файлы, git
 - `hub/proving.py` — полигон и экзамен моделей
 - `hub/release.py` — обновления самой AFO
+- `hub/resources.py` — что нужно локальным моделям: файлы движка на диске и отвечает ли llama-swap
 - `hub/retention.py` — сколько хаб хранит на диске
 - `hub/rewrite.py` — модель правит выделенное в редакторе
 - `hub/ripgrep.py` — загрузка ripgrep
@@ -685,6 +686,11 @@
   через `Setup` (одно скачивание за раз: `Setup.start` отдаёт уже идущее). Свой llama-swap человека не трогает.
   Создание config.yaml — под `llama_config.writing()`. Выключатель как `fetch_ripgrep`, в тестах выключен. Файлы:
   `hub/resources.py`, `hub/setup.py`, `hub/server.py`.
+  - 39.1а ✓ Готовность — по файлам: `resources.scan()` (программа llama-swap, конфиг, llama-server; llama-bench
+    только называется), `resources.llama_swap_answers()` — отвечает его `/running`, а не любая программа на порту.
+    `Setup.state` — `needed`, если нет файлов и не отвечает настоящий llama-swap; `resources` в ответе. Первый
+    config.yaml — под замком. Тест — `test_the_engine_is_judged_by_its_files_not_by_who_answers_on_its_port`.
+  - 39.1б Скачивание само (при старте хаба и при входе окна).
 - 39.2 Свободный порт: 8080 занят чужой программой — другой порт, запоминается в базе. Выбирается при старте хаба до
   сборки служб: адрес llama-swap запоминают 26 мест в 13 файлах. Переносится только llama-swap.exe, который запускает
   AFO; запущенный своим скриптом — нет. Файлы: `hub/server.py`, `hub/autostart.py`.
