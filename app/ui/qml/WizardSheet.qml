@@ -11,6 +11,15 @@ Sheet {
     iconName: "sparkle"
     width: Math.min(700, (parent ? parent.width : 960) * 0.94)
     onAboutToShow: Setup.load()
+    // 39.3: the engine came by itself - the wizard opens at its first models, once they are there to show
+    property bool revealModels: false
+    function showModelsIfAsked() {
+        if (revealModels && opened && modelsTitle.visible) {
+            revealModels = false
+            Qt.callLater(() => sheet.reveal(modelsTitle))
+        }
+    }
+    onOpened: showModelsIfAsked()
 
     function tone(t) { return t === "ok" ? Theme.p.ok : t === "warn" ? Theme.p.warn : t === "error" ? Theme.p.error : Theme.p.muted }
 
@@ -101,7 +110,13 @@ Sheet {
         }
     }
 
-    SectionTitle { text: qsTr("Первая модель"); visible: Setup.loaded && !Setup.needed }
+    SectionTitle {
+        id: modelsTitle
+        objectName: "wizardModels"
+        text: qsTr("Первая модель")
+        visible: Setup.loaded && !Setup.needed
+        onVisibleChanged: sheet.showModelsIfAsked()
+    }
     Note {
         visible: Setup.loaded && !Setup.needed && Setup.modelsLoading
         text: qsTr("Подбираю модели под этот компьютер…")

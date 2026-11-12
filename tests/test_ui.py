@@ -687,6 +687,13 @@ class FakeClient:
         self.install_jobs_list = [job]
         return {"job": job}
 
+    def setup_check(self):
+        self.install_calls.append(("check",))
+        return {
+            "resources": {"status": "fetching" if self.setup["needed"] else "ready"},
+            "job": dict(self.setup["job"]),
+        }
+
     def setup_engine(self, build=""):
         self.install_calls.append(("engine", build))
         self.setup["job"] = {"status": "downloading", "build": build, "done": 0, "total": 0, "step": ""}
@@ -6401,6 +6408,53 @@ def test_the_first_run_wizard(qapp):
         assert app.settings.value(DISMISSED, False, bool)
         for _ in range(10):
             QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_engine_fetched_by_itself_shows_in_the_status_bar_then_offers_a_model(qapp):
+    """39.3 (2026-11-12, the plan: «ход скачивания простыми словами в строке состояния, без мастера; мастер
+    открывается сам, когда движок готов, — на «Первая модель»»): the window asks the hub to look at what local models
+    need when it comes (39.1); while the hub fetches the engine by itself the wizard stays closed and the status bar
+    says how far it is; once the engine is in, the wizard opens by itself at its first models - once, «Позже» said
+    before too: that was about installing the engine by hand."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+    from app.ui.setup_view import DISMISSED
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.settings.setValue(DISMISSED, True)
+        client = FakeClient()
+        fetching = {"status": "downloading", "auto": True, "build": "cuda-13", "done": 0, "total": 0, "step": ""}
+        client.setup = {**client.setup, "needed": True, "answering": False, "job": fetching}
+        asked = []
+        app.uiRequested.connect(asked.append)
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and ("check",) in client.install_calls and app.setup_view.loaded)
+        sheet = quick.window.findChild(QObject, "wizardSheet")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert not sheet.property("opened") and "setup-first-run" not in asked  # no wizard while it fetches
+        job = {**fetching, "done": 340_000_000, "total": 820_000_000}
+        app.on_event({"type": "setup.progress", "payload": {"job": job}})
+        status = app.setup_view.status
+        assert status["text"] == "Скачиваю программу для локальных моделей… 340 МБ из 820 МБ"
+        assert (status["short"], round(status["percent"], 2)) == ("340 МБ из 820 МБ", 0.41)
+        wait_until(lambda: quick.window.findChild(QObject, "statusEngine").property("visible"))
+
+        client.setup = {**client.setup, "needed": False, "answering": True, "job": {"status": "done", "auto": True}}
+        app.on_event({"type": "setup.changed", "payload": {"job": {"status": "done", "auto": True}}})
+        wait_until(lambda: not app.bg.busy and sheet.property("opened"))  # by itself, «Позже» or not
+        assert asked.count("setup-first-model") == 1 and app.setup_view.status == {}
+        sheet.close()
+        app.on_event({"type": "setup.changed", "payload": {"job": {"status": "done", "auto": True}}})
+        for _ in range(10):
+            QApplication.processEvents()
+        assert asked.count("setup-first-model") == 1  # once
         assert quick.warnings == []
     finally:
         quick.close()

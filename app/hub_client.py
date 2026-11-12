@@ -140,6 +140,10 @@ class HubClient:
     def setup_models(self) -> dict:
         return self._call("GET", "/v1/setup/models", timeout=90)
 
+    def setup_check(self) -> dict:
+        """The window has come: the hub looks at what local models need, and fetches AFO's own engine (39.1)."""
+        return self._call("POST", "/v1/setup/check", timeout=30)
+
     def setup_engine(self, build: str = "") -> dict:
         return self._call("POST", "/v1/setup/engine", {"build": build}, timeout=30)
 

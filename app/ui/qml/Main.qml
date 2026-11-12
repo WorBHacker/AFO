@@ -309,6 +309,7 @@ Window {
             else if (what === "draw") visualSheet.open()
             else if (what === "setup") wizardSheet.open()
             else if (what === "setup-first-run") root.openWizardWhenFree()
+            else if (what === "setup-first-model") { wizardSheet.revealModels = true; root.openWizardWhenFree() }
             else if (what === "check-system") checkSheet.open()
             else if (what === "transfer") transferSheet.open()
             else if (what === "memory") memorySheet.open()

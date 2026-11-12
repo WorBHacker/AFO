@@ -83,10 +83,41 @@ Rectangle {
 
     Small {
         x: left.x + left.width + 16
-        width: (installing.visible ? installing.x : right.x) - x - 16
+        width: (engine.visible ? engine.x : installing.visible ? installing.x : right.x) - x - 16
         elide: Text.ElideRight
         text: App.flashText
         color: App.flashError ? Theme.p.warn : Theme.p.text_soft
+    }
+
+    // 39.3: the hub fetches the engine by itself - how far, in plain words; a click opens the wizard
+    Row {
+        id: engine
+        objectName: "statusEngine"
+        visible: !!Setup.status.text
+        anchors.right: installing.visible ? installing.left : right.left
+        anchors.rightMargin: 14
+        height: parent.height
+        spacing: 6
+        HoverHandler { id: engineHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: App.openUi("setup") }
+        ToolTip.visible: engineHover.hovered
+        ToolTip.text: Setup.status.tip || ""
+        readonly property bool roomy: (installing.visible ? installing.x : right.x) - (left.x + left.width)
+                                      >= engineFull.width + 150
+        TextMetrics { id: engineFull; font.family: Theme.uiFont; font.pixelSize: 12; text: Setup.status.text || "" }
+        Icon { name: "download"; size: 13; tint: Theme.p.accent; anchors.verticalCenter: parent.verticalCenter }
+        Rectangle {
+            width: 44; height: 4; radius: 2
+            color: Theme.p.hairline
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+                width: parent.width * Math.max(0, Math.min(1, Setup.status.percent || 0))
+                height: 4; radius: 2
+                color: Theme.p.accent
+            }
+        }
+        Small { text: engine.roomy ? Setup.status.text || "" : Setup.status.short || "" }
+        Separator { anchors.verticalCenter: parent.verticalCenter }
     }
 
     Row {

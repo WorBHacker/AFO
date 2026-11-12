@@ -3,17 +3,20 @@ they want, RAM and the page file; «Движок» - llama.cpp and llama-swap fe
 модель» - for each purpose the curated model that runs best here, installed by the model installer (10.1).
 
 It opens by itself when the hub says the computer has no engine yet - once: «Позже» keeps it closed (app.ini), and
-«Настройки» opens it again.
+«Настройки» opens it again. When the hub fetches the engine by itself (39.1) the status bar says how far it is and the
+wizard stays closed; once the engine is in, the wizard opens at «Первая модель» - once, «Позже» or not (39.3).
 """
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
 from common.i18n import N_, tr
 
+from ..hub_client import HubError
 from .install_view import gb, verdict_of
 
 if TYPE_CHECKING:
@@ -25,6 +28,7 @@ PURPOSES = [("chat", N_("Разговоры"), N_("отвечает на воп�
             ("image", N_("Рисовать"), N_("рисует картинки по описанию"))]  # fmt: skip
 VENDORS = {"nvidia": "NVIDIA", "amd": "AMD", "intel": "Intel", "other": ""}
 DISMISSED = "setup/dismissed"
+OFFERED = "setup/modelOffered"  # the wizard opened at «Первая модель» once the engine came by itself (39.3)
 
 
 def card_rows(cards: list[dict[str, Any]]) -> list[str]:
@@ -57,6 +61,16 @@ def job_text(job: dict[str, Any]) -> str:
     return ""
 
 
+def amount(size: float) -> str:
+    """A download's size: in MB below a gigabyte - «340 МБ из 820 МБ» moves where «0,3 ГБ» would stand still."""
+    return tr("{size:.0f} МБ", size=max(size / 1e6, 1)) if size < 1e9 else gb(size)
+
+
+def fetched_by_itself(job: dict[str, Any]) -> bool:
+    """The hub's scanner fetches the engine now, not the person (39.1)."""
+    return bool(job.get("auto")) and job.get("status") in ("downloading", "starting")
+
+
 def model_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for purpose, title, what in PURPOSES:
@@ -74,6 +88,7 @@ def model_rows(models: dict[str, Any]) -> list[dict[str, Any]]:
 class SetupView(QObject):
     changed = Signal()
     openRequested = Signal()  # the hub says this computer needs the wizard
+    modelsRequested = Signal()  # the engine came by itself: the wizard at «Первая модель» (39.3)
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -146,6 +161,22 @@ class SetupView(QObject):
                   "GitHub (около 40–600 МБ, смотря по сборке) в {folder} и сам их запустит.",
                   folder=folder)  # fmt: skip
 
+    @Property("QVariantMap", notify=changed)
+    def status(self) -> dict:
+        """The status bar's word while the hub fetches the engine by itself (39.3): {text, short, percent, tip}; {}
+        when it does not."""
+        job = self._state.get("job") or {}
+        if not fetched_by_itself(job):
+            return {}
+        total, done = job.get("total") or 0, job.get("done") or 0
+        far = tr("{done} из {total}", done=amount(done), total=amount(total)) if total else ""
+        if job["status"] == "starting":
+            text = tr("Запускаю llama-swap…")
+        else:
+            text = tr("Скачиваю программу для локальных моделей…") + (f" {far}" if far else "")
+        return {"text": text, "short": far or text, "percent": done / total if total else 0.0,
+                "tip": job_text(job)}  # fmt: skip
+
     @Property(str, notify=changed)
     def jobStatus(self) -> str:
         return (self._state.get("job") or {}).get("status", "idle")
@@ -173,20 +204,27 @@ class SetupView(QObject):
     def load(self) -> None:
         if self.app.client is None:
             return
+        client = self.app.client
+
+        def looked() -> dict[str, Any]:  # in the background: the hub looks first (39.1), a hub without it says 404
+            with contextlib.suppress(HubError):
+                client.setup_check()
+            return client.setup_state()
 
         def show(state: dict[str, Any]) -> None:
             self._state = state
             self.changed.emit()
             if not self._asked:
                 self._asked = True
-                if state.get("needed") and not self.app.settings.value(DISMISSED, False, bool):
+                fetching = fetched_by_itself(state.get("job") or {})  # the status bar says it, not the wizard (39.3)
+                if state.get("needed") and not fetching and not self.app.settings.value(DISMISSED, False, bool):
                     self.openRequested.emit()
             if not state.get("needed") and not self._models and not self._models_loading:
                 self._load_models()
             if not state.get("needed"):
                 self._load_update()
 
-        self.app._call(lambda: self.app.client.setup_state(), show, lambda _e: None)
+        self.app._call(looked, show, lambda _e: None)
 
     def _load_update(self) -> None:
         def show(found: dict[str, Any]) -> None:
@@ -271,4 +309,7 @@ class SetupView(QObject):
             if kind == "setup.changed" and job.get("status") == "done":
                 self.load()  # the engine is there now: the first models
                 self.app.load_models()
+                if job.get("auto") and not self.app.settings.value(OFFERED, False, bool):
+                    self.app.settings.setValue(OFFERED, True)  # once: «Позже» was about the engine by hand (39.3)
+                    self.modelsRequested.emit()
             self.changed.emit()

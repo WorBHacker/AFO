@@ -272,6 +272,7 @@ class Controller(QObject):
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
+        self.setup_view.modelsRequested.connect(lambda: self.uiRequested.emit("setup-first-model"))  # 39.3
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
         self.goal_view = GoalView(self)  # a chat's goal: its bar, its contract card, steering (D44, 11.3)
         self.currentChanged.connect(self.goal_view.load)
