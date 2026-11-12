@@ -47,6 +47,9 @@ SHOWN = ("done", "added", "failed", "paused", "trialwait")
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
+# how much of the model a variant kept (41.3, hub.model_install.quality_of): words; the bits go to the tooltip
+QUALITY = {"same": N_("как у оригинала"), "near": N_("качество почти как у оригинала"),
+           "less": N_("немного хуже оригинала"), "worse": N_("заметно хуже")}  # fmt: skip
 PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
 # the search's filters (32.6; the hub's /v1/install/search): what for - the curated list's purposes, and (41.2) videos
 SEARCH_TASKS = [*PURPOSES, ("video", N_("Видео"))]
@@ -238,8 +241,11 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for v in details.get("variants") or []:
         words, tone = verdict_of(v)
-        bits = tr("≈ {bits} бита на вес", bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""
-        out.append({"quant": v["quant"], "size": gb(v["size"]), "bits": bits, "words": words, "tone": tone,
+        bits = tr("≈ {bits} бита на вес — сколько осталось от каждого веса (в оригинале 16)",
+                  bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""  # fmt: skip
+        quality = tr(QUALITY[v["quality"]]) if v.get("quality") in QUALITY else ""
+        out.append({"quant": v["quant"], "size": gb(v["size"]), "quality": quality, "bitsTip": bits, "words": words,
+                    "tone": tone,
                     "recommended": bool(v.get("recommended")), "parts": len(v.get("files") or []),
                     "pick": tr(PICKS[v["pick"]]) if v.get("pick") in PICKS else ""})  # fmt: skip
     return out

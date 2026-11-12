@@ -66,6 +66,7 @@ FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
 MAX_BITS = 8.6  # above Q8_0 the quality is the same and the model only slower
 GOOD_BITS = 4.5  # from about Q4_K_M on a quantization keeps nearly all of the model
+SAME_BITS = 7.5  # from about Q8_0 on - the same as the original (41.3)
 FIT_BITS = 4.9  # a search's «поместится» (32.5): a model taken as it usually is, about Q4_K_M
 FIT_QUANT = "Q4_K_M"  # what the estimate beside each found model is of (41.1)
 # a search's sizes (32.5): parameters from - to (0: no bound); "fits" - as much as this computer holds (fits_params)
@@ -219,6 +220,18 @@ def fits_params(space: dict[str, Any]) -> int:
     a variant is judged with - or, with no graphics card, «cpu» (verdict)."""
     room_gib = space["vram_gib"] - COMPUTE_GIB if space["vram_gib"] else space["ram_gib"]
     return max(int((room_gib - _kv_gib(None, FIT_CONTEXT)) * GIB * 8 / FIT_BITS), 0)
+
+
+def quality_of(bits: float | None) -> str:
+    """How much of the model a variant kept (41.3), for words instead of «bits per weight»: same (about Q8_0 and up),
+    near (from about Q4_K_M), less (down to MIN_BITS), worse (below it); '' - its bits are not known."""
+    if bits is None:
+        return ""
+    if bits >= SAME_BITS:
+        return "same"
+    if bits >= GOOD_BITS:
+        return "near"
+    return "less" if bits >= MIN_BITS else "worse"
 
 
 def search_fit(found: dict[str, Any], space: dict[str, Any]) -> dict[str, Any] | None:
@@ -667,6 +680,7 @@ class Installer:
         best = recommend(variants, judged, moe=moe)
         ends = extremes(variants, judged)
         shown = [{**v, "verdict": judged[v["quant"]], "words": tr(VERDICTS[judged[v["quant"]]]),
+                  "quality": quality_of(v.get("bits")),
                   "gb": round(v["size"] / 1e9, 1), "recommended": v["quant"] == best,
                   "pick": "fast" if v["quant"] == ends["fast"] and ends["fast"] != best else
                   "quality" if v["quant"] == ends["quality"] and ends["quality"] != best else ""}

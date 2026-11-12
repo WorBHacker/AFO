@@ -741,11 +741,16 @@ Sheet {
                             elide: Text.ElideRight
                             text: variant.modelData.job.live || variant.modelData.job.status === "failed"
                                   ? variant.modelData.job.line
-                                  : [variant.modelData.words, variant.modelData.bits].filter(s => s).join(" · ")
+                                  : [variant.modelData.words, variant.modelData.quality].filter(s => s).join(" · ")
                             color: variant.modelData.job.live ? Theme.p.accent
                                    : variant.modelData.job.status === "failed" ? Theme.p.error : Theme.p.faint
                             font.family: Theme.uiFont
                             font.pixelSize: 11
+                            // the bits behind the words (41.3)
+                            HoverHandler { id: bitsHover }
+                            ToolTip.visible: bitsHover.hovered && !!variant.modelData.bitsTip
+                            ToolTip.delay: 600
+                            ToolTip.text: variant.modelData.bitsTip || ""
                         }
                     }
                 }

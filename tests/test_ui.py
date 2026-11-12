@@ -819,6 +819,7 @@ class FakeClient:
                     "quant": "Q4_0",
                     "size": 4_590_000_000,
                     "bits": 4.9,
+                    "quality": "near",
                     "verdict": "gpu",
                     "words": "помещается в видеопамять — быстро",
                     "recommended": False,
@@ -828,6 +829,7 @@ class FakeClient:
                     "quant": "Q8_0",
                     "size": 8_030_000_000,
                     "bits": 8.5,
+                    "quality": "same",
                     "verdict": "gpu",
                     "words": "помещается в видеопамять — быстро",
                     "recommended": True,
@@ -6401,6 +6403,9 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert quick.window.findChild(QObject, "installRepo").property("visible")
         assert [(v["quant"], v["size"], v["recommended"]) for v in view.variants] == [
             ("Q4_0", "4,6 ГБ", False), ("Q8_0", "8,0 ГБ", True)]  # fmt: skip
+        # 41.3: how much of the model each kept, in words; the bits - in the tooltip
+        assert [v["quality"] for v in view.variants] == ["качество почти как у оригинала", "как у оригинала"]
+        assert view.variants[0]["bitsTip"] == "≈ 4,9 бита на вес — сколько осталось от каждого веса (в оригинале 16)"
         assert view.repo["projectorText"] == "Понимать картинки (+0,6 ГБ)" and "7,6 млрд" in view.repo["notes"]
         assert view.target == "D:\\AI model\\LocalChat\\model\\ggml-org\\gemma-4-E4B-it-GGUF"
         assert quick.window.findChild(QObject, "installBrowse").property("visible")

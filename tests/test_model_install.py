@@ -615,8 +615,8 @@ def test_a_model_installed_tried_and_removed(hub):
     assert system["folder"] == str(home) and system["home"]["folder"] == str(home)
     assert system["drives"][0]["folder"] == str(Path(hub.tmp / "T" / "AFO" / "models"))
     shown = hub.get("/v1/install/repo/test/Tiny-GGUF").json()
-    assert [(v["quant"], v["bits"], v["verdict"]) for v in shown["variants"]] == [
-        ("Q4_K_M", 4.5, "gpu"), ("Q8_0", 8.5, "gpu"), ("BF16", 16.0, "gpu")]  # fmt: skip
+    assert [(v["quant"], v["bits"], v["verdict"], v["quality"]) for v in shown["variants"]] == [
+        ("Q4_K_M", 4.5, "gpu", "near"), ("Q8_0", 8.5, "gpu", "same"), ("BF16", 16.0, "gpu", "same")]  # fmt: skip
     assert shown["recommended"] == "Q8_0" and shown["projector"]["file"] == "mmproj-Tiny-Q8_0.gguf"
     assert shown["header"]["layers"] == 8 and shown["license"] == "mit"
     listed = hub.get("/v1/install/catalog").json()["models"]
@@ -1283,3 +1283,10 @@ def test_the_search_by_build_language_licence_author_and_newest(hub):
             assert hub.get("/v1/install/search", params=wrong).status_code == 422, wrong
     finally:
         del SEARCH[-len(extra) :]
+
+
+def test_a_variants_quality_in_words():
+    """41.3: how much of the model a variant kept, in words instead of «bits per weight»: from about Q8_0 the same as
+    the original, from about Q4_K_M (GOOD_BITS) nearly, down to MIN_BITS a little worse, below it - noticeably."""
+    said = [mi.quality_of(bits) for bits in (16.0, 8.5, 7.5, 6.6, 4.5, 4.4, 3.5, 3.4, 2.9, None)]
+    assert said == ["same", "same", "same", "near", "near", "less", "less", "worse", "worse", ""]
