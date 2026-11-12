@@ -762,6 +762,12 @@
   лицензии в открытом репозитории); кто сжал (unsloth, bartowski, ggml-org…); порядок +
   «Новые». У моделей для картинок и видео «Установить» — только у тех, что AFO умеет собрать (сейчас 4 из каталога), у
   остальных — ссылка на страницу и «AFO пока не умеет ставить её сам».
+  - 41.2а ✓ Хаб: `GET /v1/install/search` — `task` image/video (`text-to-image`, `text-to-video`), `language` ru/en
+    (тег), `author` (5 известных, `author=` Hugging Face), `sort=new` (`createdAt`); свои фильтры хаба — `build`
+    moe/dense (`hf.experts`) и `license` free/work: `hf.license_kind` — free (Apache, MIT, BSD, CC-BY…), terms (Llama,
+    Gemma, Qwen, OpenRAIL…), closed (NC, research), '' — не разобрать; у каждой строки — `license_kind`. Модель картинок
+    или видео — `picture`: набор AFO, если это основной файл набора (`PICTURE_MAIN`), и без оценки памяти. Тесты —
+    `test_licences_in_words`, `test_the_search_by_build_language_licence_author_and_newest`.
 - 41.3 Вместо «bits per weight» — слова: «качество почти как у оригинала» (от ~4,5 бита), «заметно хуже» (ниже 3,5);
   биты — во всплывающей подсказке.
 

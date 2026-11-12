@@ -90,14 +90,20 @@ async def catalog(request: Request, client: Annotated[Client, Depends(require_ap
 
 @router.get("/search")
 async def search(request: Request, client: Annotated[Client, Depends(require_app)], q: str = "",
-                 task: Literal["", "chat", "code", "vision"] = "",
+                 task: Literal["", "chat", "code", "vision", "image", "video"] = "",
                  size: Literal["", "fits", "small", "medium", "large", "huge"] = "",
-                 sort: Literal["downloads", "trending", "likes", "updated"] = "downloads",
-                 plain: bool = False) -> dict:  # fmt: skip
+                 sort: Literal["downloads", "trending", "likes", "updated", "new"] = "downloads",
+                 plain: bool = False, language: Literal["", "ru", "en"] = "",
+                 author: Literal["", "ggml-org", "unsloth", "bartowski", "lmstudio-community", "mradermacher"] = "",
+                 build: Literal["", "moe", "dense"] = "",
+                 license: Literal["", "free", "work"] = "") -> dict:  # fmt: skip
     """GGUF models on Hugging Face (32.5): by words (none: the most popular), what for, size («fits» - what this
-    computer holds), order, and `plain` - none whose refusals were taken out."""
+    computer holds), order, and `plain` - none whose refusals were taken out; (41.2) language, who put the files
+    there, how the model is built (a mixture of experts or not), its licence (free; or for work, on its terms too)."""
     try:
-        found = await _installer(request).search(q.strip()[:100], task=task, size=size, sort=sort, plain=plain)
+        found = await _installer(request).search(q.strip()[:100], task=task, size=size, sort=sort, plain=plain,
+                                                 language=language, author=author, build=build,
+                                                 licence=license)  # fmt: skip
     except hf.HubError as exc:
         raise _refusal(exc) from exc
     return {"models": found}

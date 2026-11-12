@@ -59,6 +59,7 @@ CATALOG = Path(__file__).with_name("model_catalog.json")
 PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать"),
             "video": N_("Видео")}  # fmt: skip
 SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
+PICTURE_MAIN = ("model", "diffusion-model")  # a picture set's own model among its files (the rest: encoders, VAE)
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
@@ -699,17 +700,27 @@ class Installer:
         return listed
 
     async def search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
-                     plain: bool = False) -> list[dict[str, Any]]:  # fmt: skip
+                     plain: bool = False, **more: str) -> list[dict[str, Any]]:  # fmt: skip
         """Hugging Face at large (32.5): the words, what for (hf.TASKS), how big (SIZES, or "fits": what this computer
-        holds), in what order (hf.SORTS), and `plain` - none whose refusals were taken out."""
+        holds), in what order (hf.SORTS), and `plain` - none whose refusals were taken out; `more` (41.2): language,
+        author, build, licence (hf.search). Each found says whether it fits this computer (41.1); a model that draws
+        or films - which picture set of AFO's it is (`picture`, its main repository), or none: AFO cannot put it
+        together itself."""
         fewest, most = (0, fits_params(self.space())) if size == "fits" else SIZES.get(size, (0, 0))
         if size == "fits" and not most:
             return []  # nothing fits here
         async with httpx.AsyncClient(timeout=30.0) as http:
             found = await hf.search(http, query, token=self.token(), task=task, fewest=fewest, most=most, sort=sort,
-                                    plain=plain)  # fmt: skip
+                                    plain=plain, **more)  # fmt: skip
         space = self.space()
-        return [{**each, "fit": search_fit(each, space)} for each in found]  # fits this computer? (41.1)
+        sets = {f["repo"]: entry["id"] for entry in picture_sets() for f in entry["files"]
+                if f["role"] in PICTURE_MAIN}  # fmt: skip
+        out = []
+        for each in found:
+            picture = sets.get(each["repo"], "")
+            drawn = bool(picture) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
+            out.append({**each, "picture": picture, "fit": None if drawn else search_fit(each, space)})
+        return out
 
     # --- picture models (29.3) ---
 

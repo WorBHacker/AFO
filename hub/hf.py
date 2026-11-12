@@ -42,8 +42,22 @@ RETRY_S = 1.0
 SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag", "gguf")
 INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "sha")
 # a search's «для чего» (32.5): Hugging Face's tags - many chat models have no pipeline tag, but all have this one
-TASKS = {"chat": "conversational", "code": "code", "vision": "image-text-to-text"}
-SORTS = {"downloads": "downloads", "trending": "trendingScore", "likes": "likes", "updated": "lastModified"}
+TASKS = {"chat": "conversational", "code": "code", "vision": "image-text-to-text", "image": "text-to-image",
+         "video": "text-to-video"}  # fmt: skip
+PICTURE_TASKS = ("image", "video")  # models that draw and film (41.2): sd-server's, not llama.cpp's
+PICTURE_PIPELINES = ("text-to-image", "image-to-image", "text-to-video", "image-to-video")
+SORTS = {"downloads": "downloads", "trending": "trendingScore", "likes": "likes", "updated": "lastModified",
+         "new": "createdAt"}  # fmt: skip
+# the search's other filters (41.2): Hugging Face's - a language tag, who put the files there; the hub's own - how the
+# model is built, its licence (Hugging Face takes one licence at a time)
+LANGUAGES = ("ru", "en")
+AUTHORS = ("ggml-org", "unsloth", "bartowski", "lmstudio-community", "mradermacher")
+BUILDS = ("moe", "dense")
+LICENCES = ("free", "work")  # free - with no conditions; work - and the companies' own, on their terms
+FREE_LICENCES = frozenset({"apache-2.0", "mit", "isc", "unlicense", "cc0-1.0", "mpl-2.0", "zlib", "0bsd", "bsl-1.0",
+                           "postgresql", "artistic-2.0", "afl-3.0", "ecl-2.0", "wtfpl"})  # fmt: skip
+NOT_FOR_WORK = re.compile(r"(?:^|[-_.])nc(?:[-_.]|$)|research|non-?commercial")
+OWN_TERMS = re.compile(r"llama|gemma|qwen|tongyi|deepseek|openrail|gpl|nvidia-open-model|falcon")
 # a variant's quantization in its file name: Q4_K_M, IQ3_XXS, UD-Q4_K_XL, Q8_0, MXFP4, BF16...
 QUANT = re.compile(r"(?i)(?<![A-Z0-9])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|MXFP4(?:_MOE)?|NVFP4|BF16|F16|FP16|F32))"
                    r"(?![A-Z0-9])")  # fmt: skip
@@ -136,6 +150,20 @@ def _license(info: dict[str, Any]) -> str:
     return str(found or "")
 
 
+def license_kind(name: str) -> str:
+    """What a licence lets one do (41.2): «free» - work with the model with no conditions (Apache, MIT, BSD,
+    CC-BY); «terms» - a company's own (Llama, Gemma, Qwen): for work too, on its terms; «closed» - research or
+    non-commercial: not for work; '' - the hub cannot tell, the model's page says."""
+    name = name.strip().lower()
+    if not name or name in ("other", "unknown"):
+        return ""
+    if NOT_FOR_WORK.search(name):
+        return "closed"
+    if name in FREE_LICENCES or name.startswith(("bsd", "cc-by")):
+        return "free"
+    return "terms" if OWN_TERMS.search(name) else ""
+
+
 def named_params(repo: str) -> int:
     """The parameter count a repository's name says - the largest («7B-Instruct-1M» is 7B) - or 0."""
     found = [float(n) * (1e9 if unit.upper() == "B" else 1e6) for n, unit in NAMED_SIZE.findall(repo.split("/")[-1])]
@@ -167,6 +195,7 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
         "likes": info.get("likes") or 0,
         "gated": info.get("gated") or False,  # False, "auto" or "manual": the licence is accepted on the site
         "license": _license(info),
+        "license_kind": license_kind(_license(info)),
         "updated": (info.get("lastModified") or "")[:10],
         "pipeline": info.get("pipeline_tag") or "",
         "params": params_of({**info, "id": repo}),
@@ -177,19 +206,22 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
 
 
 async def search(http: httpx.AsyncClient, query: str = "", *, limit: int = 30, token: str | None = None,
-                 task: str = "", fewest: int = 0, most: int = 0, sort: str = "downloads",
-                 plain: bool = False) -> list[dict]:  # fmt: skip
+                 task: str = "", fewest: int = 0, most: int = 0, sort: str = "downloads", plain: bool = False,
+                 language: str = "", author: str = "", build: str = "", licence: str = "") -> list[dict]:  # fmt: skip
     """GGUF repositories matching the words (none: all of them), the most downloaded first - or as `sort` says;
     `task` (TASKS), a parameter count from `fewest` to `most` (0: no bound) and `plain` (none whose refusals were
-    taken out) narrow it (32.5). Hugging Face bounds the count it read - some it read from a projector - so the hub
-    bounds params_of again, asking for more than it shows when some may drop."""
-    narrowed = bool(plain or fewest or most)
-    params: dict[str, Any] = {"filter": ["gguf", *([TASKS[task]] if task in TASKS else [])],
-                              "sort": SORTS.get(sort, "downloads"), "direction": "-1",
+    taken out) narrow it (32.5), and (41.2) the `language` tag, the `author`, the `build` (BUILDS) and the
+    `licence` (LICENCES). Hugging Face bounds the count it read - some it read from a projector - so the hub bounds
+    params_of again; the build and the licence are the hub's own: it asks for more than it shows when some may drop."""
+    narrowed = bool(plain or fewest or most or build or licence)
+    tags = [*([TASKS[task]] if task in TASKS else []), *([language] if language in LANGUAGES else [])]
+    params: dict[str, Any] = {"filter": ["gguf", *tags], "sort": SORTS.get(sort, "downloads"), "direction": "-1",
                               "limit": str(limit * 2 if narrowed else limit),
                               "expand[]": list(SEARCH_FIELDS)}  # fmt: skip
     if query:
         params["search"] = query
+    if author in AUTHORS:
+        params["author"] = author
     if fewest or most:
         params["num_parameters"] = f"min:{fewest}" + (f",max:{most}" if most else "")
     found = await _get(http, "/api/models", tr("Поиск"), token, **params)
@@ -200,6 +232,11 @@ async def search(http: httpx.AsyncClient, query: str = "", *, limit: int = 30, t
         shown = summary(info)
         count = shown["params"]
         if (plain and shown["unrestricted"]) or (count and (count < fewest or (most and count > most))):
+            continue
+        if build and shown["moe"] != (build == "moe"):
+            continue
+        kind = shown["license_kind"]
+        if licence and not (kind == "free" or (licence == "work" and kind == "terms")):
             continue
         out.append(shown)
     return out[:limit]

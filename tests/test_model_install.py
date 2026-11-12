@@ -66,13 +66,15 @@ FILES = {
 }
 PARAMS = 320_000  # bits a weight: Q4_K_M 4.5, Q8_0 8.5, BF16 16
 SEARCH = [  # what the stand-in Hugging Face's search finds: its tags, and gguf.total - the count it read (32.5)
-    {"id": "test/Tiny-GGUF", "downloads": 10, "likes": 2, "trendingScore": 1,
+    {"id": "test/Tiny-GGUF", "downloads": 10, "likes": 2, "trendingScore": 1, "createdAt": "2026-09-01T00:00:00.000Z",
      "lastModified": "2026-10-01T00:00:00.000Z", "tags": ["license:mit", "gguf", "conversational", "code"],
      "gguf": {"total": PARAMS}},
     {"id": "someone/Big-27B-MTP-GGUF", "downloads": 7, "likes": 1, "trendingScore": 3,
+     "createdAt": "2026-09-03T00:00:00.000Z",
      "lastModified": "2026-10-02T00:00:00.000Z", "tags": ["gguf", "conversational", "image-text-to-text"],
      "gguf": {"total": 460_730_096}},  # the count read from its projector (32.4)
     {"id": "someone/Tiny-abliterated-GGUF", "downloads": 5, "likes": 9, "trendingScore": 2,
+     "createdAt": "2026-09-02T00:00:00.000Z",
      "lastModified": "2026-10-03T00:00:00.000Z", "tags": ["gguf", "conversational"], "gguf": {"total": 2_000_000_000}},
 ]  # fmt: skip
 
@@ -140,7 +142,9 @@ class FakeHub(BaseHTTPRequestHandler):
             if "num_parameters" in query:
                 bounds = dict(b.split(":") for b in query["num_parameters"][0].split(","))
                 low, high = int(bounds.get("min", 0)), int(bounds.get("max", 10**15))
-                found = [m for m in found if low <= m["gguf"]["total"] <= high]
+                found = [m for m in found if low <= (m["gguf"].get("total") or 0) <= high]
+            if "author" in query:  # who put it there (41.2)
+                found = [m for m in found if m["id"].startswith(query["author"][0] + "/")]
             found.sort(key=lambda m: m[query["sort"][0]], reverse=True)
             self._json(found[: int(query["limit"][0])])
         elif path == "/api/whoami-v2":
@@ -1213,3 +1217,68 @@ def test_each_found_model_says_whether_it_fits_this_computer(hub):
         "split_moe")  # fmt: skip
     assert found["someone/Mix-26B-A4B-GGUF"]["moe"]  # by its name alone
     assert found["someone/Unread-GGUF"]["fit"] is None
+
+
+def test_licences_in_words():
+    """41.2 (2026-11-13, the user's word: the person decides how strict - in the filter itself): a free licence lets one
+    work with the model with no conditions; a company's own (Llama, Gemma, Qwen) - for work too, on its terms; a
+    research or non-commercial one - not for work; one the hub cannot tell - the model's page says."""
+    kinds = {"apache-2.0": "free", "MIT": "free", "bsd-3-clause": "free", "cc-by-4.0": "free", "cc0-1.0": "free",
+             "llama3.1": "terms", "gemma": "terms", "qwen": "terms", "creativeml-openrail-m": "terms",
+             "cc-by-nc-4.0": "closed", "qwen-research": "closed", "flux-1-dev-non-commercial-license": "closed",
+             "other": "", "": ""}  # fmt: skip
+    assert {name: hf.license_kind(name) for name in kinds} == kinds
+
+
+def test_the_search_by_build_language_licence_author_and_newest(hub):
+    """41.2а: more filters - how the model is built (a mixture of experts or not: the hub tells, Hugging Face has no
+    such filter), its language and its author (Hugging Face's), its licence - free, or for work on its own terms too
+    (the hub's: Hugging Face takes one licence at a time), the newest first; and models that draw or film: «Установить»
+    only for those AFO puts together itself (the main repository of a picture set), the others - their page."""
+
+    def found(repo: str, downloads: int, day: int, tags: list[str], **gguf) -> dict:
+        made = f"2026-11-1{day}T00:00:00.000Z"
+        return {"id": repo, "downloads": downloads, "likes": 0, "trendingScore": 0, "createdAt": made,
+                "lastModified": made, "tags": ["gguf", *tags], "gguf": gguf}  # fmt: skip
+
+    extra = [
+        found("unsloth/Coder-30B-A3B-GGUF", 4, 0, ["conversational", "ru", "license:apache-2.0"],
+              total=30_532_122_624, architecture="qwen3moe"),
+        found("bartowski/Llama-8B-GGUF", 3, 2, ["conversational", "en", "license:llama3.1"], total=8_000_000_000,
+              architecture="llama"),
+        found("someone/Research-7B-GGUF", 2, 1, ["conversational", "license:cc-by-nc-4.0"], total=7_000_000_000),
+        found("leejet/FLUX.2-klein-4B-GGUF", 1, 3, ["text-to-image", "license:apache-2.0"]),
+        found("someone/Other-Image-GGUF", 0, 4, ["text-to-image"], total=12_000_000_000),
+        found("hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF", 0, 5, ["text-to-video"]),
+    ]  # fmt: skip
+    coder, llama, research, flux, other, wan = (m["id"] for m in extra)
+    tiny, big = "test/Tiny-GGUF", "someone/Big-27B-MTP-GGUF"
+
+    def look(**params):
+        return [m["repo"] for m in hub.get("/v1/install/search", params=params).json()["models"]]
+
+    shipped = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    kept = json.loads(mi.CATALOG.read_text(encoding="utf-8"))  # the test's catalog, with AFO's own picture sets
+    mi.CATALOG.write_text(json.dumps({**kept, "pictures": shipped}), encoding="utf-8")
+    SEARCH.extend(extra)
+    try:
+        assert look(build="moe") == [coder]
+        assert coder not in look(build="dense") and tiny in look(build="dense")
+        assert look(language="ru") == [coder] and FakeHub.searches[-1]["filter"] == ["gguf", "ru"]
+        assert look(task="chat", language="en") == [llama]
+        assert look(license="free") == [tiny, coder, flux]  # free: no conditions at all
+        assert look(license="work") == [tiny, coder, llama, flux]  # and the companies' own, on their terms
+        kinds = {m["repo"]: m["license_kind"] for m in hub.get("/v1/install/search").json()["models"]}
+        assert (kinds[tiny], kinds[llama], kinds[research], kinds[big]) == ("free", "terms", "closed", "")
+        assert look(author="unsloth") == [coder] and FakeHub.searches[-1]["author"] == ["unsloth"]
+        assert look(sort="new")[:3] == [wan, other, flux] and FakeHub.searches[-1]["sort"] == ["createdAt"]
+        drawn = {m["repo"]: m for m in hub.get("/v1/install/search", params={"task": "image"}).json()["models"]}
+        assert FakeHub.searches[-1]["filter"] == ["gguf", "text-to-image"] and list(drawn) == [flux, other]
+        assert (drawn[flux]["picture"], drawn[other]["picture"]) == ("flux2-klein-4b", "")  # AFO puts it together
+        assert drawn[other]["fit"] is None  # not llama.cpp's: no estimate of its memory
+        filmed = hub.get("/v1/install/search", params={"task": "video"}).json()["models"]
+        assert [(m["repo"], m["picture"]) for m in filmed] == [(wan, "wan2.2-ti2v-5b-turbo")]
+        for wrong in ({"build": "big"}, {"language": "zz"}, {"license": "any"}, {"author": "evil"}):
+            assert hub.get("/v1/install/search", params=wrong).status_code == 422, wrong
+    finally:
+        del SEARCH[-len(extra) :]
