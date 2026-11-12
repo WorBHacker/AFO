@@ -719,7 +719,7 @@ class Installer:
         for each in found:
             picture = sets.get(each["repo"], "")
             drawn = bool(picture) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
-            out.append({**each, "picture": picture, "fit": None if drawn else search_fit(each, space)})
+            out.append({**each, "picture": picture, "drawn": drawn, "fit": None if drawn else search_fit(each, space)})
         return out
 
     # --- picture models (29.3) ---

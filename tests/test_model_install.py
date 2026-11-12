@@ -1275,7 +1275,8 @@ def test_the_search_by_build_language_licence_author_and_newest(hub):
         drawn = {m["repo"]: m for m in hub.get("/v1/install/search", params={"task": "image"}).json()["models"]}
         assert FakeHub.searches[-1]["filter"] == ["gguf", "text-to-image"] and list(drawn) == [flux, other]
         assert (drawn[flux]["picture"], drawn[other]["picture"]) == ("flux2-klein-4b", "")  # AFO puts it together
-        assert drawn[other]["fit"] is None  # not llama.cpp's: no estimate of its memory
+        assert drawn[other]["fit"] is None and drawn[other]["drawn"]  # not llama.cpp's: no estimate of its memory
+        assert not next(m for m in hub.get("/v1/install/search").json()["models"] if m["repo"] == coder)["drawn"]
         filmed = hub.get("/v1/install/search", params={"task": "video"}).json()["models"]
         assert [(m["repo"], m["picture"]) for m in filmed] == [(wan, "wan2.2-ti2v-5b-turbo")]
         for wrong in ({"build": "big"}, {"language": "zz"}, {"license": "any"}, {"author": "evil"}):

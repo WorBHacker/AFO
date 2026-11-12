@@ -48,12 +48,28 @@ LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
          "cpu": N_("на процессоре — видеокарта здесь не нарисовала")}  # fmt: skip
 PICKS = {"fast": N_("быстрее"), "quality": N_("качественнее")}  # «Быстрее ↔ Качественнее» beside the recommended one
-# the search's filters (32.6; the hub's /v1/install/search): what for - the curated list's purposes but pictures
-SEARCH_TASKS = [p for p in PURPOSES if p[0] != "image"]
+# the search's filters (32.6; the hub's /v1/install/search): what for - the curated list's purposes, and (41.2) videos
+SEARCH_TASKS = [*PURPOSES, ("video", N_("Видео"))]
 SEARCH_SIZES = [("", N_("Любой")), ("fits", ""), ("small", N_("до 4 млрд")), ("medium", N_("4–15 млрд")),
                 ("large", N_("15–40 млрд")), ("huge", N_("больше 40 млрд"))]  # fmt: skip
 SEARCH_SORTS = [("downloads", N_("Популярные")), ("trending", N_("В тренде")), ("likes", N_("Больше ♥")),
-                ("updated", N_("Недавно обновлённые"))]  # fmt: skip
+                ("updated", N_("Недавно обновлённые")), ("new", N_("Новые"))]  # fmt: skip
+# «Ещё фильтры» (41.2): how the model is built, its language, its licence (the person decides how strict - 2026-11-13),
+# who put the files there
+SEARCH_BUILDS = [("", N_("Любое")), ("dense", N_("Обычная")), ("moe", N_("Из «экспертов» (MoE)"))]
+SEARCH_LANGUAGES = [("", N_("Любой")), ("ru", N_("Русский")), ("en", N_("Английский"))]
+SEARCH_LICENCES = [("", N_("Любая")), ("free", N_("Свободная")), ("work", N_("Можно для работы"))]
+SEARCH_AUTHORS = ("ggml-org", "unsloth", "bartowski", "lmstudio-community", "mradermacher")
+# what a licence lets one do (hub.hf.license_kind): beside a found model, and in the open repository
+LICENCE_SHORT = {"free": N_("свободная"), "terms": N_("свои условия"), "closed": N_("не для работы")}
+LICENCE_WORDS = {"free": N_("свободная: можно и для работы"),
+                 "terms": N_("для работы можно, но со своими условиями — прочитайте их на странице модели"),
+                 "closed": N_("не для работы: только для исследований или для себя"),
+                 "": N_("условия не разобрать — прочитайте их на странице модели")}  # fmt: skip
+LICENCE_TONES = {"free": "ok", "terms": "warn", "closed": "error"}
+# a found model that draws or films (41.2): one of AFO's picture sets, or one AFO cannot put together itself
+PICTURE_OWN = N_("AFO ставит её сам — «Установить» в «Рисовать»")
+PICTURE_OTHER = N_("AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face")
 
 
 def status_words(status: str) -> str:
@@ -193,12 +209,18 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if m.get("params"):
             note.append(tr("{count} млрд параметров", count=billions(m["params"])))
         if m.get("license"):
-            note.append(tr("лицензия {license}", license=m["license"]))
+            kind = LICENCE_SHORT.get(m.get("license_kind") or "")
+            note.append(tr("лицензия {license} — {kind}", license=m["license"], kind=tr(kind)) if kind
+                        else tr("лицензия {license}", license=m["license"]))  # fmt: skip
         if m.get("updated"):
             note.append(tr("обновлена {date}", date=m["updated"]))
         badges = ([tr("снятые ограничения")] if m.get("unrestricted") else []) + (
             [tr("лицензия на сайте")] if m.get("gated") else [])  # fmt: skip
-        out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges, **fit_of(m.get("fit"))})
+        fit = fit_of(m.get("fit"))
+        if m.get("drawn"):  # it draws or films: AFO's own picture set, or its page
+            fit = {"fit": tr(PICTURE_OWN), "fitTone": "ok"} if m.get("picture") else {"fit": tr(PICTURE_OTHER),
+                                                                                      "fitTone": ""}  # fmt: skip
+        out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges, **fit})
     return out
 
 
@@ -426,6 +448,8 @@ class InstallView(QObject):
         self._tab = "catalog"
         self._query = ""
         self._task, self._size, self._sort, self._plain = "", "", "downloads", False  # the search's filters (32.6)
+        self._more = {"build": "", "language": "", "license": "", "author": ""}  # «Ещё фильтры» (41.2)
+        self._shown_set = ""  # a picture set a found model led to (41.2): its card among «Рисовать»
         self._asked: tuple | None = None  # the last search sent: an older answer is not shown over it
         self._found: list[dict[str, Any]] = []
         self._searching = False
@@ -549,6 +573,48 @@ class InstallView(QObject):
     def searchPlain(self) -> bool:
         return self._plain
 
+    @Property(list, notify=changed)
+    def searchBuilds(self) -> list:
+        return [{"id": i, "name": tr(name)} for i, name in SEARCH_BUILDS]
+
+    @Property(list, notify=changed)
+    def searchLanguages(self) -> list:
+        return [{"id": i, "name": tr(name)} for i, name in SEARCH_LANGUAGES]
+
+    @Property(list, notify=changed)
+    def searchLicences(self) -> list:
+        return [{"id": i, "name": tr(name)} for i, name in SEARCH_LICENCES]
+
+    @Property(list, notify=changed)
+    def searchAuthors(self) -> list:
+        return [{"id": "", "name": tr("Любой")}, *({"id": a, "name": a} for a in SEARCH_AUTHORS)]
+
+    @Property(str, notify=changed)
+    def searchBuild(self) -> str:
+        return self._more["build"]
+
+    @Property(str, notify=changed)
+    def searchLanguage(self) -> str:
+        return self._more["language"]
+
+    @Property(str, notify=changed)
+    def searchLicence(self) -> str:
+        return self._more["license"]
+
+    @Property(str, notify=changed)
+    def searchAuthor(self) -> str:
+        return self._more["author"]
+
+    @Property(str, notify=changed)
+    def moreFilters(self) -> str:
+        """«Ещё фильтры», with how many of them are picked: folded, they are not forgotten."""
+        picked = sum(1 for value in self._more.values() if value)
+        return tr("Ещё фильтры ({count})", count=picked) if picked else tr("Ещё фильтры")
+
+    @Property(str, notify=changed)
+    def shownSet(self) -> str:
+        return self._shown_set
+
     @Property(str, notify=changed)
     def searchError(self) -> str:
         return self._search_error
@@ -570,7 +636,7 @@ class InstallView(QObject):
         r = self._repo
         if not r:
             return {}
-        notes = [tr("лицензия {license}", license=r["license"]) if r.get("license") else tr("лицензия не указана")]
+        notes = []
         if r.get("params"):
             notes.append(tr("{count} млрд параметров", count=billions(r["params"])))
         if r.get("context_trained"):
@@ -578,7 +644,12 @@ class InstallView(QObject):
         if r.get("moe"):
             notes.append(tr("из «экспертов»"))
         lens = r.get("projector")
+        kind = r.get("license_kind") or ""
+        licence = tr("Лицензия не указана — прочитайте условия на странице модели")
+        if r.get("license"):
+            licence = tr("Лицензия {license}: {words}", license=r["license"], words=tr(LICENCE_WORDS.get(kind, "")))
         return {"repo": r.get("repo", ""), "page": r.get("page", ""), "notes": " · ".join(notes),
+                "licence": licence, "licenceTone": LICENCE_TONES.get(kind, "") if r.get("license") else "",
                 "unrestricted": bool(r.get("unrestricted")), "gated": bool(r.get("gated")),
                 "projector": bool(lens),
                 "projectorText": tr("Понимать картинки (+{size})", size=gb(lens["size"])) if lens else ""}  # fmt: skip
@@ -883,11 +954,46 @@ class InstallView(QObject):
         self._plain = plain
         self._search()
 
+    def _set_more(self, name: str, value: str) -> None:
+        self._more = {**self._more, name: value}
+        self._search()
+
+    @Slot(str)
+    def setSearchBuild(self, build: str) -> None:
+        self._set_more("build", build)
+
+    @Slot(str)
+    def setSearchLanguage(self, language: str) -> None:
+        self._set_more("language", language)
+
+    @Slot(str)
+    def setSearchLicence(self, licence: str) -> None:
+        self._set_more("license", licence)
+
+    @Slot(str)
+    def setSearchAuthor(self, author: str) -> None:
+        self._set_more("author", author)
+
+    @Slot(str)
+    def openFound(self, repo: str) -> None:
+        """A found model clicked: its repository - or, a model that draws or films (41.2), AFO's picture set among
+        «Рисовать», or its page on Hugging Face: AFO would misread its files as a chat model's."""
+        row = next((m for m in self._found if m["repo"] == repo), None)
+        if row is None or not row.get("drawn"):
+            self.openRepo(repo)
+        elif row.get("picture"):
+            self._shown_set = row["picture"]
+            self.setTab("catalog")
+            self.setPurpose("image")
+        elif row.get("page"):
+            self.app.openLink(row["page"])
+
     def _search(self) -> None:
-        asked = self._asked = (self._query, self._task, self._size, self._sort, self._plain)
+        more = dict(self._more)
+        asked = self._asked = (self._query, self._task, self._size, self._sort, self._plain, tuple(more.values()))
         self._searching, self._search_error = True, ""
         self.changed.emit()
-        query, task, size, sort, plain = asked
+        query, task, size, sort, plain, _more = asked
 
         def show(data: dict[str, Any]) -> None:
             if asked == self._asked:
@@ -900,7 +1006,7 @@ class InstallView(QObject):
                 self.changed.emit()
 
         self.app.call_or_fail(lambda: self.app.client.install_search(query, task=task, size=size, sort=sort,
-                                                                     plain=plain), show, failed)  # fmt: skip
+                                                                     plain=plain, **more), show, failed)  # fmt: skip
 
     @Slot(str)
     def openRepo(self, repo: str) -> None:

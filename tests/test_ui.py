@@ -771,8 +771,20 @@ class FakeClient:
             ]
         }
 
-    def install_search(self, query, *, task="", size="", sort="downloads", plain=False):
-        self.install_calls.append(("search", {"q": query, "task": task, "size": size, "sort": sort, "plain": plain}))
+    def install_search(self, query, *, task="", size="", sort="downloads", plain=False, **more):
+        self.install_calls.append(
+            (
+                "search",
+                {
+                    "q": query,
+                    "task": task,
+                    "size": size,
+                    "sort": sort,
+                    "plain": plain,
+                    **{k: v for k, v in more.items() if v},
+                },
+            )
+        )  # 41.2: those picked
         if query == "nothing":
             return {"models": []}
         return {
@@ -794,7 +806,8 @@ class FakeClient:
     def install_repo(self, repo):
         return {
             "repo": repo,
-            "license": "apache-2.0",
+            "license": "gemma",  # Gemma's own: for work too, on its terms (41.2)
+            "license_kind": "terms",
             "params": 7_600_000_000,
             "context_trained": 131072,
             "unrestricted": False,
@@ -6156,6 +6169,94 @@ def test_a_sandbox_chat_in_the_window(qapp):
         quick.close()
 
 
+def test_the_search_s_filters_licences_and_pictures_in_the_window(qapp, monkeypatch):
+    """41.2б (2026-11-13, the user's word: «дай решение пользователю и в фильтре показывай фильтр лицензии и в самом
+    репозитории тоже»): the search's other filters under «Ещё фильтры» - how the model is built, its language, its
+    licence (any / free / for work - the person decides how strict), who put the files there - and the newest first;
+    each found model says what its licence lets one do, and so does the open repository. A model that draws or films:
+    one of AFO's picture sets - its card among «Рисовать», with «Установить»; another - its page on Hugging Face, for
+    AFO cannot put it together itself."""
+    from PySide6.QtCore import QObject
+
+    from app.ui import controller as ui_controller
+    from app.ui.main import QuickApp
+
+    opened = []
+    monkeypatch.setattr(ui_controller.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        page = "https://huggingface.co/someone/Other-Image-GGUF"
+        found = [
+            {"repo": "unsloth/Coder-30B-A3B-GGUF", "downloads": 10, "likes": 1, "params": 30_500_000_000,
+             "license": "apache-2.0", "license_kind": "free", "moe": True, "picture": "", "drawn": False,
+             "fit": {"gb": 18.7, "quant": "Q4_K_M", "verdict": "split_moe", "words": "часть в ОЗУ"}},
+            {"repo": "bartowski/Llama-8B-GGUF", "downloads": 5, "likes": 1, "params": 8_000_000_000,
+             "license": "llama3.1", "license_kind": "terms", "picture": "", "drawn": False, "fit": None},
+            {"repo": "leejet/FLUX.2-klein-4B-GGUF", "downloads": 3, "likes": 0, "params": 0, "license": "apache-2.0",
+             "license_kind": "free", "picture": "flux2-klein-4b", "drawn": True, "fit": None},
+            {"repo": "someone/Other-Image-GGUF", "downloads": 1, "likes": 0, "params": 0, "license": "",
+             "license_kind": "", "picture": "", "drawn": True, "fit": None, "page": page},
+        ]  # fmt: skip
+
+        def search(query, **asked):
+            client.install_calls.append(("search", {"q": query, **asked}))
+            return {"models": found}
+
+        client.install_search = search
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = quick.window.findChild(QObject, "installSheet")
+        app.openUi("install-models")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        view.setTab("search")
+        view.search("")
+        wait_until(lambda: not app.bg.busy and view.found)
+        assert [t["name"] for t in view.searchTasks][-2:] == ["Рисовать", "Видео"]
+        assert view.searchSorts[-1] == {"id": "new", "name": "Новые"}
+        assert [b["name"] for b in view.searchBuilds] == ["Любое", "Обычная", "Из «экспертов» (MoE)"]
+        assert [x["name"] for x in view.searchLicences] == ["Любая", "Свободная", "Можно для работы"]
+        assert [x["name"] for x in view.searchLanguages] == ["Любой", "Русский", "Английский"]
+        assert [x["id"] for x in view.searchAuthors] == ["", "ggml-org", "unsloth", "bartowski", "lmstudio-community",
+                                                         "mradermacher"]  # fmt: skip
+        assert view.moreFilters == "Ещё фильтры"
+        view.setSearchLicence("work")
+        view.setSearchBuild("moe")
+        view.setSearchLanguage("ru")
+        view.setSearchAuthor("unsloth")
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][1].get("author") == "unsloth")
+        asked = client.install_calls[-1][1]
+        assert (asked["license"], asked["build"], asked["language"]) == ("work", "moe", "ru")
+        assert view.moreFilters == "Ещё фильтры (4)"
+        rows_ = {r["repo"]: r for r in view.found}
+        assert "лицензия apache-2.0 — свободная" in rows_["unsloth/Coder-30B-A3B-GGUF"]["note"]
+        assert "лицензия llama3.1 — свои условия" in rows_["bartowski/Llama-8B-GGUF"]["note"]
+        flux, other = rows_["leejet/FLUX.2-klein-4B-GGUF"], rows_["someone/Other-Image-GGUF"]
+        assert (flux["fit"], flux["fitTone"]) == ("AFO ставит её сам — «Установить» в «Рисовать»", "ok")
+        assert other["fit"] == "AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "installMoreFilters").property("visible")
+        view.openFound("someone/Other-Image-GGUF")
+        assert opened == [page] and view.repoName == ""  # its page, not a repository AFO would misread
+        view.openFound("leejet/FLUX.2-klein-4B-GGUF")
+        wait_until(lambda: not app.bg.busy)
+        assert (view.tab, view.purpose, view.shownSet) == ("catalog", "image", "flux2-klein-4b")
+        # the open repository says what its licence lets one do
+        view.setTab("search")
+        view.openFound("ggml-org/gemma-4-E4B-it-GGUF")
+        wait_until(lambda: not app.bg.busy and view.variants)
+        assert view.repo["licence"] == (
+            "Лицензия gemma: для работы можно, но со своими условиями — прочитайте их на странице модели"
+        )
+        assert view.repo["licenceTone"] == "warn"
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_installing_a_local_model_from_the_window(qapp):
     from PySide6.QtCore import QObject
 
@@ -6267,10 +6368,11 @@ def test_installing_a_local_model_from_the_window(qapp):
         assert (view.found[0]["fit"], view.found[0]["fitTone"]) == ("≈ 16,7 ГБ в Q4_K_M: часть в ОЗУ — медленнее",
                                                                     "warn")  # fmt: skip
         # the filters (32.6): a pick searches again with the words in the field, sent or not
-        assert [t["name"] for t in view.searchTasks] == ["Все", "Разговоры", "Код", "Понимать картинки"]
+        assert [t["name"] for t in view.searchTasks] == ["Все", "Разговоры", "Код", "Понимать картинки", "Рисовать",
+                                                         "Видео"]  # fmt: skip
         assert [s["name"] for s in view.searchSizes][:3] == ["Любой", "Поместится в видеопамять (до 22 млрд)",
                                                              "до 4 млрд"]  # fmt: skip
-        assert view.searchSort == "downloads" and len(view.searchSorts) == 4
+        assert view.searchSort == "downloads" and len(view.searchSorts) == 5
         view.setQuery("tiny coder")
         view.setSearchTask("code")
         wait_until(lambda: not app.bg.busy and client.install_calls[-1][1]["task"] == "code")

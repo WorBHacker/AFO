@@ -203,7 +203,9 @@ Sheet {
                 height: cardColumn.height + 24
                 radius: 8
                 color: Theme.p.card
-                border.color: Theme.p.hairline
+                // the picture set a found model led to (41.2)
+                border.color: Installer.purpose === "image" && card.modelData.id === Installer.shownSet
+                              ? Theme.p.accent : Theme.p.hairline
                 Column {
                     id: cardColumn
                     x: 14
@@ -323,6 +325,61 @@ Sheet {
             checked: Installer.searchPlain
             onToggled: Installer.setSearchPlain(checked)
         }
+        // the rest of the filters (41.2), folded: how the model is built, its language, its licence, who put it there
+        Text {
+            objectName: "installMoreFilters"
+            text: "<a href=\"x\">" + (moreFilters.visible ? "▾ " : "▸ ") + Installer.moreFilters + "</a>"
+            textFormat: Text.StyledText
+            linkColor: Theme.p.link
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+            onLinkActivated: moreFilters.visible = !moreFilters.visible
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+        }
+        Column {
+            id: moreFilters
+            objectName: "installMoreFilterRows"
+            visible: false
+            width: parent.width
+            spacing: 8
+            FilterRow {
+                objectName: "installSearchBuild"
+                label: qsTr("Устройство")
+                options: Installer.searchBuilds
+                value: Installer.searchBuild
+                onPicked: (id) => Installer.setSearchBuild(id)
+            }
+            FilterRow {
+                objectName: "installSearchLanguage"
+                label: qsTr("Язык")
+                options: Installer.searchLanguages
+                value: Installer.searchLanguage
+                onPicked: (id) => Installer.setSearchLanguage(id)
+            }
+            Note {
+                visible: Installer.searchLanguage !== ""
+                text: qsTr("Язык — по меткам Hugging Face; многие сжатые копии меток не ставят, и годные многоязычные модели могут не найтись.")
+                color: Theme.p.faint
+            }
+            FilterRow {
+                objectName: "installSearchLicence"
+                label: qsTr("Лицензия")
+                options: Installer.searchLicences
+                value: Installer.searchLicence
+                onPicked: (id) => Installer.setSearchLicence(id)
+            }
+            Note {
+                text: qsTr("Свободная — Apache, MIT, BSD, CC-BY: для работы без условий. Можно для работы — ещё и свои лицензии Llama, Gemma, Qwen: работать можно, но у них есть условия, прочитайте их на странице модели.")
+                color: Theme.p.faint
+            }
+            FilterRow {
+                objectName: "installSearchAuthor"
+                label: qsTr("Кто сжал")
+                options: Installer.searchAuthors
+                value: Installer.searchAuthor
+                onPicked: (id) => Installer.setSearchAuthor(id)
+            }
+        }
         Note {
             visible: Installer.searching || Installer.searchError !== "" || Installer.nothingFound
             text: Installer.searching ? qsTr("Ищу на Hugging Face…") : Installer.searchError !== "" ? Installer.searchError
@@ -344,7 +401,7 @@ Sheet {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: Installer.openRepo(hit.modelData.repo)
+                    onClicked: Installer.openFound(hit.modelData.repo)  // a picture model: its set, or its page
                 }
                 Column {
                     x: 12
@@ -581,6 +638,12 @@ Sheet {
             color: Installer.repoError !== "" ? Theme.p.error : Theme.p.faint
         }
         Note { visible: Installer.repo.notes !== undefined; text: Installer.repo.notes || "" }
+        Note {  // what its licence lets one do (41.2)
+            objectName: "installRepoLicence"
+            visible: !!Installer.repo.licence
+            text: Installer.repo.licence || ""
+            color: sheet.tone(Installer.repo.licenceTone)
+        }
         Note {
             visible: !!Installer.repo.unrestricted
             text: qsTr("У этой модели сняты ограничения (abliterated / uncensored): она не откажется от опасных просьб. Ставьте, только если понимаете зачем.")
