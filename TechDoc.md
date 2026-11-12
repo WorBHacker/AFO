@@ -806,7 +806,17 @@
   черновика (`draft_info` в `/v1/llama/models`, `_files`), его считают окно «Настройка модели» (`launch_judged`),
   проверка после пробного запуска (`_estimate`) и слова при загрузке (`_estimated`); файла нет — оценка без него. Пример:
   Qwen3-0.6B при 32 тыс. — 4,4 ГБ в f16, 2,8 ГБ в q8_0. Тест — `test_the_draft_model_takes_its_share_of_the_memory`.
-- 42.3 Пара по токенизатору: `common/gguf.py` дочитывает токенизатор; черновики — в `hub/model_catalog.json`.
+- 42.3 ✓ Пара по токенизатору: `common/gguf.py` дочитывает токенизатор; черновики — в `hub/model_catalog.json`.
+  Сделано: `gguf.tokenizer_info` (вид, токены, bos/eos и добавляются ли), `same_vocabulary` — правило llama.cpp
+  (`common_speculative_are_compatible`: тот же вид и bos/eos, разница не больше 128 токенов, токены с пятого одни);
+  `hf.tokenizer` — словарь черновика из первых байт его файла на Hugging Face, до скачивания (`_first_bytes`, общий с
+  `hf.header`). Каталог `drafts`: Qwen3-0.6B, Qwen3.5-0.8B, Qwen2.5-Coder-0.5B (`names`: только для «coder»),
+  Qwen2.5-0.5B — Q8_0, по `architectures`. `Installer.draft_for(файл модели)`: семья, модель не меньше чем в
+  `DRAFT_RATIO` 5 раз больше файла черновика (больший — его заголовок даже не читается), словари одни. Сверено с
+  Hugging Face 2026-11-13: Qwen3-0.6B — пара Qwen3-8B; Qwen3.5-0.8B — Qwen3.5-35B-A3B; черновики Qwen2.5 0.5B —
+  Qwen2.5-Coder-7B и Qwen2.5-VL-7B (словарь 152064 и 151936 — разница ровно 128). Без пары: Qwen3-Coder-30B-A3B от
+  unsloth и Qwen3.6/3.8 — другой bos; у Gemma 4 словарь свой (`gemma4`), её черновики — MTP и DFlash («Потом»).
+  Тесты — `test_a_draft_model_is_paired_by_its_tokenizer`, `test_the_catalogs_drafts`.
 - 42.4 Замер самим llama-server: без угадывания, ngram, черновик (не помещается — «черновик + часть слоёв в ОЗУ»,
   решение пользователя выше); при температуре из настроек модели. Победитель
   пишется, если быстрее больше чем на 3 %, затем проверочный запуск, как сейчас. Ручной «Подобрать» тоже ждёт видео и

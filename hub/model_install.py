@@ -43,7 +43,7 @@ from typing import Any
 import httpx
 
 from common import disks, hardware, kept_json
-from common.gguf import GGUFError, model_info
+from common.gguf import GGUFError, model_info, same_vocabulary, tokenizer_info
 from common.i18n import N_, tr
 from common.llama_memory import (
     COMPUTE_GIB,
@@ -94,6 +94,9 @@ PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
 ENGINE_WAIT_S = 2.0  # how often a model downloaded before the engine looks for it again (39.3)
 ENGINE_WAIT = N_("ждёт программу для локальных моделей: она скачивается")
+# a draft model guesses ahead for a model at least this many times its size (42.3): a larger one guesses too slowly to
+# give anything (Qwen3-8B in Q4_K_M is 6,5 times Qwen3-0.6B in Q8_0)
+DRAFT_RATIO = 5
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 IN_CONFIG = ("done", "added")  # an install whose block llama-swap's config has (34.5: added - not tried yet)
 VERDICTS = {
@@ -116,6 +119,13 @@ class InstallError(Exception):
 def curated() -> list[dict[str, Any]]:
     """The curated list's models (model_catalog.json)."""
     return json.loads(CATALOG.read_text(encoding="utf-8"))["models"]
+
+
+def drafts() -> list[dict[str, Any]]:
+    """The draft models for guessing ahead (model_catalog.json `drafts`, 42.3): {id, repo, file, name,
+    architectures - the families of models each is tried for, names - only for model files named so}, in the order
+    they are tried."""
+    return json.loads(CATALOG.read_text(encoding="utf-8")).get("drafts") or []
 
 
 def picture_sets() -> list[dict[str, Any]]:
@@ -617,6 +627,38 @@ class Installer:
                 return None  # not kept: the next look tries again
             self._answers_new = True
         return self._headers[repo, path]
+
+    async def draft_for(self, model_file: Path) -> dict[str, Any] | None:
+        """The catalog's draft model for this model (42.3): of its family, DRAFT_RATIO times smaller at least, its
+        vocabulary the model's - read from the first bytes of its file on Hugging Face, before any download; with its
+        file as Hugging Face has it now (size, sha256, commit). None - none fits; a repository that does not answer
+        is passed over."""
+        info = await asyncio.to_thread(model_info, model_file)
+        own: dict[str, Any] | None = None
+        for entry in drafts():
+            if info.get("architecture") not in entry["architectures"]:
+                continue
+            if entry.get("names") and not re.search(entry["names"], model_file.name):  # a coder's draft for a coder
+                continue
+            try:
+                listed = await self._listed(entry["repo"])
+            except hf.HubError as exc:
+                log.info("no draft %s: %s", entry["repo"], exc)
+                continue
+            file = listed["files"].get(entry["file"])
+            if file is None or file["size"] * DRAFT_RATIO > info["size_bytes"]:
+                continue
+            if own is None:
+                own = await asyncio.to_thread(tokenizer_info, model_file)
+            try:
+                theirs = await asyncio.to_thread(hf.tokenizer, entry["repo"], entry["file"], self.token(),
+                                                 listed["revision"])  # fmt: skip
+            except (hf.HubError, GGUFError) as exc:
+                log.info("no vocabulary of %s/%s: %s", entry["repo"], entry["file"], exc)
+                continue
+            if same_vocabulary(own, theirs):
+                return {**entry, "size": file["size"], "sha256": file["sha256"], "revision": listed["revision"]}
+        return None
 
     def space(self) -> dict[str, Any]:
         return room(self._status() or self._kept_machine(), self.reserve)

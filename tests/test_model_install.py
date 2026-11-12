@@ -8,6 +8,7 @@ import contextlib
 import hashlib
 import io
 import json
+import re
 import socket
 import struct
 import threading
@@ -22,7 +23,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from common import llama_memory
+from common import gguf, llama_memory
 from common.paths import data_paths, engines_home
 from hub import engines, hf, tuning
 from hub import llama_config as lc
@@ -36,22 +37,29 @@ from tests.test_llama_config import CONFIG, FakeLlamaSwap
 GIB = 1024**3
 
 
-def tiny_gguf(size: int, *, layers: int = 8, context: int = 16384, architecture: str = "tiny") -> bytes:
-    """A GGUF file of `size` bytes: a real header (the architecture's keys, then a tokenizer list), then filler."""
+def tiny_gguf(size: int, *, layers: int = 8, context: int = 16384, architecture: str = "tiny",
+              tokens: list[str] | None = None, eos: int = 1) -> bytes:  # fmt: skip
+    """A GGUF file of `size` bytes: a real header (the architecture's keys, then a tokenizer list), then filler.
+    `tokens` - a vocabulary of its own (42.3), with its kind and end token after the list, as llama.cpp writes them."""
 
     def string(text):
         data = text.encode()
         return struct.pack("<Q", len(data)) + data
 
+    def pair(key, value):
+        return string(key) + (struct.pack("<I", 8) + string(value) if isinstance(value, str)
+                              else struct.pack("<II", 4, value))  # fmt: skip
+
     a = architecture
     keys = {"general.architecture": a, "general.name": "Tiny", f"{a}.block_count": layers,
             f"{a}.context_length": context, f"{a}.embedding_length": 256, f"{a}.attention.head_count": 4,
             f"{a}.attention.head_count_kv": 2}  # fmt: skip
-    out = b"GGUF" + struct.pack("<IQQ", 3, 0, len(keys) + 1)
-    for key, value in keys.items():
-        out += string(key) + (struct.pack("<I", 8) + string(value) if isinstance(value, str)
-                              else struct.pack("<II", 4, value))  # fmt: skip
-    out += string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 3) + b"".join(string(t) for t in "abc")
+    after = {} if tokens is None else {"tokenizer.ggml.model": "gpt2", "tokenizer.ggml.eos_token_id": eos}
+    words = list("abc") if tokens is None else tokens
+    out = b"GGUF" + struct.pack("<IQQ", 3, 0, len(keys) + 1 + len(after))
+    out += b"".join(pair(key, value) for key, value in keys.items())
+    out += string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, len(words)) + b"".join(map(string, words))
+    out += b"".join(pair(key, value) for key, value in after.items())
     return out + bytes(range(256)) * ((size - len(out)) // 256) + b"\0" * ((size - len(out)) % 256)
 
 
@@ -93,6 +101,16 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
             "test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
             "test/Words-GGUF": {"words-Q4_K_M.gguf": b"W" * 60_000},
             "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000}}  # fmt: skip
+# draft models guessing ahead (42.3): their vocabulary is the model's, or one token is another
+WORDS = [f"w{i}" for i in range(400)]
+DRAFTS = {
+    "test/Small-GGUF": {
+        "Small-Q8_0.gguf": tiny_gguf(40_000, tokens=WORDS),
+        "Big-Q8_0.gguf": tiny_gguf(200_000, tokens=WORDS),
+    },
+    "test/Other-GGUF": {"Other-Q8_0.gguf": tiny_gguf(40_000, tokens=[*WORDS[:200], "x", *WORDS[201:]])},
+}
+REPOS = {**PICTURES, **DRAFTS}  # served beside the Tiny model's: their info, tree and files
 ENGINE = {f"sd-master-{engines.SD_TAG.rsplit('-', 1)[1]}-bin-win-cuda12-x64.zip":
           _zip({"sd-server.exe": b"MZ server", "ggml-cuda.dll": b"MZ"}),
           "cudart-sd-bin-win-cu12-x64.zip": _zip({"cudart64_12.dll": b"MZ"}),
@@ -169,8 +187,8 @@ class FakeHub(BaseHTTPRequestHandler):
             self.end_headers()
         elif path.startswith("/cdn/"):
             self._file(path.removeprefix("/cdn/"))
-        elif picture := next((r for r in PICTURES if path.startswith((f"/api/models/{r}", f"/{r}/"))), None):
-            files = PICTURES[picture]
+        elif picture := next((r for r in REPOS if path.startswith((f"/api/models/{r}", f"/{r}/"))), None):
+            files = REPOS[picture]
             if path == f"/api/models/{picture}":
                 self._json({"id": picture, "sha": "def456", "tags": ["license:apache-2.0"]})
             elif path == f"/api/models/{picture}/tree/main":
@@ -1290,3 +1308,72 @@ def test_a_variants_quality_in_words():
     the original, from about Q4_K_M (GOOD_BITS) nearly, down to MIN_BITS a little worse, below it - noticeably."""
     said = [mi.quality_of(bits) for bits in (16.0, 8.5, 7.5, 6.6, 4.5, 4.4, 3.5, 3.4, 2.9, None)]
     assert said == ["same", "same", "same", "near", "near", "less", "less", "worse", "worse", ""]
+
+
+def vocabulary(tokens, kind="gpt2", eos=1):
+    """A model's tokenizer as common.gguf.tokenizer_info reads it."""
+    return {"model": kind, "pre": "", "tokens": tokens, "bos": None, "eos": eos, "add_bos": None, "add_eos": None}
+
+
+def test_a_draft_model_is_paired_by_its_tokenizer(hub, tmp_path):
+    """42.3: a draft model guesses the tokens the model then checks, so llama.cpp takes a pair only when their
+    vocabularies are one (common_speculative_are_compatible: the same kind, bos and eos, at most 128 tokens more or
+    less, each token from the fifth on the same). The hub reads the model's tokenizer from its file and a draft's from
+    the first bytes of its file on Hugging Face - before anything is downloaded. The catalog names the drafts to try
+    for a family; one is worth it only for a model at least DRAFT_RATIO times its size."""
+    one = vocabulary(WORDS)
+    assert gguf.same_vocabulary(one, vocabulary(list(WORDS)))
+    assert gguf.same_vocabulary(one, vocabulary(["x"] * 5 + WORDS[5:]))  # the first five are not compared
+    assert gguf.same_vocabulary(one, vocabulary([*WORDS, *["more"] * 128]))  # llama.cpp's slack at the end
+    for other in (vocabulary([*WORDS, *["more"] * 129]), vocabulary([*WORDS[:200], "x", *WORDS[201:]]),
+                  vocabulary(WORDS, kind="llama"), vocabulary(WORDS, eos=2), vocabulary([])):  # fmt: skip
+        assert not gguf.same_vocabulary(one, other)
+
+    model = tmp_path / "Main-Q4_K_M.gguf"
+    model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+    read = gguf.tokenizer_info(model)
+    assert read["tokens"] == WORDS and read["model"] == "gpt2" and gguf.same_vocabulary(read, one)
+    assert gguf.model_info(model)["architecture"] == "tiny"  # the estimate's header read stops before the tokenizer
+
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [
+        {"id": "coder", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Coder",
+         "architectures": ["tiny"], "names": "(?i)coder"},  # only for a model whose file says so
+        {"id": "other", "repo": "test/Other-GGUF", "file": "Other-Q8_0.gguf", "name": "Other",
+         "architectures": ["tiny"]},
+        {"id": "big", "repo": "test/Small-GGUF", "file": "Big-Q8_0.gguf", "name": "Big", "architectures": ["tiny"]},
+        {"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+         "architectures": ["tiny"]},
+        {"id": "elsewhere", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Elsewhere",
+         "architectures": ["llama"]},
+    ]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    FakeHub.spans.clear()
+    found = hub.portal.call(installer.draft_for, model)
+    assert (found["id"], found["repo"], found["file"], found["size"]) == ("small", "test/Small-GGUF",
+                                                                          "Small-Q8_0.gguf", 40_000)  # fmt: skip
+    assert found["sha256"] and found["revision"] == "def456"
+    read = {name for name, _, _ in FakeHub.spans}
+    assert read == {"Other-Q8_0.gguf", "Small-Q8_0.gguf"}  # the big one is not worth it: its header not even read
+    model.write_bytes(tiny_gguf(150_000, tokens=WORDS))  # a small model: no draft is DRAFT_RATIO times smaller
+    assert hub.portal.call(installer.draft_for, model) is None
+    # each its own size: model_info keeps what it read while a file's size and time stay
+    model.write_bytes(tiny_gguf(410_000, tokens=WORDS, architecture="llama"))  # its family: only «elsewhere»
+    assert hub.portal.call(installer.draft_for, model)["id"] == "elsewhere"
+    model.write_bytes(tiny_gguf(420_000, tokens=WORDS, architecture="qwen3"))  # no draft for this family
+    assert hub.portal.call(installer.draft_for, model) is None
+    coder = tmp_path / "Tiny-Coder-Q4_K_M.gguf"
+    coder.write_bytes(tiny_gguf(430_000, tokens=WORDS))
+    assert hub.portal.call(installer.draft_for, coder)["id"] == "coder"
+
+
+def test_the_catalogs_drafts():
+    """42.3: each draft in the catalog names its repository, file and the families it is tried for; the file is a
+    8-bit one (a draft guesses: its own quality decides how often it is right)."""
+    drafts = json.loads(mi.CATALOG.read_text(encoding="utf-8"))["drafts"]
+    assert drafts and len({d["id"] for d in drafts}) == len(drafts)
+    for draft in drafts:
+        assert set(draft) >= {"id", "repo", "file", "name", "architectures"} and draft["architectures"]
+        assert re.compile(draft.get("names") or "")  # a pattern of model file names, when it is given
+        assert hf.quant_of(draft["file"]) == "Q8_0"

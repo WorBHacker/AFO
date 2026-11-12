@@ -20,13 +20,13 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import quote, urlsplit
 
 import httpx
 
 from common import __version__
-from common.gguf import GGUFError, header_info, read_header
+from common.gguf import GGUFError, header_info, read_header, tokenizer_info
 from common.i18n import tr
 
 BASE_ENV = "LOCALCHAT_HF_URL"  # tests point it at a stand-in
@@ -352,21 +352,31 @@ class _Stream:
             offset -= len(data)
 
 
-def header(repo: str, path: str, token: str | None = None, revision: str = "main") -> dict[str, Any]:
-    """The model's layers, attention heads and trained context from the first bytes of its (first) file - before
-    any download, for the memory estimate (blocking: in a thread)."""
+def _first_bytes(repo: str, path: str, token: str | None, revision: str, read: Callable[[BinaryIO], Any]) -> Any:
+    """What `read` takes from the first bytes of a file on Hugging Face, read as they come (blocking)."""
     with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0)) as http:
         request_headers = {**headers(token), "Range": f"bytes=0-{HEADER_LIMIT - 1}"}
         try:
             with http.stream("GET", file_url(repo, path, revision), headers=request_headers) as response:
                 if response.status_code not in (200, 206):
                     raise _refused(response, path)
-                head = read_header(_Stream(response.iter_bytes(256 << 10), HEADER_LIMIT), until_tokenizer=True)
+                return read(_Stream(response.iter_bytes(256 << 10), HEADER_LIMIT))
         except httpx.HTTPError as exc:
             raise HubError(
                 tr("{what}: нет связи с Hugging Face ({error})", what=path, error=exc.__class__.__name__)
             ) from exc
-    return header_info(head)
+
+
+def header(repo: str, path: str, token: str | None = None, revision: str = "main") -> dict[str, Any]:
+    """The model's layers, attention heads and trained context from the first bytes of its (first) file - before
+    any download, for the memory estimate (blocking: in a thread)."""
+    return header_info(_first_bytes(repo, path, token, revision, lambda f: read_header(f, until_tokenizer=True)))
+
+
+def tokenizer(repo: str, path: str, token: str | None = None, revision: str = "main") -> dict[str, Any]:
+    """A model's vocabulary from the first bytes of its file (42.3): a draft model is paired with a model before it
+    is downloaded - its whole header, a few megabytes (blocking: in a thread)."""
+    return _first_bytes(repo, path, token, revision, tokenizer_info)
 
 
 @dataclass

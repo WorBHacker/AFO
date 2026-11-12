@@ -114,6 +114,37 @@ def header_info(head: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# a model's vocabulary (42.3): what llama.cpp compares before it takes a draft model for guessing ahead
+TOKENIZER = ("tokenizer.ggml.model", "tokenizer.ggml.pre", "tokenizer.ggml.tokens", "tokenizer.ggml.bos_token_id",
+             "tokenizer.ggml.eos_token_id", "tokenizer.ggml.add_bos_token", "tokenizer.ggml.add_eos_token")  # fmt: skip
+VOCAB_SLACK = 128  # llama.cpp's SPEC_VOCAB_MAX_SIZE_DIFFERENCE: a draft's vocabulary this much longer or shorter
+VOCAB_FROM = 5  # SPEC_VOCAB_CHECK_START_TOKEN_ID: the first tokens are not compared
+
+
+def tokenizer_info(source: Path | BinaryIO) -> dict[str, Any]:
+    """A model's vocabulary from its header (a file, or the first bytes of a download): its kind, the tokens, the
+    begin and end tokens and whether they are added. The whole header is read - the tokens come after the model's
+    keys."""
+    head = read_header(source, TOKENIZER)
+    tokens = head.get("tokenizer.ggml.tokens")
+    return {"model": head.get("tokenizer.ggml.model") or "", "pre": head.get("tokenizer.ggml.pre") or "",
+            "tokens": tokens if isinstance(tokens, list) else [], "bos": head.get("tokenizer.ggml.bos_token_id"),
+            "eos": head.get("tokenizer.ggml.eos_token_id"), "add_bos": head.get("tokenizer.ggml.add_bos_token"),
+            "add_eos": head.get("tokenizer.ggml.add_eos_token")}  # fmt: skip
+
+
+def same_vocabulary(model: dict[str, Any], draft: dict[str, Any]) -> bool:
+    """Whether llama.cpp takes this draft for this model (common_speculative_are_compatible): the same kind, the same
+    begin and end tokens, at most VOCAB_SLACK tokens more or less, each token from VOCAB_FROM on the same."""
+    a, b = model["tokens"], draft["tokens"]
+    if not a or not b or model["model"] != draft["model"] or abs(len(a) - len(b)) > VOCAB_SLACK:
+        return False
+    if any(model[key] != draft[key] for key in ("bos", "eos", "add_bos", "add_eos")):
+        return False
+    n = min(len(a), len(b))
+    return a[VOCAB_FROM:n] == b[VOCAB_FROM:n]
+
+
 @functools.lru_cache(maxsize=32)
 def _model_info(path: str, _size: int, _mtime: float) -> dict[str, Any]:
     return header_info(read_header(Path(path), until_tokenizer=True))
