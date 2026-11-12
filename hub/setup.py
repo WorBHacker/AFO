@@ -80,6 +80,8 @@ class Setup:
         self._cancel = threading.Event()
         self.job: dict[str, Any] = {"status": "idle"}  # idle | downloading | starting | done | failed | cancelled
         self.on_updated: Callable[[], Any] | None = None  # a newer llama.cpp in place: the models' tuning (15.2)
+        self.on_finished: Callable[[dict[str, Any]], Any] | None = None  # the engine's download ended (39.1)
+        self.finished_at: float | None = None  # when (time.monotonic): a failed one is tried again later
         self._shown = 0.0
 
     def _engine(self) -> dict[str, Any]:
@@ -175,6 +177,7 @@ class Setup:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
                 cpp = await engines.llama_cpp_release(http, build)
             folder = engines_home() / "llama.cpp" / f"{cpp['tag']}-{build}"
+            await _room(engines_home(), cpp["assets"])
             self.job.update(total=sum(a["size"] for a in cpp["assets"]), tag=cpp["tag"],
                             step=f"llama.cpp {cpp['tag']} ({tr(BUILDS[build])})")  # fmt: skip
             await self._publish()
@@ -239,6 +242,7 @@ class Setup:
             cpp_folder = home / "llama.cpp" / f"{cpp['tag']}-{build}"
             swap_folder = home / "llama-swap"
             assets = [*cpp["assets"], *swap["assets"]]
+            await _room(home, assets)
             self.job.update(total=sum(a["size"] for a in assets), tag=cpp["tag"], swap=swap["tag"],
                             step=tr("llama.cpp {tag} ({build}) и llama-swap {swap}", tag=cpp["tag"],
                                     build=tr(BUILDS[build]), swap=swap["tag"]))  # fmt: skip
@@ -283,8 +287,19 @@ class Setup:
             else:
                 log.exception("the engine's install failed")
                 self.job.update(status="failed", error=tr("не вышло: {error}", error=exc))
+        self.finished_at = time.monotonic()  # with the job's end, before any wait: a look meanwhile sees both
         await self._publish()
+        if self.on_finished is not None:
+            self.on_finished(dict(self.job))
 
     def _fetch(self, assets, downloads: Path, folder: Path, base: int, report) -> None:
         engines.fetch(assets, downloads, folder, report=lambda n, _t: report(base + n, self.job["total"]),
                       cancel=self._cancel)  # fmt: skip
+
+
+async def _room(folder: Path, assets: list[dict[str, Any]]) -> None:
+    """Room on the disk for the archives and what they unpack to, said before the download (39.1)."""
+    try:
+        await asyncio.to_thread(mi._check_room, folder, 2 * sum(a["size"] for a in assets))
+    except mi.InstallError as exc:
+        raise engines.EngineError(str(exc)) from exc

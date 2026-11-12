@@ -2,6 +2,7 @@
 stand-in GitHub (the build the card wants, archives checked and unpacked), llama-swap's first config and the window's
 choice of it, the hub starting it; the first model for each purpose; a word on a small page file."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -9,6 +10,7 @@ import threading
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 import pytest
 from starlette.testclient import TestClient
@@ -40,6 +42,8 @@ FILES = {
 
 class FakeGitHub(BaseHTTPRequestHandler):
     port = 0
+    asked: ClassVar[list] = []  # the paths asked for (39.1: GitHub allows 60 an hour)
+    limited = False  # 403 to every question: the hour's limit is spent
 
     def log_message(self, *args):
         pass
@@ -57,7 +61,12 @@ class FakeGitHub(BaseHTTPRequestHandler):
                  "browser_download_url": f"http://127.0.0.1:{self.port}/download/{n}"} for n in names]  # fmt: skip
 
     def do_GET(self):
-        if self.path.startswith("/repos/ggml-org/llama.cpp/releases"):
+        FakeGitHub.asked.append(self.path)
+        if self.limited and self.path.startswith("/repos/"):
+            self.send_response(403)
+            self.send_header("content-length", "0")
+            self.end_headers()
+        elif self.path.startswith("/repos/ggml-org/llama.cpp/releases"):
             builds = [n for n in FILES if "llama-swap" not in n]
             self._send([{"tag_name": "v0.7.0", "assets": []}, {"tag_name": "b200", "assets": self._assets(*builds)}])
         elif self.path == "/repos/mostlygeek/llama-swap/releases/latest":
@@ -72,7 +81,7 @@ class FakeGitHub(BaseHTTPRequestHandler):
 @pytest.fixture
 def github(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
-    FakeGitHub.port = server.server_port
+    FakeGitHub.port, FakeGitHub.asked, FakeGitHub.limited = server.server_port, [], False
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{server.server_port}")
     yield server
@@ -197,34 +206,52 @@ def test_the_engine_is_judged_by_its_files_not_by_who_answers_on_its_port(hub, m
         assert not state["resources"]["ready"]
 
 
-def test_a_computer_with_nothing_gets_the_engine_by_itself(github, monkeypatch, tmp_path):
-    """39.1 (2026-11-12, the user's word: «Программы AFO скачивает сам при входе: сканер видит, чего нет, и
-    докачивает»): a hub started on a computer with no llama-swap fetches the engine itself - the build its graphics
-    card wants, into AFO's engines folder - with no wizard; the window asks again when it comes. A llama-swap the
-    person chose outside AFO's folder is never touched: what it lacks is said, nothing is fetched."""
+def a_bare_computer(monkeypatch, tmp_path) -> list:
+    """No llama-swap here: the isolation's paths taken away, and the author's own llama-swap beside the checkout
+    (D:/AI model/llama-swap) out of sight; llama-swap's start only noted - the real one never starts in a test."""
     monkeypatch.delenv(lc.CONFIG_ENV)
     monkeypatch.delenv(autostart.LLAMA_SWAP_START_ENV)
-    monkeypatch.setattr(autostart, "DEFAULT_LLAMA_SWAP_START", tmp_path / "none" / "start-llama-swap.cmd")  # not
-    monkeypatch.setattr(lc, "DEFAULT_CONFIG", tmp_path / "none" / "config.yaml")  # the author's own llama-swap
+    monkeypatch.setattr(autostart, "DEFAULT_LLAMA_SWAP_START", tmp_path / "none" / "start-llama-swap.cmd")
+    monkeypatch.setattr(lc, "DEFAULT_CONFIG", tmp_path / "none" / "config.yaml")
     monkeypatch.setattr(hardware, "adapters", lambda: [{"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0,
                                                         "driver": "32.0"}])  # fmt: skip
     monkeypatch.setattr(hardware, "nvidia_driver", lambda: None)
     started = []
 
-    async def fake_start(url, script, wanted, log_file, **kwargs):  # the real one never starts here
+    async def fake_start(url, script, wanted, log_file, **kwargs):
         started.append(script)
         return "started"
 
     monkeypatch.setattr(autostart, "ensure_llama_swap", fake_start)
+    return started
+
+
+@contextlib.contextmanager
+def fetching_hub():
     settings = HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
                            process_interval_s=0, fetch_engines=True)  # fmt: skip
     with TestClient(create_app(settings), base_url=BASE) as client:
         client.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        yield client
+
+
+def until_ended(setup_, *, timeout=20.0):
+    deadline = time.monotonic() + timeout
+    while setup_.job["status"] in ("idle", "downloading", "starting"):
+        assert time.monotonic() < deadline, setup_.job
+        time.sleep(0.05)
+    return setup_.job
+
+
+def test_a_computer_with_nothing_gets_the_engine_by_itself(github, monkeypatch, tmp_path):
+    """39.1 (2026-11-12, the user's word: «Программы AFO скачивает сам при входе: сканер видит, чего нет, и
+    докачивает»): a hub started on a computer with no llama-swap fetches the engine itself - the build its graphics
+    card wants, into AFO's engines folder - with no wizard; the window asks again when it comes. A llama-swap the
+    person chose outside AFO's folder is never touched: what it lacks is said, nothing is fetched."""
+    started = a_bare_computer(monkeypatch, tmp_path)
+    with fetching_hub() as client:
         setup_ = client.app.state.setup
-        deadline = time.monotonic() + 20
-        while setup_.job["status"] in ("idle", "downloading", "starting"):
-            assert time.monotonic() < deadline, setup_.job
-            time.sleep(0.05)
+        until_ended(setup_)
         assert (setup_.job["status"], setup_.job["build"], setup_.job["auto"]) == ("done", "vulkan", True)
         swap = tmp_path / "localchat-home" / "engines" / "llama-swap"
         assert (swap / "llama-swap.exe").exists() and (swap / "config.yaml").exists() and started == [
@@ -236,6 +263,47 @@ def test_a_computer_with_nothing_gets_the_engine_by_itself(github, monkeypatch, 
         checked = client.post("/v1/setup/check").json()
         assert checked["resources"]["status"] == "own" and str(mine) in checked["resources"]["words"]
         assert checked["job"]["status"] == "done"  # nothing fetched again
+
+
+def test_the_engines_fetch_meets_github_s_limit_an_antivirus_and_a_full_disk(github, monkeypatch, tmp_path):
+    """39.1 (the plan's risks): GitHub answers 60 questions an hour - a fetch that failed (its limit, no network) is
+    tried again by itself later, not at each look; a program gone after the install (an antivirus took it) is not
+    fetched again and again - the words say so; a disk with too little room is said before the download."""
+    from hub import model_install as mi
+    from hub import resources
+
+    a_bare_computer(monkeypatch, tmp_path)
+    monkeypatch.setattr(resources, "RETRY_S", 5.0)
+    FakeGitHub.limited = True
+    with fetching_hub() as client:
+        setup_ = client.app.state.setup
+        failed = until_ended(setup_)
+        assert (failed["status"], failed["auto"]) == ("failed", True) and "слишком много запросов" in failed["error"]
+        asked = len(FakeGitHub.asked)
+        checked = client.post("/v1/setup/check").json()["resources"]  # the window came: not asked again yet
+        assert checked["status"] == "failed" and "Попробую снова" in checked["words"]
+        assert len(FakeGitHub.asked) == asked
+
+        FakeGitHub.limited = False  # the hour is over: the scanner tries again by itself
+        deadline = time.monotonic() + 25
+        while setup_.job["status"] != "done":
+            assert time.monotonic() < deadline, setup_.job
+            time.sleep(0.05)
+        assert client.post("/v1/setup/check").json()["resources"]["status"] == "ready"
+
+        exe = tmp_path / "localchat-home" / "engines" / "llama-swap" / "llama-swap.exe"
+        exe.unlink()  # an antivirus took it
+        asked = len(FakeGitHub.asked)
+        gone = client.post("/v1/setup/check").json()
+        assert gone["resources"]["status"] == "vanished" and "антивирус" in gone["resources"]["words"]
+        assert str(exe) in gone["resources"]["words"] and gone["job"]["status"] == "done"
+        assert len(FakeGitHub.asked) == asked  # not fetched again
+
+        monkeypatch.setattr(mi, "DISK_MARGIN_GIB", 10.0**9)  # «Установить движок» on a full disk
+        client.post("/v1/setup/engine", json={})
+        full = until_ended(setup_)
+        assert full["status"] == "failed" and "не хватает места" in full["error"]
+        assert not exe.exists()
 
 
 def test_which_build_runs_and_the_macro_it_lives_in(tmp_path):

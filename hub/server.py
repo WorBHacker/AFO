@@ -210,7 +210,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.setup.on_updated = lambda: app.state.tuner.request_all(auto=True)  # a newer llama.cpp: measured anew
         # what local models need, on the disk: AFO's own engine missing - fetched at the start and when the window
         # comes (39.1); the person's own llama-swap never touched
-        app.state.resources = Resources(app.state.setup, url=settings.llama_swap_url, enabled=settings.fetch_engines)
+        app.state.resources = Resources(
+            db, app.state.setup, url=settings.llama_swap_url, enabled=settings.fetch_engines
+        )
         app.state.visual = Visual(db, bus, llama_swap_url=settings.llama_swap_url, media=paths.media,
                                   machine=lambda: app.state.installer.machine())  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
@@ -304,6 +306,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.scheduler.stop()
             await app.state.installer.stop()
             await app.state.visual.stop()
+            await app.state.resources.stop()  # a failed fetch's next try (39.1)
             await app.state.setup.stop()
             await app.state.releases.stop()
             await app.state.scanner.stop()

@@ -696,7 +696,10 @@
     папке движков или ничего не выбрано), сборку по видеокарте (`Setup.recommended_build`), через
     `Setup.start(auto=True)`; свой llama-swap человека — только слова. Выключатель
     `HubSettings.fetch_engines`. Тест — `test_a_computer_with_nothing_gets_the_engine_by_itself`.
-  - 39.1в Риски: повтор позже после сбоя (лимит GitHub, нет сети), антивирус удалил exe, место на диске.
+  - 39.1в ✓ Риски. Сбой (лимит GitHub, нет сети) — повтор сам через `RETRY_S` (30 мин; `Setup.on_finished`,
+    `Setup.finished_at`), окно до этого не гоняет GitHub. Программа, которая была (`resources.seen` в
+    `settings`), пропала — «удалил антивирус», сама не качается. Место на диске (архивы × 2) — до скачивания,
+    `_room` в `hub/setup.py`. Тест — `test_the_engines_fetch_meets_github_s_limit_an_antivirus_and_a_full_disk`.
 - 39.2 Свободный порт: 8080 занят чужой программой — другой порт, запоминается в базе. Выбирается при старте хаба до
   сборки служб: адрес llama-swap запоминают 26 мест в 13 файлах. Переносится только llama-swap.exe, который запускает
   AFO; запущенный своим скриптом — нет. Файлы: `hub/server.py`, `hub/autostart.py`.
