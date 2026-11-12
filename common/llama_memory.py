@@ -15,6 +15,7 @@ CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 
                "q4_1": 20 / 32, "q4_0": 18 / 32}  # fmt: skip
 # llama.cpp's compute buffers on the GPU, roughly - one figure for the installer, tuning and the window (38.1)
 COMPUTE_GIB = 0.8
+DRAFT_COMPUTE_GIB = 0.3  # a small draft model's (42.2): mostly its logits over a large vocabulary
 # what a model may not count on, of the computer's own memory (38.1, the user's word): the video memory Windows and
 # the desktop keep, the RAM Windows 11 keeps
 RESERVE_GIB = 1.0
@@ -36,32 +37,48 @@ def estimate(
     mmproj_on_gpu: bool = True,
     vram_total_mib: int | None = None,
     reserve_gib: float = RESERVE_GIB,
+    draft: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """{vram_gb, ram_gb, kv_gb, weights_gb, verdict, text}. `gpu_layers`: "all", a number, or "auto" (llama.cpp's
-    --fit: it puts on the GPU what fits and the rest in RAM). `reserve_gib` - the video memory a model may not count
-    on: the user's (38.3), else the default."""
+    """{vram_gb, ram_gb, kv_gb, weights_gb, verdict, text} (+ draft_gb). `gpu_layers`: "all", a number, or "auto"
+    (llama.cpp's --fit: it puts on the GPU what fits and the rest in RAM). `reserve_gib` - the video memory a model may
+    not count on: the user's (38.3), else the default. `draft` - the draft model guessing ahead (42.2, draft_load):
+    its weights and its own KV cache for the whole context, on the graphics card first."""
     weights = float(info["size_bytes"])
     kv = kv_bytes(info, context, cache_type)
     blocks = max(info["layers"], 1) + 1  # the layers and the output
     total = vram_total_mib * 1024**2 / GIB if vram_total_mib else None
     vision_gpu = mmproj_bytes if mmproj_on_gpu else 0
+    draft_gpu = draft_ram = 0.0
+    if draft:
+        small = draft["info"]
+        held = (float(small["size_bytes"]) + kv_bytes(small, context, draft.get("cache_type") or "f16")) / GIB
+        layers, its_blocks = draft.get("gpu_layers", "auto"), small["layers"] + 1
+        part = 1.0 if layers in ("auto", "all") else min(max(int(layers), 0), its_blocks) / its_blocks
+        draft_gpu = held * part + (DRAFT_COMPUTE_GIB if part else 0)
+        draft_ram = held * (1 - part)  # its layers kept in RAM: its guesses come slower
     if gpu_layers == "auto":
-        need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB
+        need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB + draft_gpu
         room = (total - reserve_gib) if total else need
         vram = min(need, room)
         spill = need - vram  # the layers that did not fit: in RAM
-        ram = spill + (mmproj_bytes - vision_gpu) / GIB
+        ram = spill + (mmproj_bytes - vision_gpu) / GIB + draft_ram
+        spill += draft_ram
     else:
         share = 1.0 if gpu_layers == "all" else min(max(int(gpu_layers), 0), blocks) / blocks
-        vram = (weights + kv) * share / GIB + (COMPUTE_GIB if share else 0) + vision_gpu / GIB
-        spill = (weights + kv) * (1 - share) / GIB
+        vram = (weights + kv) * share / GIB + (COMPUTE_GIB if share else 0) + vision_gpu / GIB + draft_gpu
+        spill = (weights + kv) * (1 - share) / GIB + draft_ram
         ram = spill + (mmproj_bytes - vision_gpu) / GIB  # the vision projector kept in RAM is not slower layers
     out = {"vram_gb": round(vram, 1), "ram_gb": round(ram, 1), "kv_gb": round(kv / GIB, 2),
            "weights_gb": round(weights / GIB, 1), "total_gb": round(total, 1) if total else None}  # fmt: skip
+    if draft:
+        out["draft_gb"] = round(draft_gpu + draft_ram, 1)
     where = tr("≈ {vram} ГБ видеопамяти из {total:g}", vram=out["vram_gb"], total=out["total_gb"]) if total else \
         tr("≈ {vram} ГБ видеопамяти", vram=out["vram_gb"])  # fmt: skip
     where += tr(" и {ram} ГБ ОЗУ", ram=out["ram_gb"]) if out["ram_gb"] >= 0.1 else ""
-    where += tr(" (KV-кэш {kv} ГБ)", kv=out["kv_gb"])
+    if draft:
+        where += tr(" (KV-кэш {kv} ГБ, черновая модель {draft} ГБ)", kv=out["kv_gb"], draft=out["draft_gb"])
+    else:
+        where += tr(" (KV-кэш {kv} ГБ)", kv=out["kv_gb"])
     if total is None:
         out["verdict"] = "unknown"
     elif gpu_layers == "auto":
@@ -83,6 +100,17 @@ def estimate(
         }[out["verdict"]]
     )
     return out
+
+
+def draft_load(view: dict[str, Any]) -> dict[str, Any] | None:
+    """The draft model a launch takes, as estimate() wants it (42.2): from a model's view (hub.llama_config's `spec`)
+    with its draft's header read (`draft_info`); None - no draft, or its file not read. Its cache is f16 unless the
+    command says otherwise: llama.cpp's own default for a draft."""
+    spec = view.get("spec") or {}
+    if not spec.get("draft") or not view.get("draft_info"):
+        return None
+    return {"info": view["draft_info"], "gpu_layers": spec.get("draft_gpu_layers") or "auto",
+            "cache_type": spec.get("draft_cache_type") or "f16"}  # fmt: skip
 
 
 def short_now(need: dict[str, Any], status: dict[str, Any] | None, own: dict[str, float] | None = None) -> str:

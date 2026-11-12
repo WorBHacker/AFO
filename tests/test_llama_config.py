@@ -17,10 +17,13 @@ from typing import ClassVar
 import pytest
 from starlette.testclient import TestClient
 
+from app.ui import model_setup as ms
 from common.gguf import GGUFError, model_info, read_header
 from common.llama_memory import estimate
 from common.paths import data_paths
 from hub import llama_config as lc
+from hub import model_install as mi
+from hub.api.llama import _files as lc_files
 from hub.auth import create_client
 from hub.server import create_app
 from hub.settings import HubSettings
@@ -145,6 +148,50 @@ def test_a_model_files_header_and_the_memory_it_takes(tmp_path):
     auto = estimate({**info, "size_bytes": 28 * 1024**3}, context=32768, gpu_layers="auto", vram_total_mib=16 * 1024)
     assert auto["verdict"] == "auto" and auto["vram_gb"] < 16 and auto["ram_gb"] > 10
     assert "из 16" in whole["text"] and "целиком" in whole["text"]
+
+
+def test_the_draft_model_takes_its_share_of_the_memory(tmp_path):
+    """42.2: a draft model for guessing ahead sits in the video memory beside the model - its weights, and a KV cache
+    of its own for the model's whole context (b11899 has no context of the draft's own): Qwen3-0.6B's in f16 for 32
+    thousand tokens is 3,5 GB, more than its weights. The estimate counts it, with the draft's cache type."""
+    main = {"architecture": "qwen3", "layers": 36, "kv_layers": 36, "kv_heads": 8, "key_length": 128,
+            "value_length": 128, "context_trained": 40960, "size_bytes": int(4.7 * 1024**3)}  # fmt: skip
+    small = {**main, "layers": 28, "kv_layers": 28, "size_bytes": int(0.6 * 1024**3)}
+    card = 12 * 1024
+    alone = estimate(main, context=32768, cache_type="q8_0", vram_total_mib=card)
+    assert alone["verdict"] == "fits" and "draft_gb" not in alone
+    f16 = estimate(main, context=32768, cache_type="q8_0", vram_total_mib=card,
+                   draft={"info": small, "gpu_layers": "auto", "cache_type": "f16"})  # fmt: skip
+    q8 = estimate(main, context=32768, cache_type="q8_0", vram_total_mib=card,
+                  draft={"info": small, "gpu_layers": "all", "cache_type": "q8_0"})  # fmt: skip
+    assert f16["verdict"] == "over" and f16["draft_gb"] == 4.4  # 0,6 + 3,5 of its KV + its buffers
+    assert q8["verdict"] == "fits" and q8["draft_gb"] == 2.8 and abs(q8["vram_gb"] - alone["vram_gb"] - 2.8) < 0.11
+    assert "черновая модель 2.8 ГБ" in q8["text"]
+    in_ram = estimate(main, context=32768, cache_type="q8_0", vram_total_mib=card,
+                      draft={"info": small, "gpu_layers": 0, "cache_type": "q8_0"})  # fmt: skip
+    assert in_ram["verdict"] == "split" and in_ram["vram_gb"] == alone["vram_gb"] and in_ram["ram_gb"] == 2.5
+    placed = estimate(main, context=32768, cache_type="q8_0", gpu_layers="auto", vram_total_mib=card,
+                      draft={"info": small, "gpu_layers": "auto", "cache_type": "f16"})  # fmt: skip
+    assert placed["verdict"] == "auto" and placed["vram_gb"] == 11.0 and placed["ram_gb"] == 1.3  # the model's layers
+
+    # the hub reads the draft's header beside the model's; the window and the words at loading count it
+    fields = {"general.architecture": "qwen3", "qwen3.attention.head_count": 32, "qwen3.attention.head_count_kv": 8,
+              "qwen3.attention.key_length": 128, "qwen3.attention.value_length": 128}  # fmt: skip
+    gguf(tmp_path / "big.gguf", {**fields, "qwen3.block_count": 36})
+    gguf(tmp_path / "draft.gguf", {**fields, "qwen3.block_count": 28})
+    (tmp_path / "mmproj.gguf").write_bytes(b"\0" * 100)
+    plain = CONFIG.replace("F:/models/", tmp_path.as_posix() + "/")
+    draft_flags = f'--spec-type draft-simple -md "{tmp_path.as_posix()}/draft.gguf" -ctkd q8_0'
+    text = plain.replace("-np 1\n", f"-np 1 {draft_flags}\n")
+    view = {**lc.model_view(text, "big"), **lc_files(lc.model_view(text, "big"))}
+    assert view["draft_info"]["layers"] == 28 and view["draft_info"]["size_bytes"] > 0
+    form = ms.launch_draft(view)
+    assert "черновая модель" in ms.launch_estimate(form, view, card)
+    with_draft = mi._estimated(text, "big", card)
+    assert with_draft["draft_gb"] > 0 and with_draft["vram_gb"] > mi._estimated(plain, "big", card)["vram_gb"]
+    missing = text.replace("draft.gguf", "gone.gguf")  # its file away: the model's own estimate still
+    assert "draft_gb" not in mi._estimated(missing, "big", card)
+    assert lc_files(lc.model_view(missing, "big"))["draft_error"]
 
 
 _noise = random.Random(7)

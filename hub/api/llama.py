@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from common.gguf import GGUFError, model_info
 from common.i18n import tr
-from common.llama_memory import estimate
+from common.llama_memory import draft_load, estimate
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
@@ -56,6 +56,11 @@ def _files(view: dict[str, Any]) -> dict[str, Any]:
             out["mmproj_bytes"] = Path(view["mmproj"]).stat().st_size
         except OSError:
             out["mmproj_bytes"] = 0
+    if (view.get("spec") or {}).get("draft"):  # the draft model guessing ahead takes its share too (42.2)
+        try:
+            out["draft_info"] = model_info(Path(view["spec"]["draft"]))
+        except (OSError, GGUFError) as exc:
+            out["draft_error"] = str(exc)
     return out
 
 
@@ -161,7 +166,7 @@ async def _estimate(request: Request, model_id: str) -> dict[str, Any] | None:
     return estimate(view["info"], context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=view.get("mmproj_bytes") or 0,
                     mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=total,
-                    reserve_gib=request.app.state.installer.reserve["vram_gib"])  # fmt: skip
+                    reserve_gib=request.app.state.installer.reserve["vram_gib"], draft=draft_load(view))  # fmt: skip
 
 
 class Restore(BaseModel):

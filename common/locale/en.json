@@ -5,6 +5,7 @@
  "  · только локальным моделям": "  · local models only",
  "  — рекомендую": "  — recommended",
  " (KV-кэш {kv} ГБ)": " (KV cache {kv} GB)",
+ " (KV-кэш {kv} ГБ, черновая модель {draft} ГБ)": " (KV cache {kv} GB, draft model {draft} GB)",
  " (в приложении)": " (in the app)",
  " (входящих нет)": " (the inbox is empty)",
  " (выбран вами)": " (chosen by you)",

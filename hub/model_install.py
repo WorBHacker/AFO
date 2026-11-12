@@ -45,7 +45,16 @@ import httpx
 from common import disks, hardware, kept_json
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
-from common.llama_memory import COMPUTE_GIB, GIB, RAM_RESERVE_GIB, RESERVE_GIB, estimate, kv_bytes, short_now
+from common.llama_memory import (
+    COMPUTE_GIB,
+    GIB,
+    RAM_RESERVE_GIB,
+    RESERVE_GIB,
+    draft_load,
+    estimate,
+    kv_bytes,
+    short_now,
+)
 from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
@@ -1544,9 +1553,13 @@ def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str
         mmproj = Path(view["mmproj"]).stat().st_size if view.get("mmproj") else 0
     except llama_config.ConfigError, OSError, GGUFError:
         return None
+    if view["spec"]["draft"]:  # the draft model guessing ahead (42.2); its file away - the model's own estimate
+        with contextlib.suppress(OSError, GGUFError):
+            view["draft_info"] = model_info(Path(view["spec"]["draft"]))
     return estimate(info, context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=mmproj,
-                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=vram_total_mib)  # fmt: skip
+                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=vram_total_mib,
+                    draft=draft_load(view))  # fmt: skip
 
 
 def _ours(text: str, model_id: str, job_id: str) -> bool:

@@ -799,8 +799,13 @@
   (его KV — на весь `-c`). Тесты — `test_the_speculative_flags_are_the_builds_own`,
   `test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file`,
   `test_the_engine_is_updated_beside_the_old_one`.
-- 42.2 Оценка памяти учитывает черновик: его веса и KV на весь контекст. Файлы: `common/llama_memory.py`,
-  `app/ui/model_setup.py`.
+- 42.2 ✓ Оценка памяти учитывает черновик: его веса и KV на весь контекст. Файлы: `common/llama_memory.py`,
+  `app/ui/model_setup.py`. Сделано: `estimate(..., draft=)` — веса черновика, его KV на весь `-c` с его типом кэша
+  (без `-ctkd` — f16, как у llama.cpp) и `DRAFT_COMPUTE_GIB` 0,3 (до замера); черновик — в видеопамяти первым, его слои
+  в ОЗУ — «часть в ОЗУ»; `draft_gb` и «черновая модель N ГБ» в тексте. `draft_load(view)`; хаб читает заголовок
+  черновика (`draft_info` в `/v1/llama/models`, `_files`), его считают окно «Настройка модели» (`launch_judged`),
+  проверка после пробного запуска (`_estimate`) и слова при загрузке (`_estimated`); файла нет — оценка без него. Пример:
+  Qwen3-0.6B при 32 тыс. — 4,4 ГБ в f16, 2,8 ГБ в q8_0. Тест — `test_the_draft_model_takes_its_share_of_the_memory`.
 - 42.3 Пара по токенизатору: `common/gguf.py` дочитывает токенизатор; черновики — в `hub/model_catalog.json`.
 - 42.4 Замер самим llama-server: без угадывания, ngram, черновик (не помещается — «черновик + часть слоёв в ОЗУ»,
   решение пользователя выше); при температуре из настроек модели. Победитель
