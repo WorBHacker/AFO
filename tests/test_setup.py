@@ -21,6 +21,7 @@ from hub import autostart, engines, setup
 from hub import llama_config as lc
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.test_llama_config import HELP
 from tests.test_tools import BASE, hub  # noqa: F401 - the hub fixture
 
 
@@ -343,10 +344,13 @@ models:
   "a":
     cmd: |
       ${{llama_server}} -m a.gguf
+      -md d.gguf --spec-type draft-simple --draft-max 8
       --port ${{PORT}}
 """, encoding="utf-8")  # fmt: skip
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     monkeypatch.setattr(lc, "RELOAD_S", 0.5)  # no llama-swap here: the write is kept, not checked
+    asked = []  # the new build's --help (42.1): its stand-in here is no program - what b11899 says
+    monkeypatch.setattr(lc, "server_flags", lambda server: asked.append(server) or lc.parse_help(HELP))
     found = hub.get("/v1/setup/update").json()
     assert found == {"current": "b100", "build": "vulkan", "latest": "b200", "newer": True, "server": str(old /
                      "llama-server.exe")}  # fmt: skip
@@ -361,6 +365,8 @@ models:
     new = tmp_path / "localchat-home" / "engines" / "llama.cpp" / "b200-vulkan" / "llama-server.exe"
     text = config.read_text(encoding="utf-8")
     assert lc.macros(text)["llama_server"] == '"' + new.as_posix() + '"' and set(lc.model_blocks(text)) == {"a"}
+    # the flags as the new build takes them, in the same write: its --draft-max is gone (42.1)
+    assert asked == [new] and "      -md d.gguf --spec-type draft-simple --spec-draft-n-max 8" in text.splitlines()
     assert (old / "llama-server.exe").exists()  # the old build stays (a model may still run on it)
     assert list(tmp_path.glob("config.yaml.bak-*"))  # a copy of the config first
     assert hub.get("/v1/setup/update").json()["newer"] is False

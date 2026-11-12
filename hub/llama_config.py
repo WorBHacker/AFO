@@ -15,6 +15,7 @@ import asyncio
 import os
 import re
 import shutil
+import subprocess
 import time
 import weakref
 from datetime import datetime
@@ -53,7 +54,21 @@ FLAGS = {
     "n_cpu_moe": ("-ncmoe", "--n-cpu-moe"),
     "mmproj": ("--mmproj",),
     "model": ("-m", "--model"),
+    # guessing ahead (speculative decoding, 42.1): their names change between llama.cpp's builds - b11899 took away
+    # --draft-max - so each is written as the build in the config spells it (server_flags); the old names are read
+    "spec_type": ("--spec-type",),
+    "draft_model": ("-md", "--spec-draft-model", "--model-draft"),
+    "draft_gpu_layers": ("-ngld", "--spec-draft-ngl", "--gpu-layers-draft", "--n-gpu-layers-draft"),
+    "draft_max": ("--spec-draft-n-max", "--draft-max", "--draft", "--draft-n"),
+    "draft_min": ("--spec-draft-n-min", "--draft-min", "--draft-n-min"),
+    "draft_cache_k": ("-ctkd", "--spec-draft-type-k", "--cache-type-k-draft"),
+    "draft_cache_v": ("-ctvd", "--spec-draft-type-v", "--cache-type-v-draft"),
 }
+DRAFT = ("draft_model", "draft_gpu_layers", "draft_max", "draft_min", "draft_cache_k", "draft_cache_v")
+SPEC = ("spec_type", *DRAFT)
+SPEC_CHANGES = ("spec_type", "draft_model", "draft_gpu_layers", "draft_max", "draft_cache_type")
+_SPEC_FAMILY = re.compile(r"^--(?:spec-|draft)")  # a flag of guessing ahead the hub does not set itself
+HELP_TIMEOUT_S = 30.0
 COUNTS = {"batch": (32, 65536), "ubatch": (32, 65536), "threads": (1, 512), "n_cpu_moe": (1, 999)}  # 0: llama.cpp's
 CACHE_TYPES = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0")
 SD_ENGINE = "stable-diffusion.cpp"  # a picture model's sd-server (D55, 29.3)
@@ -211,6 +226,138 @@ def _flag(tokens: list[str], names: tuple[str, ...]) -> int | None:
     return next((i for i, t in enumerate(tokens) if t in names), None)
 
 
+# --- what a llama-server build takes (42.1): its --help, read once per file ---
+
+_OPTION = re.compile(r"--?[A-Za-z][\w-]*")
+_builds: dict[tuple[str, int, float], dict[str, Any]] = {}
+
+
+def parse_help(text: str) -> dict[str, Any]:
+    """llama-server's --help read: each option with its synonyms (`groups`), every name (`known`), those it says
+    were taken away (`removed`), and the kinds of guessing ahead `--spec-type` takes (`spec_types`)."""
+    groups: list[tuple[str, ...]] = []
+    removed: set[str] = set()
+    kinds: tuple[str, ...] = ()
+    about: list[str] = []
+
+    def close() -> None:
+        if groups and "has been removed" in " ".join(about):
+            removed.update(groups[-1])
+        about.clear()
+
+    for line in text.splitlines():
+        if line.startswith("-") and not line.startswith("---"):  # an option at its start; «-----» heads a part
+            close()
+            names, rest = [], line
+            while match := _OPTION.match(rest):
+                names.append(match.group(0))
+                rest = rest[match.end() :]
+                comma = re.match(r",\s*", rest)
+                if comma is None:
+                    break
+                rest = rest[comma.end() :]
+            groups.append(tuple(names))
+            about.append(rest)
+            if "--spec-type" in names and rest.split():
+                kinds = tuple(rest.split()[0].split(","))
+        elif line[:1].isspace():
+            about.append(line)
+        else:
+            close()
+    close()
+    return {"groups": groups, "known": frozenset(n for g in groups for n in g), "removed": frozenset(removed),
+            "spec_types": kinds}  # fmt: skip
+
+
+def server_flags(server: Path) -> dict[str, Any] | None:
+    """What this llama-server takes (parse_help of its --help), once per file (its size and time stay); None when
+    it does not run - no such file, not a program. Blocking: in a thread."""
+    try:
+        stat = server.stat()
+    except OSError:
+        return None
+    key = (str(server), stat.st_size, stat.st_mtime)
+    if key in _builds:
+        return _builds[key]
+    try:
+        done = subprocess.run([str(server), "--help"], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=HELP_TIMEOUT_S,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+    except OSError, subprocess.SubprocessError:
+        return None
+    found = parse_help(done.stdout)
+    if not found["groups"]:
+        return None
+    _builds[key] = found
+    return found
+
+
+def spelled(setting: str, build: dict[str, Any] | None) -> tuple[tuple[str, ...], str | None]:
+    """A setting's flag: each name it may have in a command (the hub's and the build's synonyms), and the one this
+    build takes (None: none of them); without a build - the hub's own first name."""
+    ours = FLAGS[setting]
+    if build is None:
+        return ours, ours[0]
+    every = tuple(dict.fromkeys([*ours, *(n for g in build["groups"] if set(g) & set(ours) for n in g)]))
+    return every, next((n for n in every if n in build["known"] and n not in build["removed"]), None)
+
+
+def _uses_draft(kinds: str) -> bool:
+    """Whether these kinds of guessing ahead take a draft model of their own (`-md`); MTP is the model's own layer."""
+    return any(k.startswith("draft-") and k != "draft-mtp" for k in kinds.split(","))
+
+
+def _has_value(tokens: list[str], at: int) -> bool:
+    return at + 1 < len(tokens) and not _OPTION.fullmatch(tokens[at + 1])
+
+
+def match_build(text: str, build: dict[str, Any]) -> str:
+    """The commands as this build takes them (42.1: after the wizard updates llama.cpp - a flag it took away stops
+    llama-swap from starting the model): a flag of guessing ahead under the build's own name, the kinds it does not
+    know left out (none left - guessing off); a flag it says was removed, or one of guessing ahead it does not know,
+    taken off with its value; a line left empty goes. Only the commands the window edits; every other line as it
+    was."""
+    lines = text.splitlines()
+    for model_id, (start, end) in sorted(model_blocks(text).items(), key=lambda m: -m[1][0]):  # from the end
+        try:
+            view = model_view(text, model_id)
+        except ConfigError:
+            continue
+        if view["engine"] != "llama.cpp" or not view["editable"]:
+            continue
+        first, last = _cmd_lines(lines, start, end)
+        names = {setting: spelled(setting, build) for setting in SPEC}
+        kinds = view["spec"]["type"]
+        known = ",".join(k for k in kinds.split(",") if k in build["spec_types"] and k != "none") if kinds else ""
+        if kinds and not known:  # nothing of it the build knows: guessing off, its draft too
+            names = {setting: (every, None) for setting, (every, _) in names.items()}
+        for i in range(last - 1, first - 1, -1):
+            indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+            tokens = _TOKEN.findall(lines[i])
+            at = 0
+            while at < len(tokens):
+                setting = next((s for s, (every, _) in names.items() if tokens[at] in every), None)
+                if setting is not None and names[setting][1] is not None:
+                    if tokens[at] not in build["known"] or tokens[at] in build["removed"]:  # a name it takes stays
+                        tokens[at] = names[setting][1]
+                    if setting == "spec_type" and _has_value(tokens, at):
+                        tokens[at + 1] = known
+                    at += 1
+                elif setting is not None or tokens[at] in build["removed"] or (
+                        _SPEC_FAMILY.match(tokens[at]) and tokens[at] not in build["known"]):  # fmt: skip
+                    del tokens[at : at + (2 if _has_value(tokens, at) else 1)]
+                else:
+                    at += 1
+            if tokens:
+                lines[i] = indent + " ".join(tokens)
+            else:
+                del lines[i]
+    out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    if set(model_blocks(out)) != set(model_blocks(text)):
+        raise ConfigError(tr("правка задела другие модели — не записано"))
+    return out
+
+
 def model_view(text: str, model_id: str) -> dict[str, Any]:
     """What the window shows of a model: its engine, files and launch settings (llama.cpp), or its profile (Strata)."""
     blocks = model_blocks(text)
@@ -265,14 +412,53 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
             "ubatch": int(value("ubatch") or 0),
             "threads": int(value("threads") or 0),
             "n_cpu_moe": int(value("n_cpu_moe") or 0),
+            # guessing ahead (42.1): its kinds ('' - off), the draft model and how it runs
+            "spec": {"type": value("spec_type") or "", "draft": value("draft_model") or "",
+                     "draft_gpu_layers": _layers(value("draft_gpu_layers")), "draft_max": _whole(value("draft_max")),
+                     "draft_cache_type": value("draft_cache_k") or ""},
         })  # fmt: skip
     return view
 
 
-def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, Any]:
-    """The settings asked for, checked; a Strata model takes only its ttl."""
+def _whole(value: str | None) -> int:
+    return int(value) if value and value.isdigit() else 0
+
+
+def _layers(value: str | None) -> str | int:
+    """A draft's layers on the graphics card as the command has them: auto (none said), all, or a number."""
+    if value in ("auto", "all"):
+        return value
+    if value is None or not value.isdigit():
+        return "auto"
+    return "all" if int(value) >= 99 else int(value)
+
+
+def _check_spec(key: str, value: Any, build: dict[str, Any] | None) -> None:
+    """A setting of guessing ahead (42.1), checked against the build that will run it."""
+    if build is None or spelled("spec_type", build)[1] is None:
+        raise ConfigError(tr("эта сборка llama.cpp не умеет угадывать вперёд — обновите её в мастере первого запуска"))
+    if key == "spec_type":
+        kinds = value.split(",") if isinstance(value, str) else []
+        if value != "none" and (not kinds or any(k == "none" or k not in build["spec_types"] for k in kinds)):
+            raise ConfigError(tr("угадывание вперёд: none или {kinds}",
+                                 kinds=", ".join(k for k in build["spec_types"] if k != "none")))  # fmt: skip
+    elif key == "draft_model" and (not isinstance(value, str) or not value.strip()):
+        raise ConfigError(tr("черновая модель: путь к её файлу"))
+    elif key == "draft_gpu_layers" and value not in ("auto", "all") and (
+            isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 999):  # fmt: skip
+        raise ConfigError(tr("слои черновой модели на видеокарте: auto, all или число от 0 до 999"))
+    elif key == "draft_max" and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 64):
+        raise ConfigError(tr("черновая модель угадывает за раз от 1 до 64 токенов"))
+    elif key == "draft_cache_type" and value not in CACHE_TYPES:
+        raise ConfigError(tr("сжатие KV-кэша черновой модели: одно из {types}", types=", ".join(CACHE_TYPES)))
+
+
+def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str, Any] | None = None
+                  ) -> dict[str, Any]:  # fmt: skip
+    """The settings asked for, checked; a Strata model takes only its ttl. Guessing ahead is checked against
+    `build` - the server_flags of the llama-server in the config."""
     allowed = {"ttl"} if not view["editable"] else {"ttl", "context", "gpu_layers", "flash_attn", "cache_type",
-                                                    "parallel", *COUNTS}  # fmt: skip
+                                                    "parallel", *COUNTS, *SPEC_CHANGES}  # fmt: skip
     out: dict[str, Any] = {}
     for key, value in changes.items():
         if value is None:
@@ -281,7 +467,9 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, An
             if not view["editable"]:
                 raise ConfigError(tr("«{key}» у этой модели не меняется (её профиль пишет Strata)", key=key))
             raise ConfigError(tr("«{key}» у этой модели не меняется", key=key))
-        if key in ("ttl", "context", "parallel"):
+        if key in SPEC_CHANGES:
+            _check_spec(key, value, build)
+        elif key in ("ttl", "context", "parallel"):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ConfigError(tr("{key}: нужно целое число", key=key))
             low, high = {"ttl": (0, 7 * 86400), "context": (512, 4_194_304), "parallel": (1, 64)}[key]
@@ -301,12 +489,17 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any]) -> dict[str, An
         elif key == "cache_type" and value not in CACHE_TYPES:
             raise ConfigError(tr("сжатие KV-кэша: одно из {types}", types=", ".join(CACHE_TYPES)))
         out[key] = value
+    kinds = out.get("spec_type", view.get("spec", {}).get("type") or "none")
+    if "spec_type" in out and _uses_draft(kinds) and not (out.get("draft_model") or view["spec"]["draft"]):
+        raise ConfigError(tr("угадыванию черновой моделью нужен файл черновой модели"))
     return out
 
 
-def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], value: str | None) -> None:
+def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], value: str | None,
+              write_as: str | None = None) -> None:  # fmt: skip
     """Sets (or with None removes) a flag and its value in the cmd lines, keeping each line's indent; a new flag
-    goes to the line with the other options (the one with -c / -ngl / -fa, else the one before --host)."""
+    goes to the line with the other options (the one with -c / -ngl / -fa, else the one before --host). `write_as` -
+    the name to write it under (the build's own, 42.1), also over another name it had."""
     for i in range(first, last):
         indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
         tokens = _TOKEN.findall(lines[i])
@@ -315,10 +508,12 @@ def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], v
             continue
         if value is None:
             del tokens[at : at + 2]
-        elif at + 1 < len(tokens):
-            tokens[at + 1] = value
         else:
-            tokens.append(value)
+            tokens[at] = write_as or tokens[at]
+            if at + 1 < len(tokens):
+                tokens[at + 1] = value
+            else:
+                tokens.append(value)
         lines[i] = indent + " ".join(tokens)
         return
     if value is None:
@@ -328,13 +523,44 @@ def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], v
                 None)  # fmt: skip
     if home is None:
         home = next((i - 1 for i in range(first + 1, last) if "--host" in lines[i]), last - 1)
-    lines[home] = lines[home].rstrip() + f" {names[0]} {value}"
+    lines[home] = lines[home].rstrip() + f" {write_as or names[0]} {value}"
 
 
-def edit(text: str, model_id: str, changes: dict[str, Any]) -> str:
-    """The config with this model's settings changed; every other line as it was."""
+def _set_spec(lines: list[str], first: int, last: int, changes: dict[str, Any], view: dict[str, Any],
+              build: dict[str, Any]) -> None:  # fmt: skip
+    """Guessing ahead written (42.1): its kinds, and the draft model's flags while a kind takes one - off, each of
+    its flags goes."""
+    kinds = changes.get("spec_type", view["spec"]["type"] or "none")
+
+    def put(setting: str, value: str | None) -> None:
+        every, name = spelled(setting, build)
+        while value is None and any(_flag(_TOKEN.findall(lines[i]), every) is not None for i in range(first, last)):
+            _set_flag(lines, first, last, every, None)  # each one, under any name
+        if value is not None:
+            _set_flag(lines, first, last, every, value, name)
+
+    put("spec_type", None if kinds == "none" else kinds)
+    if kinds == "none" or not _uses_draft(kinds):
+        for setting in DRAFT:
+            put(setting, None)
+        return
+    if "draft_model" in changes:
+        put("draft_model", quoted(changes["draft_model"].replace(os.sep, "/")))
+    if "draft_gpu_layers" in changes:
+        layers = changes["draft_gpu_layers"]
+        put("draft_gpu_layers", None if layers == "auto" else "99" if layers == "all" else str(layers))
+    if "draft_max" in changes:
+        put("draft_max", str(changes["draft_max"]))
+    if "draft_cache_type" in changes:
+        put("draft_cache_k", changes["draft_cache_type"])
+        put("draft_cache_v", changes["draft_cache_type"])
+
+
+def edit(text: str, model_id: str, changes: dict[str, Any], *, build: dict[str, Any] | None = None) -> str:
+    """The config with this model's settings changed; every other line as it was. `build` - what the llama-server
+    in the config takes (server_flags): guessing ahead is written only with it, under its names."""
     view = model_view(text, model_id)
-    changes = check_changes(changes, view)
+    changes = check_changes(changes, view, build)
     lines = text.splitlines()
     start, end = model_blocks(text)[model_id]
     if "ttl" in changes:
@@ -375,6 +601,8 @@ def edit(text: str, model_id: str, changes: dict[str, Any]) -> str:
     for key in COUNTS:
         if key in changes:
             _set_flag(lines, first, last, FLAGS[key], str(changes[key]) if changes[key] else None)
+    if build is not None and set(SPEC_CHANGES) & changes.keys():
+        _set_spec(lines, first, last, changes, view, build)
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     if set(model_blocks(out)) != set(model_blocks(text)):  # the edit must leave every model in place
         raise ConfigError(tr("правка задела другие модели — не записано"))

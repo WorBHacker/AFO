@@ -4,9 +4,11 @@ copy back when it does not, or when the model does not start. A stand-in llama-s
 
 import asyncio
 import base64
+import contextlib
 import json
 import random
 import struct
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -398,6 +400,168 @@ def test_a_write_waits_out_a_reader_of_the_file(tmp_path, monkeypatch):
         lc.write(path, new)
     reading.join()
     assert path.read_text(encoding="utf-8") == CONFIG and not path.with_name("config.yaml.part").exists()
+
+
+# llama-server --help of b11899 (2026-11-13) - its own lines, those of the options a launch with speculative decoding
+# takes, out of 750
+KINDS = ("none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,"
+         "ngram-map-k4v,ngram-mod,ngram-cache")  # fmt: skip
+HELP = f"""----- common params -----
+
+-h,    --help, --usage                  print usage and exit
+-c,    --ctx-size N                     size of the prompt context (default: 0, 0 = loaded from model)
+                                        (env: LLAMA_ARG_CTX_SIZE)
+-fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default: 'auto')
+                                        (env: LLAMA_ARG_FLASH_ATTN)
+-ngl,  --gpu-layers, --n-gpu-layers N   max. number of layers to store in VRAM, either an exact number,
+                                        'auto', or 'all' (default: auto)
+                                        (env: LLAMA_ARG_N_GPU_LAYERS)
+-m,    --model FNAME                    model path to load
+                                        (env: LLAMA_ARG_MODEL)
+--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE
+                                        KV cache data type for K for the draft model
+                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1
+                                        (default: f16)
+--spec-draft-type-v, -ctvd, --cache-type-v-draft TYPE
+                                        KV cache data type for V for the draft model
+                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1
+                                        (default: f16)
+
+----- speculative params -----
+
+--spec-draft-n-max N                    number of tokens to draft for speculative decoding (default: 3)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_MAX)
+--spec-draft-n-min N                    minimum number of draft tokens to use for speculative decoding
+                                        (default: 0)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_MIN)
+--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N
+                                        max. number of draft model layers to store in VRAM, either an exact
+                                        number, 'auto', or 'all' (default: auto)
+                                        (env: LLAMA_ARG_N_GPU_LAYERS_DRAFT)
+--spec-draft-model, -md, --model-draft FNAME
+                                        draft model for speculative decoding (default: unused)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_MODEL)
+--spec-type {KINDS}
+                                        comma-separated list of types of speculative decoding to use (default:
+                                        none)
+
+--draft, --draft-n, --draft-max N       the argument has been removed. use --spec-draft-n-max or
+                                        --spec-ngram-mod-n-max
+                                        (env: LLAMA_ARG_DRAFT_MAX)
+--draft-min, --draft-n-min N            the argument has been removed. use --spec-draft-n-min or
+                                        --spec-ngram-mod-n-min
+                                        (env: LLAMA_ARG_DRAFT_MIN)
+--spec-ngram-size-n N                   the argument has been removed. use the respective
+                                        --spec-ngram-*-size-n or --spec-ngram-mod-n-match
+
+----- example-specific params -----
+"""
+
+
+def help_server(folder):
+    """A llama-server that only says its --help - a real process (a .cmd: Windows starts it as a program); each run
+    leaves a line in runs.txt."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "help.py").write_text("import pathlib, sys\n"
+                                    "with open(pathlib.Path(__file__).with_name('runs.txt'), 'a') as f:\n"
+                                    "    f.write('run\\n')\n"
+                                    f"sys.stdout.write({HELP!r})\n", encoding="utf-8")  # fmt: skip
+    server = folder / "llama-server.cmd"
+    server.write_text(f'@"{sys.executable}" "%~dp0help.py" %*\n', encoding="utf-8")
+    return server
+
+
+def test_the_speculative_flags_are_the_builds_own(tmp_path):
+    """42.1: guessing ahead (speculative decoding) is told by flags whose names change between llama.cpp's builds -
+    b11899 took away --draft-max, and without `--spec-type` a draft model is loaded and not used. The hub reads them
+    from the --help of the build in the config, once per file, and writes each as that build spells it."""
+    server = help_server(tmp_path / "b11899")
+    build = lc.server_flags(server)
+    assert build["spec_types"][:2] == ("none", "draft-simple") and "ngram-mod" in build["spec_types"]
+    assert {"--draft", "--draft-max", "--draft-min"} <= build["removed"]
+    assert "--spec-draft-n-max" not in build["removed"]
+    assert {"-md", "--model-draft", "-ngld", "-ctkd"} <= build["known"]
+    assert lc.server_flags(server) is build and (tmp_path / "b11899" / "runs.txt").read_text().count("run") == 1
+    assert lc.server_flags(tmp_path / "nowhere" / "llama-server.exe") is None
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "llama-server.exe").write_bytes(b"MZ")  # not a program that runs
+    assert lc.server_flags(tmp_path / "broken" / "llama-server.exe") is None
+
+    assert lc.model_view(CONFIG, "big")["spec"] == {"type": "", "draft": "", "draft_gpu_layers": "auto",
+                                                    "draft_max": 0, "draft_cache_type": ""}  # fmt: skip
+    draft = {"spec_type": "draft-simple", "draft_model": "F:/models/small draft.gguf", "draft_gpu_layers": "all",
+             "draft_max": 8, "draft_cache_type": "q8_0"}  # fmt: skip
+    new = lc.edit(CONFIG, "big", draft, build=build)
+    assert ('      -ngl 99 -fa on -c 32768 -ctk q8_0 -ctv q8_0 -np 1 --spec-type draft-simple'
+            ' -md "F:/models/small draft.gguf" -ngld 99 --spec-draft-n-max 8 -ctkd q8_0 -ctvd q8_0'
+            in new.splitlines())  # fmt: skip
+    assert lc.model_view(new, "big")["spec"] == {"type": "draft-simple", "draft": "F:/models/small draft.gguf",
+                                                 "draft_gpu_layers": "all", "draft_max": 8,
+                                                 "draft_cache_type": "q8_0"}  # fmt: skip
+    assert new.split('  "big":')[0] == CONFIG.split('  "big":')[0]  # the other models as they were
+    ngram = lc.model_view(lc.edit(new, "big", {"spec_type": "ngram-mod"}, build=build), "big")["spec"]
+    assert ngram == {"type": "ngram-mod", "draft": "", "draft_gpu_layers": "auto", "draft_max": 0,
+                     "draft_cache_type": ""}  # fmt: skip
+    assert lc.edit(new, "big", {"spec_type": "none"}, build=build) == CONFIG  # off: each of its flags away
+    for changes, how, said in ((draft, None, "не умеет"), ({**draft, "spec_type": "draft-magic"}, build, "none или"),
+                               ({"spec_type": "draft-simple"}, build, "файл черновой"),
+                               ({**draft, "draft_max": 0}, build, "от 1 до 64"),
+                               ({**draft, "draft_cache_type": "q3"}, build, "KV")):  # fmt: skip
+        with pytest.raises(lc.ConfigError, match=said):
+            lc.edit(CONFIG, "big", changes, build=how)
+
+
+def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file(tmp_path):
+    """42.1: after the wizard updates llama.cpp, a flag the new build took away would stop llama-swap from starting
+    the model. Under the lock the config's commands are written as the build spells them - the old name under its
+    new one, the kinds of guessing it does not know and the flags it says were removed taken off - while llama-swap
+    rereads the file the whole time (--watch-config): it sees the old file or the new one, never a part."""
+    old = CONFIG.replace("      --jinja --temp 1.0\n",
+                         "      --spec-type draft-simple,ngram-lookup --model-draft F:/models/draft.gguf\n"
+                         "      --draft-max 8 --spec-ngram-size-n 4\n"
+                         "      --draft-min 2 --jinja --temp 1.0\n")  # fmt: skip
+    path = tmp_path / "config.yaml"
+    path.write_text(old, encoding="utf-8")
+    new = lc.match_build(old, lc.parse_help(HELP))
+    seen, stop = [], threading.Event()
+
+    def llama_swap():
+        while not stop.is_set():
+            with contextlib.suppress(OSError):  # the moment the file is replaced
+                seen.append(path.read_text(encoding="utf-8"))
+            time.sleep(0.002)
+
+    reader = threading.Thread(target=llama_swap)
+    reader.start()
+    try:
+        time.sleep(0.05)
+        lc.write(path, new)
+        deadline = time.monotonic() + 5
+        while new not in seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        reader.join()
+    assert set(seen) == {old, new}
+    lines = new.split('  "big":')[1].split('  "huge":')[0].splitlines()
+    assert "      --spec-type draft-simple --model-draft F:/models/draft.gguf" in lines  # a name the build takes stays
+    # the old names under the new ones; a flag it took away that has none - off
+    assert "      --spec-draft-n-max 8" in lines and "      --spec-draft-n-min 2 --jinja --temp 1.0" in lines
+    assert lc.model_view(new, "big")["spec"] == {"type": "draft-simple", "draft": "F:/models/draft.gguf",
+                                                 "draft_gpu_layers": "auto", "draft_max": 8,
+                                                 "draft_cache_type": ""}  # fmt: skip
+
+    def outside(text):
+        head, rest = text.split('  "big":')
+        return head + rest.split('  "huge":')[1]
+
+    assert outside(new) == outside(old)  # the other models as they were
+    assert lc.match_build(new, lc.parse_help(HELP)) == new  # the second time: nothing to change
+    # a build that knows no guessing ahead: each of its flags off, lines left empty away, the rest as it was
+    bare = lc.match_build(old, lc.parse_help(HELP.split("----- speculative params -----")[0]))
+    assert lc.model_view(bare, "big")["spec"]["type"] == "" and "draft" not in bare.split('  "big":')[1]
+    assert lc.model_view(bare, "big")["command"] == lc.model_view(CONFIG, "big")["command"]
+    assert outside(bare) == outside(old)
 
 
 def test_a_model_under_a_new_id_and_name():

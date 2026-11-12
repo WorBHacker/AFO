@@ -183,6 +183,8 @@ class Setup:
             await self._publish()
             await asyncio.to_thread(self._fetch, cpp["assets"], engines_home() / "downloads", folder, 0, report)
             server = engines.server_in(folder)
+            # what the new build takes (42.1): a flag of guessing ahead it took away would stop the model's start
+            build = await asyncio.to_thread(llama_config.server_flags, server)
             path = llama_config.config_path()
             async with llama_config.writing():  # 34.4: an install or the tuning does not write in between
                 text = await asyncio.to_thread(path.read_text, encoding="utf-8")
@@ -192,6 +194,8 @@ class Setup:
                                                  "поменяйте путь на {server} сами", server=server))  # fmt: skip
                 new = llama_config.set_macro(text, command.strip("${}"),
                                              "'\"" + str(server).replace("\\", "/") + "\"'")  # fmt: skip
+                if build is not None:
+                    new = llama_config.match_build(new, build)
                 backup = await asyncio.to_thread(llama_config.write, path, new)
                 ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
                 if not ok and problem != tr(llama_config.NOT_ANSWERING):
