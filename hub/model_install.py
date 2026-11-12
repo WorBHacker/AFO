@@ -66,6 +66,7 @@ MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
 MAX_BITS = 8.6  # above Q8_0 the quality is the same and the model only slower
 GOOD_BITS = 4.5  # from about Q4_K_M on a quantization keeps nearly all of the model
 FIT_BITS = 4.9  # a search's «поместится» (32.5): a model taken as it usually is, about Q4_K_M
+FIT_QUANT = "Q4_K_M"  # what the estimate beside each found model is of (41.1)
 # a search's sizes (32.5): parameters from - to (0: no bound); "fits" - as much as this computer holds (fits_params)
 SIZES = {"small": (0, 4 * 10**9), "medium": (4 * 10**9, 15 * 10**9), "large": (15 * 10**9, 40 * 10**9),
          "huge": (40 * 10**9, 0)}  # fmt: skip
@@ -217,6 +218,17 @@ def fits_params(space: dict[str, Any]) -> int:
     a variant is judged with - or, with no graphics card, «cpu» (verdict)."""
     room_gib = space["vram_gib"] - COMPUTE_GIB if space["vram_gib"] else space["ram_gib"]
     return max(int((room_gib - _kv_gib(None, FIT_CONTEXT)) * GIB * 8 / FIT_BITS), 0)
+
+
+def search_fit(found: dict[str, Any], space: dict[str, Any]) -> dict[str, Any] | None:
+    """A repository a search lists, judged against this computer with no more requests (41.1): its count of weights
+    as it usually is (about Q4_K_M, FIT_BITS) - an estimate, the open repository judges each variant. None - nobody
+    read its count."""
+    if not found.get("params"):
+        return None
+    size = int(found["params"] * FIT_BITS / 8)
+    judged = verdict(size, None, space, moe=bool(found.get("moe")))
+    return {"gb": round(size / 1e9, 1), "quant": FIT_QUANT, "verdict": judged, "words": tr(VERDICTS[judged])}
 
 
 def recommend(found: list[dict[str, Any]], judged: dict[str, str], *, moe: bool = False) -> str | None:
@@ -648,7 +660,7 @@ class Installer:
         info = await self.header(repo, variants[0]["files"][0]["path"])
         lens = projector(found["projectors"])
         space = self.space()
-        moe = bool((entry or {}).get("moe")) or "moe" in found["architecture"].lower()
+        moe = bool((entry or {}).get("moe")) or bool(found.get("moe"))  # its architecture, tags or name (41.1)
         judged = {v["quant"]: verdict(v["size"], info, space, mmproj=lens["size"] if lens else 0, moe=moe)
                   for v in variants}  # fmt: skip
         best = recommend(variants, judged, moe=moe)
@@ -694,8 +706,10 @@ class Installer:
         if size == "fits" and not most:
             return []  # nothing fits here
         async with httpx.AsyncClient(timeout=30.0) as http:
-            return await hf.search(http, query, token=self.token(), task=task, fewest=fewest, most=most, sort=sort,
-                                   plain=plain)  # fmt: skip
+            found = await hf.search(http, query, token=self.token(), task=task, fewest=fewest, most=most, sort=sort,
+                                    plain=plain)  # fmt: skip
+        space = self.space()
+        return [{**each, "fit": search_fit(each, space)} for each in found]  # fits this computer? (41.1)
 
     # --- picture models (29.3) ---
 

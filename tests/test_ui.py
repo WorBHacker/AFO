@@ -786,6 +786,7 @@ class FakeClient:
                     "unrestricted": True,
                     "gated": False,
                     "updated": "2026-10-01",
+                    "fit": {"gb": 16.7, "quant": "Q4_K_M", "verdict": "split", "words": "часть в ОЗУ — медленнее"},
                 }
             ]
         }
@@ -6262,6 +6263,9 @@ def test_installing_a_local_model_from_the_window(qapp):
                                                        "plain": False})  # fmt: skip
         assert view.found[0]["badges"] == ["снятые ограничения"] and view.found[0]["note"].startswith("↓ 1,2 млн")
         assert "27,3 млрд параметров" in view.found[0]["note"]
+        # 41.1: whether it fits this computer, beside it - an estimate with no more requests
+        assert (view.found[0]["fit"], view.found[0]["fitTone"]) == ("≈ 16,7 ГБ в Q4_K_M: часть в ОЗУ — медленнее",
+                                                                    "warn")  # fmt: skip
         # the filters (32.6): a pick searches again with the words in the field, sent or not
         assert [t["name"] for t in view.searchTasks] == ["Все", "Разговоры", "Код", "Понимать картинки"]
         assert [s["name"] for s in view.searchSizes][:3] == ["Любой", "Поместится в видеопамять (до 22 млрд)",
@@ -6281,6 +6285,8 @@ def test_installing_a_local_model_from_the_window(qapp):
             QApplication.processEvents()
         for name in ("installSearchTask", "installSearchSize", "installSearchSort", "installSearchPlain"):
             assert quick.window.findChild(QObject, name).property("visible"), name
+        fit = item_named(quick.window.findChild(QObject, "installSearchTask").parentItem(), "installHitFit")
+        assert fit.property("visible") and fit.property("text") == view.found[0]["fit"]
         assert not view.nothingFound
         view.search("nothing")
         wait_until(lambda: not app.bg.busy and not view.searching)

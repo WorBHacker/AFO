@@ -1187,3 +1187,29 @@ def test_the_search_narrowed_by_what_for_size_and_order(hub):
     assert (shown["params"], shown["pipeline"]) == (27_000_000_000, "")  # by its name (32.4)
     assert hub.get("/v1/install/search", params={"task": "pictures"}).status_code == 422
     assert hub.get("/v1/install/search", params={"sort": "name"}).status_code == 422
+
+
+def test_each_found_model_says_whether_it_fits_this_computer(hub):
+    """41.1 (2026-11-12): beside each repository the search lists - «≈ 16,5 ГБ в Q4_K_M: часть в ОЗУ», by the
+    count of weights Hugging Face read, with no more requests: a model taken as it usually is (FIT_BITS), judged as a
+    variant is (verdict, the reserves of stage 38). A mixture of experts - by its architecture or by a name like
+    «30B-A3B», which not every repository tags - loses little speed with its experts in RAM; a count nobody read - no
+    estimate."""
+    moe = {"id": "someone/Coder-30B-A3B-GGUF", "downloads": 1, "likes": 0, "trendingScore": 0,
+           "lastModified": "2026-10-04T00:00:00.000Z", "tags": ["gguf"],
+           "gguf": {"total": 30_532_122_624, "architecture": "qwen3moe"}}  # fmt: skip
+    named = {**moe, "id": "someone/Mix-26B-A4B-GGUF", "gguf": {"total": 25_800_000_000, "architecture": "mix"}}
+    unread = {**moe, "id": "someone/Unread-GGUF", "gguf": {}}
+    SEARCH.extend([moe, named, unread])
+    try:
+        found = {m["repo"]: m for m in hub.get("/v1/install/search").json()["models"]}
+    finally:
+        del SEARCH[-3:]
+    big, free = found["someone/Big-27B-MTP-GGUF"]["fit"], found["someone/Tiny-abliterated-GGUF"]["fit"]
+    assert (big["gb"], big["quant"], big["verdict"]) == (16.5, "Q4_K_M", "split")  # 15 GB of video memory: no room
+    assert big["words"] == "часть в ОЗУ — медленнее" and not found["someone/Big-27B-MTP-GGUF"]["moe"]
+    assert (free["gb"], free["verdict"]) == (1.2, "gpu")
+    assert found["someone/Coder-30B-A3B-GGUF"]["moe"] and found["someone/Coder-30B-A3B-GGUF"]["fit"]["verdict"] == (
+        "split_moe")  # fmt: skip
+    assert found["someone/Mix-26B-A4B-GGUF"]["moe"]  # by its name alone
+    assert found["someone/Unread-GGUF"]["fit"] is None

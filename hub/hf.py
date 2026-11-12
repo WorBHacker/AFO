@@ -55,6 +55,8 @@ UNRESTRICTED = re.compile(r"(?i)abliterat|uncensor|heretic|unfilter|unrestrict|r
 # a model's size in its repository's name: 27B, 0.8B, 135M - not the active 3B of «30B-A3B», not «E4B» or «8x7B»
 NAMED_SIZE = re.compile(r"(?i)(?<![A-Z0-9.])(\d+(?:\.\d+)?)([BM])(?![A-Z0-9])")
 SIXTEEN_BITS = {"BF16", "F16", "FP16", "F32"}
+# a mixture of experts by its name (41.1): «30B-A3B» - all its weights, then those at work for a token
+EXPERTS_NAME = re.compile(r"(?i)(?<![A-Z0-9.])\d+(?:\.\d+)?B-A\d+(?:\.\d+)?B(?![A-Z0-9])")
 
 
 class HubError(Exception):
@@ -148,6 +150,14 @@ def params_of(info: dict[str, Any]) -> int:
     return named if named > 2 * read else read
 
 
+def experts(info: dict[str, Any], repo: str) -> bool:
+    """A mixture of experts (41.1): its architecture says so (qwen3moe), its tags, or its name («30B-A3B») - not every
+    repository tags it."""
+    architecture = str((info.get("gguf") or {}).get("architecture") or "").lower()
+    tags = [str(t).lower() for t in info.get("tags") or []]
+    return "moe" in architecture or "moe" in tags or bool(EXPERTS_NAME.search(repo.split("/")[-1]))
+
+
 def summary(info: dict[str, Any]) -> dict[str, Any]:
     """A repository as a search lists it."""
     repo = info.get("id") or info.get("modelId") or ""
@@ -160,6 +170,7 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
         "updated": (info.get("lastModified") or "")[:10],
         "pipeline": info.get("pipeline_tag") or "",
         "params": params_of({**info, "id": repo}),
+        "moe": experts(info, repo),
         "unrestricted": bool(UNRESTRICTED.search(repo)) or any(UNRESTRICTED.search(t) for t in info.get("tags") or []),
         "page": f"{base_url()}/{repo}",
     }

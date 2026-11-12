@@ -335,7 +335,7 @@ Sheet {
                 id: hit
                 required property var modelData
                 width: parent ? parent.width : 600
-                height: 48
+                height: hit.modelData.fit ? 64 : 48
                 radius: 6
                 color: hitArea.containsMouse ? Theme.p.item_hover : "transparent"
                 border.color: Theme.p.hairline
@@ -377,6 +377,20 @@ Sheet {
                         color: Theme.p.faint
                         font.family: Theme.uiFont
                         font.pixelSize: 11
+                    }
+                    Text {  // whether it fits this computer: an estimate by its count of weights (41.1)
+                        objectName: "installHitFit"
+                        visible: !!hit.modelData.fit
+                        width: parent.width
+                        elide: Text.ElideRight
+                        text: hit.modelData.fit || ""
+                        color: sheet.tone(hit.modelData.fitTone)
+                        font.family: Theme.uiFont
+                        font.pixelSize: 11
+                        ToolTip.visible: fitHover.hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: qsTr("Оценка по числу весов, как обычно сжимают — Q4_K_M. Точнее — в самом репозитории: там каждый вариант.")
+                        HoverHandler { id: fitHover }
                     }
                 }
             }

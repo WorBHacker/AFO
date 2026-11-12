@@ -198,8 +198,18 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
             note.append(tr("обновлена {date}", date=m["updated"]))
         badges = ([tr("снятые ограничения")] if m.get("unrestricted") else []) + (
             [tr("лицензия на сайте")] if m.get("gated") else [])  # fmt: skip
-        out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges})
+        out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges, **fit_of(m.get("fit"))})
     return out
+
+
+def fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
+    """Whether a found model fits this computer (41.1): «≈ 4,4 ГБ в Q4_K_M: помещается в видеопамять — быстро», its
+    tone; nothing when the hub could not tell."""
+    if not fit:
+        return {"fit": "", "fitTone": ""}
+    text = tr("≈ {size} в {quant}: {words}", size=gb(fit["gb"], of_bytes=False), quant=fit["quant"],
+              words=fit["words"])  # fmt: skip
+    return {"fit": text, "fitTone": TONES.get(fit.get("verdict", ""), "")}
 
 
 def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
