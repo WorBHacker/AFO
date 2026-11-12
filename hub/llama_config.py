@@ -33,6 +33,8 @@ configured: Path | None = None  # the chosen file, as the hub read it from its s
 FOUND_SETTING = "llama_swap.found_config"  # the running llama-swap's config, kept (hub/autostart.py)
 found: Path | None = None
 KEEP_BACKUPS = 10
+# a write's os.replace refused while another program reads the file (Windows): tried again after these, ~3 s in all
+REPLACE_WAITS_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 RELOAD_S = 15.0  # llama-swap rereads the file within a second or two (--watch-config)
 NOT_ANSWERING = N_("llama-swap не отвечает")  # what reloaded() says, in the language: compared as tr(NOT_ANSWERING)
 
@@ -390,7 +392,7 @@ def write(path: Path, text: str, *, now: datetime | None = None) -> Path:
     shutil.copy2(path, backup)
     partial = path.with_name(f"{path.name}.part")
     partial.write_bytes(text.encode("utf-8"))
-    os.replace(partial, path)
+    _replace(partial, path)
     for old in backups(path)[:-KEEP_BACKUPS]:
         old.unlink(missing_ok=True)
     return backup
@@ -400,7 +402,22 @@ def restore(path: Path, backup: Path) -> None:
     """The copy back in the file's place (the copy itself stays)."""
     partial = path.with_name(f"{path.name}.part")
     shutil.copy2(backup, partial)
-    os.replace(partial, path)
+    _replace(partial, path)
+
+
+def _replace(partial: Path, path: Path) -> None:
+    """os.replace that waits a reader out (blocking: called in a thread). Windows refuses to replace a file open for
+    reading (WinError 5: the reader did not share deleting it) - llama-swap rereads the config right after a write.
+    When the reader does not let go, the file stays as it was and the part goes."""
+    for wait in (*REPLACE_WAITS_S, None):
+        try:
+            os.replace(partial, path)
+            return
+        except PermissionError:
+            if wait is None:
+                partial.unlink(missing_ok=True)
+                raise
+            time.sleep(wait)
 
 
 async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,

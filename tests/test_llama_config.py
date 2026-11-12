@@ -8,6 +8,7 @@ import json
 import random
 import struct
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
@@ -354,6 +355,49 @@ def test_the_config_is_changed_by_one_writer_at_a_time():
     asyncio.run(both())
     assert order == ["install in", "install out", "tuning in", "tuning out"]
     asyncio.run(both())  # another loop: a lock of its own
+
+
+def test_a_write_waits_out_a_reader_of_the_file(tmp_path, monkeypatch):
+    """2026-11-12 (found by a test that failed once): Windows refuses os.replace while another program has the file
+    open for reading - llama-swap rereads the config right after the hub writes it, and an install failed with
+    «[WinError 5] Отказано в доступе». The write and the copy back wait the reader out; one that never lets go
+    leaves the file as it was and no part beside it."""
+    path = tmp_path / "config.yaml"
+    path.write_text(CONFIG, encoding="utf-8")
+
+    def held(seconds):
+        opened = threading.Event()
+
+        def reader():
+            with path.open(encoding="utf-8") as file:
+                file.read()
+                opened.set()
+                time.sleep(seconds)
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        assert opened.wait(5)
+        return thread
+
+    new = lc.edit(CONFIG, "big", {"context": 49152})
+    reading = held(0.4)
+    backup = lc.write(path, new)
+    reading.join()
+    written = path.read_text(encoding="utf-8")
+    assert written == new and lc.model_view(written, "big")["context"] == 49152 and list(lc.model_blocks(written)) == [
+        "fast", "big", "huge"]  # fmt: skip
+    assert backup.read_text(encoding="utf-8") == CONFIG
+    reading = held(0.4)
+    lc.restore(path, backup)
+    reading.join()
+    assert path.read_text(encoding="utf-8") == CONFIG
+
+    monkeypatch.setattr(lc, "REPLACE_WAITS_S", (0.01, 0.01))
+    reading = held(1.0)
+    with pytest.raises(PermissionError):
+        lc.write(path, new)
+    reading.join()
+    assert path.read_text(encoding="utf-8") == CONFIG and not path.with_name("config.yaml.part").exists()
 
 
 def test_a_model_under_a_new_id_and_name():
