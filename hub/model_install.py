@@ -45,7 +45,7 @@ import httpx
 from common import disks, hardware, kept_json
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
-from common.llama_memory import COMPUTE_GIB, GIB, RESERVE_GIB, kv_bytes
+from common.llama_memory import COMPUTE_GIB, GIB, RAM_RESERVE_GIB, RESERVE_GIB, kv_bytes
 from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
@@ -69,8 +69,6 @@ FIT_BITS = 4.9  # a search's «поместится» (32.5): a model taken as i
 # a search's sizes (32.5): parameters from - to (0: no bound); "fits" - as much as this computer holds (fits_params)
 SIZES = {"small": (0, 4 * 10**9), "medium": (4 * 10**9, 15 * 10**9), "large": (15 * 10**9, 40 * 10**9),
          "huge": (40 * 10**9, 0)}  # fmt: skip
-OTHER_VRAM_GIB = 1.0  # what the desktop and other programs hold of the video memory while a model is swapped
-RAM_RESERVE_GIB = 4.0  # Windows and the browser keep this much of the RAM
 DISK_MARGIN_GIB = 2.0
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
@@ -143,20 +141,16 @@ def sd_server(text: str, macro: str = SD_MACRO) -> Path | None:
 
 
 def room(status: dict[str, Any] | None) -> dict[str, Any]:
-    """The memory a new local model can have: video memory - free now, or all but the desktop's share when llama-swap
-    holds a model (it unloads that one to start another) - and the RAM left over Windows' own."""
+    """The memory a new local model can have, by the computer itself (38.1): its video memory less the desktop's
+    share, its RAM less Windows' own. Not what is taken right now: another program holding memory (Ollama, a game)
+    is a reason to close it, not to judge that a model does not fit."""
     gpu = (status or {}).get("gpu") or {}
     memory = (status or {}).get("memory") or {}
     loaded = [r.get("model", "") for r in ((status or {}).get("local") or {}).get("running", [])]
     total = (gpu.get("vram_total_mib") or 0) / 1024
-    if not total:
-        vram = 0.0
-    elif loaded:
-        vram = total - RESERVE_GIB - OTHER_VRAM_GIB
-    else:
-        vram = total - (gpu.get("vram_used_mib") or 0) / 1024 - 0.3
+    vram = total - RESERVE_GIB if total else 0.0
     ram_total = memory.get("ram_total_gib") or 0.0
-    ram = ram_total - (memory.get("ram_used_gib") or 0.0) - RAM_RESERVE_GIB
+    ram = ram_total - RAM_RESERVE_GIB
     return {"gpu": gpu.get("name") or "", "vram_total_gib": round(total, 1), "vram_gib": round(max(vram, 0.0), 1),
             "ram_total_gib": round(ram_total, 1), "ram_gib": round(max(ram, 0.0), 1), "loaded": loaded}  # fmt: skip
 
@@ -541,8 +535,8 @@ class Installer:
         return room(self._status() or self._kept_machine())
 
     def _kept_machine(self) -> dict[str, Any] | None:
-        """computer.json as a sample (35.2): a hub just started, before its first look at the machine - the whole
-        memory counted free for those seconds."""
+        """computer.json as a sample (35.2): a hub just started, before its first look at the machine - judged as
+        by a sample, room() counts only what the computer has (38.1)."""
         kept = self._computer
         if not kept.get("ram_total_gib") and not kept.get("vram_total_gib"):
             return None

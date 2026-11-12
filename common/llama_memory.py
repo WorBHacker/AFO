@@ -13,8 +13,12 @@ GIB = 1024**3
 # bytes per cached value: llama.cpp's KV cache types (a block of 32 values with its scale)
 CACHE_BYTES = {"f32": 4.0, "f16": 2.0, "bf16": 2.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32,
                "q4_1": 20 / 32, "q4_0": 18 / 32}  # fmt: skip
-COMPUTE_GIB = 0.8  # llama.cpp's compute buffers on the GPU, roughly
-RESERVE_GIB = 0.6  # what Windows and other programs keep of the video memory
+# llama.cpp's compute buffers on the GPU, roughly - one figure for the installer, tuning and the window (38.1)
+COMPUTE_GIB = 0.8
+# what a model may not count on, of the computer's own memory (38.1, the user's word): the video memory Windows and
+# the desktop keep, the RAM Windows 11 keeps
+RESERVE_GIB = 1.0
+RAM_RESERVE_GIB = 3.0
 
 
 def kv_bytes(info: dict[str, Any], context: int, cache_type: str) -> float:

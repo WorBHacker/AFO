@@ -33,7 +33,7 @@ import psutil
 
 from common.gguf import GGUFError, model_info
 from common.i18n import tr
-from common.llama_memory import kv_bytes
+from common.llama_memory import COMPUTE_GIB, kv_bytes
 
 from . import llama_config
 from .db import utc_now
@@ -59,7 +59,6 @@ WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write 
 RELOADING = "shutting down"  # llama-swap's answer while it rereads the file («group is shutting down»)
 RETRY_S = 1.0
 GIB = 1024**3
-COMPUTE_GIB = 1.5  # llama.cpp's buffers beside the weights and the cache (hub/model_install.py)
 
 
 class TuneError(Exception):

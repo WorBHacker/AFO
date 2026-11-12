@@ -22,8 +22,9 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from common import llama_memory
 from common.paths import data_paths, engines_home
-from hub import engines, hf
+from hub import engines, hf, tuning
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.auth import create_client
@@ -318,9 +319,9 @@ def test_the_parameter_count_by_the_name_when_hugging_face_read_a_projector():
 
 def test_this_computer_against_a_model():
     space = mi.room(SPACE)
-    assert (space["vram_gib"], space["ram_gib"]) == (14.7, 44.0)  # free video memory; RAM over Windows' share
+    assert (space["vram_gib"], space["ram_gib"]) == (15.0, 61.0)  # the computer's own, less the desktop's and Windows'
     swapped = mi.room({**SPACE, "local": {"running": [{"model": "big"}]}})
-    assert swapped["vram_gib"] == 14.4 and swapped["loaded"] == ["big"]  # the loaded one would unload
+    assert swapped["vram_gib"] == 15.0 and swapped["loaded"] == ["big"]  # the loaded one would unload
     info = {"layers": 48, "kv_layers": 48, "kv_heads": 8, "key_length": 128, "value_length": 128,
             "context_trained": 131072}  # fmt: skip
     assert mi.verdict(8 * GIB, info, space) == "gpu"
@@ -604,7 +605,7 @@ def wait_for(hub, job_id, *statuses, timeout=30.0):
 
 def test_a_model_installed_tried_and_removed(hub):
     system = hub.get("/v1/install/system").json()
-    assert system["server"] == "${llama_server}" and system["space"]["vram_gib"] == 14.7
+    assert system["server"] == "${llama_server}" and system["space"]["vram_gib"] == 15.0
     home = hub.tmp / "localchat-model"  # LocalChat's own `model` folder (conftest points it at the test's folder)
     assert system["folder"] == str(home) and system["home"]["folder"] == str(home)
     assert system["drives"][0]["folder"] == str(Path(hub.tmp / "T" / "AFO" / "models"))
@@ -822,6 +823,30 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
 
 
+def test_a_model_is_judged_by_this_computer_not_by_what_is_busy_now(hub):
+    """38.1 (2026-11-12, a screenshot from the user's laptop): an RTX 3060 of 6 GB and 16 GB of RAM, Ollama holding a
+    14B model. Ollama is not llama-swap, so the hub counted its memory as taken and judged every model «не поместится»,
+    one of 3 GB too, and the wizard had nothing to offer. What fits is judged by the computer itself (computer.json):
+    the video memory less 1 GB, the RAM less 3 GB; llama.cpp's buffers are one figure for the installer and tuning."""
+    laptop = {
+        "gpu": {"name": "RTX 3060 Laptop", "vram_total_mib": 6144, "vram_used_mib": 5734},
+        "memory": {"ram_total_gib": 16.0, "ram_used_gib": 14.5},
+        "local": {"reachable": True, "running": []},
+    }
+    hub.app.state.status.latest = laptop
+    space = hub.get("/v1/install/system").json()["space"]
+    assert (space["vram_gib"], space["ram_gib"]) == (5.0, 13.0)
+    info = {"layers": 36, "kv_layers": 36, "kv_heads": 8, "key_length": 128, "value_length": 128,
+            "context_trained": 40960}  # fmt: skip
+    assert mi.verdict(3 * GIB, info, space) == "gpu"
+    offered = hub.get("/v1/install/catalog").json()["models"][0]
+    assert (offered.get("recommended") or {}).get("verdict") == "gpu"  # the wizard has a model to offer
+
+    hub.app.state.status.latest = {**laptop, "local": {"reachable": True, "running": [{"model": "a"}]}}
+    assert hub.get("/v1/install/system").json()["space"]["vram_gib"] == 5.0  # llama-swap's own model: the same room
+    assert tuning.COMPUTE_GIB == llama_memory.COMPUTE_GIB  # one figure for llama.cpp's buffers
+
+
 def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
     """35.2 (2026-11-08, the user's word: «сделать документ для приложение чтобы каждый раз не провести замеры»): the
     graphics card and the memory go into computer.json in the data folder, which an update leaves alone - only when
@@ -840,7 +865,7 @@ def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
 
     hub.app.state.status.latest = None  # no sample yet
     space = hub.get("/v1/install/system").json()["space"]
-    assert (space["gpu"], space["vram_total_gib"], space["vram_gib"], space["ram_gib"]) == ("RTX", 16.0, 15.7, 60.0)
+    assert (space["gpu"], space["vram_total_gib"], space["vram_gib"], space["ram_gib"]) == ("RTX", 16.0, 15.0, 61.0)
     started = mi.Installer(None, None, None, None, llama_swap_url="", status=lambda: None, computer=file)  # restarted
     assert started.space()["gpu"] == "RTX" and started.space()["ram_total_gib"] == 64.0
 
@@ -857,7 +882,7 @@ def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
 def test_what_hugging_face_said_is_kept_for_the_next_start(hub, monkeypatch):
     """35.3 (D58): what Hugging Face said about the models offered lived in the hub's memory - after each update every
     model was asked again over the network (2-3 s, without a network «Каталог не загрузился»). Now it is in a file: the
-    list comes at once and without a network, judged against the memory as it is now; an answer older than an hour is
+    list comes at once and without a network, judged against the computer as it is now; an answer older than an hour is
     shown at once, and a newer one comes in the background for the next look."""
     installer, file = hub.app.state.installer, data_paths().hf_answers
     first = hub.get("/v1/install/catalog").json()["models"]
@@ -883,7 +908,7 @@ def test_what_hugging_face_said_is_kept_for_the_next_start(hub, monkeypatch):
     again = hub.get("/v1/install/catalog").json()["models"]
     assert again[0]["recommended"]["quant"] == "Q8_0" and "error" not in again[0] and asked == []
 
-    hub.app.state.status.latest = {**SPACE, "gpu": {**SPACE["gpu"], "vram_used_mib": 16000}}  # judged as it is now
+    hub.app.state.status.latest = {**SPACE, "gpu": {**SPACE["gpu"], "vram_total_mib": 512}}  # judged as it is now
     busy = hub.get("/v1/install/catalog").json()["models"][0]
     assert (busy.get("recommended") or {}).get("verdict") != "gpu" or busy["recommended"]["quant"] != "Q8_0"
     hub.app.state.status.latest = SPACE
@@ -1028,9 +1053,9 @@ def test_the_search_narrowed_by_what_for_size_and_order(hub):
     assert look(size="medium") == [] and FakeHub.searches[-1]["num_parameters"] == ["min:4000000000,max:15000000000"]
     assert look(size="huge") == [] and FakeHub.searches[-1]["num_parameters"] == ["min:40000000000"]
     fits = hub.get("/v1/install/system").json()["fits_params"]
-    assert 22e9 < fits < 24e9  # 14.7 GB of video memory, a model of about Q4_K_M with a context of 8K
+    assert 22e9 < fits < 24e9  # 15 GB of video memory, a model of about Q4_K_M with a context of 8K
     assert look(size="fits") == [tiny, free] and FakeHub.searches[-1]["num_parameters"] == [f"min:0,max:{fits}"]
-    assert mi.fits_params(mi.room({"memory": SPACE["memory"]})) > fits  # no graphics card: the 44 GB of RAM
+    assert mi.fits_params(mi.room({"memory": SPACE["memory"]})) > fits  # no graphics card: the 61 GB of RAM
 
     assert look(plain="true") == [tiny, big]  # no models with their refusals taken out
     assert look(q="tiny", plain="true", task="chat") == [tiny] and FakeHub.searches[-1]["search"] == ["tiny"]
