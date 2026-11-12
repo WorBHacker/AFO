@@ -212,6 +212,11 @@ def test_models_added_are_tried_by_the_button_one_at_a_time_in_order(hub, tmp_pa
 
     asked = len(FakeLlamaSwap.asked)
     jobs = add("A", "B", "C")
+    # the worker says «added» and then looks once more for work before it ends: under a full run's load the test
+    # asked in between (2026-11-12, the end of stage 40)
+    deadline = time.monotonic() + 5
+    while installer.busy() and time.monotonic() < deadline:
+        time.sleep(0.02)
     assert len(FakeLlamaSwap.asked) == asked and not installer.busy() and not hub.app.state.tuner.state_job()["queue"]
     chatting = [True]
     installer.chat_busy = lambda: chatting[0]  # a chat answers: the trials wait for it
