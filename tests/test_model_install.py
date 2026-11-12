@@ -824,6 +824,34 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
 
 
+def test_a_model_installed_while_the_engine_comes_waits_for_it(hub):
+    """39.3 (2026-11-12): the scanner fetches the engine by itself (39.1) and the wizard offers a model at once -
+    «Установить» said «нет конфига llama-swap» (409) while llama-swap was still on its way. Now the model downloads
+    meanwhile and waits for the engine, «ждёт программу для локальных моделей»; once it is in, the model goes into
+    its config and is tried. With no engine coming the refusal stays."""
+    text = hub.config.read_text(encoding="utf-8")
+    hub.config.unlink()  # no llama-swap here yet
+    refused = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M"})
+    assert refused.status_code == 409 and "нет конфига llama-swap" in refused.json()["detail"]
+
+    setup_ = hub.app.state.setup
+    setup_.job = {"status": "downloading", "auto": True, "build": "cuda-13", "done": 0, "total": 0}  # on its way
+    sent = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M"})
+    assert sent.status_code == 200, sent.text
+    job = sent.json()["job"]
+    deadline = time.monotonic() + 20
+    while "ждёт программу для локальных моделей" not in (found := wait_for(hub, job["id"], "queued"))["error"]:
+        assert time.monotonic() < deadline, found
+        time.sleep(0.05)
+    assert found["done_bytes"] == found["total_bytes"]  # downloaded meanwhile
+
+    hub.config.write_text(text, encoding="utf-8")  # the engine is in
+    setup_.job = {"status": "done", "auto": True}
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert done["model_id"] in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+
+
 def test_a_model_is_judged_by_this_computer_not_by_what_is_busy_now(hub):
     """38.1 (2026-11-12, a screenshot from the user's laptop): an RTX 3060 of 6 GB and 16 GB of RAM, Ollama holding a
     14B model. Ollama is not llama-swap, so the hub counted its memory as taken and judged every model «не поместится»,

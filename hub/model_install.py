@@ -80,6 +80,8 @@ RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection 
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
+ENGINE_WAIT_S = 2.0  # how often a model downloaded before the engine looks for it again (39.3)
+ENGINE_WAIT = N_("ждёт программу для локальных моделей: она скачивается")
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 IN_CONFIG = ("done", "added")  # an install whose block llama-swap's config has (34.5: added - not tried yet)
 VERDICTS = {
@@ -381,6 +383,8 @@ class Installer:
         # filled the memory) and while a chat answers (its model would be swapped out); set by the server (34.4)
         self.tuning: Callable[[], bool] = lambda: False
         self.chat_busy: Callable[[], bool] = lambda: False
+        # the engine on its way (39.3: the scanner, the wizard): an install waits for it, not a 409; set by the server
+        self.engine_coming: Callable[[], bool] = lambda: False
         self.machine: Callable[[], dict[str, Any]] = this_computer  # what pictures it can make (tests give their own)
         self._task: asyncio.Task | None = None
         self._cancel: dict[str, threading.Event] = {}
@@ -810,9 +814,14 @@ class Installer:
         except OSError as exc:
             raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
                                422) from exc  # fmt: skip
-        text = config_text()
-        llama_config.server_command(text)  # no llama.cpp in the config: nothing to install into
-        model_id = llama_config.free_id(text, id_base(repo, quant))
+        try:
+            text = config_text()
+            llama_config.server_command(text)  # no llama.cpp in the config: nothing to install into
+        except InstallError, llama_config.ConfigError:
+            if not self.engine_coming():
+                raise
+            text = "models:\n"  # the engine on its way (39.3): the model downloads meanwhile, its block waits
+        model_id = llama_config.free_id(text, id_base(repo, quant))  # _configure looks again
         name = spec.get("name") or f"{(entry or {}).get('name') or repo_name(repo)} {quant}"
         purposes = list((entry or {}).get("purposes") or ["chat"])
         if lens and "vision" not in purposes:
@@ -1139,6 +1148,7 @@ class Installer:
                 await self._try(await self._get(job_id), True)
                 return
             await self._download(found, cancel)
+            await self._engine_wait(job_id, cancel)
             if not found.get("own_files", 1):  # from the drives (34.5, D57): into the config only, nothing loaded -
                 await self._configure(await self._get(job_id))  # the trial is the person's button
                 await self._sync()
@@ -1165,6 +1175,16 @@ class Installer:
         finally:
             self._cancel.pop(job_id, None)
             self.speed.pop(job_id, None)
+
+    async def _engine_wait(self, job_id: str, cancel: threading.Event) -> None:
+        """Until the engine on its way is in (39.3): a model downloaded before llama-swap waits «в очереди», with
+        why; an engine that did not come leaves the config's own refusal to _configure."""
+        while self.engine_coming():
+            if cancel.is_set():
+                raise hf.Cancelled()
+            if (await self._get(job_id))["error"] != tr(ENGINE_WAIT):
+                await self._set(job_id, status="queued", error=tr(ENGINE_WAIT))
+            await asyncio.sleep(ENGINE_WAIT_S)
 
     async def _card(self, job_id: str, cancel: threading.Event) -> None:
         """Until the graphics card is free for the trial (34.4): «Подбор параметров» measures - llama-bench runs past

@@ -92,7 +92,7 @@ from .programs import ProgramCatalog
 from .projects import keep_private, list_projects, set_path
 from .proving import ProvingGround
 from .release import Releases
-from .resources import Resources
+from .resources import FETCHING, Resources
 from .retention import Keeper
 from .ripgrep import Fetcher
 from .sandbox import orphans as sandbox_orphans
@@ -214,6 +214,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
         )  # the first-run wizard (10.2)
         app.state.setup.on_updated = lambda: app.state.tuner.request_all(auto=True)  # a newer llama.cpp: measured anew
+        app.state.installer.engine_coming = lambda: app.state.setup.job.get("status") in FETCHING  # 39.3
         # what local models need, on the disk: AFO's own engine missing - fetched at the start and when the window
         # comes (39.1); the person's own llama-swap never touched
         app.state.resources = Resources(

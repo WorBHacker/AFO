@@ -2026,6 +2026,7 @@
  "ждёт очереди": "queued",
  "ждёт подтверждения": "waiting for approval",
  "ждёт пробного запуска": "waiting for its trial run",
+ "ждёт программу для локальных моделей: она скачивается": "waits for the program for local models: it is downloading",
  "ждёт события": "waiting for an event",
  "журналы терминалов": "terminal logs",
  "жёсткий диск (медленно)": "hard disk (slow)",
