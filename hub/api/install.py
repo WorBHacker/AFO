@@ -2,8 +2,9 @@
 app's alone, like the launch settings (hub/api/llama.py): it decides what runs on the user's computer.
 
 GET /system - this computer as an install sees it (video memory and RAM for a new model, the drives, how many
-parameters fit); GET /catalog - the curated list with the variant recommended here; GET /search - Hugging Face at
-large, by words, what for, size and order (32.5); GET /repo/<a>/<b> - one repository's variants judged. POST /
+parameters fit, the memory reserves); PUT /reserve - the user's memory reserves (38.3); GET /catalog - the curated
+list with the variant recommended here; GET /search - Hugging Face at large, by words, what for, size and order
+(32.5); GET /repo/<a>/<b> - one repository's variants judged. POST /
 starts an install; GET /jobs lists them (`lost` - its block is gone from llama-swap's config, 34.4); POST
 /jobs/<id>/<pause|resume|cancel|trial> (resume a lost one - its block written again; trial - one model added and not
 tried); DELETE /jobs/<id> takes an unfinished one off the list (its files too); DELETE /models/<id> removes an
@@ -41,8 +42,27 @@ def _refusal(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status, detail=str(exc))
 
 
+class Reserve(BaseModel):
+    vram_gib: float
+    ram_gib: float
+
+
 @router.get("/system")
 async def system(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    return await _system(request)
+
+
+@router.put("/reserve")
+async def set_reserve(body: Reserve, request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """The memory a model may not count on (38.3): the user's own; this computer as an install sees it after."""
+    try:
+        await _installer(request).set_reserve(body.vram_gib, body.ram_gib)
+    except mi.InstallError as exc:
+        raise _refusal(exc) from exc
+    return await _system(request)
+
+
+async def _system(request: Request) -> dict:
     installer = _installer(request)
     drives = await asyncio.to_thread(installer.drives)
     try:
@@ -55,6 +75,7 @@ async def system(request: Request, client: Annotated[Client, Depends(require_app
     on = next((d for d in drives if str(home).upper().startswith(str(d["root"]).upper()[:2])), None)
     space = installer.space()
     return {"space": space, "fits_params": mi.fits_params(space),  # the search's «поместится» (32.5)
+            "reserve": installer.reserve_view(),  # what a model may not count on, the user's (38.3)
             "drives": [{**d, "folder": str(mi.models_root(d))} for d in drives],
             "server": server, "problem": problem, "folder": str(home),  # where a model goes unless told otherwise
             "home": {"folder": str(home), "letter": on["letter"] if on else "", "words": on.get("words", "") if on

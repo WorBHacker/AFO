@@ -2039,6 +2039,8 @@
  "задачу|задачи|задач": "task|tasks",
  "закончен": "finished",
  "закончил без отчёта": "finished without a report",
+ "запас ОЗУ: от {low:g} до {high:g} ГБ": "RAM reserve: from {low:g} to {high:g} GB",
+ "запас видеопамяти: от {low:g} до {high:g} ГБ": "VRAM reserve: from {low:g} to {high:g} GB",
  "записывать файлы": "write files",
  "записываю в llama-swap": "writing to llama-swap",
  "запись": "write",

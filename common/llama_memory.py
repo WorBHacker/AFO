@@ -35,9 +35,11 @@ def estimate(
     mmproj_bytes: int = 0,
     mmproj_on_gpu: bool = True,
     vram_total_mib: int | None = None,
+    reserve_gib: float = RESERVE_GIB,
 ) -> dict[str, Any]:
     """{vram_gb, ram_gb, kv_gb, weights_gb, verdict, text}. `gpu_layers`: "all", a number, or "auto" (llama.cpp's
-    --fit: it puts on the GPU what fits and the rest in RAM)."""
+    --fit: it puts on the GPU what fits and the rest in RAM). `reserve_gib` - the video memory a model may not count
+    on: the user's (38.3), else the default."""
     weights = float(info["size_bytes"])
     kv = kv_bytes(info, context, cache_type)
     blocks = max(info["layers"], 1) + 1  # the layers and the output
@@ -45,7 +47,7 @@ def estimate(
     vision_gpu = mmproj_bytes if mmproj_on_gpu else 0
     if gpu_layers == "auto":
         need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB
-        room = (total - RESERVE_GIB) if total else need
+        room = (total - reserve_gib) if total else need
         vram = min(need, room)
         spill = need - vram  # the layers that did not fit: in RAM
         ram = spill + (mmproj_bytes - vision_gpu) / GIB
@@ -64,7 +66,7 @@ def estimate(
         out["verdict"] = "unknown"
     elif gpu_layers == "auto":
         out["verdict"] = "auto" if spill > 0.1 else "fits"
-    elif vram <= total - RESERVE_GIB:
+    elif vram <= total - reserve_gib:
         out["verdict"] = "fits" if spill < 0.1 else "split"
     else:
         out["verdict"] = "over"

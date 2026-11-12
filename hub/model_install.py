@@ -71,6 +71,10 @@ SIZES = {"small": (0, 4 * 10**9), "medium": (4 * 10**9, 15 * 10**9), "large": (1
          "huge": (40 * 10**9, 0)}  # fmt: skip
 DISK_MARGIN_GIB = 2.0
 BUSY_SLACK_GIB = 0.5  # the desktop holding a little more video memory than its share is not worth a word (38.2)
+# what a model may not count on of the computer's memory (38.1), the user's to change (38.3): hub.db's settings
+RESERVE_SETTING = "install.reserve"
+DEFAULT_RESERVE = {"vram_gib": RESERVE_GIB, "ram_gib": RAM_RESERVE_GIB}
+RESERVE_BOUNDS = {"vram_gib": (0.0, 8.0), "ram_gib": (0.0, 32.0)}
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
@@ -141,17 +145,43 @@ def sd_server(text: str, macro: str = SD_MACRO) -> Path | None:
 # --- this computer against a model ---
 
 
-def room(status: dict[str, Any] | None) -> dict[str, Any]:
+def reserve_saved(conn) -> dict[str, float]:
+    """The memory reserves as the user set them (38.3), the defaults for what is not set."""
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (RESERVE_SETTING,)).fetchone()
+    saved = json.loads(row["value"]) if row else {}
+    return {key: float(saved[key]) if isinstance(saved.get(key), int | float) and not isinstance(saved[key], bool)
+            else value for key, value in DEFAULT_RESERVE.items()}  # fmt: skip
+
+
+def reserve_save(conn, vram_gib: Any, ram_gib: Any) -> dict[str, float]:
+    """The user's reserves into the settings (38.3); out of bounds - InstallError in words, nothing written."""
+    value = {"vram_gib": vram_gib, "ram_gib": ram_gib}
+    words = {"vram_gib": N_("запас видеопамяти: от {low:g} до {high:g} ГБ"),
+             "ram_gib": N_("запас ОЗУ: от {low:g} до {high:g} ГБ")}  # fmt: skip
+    for key, (low, high) in RESERVE_BOUNDS.items():
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, int | float) or not low <= number <= high:
+            raise InstallError(tr(words[key], low=low, high=high), 422)
+    value = {key: round(float(number), 1) for key, number in value.items()}
+    conn.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET "
+                 "value = excluded.value, updated_at = excluded.updated_at",
+                 (RESERVE_SETTING, json.dumps(value), utc_now()))  # fmt: skip
+    return value
+
+
+def room(status: dict[str, Any] | None, reserve: dict[str, float] | None = None) -> dict[str, Any]:
     """The memory a new local model can have, by the computer itself (38.1): its video memory less the desktop's
-    share, its RAM less Windows' own. Not what is taken right now: another program holding memory (Ollama, a game)
-    is a reason to close it, not to judge that a model does not fit."""
+    share, its RAM less Windows' own - the user's reserves (38.3) or the defaults. Not what is taken right now:
+    another program holding memory (Ollama, a game) is a reason to close it, not to judge that a model does not
+    fit."""
+    reserve = reserve or DEFAULT_RESERVE
     gpu = (status or {}).get("gpu") or {}
     memory = (status or {}).get("memory") or {}
     loaded = [r.get("model", "") for r in ((status or {}).get("local") or {}).get("running", [])]
     total = (gpu.get("vram_total_mib") or 0) / 1024
-    vram = total - RESERVE_GIB if total else 0.0
+    vram = total - reserve["vram_gib"] if total else 0.0
     ram_total = memory.get("ram_total_gib") or 0.0
-    ram = ram_total - RAM_RESERVE_GIB
+    ram = ram_total - reserve["ram_gib"]
     # other programs hold the video memory past the desktop's share, by more than BUSY_SLACK_GIB (38.2): words, not
     # a verdict; while llama-swap holds a model its share is not told from theirs - the window says that one unloads
     busy = short_now({"vram_gb": vram - BUSY_SLACK_GIB}, status) if vram > BUSY_SLACK_GIB and not loaded else ""
@@ -340,6 +370,7 @@ class Installer:
         self._secrets = secrets
         self._url = llama_swap_url
         self._status = status
+        self.reserve: dict[str, float] = dict(DEFAULT_RESERVE)  # the user's memory reserves (38.3): start() reads them
         self.drives = drives  # the disks a model may go to (common/disks.py; tests give their own)
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
@@ -379,9 +410,21 @@ class Installer:
                 (tr("хаб перезапускался — загрузка продолжится по кнопке «Продолжить»"), utc_now()),
             ).rowcount
 
+        await self.load_reserve()
         left = await self._db.acall(pause)
         self._naming = asyncio.create_task(self.name_ollama_models())  # in the background: llama-swap may not be up
         return left
+
+    async def load_reserve(self) -> None:
+        self.reserve = await self._db.acall(reserve_saved)
+
+    async def set_reserve(self, vram_gib: Any, ram_gib: Any) -> dict[str, Any]:
+        """The user's memory reserves (38.3): saved, then judged by from the next look on."""
+        self.reserve = await self._db.acall(lambda conn: reserve_save(conn, vram_gib, ram_gib))
+        return self.reserve_view()
+
+    def reserve_view(self) -> dict[str, Any]:
+        return {**self.reserve, "default": dict(DEFAULT_RESERVE)}
 
     async def name_ollama_models(self) -> list[tuple[str, str]]:
         """Models of Ollama's added under the file's name (`sha256-…`; before 34.2, and «Вернуть в llama-swap» brought
@@ -537,7 +580,7 @@ class Installer:
         return self._headers[repo, path]
 
     def space(self) -> dict[str, Any]:
-        return room(self._status() or self._kept_machine())
+        return room(self._status() or self._kept_machine(), self.reserve)
 
     def _kept_machine(self) -> dict[str, Any] | None:
         """computer.json as a sample (35.2): a hub just started, before its first look at the machine - judged as

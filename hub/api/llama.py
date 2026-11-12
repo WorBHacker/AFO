@@ -77,6 +77,7 @@ async def _listing(request: Request) -> dict[str, Any]:
         view.update(await asyncio.to_thread(_files, view))
     status = request.app.state.status.latest or {}
     return {"path": str(path), "models": views, "vram_total_mib": (status.get("gpu") or {}).get("vram_total_mib"),
+            "vram_reserve_gib": request.app.state.installer.reserve["vram_gib"],  # the user's (38.3)
             "backups": [p.name for p in llama_config.backups(path)]}  # fmt: skip
 
 
@@ -159,7 +160,8 @@ async def _estimate(request: Request, model_id: str) -> dict[str, Any] | None:
         return None
     return estimate(view["info"], context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=view.get("mmproj_bytes") or 0,
-                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=total)  # fmt: skip
+                    mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=total,
+                    reserve_gib=request.app.state.installer.reserve["vram_gib"])  # fmt: skip
 
 
 class Restore(BaseModel):

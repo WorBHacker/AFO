@@ -914,6 +914,35 @@ def test_a_model_loading_while_other_programs_hold_the_memory_says_so(hub, monke
     assert words.startswith("сейчас свободно 2.0 ГБ ОЗУ") and "видеопамяти" not in words
 
 
+def test_the_memory_reserves_are_the_users_to_change(hub):
+    """38.3 (2026-11-12, the user's word: «запасы для опытных меняются в Настройки → Модели»): what a model may not
+    count on of the computer's memory - 1 GB of the video memory, 3 GB of the RAM - is the user's to change. The
+    installer, the wizard, the search, tuning and the window's estimate of a model's launch judge by it; it stays
+    across a restart; what is out of bounds is refused in words."""
+    system = hub.get("/v1/install/system").json()
+    default = {"vram_gib": 1.0, "ram_gib": 3.0}
+    assert system["reserve"] == {**default, "default": default}
+    changed = hub.put("/v1/install/reserve", json={"vram_gib": 2.5, "ram_gib": 6}).json()
+    assert changed["reserve"] == {"vram_gib": 2.5, "ram_gib": 6.0, "default": default}
+    assert (changed["space"]["vram_gib"], changed["space"]["ram_gib"]) == (13.5, 58.0)  # 16 and 64 GB, less these
+    assert changed["fits_params"] < system["fits_params"]  # the search's «поместится»
+    assert hub.app.state.tuner._space()["vram_gib"] == 13.5  # tuning's room: the installer's
+    assert hub.get("/v1/llama/models").json()["vram_reserve_gib"] == 2.5  # the window's estimate of a launch
+
+    db, bus = hub.app.state.db, hub.app.state.bus
+    started = mi.Installer(db, bus, None, None, llama_swap_url="", status=lambda: SPACE)  # the hub restarted
+    assert started.space()["vram_gib"] == 15.0  # before it reads the database: the defaults
+    hub.portal.call(started.load_reserve)
+    assert (started.space()["vram_gib"], started.space()["ram_gib"]) == (13.5, 58.0)
+
+    for wrong in ({"vram_gib": -1, "ram_gib": 3}, {"vram_gib": 1, "ram_gib": 100}, {"vram_gib": 9, "ram_gib": 3}):
+        refused = hub.put("/v1/install/reserve", json=wrong)
+        assert refused.status_code == 422 and "запас" in refused.json()["detail"]
+    assert hub.get("/v1/install/system").json()["reserve"]["vram_gib"] == 2.5  # nothing changed by them
+    back = hub.put("/v1/install/reserve", json=default).json()
+    assert back["space"]["vram_gib"] == 15.0
+
+
 def test_what_this_computer_is_stays_in_a_file_across_restarts(hub):
     """35.2 (2026-11-08, the user's word: «сделать документ для приложение чтобы каждый раз не провести замеры»): the
     graphics card and the memory go into computer.json in the data folder, which an update leaves alone - only when
