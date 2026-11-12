@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from fastapi import FastAPI
 from starlette.routing import Route
@@ -112,9 +113,11 @@ log = logging.getLogger("hub")
 
 def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -> FastAPI:
     """`secret_store` defaults to the OS store (Windows Credential Manager); tests pass their own."""
+    requested = settings.llama_swap_url  # llama-swap's address as asked; its port may move at each start (39.2)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal settings
         paths = settings.paths.ensure()
         keep_private(paths.root)  # the data folder is never served through a project, even LocalChat's own (D46)
         db = Database(paths.db)
@@ -124,6 +127,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
         load_token_files(paths.tokens)  # masked in all a model sees, by value (D46)
         db.call(autostart.load_choices)  # llama-swap's config and its start, as chosen in the window (10.3)
+        if settings.move_llama_swap:  # another program on its port: AFO's own llama-swap on a free one (39.2) -
+            # before all that talks to llama-swap is built with its address
+            settings = replace(settings, llama_swap_url=await autostart.llama_swap_url(db, requested))
         if await autostart.find_running(db, settings.llama_swap_url):  # one the person runs already (10.4)
             log.info("llama-swap's paths: those of the one running")
         log.info("language: %s", db.call(language.load))  # what the hub writes for people (10.5)

@@ -27,6 +27,8 @@ class HubSettings:
     status_interval_s: float = 2.0  # GPU / memory / llama-swap sampling; 0 turns the monitor off
     process_interval_s: float = 3.0  # processes and ports in project folders; 0: only when asked
     manage_llama_swap: bool = False  # start llama-swap when it does not answer (Q8); the real hub, not tests
+    # another program on llama-swap's port: AFO's own llama-swap to a free one (39.2); not with an address set by hand
+    move_llama_swap: bool = False
     schedule_tick_s: float = 0.0  # how often schedules are looked at (9.7); 0: never by themselves - tests
     programs_interval_s: float = 0.0  # looks for new programs (D43); 0: only when asked - tests never scan
     backup_interval_s: float = 0.0  # checks for today's database copy (D29); 0: never
@@ -42,6 +44,7 @@ class HubSettings:
             port=int(os.environ.get(PORT_ENV, DEFAULT_PORT)),
             llama_swap_url=os.environ.get(LLAMA_SWAP_URL_ENV, DEFAULT_LLAMA_SWAP_URL),
             manage_llama_swap=True,
+            move_llama_swap=LLAMA_SWAP_URL_ENV not in os.environ,  # an address set by hand stays as it is (39.2)
             programs_interval_s=600.0,
             schedule_tick_s=20.0,
             backup_interval_s=3600.0,

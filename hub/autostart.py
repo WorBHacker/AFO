@@ -8,8 +8,10 @@
   LOCALCHAT_LLAMA_SWAP_START, else the script or llama-swap.exe chosen in Settings (10.3), else the start script beside
   the checkout on the computer it was built on, else the llama-swap.exe the first-run wizard put in AFO's engines
   (10.2) - an .exe gets the config (hub/llama_config.py) and the address. On unless the user turns it off in
-  Settings. Its output goes to data/logs/llama-swap.out.log. When another program holds its port (a model of Strata
-  on 8080), llama-swap is not started - it could not listen there - and the hub says who holds it (23.4).
+  Settings. Its output goes to data/logs/llama-swap.out.log. When another program holds its port (Tomcat or a model
+  of Strata on 8080), an .exe is told to listen on a free port after it, kept in the database (39.2, llama_swap_url,
+  chosen at the hub's start); a script listens where it says - it is not started, and the hub says who holds the
+  port (23.4).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -48,6 +51,8 @@ FOUND_START_SETTING = "llama_swap.found_start"  # the running llama-swap's progr
 found_start: Path | None = None
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 READY_TIMEOUT_S = 60.0  # llama-swap itself starts in a second; models load only when asked
+PORT_SETTING = "llama_swap.port"  # where AFO's own llama-swap moved when another program held its port (39.2)
+PORTS_TRIED = 20  # the ports after the default one it may move to
 BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
 
 
@@ -289,6 +294,68 @@ def port_taken(url: str) -> dict[str, Any] | None:
     if holder is None or not holder["name"] or holder["name"].lower().startswith("llama-swap"):
         return None
     return {"port": port, **holder}
+
+
+def _with_port(url: str, port: int) -> str:
+    parts = urlsplit(url)
+    return parts._replace(netloc=f"{parts.hostname}:{port}").geturl()
+
+
+def _kept_port(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (PORT_SETTING,)).fetchone()
+    return json.loads(row["value"]) if row else None
+
+
+def _keep_port(conn: sqlite3.Connection, port: int | None) -> None:
+    if port is None:
+        conn.execute("DELETE FROM settings WHERE key = ?", (PORT_SETTING,))
+        return
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
+        " value = excluded.value, updated_at = excluded.updated_at",
+        (PORT_SETTING, json.dumps(port), utc_now()),
+    )
+
+
+def free_port(host: str, ports: list[int]) -> int | None:
+    """The first of the ports nobody listens on and this process can bind (blocking: psutil and a socket)."""
+    for port in ports:
+        if processes.listener(port) is not None:
+            continue
+        with socket.socket() as probe:
+            try:
+                probe.bind((host, port))
+            except OSError:
+                continue
+        return port
+    return None
+
+
+async def llama_swap_url(db, url: str) -> str:
+    """Where llama-swap listens (39.2): its default port - or, when another program holds it (Tomcat on 8080) and the
+    llama-swap AFO starts is a program it tells where to listen (an .exe, not a script), a free port after it, kept
+    in the database. AFO's llama-swap still running on the kept port (it outlives the hub, D2) is found there; with
+    nothing there and the default free, back on the default."""
+    from .resources import llama_swap_answers
+
+    parts = urlsplit(url)
+    if (parts.hostname or "") not in LOCAL_HOSTS:
+        return url
+    kept = await db.acall(_kept_port)
+    if kept and await llama_swap_answers(_with_port(url, kept)):
+        return _with_port(url, kept)
+    if await asyncio.to_thread(port_taken, url) is None or llama_swap_script().suffix.lower() != ".exe":
+        await db.acall(lambda conn: _keep_port(conn, None))
+        return url
+    default = parts.port or 8080
+    ports = [p for p in [kept, *range(default + 1, default + 1 + PORTS_TRIED)] if p]
+    port = await asyncio.to_thread(free_port, parts.hostname or "127.0.0.1", ports)
+    if port is None:
+        log.warning("port %s is taken and none of the next %s is free: llama-swap stays", default, PORTS_TRIED)
+        return url
+    await db.acall(lambda conn: _keep_port(conn, port))
+    log.info("port %s is taken by another program: llama-swap listens on %s", default, port)
+    return _with_port(url, port)
 
 
 async def answers(url: str, transport: httpx.AsyncBaseTransport | None = None) -> bool:

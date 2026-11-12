@@ -2,13 +2,21 @@
 and llama-swap started by the hub when it does not answer (here a fake starter and a mock llama-swap)."""
 
 import asyncio
+import socket
+import threading
+from http.server import ThreadingHTTPServer
 
 import httpx
 import pytest
+from starlette.testclient import TestClient
 
+from common.paths import data_paths
 from hub import autostart
 from hub.auth import create_client
-from tests.test_tools import hub  # noqa: F401 - the hub fixture
+from hub.server import create_app
+from hub.settings import HubSettings
+from tests.test_setup import OwnSwap
+from tests.test_tools import BASE, hub  # noqa: F401 - the hub fixture
 
 PORT_TAKEN = autostart.port_taken
 
@@ -229,3 +237,65 @@ def test_the_running_llama_swap_is_found_and_kept(hub, tmp_path, monkeypatch):  
     other.write_text('models:\n  "b":\n    cmd: |\n      llama-server -m b.gguf\n', encoding="utf-8")
     chosen = hub.put("/v1/autostart", json={"llama_swap_config": str(other)}).json()
     assert (chosen["llama_swap_config"], chosen["llama_swap_config_source"]) == (str(other), "chosen")
+
+
+def test_llama_swap_moves_off_a_port_another_program_holds(tmp_path, monkeypatch):
+    """39.2 (2026-11-12, the user's word: «Порт llama-swap (8080) занят чужой программой — llama-swap сам переходит на
+    свободный»): a laptop with Tomcat on 8080 - AFO's own llama-swap (an .exe it tells where to listen) goes to a free
+    port after it, before the hub builds what talks to it, and the port is kept: a llama-swap still running there
+    (it outlives the hub) is found there. When nobody holds the default port and nothing of AFO's runs on the kept
+    one, it is back on the default; a script listens where it says - it is not moved. Real sockets: the test's own
+    process holds the port, a program that is not llama-swap."""
+    monkeypatch.setattr(autostart, "port_taken", PORT_TAKEN)  # who really listens, not the file's stand-in
+    exe = tmp_path / "engines" / "llama-swap" / "llama-swap.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"MZ")
+    monkeypatch.setenv(autostart.LLAMA_SWAP_START_ENV, str(exe))
+    told = []
+
+    async def fake_start(url, script, wanted, log_file, **kwargs):  # the real llama-swap never starts here
+        told.append(autostart.start_command(script, url))
+        return "started"
+
+    monkeypatch.setattr(autostart, "ensure_llama_swap", fake_start)
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", 0))
+    holder.listen()
+    port = holder.getsockname()[1]
+    default = f"http://127.0.0.1:{port}"
+
+    def started() -> str:
+        settings = HubSettings(paths=data_paths(), llama_swap_url=default, status_interval_s=0, process_interval_s=0,
+                               manage_llama_swap=True, move_llama_swap=True)  # fmt: skip
+        with TestClient(create_app(settings), base_url=BASE) as client:
+            state = client.app.state
+            client.portal.call(asyncio.wait_for, state.initial_sync, 30)
+            url = state.settings.llama_swap_url
+            assert state.gateway.provider("llama-swap").base_url == url and state.installer._url == url
+            return url
+
+    try:
+        moved = started()
+        new = int(moved.rsplit(":", 1)[1])
+        assert port < new <= port + autostart.PORTS_TRIED and told[-1][-3:-1] == ["--listen", f"127.0.0.1:{new}"]
+        assert started() == moved  # kept: the same one while the default is held
+        holder.close()
+
+        swap = ThreadingHTTPServer(("127.0.0.1", new), OwnSwap)  # AFO's llama-swap, still running from before
+        threading.Thread(target=swap.serve_forever, daemon=True).start()
+        try:
+            assert started() == moved  # found where it runs, not started again on the default
+        finally:
+            swap.shutdown()
+            swap.server_close()
+        assert started() == default  # nothing there now, the default free: back on it
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", port))
+        holder.listen()
+        script = tmp_path / "start-llama-swap.cmd"
+        script.write_text("@echo off\n", encoding="utf-8")
+        monkeypatch.setenv(autostart.LLAMA_SWAP_START_ENV, str(script))
+        assert started() == default  # a script says itself where it listens: nothing to move
+    finally:
+        holder.close()
