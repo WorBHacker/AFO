@@ -91,6 +91,7 @@ from .programs import ProgramCatalog
 from .projects import keep_private, list_projects, set_path
 from .proving import ProvingGround
 from .release import Releases
+from .resources import Resources
 from .retention import Keeper
 from .ripgrep import Fetcher
 from .sandbox import orphans as sandbox_orphans
@@ -207,6 +208,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
         )  # the first-run wizard (10.2)
         app.state.setup.on_updated = lambda: app.state.tuner.request_all(auto=True)  # a newer llama.cpp: measured anew
+        # what local models need, on the disk: AFO's own engine missing - fetched at the start and when the window
+        # comes (39.1); the person's own llama-swap never touched
+        app.state.resources = Resources(app.state.setup, url=settings.llama_swap_url, enabled=settings.fetch_engines)
         app.state.visual = Visual(db, bus, llama_swap_url=settings.llama_swap_url, media=paths.media,
                                   machine=lambda: app.state.installer.machine())  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
@@ -398,6 +402,11 @@ async def _resume_goals(app: FastAPI) -> None:
 
 async def _initial_sync(app: FastAPI) -> None:
     settings = app.state.settings
+    try:  # AFO's own engine missing: fetched now, the wizard's Setup starts llama-swap when it is in (39.1)
+        found = await app.state.resources.check()
+        log.info("local models' programs: %s %s", found["status"], found.get("words", ""))
+    except Exception:
+        log.exception("looking at the local models' programs failed")
     if settings.manage_llama_swap:  # llama-swap down: the hub starts it first (Q8), then reads its models
         try:
             wanted = await app.state.db.acall(autostart.llama_swap_wanted)

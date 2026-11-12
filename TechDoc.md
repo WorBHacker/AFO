@@ -104,7 +104,8 @@
 - `hub/projects.py` — реестр проектов, дерево, файлы, git
 - `hub/proving.py` — полигон и экзамен моделей
 - `hub/release.py` — обновления самой AFO
-- `hub/resources.py` — что нужно локальным моделям: файлы движка на диске и отвечает ли llama-swap
+- `hub/resources.py` — что нужно локальным моделям: файлы движка на диске, отвечает ли llama-swap; сканер, который
+  качает свой движок AFO, когда его нет
 - `hub/retention.py` — сколько хаб хранит на диске
 - `hub/rewrite.py` — модель правит выделенное в редакторе
 - `hub/ripgrep.py` — загрузка ripgrep
@@ -690,7 +691,12 @@
     только называется), `resources.llama_swap_answers()` — отвечает его `/running`, а не любая программа на порту.
     `Setup.state` — `needed`, если нет файлов и не отвечает настоящий llama-swap; `resources` в ответе. Первый
     config.yaml — под замком. Тест — `test_the_engine_is_judged_by_its_files_not_by_who_answers_on_its_port`.
-  - 39.1б Скачивание само (при старте хаба и при входе окна).
+  - 39.1б ✓ Скачивание само: `resources.Resources.check()` при старте хаба (`_initial_sync`) и по
+    `POST /v1/setup/check` (окно, 39.3). Качает только свой движок AFO (`afo_own()`: программа и конфиг в
+    папке движков или ничего не выбрано), сборку по видеокарте (`Setup.recommended_build`), через
+    `Setup.start(auto=True)`; свой llama-swap человека — только слова. Выключатель
+    `HubSettings.fetch_engines`. Тест — `test_a_computer_with_nothing_gets_the_engine_by_itself`.
+  - 39.1в Риски: повтор позже после сбоя (лимит GitHub, нет сети), антивирус удалил exe, место на диске.
 - 39.2 Свободный порт: 8080 занят чужой программой — другой порт, запоминается в базе. Выбирается при старте хаба до
   сборки служб: адрес llama-swap запоминают 26 мест в 13 файлах. Переносится только llama-swap.exe, который запускает
   AFO; запущенный своим скриптом — нет. Файлы: `hub/server.py`, `hub/autostart.py`.

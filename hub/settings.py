@@ -33,6 +33,7 @@ class HubSettings:
     folder_check_s: float = 0.0  # projects' folders gone, moved, back (hub/watch.py); 0: never by themselves - tests
     links_quiet_s: float = 0.0  # links looked for again this long after a change (hub/links.py); 0: never - tests
     fetch_ripgrep: bool = False  # ripgrep from its GitHub release when there is none (hub/ripgrep.py); not in tests
+    fetch_engines: bool = False  # llama.cpp and llama-swap fetched when AFO's own are missing (39.1); not in tests
 
     @classmethod
     def from_env(cls) -> HubSettings:
@@ -47,4 +48,5 @@ class HubSettings:
             folder_check_s=5.0,
             links_quiet_s=20.0,
             fetch_ripgrep=True,
+            fetch_engines=True,
         )

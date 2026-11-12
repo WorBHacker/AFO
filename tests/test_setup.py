@@ -11,11 +11,15 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from starlette.testclient import TestClient
 
 from common import hardware
+from common.paths import data_paths
 from hub import autostart, engines, setup
 from hub import llama_config as lc
-from tests.test_tools import hub  # noqa: F401 - the hub fixture
+from hub.server import create_app
+from hub.settings import HubSettings
+from tests.test_tools import BASE, hub  # noqa: F401 - the hub fixture
 
 
 def archive(*names):
@@ -191,6 +195,47 @@ def test_the_engine_is_judged_by_its_files_not_by_who_answers_on_its_port(hub, m
         assert (state["needed"], state["answering"]) == (needed, not needed), handler.__name__
         assert {m["what"] for m in state["resources"]["missing"]} == {"llama-swap", "config"}  # nothing on the disk
         assert not state["resources"]["ready"]
+
+
+def test_a_computer_with_nothing_gets_the_engine_by_itself(github, monkeypatch, tmp_path):
+    """39.1 (2026-11-12, the user's word: «Программы AFO скачивает сам при входе: сканер видит, чего нет, и
+    докачивает»): a hub started on a computer with no llama-swap fetches the engine itself - the build its graphics
+    card wants, into AFO's engines folder - with no wizard; the window asks again when it comes. A llama-swap the
+    person chose outside AFO's folder is never touched: what it lacks is said, nothing is fetched."""
+    monkeypatch.delenv(lc.CONFIG_ENV)
+    monkeypatch.delenv(autostart.LLAMA_SWAP_START_ENV)
+    monkeypatch.setattr(autostart, "DEFAULT_LLAMA_SWAP_START", tmp_path / "none" / "start-llama-swap.cmd")  # not
+    monkeypatch.setattr(lc, "DEFAULT_CONFIG", tmp_path / "none" / "config.yaml")  # the author's own llama-swap
+    monkeypatch.setattr(hardware, "adapters", lambda: [{"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0,
+                                                        "driver": "32.0"}])  # fmt: skip
+    monkeypatch.setattr(hardware, "nvidia_driver", lambda: None)
+    started = []
+
+    async def fake_start(url, script, wanted, log_file, **kwargs):  # the real one never starts here
+        started.append(script)
+        return "started"
+
+    monkeypatch.setattr(autostart, "ensure_llama_swap", fake_start)
+    settings = HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
+                           process_interval_s=0, fetch_engines=True)  # fmt: skip
+    with TestClient(create_app(settings), base_url=BASE) as client:
+        client.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
+        setup_ = client.app.state.setup
+        deadline = time.monotonic() + 20
+        while setup_.job["status"] in ("idle", "downloading", "starting"):
+            assert time.monotonic() < deadline, setup_.job
+            time.sleep(0.05)
+        assert (setup_.job["status"], setup_.job["build"], setup_.job["auto"]) == ("done", "vulkan", True)
+        swap = tmp_path / "localchat-home" / "engines" / "llama-swap"
+        assert (swap / "llama-swap.exe").exists() and (swap / "config.yaml").exists() and started == [
+            swap / "llama-swap.exe"]  # fmt: skip
+        assert client.post("/v1/setup/check").json()["resources"]["status"] == "ready"
+
+        mine = tmp_path / "mine" / "llama-swap.exe"
+        client.app.state.db.call(lambda conn: autostart.set_choice(conn, autostart.START_SETTING, str(mine)))
+        checked = client.post("/v1/setup/check").json()
+        assert checked["resources"]["status"] == "own" and str(mine) in checked["resources"]["words"]
+        assert checked["job"]["status"] == "done"  # nothing fetched again
 
 
 def test_which_build_runs_and_the_macro_it_lives_in(tmp_path):

@@ -117,14 +117,22 @@ class Setup:
 
     # --- the engine ---
 
-    def start(self, build: str, *, update: bool = False) -> dict[str, Any]:
+    async def recommended_build(self) -> str:
+        """The llama.cpp build this computer's graphics card wants."""
+        cards = await asyncio.to_thread(hardware.adapters)
+        nvidia = await asyncio.to_thread(hardware.nvidia_driver)
+        return hardware.build_for(cards, nvidia)["build"]
+
+    def start(self, build: str, *, update: bool = False, auto: bool = False) -> dict[str, Any]:
+        """The engine's download (or a newer llama.cpp's); the one going on when there is one. `auto` - the scanner
+        started it, not the person (39.1): the window shows it in the status line, not in the wizard."""
         if build not in BUILDS:
             raise ValueError(tr("сборка — одна из {builds}", builds=", ".join(BUILDS)))
         if self._task is not None and not self._task.done():
             return dict(self.job)
         self._cancel = threading.Event()
         self.job = {"status": "downloading", "build": build, "done": 0, "total": 0, "error": "", "step": "",
-                    "update": update}  # fmt: skip
+                    "update": update, "auto": auto}  # fmt: skip
         self._task = asyncio.create_task(self._update(build) if update else self._run(build))
         return dict(self.job)
 

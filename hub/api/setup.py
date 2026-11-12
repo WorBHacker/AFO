@@ -3,7 +3,8 @@ computer.
 
 GET - this computer (graphics cards, the build it wants, RAM and page file) and whether the engine is there; GET
 /models - the first model to offer for each purpose; POST /engine - llama.cpp and llama-swap from GitHub (the build
-named, or the one recommended), progress as `setup.progress` events; POST /engine/cancel.
+named, or the one recommended), progress as `setup.progress` events; POST /engine/cancel; POST /check - the window
+has come: what local models need looked at, AFO's own engine fetched when it lacks something (39.1).
 """
 
 from __future__ import annotations
@@ -30,6 +31,13 @@ class Engine(BaseModel):
 @router.get("")
 async def state(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     return await request.app.state.setup.state()
+
+
+@router.post("/check")
+async def check(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """The window has come (39.1): what local models need looked at again; AFO's own engine missing - fetched."""
+    found = await request.app.state.resources.check()
+    return {"resources": found, "job": dict(request.app.state.setup.job)}
 
 
 @router.get("/models")
