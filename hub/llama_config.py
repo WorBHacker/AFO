@@ -226,6 +226,11 @@ def _flag(tokens: list[str], names: tuple[str, ...]) -> int | None:
     return next((i for i, t in enumerate(tokens) if t in names), None)
 
 
+def arguments(command: str) -> list[str]:
+    """A command's words as the program gets them: a quoted one without its quotes (a path with spaces)."""
+    return [_unquote(t) for t in _TOKEN.findall(command)]
+
+
 # --- what a llama-server build takes (42.1): its --help, read once per file ---
 
 _OPTION = re.compile(r"--?[A-Za-z][\w-]*")

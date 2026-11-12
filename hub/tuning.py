@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -32,10 +33,11 @@ import httpx
 import psutil
 
 from common.gguf import GGUFError, model_info
-from common.i18n import tr
-from common.llama_memory import COMPUTE_GIB, kv_bytes
+from common.i18n import N_, tr
+from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes
+from common.paths import data_paths
 
-from . import llama_config
+from . import llama_config, model_settings
 from .db import utc_now
 
 log = logging.getLogger("hub.tuning")
@@ -59,6 +61,29 @@ WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write 
 RELOADING = "shutting down"  # llama-swap's answer while it rereads the file («group is shutting down»)
 RETRY_S = 1.0
 GIB = 1024**3
+# guessing ahead (42.4): measured by llama-server itself - llama-bench has no draft model
+NGRAMS = ("ngram-mod", "ngram-simple")  # the kind of ngram guessing measured: the first the build has
+SPEC_TOKENS = 256  # each answer measured
+SEED = 42
+SERVE_TIMEOUT_S = 600.0  # a large model read from a slow disk
+HEALTH_S = 0.5
+SAMPLING = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty")  # the model's own: they decide how often a
+# guess is right
+SPEC_PROMPTS = (  # a code edit (ngram guesses its copied lines) and a plain answer (only a draft model guesses those)
+    N_("Переименуй в этой функции переменную total в amount и верни весь код целиком, без пояснений:\n\n"
+       "def summarize(orders):\n"
+       "    total = 0\n"
+       "    count = 0\n"
+       "    for order in orders:\n"
+       "        if order.get(\"status\") != \"paid\":\n"
+       "            continue\n"
+       "        total += order[\"price\"] * order.get(\"quantity\", 1)\n"
+       "        count += 1\n"
+       "    average = total / count if count else 0\n"
+       "    return {\"total\": total, \"count\": count, \"average\": average}\n"),
+    N_("Объясни простыми словами, как работает холодильник: откуда берётся холод и куда уходит тепло. "
+       "Пять-шесть предложений."),
+)  # fmt: skip
 
 
 class TuneError(Exception):
@@ -172,6 +197,73 @@ def changes_for(choice: dict[str, Any]) -> dict[str, Any]:
             "batch": max(BATCH, choice["ubatch"]), "threads": choice["threads"]}  # fmt: skip
 
 
+def _tail(path: Path) -> str:
+    """A log's last words: why a program stopped."""
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines()]
+    except OSError:
+        return ""
+    return " ".join([line for line in lines if line][-3:])
+
+
+def free_port() -> int:
+    """A port nobody listens on, for a llama-server the measuring runs itself (42.4)."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def spec_command(text: str, model_id: str, changes: dict[str, Any], build: dict[str, Any], port: int) -> list[str]:
+    """The model's launch as the config would have it with these settings (llama_config.edit, in `build`'s names) -
+    to run past llama-swap on a port of the measuring's own: its macros in, ${PORT} too (42.4)."""
+    view = llama_config.model_view(llama_config.edit(text, model_id, changes, build=build), model_id)
+    argv = [word.replace("${PORT}", str(port)) for word in llama_config.arguments(view["command"])]
+    if any("${" in word for word in argv):
+        raise TuneError(tr("в команде «{model}» есть макрос llama-swap, который AFO не подставит", model=model_id))
+    return argv
+
+
+def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
+                  draft: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
+    """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the draft model ({path, info}) beside
+    the model as it is - or, when it does not fit so (the user's word, 2026-11-13), wholly on the graphics card and the
+    model with as few layers fewer there as it needs; the context is never made smaller by itself. And what the draft
+    lacks to fit beside the model as it is ({short_gb, context} - the largest context it would fit with; {} - it
+    fits, or there is no draft)."""
+    out: list[dict[str, Any]] = [{"name": "none", "changes": {"spec_type": "none"}}]
+    ngram = next((kind for kind in NGRAMS if kind in build["spec_types"]), None)
+    if ngram:
+        out.append({"name": "ngram", "changes": {"spec_type": ngram}})
+    if draft is None or "draft-simple" not in build["spec_types"]:
+        return out, {}
+    cache = view.get("cache_type") or "f16"  # the draft's KV cache as the model's: q8_0 takes half of f16
+    load = {"info": draft["info"], "gpu_layers": "all", "cache_type": cache}
+    changes = {"spec_type": "draft-simple", "draft_model": str(draft["path"]), "draft_gpu_layers": "all",
+               "draft_cache_type": cache}  # fmt: skip
+    context = view.get("context") or 4096
+
+    def need(layers: str | int, tokens: int = context) -> float:
+        return estimate(info, context=tokens, cache_type=cache, gpu_layers=layers, draft=load)["vram_gb"]
+
+    room = space.get("vram_gib") or 0.0
+    if view["gpu_layers"] == "auto" or need(view["gpu_layers"]) <= room:  # --fit places them itself
+        return [*out, {"name": "draft", "changes": changes}], {}
+    layers = info["layers"] if view["gpu_layers"] == "all" else int(view["gpu_layers"])
+    fewer = next((n for n in range(layers - 1, 0, -1) if need(n) <= room), None)
+    if fewer is not None:
+        out.append({"name": "draft_fewer", "changes": {**changes, "gpu_layers": fewer}})
+    smaller = [context // 2**i for i in range(1, 5) if context // 2**i >= 4096]
+    return out, {"short_gb": round(need(view["gpu_layers"]) - room, 1),
+                 "context": next((c for c in smaller if need(view["gpu_layers"], c) <= room), 0)}  # fmt: skip
+
+
+def sampling(conn, model_id: str) -> dict[str, Any]:
+    """The model's own sampling, as the hub's model settings have it (llama-swap's id): a guess is right more often
+    when the answer is surer - measured as it will be used."""
+    params = model_settings.current(conn, f"llama-swap/{model_id}")[1].get("params") or {}
+    return {key: params[key] for key in SAMPLING if key in params}
+
+
 def load_results(conn) -> dict[str, Any]:
     row = conn.execute("SELECT value FROM settings WHERE key = ?", (RESULTS_KEY,)).fetchone()
     return json.loads(row[0]) if row else {}
@@ -244,9 +336,17 @@ class Tuner:
                 await self._task
 
     def _kill(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            with contextlib.suppress(OSError):
-                self._process.kill()
+        """The measuring program let go - with what it started (a launcher's child would keep the port and the
+        graphics card)."""
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        with contextlib.suppress(psutil.Error):
+            for child in psutil.Process(process.pid).children(recursive=True):
+                with contextlib.suppress(psutil.Error):
+                    child.kill()
+        with contextlib.suppress(OSError):
+            process.kill()
 
     def request(self, model_id: str, auto: bool = False) -> dict[str, Any]:
         if model_id not in {m for m, _ in self._queue} and self.job.get("model_id") != model_id:
@@ -445,6 +545,60 @@ class Tuner:
                 raise TuneError(tr("llama-bench не смог: {error}", error=tail or code))
             log.warning("llama-bench stopped (exit %s) after %d measurements: %s", code, len(lines), tail)
         return lines
+
+    def _serve(self, argv: list[str], port: int, params: dict[str, Any]) -> dict[str, Any]:
+        """llama-server run with this command past llama-swap and its answers measured (42.4; blocking: in a thread):
+        a short warm-up, then each of SPEC_PROMPTS at the model's sampling (`params`) - tokens a second by llama.cpp's
+        own timings, and how many of the guessed tokens were right; then the server is let go. A server that does not
+        start says why in its log; stopped for a chat - _Halted."""
+        log_path = data_paths().logs / "tuning-server.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "wb") as out:  # not a pipe: llama-server writes a lot, and an unread pipe stops it
+            self._process = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))  # fmt: skip
+        url = f"http://127.0.0.1:{port}"
+        try:
+            with httpx.Client(timeout=httpx.Timeout(CHECK_TIMEOUT_S, connect=2.0)) as http:
+                self._healthy(http, url, log_path)
+                body = {**params, "seed": SEED, "stream": False}
+                self._ask(http, url, {**body, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 4})
+                speeds, drafted, right = [], 0, 0
+                for prompt in SPEC_PROMPTS:
+                    timings = self._ask(http, url, {**body, "messages": [{"role": "user", "content": tr(prompt)}],
+                                                    "max_tokens": SPEC_TOKENS})  # fmt: skip
+                    speeds.append(float(timings["predicted_per_second"]))
+                    drafted += int(timings.get("draft_n") or 0)
+                    right += int(timings.get("draft_n_accepted") or 0)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            if self._halt.is_set():
+                raise _Halted from exc
+            raise TuneError(tr("llama-server не ответил: {error}", error=_tail(log_path) or exc)) from exc
+        finally:
+            self._kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                self._process.wait(10)
+        return {"tg": round(sum(speeds) / len(speeds), 1), "accepted": round(right / drafted, 2) if drafted else None}
+
+    def _healthy(self, http: httpx.Client, url: str, log_path: Path) -> None:
+        """Until llama-server has loaded the model (its /health answers 200); it quit - its log's last words."""
+        deadline = time.monotonic() + SERVE_TIMEOUT_S
+        while True:
+            if self._halt.is_set():
+                raise _Halted
+            if self._process is None or self._process.poll() is not None:
+                raise TuneError(tr("llama-server не запустился: {error}", error=_tail(log_path) or tr("нет ответа")))
+            with contextlib.suppress(httpx.HTTPError):
+                if http.get(f"{url}/health", timeout=2.0).status_code == 200:
+                    return
+            if time.monotonic() > deadline:
+                raise TuneError(tr("llama-server не загрузил модель за {seconds} с", seconds=int(SERVE_TIMEOUT_S)))
+            time.sleep(HEALTH_S)
+
+    @staticmethod
+    def _ask(http: httpx.Client, url: str, body: dict[str, Any]) -> dict[str, Any]:
+        answer = http.post(f"{url}/v1/chat/completions", json=body)
+        answer.raise_for_status()
+        return answer.json()["timings"]
 
     async def _load(self, model_id: str) -> dict[str, Any]:
         """The model loaded with its whole context and one short answer: it fits with the new settings. llama-swap

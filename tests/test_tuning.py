@@ -6,6 +6,7 @@ stand-ins."""
 
 import asyncio
 import json
+import socket
 import sys
 import time
 
@@ -409,3 +410,159 @@ def test_a_renamed_model_keeps_what_was_measured(hub, setup):  # noqa: F811
 
     asyncio.run(renamed())
     assert list(found.results) == ["bigger"] and list(hub.app.state.db.call(tuning.load_results)) == ["bigger"]
+
+
+# --- guessing ahead, measured by llama-server itself (42.4) ---
+
+SERVER = r'''"""A stand-in llama-server (42.4): says its --help; else serves /health (503 while «loading») and
+answers with llama.cpp's timings - its speed by --spec-type, and by -ngl when it is not all the layers. Each launch
+and each request are written down beside it."""
+import json, pathlib, sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+here = pathlib.Path(__file__).parent
+args = sys.argv[1:]
+if "--help" in args:
+    sys.stdout.write((here / "help.txt").read_text(encoding="utf-8"))
+    sys.exit(0)
+with open(here / "launches.txt", "a", encoding="utf-8") as f:
+    f.write(json.dumps(args) + "\n")
+how = json.loads((here / "speeds.json").read_text(encoding="utf-8"))
+
+
+def flag(name, default=None):
+    return args[args.index(name) + 1] if name in args else default
+
+
+kind = flag("--spec-type", "none")
+if kind in how.get("crash", []):
+    print("common_speculative_init: speculative decoding not supported by this context", flush=True)
+    sys.exit(1)
+speed = how["fewer"] if flag("-ngl", "99") != "99" else how["speeds"][kind]
+started = time.monotonic()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, body):
+        data = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        ready = time.monotonic() - started > how.get("load_s", 0.3)
+        self._send(200 if ready else 503, {"status": "ok"} if ready else {"error": {"message": "Loading model"}})
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        with open(here / "asked.txt", "a", encoding="utf-8") as f:
+            f.write(json.dumps(body) + "\n")
+        drafted = 0 if kind == "none" else 100
+        self._send(200, {"choices": [{"message": {"content": "ok"}}],
+                         "timings": {"predicted_per_second": speed, "draft_n": drafted,
+                                     "draft_n_accepted": int(drafted * how.get("accepted", 0.7))}})
+
+
+HTTPServer(("127.0.0.1", int(flag("--port"))), Handler).serve_forever()
+'''
+
+
+@pytest.fixture
+def served(setup, tmp_path):
+    """The config's llama-server is a stand-in that runs (a .cmd: Windows starts it as a program) with b11899's
+    --help; a draft model's file beside the model's."""
+    from tests.test_llama_config import HELP
+
+    folder = tmp_path / "llama.cpp"
+    (folder / "server.py").write_text(SERVER, encoding="utf-8")
+    (folder / "help.txt").write_text(HELP, encoding="utf-8")
+    speeds(folder, {"none": 40.0, "ngram-mod": 44.0, "draft-simple": 60.0}, fewer=50.0)
+    server = folder / "llama-server.cmd"
+    server.write_text(f'@"{sys.executable}" "%~dp0server.py" %*\n', encoding="utf-8")
+    text = setup.read_text(encoding="utf-8").replace(
+        f'"{(folder / "llama-server.exe").as_posix()}"', f'"{server.as_posix()}"')  # fmt: skip
+    setup.write_text(text, encoding="utf-8")
+    keys = {"general.architecture": "tiny", "tiny.block_count": 4, "tiny.context_length": 65536,
+            "tiny.embedding_length": 128, "tiny.attention.head_count": 2,
+            "tiny.attention.head_count_kv": 1}  # fmt: skip
+    gguf(tmp_path / "draft.gguf", keys)
+    return folder
+
+
+def speeds(folder, by_kind, *, fewer=0.0, crash=()):
+    """How fast the stand-in llama-server answers: by --spec-type; with fewer layers on the card; which kinds of
+    guessing it cannot start with."""
+    (folder / "speeds.json").write_text(json.dumps({"speeds": by_kind, "fewer": fewer, "crash": list(crash)}),
+                                        encoding="utf-8")  # fmt: skip
+
+
+def listening(port):
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def test_guessing_ahead_is_measured_by_llama_server_itself(hub, setup, served):  # noqa: F811
+    """42.4: llama-bench has no draft model, so guessing ahead is measured by llama-server of the config's build:
+    the model's own command as the config would have it (its macros in, a port of the measuring's own, past
+    llama-swap), each answer's tokens a second from llama.cpp's own timings, at the model's own sampling; then the
+    server is let go - its port free, no program left (a .cmd's child too)."""
+    text = setup.read_text(encoding="utf-8")
+    build = lc.server_flags(served / "llama-server.cmd")
+    port = tuning.free_port()
+    argv = tuning.spec_command(text, "big", {"spec_type": "ngram-mod"}, build, port)
+    assert argv[0] == (served / "llama-server.cmd").as_posix() and argv[argv.index("-m") + 1].endswith("big.gguf")
+    assert argv[argv.index("--port") + 1] == str(port) and argv[argv.index("--spec-type") + 1] == "ngram-mod"
+    assert "-c" in argv and "--mmproj" in argv  # the model as it runs: its context, its vision projector
+
+    found = tuner(hub, measured={})
+    measured = found._serve(argv, port, {"temperature": 0.3, "top_k": 20})
+    assert measured == {"tg": 44.0, "accepted": 0.7}
+    asked = [json.loads(line) for line in (served / "asked.txt").read_text(encoding="utf-8").splitlines()]
+    assert len(asked) == 1 + len(tuning.SPEC_PROMPTS)  # a short warm-up first: not counted
+    assert all(a["temperature"] == 0.3 and a["top_k"] == 20 and a["seed"] == tuning.SEED for a in asked)
+    assert {a["max_tokens"] for a in asked[1:]} == {tuning.SPEC_TOKENS} and not any(a.get("stream") for a in asked)
+    assert not listening(port)  # let go
+
+    speeds(served, {}, crash=["draft-simple"])
+    port = tuning.free_port()
+    crashed = tuning.spec_command(text, "big", {"spec_type": "draft-simple", "draft_model": "D:/d.gguf"}, build, port)
+    with pytest.raises(tuning.TuneError, match="not supported by this context"):  # its own words, from its log
+        found._serve(crashed, port, {})
+
+
+def test_what_guessing_ahead_is_measured(tmp_path):
+    """42.4 (the user's word, 2026-11-13): without guessing, ngram (it takes no memory), and the draft model -
+    beside the model as it is, or, when it does not fit so, wholly on the graphics card and as few of the model's
+    layers fewer as it needs; the context is not made smaller by itself - what the draft lacks and the context it
+    would fit with go to the window."""
+    from tests.test_llama_config import HELP
+
+    build = lc.parse_help(HELP)
+    info = {"architecture": "qwen3", "layers": 36, "kv_layers": 36, "kv_heads": 8, "key_length": 128,
+            "value_length": 128, "context_trained": 40960, "size_bytes": int(4.7 * 1024**3)}  # fmt: skip
+    draft = {"path": tmp_path / "draft.gguf", "info": {**info, "layers": 28, "kv_layers": 28,
+                                                        "size_bytes": int(0.6 * 1024**3)}}  # fmt: skip
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
+    roomy, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+    assert [v["name"] for v in roomy] == ["none", "ngram", "draft"] and short == {}
+    assert roomy[1]["changes"] == {"spec_type": "ngram-mod"} and roomy[0]["changes"] == {"spec_type": "none"}
+    assert roomy[2]["changes"] == {"spec_type": "draft-simple", "draft_model": str(tmp_path / "draft.gguf"),
+                                   "draft_gpu_layers": "all", "draft_cache_type": "q8_0"}  # fmt: skip
+    tight, short = tuning.spec_variants(view, info, {"vram_gib": 10.2}, build, draft)  # 7,9 + 2,8 > 10,2
+    assert [v["name"] for v in tight] == ["none", "ngram", "draft_fewer"]
+    fewer = tight[2]["changes"]["gpu_layers"]
+    assert 30 <= fewer < 36 and tight[2]["changes"]["draft_gpu_layers"] == "all"
+    assert short == {"short_gb": 0.4, "context": 16384}  # 16 thousand tokens and the draft fits
+    alone, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, None)  # no draft for it
+    assert [v["name"] for v in alone] == ["none", "ngram"] and short == {}
+    placed, _ = tuning.spec_variants({**view, "gpu_layers": "auto"}, info, {"vram_gib": 10.0}, build, draft)
+    assert [v["name"] for v in placed] == ["none", "ngram", "draft"]  # llama.cpp's --fit places them itself
+    old = lc.parse_help(HELP.replace(",ngram-mod", ""))  # a build without ngram-mod
+    assert tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, None)[0][1]["changes"] == {
+        "spec_type": "ngram-simple"}  # fmt: skip
