@@ -8,6 +8,7 @@ import json
 import os
 import time
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -505,8 +506,11 @@ class FakeClient:
         self.tune_status["auto"] = on
         return self.tune_state()
 
+    llama_reserve = 1.0  # the video memory a model may not count on, as the hub says it (38.3)
+
     def llama_models(self):
-        return {"models": [dict(m) for m in LLAMA], "vram_total_mib": 16384, "backups": []}
+        return {"models": [dict(m) for m in LLAMA], "vram_total_mib": 16384, "vram_reserve_gib": self.llama_reserve,
+                "backups": []}  # fmt: skip
 
     def change_llama_model(self, model_id, changes):
         self.model_calls.append(("launch", model_id, changes))
@@ -718,7 +722,15 @@ class FakeClient:
                 "free_gib": 456.5,
             },
             "token": False,
+            "reserve": {**self.reserved, "default": {"vram_gib": 1.0, "ram_gib": 3.0}},
         }
+
+    reserved: ClassVar[dict] = {"vram_gib": 1.0, "ram_gib": 3.0}  # what a model may not count on (38.3)
+
+    def install_reserve(self, vram_gib, ram_gib):
+        self.log.append(("reserve", vram_gib, ram_gib))
+        self.reserved = {"vram_gib": vram_gib, "ram_gib": ram_gib}
+        return self.install_system()
 
     def install_catalog(self):
         best = {"quant": "Q8_0", "size": 8_030_000_000, "verdict": "gpu", "words": "помещается в видеопамять — быстро"}
@@ -5089,6 +5101,13 @@ def test_a_local_models_launch_in_the_window(app):
     setup.open("anthropic/claude-opus-5-5")
     wait_until(lambda: not app.bg.busy and not setup.loading)
     assert setup.launch == {}  # a cloud model: nothing to launch
+    app.client.llama_reserve = 15.5  # the user's reserve of the video memory (38.3): the hub's word, not 1 GB
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("engine") == "llama.cpp")
+    assert "не поместится" in setup.launchEstimate
+    app.client.llama_reserve = 1.0
+    setup.open("anthropic/claude-opus-5-5")
+    wait_until(lambda: not app.bg.busy and not setup.loading)
     setup.open("llama-swap/big")
     wait_until(lambda: not app.bg.busy and setup.launch.get("engine") == "llama.cpp")
     assert not setup.launchDirty and "целиком" in setup.launchEstimate
@@ -7158,6 +7177,44 @@ def test_what_the_hub_keeps_in_the_settings(qapp):
         app.pruneKept()
         wait_until(lambda: not app.bg.busy and ("prune",) in client.log)
         assert app.flashText == "Удалено старых файлов: 3"
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_memory_reserves_in_the_models_settings(qapp):
+    """38.3 (2026-11-12, the user's word: «запасы для опытных меняются в Настройки → Модели»): the sheet shows what a
+    model may not count on of the memory, as the hub keeps it, and changes it; «По умолчанию» brings the hub's
+    defaults back. A word that is no number is refused in the window, and nothing is sent when nothing changed."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = quick.window.findChild(QObject, "settingsModels")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and view.reserve)
+        assert (view.reserve["vram"], view.reserve["ram"], view.reserve["isDefault"]) == ("1", "3", True)
+        field = quick.window.findChild(QObject, "reserveVram")
+        assert field.property("text") == "1" and not quick.window.findChild(QObject, "reserveDefault").property(
+            "visible")  # fmt: skip
+        view.setReserve("1", "3")  # nothing changed: nothing sent
+        view.setReserve("много", "3")
+        assert app.flashError and not [e for e in client.log if e[0] == "reserve"]
+        view.setReserve("2,5", "6")
+        wait_until(lambda: not app.bg.busy and ("reserve", 2.5, 6.0) in client.log)
+        assert (view.reserve["vram"], view.reserve["isDefault"]) == ("2,5", False)
+        assert app.flashText == "Запас памяти сохранён" and field.property("text") == "2,5"
+        assert quick.window.findChild(QObject, "reserveDefault").property("visible")
+        view.resetReserve()
+        wait_until(lambda: not app.bg.busy and ("reserve", 1.0, 3.0) in client.log)
+        assert view.reserve["isDefault"]
         assert quick.warnings == []
     finally:
         quick.close()

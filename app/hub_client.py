@@ -157,6 +157,10 @@ class HubClient:
     def install_system(self) -> dict:
         return self._call("GET", "/v1/install/system")
 
+    def install_reserve(self, vram_gib: float, ram_gib: float) -> dict:
+        """The memory a model may not count on (38.3); this computer as an install sees it after."""
+        return self._call("PUT", "/v1/install/reserve", {"vram_gib": vram_gib, "ram_gib": ram_gib})
+
     def install_catalog(self) -> dict:
         return self._call("GET", "/v1/install/catalog", timeout=90)
 

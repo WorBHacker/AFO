@@ -437,6 +437,20 @@ class InstallView(QObject):
 
     # ================= for QML =================
 
+    @Property("QVariantMap", notify=changed)
+    def reserve(self) -> dict:
+        """«Настройки → Модели»: what a model may not count on of the memory, as the hub keeps it (38.3); {} until it
+        says."""
+        found = self._system.get("reserve") or {}
+        if not found:
+            return {}
+        default = found.get("default") or {}
+        return {"vram": decimal(f"{found['vram_gib']:g}"), "ram": decimal(f"{found['ram_gib']:g}"),
+                "isDefault": all(found[key] == default.get(key) for key in ("vram_gib", "ram_gib")),
+                "defaults": tr("по умолчанию: видеопамять {vram} ГБ, ОЗУ {ram} ГБ",
+                               vram=decimal(f"{default.get('vram_gib', 0):g}"),
+                               ram=decimal(f"{default.get('ram_gib', 0):g}"))}  # fmt: skip
+
     @Property(str, notify=changed)
     def systemText(self) -> str:
         if self._system:
@@ -664,6 +678,40 @@ class InstallView(QObject):
         self._load_jobs()
         if not self._catalog and not self._catalog_loading:
             self._load_catalog()
+
+    @Slot()
+    def loadReserve(self) -> None:
+        """«Настройки → Модели» opened: the reserves as the hub keeps them now (38.3)."""
+        if self.app.client is not None:
+            self._system_tries = 0
+            self._load_system()
+
+    @Slot(str, str)
+    def setReserve(self, vram: str, ram: str) -> None:
+        try:
+            wanted = float(vram.strip().replace(",", ".")), float(ram.strip().replace(",", "."))
+        except ValueError:
+            self.app.show_error(tr("Запас памяти — число гигабайт, например 1 или 2,5"))
+            return
+        found = self._system.get("reserve") or {}
+        if found and wanted == (found["vram_gib"], found["ram_gib"]):
+            return
+
+        def saved(data: dict[str, Any]) -> None:
+            self._system = data
+            self.changed.emit()
+            self.app.flash(tr("Запас памяти сохранён"))
+            if self._catalog and not self._catalog_loading:
+                self._load_catalog()  # its recommendations were judged with the old reserve
+
+        self.app.call_or_fail(lambda: self.app.client.install_reserve(*wanted), saved,
+                              lambda e: self.app.show_error(tr("Не сохранено: {error}", error=e)))  # fmt: skip
+
+    @Slot()
+    def resetReserve(self) -> None:
+        default = (self._system.get("reserve") or {}).get("default") or {}
+        if default:
+            self.setReserve(f"{default['vram_gib']:g}", f"{default['ram_gib']:g}")
 
     def connected(self) -> None:
         """The hub is up: what the status bar shows - and all of the sheet, once it has been opened (35.1)."""

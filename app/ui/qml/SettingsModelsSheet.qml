@@ -23,6 +23,53 @@ Sheet {
         onPicked: (id) => App.setPriority(id)
     }
 
+    // 38.3: what a model may not count on of the computer's memory - the installer, the wizard and the search judge by
+    // it; the hub's own figures until the user changes them
+    onOpened: Installer.loadReserve()
+    SectionTitle { text: qsTr("Запас памяти") }
+    Text {
+        width: parent.width
+        wrapMode: Text.Wrap
+        text: qsTr("Сколько памяти локальная модель не займёт: её держат Windows и другие программы. Больше запас — модели предлагаются поменьше, зато не замедляются.")
+        color: Theme.p.muted
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+    Flow {
+        width: parent.width
+        spacing: 8
+        Text { text: qsTr("Видеопамять, ГБ"); color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Field {
+            id: reserveVram
+            objectName: "reserveVram"
+            width: 64
+            text: Installer.reserve.vram || ""
+            onEditingFinished: Installer.setReserve(text, reserveRam.text)
+        }
+        Text { text: qsTr("ОЗУ, ГБ"); color: Theme.p.text_soft; font.family: Theme.uiFont; font.pixelSize: 13; height: 34; verticalAlignment: Text.AlignVCenter }
+        Field {
+            id: reserveRam
+            objectName: "reserveRam"
+            width: 64
+            text: Installer.reserve.ram || ""
+            onEditingFinished: Installer.setReserve(reserveVram.text, text)
+        }
+        PlainButton {
+            objectName: "reserveDefault"
+            visible: !!Installer.reserve.vram && !Installer.reserve.isDefault
+            text: qsTr("По умолчанию")
+            onClicked: Installer.resetReserve()
+        }
+    }
+    Text {
+        width: parent.width
+        visible: !!Installer.reserve.defaults
+        text: Installer.reserve.defaults || ""
+        color: Theme.p.faint
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
+
     SectionTitle { text: qsTr("Модели") }
     Text {
         width: parent.width

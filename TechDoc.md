@@ -663,10 +663,18 @@
   лишние программы, иначе будет медленно». Сделано: слова — `short_now` в `common/llama_memory.py`; в чате их
   считает `Installer.memory_now` по последнему замеру, когда llama-swap начал загрузку (свои загруженные модели
   llama-swap считаются свободными: они выгрузятся; конфиг читает под `llama_config.writing()`, а пока идёт запись —
-  молчит), и несёт `chat.loading` (`memory`), окно пишет их под «Загрузка
-  модели»; в окне установки — `busy` из `room()` (только видеопамять и только когда llama-swap пуст), строка ОЗУ —
-  «ОЗУ для модели ≈». Тест — `test_a_model_loading_while_other_programs_hold_the_memory_says_so`.
-- 38.3 Запасы для опытных — в «Настройки → Модели».
+  молчит), и несёт `chat.loading` (`memory`), окно пишет их под «Загрузка модели»; в окне установки — `busy` из
+  `room()` (только видеопамять и только когда llama-swap пуст), строка ОЗУ — «ОЗУ для модели ≈». Тест —
+  `test_a_model_loading_while_other_programs_hold_the_memory_says_so`.
+- 38.3 ✓ Запасы для опытных — в «Настройки → Модели». Сделано: `hub.db` `settings`, ключ `install.reserve`
+  (`reserve_saved`/`reserve_save` в `hub/model_install.py`, границы 0–8 и 0–32 ГБ); установщик читает их при старте,
+  `room()` и всё, что от неё (мастер, поиск, план запуска, подбор), считает по ним; `GET /v1/install/system` —
+  `reserve`, `PUT /v1/install/reserve`; оценка окна «Настройка модели» берёт `vram_reserve_gib` из
+  `/v1/llama/models`. Окно — `Installer.reserve`/`setReserve`/`resetReserve` (`app/ui/install_view.py`), поля в
+  `SettingsModelsSheet.qml`. Тесты — `test_the_memory_reserves_are_the_users_to_change`,
+  `test_the_memory_reserves_in_the_models_settings`.
+- Заодно (2026-11-12): запись `config.yaml` ждёт читателя файла (`_replace` в `hub/llama_config.py`): Windows не даёт
+  заменить файл, открытый на чтение, а llama-swap перечитывает его сразу после записи хаба.
 - Цифру буферов проверить замером на настоящей карте (по слову пользователя, после `nvidia-smi`).
 
 ### Этап 39. Ресурсы сами (сканер)

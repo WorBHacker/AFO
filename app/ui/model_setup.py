@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.i18n import N_, tr
-from common.llama_memory import estimate
+from common.llama_memory import RESERVE_GIB, estimate
 from hub.gateway.base import PRICES_FRESH_DAYS
 
 from .. import presenter
@@ -291,7 +291,8 @@ def launch_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any
 ESTIMATE_TONES = {"over": "error", "split": "warn", "auto": "warn"}  # the estimate's verdict: the text's colour
 
 
-def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None) -> tuple[str, str]:
+def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+                  reserve_gib: float | None = None) -> tuple[str, str]:  # fmt: skip
     """What the fields would take of the video memory and RAM, said before anything is written - and its tone
     ('error': it does not fit, 'warn': slower, '': fine or unknown)."""
     info = view.get("info")
@@ -308,12 +309,14 @@ def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: i
         return str(exc), ""
     found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
                      mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
-                     vram_total_mib=vram_total_mib)  # fmt: skip
+                     vram_total_mib=vram_total_mib,
+                     reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib)  # fmt: skip
     return found["text"], ESTIMATE_TONES.get(found["verdict"], "")
 
 
-def launch_estimate(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None) -> str:
-    return launch_judged(draft, view, vram_total_mib)[0]
+def launch_estimate(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+                    reserve_gib: float | None = None) -> str:  # fmt: skip
+    return launch_judged(draft, view, vram_total_mib, reserve_gib)[0]
 
 
 def check_text(result: dict[str, Any]) -> str:
@@ -400,6 +403,7 @@ class ModelSetup(QObject):
         self._told: set[str] = set()  # the results already said in the status line
         self._launch_draft: dict[str, str] = {}
         self._vram_mib: int | None = None
+        self._reserve_gib: float | None = None  # the video memory a model may not count on, the hub's (38.3)
         self._launch_status = ""
         self._launch_failed = False  # the launch's status says it went wrong: red
         self._launch_busy = False
@@ -498,12 +502,18 @@ class ModelSetup(QObject):
 
     @Property(str, notify=changed)
     def launchEstimate(self) -> str:
-        return launch_estimate(self._launch_draft, self._launch, self._vram_mib) if self._launch else ""
+        return (
+            launch_estimate(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib) if self._launch else ""
+        )
 
     @Property(str, notify=changed)
     def launchEstimateTone(self) -> str:
         """'error': it does not fit, 'warn': slower, '' - the sheet colours the estimate by it, not by its words."""
-        return launch_judged(self._launch_draft, self._launch, self._vram_mib)[1] if self._launch else ""
+        return (
+            launch_judged(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1]
+            if self._launch
+            else ""
+        )
 
     @Property(str, notify=changed)
     def launchStatus(self) -> str:
@@ -534,6 +544,7 @@ class ModelSetup(QObject):
             self._launch = next((m for m in listing.get("models") or [] if m["id"] == ref), {})
             self._launch_draft = launch_draft(self._launch) if self._launch else {}
             self._vram_mib = listing.get("vram_total_mib")
+            self._reserve_gib = listing.get("vram_reserve_gib")
             self.changed.emit()
 
         self.app._call(lambda: self.app.client.llama_models(), show, lambda _e: None)
