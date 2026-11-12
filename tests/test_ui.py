@@ -19,7 +19,7 @@ from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 
 from app import palette
 from app.hub_client import HubError
-from app.ui import commands, editor, project_rows, rows
+from app.ui import commands, editor, install_view, project_rows, rows
 from app.ui.controller import Controller
 from app.ui.models import TREE_ROLES, RowModel
 from app.ui.theme import Theme, qml_colour
@@ -1738,6 +1738,9 @@ def test_a_streamed_answer(app):
     assert live == 2 and app.messages.rows[live]["streaming"]
     on(event("chat.loading", text="llama-swap loading model: coder\n"))
     wait_until(lambda: app.messages.rows[live]["notice"].startswith("Загрузка модели"))
+    short = "сейчас свободно 0.4 ГБ видеопамяти из 6 — закройте лишние программы, иначе модель будет работать медленно"
+    on(event("chat.loading", text="Done! (0.4s)\n", memory=short))  # other programs hold the memory (38.2)
+    wait_until(lambda: app.messages.rows[live]["notice"].endswith("Done! (0.4s)\n" + short))
     on(event("chat.delta", kind="reasoning", text="хм"))
     wait_until(lambda: (app.messages.rows[live]["thinking"] or {}).get("running") is True)
     on(event("chat.delta", kind="content", text="Ответ `код`"))
@@ -6150,7 +6153,9 @@ def test_installing_a_local_model_from_the_window(qapp):
         sheet = quick.window.findChild(QObject, "installSheet")
         app.openUi("install-models")
         wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.catalog)
-        assert view.systemText.startswith("RTX 5080: для новой модели ≈ 14,2 ГБ видеопамяти · ОЗУ свободно ≈ 42,0 ГБ")
+        assert view.systemText.startswith("RTX 5080: для новой модели ≈ 14,2 ГБ видеопамяти · ОЗУ для модели ≈ 42,0 ГБ")
+        busy = {"space": {"gpu": "RTX", "vram_total_gib": 6.0, "vram_gib": 5.0, "ram_gib": 13.0, "busy": "сейчас…"}}
+        assert install_view.system_text(busy).endswith(" · сейчас…")  # other programs hold the memory (38.2)
         rows = view.catalog
         assert rows[0]["offer"] == "Q8_0 · 8,0 ГБ" and rows[0]["tone"] == "ok" and rows[0]["canInstall"]
         assert rows[1]["tone"] == "error" and "63,4 ГБ" in rows[1]["words"] and not rows[1]["canInstall"]

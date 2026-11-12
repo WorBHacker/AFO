@@ -70,6 +70,7 @@ FIT_BITS = 4.9  # a search's «поместится» (32.5): a model taken as i
 SIZES = {"small": (0, 4 * 10**9), "medium": (4 * 10**9, 15 * 10**9), "large": (15 * 10**9, 40 * 10**9),
          "huge": (40 * 10**9, 0)}  # fmt: skip
 DISK_MARGIN_GIB = 2.0
+BUSY_SLACK_GIB = 0.5  # the desktop holding a little more video memory than its share is not worth a word (38.2)
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
@@ -151,8 +152,12 @@ def room(status: dict[str, Any] | None) -> dict[str, Any]:
     vram = total - RESERVE_GIB if total else 0.0
     ram_total = memory.get("ram_total_gib") or 0.0
     ram = ram_total - RAM_RESERVE_GIB
+    # other programs hold the video memory past the desktop's share, by more than BUSY_SLACK_GIB (38.2): words, not
+    # a verdict; while llama-swap holds a model its share is not told from theirs - the window says that one unloads
+    busy = short_now({"vram_gb": vram - BUSY_SLACK_GIB}, status) if vram > BUSY_SLACK_GIB and not loaded else ""
     return {"gpu": gpu.get("name") or "", "vram_total_gib": round(total, 1), "vram_gib": round(max(vram, 0.0), 1),
-            "ram_total_gib": round(ram_total, 1), "ram_gib": round(max(ram, 0.0), 1), "loaded": loaded}  # fmt: skip
+            "ram_total_gib": round(ram_total, 1), "ram_gib": round(max(ram, 0.0), 1), "loaded": loaded,
+            "busy": busy}  # fmt: skip
 
 
 def _kv_gib(info: dict[str, Any] | None, context: int, cache: str = "q8_0") -> float:
@@ -554,15 +559,21 @@ class Installer:
         if model_id in running:
             return ""
         total = (status.get("gpu") or {}).get("vram_total_mib")
-
-        def judged() -> tuple[dict[str, Any] | None, list[dict[str, Any] | None]]:
-            text = config_text()
-            return _estimated(text, model_id, total), [_estimated(text, other, total) for other in running]
-
+        # read under the writers' lock: Windows refuses a write's os.replace while the file is open for reading -
+        # and while the config is being changed, nothing is said rather than a read in its way
+        lock = llama_config.writing()
+        if lock.locked():
+            return ""
         try:
-            need, held = await asyncio.to_thread(judged)
+            async with lock:
+                text = await asyncio.to_thread(config_text)
         except InstallError:
             return ""
+
+        def judged() -> tuple[dict[str, Any] | None, list[dict[str, Any] | None]]:
+            return _estimated(text, model_id, total), [_estimated(text, other, total) for other in running]
+
+        need, held = await asyncio.to_thread(judged)
         if need is None or any(h is None for h in held):
             return ""
         own = {"vram_gb": sum(h["vram_gb"] for h in held), "ram_gb": sum(h["ram_gb"] for h in held)}

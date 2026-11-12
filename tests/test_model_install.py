@@ -899,6 +899,14 @@ def test_a_model_loading_while_other_programs_hold_the_memory_says_so(hub, monke
     }
     assert loading(ours) == {""}  # 5.5 GB taken, 0.8 of it llama-swap's «other», which unloads: enough is free
 
+    def busy(status):  # the install window's line: the same words, while llama-swap holds nothing
+        hub.app.state.status.latest = status
+        return hub.get("/v1/install/system").json()["space"]["busy"]
+
+    assert busy(ollama).startswith("сейчас свободно 0.4 ГБ видеопамяти из 6")
+    assert busy({**ollama, "gpu": {**gpu, "vram_used_mib": 1300}}) == ""  # the desktop's share, a little over
+    assert busy(ours) == ""  # llama-swap's own model: the window says it unloads
+
     split = {"vram_gb": 3.0, "ram_gb": 6.0}  # a model partly in RAM, with 2 GB of RAM free now
     words = llama_memory.short_now(
         split, {**ollama, "gpu": {**gpu, "vram_used_mib": 0}, "memory": {**memory, "ram_used_gib": 14.0}}

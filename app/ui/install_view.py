@@ -104,10 +104,13 @@ def system_text(system: dict[str, Any]) -> str:
                     size=gb(space["vram_gib"], of_bytes=False))]  # fmt: skip
     else:
         parts = [tr("Видеокарта NVIDIA не найдена — модели будут работать в ОЗУ, медленно")]
-    parts.append(tr("ОЗУ свободно ≈ {size}", size=gb(space.get("ram_gib") or 0, of_bytes=False)))
+    # the computer's own RAM less Windows' share (38.1), not what is free right now
+    parts.append(tr("ОЗУ для модели ≈ {size}", size=gb(space.get("ram_gib") or 0, of_bytes=False)))
     if space.get("loaded"):
         parts.append(tr("сейчас загружена «{models}» — на время работы новой она выгрузится",
                         models=", ".join(space["loaded"])))  # fmt: skip
+    if space.get("busy"):
+        parts.append(space["busy"])  # other programs hold the video memory (38.2)
     return " · ".join(parts)
 
 

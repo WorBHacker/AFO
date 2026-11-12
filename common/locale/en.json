@@ -1008,7 +1008,7 @@
  "ОЗУ {size}": "RAM {size}",
  "ОЗУ {total} ГБ, занято {used} ГБ; файл подкачки ≈ {page} ГБ": "RAM {total} GB, {used} GB in use; page file ≈ {page} GB",
  "ОЗУ {used:.1f}/{total:.1f} ГБ, выделено {committed:.0f}/{limit:.0f} ГБ": "RAM {used:.1f}/{total:.1f} GB, committed {committed:.0f}/{limit:.0f} GB",
- "ОЗУ свободно ≈ {size}": "RAM free ≈ {size}",
+ "ОЗУ для модели ≈ {size}": "RAM for a model ≈ {size}",
  "Обзор проекта": "Project overview",
  "Обзор…": "Browse…",
  "Облако": "Cloud",

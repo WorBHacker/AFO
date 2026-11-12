@@ -95,6 +95,7 @@ class LiveRun:
     text: str = ""
     reasoning: str = ""
     loading: str = ""
+    memory: str = ""  # while it loads: other programs hold the memory the model needs (38.2)
     clock_from: float = field(default_factory=time.monotonic)
     answer_at: float | None = None
 
@@ -1679,6 +1680,7 @@ class Controller(QObject):
             run = self.live.setdefault(cid, LiveRun(self._run_models.get(cid, "")))
             lines = [line for line in payload.get("text", "").splitlines() if line.strip()]
             run.loading = lines[-1].strip() if lines else run.loading
+            run.memory = payload.get("memory") or run.memory
             run.clock_from = time.monotonic()  # the thinking clock starts once the model is in VRAM
             self._schedule_render(cid)
         elif kind == "chat.delta":
@@ -1944,7 +1946,9 @@ class Controller(QObject):
         changes: dict[str, Any] = {
             "author": rows.model_name(self.models, run.model_id),
             "local": rows.is_local(self.models, run.model_id),
-            "notice": tr("Загрузка модели: {text}", text=run.loading) if run.loading else "",
+            "notice": tr("Загрузка модели: {text}", text=run.loading) + (f"\n{run.memory}" if run.memory else "")
+            if run.loading
+            else "",
         }
         if run.reasoning:
             changes["thinking"] = rows.thinking(
