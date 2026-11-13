@@ -1,5 +1,6 @@
 """Stage 43: the tray and the graphics card for models - one window, the tray, its menu, Windows' login."""
 
+import gc
 import json
 import shutil
 import subprocess
@@ -345,3 +346,11 @@ def test_a_second_starts_word_is_not_lost_while_the_first_is_busy(qapp, tmp_path
         assert second.wait(timeout=30) == 0
     finally:
         single.close()
+    # closed and dropped right after the word, as a restart does: the socket of the second start, its «ok» on the
+    # way, went with the server - Qt then touched it after it was gone, and the process fell
+    del single
+    gc.collect()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)

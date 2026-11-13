@@ -62,6 +62,10 @@ class Single(QObject):
             self.asked.emit(word)
 
     def close(self) -> None:
+        # a second start's socket still open (its «ok» on the way) is cut first: left to go with the server, Qt touched
+        # it after it was gone and the process fell (43.10, a restart right after a second start)
+        for socket in self.server.findChildren(QLocalSocket):
+            socket.abort()
         self.server.close()
         self.lock.release()
 
