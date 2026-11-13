@@ -86,6 +86,7 @@
  "AFO {version} скачана — можно ставить": "AFO {version} is downloaded — ready to install",
  "AFO {version} — самая новая версия": "AFO {version} — the newest version",
  "AFO будет запускаться при входе в Windows — сразу в трей": "AFO will start when you sign in to Windows - in the tray",
+ "AFO её не трогает": "AFO leaves it alone",
  "AFO закроется, поставит новую версию и откроется снова. Разговоры, проекты и модели останутся; задачи агента, которые идут сейчас, прервутся.": "AFO closes, installs the new version and opens again. Chats, projects and models stay; agent tasks running now are interrupted.",
  "AFO замерит на этом компьютере несколько настроек (llama-bench той же сборки llama.cpp) и запишет самые быстрые. Модель на это время выгружается — несколько минут.": "AFO measures a few settings on this computer (llama-bench of the same llama.cpp build) and writes the fastest. The model is unloaded meanwhile — a few minutes.",
  "AFO запускается при входе в Windows": "AFO starts when you sign in to Windows",

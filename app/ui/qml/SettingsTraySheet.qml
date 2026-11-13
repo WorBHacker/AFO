@@ -141,7 +141,7 @@ Sheet {
                     objectName: "gpuChoose"
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    visible: Gpu.available && row.modelData.why !== "windows"
+                    visible: Gpu.available && row.modelData.why !== "windows" && row.modelData.why !== "never"
                     text: row.modelData.offerText
                     onClicked: Gpu.choose(row.modelData.exe, row.modelData.offer)
                 }

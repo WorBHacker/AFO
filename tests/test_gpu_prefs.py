@@ -96,7 +96,12 @@ def test_which_programs_stay_on_the_card(tmp_path):
     3D work, AFO's own engines), Windows' own parts, a program with a choice already; the person's choice first."""
     why = gpu_prefs.why_kept
     assert why(program(r"C:\Users\u\AppData\Roaming\Telegram Desktop\Telegram.exe"), FACTS) is None  # it goes
-    assert why(program(r"C:\Program Files\Microsoft VS Code\Code.exe"), FACTS) is None
+    # the user's word (2026-11-13): VS Code and Claude are never touched - not even by the person's «integrated»
+    assert why(program(r"C:\Users\u\AppData\Local\Programs\Microsoft VS Code\Code.exe"), FACTS) == "never"
+    assert why(program(r"C:\Users\u\AppData\Local\AnthropicClaude\app-5.1\claude.exe"), FACTS) == "never"
+    asked = {**FACTS, "choices": {r"c:\apps\vs code\code.exe": "integrated"}}
+    assert why(program(r"C:\Apps\VS Code\Code.exe"), asked) == "never"
+    assert why(program(r"C:\Program Files\Microsoft\EdgeWebView\Application\157\msedgewebview2.exe"), FACTS) is None
     assert why(program(r"E:\Games\Delta\delta.exe"), FACTS) == "game"  # Windows knows it as a game
     assert why(program(r"E:\SteamLibrary\steamapps\common\AION2\aion2.exe"), FACTS) == "game"  # a store's folder
     assert why(program(r"E:\Dev\build\Stress.exe", busy_3d=40.0), FACTS) == "game"  # drawing 3D hard now
@@ -149,9 +154,9 @@ def test_the_watcher_moves_programs_on_the_card_and_says_which_wait(key, hub):  
     assert rows[r"C:\Apps\Telegram.exe"]["where"] == "moved" and state["freed_mib"] == 34.0
 
     hub.portal.call(watcher.set_on, False)
-    seen.append(program(r"C:\Apps\Code.exe", "Code.exe", 144.0))
+    seen.append(program(r"C:\Apps\Notes.exe", "Notes.exe", 144.0))
     state = hub.portal.call(watcher.check)
-    assert not state["on"] and gpu_prefs.Registry().read(r"C:\Apps\Code.exe") is None  # off: nothing more moves
+    assert not state["on"] and gpu_prefs.Registry().read(r"C:\Apps\Notes.exe") is None  # off: nothing more moves
     assert gpu_prefs.Registry().read(r"C:\Apps\Telegram.exe") == "GpuPreference=1;"  # nor given back
 
     hub.portal.call(watcher.set_on, True)
@@ -159,12 +164,12 @@ def test_the_watcher_moves_programs_on_the_card_and_says_which_wait(key, hub):  
     assert gpu_prefs.Registry().read(r"C:\Apps\Telegram.exe") is None  # given back at once
     state = hub.portal.call(watcher.check)
     rows = {p["exe"]: p for p in state["programs"]}
-    assert rows[r"C:\Apps\Code.exe"]["where"] == "waits" and rows.get(r"C:\Apps\Telegram.exe", {}).get("why") in (
+    assert rows[r"C:\Apps\Notes.exe"]["where"] == "waits" and rows.get(r"C:\Apps\Telegram.exe", {}).get("why") in (
         None, "person")  # fmt: skip
 
     back = hub.portal.call(watcher.give_back)
-    assert back["given_back"] == [r"C:\Apps\Code.exe"] and not back["state"]["on"]  # back, and off
-    assert gpu_prefs.Registry().read(r"C:\Apps\Code.exe") is None
+    assert back["given_back"] == [r"C:\Apps\Notes.exe"] and not back["state"]["on"]  # back, and off
+    assert gpu_prefs.Registry().read(r"C:\Apps\Notes.exe") is None
 
 
 def test_the_api(hub):  # noqa: F811

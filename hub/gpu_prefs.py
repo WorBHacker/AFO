@@ -378,17 +378,21 @@ NEEDS_CARD = frozenset({"obs64.exe", "obs32.exe", "blender.exe", "resolve.exe", 
                         "llama-bench.exe", "sd-server.exe", "sd.exe", "strata.exe", "ollama.exe",
                         "ollama app.exe", "lm studio.exe"})  # fmt: skip
 NOT_GAMES = frozenset({"wallpaper32.exe", "wallpaper64.exe", "steamwebhelper.exe"})  # Steam's own software
+NEVER = frozenset({"code.exe", "code - insiders.exe", "claude.exe"})  # VS Code and Claude: the user's word, 2026-11-13
 # a folder on its path says «game» (the stores', «Games», a game's own build - «GameDevelop»), or Unreal's build
 GAME_PATH = re.compile(r"(?i)\\[^\\]*game[^\\]*\\|\\binaries\\win64\\|-shipping\.exe$")
 ENGINE_FILES = ("UnityPlayer.dll", "GameAssembly.dll")  # a Unity game beside its program
 
 
 def why_kept(program: dict[str, Any], facts: dict[str, Any]) -> str | None:
-    """Why a program on the card stays there: "person" (they chose the card), "windows" (Windows' own parts, packaged
-    apps - the setting goes by their package), "tool" (it needs the card), "game", "chosen" (the person or Windows
-    gave it a choice already); None - it goes to the integrated graphics. The person's choice comes first."""
+    """Why a program on the card stays there: "never" (AFO never touches it), "person" (they chose the card),
+    "windows" (Windows' own parts, packaged apps - the setting goes by their package), "tool" (it needs the card),
+    "game", "chosen" (the person or Windows gave it a choice already); None - it goes to the integrated graphics. The
+    person's choice comes first, after "never"."""
     exe = program["exe"]
     low, name = exe.lower(), (program.get("name") or exe.rsplit("\\", 1)[-1]).lower()
+    if name in NEVER:
+        return "never"
     choice = facts["choices"].get(low)
     if choice == "card":
         return "person"
@@ -649,7 +653,7 @@ class Watcher:
         await self._db.acall(keep)
         if where == "card":
             await self.prefs.give_back_one(exe)
-        elif where == "integrated":
+        elif where == "integrated" and exe.rsplit("\\", 1)[-1].lower() not in NEVER:  # never VS Code, Claude
             await self.prefs.move(exe, name=exe.rsplit("\\", 1)[-1])
         return await self.check()
 
