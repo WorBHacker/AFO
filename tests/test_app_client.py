@@ -63,6 +63,17 @@ def test_address_comes_from_hub_json_or_the_port_setting(isolated_data_dir, monk
     assert hub_address(paths) == "http://127.0.0.1:9999"
     paths.hub_info.write_text(json.dumps({"host": "127.0.0.1", "port": 8123}), encoding="utf-8")
     assert hub_address(paths) == "http://127.0.0.1:8123"
+    # 43.8 (the live check): a hub that ended without tidying left its hub.json (2026-10-29) - its port is not the
+    # hub's any more (another program held it), the configured one is
+    import subprocess
+    import sys
+
+    gone = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True)
+    paths.hub_info.write_text(json.dumps({"pid": int(gone.stdout.strip()), "host": "127.0.0.1", "port": 8765}),
+                              encoding="utf-8")  # fmt: skip
+    assert hub_address(paths) == "http://127.0.0.1:9999"
+    paths.hub_info.write_text(json.dumps({"pid": os.getpid(), "host": "127.0.0.1", "port": 8124}), encoding="utf-8")
+    assert hub_address(paths) == "http://127.0.0.1:8124"  # alive: its own word
 
 
 def test_a_foreign_program_on_the_port_is_not_taken_for_the_hub(monkeypatch):

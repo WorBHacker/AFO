@@ -15,6 +15,7 @@ from ctypes import wintypes
 from typing import Any
 
 import httpx
+import psutil
 
 from common.i18n import tr
 from common.paths import PROJECT_ROOT, DataPaths
@@ -40,9 +41,12 @@ class HubUnavailable(Exception):
 
 
 def hub_address(paths: DataPaths) -> str:
-    """Where the hub listens: hub.json of a running hub, else the configured port."""
+    """Where the hub listens: hub.json of a running hub, else the configured port. A hub.json whose process is gone
+    (a hub that ended without tidying, 43.8) says nothing: its port may be another program's now."""
     try:
         info = json.loads(paths.hub_info.read_text(encoding="utf-8"))
+        if "pid" in info and not psutil.pid_exists(int(info["pid"])):
+            raise ValueError("the hub that wrote hub.json is gone")
         return f"http://{info['host']}:{info['port']}"
     except OSError, ValueError, KeyError:
         return f"http://127.0.0.1:{int(os.environ.get(PORT_ENV, DEFAULT_PORT))}"
