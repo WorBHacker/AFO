@@ -97,6 +97,9 @@ ENGINE_WAIT = N_("ждёт программу для локальных моде
 # a draft model guesses ahead for a model at least this many times its size (42.3): a larger one guesses too slowly to
 # give anything (Qwen3-8B in Q4_K_M is 6,5 times Qwen3-0.6B in Q8_0)
 DRAFT_RATIO = 5
+# the draft models AFO downloaded (42.5), hub.db's settings: their file -> {repo, file, sha256, size, waiting - the
+# models whose tuning has not measured it yet}
+DRAFTS_SETTING = "install.drafts"
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 IN_CONFIG = ("done", "added")  # an install whose block llama-swap's config has (34.5: added - not tried yet)
 VERDICTS = {
@@ -422,6 +425,12 @@ class Installer:
         # the trial run (the hub's «Проверить», hub/api/model_settings.run_check): set by the server
         self.trial: Callable[[dict[str, Any], Any], Awaitable[dict[str, Any]]] | None = None
         self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
+        # its draft model on the disk (42.5): then its tuning, model id and whether it waits for a quiet computer
+        self.on_speed_up: Callable[[str, bool], Any] | None = None
+        self.drafting: dict[str, Any] = {}  # a draft on its way: {model_id, name, done, total} | {model_id, error}
+        self._drafts: dict[str, dict[str, Any]] = {}  # DRAFTS_SETTING
+        self._speeding: set[asyncio.Task] = set()
+        self._draft_cancel = threading.Event()
         self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
         self._naming: asyncio.Task | None = None
         # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
@@ -460,8 +469,10 @@ class Installer:
             ).rowcount
 
         await self.load_reserve()
+        self._drafts = await self._db.acall(lambda conn: _setting(conn, DRAFTS_SETTING))
         left = await self._db.acall(pause)
         self._naming = asyncio.create_task(self.name_ollama_models())  # in the background: llama-swap may not be up
+        self._keep(self._quietly(self.unhook_lost_drafts()))  # a draft's file gone while the hub was off (42.5)
         return left
 
     async def load_reserve(self) -> None:
@@ -545,6 +556,11 @@ class Installer:
             self._naming.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._naming
+        self._draft_cancel.set()  # a draft's download: its part stays, the next «Ускорить» goes on with it
+        for task in list(self._speeding):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
         for event in self._cancel.values():
             event.set()
         for job_id in self._cancel:
@@ -659,6 +675,153 @@ class Installer:
             if same_vocabulary(own, theirs):
                 return {**entry, "size": file["size"], "sha256": file["sha256"], "revision": listed["revision"]}
         return None
+
+    # --- the draft model guessing ahead (42.5) ---
+
+    def _keep(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task:
+        task = asyncio.create_task(coroutine)
+        self._speeding.add(task)  # kept: a task nobody holds may vanish
+        task.add_done_callback(self._speeding.discard)
+        return task
+
+    async def _quietly(self, coroutine: Coroutine[Any, Any, Any]) -> None:
+        try:
+            await coroutine
+        except (InstallError, llama_config.ConfigError, OSError) as exc:
+            log.info("drafts: %s", exc)
+
+    def speed_up(self, model_id: str, automatic: bool = False) -> dict[str, Any]:
+        """«Ускорить» (42.5), and by itself after an install: the draft model paired with this one onto the disk (once:
+        it serves its whole family), then the model's tuning measures guessing ahead with it - at once, or when the
+        computer is quiet (`automatic`). In the background; what goes on - `drafting`."""
+        self._keep(self._speed_up(model_id, automatic))
+        return {"model_id": model_id, "drafting": self.drafting}
+
+    async def _speed_up(self, model_id: str, automatic: bool) -> None:
+        try:
+            await self._fetch_draft(model_id)
+        except (InstallError, hf.HubError, hf.Cancelled, llama_config.ConfigError, OSError, GGUFError) as exc:
+            log.info("no draft model for %s: %s", model_id, exc)
+            self.drafting = {"model_id": model_id, "error": str(exc) or tr("загрузка остановлена")}
+            await self._bus.publish("install.draft", {"drafting": self.drafting})
+        if self.on_speed_up is not None:
+            self.on_speed_up(model_id, automatic)
+
+    async def _fetch_draft(self, model_id: str) -> None:
+        """The catalog's draft paired with this model on the disk (draft_for): one AFO has is taken again, another
+        waits for the installs' downloads (one at a time) and comes to the fastest drive with room, its sha256
+        checked; the model waits for its tuning to measure it. Nothing without a graphics card (a draft only slows the
+        processor down - ngram is measured) or for a model not llama.cpp's."""
+        if not self.space().get("vram_gib"):
+            return
+        view = llama_config.model_view(await asyncio.to_thread(config_text), model_id)
+        if view["engine"] != "llama.cpp" or not view.get("file"):
+            return
+        entry = await self.draft_for(Path(view["file"]))
+        if entry is None:
+            return
+        same = (entry["repo"], entry["file"])
+        dest = next((Path(file) for file, d in self._drafts.items()
+                     if (d["repo"], d["file"]) == same and Path(file).is_file()), None)  # fmt: skip
+        if dest is None:
+            while self.busy():
+                await asyncio.sleep(ENGINE_WAIT_S)
+            drive = pick_drive(await asyncio.to_thread(self.drives), entry["size"] / GIB)
+            if drive is None:
+                raise InstallError(tr("нет места для черновой модели: нужно {size:.1f} ГБ",
+                                      size=entry["size"] / GIB + DISK_MARGIN_GIB), 507)  # fmt: skip
+            dest = models_root(drive) / "drafts" / PurePosixPath(entry["file"]).name
+            await self._download_draft(model_id, entry, dest)
+        record = self._drafts.get(str(dest)) or {key: entry[key] for key in ("repo", "file", "sha256", "size")}
+        record["waiting"] = sorted({*record.get("waiting", []), model_id})
+        self._drafts[str(dest)] = record
+        await self._save_drafts()
+
+    async def _download_draft(self, model_id: str, entry: dict[str, Any], dest: Path) -> None:
+        await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(_check_room, dest.parent, entry["size"])
+        self.drafting = {"model_id": model_id, "name": entry["name"], "done": 0, "total": entry["size"]}
+        await self._bus.publish("install.draft", {"drafting": self.drafting})
+        loop, shown = asyncio.get_running_loop(), [0.0]
+
+        def report(done: int) -> None:  # in the download's thread
+            self.drafting["done"] = done
+            if time.monotonic() - shown[0] >= PROGRESS_S:
+                shown[0] = time.monotonic()
+                said = self._bus.publish("install.draft", {"drafting": dict(self.drafting)}, persist=False)
+                asyncio.run_coroutine_threadsafe(said, loop)
+
+        self._draft_cancel.clear()
+        url, progress = hf.file_url(entry["repo"], entry["file"], entry["revision"]), hf.Progress()
+        for attempt in range(len(RETRIES_S) + 1):
+            try:
+                await asyncio.to_thread(hf.download, url, dest, size=entry["size"], sha256=entry["sha256"],
+                                        token=self.token(), report=report, cancel=self._draft_cancel,
+                                        progress=progress)  # fmt: skip
+                break
+            except hf.HubError as exc:
+                if exc.status in (403, 404, 429) or attempt == len(RETRIES_S):
+                    raise
+                if await asyncio.to_thread(self._draft_cancel.wait, RETRIES_S[attempt]):
+                    raise hf.Cancelled() from exc
+        self.drafting = {}
+        await self._bus.publish("install.draft", {"drafting": self.drafting})
+
+    async def _save_drafts(self) -> None:
+        drafts = json.loads(json.dumps(self._drafts))
+        await self._db.acall(lambda conn: _put_setting(conn, DRAFTS_SETTING, drafts))
+
+    async def draft_path(self, model_id: str, model_file: Path) -> Path | None:
+        """The draft downloaded for this model whose tuning has not measured it yet (42.5) - the tuner's `draft`."""
+        return next((Path(file) for file, d in self._drafts.items()
+                     if model_id in d.get("waiting", []) and Path(file).is_file()), None)  # fmt: skip
+
+    async def tuned(self, model_id: str, result: dict[str, Any]) -> None:
+        """A model's tuning ended (42.5): it waits for its draft no more. A draft no model's command uses and none
+        waits for gave nothing - it is deleted; a draft's file gone from the disk is taken off each command."""
+        for record in self._drafts.values():
+            if model_id in record.get("waiting", []):
+                record["waiting"].remove(model_id)
+        await self.prune_drafts()
+
+    async def prune_drafts(self) -> None:
+        """Each downloaded draft no model's command uses and none waits for - deleted (a file in use stays for the
+        next time); a draft's file gone - off the commands (unhook_lost_drafts)."""
+        try:
+            text = await asyncio.to_thread(config_text)
+        except InstallError:
+            return
+        used = {Path(v["spec"]["draft"]) for v in _views(text) if v.get("spec", {}).get("draft")}
+        for file, record in list(self._drafts.items()):
+            if record.get("waiting") or Path(file) in used:
+                continue
+            try:
+                await asyncio.to_thread(_delete_draft, Path(file))
+            except OSError as exc:  # llama-server still holds it (Windows): the next time
+                log.info("the draft %s stays for now: %s", file, exc)
+                continue
+            del self._drafts[file]
+        await self._save_drafts()
+        await self._quietly(self.unhook_lost_drafts())
+
+    async def unhook_lost_drafts(self) -> list[str]:
+        """Each command whose draft model's file is gone (deleted, an antivirus) without its guessing ahead - llama-swap
+        would not start the model with it (the stage's risk, 42.5); under the writers' lock. The models changed."""
+        path = llama_config.config_path()
+        async with llama_config.writing():
+            text = await asyncio.to_thread(config_text)
+            new, changed = await asyncio.to_thread(_without_lost_drafts, text)
+            if not changed:
+                return []
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
+        log.info("draft models gone from the disk: guessing ahead off for %s", changed)
+        await self._bus.publish("llama.config", {"changes": {"spec_type": "none"}, "models": changed})
+        return changed
 
     def space(self) -> dict[str, Any]:
         return room(self._status() or self._kept_machine(), self.reserve)
@@ -1573,6 +1736,45 @@ class Installer:
             await asyncio.to_thread(llama_config.write, path, new)
             await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
         await self._sync()
+
+
+def _setting(conn, key: str) -> dict[str, Any]:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    value = json.loads(row["value"]) if row else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _put_setting(conn, key: str, value: Any) -> None:
+    conn.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET "
+                 "value = excluded.value, updated_at = excluded.updated_at",
+                 (key, json.dumps(value, ensure_ascii=False), utc_now()))  # fmt: skip
+
+
+def _views(text: str) -> list[dict[str, Any]]:
+    """The config's llama.cpp models the window edits, as model_view reads them."""
+    out = []
+    for model_id in llama_config.model_blocks(text):
+        with contextlib.suppress(llama_config.ConfigError):
+            view = llama_config.model_view(text, model_id)
+            if view["engine"] == "llama.cpp" and view["editable"]:
+                out.append(view)
+    return out
+
+
+def _without_lost_drafts(text: str) -> tuple[str, list[str]]:
+    """The config with guessing ahead off for each model whose draft model's file is not on the disk (blocking: in a
+    thread); the models changed."""
+    changed = [v["id"] for v in _views(text) if v["spec"]["draft"] and not Path(v["spec"]["draft"]).is_file()]
+    for model_id in changed:
+        text = llama_config.edit(text, model_id, {"spec_type": "none"})
+    return text, changed
+
+
+def _delete_draft(path: Path) -> None:
+    """A draft's file and what is left of its download."""
+    for each in (path.with_name(path.name + ".part"), path.with_name(path.name + ".parts")):
+        each.unlink(missing_ok=True)
+    path.unlink(missing_ok=True)
 
 
 def config_text() -> str:

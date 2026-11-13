@@ -847,8 +847,18 @@
     `test_guessing_ahead_that_does_not_start_is_passed_over_or_taken_back`,
     `test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat`, в `test_together.py` —
     `test_a_chat_that_begins_stops_tuning_by_hand_and_it_goes_on_after` (настоящий чат хаба).
-- 42.5 Черновая модель качается сама; не дала выигрыша — файл удаляется, если им никто не пользуется. Кнопка
-  «Ускорить». Файлы: `hub/model_install.py`, `hub/api/install.py`.
+- 42.5 ✓ Черновая модель качается сама; не дала выигрыша — файл удаляется, если им никто не пользуется. Кнопка
+  «Ускорить». Файлы: `hub/model_install.py`, `hub/api/install.py`. Сделано: `Installer.speed_up` (после установки —
+  `on_done`, сам; «Ускорить» — `POST /v1/install/speedup/{id}`, сразу): пара из каталога (`draft_for`) — уже скачанная
+  берётся снова, иначе ждёт загрузки установок (одна за раз) и качается на самый быстрый диск с местом в
+  `…\AFO\models\drafts` (sha256, докачка, повторы как у модели); ход — `drafting` (`GET /v1/install/speedup`, событие
+  `install.draft`); без видеокарты не качается (только замедлит процессор — меряется ngram); затем подбор
+  (`on_speed_up` → `tuner.request`, сразу или в тишине). Записи — `install.drafts` в `settings` (файл → repo, file,
+  sha256, size, `waiting` — модели, чей подбор его ещё не мерил); подбор берёт его через `draft_path`. После подбора
+  (`Tuner.on_tuned` → `tuned`) черновик, который ни одна команда не использует и никто не ждёт, удаляется (`prune_drafts`;
+  занятый файл — в следующий раз); файл черновика пропал — `unhook_lost_drafts` под замком снимает угадывание с каждой
+  команды, что на него ссылается (и при старте хаба). Снять угадывание (`spec_type: none`) можно без сборки. Тест —
+  `test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing`.
 - 42.6 Окно: какое ускорение стоит и сколько дало. Файлы: `app/ui/model_setup.py`, `ModelsSheet.qml`.
 - Риски: обновление llama.cpp в мастере переименует флаги — после обновления сверить их и под замком переписать или
   снять; удалили черновик — снять `-md` у всех моделей, что на него ссылаются; черновик занимает видеопамять —

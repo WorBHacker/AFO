@@ -439,7 +439,10 @@ def _layers(value: str | None) -> str | int:
 
 
 def _check_spec(key: str, value: Any, build: dict[str, Any] | None) -> None:
-    """A setting of guessing ahead (42.1), checked against the build that will run it."""
+    """A setting of guessing ahead (42.1), checked against the build that will run it; taking it off needs none
+    (each of its flags goes under any name it has: 42.5, a draft's file gone)."""
+    if key == "spec_type" and value == "none":
+        return
     if build is None or spelled("spec_type", build)[1] is None:
         raise ConfigError(tr("эта сборка llama.cpp не умеет угадывать вперёд — обновите её в мастере первого запуска"))
     if key == "spec_type":
@@ -532,9 +535,9 @@ def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], v
 
 
 def _set_spec(lines: list[str], first: int, last: int, changes: dict[str, Any], view: dict[str, Any],
-              build: dict[str, Any]) -> None:  # fmt: skip
+              build: dict[str, Any] | None) -> None:  # fmt: skip
     """Guessing ahead written (42.1): its kinds, and the draft model's flags while a kind takes one - off, each of
-    its flags goes."""
+    its flags goes (no build: only off, under the names the hub knows)."""
     kinds = changes.get("spec_type", view["spec"]["type"] or "none")
 
     def put(setting: str, value: str | None) -> None:
@@ -606,7 +609,7 @@ def edit(text: str, model_id: str, changes: dict[str, Any], *, build: dict[str, 
     for key in COUNTS:
         if key in changes:
             _set_flag(lines, first, last, FLAGS[key], str(changes[key]) if changes[key] else None)
-    if build is not None and set(SPEC_CHANGES) & changes.keys():
+    if set(SPEC_CHANGES) & changes.keys():  # checked: without a build only taking it off
         _set_spec(lines, first, last, changes, view, build)
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
     if set(model_blocks(out)) != set(model_blocks(text)):  # the edit must leave every model in place

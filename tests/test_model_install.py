@@ -1377,3 +1377,66 @@ def test_the_catalogs_drafts():
         assert set(draft) >= {"id", "repo", "file", "name", "architectures"} and draft["architectures"]
         assert re.compile(draft.get("names") or "")  # a pattern of model file names, when it is given
         assert hf.quant_of(draft["file"]) == "Q8_0"
+
+
+def test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing(hub, tmp_path, monkeypatch):
+    """42.5 (the user's word): AFO downloads the draft model itself - after an install, and at once on «Ускорить» -
+    once for its whole family, its sha256 checked, and the model's tuning measures with it. A draft that gave nothing
+    is deleted once no model's command uses it and none waits for it; a draft's file gone from the disk is taken off
+    each command that has it - llama-swap would not start the model with it. No graphics card - no draft: it would
+    only slow the processor down."""
+    from tests.test_llama_config import HELP
+
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [{"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+                          "architectures": ["tiny"]}]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    model = tmp_path / "own" / "Tiny-Q4_K_M.gguf"
+    model.parent.mkdir()
+    model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+    text = hub.config.read_text(encoding="utf-8")
+    block = lc.model_block("tinyone", name="Tinyone", description="", server=lc.server_command(text), model=str(model),
+                           context=8192, gpu_layers="all")  # fmt: skip
+    hub.config.write_text(lc.add_model(text, "tinyone", block), encoding="utf-8")
+    installer = hub.app.state.installer
+    asked = []
+    monkeypatch.setattr(installer, "on_speed_up", lambda model_id, automatic: asked.append((model_id, automatic)))
+
+    def sped_up(model_id):
+        asked.clear()
+        assert hub.post(f"/v1/install/speedup/{model_id}").status_code == 200
+        deadline = time.monotonic() + 20
+        while not asked:
+            assert time.monotonic() < deadline, installer.drafting
+            time.sleep(0.05)
+        return asked[0]
+
+    assert sped_up("tinyone") == ("tinyone", False)  # then its tuning, at once
+    draft = mi.models_root(installer.drives()[0]) / "drafts" / "Small-Q8_0.gguf"
+    assert draft.read_bytes() == DRAFTS["test/Small-GGUF"]["Small-Q8_0.gguf"]
+    assert hub.portal.call(installer.draft_path, "tinyone", model) == draft  # what the tuning measures
+    assert hub.get("/v1/install/speedup").json()["drafting"] == {}  # nothing on its way
+
+    hub.portal.call(installer.tuned, "tinyone", {"spec": {"kind": "ngram"}})  # the draft gave nothing
+    assert not draft.exists() and hub.portal.call(installer.draft_path, "tinyone", model) is None
+
+    sped_up("tinyone")
+    assert draft.exists()
+    build = lc.parse_help(HELP)  # the draft won: the tuning wrote it into the model's command
+    text = hub.config.read_text(encoding="utf-8")
+    hub.config.write_text(lc.edit(text, "tinyone", {"spec_type": "draft-simple", "draft_model": str(draft)},
+                                  build=build), encoding="utf-8")  # fmt: skip
+    hub.portal.call(installer.tuned, "tinyone", {"spec": {"kind": "draft"}})
+    assert draft.exists()  # a command uses it
+
+    draft.unlink()  # an antivirus took it
+    assert hub.portal.call(installer.unhook_lost_drafts) == ["tinyone"]
+    assert lc.model_view(hub.config.read_text(encoding="utf-8"), "tinyone")["spec"]["type"] == ""
+    assert hub.portal.call(installer.unhook_lost_drafts) == []
+
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 0.0, "ram_gib": 61.0})  # no graphics card
+    FakeHub.spans.clear()
+    FakeHub.ranges.clear()
+    assert sped_up("tinyone") == ("tinyone", False) and not draft.exists()
+    assert not FakeHub.spans and not FakeHub.ranges  # nothing asked of Hugging Face
+    assert hub.post("/v1/install/speedup/nope").status_code == 404

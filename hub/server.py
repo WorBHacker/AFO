@@ -203,8 +203,13 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
         app.state.tuner = Tuner(db, bus, app.state.chat, url=settings.llama_swap_url, space=app.state.installer.space,
                                 gpu=lambda: (app.state.status.latest or {}).get("gpu"),
-                                installing=app.state.installer.busy)  # fmt: skip
-        app.state.installer.on_done = lambda model_id: app.state.tuner.request(model_id, auto=True)
+                                installing=app.state.installer.busy,
+                                draft=app.state.installer.draft_path)  # fmt: skip
+        # guessing ahead (42.5): after an install its draft model comes by itself, then the tuning measures with it;
+        # a draft that gave nothing goes once no model uses it
+        app.state.installer.on_done = lambda model_id: app.state.installer.speed_up(model_id, automatic=True)
+        app.state.installer.on_speed_up = lambda model_id, auto: app.state.tuner.request(model_id, auto=auto)
+        app.state.tuner.on_tuned = app.state.installer.tuned
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # one at a time on the graphics card (34.4): a trial waits while tuning measures, and for a chat's answer
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")

@@ -319,6 +319,7 @@ class Tuner:
                  draft: Callable[[str, Path], Awaitable[Path | None]] | None = None):  # fmt: skip
         self._db = db
         self._draft = draft  # a draft model's file for a model (42.5: found and downloaded); None - none
+        self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None  # a result kept (42.5: drafts)
         self._bus = bus
         self._chat = chat
         self._url = url.rstrip("/")
@@ -458,6 +459,11 @@ class Tuner:
         await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
         self.job = {"status": "idle"}
         await self._publish()
+        if self.on_tuned is not None:
+            try:  # the drafts that gave nothing go (42.5): its failure is not the tuning's
+                await self.on_tuned(model_id, result)
+            except Exception:
+                log.exception("after tuning %s", model_id)
         return result
 
     async def _tune(self, model_id: str) -> dict[str, Any]:

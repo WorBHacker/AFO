@@ -256,3 +256,21 @@ async def remove(request: Request, model_id: str, client: Annotated[Client, Depe
         return {"job": await _installer(request).remove(model_id)}
     except (mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
+
+
+@router.get("/speedup")
+async def drafting(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """The draft model on its way (42.5): {model_id, name, done, total}, its error, or {} - nothing."""
+    return {"drafting": _installer(request).drafting}
+
+
+@router.post("/speedup/{model_id}")
+async def speed_up(request: Request, model_id: str, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """«Ускорить» (42.5): the draft model paired with this one downloaded, if there is one and a graphics card, then
+    the model's tuning at once - guessing ahead measured; in the background."""
+    try:
+        text = await asyncio.to_thread(mi.config_text)
+        llama_config.model_view(text, model_id)
+    except (mi.InstallError, llama_config.ConfigError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _installer(request).speed_up(model_id)
