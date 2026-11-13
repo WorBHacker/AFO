@@ -135,6 +135,40 @@ def test_app_entry_point_builds_the_window(env, isolated_data_dir):
     assert "the window was built" in log_text
 
 
+def wait_for(check, timeout: float = 60) -> None:
+    deadline = time.monotonic() + timeout
+    while not check():
+        if time.monotonic() > deadline:
+            raise TimeoutError("not in time")
+        time.sleep(0.2)
+
+
+def test_a_second_start_shows_the_first_window_and_leaves(env, isolated_data_dir):
+    """43.1: AFO in the tray (`--tray`, Windows' login) is one: a second start - a shortcut, the login again - asks
+    the first to show its window (or, from the login, nothing) and leaves; no second window, no second tray icon."""
+    offscreen = {**env, "QT_QPA_PLATFORM": "offscreen"}
+    log = isolated_data_dir / "logs" / "app.log"
+
+    def said(words: str) -> bool:
+        return log.is_file() and words in log.read_text(encoding="utf-8", errors="replace")
+
+    first = subprocess.Popen([sys.executable, "-m", "app", "--tray"], cwd=PROJECT_ROOT, env=offscreen)
+    try:
+        wait_for(lambda: said("one window: waits for a second start"))
+        assert wait_healthy(int(env[PORT_ENV]), timeout=60)["status"] == "ok"  # the window started its hub
+        second = run(offscreen, "app", timeout=60)
+        assert second.returncode == 0, second.stderr
+        assert said("AFO runs already: asked it to show")
+        wait_for(lambda: said("a second start asks: show"))
+        again = run(offscreen, "app", "--tray", timeout=60)
+        assert again.returncode == 0 and said("AFO runs already: asked it to tray")
+        wait_for(lambda: said("a second start asks: tray"))
+        assert first.poll() is None  # the first goes on
+    finally:
+        stop_tree(first)
+        run(env, "hub", "stop")
+
+
 def test_a_native_crash_of_the_window_leaves_a_trace(env, isolated_data_dir):
     """A crash inside Qt has no Python traceback: the stacks go to app-crash.log, Qt's warnings to app.log."""
     code = (

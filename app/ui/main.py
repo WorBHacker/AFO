@@ -58,15 +58,19 @@ def native_frame_touches(window: QWindow) -> None:
         log.info("no DWM window touches (%s)", exc)
 
 
-def restore_geometry(window: QWindow, settings: QSettings) -> None:
+def restore_geometry(window: QWindow, settings: QSettings, *, show: bool = True) -> bool:
+    """The window's place and size as they were; whether it was maximized (`show` - it is shown so now; a window
+    started in the tray is maximized when it is first shown, 43.1)."""
     geometry = settings.value("quick/geometry")
     if isinstance(geometry, list) and len(geometry) == 4:
         x, y, w, h = (int(v) for v in geometry)
         screen = QGuiApplication.screenAt(QPoint(x + w // 2, y + 20))
         if screen is not None:  # only where a screen still is
             window.setGeometry(x, y, w, h)
-    if settings.value("quick/maximized") in (True, "true"):
+    maximized = settings.value("quick/maximized") in (True, "true")
+    if maximized and show:
         window.showMaximized()
+    return maximized
 
 
 def save_geometry(window: QWindow, settings: QSettings) -> None:
@@ -81,7 +85,9 @@ def save_geometry(window: QWindow, settings: QSettings) -> None:
 class QuickApp:
     """The pieces of a running QML window, kept together so nothing is collected while it runs."""
 
-    def __init__(self, app: QGuiApplication, paths: DataPaths, *, connect: bool = True):
+    def __init__(self, app: QGuiApplication, paths: DataPaths, *, connect: bool = True, hidden: bool = False):
+        """`hidden` - started in the tray (43.1, Windows' login): the window comes when asked (show_window)."""
+        self.single = None  # this AFO's ear for a second start (app/single.py), set by `python -m app`
         self.settings = QSettings(str(paths.root / "app.ini"), QSettings.Format.IniFormat)
         self.theme = Theme(str(self.settings.value("ui/theme", "system")))
         self.controller = Controller(paths, self.settings, self.theme)
@@ -127,6 +133,7 @@ class QuickApp:
         context.setContextProperty("Rewriter", self.controller.editor.rewriter)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
+        context.setContextProperty("StartHidden", hidden)
         self.engine.load(str(QML_DIR / "Main.qml"))
         roots = self.engine.rootObjects()
         if not roots:
@@ -135,7 +142,7 @@ class QuickApp:
         native_frame_touches(self.window)
         self.snap = snap.install(app, self.window)  # Windows' snapping to edges and corners, Win+arrows
         self.stop_key = install_stop_key(app, self.window, self.controller.computer_view)  # Ctrl+Alt+End (D41)
-        restore_geometry(self.window, self.settings)
+        self._maximize = restore_geometry(self.window, self.settings, show=not hidden) and hidden
         # notices outside the window (D21): an agent waits for an answer, or finished, while the window is behind
         self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
         self.controller.approvals.requested.connect(self.notifier.notify)
@@ -153,15 +160,28 @@ class QuickApp:
         if connect:
             QTimer.singleShot(0, self.controller.connectHub)
 
-    def _front(self) -> None:
-        """A notice was clicked: the window comes forward with the chat whose request it was (its card on top)."""
+    def show_window(self) -> None:
+        """The window forward (43.1: a second start, the tray): as it was left - a window started in the tray and
+        left maximized comes maximized."""
         if self.window is None:
             return
-        if self.window.visibility() == QWindow.Visibility.Minimized:
+        if self._maximize:
+            self._maximize = False
+            self.window.showMaximized()
+        elif self.window.visibility() == QWindow.Visibility.Minimized:
             self.window.showNormal()
         self.window.show()
         self.window.raise_()
         self.window.requestActivate()
+
+    def asked(self, word: str) -> None:
+        """A second start's word (app/single.py): "show" - the window forward; "tray" (Windows' login) - nothing."""
+        if word == "show":
+            self.show_window()
+
+    def _front(self) -> None:
+        """A notice was clicked: the window comes forward with the chat whose request it was (its card on top)."""
+        self.show_window()
         self.controller.approvals.show_latest()
 
     def restart(self) -> None:
@@ -169,6 +189,9 @@ class QuickApp:
         as it starts. The hub, its chats and agents go on (D2)."""
         if self.window is not None:
             save_geometry(self.window, self.settings)  # before the new window reads it
+        if self.single is not None:  # the new one is the first AFO: this one lets its lock and its socket go
+            self.single.close()
+            self.single = None
         QProcess.startDetached(sys.executable, ["-m", "app"], str(Path.cwd()))
         QGuiApplication.instance().quit()
 
@@ -185,6 +208,9 @@ class QuickApp:
             QGuiApplication.instance().removeNativeEventFilter(self.snap)
             self.snap = None
         self.notifier.close()
+        if self.single is not None:
+            self.single.close()
+            self.single = None
         self.controller.shutdown()  # the hub keeps running (D2)
         # the engine and its window go now, before the controller, so no binding ever sees App gone
         self.window = None

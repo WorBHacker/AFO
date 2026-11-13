@@ -1,4 +1,5 @@
-"""App entry point: `python -m app` opens the chat window, which finds the hub or starts it (D2, D3).
+"""App entry point: `python -m app` opens the chat window, which finds the hub or starts it (D2, D3); one AFO at a
+time (43.1: a second start shows the first window), `--tray` starts it in the tray (Windows' login).
 
 The window is Qt Quick drawn by the CPU (app/ui, D3). `--smoke` builds the window without connecting and exits:
 a check that the GUI starts.
@@ -13,13 +14,14 @@ import sys
 
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import QSettings, QtMsgType, qInstallMessageHandler
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from common import __version__, crashes
 from common.logging_setup import setup_logging
 from common.paths import data_paths
 from hub.secret_filter import clean
 
+from .single import ask_running, first
 from .ui import brand, translator
 from .ui.hitches import HitchWatch
 from .ui.main import QuickApp, use_software_rendering
@@ -30,6 +32,7 @@ APP_ID = "AFO.App"  # the taskbar's group: the window's, and the installer's sho
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app", description="AFO window")
     parser.add_argument("--smoke", action="store_true", help="build the window, do not connect, exit")
+    parser.add_argument("--tray", action="store_true", help="start in the tray, without the window (Windows' login)")
     args = parser.parse_args(argv)
 
     log = setup_logging("app", redact=clean)
@@ -44,9 +47,18 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("AFO")
     app.setWindowIcon(brand.icon())
     paths = data_paths().ensure()
+    single = None
+    if not args.smoke:  # one AFO (43.1): a second start asks the first to show its window and leaves
+        single = first(paths.root)
+        if single is None:
+            return 0 if ask_running(paths.root, "tray" if args.tray else "show") else 3
     language = translator.use(app, QSettings(str(paths.root / "app.ini"), QSettings.Format.IniFormat))
     log.info("language: %s", language)
-    quick = QuickApp(app, paths, connect=not args.smoke)
+    hidden = args.tray and QSystemTrayIcon.isSystemTrayAvailable()  # no tray: the window, or AFO could not be found
+    quick = QuickApp(app, paths, connect=not args.smoke, hidden=hidden)
+    if single is not None:
+        quick.single = single
+        single.asked.connect(quick.asked)
     if args.smoke:
         log.info("smoke check: the window was built (%d QML warnings)", len(quick.warnings))
         quick.close()

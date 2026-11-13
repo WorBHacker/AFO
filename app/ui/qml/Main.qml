@@ -11,7 +11,7 @@ Window {
     height: 820
     minimumWidth: 900
     minimumHeight: 560
-    visible: true
+    visible: !StartHidden  // started in the tray (43.1): the window comes when asked
     title: "AFO"
     color: Theme.p.window
     flags: Qt.Window | Qt.FramelessWindowHint
