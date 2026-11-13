@@ -1,7 +1,7 @@
 """Stage 43: the tray and the graphics card for models - one window, the tray, its menu, Windows' login."""
 
-import gc
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -314,6 +314,7 @@ def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa:
         QMetaObject.invokeMethod(sheet, "close")
 
         quick.window.hide()  # behind: the notice goes to the tray
+        quick.notifier.quiet = lambda: False  # whatever the time the test runs at: not the quiet hours (23:00–08:00)
         app.on_event({"type": "gpu.moved", "payload": {"programs": [{"exe": r"C:\Apps\Code.exe", "name": "Code.exe",
                                                                       "mib": 115.0}]}})  # fmt: skip
         assert quick.notifier.shown[-1] == (
@@ -324,33 +325,76 @@ def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa:
         quick.close()
 
 
-def test_a_second_starts_word_is_not_lost_while_the_first_is_busy(qapp, tmp_path):  # noqa: F811
+# the first AFO's ear in its own Python (43.10): busy before its loop runs, then it hears, lives on, and is closed
+# right after a word - as a restart does
+FIRST = """\
+import gc, sys, time
+from pathlib import Path
+from PySide6.QtGui import QGuiApplication
+from app.single import first
+app = QGuiApplication([])
+single = first(Path(sys.argv[1]))
+words = []
+single.asked.connect(words.append)
+print("listening", flush=True)
+time.sleep(float(sys.argv[2]))  # its thread busy: QML being built, a hitch
+
+
+def pump(until, seconds):
+    deadline = time.monotonic() + seconds
+    while not until() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+
+pump(lambda: len(words) == 2, 90)
+pump(lambda: False, 2)  # it lives on: the second starts' sockets gone, their wrappers collected
+gc.collect()
+print("busy", flush=True)
+time.sleep(4)  # the third asks while it is busy again
+pump(lambda: len(words) == 3, 90)
+time.sleep(2)  # busy again: the second start reads its «ok» and leaves, unseen here yet
+single.close()  # right after a word, as a restart does
+del single
+gc.collect()
+pump(lambda: False, 2)
+print("heard:", " ".join(words), flush=True)
+"""
+SECOND = """\
+import sys
+from pathlib import Path
+from PySide6.QtCore import QCoreApplication
+from app.single import ask_running
+app = QCoreApplication([])
+sys.exit(0 if ask_running(Path(sys.argv[1]), sys.argv[2]) else 3)
+"""
+
+
+def test_a_second_starts_word_is_not_lost_while_the_first_is_busy(tmp_path):
     """43.10 (the stage's whole pytest run, 2026-11-13: the second start asked, the first never heard): the second
     start wrote its word and left at once - when the first window's thread was busy longer than about two seconds
     just then (QML being built, a hitch), the word went with the pipe, and a shortcut did nothing. Now the second waits
-    for the first's «ok» before it leaves. Real processes: the second start in its own Python, this thread blocked
-    while it asks."""
-    from app.single import first
-
-    single = first(tmp_path)
-    assert single is not None
-    words = []
-    single.asked.connect(words.append)
-    code = ("import sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication\n"
-            "from app.single import ask_running\napp = QCoreApplication([])\n"
-            f"sys.exit(0 if ask_running(Path({str(tmp_path)!r}), 'show') else 3)\n")  # fmt: skip
+    for the first's «ok» before it leaves. And the first, closed and dropped right after a word (a restart), took the
+    second's socket - its «ok» on the way - with it, and Qt touched it after it was gone: `close()` cuts it first.
+    Real processes: the first AFO's ear in its own Python, each second start in its own."""
+    root = Path(__file__).parent.parent
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    ear = subprocess.Popen([sys.executable, "-c", FIRST, str(tmp_path), "6"], cwd=root, env=env,
+                           stdout=subprocess.PIPE, text=True)  # fmt: skip
     try:
-        second = subprocess.Popen([sys.executable, "-c", code], cwd=Path(__file__).parent.parent)
-        time.sleep(6)  # this thread busy: nothing of Qt's runs here meanwhile
-        wait_until(lambda: words == ["show"], timeout=20)
-        assert second.wait(timeout=30) == 0
+        assert ear.stdout.readline().strip() == "listening"
+
+        def ask(word: str) -> None:
+            asked = subprocess.run([sys.executable, "-c", SECOND, str(tmp_path), word], cwd=root, env=env, timeout=90)
+            assert asked.returncode == 0, word  # it heard: its «ok» came
+
+        ask("show")  # while its thread is busy
+        ask("tray")
+        assert ear.stdout.readline().strip() == "busy"
+        ask("show")  # while it is busy again - and right after it, it is closed
+        said = ear.stdout.read()
+        assert ear.wait(timeout=60) == 0, said  # no crash after the words, nor when closed right after one
+        assert "heard: show tray show" in said
     finally:
-        single.close()
-    # closed and dropped right after the word, as a restart does: the socket of the second start, its «ok» on the
-    # way, went with the server - Qt then touched it after it was gone, and the process fell
-    del single
-    gc.collect()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline:
-        qapp.processEvents()
-        time.sleep(0.01)
+        if ear.poll() is None:
+            ear.kill()
