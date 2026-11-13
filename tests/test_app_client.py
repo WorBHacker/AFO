@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 
 from app.hub_client import HubClient, HubError, connect, hub_address, probe
 from common.paths import data_paths
+from hub.autostart import PORTS_TRIED
 from hub.server import create_app
 from hub.settings import LLAMA_SWAP_URL_ENV, PORT_ENV, HubSettings
 from tests.test_chat import FakeProvider, default_script
@@ -76,28 +77,62 @@ def test_address_comes_from_hub_json_or_the_port_setting(isolated_data_dir, monk
     assert hub_address(paths) == "http://127.0.0.1:8124"  # alive: its own word
 
 
-def test_a_foreign_program_on_the_port_is_not_taken_for_the_hub(monkeypatch):
-    class Other(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = b'{"service": "something-else"}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+class Other(http.server.BaseHTTPRequestHandler):
+    """Another program on the hub's port: it answers, but it is not AFO's hub."""
 
-        def log_message(self, *args):
-            pass
+    def do_GET(self):
+        body = b'{"service": "something-else"}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
+    def log_message(self, *args):
+        pass
+
+
+def stopped(client: HubClient) -> None:
+    client.shutdown()
+    deadline = time.monotonic() + 30
+    while probe(client.base_url) != "absent":
+        assert time.monotonic() < deadline, "the hub did not stop"
+        time.sleep(0.2)
+    client.close()
+
+
+def test_the_hub_moves_off_a_port_another_program_holds(monkeypatch):
+    """43.9 (the user's word, 2026-11-13: «хаб сам уходит на свободный порт»): a Docker container answers on 8765 at
+    the author's. The window does not stop at «порт занят»: it starts the hub, which listens on a free port after its
+    own and says where in hub.json; the next start keeps that port though the other program is gone - the address
+    the person gave other programs holds. Real processes: the hub, and an HTTP server of the test's own on its port."""
     server = http.server.HTTPServer(("127.0.0.1", 0), Other)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    monkeypatch.setenv(PORT_ENV, str(port))
+    monkeypatch.setenv(LLAMA_SWAP_URL_ENV, "http://127.0.0.1:9")
+    paths = data_paths().ensure()
     try:
-        port = server.server_address[1]
         assert probe(f"http://127.0.0.1:{port}") == "foreign"
-        monkeypatch.setenv(PORT_ENV, str(port))
-        with pytest.raises(HubError, match="занят"):
-            connect(data_paths().ensure(), start=False)
+        with pytest.raises(HubError, match="не запущен"):
+            connect(paths, start=False)  # the other program is not taken for the hub
+        hub = connect(paths, timeout=60)
+        moved = int(hub.base_url.rsplit(":", 1)[1])
+        assert port < moved <= port + PORTS_TRIED
+        assert hub.status()["local"]["reachable"] is False
+        said = (paths.logs / "hub.log").read_text(encoding="utf-8")
+        assert f"port {port} is taken by another program: the hub listens on {moved}" in said
+        stopped(hub)
+        server.shutdown()
+        server.server_close()
+        again = connect(paths, timeout=60)
+        assert again.base_url == f"http://127.0.0.1:{moved}"  # kept, though its own port is free now
+        stopped(again)
     finally:
         server.shutdown()
+        server.server_close()
+        if paths.hub_info.exists() and os.name == "nt":  # a hub left by a failed check
+            pid = json.loads(paths.hub_info.read_text(encoding="utf-8"))["pid"]
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
     assert probe(f"http://127.0.0.1:{free_port()}") == "absent"
 
 

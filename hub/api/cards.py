@@ -101,7 +101,7 @@ async def _export_plans(request: Request, project: projects.Project, targets: li
     )
     if not card:
         raise HTTPException(status_code=409, detail="the project has no confirmed card to export")
-    text = export.block(project, card, written)
+    text = export.block(project, card, written, hub_url=request.app.state.hub_url)
     try:
         return [await asyncio.to_thread(export.plan, project, target, text) for target in targets]
     except ExportError as exc:

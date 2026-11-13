@@ -4,6 +4,7 @@ and llama-swap started by the hub when it does not answer (here a fake starter a
 import asyncio
 import socket
 import threading
+from dataclasses import replace
 from http.server import ThreadingHTTPServer
 
 import httpx
@@ -304,3 +305,46 @@ def test_llama_swap_moves_off_a_port_another_program_holds(tmp_path, monkeypatch
         assert started() == default  # a script says itself where it listens: nothing to move
     finally:
         holder.close()
+
+
+def test_the_hub_moves_off_a_port_another_program_holds(tmp_path):
+    """43.9 (the user's word, 2026-11-13: «хаб сам уходит на свободный порт»): a Docker container answers on 8765 at
+    the author's. The hub listens on a free port after its own, and stays there next time though its own is free
+    again: the address the person gave other programs holds, and a program that starts after AFO at login finds its
+    port free. The port it moved to is kept in the database for the port it wanted; read before the hub has opened
+    the database, without changing it. Real sockets: the test's own process holds the ports."""
+    holders = []
+
+    def hold(port: int = 0) -> int:
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", port))
+        holder.listen()
+        holders.append(holder)
+        return holder.getsockname()[1]
+
+    try:
+        wanted = hold()
+        moved = autostart.hub_port("127.0.0.1", wanted, None)
+        assert moved is not None and wanted < moved <= wanted + autostart.PORTS_TRIED
+        assert autostart.hub_port("127.0.0.1", wanted, moved) == moved
+        holders.pop(0).close()  # the other program is gone
+        assert autostart.hub_port("127.0.0.1", wanted, moved) == moved  # kept, though its own is free
+        hold(moved)  # and now something else holds the kept one
+        assert autostart.hub_port("127.0.0.1", wanted, moved) == wanted  # back on its own
+        assert autostart.hub_port("127.0.0.1", wanted, None) == wanted
+    finally:
+        for holder in holders:
+            holder.close()
+
+    db = data_paths().db
+    assert autostart.kept_hub_port(tmp_path / "none.db", 8765) is None  # no database yet
+    assert not (tmp_path / "none.db").exists()
+    settings = HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
+                           process_interval_s=0, port=8766, wanted_port=8765)  # fmt: skip
+    with TestClient(create_app(settings), base_url=BASE):
+        pass
+    assert autostart.kept_hub_port(db, 8765) == 8766
+    assert autostart.kept_hub_port(db, 9000) is None  # kept for the port it wanted, not another one asked for
+    with TestClient(create_app(replace(settings, port=8765, wanted_port=None)), base_url=BASE):
+        pass
+    assert autostart.kept_hub_port(db, 8765) is None  # on its own port again: nothing kept

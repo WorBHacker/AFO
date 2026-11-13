@@ -26,10 +26,10 @@ import contextlib
 import json
 import logging
 import os
-import socket
 import sqlite3
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from common import __version__, crashes, i18n
@@ -60,8 +60,8 @@ def serve(settings: HubSettings) -> int:
         return EXIT_ALREADY_RUNNING
     watch_for_crashes(paths)
     try:
-        if not _port_free(settings.host, settings.port):
-            log.error("port %s:%s is taken by another program", settings.host, settings.port)
+        settings = _listening(settings, log)
+        if settings is None:
             return EXIT_PORT_BUSY
         info = {
             "pid": os.getpid(),
@@ -114,13 +114,26 @@ def _run_uvicorn(settings: HubSettings) -> None:
     server.run()
 
 
-def _port_free(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind((host, port))
-        except OSError:
-            return False
-    return True
+def _listening(settings: HubSettings, log: logging.Logger) -> HubSettings | None:
+    """The port the hub listens on (43.9): its own, or - another program holds it (a Docker container on 8765 at the
+    author's) - a free one after it, where it stays next time too (autostart.hub_port). hub.json says where; the
+    window and the stdio adapter read it. None: none of them is free."""
+    from . import autostart
+
+    wanted = settings.port
+    kept = autostart.kept_hub_port(settings.paths.db, wanted)
+    port = autostart.hub_port(settings.host, wanted, kept)
+    if port is None:
+        log.error("port %s:%s and the next %s are taken by other programs", settings.host, wanted,
+                  autostart.PORTS_TRIED)  # fmt: skip
+        return None
+    if port == wanted:
+        return settings
+    if port == kept:
+        log.info("the hub listens on %s, where it moved before: port %s was another program's", port, wanted)
+    else:
+        log.info("port %s is taken by another program: the hub listens on %s", wanted, port)
+    return replace(settings, port=port, wanted_port=wanted)
 
 
 def _running_hub(settings: HubSettings) -> tuple[str, str] | None:

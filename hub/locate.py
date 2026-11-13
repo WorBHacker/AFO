@@ -40,6 +40,11 @@ class HubUnavailable(Exception):
     """No hub answers and none could be started; the message is fit to show to the user."""
 
 
+def wanted_port() -> int:
+    """The hub's own port: LOCALCHAT_HUB_PORT, else 8765. Another program holding it, the hub is elsewhere (43.9)."""
+    return int(os.environ.get(PORT_ENV, DEFAULT_PORT))
+
+
 def hub_address(paths: DataPaths) -> str:
     """Where the hub listens: hub.json of a running hub, else the configured port. A hub.json whose process is gone
     (a hub that ended without tidying, 43.8) says nothing: its port may be another program's now."""
@@ -49,7 +54,7 @@ def hub_address(paths: DataPaths) -> str:
             raise ValueError("the hub that wrote hub.json is gone")
         return f"http://{info['host']}:{info['port']}"
     except OSError, ValueError, KeyError:
-        return f"http://127.0.0.1:{int(os.environ.get(PORT_ENV, DEFAULT_PORT))}"
+        return f"http://127.0.0.1:{wanted_port()}"
 
 
 def probe(base_url: str) -> str:
@@ -151,12 +156,10 @@ def _wmi_process(client: Any, command: list[str]) -> bool:
 
 
 def running_hub(paths: DataPaths, *, start: bool = True, timeout: float = START_TIMEOUT_S) -> str:
-    """The base URL of the running hub; starts one first when none answers and `start` is set."""
+    """The base URL of the running hub; starts one first when none answers and `start` is set. Another program on the
+    hub's port is not the hub: the one started listens on a free port after it and says where in hub.json (43.9)."""
     base = hub_address(paths)
-    state = probe(base)
-    if state == "foreign":
-        raise HubUnavailable(tr("на {address} отвечает не хаб AFO — порт занят другой программой", address=base))
-    if state == "ok":
+    if probe(base) == "ok":
         return base
     if not start:
         raise HubUnavailable(tr("хаб не запущен"))

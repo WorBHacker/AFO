@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -26,7 +27,7 @@ from common.paths import DataPaths
 
 from .. import palette, presenter
 from ..events import EventThread
-from ..hub_client import HubClient, HubError, connect
+from ..hub_client import HubClient, HubError, connect, wanted_port
 from ..tasks import Background
 from . import commands, mentions, rows
 from .agent_keys_view import AgentKeys
@@ -72,6 +73,7 @@ RENDER_SHARE = 4  # ...and a render takes at most a quarter of the GUI thread: a
 RENDER_INTERVAL_MAX_MS = 1000
 THINK_TICK_MS = 100
 FLASH_MS = 6000
+MOVED_FLASH_MS = 20000  # the hub on another port (43.9): long enough to read and note the address
 MODES = ("chats", "projects", "agent")
 DRAFTS_KEY = "chat/drafts"  # app.ini: what was typed in each chat and not sent - kept across switches and crashes
 NEW_CHAT = "new"  # the drafts' key of a chat not made yet
@@ -151,6 +153,7 @@ class Controller(QObject):
     attachmentsChanged = Signal()  # the files going with the next message
     busyChanged = Signal()
     hubChanged = Signal()
+    noticed = Signal(str, str)  # the hub moved off its port: a notice outside the window too (the tray, 43.9)
     statusChanged = Signal()
     subscriptionChanged = Signal()  # Claude Code's subscription limits (20.3)
     sessionChanged = Signal()
@@ -533,6 +536,27 @@ class Controller(QObject):
         return presenter.hub_port(self.client.base_url if self.client else None)
 
     @Property(str, notify=hubChanged)
+    def hubMoved(self) -> str:
+        """43.9: another program holds the hub's own port, the hub listens on another one - where its address was
+        typed by hand, the new one goes. Empty while it is on its own port."""
+        parts = urlsplit(self.client.base_url) if self.client else None
+        if parts is None or parts.port in (None, wanted_port()):
+            return ""
+        return tr("Порт {wanted} занят другой программой — хаб AFO теперь на {address}. Где адрес хаба вписан руками "
+                  "(Cline, расширение VS Code), впишите новый", wanted=wanted_port(),
+                  address=f"{parts.hostname}:{parts.port}")  # fmt: skip
+
+    def _tell_moved(self) -> None:
+        """Once for each new port: the flash, and a notice for a window hidden in the tray (43.9)."""
+        said, port = self.hubMoved, presenter.hub_port(self.client.base_url if self.client else None)
+        if not said:
+            self.settings.remove("hub/told_port")
+        elif str(self.settings.value("hub/told_port", "")) != port:
+            self.settings.setValue("hub/told_port", port)
+            self.flash(said, ms=MOVED_FLASH_MS)
+            self.noticed.emit("AFO", said)
+
+    @Property(str, notify=hubChanged)
     def hubTooltip(self) -> str:
         where = self.client.base_url if self.client else tr("адрес ещё не известен")
         return tr("Хаб: {state}\n{where}", state=tr(HUB_STATES[self._hub_state]), where=where)
@@ -743,6 +767,7 @@ class Controller(QObject):
             self.events.start()
         self._set_hub("up")
         self._set_flash("")
+        self._tell_moved()
         self.reload_all()
 
     def _on_connected(self, connected: bool) -> None:

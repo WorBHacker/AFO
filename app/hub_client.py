@@ -15,9 +15,9 @@ import httpx
 
 from common.i18n import tr
 from common.paths import DataPaths, data_paths
-from hub.locate import START_TIMEOUT_S, HubUnavailable, hub_address, probe, running_hub
+from hub.locate import START_TIMEOUT_S, HubUnavailable, hub_address, probe, running_hub, wanted_port
 
-__all__ = ["HubClient", "HubError", "connect", "hub_address", "probe"]
+__all__ = ["HubClient", "HubError", "connect", "hub_address", "probe", "wanted_port"]
 
 log = logging.getLogger("app.hub")
 

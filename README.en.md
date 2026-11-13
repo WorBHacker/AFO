@@ -68,7 +68,7 @@ offers a first model for chat, code and images. Open it again with Settings → 
 
 | Folder | What it is |
 |---|---|
-| `hub/` | the hub — a background process on `127.0.0.1:8765`: API and WebSocket, database, model gateway (llama-swap, Claude, Claude Code, OpenAI, Gemini, DeepSeek, OpenRouter), projects, terminals, approvals, agents, MCP server, OpenAI-compatible server |
+| `hub/` | the hub — a background process on `127.0.0.1:8765` (another program holds it — on the next free port, the address in `data/hub.json`): API and WebSocket, database, model gateway (llama-swap, Claude, Claude Code, OpenAI, Gemini, DeepSeek, OpenRouter), projects, terminals, approvals, agents, MCP server, OpenAI-compatible server |
 | `app/` | the PySide6 window: `app/ui/` — Qt Quick (QML), drawn by the CPU; the hub's client, starts the hub when it is not running |
 | `common/` | shared code: data paths, logging, translation (`common/i18n.py`, `common/locale/`) |
 | `vscode/` | the VS Code extension: the open file and the terminals' commands — to the hub |

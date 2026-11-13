@@ -20,6 +20,8 @@ class HubSettings:
     paths: DataPaths
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # the port asked for, when another program held it and the hub listens on `port` instead (43.9); None: as asked
+    wanted_port: int | None = None
     # D31: only requests addressed to this computer, and none sent by a web page
     allowed_hostnames: frozenset[str] = LOCAL_HOSTNAMES
     allowed_origins: frozenset[str] = frozenset()

@@ -1758,6 +1758,40 @@ def test_models_chats_status_and_session(app):
     assert app.sessionText == "Сессия: 0 ток. · $0"
 
 
+def test_the_window_says_the_hub_moved_off_its_port(qapp, tmp_path, monkeypatch):
+    """43.9: another program held the hub's port, the hub listens on another one - the window says it once per new
+    port (the flash and, with the window hidden in the tray, a notice), and «Настройки → Хаб» says it while it lasts:
+    where the address was typed by hand (Cline, the VS Code extension), the new one goes."""
+    from hub.settings import PORT_ENV
+
+    monkeypatch.delenv(PORT_ENV, raising=False)
+    settings = QSettings(str(tmp_path / "app.ini"), QSettings.Format.IniFormat)
+    controller = Controller(data_paths().ensure(), settings, Theme("dark"))
+    told = []
+    controller.noticed.connect(lambda title, text: told.append((title, text)))
+    moved, home = FakeClient(), FakeClient()
+    moved.base_url = "http://127.0.0.1:8766"
+    said = "Порт 8765 занят другой программой — хаб AFO теперь на 127.0.0.1:8766"
+    try:
+        controller.attach(moved, start_events=False)
+        assert controller.flashText.startswith(said) and "Cline" in controller.flashText
+        assert controller.hubMoved == controller.flashText and controller.hubPort == ":8766"
+        assert told == [("AFO", controller.hubMoved)]
+        wait_until(lambda: not controller.bg.busy)
+        controller.attach(moved, start_events=False)  # the next start, on the same port: said already
+        assert len(told) == 1 and not controller.flashText.startswith(said)
+        assert controller.hubMoved.startswith(said)  # the settings still say it
+        wait_until(lambda: not controller.bg.busy)
+        controller.attach(home, start_events=False)  # on its own port again
+        assert controller.hubMoved == "" and len(told) == 1
+        wait_until(lambda: not controller.bg.busy)
+        controller.attach(moved, start_events=False)  # moved again: said again
+        assert len(told) == 2
+        wait_until(lambda: not controller.bg.busy)
+    finally:
+        controller.shutdown()
+
+
 def test_history_title_meta_and_the_chats_model(app):
     user, answer = opened(app)
     assert user["role"] == "user" and user["text"] == "привет"

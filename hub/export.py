@@ -19,6 +19,7 @@ from pathlib import Path
 from .changes import keep
 from .projects import Project
 from .secret_filter import clean
+from .settings import DEFAULT_HOST, DEFAULT_PORT
 
 TARGETS = {"claude": "CLAUDE.md", "agents": "AGENTS.md", "cline": ".clinerules"}
 # the block is for the models that read these files: its words stay as written, whatever the window speaks
@@ -31,10 +32,11 @@ BLOCK = re.compile(r"<!-- (?:AFO|LocalChat): начало карточки пр�
 CLINE_FILE = "afo.md"
 OLD_CLINE_FILE = "localchat.md"  # before 10.4b: the next export moves it to CLINE_FILE
 HUB_LINE = (
-    "Этот проект знает хаб AFO на этом компьютере. Его MCP-сервер (`http://127.0.0.1:8765/mcp`, у Claude Code "
+    "Этот проект знает хаб AFO на этом компьютере. Его MCP-сервер (`{hub_url}/mcp`, у Claude Code "
     "из AFO — `localchat`) даёт карту всех проектов и их связей, карточки связанных проектов, их код, git, "
     "терминалы и процессы."  # i18n: keep
 )
+DEFAULT_HUB_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 
 
 class ExportError(Exception):
@@ -58,14 +60,15 @@ class Plan:
                 "exists": self.before is not None}  # fmt: skip
 
 
-def block(project: Project, card: str, notes: list[dict]) -> str:
-    """The card (its headings one level down, under the block's own), the notes, the hub line - through the secret
-    filter, since the file may be committed."""
+def block(project: Project, card: str, notes: list[dict], *, hub_url: str = DEFAULT_HUB_URL) -> str:
+    """The card (its headings one level down, under the block's own), the notes, the hub line with the address the hub
+    listens on (moved off a port another program holds, 43.9) - through the secret filter, since the file may be
+    committed."""
     body = re.sub(r"^(#{1,5}) ", r"#\1 ", card.strip(), flags=re.MULTILINE)
     parts = [BEGIN, f"## Карточка проекта «{project.name}» (AFO)", body]  # i18n: keep
     if notes:
         parts.append("### Заметки для моделей\n" + "\n".join(f"- {n['text']}" for n in notes))  # i18n: keep
-    parts += [HUB_LINE, END]
+    parts += [HUB_LINE.format(hub_url=hub_url.rstrip("/")), END]
     return clean("\n\n".join(parts)) + "\n"
 
 

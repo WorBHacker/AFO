@@ -16,6 +16,17 @@ Sheet {
         font.family: Theme.uiFont
         font.pixelSize: 12
     }
+    // 43.9: another program holds the hub's own port - where its address was typed by hand, the new one goes
+    Text {
+        objectName: "hubMoved"
+        visible: text !== ""
+        width: parent.width
+        text: App.hubMoved
+        wrapMode: Text.Wrap
+        color: Theme.p.warn
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
     Flow {
         width: parent.width
         spacing: 8

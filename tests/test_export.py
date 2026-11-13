@@ -26,7 +26,7 @@ def test_the_block(tmp_path):
     assert "## Карточка проекта «demo» (AFO)" in text and "LocalChat" not in text
     assert "### Назначение\nДемо-проект." in text and "### Как запускать" in text  # one level down, under the block
     assert "### Заметки для моделей\n- тесты: pytest -q" in text
-    assert "MCP" in text and SECRET not in text  # the file may be committed: secrets are masked
+    assert "`http://127.0.0.1:8765/mcp`" in text and SECRET not in text  # the file may be committed: masked
 
 
 def test_each_file_changes_only_where_it_should(tmp_path):
@@ -99,7 +99,7 @@ def test_what_is_refused(tmp_path):
 
 def test_the_api(repo):
     app = create_app(HubSettings(paths=data_paths(), llama_swap_url="http://127.0.0.1:9", status_interval_s=0,
-                                 process_interval_s=0))  # fmt: skip
+                                 process_interval_s=0, port=8766, wanted_port=8765))  # fmt: skip
     with TestClient(app, base_url=BASE) as client:
         client.headers["Authorization"] = "Bearer " + (data_paths().tokens / "app.token").read_text(encoding="utf-8")
         pid = client.post("/v1/projects", json={"path": str(repo)}).json()["id"]
@@ -113,6 +113,8 @@ def test_the_api(repo):
         assert modes == {"claude": ("CLAUDE.md", "create"), "agents": ("AGENTS.md", "append"),
                          "cline": (".clinerules", "create")}  # fmt: skip
         assert "- тесты: pytest" in preview["block"]
+        # the address the hub listens on: moved off a port another program holds (43.9), not the default one
+        assert "`http://127.0.0.1:8766/mcp`" in preview["block"] and "8765" not in preview["block"]
         assert not (repo / "CLAUDE.md").exists()  # a preview writes nothing (D23)
 
         written = client.post(f"/v1/projects/{pid}/card/export", json={"targets": ["claude", "agents"]})

@@ -14,6 +14,8 @@
   of Strata on 8080), an .exe is told to listen on a free port after it, kept in the database (39.2, llama_swap_url,
   chosen at the hub's start); a script listens where it says - it is not started, and the hub says who holds the
   port (23.4).
+- The hub's own port: when another program holds it, the hub listens on a free one after it and stays there, kept in
+  the database too (43.9, hub_port); hub.json says where it is.
 """
 
 from __future__ import annotations
@@ -55,7 +57,8 @@ found_start: Path | None = None
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 READY_TIMEOUT_S = 60.0  # llama-swap itself starts in a second; models load only when asked
 PORT_SETTING = "llama_swap.port"  # where AFO's own llama-swap moved when another program held its port (39.2)
-PORTS_TRIED = 20  # the ports after the default one it may move to
+PORTS_TRIED = 20  # the ports after the default one it may move to (llama-swap, the hub)
+HUB_PORT_SETTING = "hub.port"  # where the hub moved when another program held its port, and which it wanted (43.9)
 BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
 STOP_WAIT_S = 10.0  # llama-swap and what it runs, after «Выход» (43.2): then killed
 
@@ -352,14 +355,14 @@ def _kept_port(conn: sqlite3.Connection) -> int | None:
     return json.loads(row["value"]) if row else None
 
 
-def _keep_port(conn: sqlite3.Connection, port: int | None) -> None:
+def _keep_port(conn: sqlite3.Connection, port: Any, key: str = PORT_SETTING) -> None:
     if port is None:
-        conn.execute("DELETE FROM settings WHERE key = ?", (PORT_SETTING,))
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         return
     conn.execute(
         "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET"
         " value = excluded.value, updated_at = excluded.updated_at",
-        (PORT_SETTING, json.dumps(port), utc_now()),
+        (key, json.dumps(port), utc_now()),
     )
 
 
@@ -375,6 +378,38 @@ def free_port(host: str, ports: list[int]) -> int | None:
                 continue
         return port
     return None
+
+
+def hub_port(host: str, wanted: int, kept: int | None) -> int | None:
+    """Where the hub listens (43.9, the user's word 2026-11-13): the port it moved to before comes first, though its
+    own is free again - the address the person gave other programs holds, and a program that starts after AFO at
+    login (a Docker container on 8765 at the author's) finds its port free; then its own; then the next free one."""
+    ports = [kept] if kept and kept != wanted else []
+    return free_port(host, [*ports, wanted, *(p for p in range(wanted + 1, wanted + 1 + PORTS_TRIED) if p != kept)])
+
+
+def kept_hub_port(db_file: Path, wanted: int) -> int | None:
+    """The port the hub moved to before, when it wanted this one: read before the hub opens its database, without
+    changing it (none yet, an older one: nothing kept)."""
+    try:
+        conn = sqlite3.connect(f"file:{db_file.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (HUB_PORT_SETTING,)).fetchone()
+        kept = json.loads(row[0]) if row else None
+    except sqlite3.Error, ValueError, TypeError:
+        return None
+    finally:
+        conn.close()
+    if isinstance(kept, dict) and kept.get("wanted") == wanted and isinstance(kept.get("port"), int):
+        return kept["port"]
+    return None
+
+
+def keep_hub_port(conn: sqlite3.Connection, wanted: int | None, port: int) -> None:
+    """Where the hub moved, for the port it wanted; on its own port again (`wanted` None), nothing is kept."""
+    _keep_port(conn, None if wanted is None else {"wanted": wanted, "port": port}, HUB_PORT_SETTING)
 
 
 async def llama_swap_url(db, url: str) -> str:

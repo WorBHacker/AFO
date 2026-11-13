@@ -157,6 +157,7 @@ class QuickApp:
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
         self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
         self.controller.gpu_view.noticed.connect(self.notifier.notify)  # programs moved: restart them (43.7)
+        self.controller.noticed.connect(self.notifier.notify)  # the hub on another port: its new address (43.9)
         self.notifier.opened.connect(self._front)
         self.tray_menu = TrayMenu(self.controller, self.notifier, self.show_window, self.quit_all)  # 43.3
         self.controller.set_tray(self.notifier.tray is not None)

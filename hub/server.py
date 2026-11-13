@@ -130,6 +130,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         token_file = db.call(lambda conn: ensure_app_token(conn, paths.tokens))
         load_token_files(paths.tokens)  # masked in all a model sees, by value (D46)
         db.call(autostart.load_choices)  # llama-swap's config and its start, as chosen in the window (10.3)
+        # where the hub moved off a port another program holds - it stays there next time (43.9)
+        db.call(lambda conn: autostart.keep_hub_port(conn, settings.wanted_port, settings.port))
         if settings.move_llama_swap:  # another program on its port: AFO's own llama-swap on a free one (39.2) -
             # before all that talks to llama-swap is built with its address
             settings = replace(settings, llama_swap_url=await autostart.llama_swap_url(db, requested))
@@ -156,7 +158,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.approvals = ApprovalQueue(db, bus)
         app.state.completions = Completions(db, gateway, settings.llama_swap_url)  # the editor's grey text (D47)
         # Claude Code (D8, D18): the user's CLI in a chat's project, with the hub's MCP and its approval queue
-        hub_url = f"http://{settings.host}:{settings.port}"
+        app.state.hub_url = hub_url = f"http://{settings.host}:{settings.port}"  # where it listens (43.9)
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
