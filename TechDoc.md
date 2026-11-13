@@ -724,11 +724,22 @@
   «Высокую производительность» (`EnumAdapterByGpuPreference`, DXGI 1.6 через ctypes; `two` — их два);
   `process_memory()` — (pid, luid) → МиБ. У автора: Intel Graphics и RTX 5080 (`two`), в счётчиках NVIDIA Overlay
   6,7 ГБ, dwm 3,8 ГБ, проводник 0,5 ГБ. Тесты — `tests/test_gpu_prefs.py`.
-- 43.6 Кого переводить: программы на дискретной видеокарте, кроме игр (список игр Windows `GameConfigStore`, папки
+- 43.6 ✓ Кого переводить: программы на дискретной видеокарте, кроме игр (список игр Windows `GameConfigStore`, папки
   Steam, Epic, GOG, долгая нагрузка 3D), программ, которым она нужна (OBS, Blender, DaVinci, Unity, Unreal, CUDA,
   llama-server, llama-swap, Strata), частей Windows, программ с уже выбранной графикой и списка человека «оставить на
   видеокарте». Хаб смотрит каждые 30 с, пока переключатель включён; переведённые остаются и после «Выхода». Событие
-  `gpu.prefs`: кто переведён, кто ждёт перезапуска, сколько видеопамяти они держали.
+  `gpu.prefs`: кто переведён, кто ждёт перезапуска, сколько видеопамяти они держали. Сделано: `why_kept` — выбор
+  человека первым («card»/«integrated», `gpu.choices`), «windows» (папка Windows, `WindowsApps` — у пакетов
+  настройка по пакету), «tool» (`NEEDS_CARD`, `python*`, `godot*`, папка NVIDIA, свои движки AFO), «game» (список
+  Windows, папки магазинов, «game» в пути — и «GameDevelop» автора, сборка Unreal, `UnityPlayer.dll` рядом,
+  `AppStatus` Windows, 3D ≥ 15 % — запоминается в `gpu.games`), «chosen»; Wallpaper Engine — не игра. `look_now` —
+  программы на адаптерах карты (счётчики Windows, нагрузка 3D за секунду). `Watcher` (`gpu.on`, по умолчанию
+  включён — слово пользователя; `gpu_interval_s` 30 только у `python -m hub`, в тестах 0): `check`, `set_on`
+  (выключен — не переводит и не возвращает), `choose` («card» — вернуть сразу), `give_back` (и выключить);
+  программы — «waits» (переведена, ещё на карте), «moved», «kept» с причиной, «card»; `freed_mib`. API —
+  `/v1/gpu` (GET, PUT), `/v1/gpu/programs`, `/v1/gpu/give-back`. Тесты не трогают реестр человека: `conftest` даёт
+  каждому свой ключ. Сухой прогон у автора: переводятся Telegram, VS Code, Docker Desktop, Claude, PowerToys,
+  WebView2, E-IMZO (~0,5 ГБ по счётчикам); остаются части Windows и NVIDIA Overlay. Тесты — `tests/test_gpu_prefs.py`.
 - 43.7 «Настройки → Трей и видеокарта»: крестик, запуск с Windows, пункты меню трея; «Программы — на встроенную
   графику» (только где она есть), список программ с «оставить на видеокарте», «Вернуть как было».
 - 43.8 Живая проверка на компьютере автора — по его слову, после `nvidia-smi`.

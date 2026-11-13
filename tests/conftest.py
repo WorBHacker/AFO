@@ -1,7 +1,9 @@
+import contextlib
 import logging
 import subprocess
 import sys
 import threading
+import uuid
 
 import pytest
 
@@ -11,6 +13,7 @@ from hub import secret_filter
 from hub.autostart import LLAMA_SWAP_START_ENV, RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
 from hub.engines import GITHUB_ENV
+from hub.gpu_prefs import KEY_ENV as GPU_PREFS_KEY_ENV
 from hub.hf import BASE_ENV as HF_ENV
 from hub.llama_config import CONFIG_ENV as LLAMA_SWAP_CONFIG_ENV
 from hub.secrets import STORE_ENV
@@ -32,7 +35,23 @@ def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv(LLAMA_SWAP_START_ENV, str(tmp_path / "no-llama-swap" / "start-llama-swap.cmd"))
     monkeypatch.setenv(HOME_ENV, str(tmp_path / "localchat-home"))
     monkeypatch.setenv(MODELS_ENV, str(tmp_path / "localchat-model"))  # nor models into the checkout's `model` folder
-    return data
+    # nor Windows' «Графика» setting of the person's programs (43.5): a key of the test's own, gone afterwards
+    gpu_key = rf"Software\AFO-tests\{uuid.uuid4().hex}\UserGpuPreferences"
+    monkeypatch.setenv(GPU_PREFS_KEY_ENV, gpu_key)
+    yield data
+    _drop_key(gpu_key)
+
+
+def _drop_key(path: str) -> None:
+    """A test's registry key and the keys above it the test made (the topmost only when empty)."""
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    while path.count("\\") >= 1:  # never HKCU\Software itself
+        with contextlib.suppress(OSError):
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+        path = path.rsplit("\\", 1)[0]
 
 
 @pytest.fixture(autouse=True)

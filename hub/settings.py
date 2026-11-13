@@ -36,6 +36,7 @@ class HubSettings:
     links_quiet_s: float = 0.0  # links looked for again this long after a change (hub/links.py); 0: never - tests
     fetch_ripgrep: bool = False  # ripgrep from its GitHub release when there is none (hub/ripgrep.py); not in tests
     fetch_engines: bool = False  # llama.cpp and llama-swap fetched when AFO's own are missing (39.1); not in tests
+    gpu_interval_s: float = 0.0  # programs on the card looked at (43.6); 0: never by themselves - tests never move
 
     @classmethod
     def from_env(cls) -> HubSettings:
@@ -52,4 +53,5 @@ class HubSettings:
             links_quiet_s=20.0,
             fetch_ripgrep=True,
             fetch_engines=True,
+            gpu_interval_s=30.0,
         )

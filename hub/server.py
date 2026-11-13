@@ -31,6 +31,7 @@ from .api import (
     editor,
     events_ws,
     goals,
+    gpu,
     history,
     install,
     links,
@@ -80,6 +81,8 @@ from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .goals import Goals
+from .gpu_prefs import Prefs as GpuPrefs
+from .gpu_prefs import Watcher as GpuWatcher
 from .history import History
 from .judge import Judge
 from .links import Rescanner
@@ -212,6 +215,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.on_speed_up = lambda model_id, auto: app.state.tuner.request(model_id, auto=auto)
         app.state.tuner.on_tuned = app.state.installer.tuned
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
+        # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
+        app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
         # one at a time on the graphics card (34.4): a trial waits while tuning measures, and for a chat's answer
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
         app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)
@@ -268,6 +273,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.telegram.start()
         await app.state.scanner.start()  # what the last search found
         await app.state.tuner.start()
+        app.state.gpu.start()  # the graphics card for models (43.6): not in tests
         await app.state.releases.start()  # says how the last update went, then checks now and then
         if await app.state.installer.start():
             log.info("model installs left going by the last hub wait for «Продолжить»")
@@ -318,6 +324,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.backup.stop()
             await app.state.scheduler.stop()
             await app.state.installer.stop()
+            await app.state.gpu.stop()
             await app.state.visual.stop()
             await app.state.resources.stop()  # a failed fetch's next try (39.1)
             await app.state.setup.stop()
@@ -352,6 +359,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(setup.router)
     app.include_router(release.router)
     app.include_router(tuning.router)
+    app.include_router(gpu.router)
     app.include_router(support.router)
     app.include_router(memory.router)
     app.include_router(schedules.router)
