@@ -714,10 +714,16 @@
   «AFO» и убирает «AFO hub»; удаление убирает оба, если они этой копии. Тексты — «Запускать AFO при входе в Windows —
   сразу в трей». Тесты — `test_the_login_value`, `test_the_login_value_under_an_old_name_moves`, `test_the_api`,
   `test_the_wizard_agrees_with_the_program`.
-- 43.5 `hub/gpu_prefs.py`: адаптеры (DXGI: имя, производитель, LUID, своя память — есть ли встроенная и дискретная),
+- 43.5 ✓ `hub/gpu_prefs.py`: адаптеры (DXGI: имя, производитель, LUID, своя память — есть ли встроенная и дискретная),
   видеопамять программ по счётчикам Windows (PDH), значения `UserGpuPreferences`: меняется только `GpuPreference`,
   поля Windows остаются; что было до AFO — в `settings`; «Вернуть как было» — точно и только свои значения (то, что
-  человек поменял после AFO, не трогается). Тесты — настоящий реестр в своём тестовом разделе.
+  человек поменял после AFO, не трогается). Тесты — настоящий реестр в своём тестовом разделе. Сделано:
+  `with_preference`/`preference` — поля «Ключ=Значение;»; `Registry` (ключ из `LOCALCHAT_GPU_PREFS_KEY` в тестах);
+  `Prefs.move` — уже есть выбор (человека, Windows, AFO) — не трогает; `gpu.moved` — путь → {before, wrote};
+  `give_back` — {given_back, left}. `adapters()`, `choice()` — какой адаптер Windows даёт на «Энергосбережение» и на
+  «Высокую производительность» (`EnumAdapterByGpuPreference`, DXGI 1.6 через ctypes; `two` — их два);
+  `process_memory()` — (pid, luid) → МиБ. У автора: Intel Graphics и RTX 5080 (`two`), в счётчиках NVIDIA Overlay
+  6,7 ГБ, dwm 3,8 ГБ, проводник 0,5 ГБ. Тесты — `tests/test_gpu_prefs.py`.
 - 43.6 Кого переводить: программы на дискретной видеокарте, кроме игр (список игр Windows `GameConfigStore`, папки
   Steam, Epic, GOG, долгая нагрузка 3D), программ, которым она нужна (OBS, Blender, DaVinci, Unity, Unreal, CUDA,
   llama-server, llama-swap, Strata), частей Windows, программ с уже выбранной графикой и списка человека «оставить на
