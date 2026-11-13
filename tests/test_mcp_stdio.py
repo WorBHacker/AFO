@@ -151,7 +151,11 @@ def free_port() -> int:
 
 @pytest.fixture
 def env(isolated_data_dir):
+    """The environment of a hub these tests start - also as the MCP client's whole environment (a stdio server gets
+    only what it is given): conftest's isolation with it (all LOCALCHAT_*), or the hub it starts is the person's -
+    their «Графика» setting, their Run key, their llama-swap (2026-11-13: a hub started so moved eight programs)."""
     return {
+        **{k: v for k, v in os.environ.items() if k.startswith("LOCALCHAT_")},
         DATA_DIR_ENV: str(isolated_data_dir),
         PORT_ENV: str(free_port()),
         LLAMA_SWAP_URL_ENV: "http://127.0.0.1:9",

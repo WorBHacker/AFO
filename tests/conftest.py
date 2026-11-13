@@ -42,6 +42,55 @@ def isolated_data_dir(tmp_path, monkeypatch):
     _drop_key(gpu_key)
 
 
+PERSONS_KEYS = (  # the person's own registry values a stray hub could write: «Графика» (43.5), AFO at sign-in (43.4)
+    (r"Software\Microsoft\DirectX\UserGpuPreferences", None),
+    (r"Software\Microsoft\Windows\CurrentVersion\Run", ("AFO", "AFO hub", "LocalChat hub")),
+)
+
+
+def _values(path: str, names) -> dict[str, object]:
+    import winreg
+
+    out: dict[str, object] = {}
+    with contextlib.suppress(OSError), winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+        i = 0
+        while True:
+            try:
+                name, value, kind = winreg.EnumValue(key, i)
+            except OSError:
+                break
+            i += 1
+            if names is None or name in names:
+                out[name] = (value, kind)
+    return out
+
+
+@pytest.fixture(scope="session", autouse=True)
+def persons_registry_untouched():
+    """Whatever a test starts (a hub with too little of the isolation in its environment wrote the person's «Графика»
+    once, 2026-11-13): the person's values as they were before the run - put back if changed, and the run fails."""
+    if sys.platform != "win32":
+        yield
+        return
+    import winreg
+
+    before = {path: _values(path, names) for path, names in PERSONS_KEYS}
+    yield
+    changed = []
+    for path, names in PERSONS_KEYS:
+        now = _values(path, names)
+        if now == before[path]:
+            continue
+        changed.append(path)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
+            for name in set(now) - set(before[path]):
+                winreg.DeleteValue(key, name)
+            for name, (value, kind) in before[path].items():
+                if now.get(name) != (value, kind):
+                    winreg.SetValueEx(key, name, 0, kind, value)
+    assert not changed, f"tests changed the person's registry (put back): {changed}"
+
+
 def _drop_key(path: str) -> None:
     """A test's registry key and the keys above it the test made (the topmost only when empty)."""
     if sys.platform != "win32":
