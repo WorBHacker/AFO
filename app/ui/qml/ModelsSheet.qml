@@ -572,6 +572,35 @@ Sheet {
                         onPicked: (id) => ModelSetup.setTuneAuto(id === "on")
                     }
                 }
+                // guessing ahead (42.6): what the model runs with and what it gave; «Ускорить» - its draft model and
+                // the measuring at once
+                Label { text: qsTr("Угадывание вперёд") }
+                Text {
+                    objectName: "specText"
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: ModelSetup.specText
+                    color: ModelSetup.specTone === "error" ? Theme.p.error : ModelSetup.specTone === "ok" ? Theme.p.ok : Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+                Row {
+                    spacing: 8
+                    PlainButton {
+                        objectName: "speedUp"
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.speedBusy && !ModelSetup.launchDirty
+                        iconName: "bolt"
+                        text: qsTr("Ускорить")
+                        onClicked: ModelSetup.speedUp()
+                    }
+                    PlainButton {
+                        objectName: "speedOff"
+                        visible: ModelSetup.specOn
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty
+                        text: qsTr("Снять ускорение")
+                        onClicked: ModelSetup.speedOff()
+                    }
+                }
             }
             Text {
                 objectName: "launchEstimate"

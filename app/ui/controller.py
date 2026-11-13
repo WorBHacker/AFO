@@ -1820,6 +1820,8 @@ class Controller(QObject):
             self.tasks_view.on_event(kind, payload)  # the coordinator's board (16.4)
         elif kind.startswith(("programs.", "program.")):
             self.programs.on_event(kind, payload)
+        elif kind == "install.draft":  # the draft model guessing ahead on its way (42.5): the models view says it
+            self.model_setup.on_event(kind, payload)
         elif kind.startswith("install."):
             self.install_view.on_event(kind, payload)
         elif kind.startswith("visual."):

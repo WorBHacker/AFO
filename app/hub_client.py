@@ -277,6 +277,14 @@ class HubClient:
     def set_tune_auto(self, on: bool) -> dict:
         return self._call("PUT", "/v1/tune", {"auto": on})
 
+    def speed_up(self, model_id: str) -> dict:
+        """«Ускорить» (42.5): the draft model downloaded if there is one, then the model's tuning at once."""
+        return self._call("POST", f"/v1/install/speedup/{model_id}")
+
+    def speedup_state(self) -> dict:
+        """{drafting: {model_id, name, done, total} | {model_id, error} | {}}."""
+        return self._call("GET", "/v1/install/speedup")
+
     def install_remove(self, model_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
 

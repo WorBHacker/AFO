@@ -390,6 +390,7 @@ class FakeClient:
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
+        self.llama_spec = {"type": "", "draft": ""}  # guessing ahead in «big»'s command (42.6)
         self.setup = {
             "needed": False,
             "answering": True,
@@ -509,8 +510,16 @@ class FakeClient:
     llama_reserve = 1.0  # the video memory a model may not count on, as the hub says it (38.3)
 
     def llama_models(self):
-        return {"models": [dict(m) for m in LLAMA], "vram_total_mib": 16384, "vram_reserve_gib": self.llama_reserve,
+        models = [{**m, "spec": dict(self.llama_spec)} if m["id"] == "big" else dict(m) for m in LLAMA]
+        return {"models": models, "vram_total_mib": 16384, "vram_reserve_gib": self.llama_reserve,
                 "backups": []}  # fmt: skip
+
+    def speed_up(self, model_id):
+        self.tune_calls.append(("speedup", model_id))
+        return {"model_id": model_id, "drafting": {}}
+
+    def speedup_state(self):
+        return {"drafting": {}}
 
     def change_llama_model(self, model_id, changes):
         self.model_calls.append(("launch", model_id, changes))
@@ -7889,3 +7898,98 @@ def test_the_viewer_tells_the_line_ends_and_invisible_characters():
                         "text": "ok = 1\nif role == 'user\u202e':\n    x = '\u200b'\n"})  # fmt: skip
     assert trojan["hidden"] == "⚠ невидимые символы: 2 (строки 2, 3)"
     assert file_view({"path": "b.txt", "size": 3, "text": "\ufeffok", "encoding": "utf-8"})["hidden"] == ""
+
+
+def test_guessing_ahead_in_the_models_sheet(app):
+    """42.6: «Модели → Запуск» says which guessing ahead the model runs with and what it gave - the draft model and
+    how many of its guesses were right, ngram, or that nothing paid (and what a draft lacks to fit); the draft on its
+    way; a build that cannot. «Ускорить» asks the hub at once; «Снять ускорение» takes it off the model's command."""
+    from app.ui import model_setup as ms
+
+    state = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}
+    plain = {"spec": {"type": "", "draft": ""}}
+    on = {"spec": {"type": "draft-simple", "draft": "D:/AFO/models/drafts/Qwen3-0.6B-Q8_0.gguf"}}
+    assert ms.spec_text(state, "big", plain, {})[0].startswith("Угадывание вперёд не настроено")
+    assert ms.spec_text(state, "big", on, {}) == ("Сейчас: черновая модель Qwen3-0.6B-Q8_0.gguf.", "")
+
+    def said(spec, launch=on, drafting=None):
+        return ms.spec_text({**state, "results": {"big": {"status": "same", "spec": spec}}}, "big", launch,
+                            drafting or {})  # fmt: skip
+
+    draft = {"status": "better", "kind": "draft", "spec_type": "draft-simple", "before": 40.2, "after": 61.4,
+             "accepted": 0.72, "draft": "Qwen3-0.6B-Q8_0.gguf", "short": {}}  # fmt: skip
+    assert said(draft) == ("Ускорение — черновая модель Qwen3-0.6B-Q8_0.gguf: ответ 40 → 61 ток/с, угадано 72 %.",
+                           "ok")  # fmt: skip
+    assert "часть слоёв модели в ОЗУ" in said({**draft, "kind": "draft_fewer"})[0]
+    ngram = {**draft, "kind": "ngram", "spec_type": "ngram-mod", "after": 44.0, "accepted": 0.4, "draft": ""}
+    assert said(ngram, {"spec": {"type": "ngram-mod", "draft": ""}}) == (
+        "Ускорение — ngram (повторы уже написанного): ответ 40 → 44 ток/с.", "ok")  # fmt: skip
+    nothing = {**draft, "kind": "none", "spec_type": "none", "after": 40.2, "short": {"short_gb": 0.4,
+                                                                                       "context": 16384}}  # fmt: skip
+    assert said(nothing, plain) == ("Угадывание вперёд не дало выигрыша — выключено (ответ 40 ток/с). Черновой "
+                                    "модели не хватило 0,4 ГБ видеопамяти; с контекстом 16 тыс. она поместится — его "
+                                    "можно уменьшить выше.", "")  # fmt: skip
+    assert said({"status": "unsupported"}, plain)[0].startswith("Эта сборка llama.cpp не умеет угадывать вперёд")
+    assert said({"status": "failed", "error": "не встала"}, plain) == ("Ускорение не подобрано: не встала", "error")
+    assert said(draft, plain)[0].startswith("Угадывание вперёд не настроено")  # taken off by hand since: as it is
+    coming = {"model_id": "big", "name": "Qwen3 0.6B", "done": 300 * 1024**2, "total": 767 * 1024**2}
+    assert said({}, plain, coming)[0] == "Качаю черновую модель Qwen3 0.6B: 300 МБ из 767 МБ…"
+    assert said({}, plain, {"model_id": "big", "error": "нет связи"}) == (
+        "Черновая модель не скачалась: нет связи", "error")  # fmt: skip
+    assert said({}, plain, {**coming, "model_id": "other"})[0].startswith("Угадывание вперёд не настроено")
+    measuring = {"status": "measuring", "model_id": "big", "step": "spec", "done": 1, "total": 3}
+    assert ms.tune_text({**state, "job": measuring}, "big").startswith("Меряю угадывание вперёд: 1 из 3…")
+
+    app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                               "provider": "llama-swap", "prices": {}}])  # fmt: skip
+    setup = app.model_setup
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("editable"))
+    assert setup.specText.startswith("Угадывание вперёд не настроено") and not setup.specOn
+    setup.speedUp()
+    wait_until(lambda: ("speedup", "big") in app.client.tune_calls)
+    send(app, "install.draft", {"drafting": coming})
+    assert setup.specText == "Качаю черновую модель Qwen3 0.6B: 300 МБ из 767 МБ…" and setup.speedBusy
+    send(app, "install.draft", {"drafting": {}})
+    app.client.tune_status = {
+        "job": {"status": "idle", "queue": []},
+        "results": {"big": {"status": "same", "spec": draft}},
+        "auto": True,
+    }
+    app.client.llama_spec = on["spec"]
+    send(app, "llama.config", {"model_id": "big"})
+    send(app, "tune.changed", {"job": {"status": "idle", "queue": []}})
+    wait_until(lambda: setup.specTone == "ok" and setup.specOn)
+    assert setup.specText.startswith("Ускорение — черновая модель") and not setup.speedBusy
+    setup.speedOff()
+    wait_until(lambda: ("launch", "big", {"spec_type": "none"}) in app.client.model_calls)
+
+
+def test_guessing_ahead_in_the_window(qapp):
+    """42.6: the models sheet's launch part has the line about guessing ahead and its two buttons - shown with the
+    model's launch, «Снять ускорение» only while the command has it."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.llama_spec = {"type": "ngram-mod", "draft": ""}
+        app.attach(client, start_events=False)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        app.model_setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and app.model_setup.launch.get("editable") and sheet.property("opened"))
+        for _ in range(10):
+            QApplication.processEvents()
+        line = quick.window.findChild(QObject, "specText")
+        assert line is not None and line.property("text") == "Сейчас: ngram."
+        assert quick.window.findChild(QObject, "speedUp") is not None
+        assert quick.window.findChild(QObject, "speedOff").property("visible")
+        assert quick.warnings == []
+    finally:
+        quick.close()

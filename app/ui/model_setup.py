@@ -8,17 +8,19 @@ one short question with these settings: its words, how soon, how fast, what it c
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
-from common.i18n import N_, tr
+from common.i18n import N_, decimal, tr
 from common.llama_memory import RESERVE_GIB, draft_load, estimate
 from hub.gateway.base import PRICES_FRESH_DAYS
 
 from .. import presenter
+from . import rows
 from .project_rows import local_time
 
 if TYPE_CHECKING:
@@ -352,10 +354,64 @@ def settings_words(settings: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+# what guessing ahead the tuning chose (hub/tuning.py spec_variants), in words
+SPEC_KINDS = {"draft": N_("черновая модель {draft}"),
+              "draft_fewer": N_("черновая модель {draft}, часть слоёв модели в ОЗУ"),
+              "ngram": N_("ngram (повторы уже написанного)")}  # fmt: skip
+
+
+def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], drafting: dict[str, Any]
+              ) -> tuple[str, str]:  # fmt: skip
+    """The models view's line about guessing ahead (42.6) and its tone: the draft model on its way (the hub's
+    `drafting`), what the tuning found - while the model's command is as it left it - or what the command has."""
+    if drafting.get("model_id") == model_id:
+        if drafting.get("error"):
+            return tr("Черновая модель не скачалась: {error}", error=drafting["error"]), "error"
+        if drafting.get("total"):
+            return tr("Качаю черновую модель {name}: {done} из {total}…", name=drafting.get("name") or "",
+                      done=rows.mb(drafting.get("done") or 0), total=rows.mb(drafting["total"])), ""  # fmt: skip
+    spec = ((state.get("results") or {}).get(model_id) or {}).get("spec") or {}
+    current = launch.get("spec") or {}
+    kinds = current.get("type") or ""
+    if spec.get("status") == "unsupported":
+        return tr("Эта сборка llama.cpp не умеет угадывать вперёд — обновите её в мастере первого запуска."), ""
+    if spec.get("status") == "failed":
+        return tr("Ускорение не подобрано: {error}", error=spec.get("error") or ""), "error"
+    if spec.get("status") in ("better", "same") and (spec.get("kind") == "none") == (not kinds):
+        if spec["kind"] == "none":
+            text = tr("Угадывание вперёд не дало выигрыша — выключено (ответ {speed} ток/с).",
+                      speed=f"{spec['before']:.0f}")  # fmt: skip
+            short = spec.get("short") or {}
+            if short.get("short_gb") and short.get("context"):
+                text += " " + tr("Черновой модели не хватило {gb} ГБ видеопамяти; с контекстом {context} она "
+                                 "поместится — его можно уменьшить выше.", gb=decimal(f"{short['short_gb']:.1f}"),
+                                 context=presenter.tokens_words(short["context"]))  # fmt: skip
+            elif short.get("short_gb"):
+                text += " " + tr("Черновой модели не хватило {gb} ГБ видеопамяти.",
+                                 gb=decimal(f"{short['short_gb']:.1f}"))  # fmt: skip
+            return text, ""
+        what = tr(SPEC_KINDS[spec["kind"]], draft=spec.get("draft") or "")
+        text = tr("Ускорение — {what}: ответ {before} → {after} ток/с", what=what, before=f"{spec['before']:.0f}",
+                  after=f"{spec['after']:.0f}")  # fmt: skip
+        if spec.get("accepted") is not None and spec["kind"] != "ngram":
+            text += tr(", угадано {share} %", share=round(spec["accepted"] * 100))
+        return text + ".", "ok"
+    if kinds:
+        draft = re.split(r"[\\/]", current.get("draft") or "")[-1]
+        if draft:
+            return tr("Сейчас: черновая модель {draft}.", draft=draft), ""
+        return tr("Сейчас: {kinds}.", kinds="ngram" if kinds.startswith("ngram") else kinds), ""
+    return tr("Угадывание вперёд не настроено. «Ускорить» скачает черновую модель, если она есть для этой модели, и "
+              "замерит, что быстрее."), ""  # fmt: skip
+
+
 def tune_text(state: dict[str, Any], model_id: str) -> str:
     """The models view's line about the tuning of this model: going on, waiting, or what it found."""
     job = state.get("job") or {}
     mine = job.get("model_id") == model_id
+    if mine and job.get("status") == "measuring" and job.get("step") == "spec":
+        return tr("Меряю угадывание вперёд: {done} из {total}… На это время модели выгружены из видеопамяти.",
+                  done=job.get("done", 0), total=job.get("total") or "?")  # fmt: skip
     if mine and job.get("status") == "measuring":
         return tr("Меряю: {done} из {total}… На это время модели выгружены из видеопамяти.", done=job.get("done", 0),
                   total=job.get("total") or "?")  # fmt: skip
@@ -400,6 +456,7 @@ class ModelSetup(QObject):
         self._loading = False
         self._launch: dict[str, Any] = {}  # this model in llama-swap's config (local models), and the memory it has
         self._tune: dict[str, Any] = {}  # launch settings by measurement (15.2): the job, each model's result, auto
+        self._drafting: dict[str, Any] = {}  # a draft model on its way (42.5): the hub's `drafting`
         self._told: set[str] = set()  # the results already said in the status line
         self._launch_draft: dict[str, str] = {}
         self._vram_mib: int | None = None
@@ -736,6 +793,53 @@ class ModelSetup(QObject):
     def tuneAuto(self) -> bool:
         return self._tune.get("auto", True) is not False
 
+    # --- guessing ahead (42.6) ---
+
+    @Property(str, notify=changed)
+    def specText(self) -> str:
+        return spec_text(self._tune, self._tune_id(), self._launch, self._drafting)[0]
+
+    @Property(str, notify=changed)
+    def specTone(self) -> str:
+        return spec_text(self._tune, self._tune_id(), self._launch, self._drafting)[1]
+
+    @Property(bool, notify=changed)
+    def specOn(self) -> bool:
+        """The model's command guesses ahead: «Снять ускорение» shows."""
+        return bool((self._launch.get("spec") or {}).get("type"))
+
+    @Property(bool, notify=changed)
+    def speedBusy(self) -> bool:
+        """Its draft model on its way."""
+        return self._drafting.get("model_id") == self._tune_id() and bool(self._drafting.get("total"))
+
+    def _set_drafting(self, drafting: dict[str, Any] | None) -> None:
+        self._drafting = drafting or {}
+        self.changed.emit()
+
+    def _load_drafting(self) -> None:
+        if self.app.client is not None:
+            self.app._call(lambda: self.app.client.speedup_state(), lambda s: self._set_drafting(s.get("drafting")),
+                           lambda _e: None)  # fmt: skip
+
+    @Slot()
+    def speedUp(self) -> None:
+        """«Ускорить»: the hub downloads the draft model paired with this one, if any, then measures at once."""
+        model_id = self._tune_id()
+        if model_id and self.app.client is not None:
+            self.app.call_or_fail(lambda: self.app.client.speed_up(model_id),
+                                  lambda answer: self._set_drafting(answer.get("drafting")),
+                                  lambda e: self.app.show_error(tr("Ускорить: {error}", error=e)))  # fmt: skip
+
+    @Slot()
+    def speedOff(self) -> None:
+        """«Снять ускорение»: guessing ahead off the model's command (its draft's file stays while another uses it)."""
+        model_id, hub_id = self._tune_id(), self._model
+        if model_id and self.app.client is not None:
+            self.app.call_or_fail(lambda: self.app.client.change_llama_model(model_id, {"spec_type": "none"}),
+                                  lambda _answer: self._load_launch(hub_id),
+                                  lambda e: self.app.show_error(tr("Снять ускорение: {error}", error=e)))  # fmt: skip
+
     def _set_tune(self, state: dict[str, Any]) -> None:
         first = not self._tune
         self._tune = state
@@ -853,6 +957,7 @@ class ModelSetup(QObject):
         hub_id = self._hub_id()
         self._load_launch(wanted)
         self._load_tune()
+        self._load_drafting()
         self.changed.emit()
 
         def show(info: dict[str, Any]) -> None:
@@ -957,6 +1062,9 @@ class ModelSetup(QObject):
         self.app.call_or_fail(lambda: self.app.client.check_model(model_id), done, failed)
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
+        if kind == "install.draft":  # the draft model on its way (42.5)
+            self._set_drafting(payload.get("drafting"))
+            return
         if kind == "tune.changed":
             job = payload.get("job") or {}
             if job.get("status") == "measuring" and self._tune:  # how far the measuring got: no call for it
