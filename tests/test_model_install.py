@@ -1377,6 +1377,10 @@ def test_the_catalogs_drafts():
         assert set(draft) >= {"id", "repo", "file", "name", "architectures"} and draft["architectures"]
         assert re.compile(draft.get("names") or "")  # a pattern of model file names, when it is given
         assert hf.quant_of(draft["file"]) == "Q8_0"
+    # the live check (42.7, 2026-11-13): Qwen3-VL's vocabulary is Qwen3's - Qwen3 0.6B guessed 89 % of a code edit
+    # for Qwen3-VL-8B, and the catalog had not named its family
+    qwen3 = next(d for d in drafts if d["id"] == "qwen3-0.6b")
+    assert {"qwen3", "qwen3moe", "qwen3vl", "qwen3vlmoe"} <= set(qwen3["architectures"])
 
 
 def test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing(hub, tmp_path, monkeypatch):

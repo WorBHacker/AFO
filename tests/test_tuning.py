@@ -452,6 +452,9 @@ if kind in how.get("crash", []):
     print("common_speculative_init: speculative decoding not supported by this context", flush=True)
     sys.exit(1)
 speed = how["fewer"] if flag("-ngl", "99") != "99" else how["speeds"][kind]
+rejected = kind in how.get("rejects", [])  # as llama.cpp with a draft of another vocabulary: on without guessing
+if rejected:
+    print("0.05.726.435 E spec common_specu: the target and draft vocabs are not compatible", flush=True)
 started = time.monotonic()
 
 
@@ -475,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         with open(here / "asked.txt", "a", encoding="utf-8") as f:
             f.write(json.dumps(body) + "\n")
-        drafted = 0 if kind == "none" else 100
+        drafted = 0 if kind == "none" or rejected else 100
         self._send(200, {"choices": [{"message": {"content": "ok"}}],
                          "timings": {"predicted_per_second": speed, "draft_n": drafted,
                                      "draft_n_accepted": int(drafted * how.get("accepted", 0.7))}})
@@ -507,11 +510,13 @@ def spec_server(setup, tmp_path):
     return folder
 
 
-def speeds(folder, by_kind, *, fewer=0.0, crash=(), load_s=0.3):
+def speeds(folder, by_kind, *, fewer=0.0, crash=(), rejects=(), load_s=0.3):
     """How fast the stand-in llama-server answers: by --spec-type; with fewer layers on the card; which kinds of
-    guessing it cannot start with; how long it «loads the model»."""
+    guessing it cannot start with; which it starts with but guesses nothing (llama.cpp with a draft of another
+    vocabulary); how long it «loads the model»."""
     (folder / "speeds.json").write_text(json.dumps({"speeds": by_kind, "fewer": fewer, "crash": list(crash),
-                                                    "load_s": load_s}), encoding="utf-8")  # fmt: skip
+                                                    "rejects": list(rejects), "load_s": load_s}),
+                                        encoding="utf-8")  # fmt: skip
 
 
 def listening(port):
@@ -645,6 +650,21 @@ def test_guessing_ahead_that_does_not_start_is_passed_over_or_taken_back(hub, se
     server.write_text(server.read_text(encoding="utf-8") + "rem a build that knows no guessing\n", encoding="utf-8")
     old = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
     assert old["spec"] == {"status": "unsupported"}
+
+
+def test_a_draft_llama_cpp_does_not_take_is_not_measured(hub, setup, spec_server):  # noqa: F811
+    """42.7 (the live check, 2026-11-13): llama-server with a draft of another vocabulary says so in its log («the
+    target and draft vocabs are not compatible») and goes on without guessing - the draft held in the video memory all
+    the same (0.9 GB for Qwen3.5 0.8B). Its speed is the model's own and the noise (+2.5 % that day, against 3 %):
+    nothing guessed is not a measurement - passed over with llama.cpp's words, never written."""
+    draft = setup.parent / "draft.gguf"
+    before = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 40.5, "draft-simple": 43.0}, rejects=["draft-simple"])
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
+    spec = result["spec"]
+    assert spec["kind"] == "none" and [m["name"] for m in spec["measured"]] == ["none", "ngram", "draft"]
+    assert "tg" not in spec["measured"][2] and "vocabs are not compatible" in spec["measured"][2]["error"]
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"] == before  # nothing written
 
 
 def test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat(hub, setup, spec_server, monkeypatch):  # noqa: F811

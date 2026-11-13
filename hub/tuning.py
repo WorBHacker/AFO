@@ -206,6 +206,21 @@ def _tail(path: Path) -> str:
     return " ".join([line for line in lines if line][-3:])
 
 
+def server_log() -> Path:
+    """llama-server's log while guessing ahead is measured (42.4)."""
+    return data_paths().logs / "tuning-server.log"
+
+
+def _said(path: Path, word: str) -> str:
+    """llama.cpp's first error about `word` in a log (its «E» lines), without the time and the function: why it went
+    on without something (42.7)."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return next((line.split(": ", 1)[-1].strip() for line in lines if " E " in line and word in line), "")
+
+
 def free_port() -> int:
     """A port nobody listens on, for a llama-server the measuring runs itself (42.4)."""
     with socket.socket() as probe:
@@ -502,6 +517,11 @@ class Tuner:
             try:
                 argv = spec_command(text, model_id, variant["changes"], build, port)
                 found = await asyncio.to_thread(self._serve, argv, port, params)
+                if "draft_model" in variant["changes"] and found["accepted"] is None:
+                    # 42.7: llama.cpp did not take the draft (another vocabulary) and went on without guessing - its
+                    # speed is the model's own and the noise, the draft held in the memory all the same
+                    raise TuneError(tr("llama.cpp не взял черновую модель: {error}", error=_said(server_log(), "draft")
+                                       or tr("за замер она не угадала ни одного токена")))  # fmt: skip
             except (TuneError, llama_config.ConfigError) as exc:
                 if variant["name"] == "none":  # nothing to compare with
                     raise
@@ -658,7 +678,7 @@ class Tuner:
         a short warm-up, then each of SPEC_PROMPTS at the model's sampling (`params`) - tokens a second by llama.cpp's
         own timings, and how many of the guessed tokens were right; then the server is let go. A server that does not
         start says why in its log; stopped for a chat - _Halted."""
-        log_path = data_paths().logs / "tuning-server.log"
+        log_path = server_log()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "wb") as out:  # not a pipe: llama-server writes a lot, and an unread pipe stops it
             self._process = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
