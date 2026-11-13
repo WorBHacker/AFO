@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ READY_TIMEOUT_S = 60.0  # llama-swap itself starts in a second; models load only
 PORT_SETTING = "llama_swap.port"  # where AFO's own llama-swap moved when another program held its port (39.2)
 PORTS_TRIED = 20  # the ports after the default one it may move to
 BREAKAWAY = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+STOP_WAIT_S = 10.0  # llama-swap and what it runs, after «Выход» (43.2): then killed
 
 
 class RunStore(Protocol):
@@ -177,22 +179,63 @@ def _flag(args: list[str], name: str) -> str | None:
     return None
 
 
-def running_llama_swap(url: str) -> tuple[Path, Path] | None:
-    """The llama-swap running at `url`'s port - one the person ran before AFO came, say: its program and its config,
-    from its command line (`-config` relative to its folder; `-listen` is :8080 when not given)."""
+def llama_swap_process(url: str) -> psutil.Process | None:
+    """The llama-swap process listening at `url`'s port: by its name and its `-listen` (:8080 when not given)."""
     port = str(urlsplit(url).port or 8080)
     for process in psutil.process_iter(["name", "exe", "cmdline", "cwd"]):
         info = process.info
         args = info.get("cmdline") or []
         if not (info.get("name") or "").lower().startswith("llama-swap") or not args:
             continue
-        if (_flag(args, "listen") or ":8080").rsplit(":", 1)[-1] != port:
-            continue
-        config = Path(_flag(args, "config") or "config.yaml")
-        if not config.is_absolute():
-            config = Path(info.get("cwd") or ".") / config
-        return Path(info.get("exe") or args[0]), config
+        if (_flag(args, "listen") or ":8080").rsplit(":", 1)[-1] == port:
+            return process
     return None
+
+
+def running_llama_swap(url: str) -> tuple[Path, Path] | None:
+    """The llama-swap running at `url`'s port - one the person ran before AFO came, say: its program and its config,
+    from its command line (`-config` relative to its folder)."""
+    process = llama_swap_process(url)
+    if process is None:
+        return None
+    info = process.info
+    args = info["cmdline"]
+    config = Path(_flag(args, "config") or "config.yaml")
+    if not config.is_absolute():
+        config = Path(info.get("cwd") or ".") / config
+    return Path(info.get("exe") or args[0]), config
+
+
+async def stop_llama_swap(url: str, wanted: bool, transport: httpx.AsyncBaseTransport | None = None) -> str:
+    """«Выход» in the tray (43.2, the user's word: everything stops): llama-swap's models unloaded; llama-swap itself
+    stopped when AFO starts it (`wanted`) - with what it runs (llama-server, Strata), or they would hold the card.
+    One the person runs and AFO does not start - only unloaded. "stopped", "unloaded" or "none" (nothing answered)."""
+    unloaded = False
+    with contextlib.suppress(httpx.HTTPError):
+        async with httpx.AsyncClient(timeout=30.0, transport=transport) as http:
+            unloaded = (await http.post(f"{url.rstrip('/')}/api/models/unload")).status_code < 400
+    said = "unloaded" if unloaded else "none"
+    if not wanted or (urlsplit(url).hostname or "") not in LOCAL_HOSTS:
+        return said
+    process = await asyncio.to_thread(llama_swap_process, url)
+    if process is None:
+        return said
+    await asyncio.to_thread(_end_tree, process)
+    log.info("llama-swap stopped (pid %s) with what it ran: everything stops", process.pid)
+    return "stopped"
+
+
+def _end_tree(process: psutil.Process) -> None:
+    """A program and what it started, stopped (Windows: at once - there is no gentler signal for a console-less one)."""
+    with contextlib.suppress(psutil.Error):
+        family = [*process.children(recursive=True), process]
+        for member in family:
+            with contextlib.suppress(psutil.Error):
+                member.terminate()
+        _, alive = psutil.wait_procs(family, timeout=STOP_WAIT_S)
+        for member in alive:
+            with contextlib.suppress(psutil.Error):
+                member.kill()
 
 
 def needs_finding() -> bool:

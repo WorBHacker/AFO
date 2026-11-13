@@ -18,8 +18,16 @@ Window {
 
     readonly property bool maximized: visibility === Window.Maximized
 
-    // unsaved edits in the editor's tabs (D47, 14.4): asked before the window goes; it goes once they are decided
-    onClosing: (close) => { if (!Editor.mayClose()) close.accepted = false }
+    // the cross hides the window in the tray (43.2): AFO, its hub and agents go on; «Выход» in the tray closes it for
+    // good. Unsaved edits in the editor's tabs (D47, 14.4): asked before the window goes; it goes once they are decided
+    onClosing: (close) => {
+        if (App.hidesOnClose) {
+            close.accepted = false
+            root.hide()
+            return
+        }
+        if (!Editor.mayClose()) close.accepted = false
+    }
     Connections {
         target: Editor
         function onCloseWindow() { root.close() }

@@ -8,11 +8,12 @@ import time
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from common import __version__
 
-from .. import store
+from .. import autostart, store
 from ..auth import APP_CLIENT, Client
 from ..db import current_version
 from .deps import require_client
@@ -97,14 +98,24 @@ async def status(request: Request, client: Annotated[Client, Depends(require_cli
     return {**sample, "busy": request.app.state.chat.busy}
 
 
+class Shutdown(BaseModel):
+    everything: bool = False  # «Выход» in the tray (43.2): the models and llama-swap AFO starts stop too
+
+
 @router.post("/shutdown", status_code=202)
-async def shutdown(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
-    """Graceful stop: the hub finishes requests, publishes hub.stopping and removes hub.json."""
+async def shutdown(request: Request, client: Annotated[Client, Depends(require_client)],
+                   body: Annotated[Shutdown | None, Body()] = None) -> dict:  # fmt: skip
+    """Graceful stop: the hub finishes requests, publishes hub.stopping and removes hub.json. With `everything`, first
+    llama-swap's models are unloaded and llama-swap AFO starts is stopped (autostart.stop_llama_swap)."""
     if client.name != APP_CLIENT:
         raise HTTPException(status_code=403, detail="only the desktop app may stop the hub")
     stop = request.app.state.request_shutdown
     if stop is None:
         raise HTTPException(status_code=503, detail="this hub was not started by `python -m hub`")
-    await request.app.state.bus.publish("hub.shutdown_requested", {"by": client.name})
+    out: dict = {"status": "stopping"}
+    if body is not None and body.everything:
+        wanted = await request.app.state.db.acall(autostart.llama_swap_wanted)
+        out["llama_swap"] = await autostart.stop_llama_swap(request.app.state.settings.llama_swap_url, wanted)
+    await request.app.state.bus.publish("hub.shutdown_requested", {"by": client.name, **out})
     stop()
-    return {"status": "stopping"}
+    return out

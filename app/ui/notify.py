@@ -28,6 +28,7 @@ class Notifier(QObject):
     """The tray icon and its notifications. `active` says whether the window is in front now."""
 
     opened = Signal()  # the user clicked a notice or the icon: show the window and the chat that waits
+    quitRequested = Signal()  # «Выход»: everything stops (43.2)
 
     def __init__(self, active: Callable[[], bool], parent: QObject | None = None):
         super().__init__(parent)
@@ -49,6 +50,8 @@ class Notifier(QObject):
             menu.addAction(tr("Открыть AFO"), self.opened.emit)
             self._stop = menu.addAction(tr("Остановить агента (управляет компьютером)"), self._stop_now)
             self._stop.setVisible(False)
+            menu.addSeparator()
+            menu.addAction(tr("Выход"), self.quitRequested.emit)
             self.tray.setContextMenu(menu)
             self._menu = menu  # kept: the tray does not own it
             self.tray.activated.connect(self._clicked)

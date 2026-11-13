@@ -686,9 +686,18 @@
   (развёрнутое — развёрнутым); без трея `--tray` показывает окно, иначе AFO не найти. Смена языка (`restart`) сперва
   отпускает замок и сокет — новый процесс становится первым. Тесты — `test_a_start_in_the_tray_shows_no_window_until_asked`
   (`tests/test_tray.py`), `test_a_second_start_shows_the_first_window_and_leaves` (настоящие процессы).
-- 43.2 Крестик прячет окно в трей (переключатель, по умолчанию так; без трея — закрывает, как сейчас). «Выход» в меню
+- 43.2 ✓ Крестик прячет окно в трей (переключатель, по умолчанию так; без трея — закрывает, как сейчас). «Выход» в меню
   трея останавливает всё: окно, хаб (`POST /v1/shutdown`), модели и llama-swap, если его запустил AFO. Файлы:
-  `Main.qml`, `app/ui/notify.py`, `app/ui/main.py`, `hub/api/system.py`, `hub/autostart.py`.
+  `Main.qml`, `app/ui/notify.py`, `app/ui/main.py`, `hub/api/system.py`, `hub/autostart.py`. Сделано: `closeToTray`
+  (`ui/close_to_tray` в `app.ini`), `hidesOnClose` — трей есть, переключатель включён, «Выход» не идёт; `onClosing`
+  прячет окно; при трее `setQuitOnLastWindowClosed(False)`, а `_shown` решает: спрятано — AFO живёт, закрыто — выход
+  (после «Выхода» сперва `shutdown(everything=True)`). `quit_all`: окно видно — закрывается (несохранённые правки
+  спрашивает редактор; «Отмена» — `closeCancelled`, выход отменён), спрятано — сразу. `POST /v1/shutdown`
+  `{"everything": true}` — `autostart.stop_llama_swap`: модели выгружены; llama-swap, который запускает AFO
+  (`llama_swap_wanted`), остановлен деревом (`llama_swap_process` — по имени и `-listen`; с ним llama-server и Strata);
+  свой llama-swap человека — только выгружен. Тесты — `test_the_cross_hides_the_window_in_the_tray_and_quitting_stops_everything`,
+  `test_quitting_from_the_tray_stops_the_models_and_llama_swap` (настоящий процесс `llama-swap.exe`: лаунчер venv под
+  этим именем, его «модель» — дочерний процесс).
 - 43.3 Меню трея: «Открыть AFO», «Новый чат», «Проекты» (последние), загруженная модель и «Выгрузить», «Видеокарта —
   моделям» (галочка и сколько освобождено), «Тихие часы», «Остановить агента» (уже есть), «Настройки», «Выход».
 - 43.4 Вместе с Windows: значение «AFO» в Run — `pythonw -m app --tray` (окно само поднимает хаб); старое «AFO hub»

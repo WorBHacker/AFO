@@ -166,6 +166,7 @@ class Controller(QObject):
     projectChatChanged = Signal()  # «Проекты»: the project's sessions, and whether one is open in the main area
     projectChatsHeightChanged = Signal()  # the line over «Чаты проекта», dragged
     sidebarWidthChanged = Signal()  # the sidebar's right edge, dragged
+    trayChanged = Signal()  # the tray: there or not, what the cross does, «Выход» going on (43.2)
     retentionChanged = Signal()  # how long and how much the hub keeps (D30)
     claudeCodeChanged = Signal()
     statsChanged = Signal()
@@ -271,6 +272,9 @@ class Controller(QObject):
         self.check_view = CheckView(self)  # «Проверить систему» and the logs for support (10.6)
         self.transfer_view = TransferView(self)  # all the settings into a file and back (D46, 13.10)
         self.editor = EditorView(self)  # the code editor, one file at a time (D47, 14.2)
+        self._tray = False  # the notification area has AFO's icon (app/ui/notify.py; not offscreen)
+        self._quitting = False  # «Выход» in the tray goes on: the window closes for good (43.2)
+        self.editor.closeCancelled.connect(lambda: self.set_quitting(False))  # the person kept the window
         self.readers = Readers(self)  # the viewer's text and its colours (24.1)
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
@@ -334,6 +338,37 @@ class Controller(QObject):
         """0: the usual width back (a double click on the edge)."""
         self.settings.setValue("ui/sidebarWidth", max(SIDEBAR_MIN, min(width, SIDEBAR_MAX)) if width else SIDEBAR_WIDTH)
         self.sidebarWidthChanged.emit()
+
+    @Property(bool, notify=trayChanged)
+    def closeToTray(self) -> bool:
+        """The window's cross hides it in the tray (43.2, the user's word); off - it closes the window, as before."""
+        return self.settings.value("ui/close_to_tray", True) not in (False, "false")
+
+    @Slot(bool)
+    def setCloseToTray(self, on: bool) -> None:
+        self.settings.setValue("ui/close_to_tray", bool(on))
+        self.trayChanged.emit()
+
+    @Property(bool, notify=trayChanged)
+    def hasTray(self) -> bool:
+        return self._tray
+
+    @Property(bool, notify=trayChanged)
+    def hidesOnClose(self) -> bool:
+        """The cross hides the window now: there is a tray to find AFO in, the switch is on, «Выход» is not going on."""
+        return self._tray and self.closeToTray and not self._quitting
+
+    def set_tray(self, available: bool) -> None:
+        self._tray = available
+        self.trayChanged.emit()
+
+    @property
+    def quitting(self) -> bool:
+        return self._quitting
+
+    def set_quitting(self, on: bool) -> None:
+        self._quitting = on
+        self.trayChanged.emit()
 
     @Property(int, notify=projectChatsHeightChanged)
     def projectChatsHeight(self) -> int:

@@ -15,6 +15,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from shiboken6 import Shiboken
 
+from app.hub_client import HubError
 from common.paths import DataPaths
 
 from . import snap
@@ -152,6 +153,12 @@ class QuickApp:
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
         self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
         self.notifier.opened.connect(self._front)
+        self.notifier.quitRequested.connect(self.quit_all)  # «Выход» (43.2)
+        self.controller.set_tray(self.notifier.tray is not None)
+        if self.notifier.tray is not None:  # the cross hides the window: AFO quits by «Выход» or the cross set so
+            app.setQuitOnLastWindowClosed(False)
+        self.quit_app = QGuiApplication.instance().quit
+        self.window.visibleChanged.connect(lambda _visible: self._shown())
         self.controller.restartRequested.connect(self.restart)
         self.notifier.quiet = self.controller.schedules_view.quiet_now  # notices wait out the quiet hours (Q23)
         view = self.controller.computer_view  # «Стоп» in the tray's menu too, while the agent acts (D41)
@@ -173,6 +180,38 @@ class QuickApp:
         self.window.show()
         self.window.raise_()
         self.window.requestActivate()
+
+    def _shown(self) -> None:
+        """The window hidden: in the tray (the cross, 43.2) - AFO goes on; closed - AFO quits: after «Выход» everything
+        stops first (the hub, the models, llama-swap AFO starts), else the hub goes on (D2)."""
+        if self.window is None or self.window.isVisible() or self.controller.hidesOnClose:
+            return
+        if self.controller.quitting:
+            self._stop_everything()
+        self.quit_app()
+
+    def quit_all(self) -> None:
+        """«Выход» in the tray (43.2, the user's word): everything stops - the window (unsaved edits asked first), the
+        hub, the models, llama-swap AFO starts."""
+        if self.window is None:
+            return
+        self.controller.set_quitting(True)
+        if self.window.isVisible():
+            self.window.close()  # the editor asks; once the window is closed, _shown stops everything
+        elif self.controller.editor.mayClose():
+            self._stop_everything()
+            self.quit_app()
+        else:
+            self.show_window()  # the question about unsaved edits waits in the window
+
+    def _stop_everything(self) -> None:
+        client = self.controller.client
+        if client is None:
+            return
+        try:
+            client.shutdown(everything=True)
+        except HubError as exc:
+            log.warning("«Выход»: the hub did not stop: %s", exc)
 
     def asked(self, word: str) -> None:
         """A second start's word (app/single.py): "show" - the window forward; "tray" (Windows' login) - nothing."""

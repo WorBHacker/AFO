@@ -236,6 +236,7 @@ class EditorView(QObject):
     loaded = Signal(str, str)  # a tab's text: its editor (by key) takes it - the undo history starts there
     placed = Signal(str, int)  # a tab's text replaced in place (the disk's version): its cursor goes back here
     closeWindow = Signal()  # the edits saved or let go: the window may close now
+    closeCancelled = Signal()  # the question about unsaved edits was dismissed: the window stays (43.2)
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -551,6 +552,8 @@ class EditorView(QObject):
                 self._save_all(closing)
             elif choice is None:
                 closing()
+            else:
+                self.closeCancelled.emit()
 
         self.app._ask(self._question(dirty), tr("Окно закрывается. Если не сохранить, правки пропадут."),
                       tr("Сохранить"), decide, other=tr("Не сохранять"))  # fmt: skip

@@ -834,8 +834,9 @@ class HubClient:
             params["project_id"] = project_id
         return self._call("GET", "/v1/feed", params=params)
 
-    def shutdown(self) -> None:
-        self._call("POST", "/v1/shutdown")
+    def shutdown(self, everything: bool = False) -> None:
+        """The hub stops; `everything` («Выход» in the tray, 43.2) - the models and llama-swap AFO starts too."""
+        self._call("POST", "/v1/shutdown", {"everything": True} if everything else None, timeout=60)
 
     def card_export(self, project_id: str) -> dict:
         """What writing the card into CLAUDE.md / AGENTS.md / .clinerules would do to each (D23)."""
