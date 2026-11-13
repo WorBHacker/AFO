@@ -130,8 +130,12 @@ def test_the_wizard_agrees_with_the_program():
     assert iss.count(f'AppUserModelID: "{APP_ID}"') == 2  # the Start menu's and the desktop's shortcut
     run = re.search(r'ValueName: "([^"]+)"; ValueData: "(.*?)"; Flags', iss)  # "" is a quote inside
     assert run and run.group(1) == autostart.RUN_VALUE
-    assert run.group(2) == '""{app}\\python\\pythonw.exe"" -m hub'  # login_command()'s form: "<pythonw>" -m hub
-    assert autostart.login_command().endswith('" -m hub')
+    # login_command()'s form: "<pythonw>" -m app --tray - AFO in the tray (43.4), on by default
+    assert run.group(2) == '""{app}\\python\\pythonw.exe"" -m app --tray'
+    assert autostart.login_command().endswith('" -m app --tray')
+    assert re.search(r'Name: "atlogin"; [^\n]*', iss).group(0).endswith('"{cm:Starting}"')  # not `unchecked`
+    for old in autostart.OLD_RUN_VALUES[:1]:  # the hub alone at login (before 43.4) goes when AFO's comes
+        assert f'ValueName: "{old}"; Flags: deletevalue; Tasks: atlogin' in iss and f"'{old}', Login)" in iss
     assert f"'{autostart.RUN_VALUE}', Login)" in iss  # removed on uninstall whoever set it - when it is this copy's
     assert "Pos(Lowercase(ExpandConstant('{app}\\')), Lowercase(Login)) > 0" in iss
     for folder in (*build.CODE, "python"):

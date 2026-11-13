@@ -53,8 +53,8 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-russian.AtLogin=Запускать хаб при входе в Windows (модели и проекты готовы до того, как откроется окно)
-english.AtLogin=Start the hub when I sign in to Windows (models and projects ready before the window opens)
+russian.AtLogin=Запускать AFO при входе в Windows — сразу в трей (модели и проекты готовы до того, как откроется окно)
+english.AtLogin=Start AFO when I sign in to Windows - in the tray (models and projects ready before the window opens)
 russian.Starting=Запуск:
 english.Starting=Starting:
 ; the program's language until one is chosen in its Settings (common/i18n.py reads it)
@@ -67,7 +67,7 @@ english.DirTooLong=The folder's path is too long: Windows would not write the pr
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "atlogin"; Description: "{cm:AtLogin}"; GroupDescription: "{cm:Starting}"; Flags: unchecked
+Name: "atlogin"; Description: "{cm:AtLogin}"; GroupDescription: "{cm:Starting}"
 
 [InstallDelete]
 ; an update replaces the code and the libraries whole (nothing left of the old version); the models stay
@@ -85,8 +85,10 @@ Name: "{autoprograms}\AFO"; Filename: "{app}\python\pythonw.exe"; Parameters: "-
 Name: "{autodesktop}\AFO"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m app"; WorkingDir: "{app}"; IconFilename: "{app}\afo.ico"; AppUserModelID: "AFO.App"; Tasks: desktopicon
 
 [Registry]
-; the value «Settings → Start» turns on and off (hub/autostart.py RUN_VALUE, login_command)
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AFO hub"; ValueData: """{app}\python\pythonw.exe"" -m hub"; Flags: uninsdeletevalue; Tasks: atlogin
+; the value «Settings → Start» turns on and off (hub/autostart.py RUN_VALUE, login_command): AFO in the tray (43.4)
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "AFO"; ValueData: """{app}\python\pythonw.exe"" -m app --tray"; Flags: uninsdeletevalue; Tasks: atlogin
+; the hub alone at login, before 43.4: AFO in the tray takes its place
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "AFO hub"; Flags: deletevalue; Tasks: atlogin
 ; the language the wizard was run in: AFO's too, until one is chosen in Settings (common/i18n.py)
 Root: HKCU; Subkey: "Software\AFO"; ValueType: string; ValueName: "Language"; ValueData: "{cm:LanguageCode}"; Flags: uninsdeletekey
 
@@ -143,7 +145,12 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Data, Models, Login: String;
 begin
-  // this installation's hub at login, set here or in Settings, goes with it; another copy's (a checkout's) stays
+  // this installation's AFO at login (and the hub alone, before 43.4), set here or in Settings, goes with it;
+  // another copy's (a checkout's) stays
+  if (CurUninstallStep = usUninstall) and
+     RegQueryStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'AFO', Login) and
+     (Pos(Lowercase(ExpandConstant('{app}\')), Lowercase(Login)) > 0) then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'AFO');
   if (CurUninstallStep = usUninstall) and
      RegQueryStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'AFO hub', Login) and
      (Pos(Lowercase(ExpandConstant('{app}\')), Lowercase(Login)) > 0) then

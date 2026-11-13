@@ -230,7 +230,7 @@ def describe(event: dict[str, Any], *, projects: dict[str, str], chats: dict[str
         case "telegram.unlinked":
             return item("all", "chat", tr("Telegram-чат отвязан"))
         case "autostart.changed":
-            login = tr("хаб запускается при входе в Windows") if p.get("login") else tr("без автозапуска при входе")
+            login = tr("AFO запускается при входе в Windows") if p.get("login") else tr("без автозапуска при входе")
             swap = tr("llama-swap запускает хаб") if p.get("llama_swap") else tr("llama-swap — вручную")
             return item("all", "power", tr("Запуск изменён"), f"{login}; {swap}")
         case "editor.command":

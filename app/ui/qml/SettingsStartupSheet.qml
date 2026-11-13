@@ -50,7 +50,7 @@ Sheet {
         }
         Switch {
             objectName: "autostartLogin"
-            text: qsTr("Запускать хаб при входе в Windows")
+            text: qsTr("Запускать AFO при входе в Windows — сразу в трей")
             checked: !!App.autostart.login
             onToggled: App.setAutostart("login", checked)
         }

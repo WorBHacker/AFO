@@ -1,8 +1,10 @@
 """Starting by itself (Q8): the hub at Windows login, llama-swap together with the hub.
 
-- At login: a value in the user's Run key (HKCU\\...\\CurrentVersion\\Run, "AFO hub") that runs `pythonw -m hub` - no
-  console, no administrator rights. Off until the user turns it on in Settings; off again removes the value. The value
-  under the old name ("LocalChat hub", before 10.4b) becomes this one when the hub starts.
+- At login: a value in the user's Run key (HKCU\\...\\CurrentVersion\\Run, "AFO") that runs `pythonw -m app --tray` -
+  AFO in the tray (43.4, the user's word 2026-11-13), its window starts the hub; no console, no administrator rights.
+  Off until the user turns it on in Settings (or the installer's task); off again removes the value. A value under an
+  old name ("AFO hub" - the hub alone, before 43.4; "LocalChat hub", before 10.4b) becomes this one when the hub
+  starts.
 - llama-swap: when the hub starts and llama-swap does not answer on this computer, the hub starts it hidden and on
   its own - it keeps running when the hub stops, as the hub does when the window closes (D2). What it starts:
   LOCALCHAT_LLAMA_SWAP_START, else the script or llama-swap.exe chosen in Settings (10.3), else the start script beside
@@ -40,8 +42,8 @@ from .db import utc_now
 log = logging.getLogger("hub.autostart")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE = "AFO hub"
-OLD_RUN_VALUE = "LocalChat hub"  # before the name AFO (10.4b)
+RUN_VALUE = "AFO"
+OLD_RUN_VALUES = ("AFO hub", "LocalChat hub")  # the hub alone (before 43.4), and before the name AFO (10.4b)
 RUN_STORE_ENV = "LOCALCHAT_RUN_KEY"  # "memory": tests and throwaway runs never touch the registry
 LLAMA_SWAP_START_ENV = "LOCALCHAT_LLAMA_SWAP_START"
 DEFAULT_LLAMA_SWAP_START = PROJECT_ROOT.parent / "llama-swap" / "start-llama-swap.cmd"
@@ -115,23 +117,24 @@ def default_run_store(name: str = RUN_VALUE) -> RunStore:
     return RegistryRunStore(name)
 
 
-def renamed(store: RunStore, old: RunStore) -> None:
-    """The hub at login under the old name becomes AFO's, with the same command (10.4b)."""
-    try:
-        command = old.get()
-        if command:
-            if not store.get():
-                store.set(command)
-            old.delete()
-    except OSError as exc:
-        log.warning("the login value under the old name stays: %s", exc)
+def renamed(store: RunStore, olds: list[RunStore]) -> None:
+    """The hub at login under an old name becomes AFO's «AFO» - AFO in the tray now (10.4b, 43.4); one set already
+    stays."""
+    for old in olds:
+        try:
+            if old.get():
+                if not store.get():
+                    store.set(login_command())
+                old.delete()
+        except OSError as exc:
+            log.warning("the login value under an old name stays: %s", exc)
 
 
 def login_command() -> str:
-    """`pythonw -m hub` of this installation: the hub with no console window."""
+    """`pythonw -m app --tray` of this installation: AFO in the tray, no console window (43.4); it starts the hub."""
     exe = Path(sys.executable)
     windowless = exe.with_name("pythonw.exe")
-    return f'"{windowless if windowless.exists() else exe}" -m hub'
+    return f'"{windowless if windowless.exists() else exe}" -m app --tray'
 
 
 def login_enabled(store: RunStore) -> bool:

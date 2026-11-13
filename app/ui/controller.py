@@ -832,7 +832,7 @@ class Controller(QObject):
             self._set_autostart(found)
             if what == "login":
                 self.flash(
-                    tr("Хаб будет запускаться при входе в Windows") if on
+                    tr("AFO будет запускаться при входе в Windows — сразу в трей") if on
                     else tr("Автозапуск при входе в Windows выключен")
                 )  # fmt: skip
 

@@ -142,7 +142,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.secrets = secrets_store
         app.state.lock = ConnectionLock(secrets_store)  # the connections' password (D13)
         app.state.run_store = autostart.default_run_store()  # the hub at Windows login (Q8)
-        autostart.renamed(app.state.run_store, autostart.default_run_store(autostart.OLD_RUN_VALUE))  # 10.4b
+        autostart.renamed(app.state.run_store, [autostart.default_run_store(name)
+                                                for name in autostart.OLD_RUN_VALUES])  # 10.4b, 43.4  # fmt: skip
         app.state.db = db
         app.state.bus = bus
         app.state.gateway = gateway

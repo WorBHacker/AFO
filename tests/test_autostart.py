@@ -28,24 +28,29 @@ def no_holder(monkeypatch):
 
 
 def test_the_login_value():
+    """43.4 (the user's word, 2026-11-13): at login AFO itself starts, in the tray - its window starts the hub."""
     store = autostart.MemoryRunStore()
     assert not autostart.login_enabled(store)
     autostart.set_login(store, True)
-    assert store.value == autostart.login_command() and store.value.endswith('" -m hub')
+    assert store.value == autostart.login_command() and store.value.endswith('" -m app --tray')
     assert "pythonw.exe" in store.value.lower() or "python" in store.value.lower()
     autostart.set_login(store, False)
     assert store.value is None and isinstance(autostart.default_run_store(), autostart.MemoryRunStore)
 
 
-def test_the_login_value_under_the_old_name_moves():
-    """10.4b: the hub at login under the old name (LocalChat) becomes AFO's, with the same command; none - nothing."""
-    assert (autostart.RUN_VALUE, autostart.OLD_RUN_VALUE) == ("AFO hub", "LocalChat hub")
-    new, old = autostart.MemoryRunStore(), autostart.MemoryRunStore()
-    autostart.renamed(new, old)
-    assert new.value is None and old.value is None
-    old.value = '"C:\\Python\\pythonw.exe" -m hub'
-    autostart.renamed(new, old)
-    assert new.value == '"C:\\Python\\pythonw.exe" -m hub' and old.value is None
+def test_the_login_value_under_an_old_name_moves():
+    """10.4b, 43.4: the hub at login under an old name («LocalChat hub», «AFO hub» - the hub alone) becomes AFO's
+    «AFO» - AFO in the tray now; none - nothing; one set already stays."""
+    assert (autostart.RUN_VALUE, autostart.OLD_RUN_VALUES) == ("AFO", ("AFO hub", "LocalChat hub"))
+    new, alone, older = autostart.MemoryRunStore(), autostart.MemoryRunStore(), autostart.MemoryRunStore()
+    autostart.renamed(new, [alone, older])
+    assert new.value is None and alone.value is None and older.value is None
+    older.value = '"C:\\Python\\pythonw.exe" -m hub'
+    autostart.renamed(new, [alone, older])
+    assert new.value == autostart.login_command() and older.value is None
+    alone.value, new.value = '"C:\\Python\\pythonw.exe" -m hub', '"D:\\AFO\\pythonw.exe" -m app --tray'
+    autostart.renamed(new, [alone, older])
+    assert new.value == '"D:\\AFO\\pythonw.exe" -m app --tray' and alone.value is None
 
 
 class FakeLlamaSwap:
@@ -113,7 +118,7 @@ def test_llama_swaps_port_held_by_another_program(tmp_path, monkeypatch):
 
 def test_the_api(hub):  # noqa: F811
     found = hub.get("/v1/autostart").json()
-    assert found["login"] is False and found["llama_swap"] is True and found["login_command"].endswith("-m hub")
+    assert found["login"] is False and found["llama_swap"] is True and found["login_command"].endswith("-m app --tray")
     changed = hub.put("/v1/autostart", json={"login": True, "llama_swap": False}).json()
     assert changed["login"] is True and changed["llama_swap"] is False
     assert hub.app.state.run_store.get() == found["login_command"]

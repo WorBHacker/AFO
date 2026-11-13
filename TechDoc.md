@@ -707,8 +707,13 @@
   галочкой (переключает `setQuiet`), «Остановить агента» — пока агент за столом (`Notifier.stop_shown`). Новый чат,
   проект и «Настройки» показывают окно. Меню ушло из `Notifier` (`use_menu`). «Видеокарта — моделям» — в 43.6. Тест —
   `test_the_trays_menu_does_what_the_window_would`.
-- 43.4 Вместе с Windows: значение «AFO» в Run — `pythonw -m app --tray` (окно само поднимает хаб); старое «AFO hub»
-  становится им при старте; задача установщика `atlogin` — так же.
+- 43.4 ✓ Вместе с Windows: значение «AFO» в Run — `pythonw -m app --tray` (окно само поднимает хаб); старое «AFO hub»
+  становится им при старте; задача установщика `atlogin` — так же. Сделано: `RUN_VALUE` «AFO», `OLD_RUN_VALUES`
+  («AFO hub» — хаб один, «LocalChat hub»); `renamed` при старте хаба ставит новую команду (не копирует старую) и
+  убирает старые; уже стоящее «AFO» остаётся. Установщик: `atlogin` включена по умолчанию (слово пользователя), пишет
+  «AFO» и убирает «AFO hub»; удаление убирает оба, если они этой копии. Тексты — «Запускать AFO при входе в Windows —
+  сразу в трей». Тесты — `test_the_login_value`, `test_the_login_value_under_an_old_name_moves`, `test_the_api`,
+  `test_the_wizard_agrees_with_the_program`.
 - 43.5 `hub/gpu_prefs.py`: адаптеры (DXGI: имя, производитель, LUID, своя память — есть ли встроенная и дискретная),
   видеопамять программ по счётчикам Windows (PDH), значения `UserGpuPreferences`: меняется только `GpuPreference`,
   поля Windows остаются; что было до AFO — в `settings`; «Вернуть как было» — точно и только свои значения (то, что

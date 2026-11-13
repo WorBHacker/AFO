@@ -118,7 +118,7 @@ Sheet {
         warn: sheet.engineMissing || sheet.swapLost
         summary: sheet.engineMissing ? qsTr("Движок локальных моделей ещё не установлен")
                  : sheet.swapLost ? qsTr("llama-swap: файла нет — укажите, где он")
-                 : App.autostart.login ? qsTr("Хаб — при входе в Windows · llama-swap на месте")
+                 : App.autostart.login ? qsTr("AFO — при входе в Windows, в трей · llama-swap на месте")
                  : qsTr("Хаб — вместе с окном · llama-swap на месте")
         onClicked: { sheet.close(); App.openUi("settings-startup") }
     }
