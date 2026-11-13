@@ -81,6 +81,69 @@ def test_the_cross_hides_the_window_in_the_tray_and_quitting_stops_everything(qa
         quick.close()
 
 
+def test_the_trays_menu_does_what_the_window_would(qapp):  # noqa: F811
+    """43.3 (the user's word, 2026-11-13): the tray's menu - «Открыть AFO», «Новый чат», «Проекты» (those whose chats
+    were busy last first), the loaded model and its unloading (the card free for a game), the quiet hours on or off,
+    «Остановить агента» while it acts, «Настройки», «Выход». Filled as things are when it opens; the window comes for
+    what needs it."""
+    from app.ui import tray
+    from app.ui.main import QuickApp
+
+    projects = [{"id": "a", "name": "Alpha"}, {"id": "b", "name": "Beta"}, {"id": "c", "name": "Gamma"}]
+    chats = [{"id": "1", "home_project": "c", "updated_at": "2026-11-13T09:00:00Z"},
+             {"id": "2", "home_project": "b", "updated_at": "2026-11-12T09:00:00Z"},
+             {"id": "3", "home_project": "c", "updated_at": "2026-11-01T09:00:00Z"}, {"id": "4"}]  # fmt: skip
+    assert [p["id"] for p in tray.recent_projects(projects, chats)] == ["c", "b", "a"]
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False, hidden=True)
+    quits: list[int] = []
+    quick.quit_app = lambda: quits.append(1)
+    try:
+        app = quick.controller
+        client = Quitting()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.projects.projectList and app.schedules_view.quiet.get("from"))
+        app.set_tray(True)  # the offscreen platform has no tray: as on the desktop (a hidden window is in the tray)
+        menu = quick.tray_menu
+        menu.refresh()
+        assert menu.shown() == ["trayOpen", "trayNewChat", "trayProjects", "trayModel", "trayQuiet", "traySettings",
+                                "trayQuit"]  # fmt: skip
+        assert menu.model.text() == "Выгрузить модель: coder" and menu.model.isEnabled()
+        assert menu.quiet.isChecked() and menu.quiet.text() == "Тихие часы (23:00–08:00)"
+
+        first = menu.projects[0]
+        first.trigger()
+        assert app.mode == "projects" and app.projects.currentId == first.data() and quick.window.isVisible()
+        quick.window.hide()
+
+        menu.model.trigger()
+        wait_until(lambda: getattr(client, "unloaded", 0) == 1)
+        menu.quiet.trigger()
+        wait_until(lambda: app.schedules_view.quiet.get("enabled") is False, timeout=15)  # saved, read back
+        menu.refresh()
+        assert not menu.quiet.isChecked()
+
+        opened: list[str] = []
+        app.uiRequested.connect(opened.append)
+        menu.settings.trigger()
+        assert opened == ["settings"] and quick.window.isVisible()
+
+        quick.notifier.show_stop(True, lambda: opened.append("stopped"))
+        menu.refresh()
+        assert menu.stop.isVisible()
+        menu.stop.trigger()
+        assert opened[-1] == "stopped"
+
+        menu.new_chat.trigger()
+        assert app.mode == "chats" and app.current is None
+        quick.window.hide()
+        menu.quit.trigger()
+        wait_until(lambda: quits == [1])
+        assert client.shutdowns == [True]
+    finally:
+        quick.close()
+
+
 SWAP = r'''"""A stand-in llama-swap: listens where --listen says; /api/models/unload is written down; it runs a
 «model» (a child that sleeps), as llama-swap runs llama-server."""
 import json, pathlib, subprocess, sys

@@ -24,6 +24,7 @@ from .controller import Controller
 from .icons import IconProvider
 from .notify import Notifier
 from .theme import Theme
+from .tray import TrayMenu
 
 log = logging.getLogger("app.ui")
 QML_DIR = Path(__file__).parent / "qml"
@@ -153,7 +154,7 @@ class QuickApp:
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
         self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
         self.notifier.opened.connect(self._front)
-        self.notifier.quitRequested.connect(self.quit_all)  # «Выход» (43.2)
+        self.tray_menu = TrayMenu(self.controller, self.notifier, self.show_window, self.quit_all)  # 43.3
         self.controller.set_tray(self.notifier.tray is not None)
         if self.notifier.tray is not None:  # the cross hides the window: AFO quits by «Выход» or the cross set so
             app.setQuitOnLastWindowClosed(False)

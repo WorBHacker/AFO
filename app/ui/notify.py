@@ -28,7 +28,6 @@ class Notifier(QObject):
     """The tray icon and its notifications. `active` says whether the window is in front now."""
 
     opened = Signal()  # the user clicked a notice or the icon: show the window and the chat that waits
-    quitRequested = Signal()  # «Выход»: everything stops (43.2)
 
     def __init__(self, active: Callable[[], bool], parent: QObject | None = None):
         super().__init__(parent)
@@ -46,14 +45,6 @@ class Notifier(QObject):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(tray_icon(), self)
             self.tray.setToolTip("AFO")
-            menu = QMenu()
-            menu.addAction(tr("Открыть AFO"), self.opened.emit)
-            self._stop = menu.addAction(tr("Остановить агента (управляет компьютером)"), self._stop_now)
-            self._stop.setVisible(False)
-            menu.addSeparator()
-            menu.addAction(tr("Выход"), self.quitRequested.emit)
-            self.tray.setContextMenu(menu)
-            self._menu = menu  # kept: the tray does not own it
             self.tray.activated.connect(self._clicked)
             self.tray.messageClicked.connect(self.opened.emit)
             self.tray.show()
@@ -70,12 +61,15 @@ class Notifier(QObject):
             self.tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information, SHOW_MS)
         return True
 
+    def use_menu(self, menu: QMenu) -> None:
+        """The tray's menu (app/ui/tray.py, 43.3); kept by its maker - the tray does not own it."""
+        if self.tray is not None:
+            self.tray.setContextMenu(menu)
+
     def show_stop(self, shown: bool, stop: Callable[[], None]) -> None:
-        """The tray's «stop» for the agent at the desktop (D41): there while it acts."""
+        """The tray's «stop» for the agent at the desktop (D41): there while it acts (the menu reads `stop_shown`)."""
         self.stop_shown = shown
         self._stop_agent = stop if shown else None
-        if self.tray is not None:
-            self._stop.setVisible(shown)
 
     def flush(self) -> None:
         """The quiet hours are over: what waited, as one notice."""
@@ -87,7 +81,7 @@ class Notifier(QObject):
         )
         self.notify(title, text)
 
-    def _stop_now(self) -> None:
+    def stop_agent_now(self) -> None:
         if self._stop_agent is not None:
             self._stop_agent()
 
