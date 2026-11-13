@@ -21,6 +21,8 @@ from hub.singleton import AlreadyRunning, InstanceLock
 log = logging.getLogger("app.single")
 
 ASK_S = 15.0  # the first may hold the lock and not listen yet: it is starting
+HEAR_S = 30.0  # the first's thread may be busy before it reads the word: the second waits for its «ok» (43.10)
+HEARD = b"ok\n"
 
 
 def server_name(root: Path) -> str:
@@ -55,6 +57,8 @@ class Single(QObject):
         word = bytes(socket.readAll().data()).decode("utf-8", errors="replace").strip()
         if word:
             log.info("a second start asks: %s", word)
+            socket.write(HEARD)  # the second leaves only now: its word is not lost with the pipe (43.10)
+            socket.flush()
             self.asked.emit(word)
 
     def close(self) -> None:
@@ -73,7 +77,9 @@ def first(root: Path) -> Single | None:
 
 
 def ask_running(root: Path, word: str) -> bool:
-    """Tells the running AFO `word` ("show", "tray"); False - it did not answer in ASK_S."""
+    """Tells the running AFO `word` ("show", "tray") and waits until it has heard it: a word written and left with
+    while the first's thread was busy went with the pipe (43.10). False - it did not connect in ASK_S, or did not
+    hear in HEAR_S."""
     deadline = time.monotonic() + ASK_S
     while True:
         socket = QLocalSocket()
@@ -81,13 +87,28 @@ def ask_running(root: Path, word: str) -> bool:
         if socket.waitForConnected(1000):
             socket.write((word + "\n").encode("utf-8"))
             socket.flush()
-            socket.waitForBytesWritten(1000)
+            heard = _heard(socket)
             socket.disconnectFromServer()
             if socket.state() != QLocalSocket.LocalSocketState.UnconnectedState:
                 socket.waitForDisconnected(1000)
+            if not heard:
+                log.warning("AFO runs already but did not hear %s in %.0f s", word, HEAR_S)
+                return False
             log.info("AFO runs already: asked it to %s", word)
             return True
         if time.monotonic() > deadline:
             log.warning("AFO holds its lock but does not answer: %s", socket.errorString())
             return False
         time.sleep(0.2)
+
+
+def _heard(socket: QLocalSocket) -> bool:
+    """The first's «ok»: it read the word (its thread may be busy a while first: QML being built, a hitch)."""
+    answer = b""
+    deadline = time.monotonic() + HEAR_S
+    while HEARD not in answer and time.monotonic() < deadline:
+        if socket.bytesAvailable() or socket.waitForReadyRead(500):
+            answer += bytes(socket.readAll().data())
+        elif socket.state() == QLocalSocket.LocalSocketState.UnconnectedState:
+            break  # the first went away
+    return HEARD in answer

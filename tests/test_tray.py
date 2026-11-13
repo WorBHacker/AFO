@@ -321,3 +321,27 @@ def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa:
         )
     finally:
         quick.close()
+
+
+def test_a_second_starts_word_is_not_lost_while_the_first_is_busy(qapp, tmp_path):  # noqa: F811
+    """43.10 (the stage's whole pytest run, 2026-11-13: the second start asked, the first never heard): the second
+    start wrote its word and left at once - when the first window's thread was busy longer than about two seconds
+    just then (QML being built, a hitch), the word went with the pipe, and a shortcut did nothing. Now the second waits
+    for the first's «ok» before it leaves. Real processes: the second start in its own Python, this thread blocked
+    while it asks."""
+    from app.single import first
+
+    single = first(tmp_path)
+    assert single is not None
+    words = []
+    single.asked.connect(words.append)
+    code = ("import sys\nfrom pathlib import Path\nfrom PySide6.QtCore import QCoreApplication\n"
+            "from app.single import ask_running\napp = QCoreApplication([])\n"
+            f"sys.exit(0 if ask_running(Path({str(tmp_path)!r}), 'show') else 3)\n")  # fmt: skip
+    try:
+        second = subprocess.Popen([sys.executable, "-c", code], cwd=Path(__file__).parent.parent)
+        time.sleep(6)  # this thread busy: nothing of Qt's runs here meanwhile
+        wait_until(lambda: words == ["show"], timeout=20)
+        assert second.wait(timeout=30) == 0
+    finally:
+        single.close()
