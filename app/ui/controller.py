@@ -41,6 +41,7 @@ from .connections import Connections
 from .editor import EditorView
 from .feed import Feed
 from .goal_view import GoalView
+from .gpu_view import GpuView
 from .history_view import HistoryView
 from .install_view import InstallView
 from .mail_view import MailView
@@ -136,6 +137,9 @@ def _read_drafts(settings: QSettings) -> dict[str, str]:
     except ValueError:
         return {}
     return {str(k): v for k, v in found.items() if isinstance(v, str) and v} if isinstance(found, dict) else {}
+
+
+TRAY_ITEMS = ("projects", "model", "quiet", "gpu")  # the tray menu's optional items (43.7)
 
 
 class Controller(QObject):
@@ -262,6 +266,7 @@ class Controller(QObject):
         self.mcp_view = McpView(self)  # outside MCP servers, a section of Connections (9.5, D42)
         self.computer_view = ComputerView(self)  # the agent at the desktop: frame and «Стоп» (9.6, D41)
         self.schedules_view = SchedulesView(self)  # goals on a schedule and on events (9.7, Q23)
+        self.gpu_view = GpuView(self)  # programs on the graphics card to the integrated graphics (43.7)
         self.mail_view = MailView(self)  # the agent's mailbox, a section of Connections (9.4b, Q21)
         self.agent_keys = AgentKeys(self)  # the user's API keys for the agent's requests (9.4b)
         self.sandbox_view = SandboxView(self)  # «Песочница»: a chat's changes in its worktree (D17, 9.4b)
@@ -348,6 +353,17 @@ class Controller(QObject):
     def setCloseToTray(self, on: bool) -> None:
         self.settings.setValue("ui/close_to_tray", bool(on))
         self.trayChanged.emit()
+
+    @Property("QVariantMap", notify=trayChanged)
+    def trayItems(self) -> dict:
+        """Which of the tray menu's optional items it shows (43.7): projects, model, quiet, gpu - all by default."""
+        return {name: self.settings.value(f"tray/{name}", True) not in (False, "false") for name in TRAY_ITEMS}
+
+    @Slot(str, bool)
+    def setTrayItem(self, name: str, on: bool) -> None:
+        if name in TRAY_ITEMS:
+            self.settings.setValue(f"tray/{name}", bool(on))
+            self.trayChanged.emit()
 
     @Property(bool, notify=trayChanged)
     def hasTray(self) -> bool:
@@ -765,6 +781,7 @@ class Controller(QObject):
         self.programs.load()
         self.autonomy_view.load()
         self.schedules_view.load()
+        self.gpu_view.load()
         self.install_view.connected()  # an install going on: in the status bar before the sheet is opened
         self.loadRetention()
         self._call(lambda: self.client.claude_code(), self._set_claude_code, lambda _e: None)
@@ -1861,6 +1878,8 @@ class Controller(QObject):
             self.install_view.on_event(kind, payload)
         elif kind.startswith("visual."):
             self.visual_view.on_event(kind, payload)
+        elif kind.startswith("gpu."):
+            self.gpu_view.on_event(kind, payload)
         elif kind.startswith("setup."):
             self.setup_view.on_event(kind, payload)
         elif kind.startswith("release."):

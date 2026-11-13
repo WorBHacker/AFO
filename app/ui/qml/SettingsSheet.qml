@@ -123,6 +123,15 @@ Sheet {
         onClicked: { sheet.close(); App.openUi("settings-startup") }
     }
     Category {
+        objectName: "settings_tray"
+        iconName: "bolt"
+        text: qsTr("Трей и видеокарта")
+        summary: (App.closeToTray ? qsTr("Крестик — в трей") : qsTr("Крестик закрывает окно"))
+                 + (Gpu.available ? " · " + (Gpu.on ? qsTr("программы — на встроенной графике")
+                                                    : qsTr("программы — на видеокарте")) : "")
+        onClicked: { sheet.close(); App.openUi("settings-tray") }
+    }
+    Category {
         objectName: "settings_hub"
         iconName: "cpu"
         text: qsTr("Хаб")

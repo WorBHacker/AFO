@@ -285,6 +285,23 @@ class HubClient:
         """{drafting: {model_id, name, done, total} | {model_id, error} | {}}."""
         return self._call("GET", "/v1/install/speedup")
 
+    # --- the graphics card for models (43.6-43.7) ---
+
+    def gpu(self) -> dict:
+        """{available, on, integrated, card, programs: [{exe, name, mib, where, why}], freed_mib}."""
+        return self._call("GET", "/v1/gpu")
+
+    def set_gpu(self, on: bool) -> dict:
+        return self._call("PUT", "/v1/gpu", {"on": on})
+
+    def gpu_choose(self, exe: str, where: str) -> dict:
+        """The person's choice for a program: "card", "integrated", "" (AFO decides)."""
+        return self._call("PUT", "/v1/gpu/programs", {"exe": exe, "where": where})
+
+    def gpu_give_back(self) -> dict:
+        """«Вернуть как было»: {given_back, left, state}."""
+        return self._call("POST", "/v1/gpu/give-back")
+
     def install_remove(self, model_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
 

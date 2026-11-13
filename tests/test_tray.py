@@ -1,5 +1,6 @@
 """Stage 43: the tray and the graphics card for models - one window, the tray, its menu, Windows' login."""
 
+import json
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from common.paths import data_paths
 from hub import autostart
 from hub.server import create_app
 from hub.settings import HubSettings
+from tests.test_code_editor import shown
 from tests.test_entry_points import free_port
 from tests.test_tuning import listening
 from tests.test_ui import FakeClient, qapp, wait_until  # noqa: F401 - the qapp fixture
@@ -226,3 +228,96 @@ def test_quitting_from_the_tray_stops_the_models_and_llama_swap(swap):
         assert process.wait(timeout=15) is not None
         wait_until(lambda: not model.is_running())  # what it ran went with it
         assert hub.post("/v1/shutdown", headers=token).json()["status"] == "stopping"  # the hub alone, as before
+
+
+GPU_STATE = {"available": True, "on": True, "integrated": "Intel(R) Graphics", "card": "NVIDIA GeForce RTX 5080",
+             "freed_mib": 126.0, "programs": [
+                 {"exe": r"C:\Apps\Code.exe", "name": "Code.exe", "mib": 115.0, "where": "waits", "why": ""},
+                 {"exe": r"C:\Apps\Telegram.exe", "name": "Telegram.exe", "mib": 126.0, "where": "moved", "why": ""},
+                 {"exe": r"E:\Games\x.exe", "name": "x.exe", "mib": 900.0, "where": "kept", "why": "game"},
+                 {"exe": r"C:\Windows\explorer.exe", "name": "explorer.exe", "mib": 466.0, "where": "kept",
+                  "why": "windows"}]}  # fmt: skip
+
+
+class OnTheCard(Quitting):
+    def __init__(self):
+        super().__init__()
+        self.gpu_state = json.loads(json.dumps(GPU_STATE))
+        self.gpu_calls: list[tuple] = []
+
+    def gpu(self):
+        return json.loads(json.dumps(self.gpu_state))
+
+    def set_gpu(self, on):
+        self.gpu_calls.append(("on", on))
+        self.gpu_state["on"] = on
+        return self.gpu()
+
+    def gpu_choose(self, exe, where):
+        self.gpu_calls.append(("choose", exe, where))
+        return self.gpu()
+
+    def gpu_give_back(self):
+        self.gpu_calls.append(("give_back",))
+        self.gpu_state["on"] = False
+        return {"given_back": [r"C:\Apps\Telegram.exe"], "left": [], "state": self.gpu()}
+
+
+def test_the_graphics_card_for_models_in_the_window_and_the_tray(qapp):  # noqa: F811
+    """43.7: «Настройки → Трей и видеокарта» - the cross, AFO at sign-in, the tray menu's items; «Видеокарта —
+    моделям»: the switch, each program's place and why (a moved one waits for its restart), the person's choice for one,
+    «Вернуть как было» asked first. The tray: the switch with what it freed. Programs moved - a notice: restart them."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = OnTheCard()
+        app.attach(client, start_events=False)
+        app.set_tray(True)
+        gpu = app.gpu_view
+        wait_until(lambda: not app.bg.busy and gpu.available, timeout=10)
+        assert gpu.summary == ("Встроенная: Intel(R) Graphics · видеокарта: NVIDIA GeForce RTX 5080 · переведено "
+                               "программ: 2, освобождено ~126 МБ · ждут перезапуска: 1")  # fmt: skip
+        rows = {r["name"]: r for r in gpu.programs}
+        assert rows["Code.exe"]["text"] == "переведена — освободит видеопамять после перезапуска"
+        assert rows["x.exe"]["text"] == "на видеокарте (игра)" and rows["x.exe"]["offer"] == "integrated"
+        assert rows["Telegram.exe"]["offerText"] == "Оставить на видеокарте"
+
+        menu = quick.tray_menu
+        menu.refresh()
+        assert "trayGpu" in menu.shown() and menu.gpu.isChecked()
+        assert menu.gpu.text() == "Видеокарта — моделям (освобождено ~126 МБ)"
+        menu.gpu.trigger()
+        wait_until(lambda: ("on", False) in client.gpu_calls and not gpu.on)
+        app.setTrayItem("model", False)
+        app.setTrayItem("gpu", False)
+        menu.refresh()
+        assert "trayModel" not in menu.shown() and "trayGpu" not in menu.shown()
+        assert quick.settings.value("tray/model") in (False, "false")
+
+        sheet = quick.window.findChild(QObject, "settingsTray")
+        app.openUi("settings-tray")
+        wait_until(lambda: sheet.property("opened"))
+        for name in ("closeToTray", "trayLogin", "trayItem_projects", "trayItem_gpu", "gpuOn", "gpuSummary",
+                     "gpuChoose", "gpuGiveBack"):  # fmt: skip
+            assert shown(quick, name) is not None, name
+        gpu.choose(r"E:\Games\x.exe", "integrated")
+        wait_until(lambda: ("choose", r"E:\Games\x.exe", "integrated") in client.gpu_calls)
+        gpu.giveBack()
+        assert app.question["title"] == "Вернуть графику программ как было?"
+        app.answer(True)
+        wait_until(lambda: ("give_back",) in client.gpu_calls and not gpu.on)
+        QMetaObject.invokeMethod(sheet, "close")
+
+        quick.window.hide()  # behind: the notice goes to the tray
+        app.on_event({"type": "gpu.moved", "payload": {"programs": [{"exe": r"C:\Apps\Code.exe", "name": "Code.exe",
+                                                                      "mib": 115.0}]}})  # fmt: skip
+        assert quick.notifier.shown[-1] == (
+            "Видеокарта — моделям",
+            "Перезапустите их, чтобы освободить видеопамять для моделей: Code.exe",
+        )
+    finally:
+        quick.close()

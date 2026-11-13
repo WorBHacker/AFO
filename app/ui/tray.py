@@ -51,12 +51,14 @@ class TrayMenu(QObject):
         self.model = self._action("", "trayModel", self._unload)
         self.quiet = self._action(tr("Тихие часы"), "trayQuiet", self._toggle_quiet)
         self.quiet.setCheckable(True)
+        self.gpu = self._action(tr("Видеокарта — моделям"), "trayGpu", self._toggle_gpu)  # 43.7
+        self.gpu.setCheckable(True)
         self.stop = self._action(tr("Остановить агента (управляет компьютером)"), "trayStop", notifier.stop_agent_now)
         self.settings = self._action(tr("Настройки"), "traySettings", self._settings)
         self.quit = self._action(tr("Выход"), "trayQuit", quit_all)
         self.projects: list[QAction] = []  # the recent ones, made anew at each refresh
         self.items: list[QAction | str | None] = [self.open, self.new_chat, "projects", None, self.model, self.quiet,
-                                                  self.stop, None, self.settings, self.quit]  # fmt: skip
+                                                  self.gpu, self.stop, None, self.settings, self.quit]  # fmt: skip
         self.menu = self.submenu = None
         if _widgets():
             self._make_menu()
@@ -88,7 +90,7 @@ class TrayMenu(QObject):
         out = []
         for item in self.items:
             if item == "projects":
-                if self.projects:
+                if self.projects and self.app.trayItems.get("projects"):
                     out.append("trayProjects")
             elif item is not None and item.isVisible():
                 out.append(item.objectName())
@@ -104,10 +106,12 @@ class TrayMenu(QObject):
                                   lambda pid=project["id"]: self._open_project(pid))  # fmt: skip
             action.setData(project["id"])
             self.projects.append(action)
+        shown = self.app.trayItems  # the optional items the person keeps (43.7)
         if self.submenu is not None:
             self.submenu.clear()
             self.submenu.addActions(self.projects)
             self.submenu.setEnabled(bool(self.projects))
+            self.submenu.menuAction().setVisible(bool(shown.get("projects")))
         loaded = list((self.app.status or {}).get("loaded") or [])
         self.model.setText(tr("Выгрузить модель: {name}", name=", ".join(loaded)) if loaded else
                            tr("Модель не загружена"))  # fmt: skip
@@ -116,6 +120,12 @@ class TrayMenu(QObject):
         self.quiet.setChecked(bool(quiet.get("enabled")))
         self.quiet.setText(tr("Тихие часы ({start}–{end})", start=quiet.get("from", ""), end=quiet.get("to", "")))
         self.stop.setVisible(self.notifier.stop_shown)
+        gpu = self.app.gpu_view
+        self.gpu.setChecked(gpu.on)
+        self.gpu.setText(gpu.trayText)
+        self.model.setVisible(bool(shown.get("model")))
+        self.quiet.setVisible(bool(shown.get("quiet")))
+        self.gpu.setVisible(bool(shown.get("gpu")) and gpu.available)
 
     def _new_chat(self) -> None:
         self.app.setMode("chats")
@@ -133,6 +143,9 @@ class TrayMenu(QObject):
     def _toggle_quiet(self) -> None:
         quiet = self.app.schedules_view.quiet
         self.app.schedules_view.setQuiet(not quiet.get("enabled"), quiet.get("from", ""), quiet.get("to", ""))
+
+    def _toggle_gpu(self) -> None:
+        self.app.gpu_view.setOn(not self.app.gpu_view.on)
 
     def _settings(self) -> None:
         self._show()

@@ -135,6 +135,7 @@ class QuickApp:
         context.setContextProperty("Rewriter", self.controller.editor.rewriter)
         context.setContextProperty("Services", self.controller.connections)  # "Connections" is a QML type
         context.setContextProperty("Theme", self.theme)
+        context.setContextProperty("Gpu", self.controller.gpu_view)
         context.setContextProperty("StartHidden", hidden)
         self.engine.load(str(QML_DIR / "Main.qml"))
         roots = self.engine.rootObjects()
@@ -146,13 +147,16 @@ class QuickApp:
         self.stop_key = install_stop_key(app, self.window, self.controller.computer_view)  # Ctrl+Alt+End (D41)
         self._maximize = restore_geometry(self.window, self.settings, show=not hidden) and hidden
         # notices outside the window (D21): an agent waits for an answer, or finished, while the window is behind
-        self.notifier = Notifier(lambda: self.window is not None and self.window.isActive(), self.controller)
+        # in front: shown and active - a window hidden in the tray (43.2) is not, its notices go to the tray
+        self.notifier = Notifier(lambda: self.window is not None and self.window.isVisible() and self.window.isActive(),
+                                 self.controller)  # fmt: skip
         self.controller.approvals.requested.connect(self.notifier.notify)
         self.controller.agents.finished.connect(self.notifier.notify)
         self.controller.programs.requested.connect(self.notifier.notify)  # the question waits in the window
         self.controller.autonomy_view.asked.connect(self.notifier.notify)  # an agent's question waits too
         self.controller.goal_view.noticed.connect(self.notifier.notify)  # a goal met, or waiting (D44)
         self.controller.proving_view.noticed.connect(self.notifier.notify)  # an exam ended (D45)
+        self.controller.gpu_view.noticed.connect(self.notifier.notify)  # programs moved: restart them (43.7)
         self.notifier.opened.connect(self._front)
         self.tray_menu = TrayMenu(self.controller, self.notifier, self.show_window, self.quit_all)  # 43.3
         self.controller.set_tray(self.notifier.tray is not None)

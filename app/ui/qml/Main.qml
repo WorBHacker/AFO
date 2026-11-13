@@ -252,6 +252,7 @@ Window {
     SettingsModelsSheet { id: settingsModels; backTo: settingsSheet }
     SettingsAgentSheet { id: settingsAgent; backTo: settingsSheet }
     SettingsStartupSheet { id: settingsStartup; backTo: settingsSheet }
+    SettingsTraySheet { id: settingsTray; backTo: settingsSheet }
     SettingsHubSheet { id: settingsHub; backTo: settingsSheet }
     SettingsTransferSheet { id: settingsTransfer; backTo: settingsSheet }
     SettingsAboutSheet { id: settingsAbout; backTo: settingsSheet }
@@ -306,6 +307,7 @@ Window {
             else if (what === "settings-models") settingsModels.open()
             else if (what === "settings-agent") settingsAgent.open()
             else if (what === "settings-startup") settingsStartup.open()
+            else if (what === "settings-tray") settingsTray.open()
             else if (what === "settings-hub") settingsHub.open()
             else if (what === "settings-transfer") settingsTransfer.open()
             else if (what === "settings-about") settingsAbout.open()
