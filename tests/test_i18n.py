@@ -34,9 +34,21 @@ def test_a_text_with_two_meanings_and_a_number(english):
     """qsTr("Свернуть", "window"): the window's button minimizes, a card's link collapses - one Russian word, two
     English ones; the one with a context has gettext's key. A number's decimal point follows the language."""
     assert i18n.in_context("window", "Свернуть") == "window\x04Свернуть"
+    # Python too (found 2026-11-14 at release 0.1.11): the tray's «Выход» is Exit, a price's «Выход» - its output
+    english.update({"Выход": "Output", "menu\x04Выход": "Exit"})
+    assert (i18n.tr_in("menu", "Выход"), i18n.tr("Выход"), i18n.tr_in("menu", "Вход")) == ("Exit", "Output", "Вход")
+    english["menu\x04Удалить {n}"] = "Delete {n}"
+    assert i18n.tr_in("menu", "Удалить {n}", n=2) == "Delete 2"
     assert i18n.decimal("1.5") == "1.5"
     i18n.set_language("ru")
     assert i18n.decimal("1.5") == "1,5"
+
+
+def test_the_trays_exit_is_not_a_prices_output(monkeypatch):
+    """Found at release 0.1.11: the tray's «Выход» shared its key with a price's «Выход» and read «Output» in English;
+    the real catalog keeps them apart."""
+    monkeypatch.setattr(i18n, "_language", "en")
+    assert (i18n.tr_in("menu", "Выход"), i18n.tr("Выход")) == ("Exit", "Output")
 
 
 def test_plural_forms_per_language(english):
@@ -96,8 +108,8 @@ def test_a_translation_keeps_the_texts_fields():
 def test_marked_and_unmarked_texts_are_found(tmp_path):
     (tmp_path / "view.py").write_text(
         '"""Модуль: докстроки не переводятся."""\n'
-        "from common.i18n import N_, plural, tr\n"
-        'LABELS = {"low": N_("низкая")}\n'
+        "from common.i18n import N_, plural, tr, tr_in\n"
+        'LABELS = {"low": N_("низкая"), "quit": tr_in("menu", "Выход")}\n'
         "def f(n, name):\n"
         '    log.info("журнал — не для людей %s", n)\n'
         '    words = plural(n, "файл", "файла", "файлов")\n'
@@ -117,8 +129,8 @@ def test_marked_and_unmarked_texts_are_found(tmp_path):
         encoding="utf-8",
     )
     keys = i18n_catalog.keys([tmp_path])
-    assert sorted(keys) == ["window\x04Свернуть", "«%1» — %2", "Настройки", "Удалить «%1»?", "Удалить «{name}»?",
-                            "низкая", "файл|файла|файлов"]  # fmt: skip
+    assert sorted(keys) == ["menu\x04Выход", "window\x04Свернуть", "«%1» — %2", "Настройки", "Удалить «%1»?",
+                            "Удалить «{name}»?", "низкая", "файл|файла|файлов"]  # fmt: skip
     assert keys["Настройки"] == [f"{tmp_path / 'Sheet.qml'}:3"]
     left = i18n_catalog.unmarked([tmp_path / "view.py", tmp_path / "Sheet.qml"])
     assert [place.rsplit(":", 1)[1] for place in left] == ["8", "8", "4"]

@@ -15,7 +15,7 @@ from typing import Any
 from PySide6.QtCore import QCoreApplication, QObject
 from PySide6.QtGui import QAction
 
-from common.i18n import tr
+from common.i18n import tr, tr_in
 
 RECENT = 8  # projects in «Проекты»
 
@@ -55,7 +55,7 @@ class TrayMenu(QObject):
         self.gpu.setCheckable(True)
         self.stop = self._action(tr("Остановить агента (управляет компьютером)"), "trayStop", notifier.stop_agent_now)
         self.settings = self._action(tr("Настройки"), "traySettings", self._settings)
-        self.quit = self._action(tr("Выход"), "trayQuit", quit_all)
+        self.quit = self._action(tr_in("menu", "Выход"), "trayQuit", quit_all)  # Exit, not a price's output
         self.projects: list[QAction] = []  # the recent ones, made anew at each refresh
         self.items: list[QAction | str | None] = [self.open, self.new_chat, "projects", None, self.model, self.quiet,
                                                   self.gpu, self.stop, None, self.settings, self.quit]  # fmt: skip

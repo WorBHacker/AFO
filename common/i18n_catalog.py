@@ -1,6 +1,6 @@
-"""The catalog's keys, as the code uses them (step 10.5): tr(), N_() and plural() in Python, qsTr() in QML - and the
-Russian texts in the code no one marked. `python -m common.i18n_catalog` says what each catalog lacks, keeps for
-nothing or got wrong; `--sync` adds what is missing (empty: to be translated) and drops what nothing uses."""
+"""The catalog's keys, as the code uses them (step 10.5): tr(), tr_in(), N_() and plural() in Python, qsTr() in QML -
+and the Russian texts in the code no one marked. `python -m common.i18n_catalog` says what each catalog lacks, keeps
+for nothing or got wrong; `--sync` adds what is missing (empty: to be translated) and drops what nothing uses."""
 
 from __future__ import annotations
 
@@ -50,6 +50,9 @@ def _python(path: Path) -> tuple[dict[str, list[int]], list[int]]:
         if name in MARKS and node.args and _text(node.args[0]) is not None:
             keys.setdefault(node.args[0].value, []).append(node.lineno)
             done.add(id(node.args[0]))
+        elif name == "tr_in" and len(node.args) >= 2 and all(_text(a) is not None for a in node.args[:2]):
+            keys.setdefault(i18n.in_context(node.args[0].value, node.args[1].value), []).append(node.lineno)
+            done.update(id(a) for a in node.args[:2])
         elif name == "plural" and len(node.args) == 4 and all(_text(a) is not None for a in node.args[1:]):
             keys.setdefault("|".join(a.value for a in node.args[1:]), []).append(node.lineno)
             done.update(id(a) for a in node.args[1:])

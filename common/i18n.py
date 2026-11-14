@@ -59,6 +59,15 @@ def in_context(context: str, text: str) -> str:
     return f"{context}\x04{text}"
 
 
+def tr_in(context: str, text: str, /, **fields: object) -> str:
+    """tr() of a text that means two things, as qsTr("Свернуть", "window") in QML: the tray's «Выход» is Exit, a
+    price's «Выход» is its output (found at release 0.1.11) - each its own key; without it, the plain text's."""
+    if _language != SOURCE:
+        words = catalog(_language)
+        text = words.get(in_context(context, text)) or words.get(text) or text
+    return text.format(**fields) if fields else text
+
+
 def decimal(number: str) -> str:
     """A number's decimal point as the language writes it: «1,5 ГБ», «$0,02» in Russian; 1.5 GB, $0.02 in English."""
     return number.replace(".", ",") if _language == "ru" else number

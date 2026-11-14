@@ -180,6 +180,7 @@
  "llama.cpp не взял черновую модель: {error}": "llama.cpp did not take the draft model: {error}",
  "llama.cpp не смог загрузить файл модели: он повреждён, слишком новый для этой сборки или не помещается в память. Переустановите модель или обновите движок в «Первом запуске».": "llama.cpp could not load the model file: it is damaged, too new for this build or does not fit in memory. Reinstall the model or update the engine in “First run”.",
  "llama.cpp не стал угадывать слоем MTP модели: {error}": "llama.cpp did not guess ahead with the model's MTP layer: {error}",
+ "menu\u0004Выход": "Exit",
  "ngram (повторы уже написанного)": "ngram (repeats of what is written)",
  "no limit\u0004нет": "none",
  "read_file, строк": "read_file, lines",
