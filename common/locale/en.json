@@ -149,6 +149,7 @@
  "llama-bench не смог: {error}": "llama-bench failed: {error}",
  "llama-server не загрузил модель за {seconds} с": "llama-server did not load the model in {seconds} s",
  "llama-server не запустился: {error}": "llama-server did not start: {error}",
+ "llama-server не ответил": "llama-server did not answer",
  "llama-server не ответил: {error}": "llama-server did not answer: {error}",
  "llama-swap ещё не перечитал файл": "llama-swap has not reread the file yet",
  "llama-swap запускает хаб": "the hub starts llama-swap",
