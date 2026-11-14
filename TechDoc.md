@@ -1350,6 +1350,10 @@ VAE при нехватке повторяет плитками.
 - 47.7 Окно: у найденной — «AFO ставит её сам: ≈ 9,9 ГБ с кодировщиком — поместится в видеопамять»; щелчок — лист
   квантований, что докачается, «Установить». Файлы: `app/ui/install_view.py`, его QML, `app/hub_client.py`. Тест —
   `tests/test_ui.py` без экрана.
+  - 47.7а ✓ Хаб: у найденной узнанного семейства в поиске — `fit` {gb, quant, verdict, words, parts}: модель по числу
+    весов в `FIT_QUANT` вместе с кодировщиком и VAE семейства, вердикт `picture_fit` (`_picture_fits`: части — по
+    одному запросу на семейство, в кэше ответов Hugging Face; не перечислились — оценки нет). Тест —
+    `test_a_found_picture_model_says_what_it_needs_here`.
 - 47.8 Семейства каталога (без карточек): Qwen-Image 2.1 и 2.1-Turbo (Qwen3-VL-8B, свой VAE; Turbo — `--sigmas
   qwen-image-2.1-turbo --steps 8 --cfg-scale 1`), FLUX.3 klein (Qwen3-VL-4B, VAE FLUX.2, 16 шагов), Qwen-Image и 2512
   (Qwen2.5-VL-7B и VAE: `Comfy-Org/Qwen-Image_ComfyUI`, откуда его советует sd.cpp, Hugging Face не отдаёт — найти

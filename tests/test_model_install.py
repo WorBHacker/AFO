@@ -1468,6 +1468,32 @@ def test_a_found_picture_model_is_known_by_its_family(hub):
         del SEARCH[-len(extra) :]
 
 
+def test_a_found_picture_model_says_what_it_needs_here(hub, monkeypatch):
+    """47.7а: beside a found model of a known family the search says what it would take here - the model, as it is
+    usually taken (FIT_QUANT, by its parameter count), with the family's encoder and VAE, judged as sd.cpp places them
+    (47.4) - as it does for a chat model (41.1); a family whose parts Hugging Face did not list - no estimate."""
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW]}), encoding="utf-8")
+    made = "2026-11-15T00:00:00.000Z"
+    extra = [{"id": "someone/Draw-More-GGUF", "downloads": 1, "likes": 0, "trendingScore": 0, "createdAt": made,
+              "lastModified": made, "tags": ["gguf", "text-to-image", *BASES["someone/Draw-More-GGUF"]],
+              "gguf": {"total": 100_000}}]  # fmt: skip
+    installer = hub.app.state.installer
+    for name in ("PICTURE_COMPUTE_GIB", "PARTS_COMPUTE_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0, raising=False)
+    SEARCH.extend(extra)
+    try:
+        for vram, verdict in ((200_000, "gpu"), (50_000, "split")):
+            monkeypatch.setattr(installer, "space", lambda v=vram: {"vram_gib": v / mi.GIB, "ram_gib": 1.0})
+            row = hub.get("/v1/install/search", params={"q": "draw-more"}).json()["models"][0]
+            assert (row["family"], row["drawn"]) == ("draw", True)
+            fit = row["fit"] or {}
+            assert (fit.get("quant"), fit.get("verdict"), fit.get("parts")) == ("Q4_K_M", verdict, 90_000), row
+            assert fit["words"] == mi.tr(mi.VERDICTS[verdict]) and fit["gb"] == round((61_250 + 90_000) / 1e9, 1)
+    finally:
+        del SEARCH[-len(extra) :]
+
+
 def test_a_variants_quality_in_words():
     """41.3: how much of the model a variant kept, in words instead of «bits per weight»: from about Q8_0 the same as
     the original, from about Q4_K_M (GOOD_BITS) nearly, down to MIN_BITS a little worse, below it - noticeably."""

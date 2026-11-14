@@ -1047,7 +1047,35 @@ class Installer:
             drawn = bool(family) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
             out.append({**each, "picture": picture, "family": family, "drawn": drawn,
                         "fit": None if drawn else search_fit(each, space)})  # fmt: skip
+        await self._picture_fits(out, listed, space)
         return out
+
+    async def _picture_fits(self, out: list[dict[str, Any]], listed: list[dict[str, Any]],
+                            space: dict[str, Any]) -> None:  # fmt: skip
+        """Beside each found model of a known family (47.7а): what it would take here - the model as it is usually taken
+        (FIT_QUANT, by its parameter count) with the family's encoders and VAE (`parts`, bytes), judged as sd.cpp places
+        them (picture_fit); a family whose parts Hugging Face did not list - none."""
+        sets = {e["id"]: e for e in listed}
+        wanted = list(dict.fromkeys(o["family"] for o in out if o["family"] and o.get("params")))
+
+        async def parts(entry: dict[str, Any]) -> int | None:
+            try:
+                return sum(f["size"] for f in await self.picture_files(
+                    {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}))  # fmt: skip
+            except hf.HubError, InstallError:
+                return None
+
+        sizes = dict(zip(wanted, await asyncio.gather(*(parts(sets[f]) for f in wanted)), strict=True))
+        for o in out:
+            rest = sizes.get(o["family"])
+            if rest is None or not o.get("params"):
+                continue
+            entry, model = sets[o["family"]], int(o["params"] * FIT_BITS / 8)
+            verdict = picture_fit(model, rest, space, side=entry["size"], own=entry["size"])
+            o["fit"] = {"gb": round((model + rest) / 1e9, 1), "quant": FIT_QUANT, "verdict": verdict,
+                        "words": tr(VERDICTS[verdict]), "parts": rest}  # fmt: skip
+        if wanted:
+            await self._keep_answers()
 
     # --- picture models (29.3) ---
 
