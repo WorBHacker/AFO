@@ -18,7 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from app.ui import model_setup as ms
-from common.gguf import GGUFError, model_info, read_header
+from common.gguf import GGUFError, header_info, model_info, read_header
 from common.llama_memory import estimate, moe_load
 from common.paths import data_paths
 from hub import llama_config as lc
@@ -169,7 +169,8 @@ def test_the_draft_model_takes_its_share_of_the_memory(tmp_path):
                   draft={"info": small, "gpu_layers": "all", "cache_type": "q8_0"})  # fmt: skip
     assert f16["verdict"] == "over" and f16["draft_gb"] == 4.4  # 0,6 + 3,5 of its KV + its buffers
     assert q8["verdict"] == "fits" and q8["draft_gb"] == 2.8 and abs(q8["vram_gb"] - alone["vram_gb"] - 2.8) < 0.11
-    assert "черновая модель 2.8 ГБ" in q8["text"]
+    assert "черновая модель 2.8 ГБ" in q8["text"] and "целиком" in q8["text"]
+    assert "experts_gb" not in q8 and "эксперты" not in q8["text"]  # 44.1 found: a draft is not experts in RAM
     in_ram = estimate(main, context=32768, cache_type="q8_0", vram_total_mib=card,
                       draft={"info": small, "gpu_layers": 0, "cache_type": "q8_0"})  # fmt: skip
     assert in_ram["verdict"] == "split" and in_ram["vram_gb"] == alone["vram_gb"] and in_ram["ram_gb"] == 2.5
@@ -242,6 +243,11 @@ def test_moe_experts_in_ram_and_their_cache_on_the_card(tmp_path):
     out = on({"all": True, "layers": 0, "cache_mib": 0})
     assert (out["verdict"], out["vram_gb"], out["ram_gb"], out["experts_gb"]) == ("fits", 2.5, 16.3, 16.3)
     assert "эксперты MoE 16.3 ГБ в ОЗУ" in out["text"] and "целиком" not in out["text"]
+    small = {**header_info({}), "layers": 1, "kv_layers": 1, "kv_heads": 4, "key_length": 128, "value_length": 128,
+             "size_bytes": 1024**3}  # fmt: skip
+    drafted = on({"all": True, "layers": 0, "cache_mib": 0}, draft={"info": small, "gpu_layers": "all"})
+    assert (drafted["experts_gb"], drafted["ram_gb"], drafted["weights_gb"]) == (16.3, 16.3, out["weights_gb"])
+    assert drafted["vram_gb"] > out["vram_gb"] + 1  # the draft on the card, the experts in RAM still
     assert on({"all": True, "layers": 0, "cache_mib": 0}, gpu_layers="auto")["verdict"] == "fits"
     by_layers = {n: on({"all": False, "layers": n, "cache_mib": 0})["verdict"] for n in (30, 36, 99)}
     assert by_layers == {30: "over", 36: "fits", 99: "fits"}  # those of the first 36 layers: the rest fits

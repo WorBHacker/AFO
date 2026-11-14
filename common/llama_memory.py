@@ -60,11 +60,11 @@ def estimate(
     draft_gpu = draft_ram = 0.0
     if draft:
         small = draft["info"]
-        held = (float(small["size_bytes"]) + kv_bytes(small, context, draft.get("cache_type") or "f16")) / GIB
+        its = (float(small["size_bytes"]) + kv_bytes(small, context, draft.get("cache_type") or "f16")) / GIB
         layers, its_blocks = draft.get("gpu_layers", "auto"), small["layers"] + 1
         part = 1.0 if layers in ("auto", "all") else min(max(int(layers), 0), its_blocks) / its_blocks
-        draft_gpu = held * part + (DRAFT_COMPUTE_GIB if part else 0)
-        draft_ram = held * (1 - part)  # its layers kept in RAM: its guesses come slower
+        draft_gpu = its * part + (DRAFT_COMPUTE_GIB if part else 0)
+        draft_ram = its * (1 - part)  # its layers kept in RAM: its guesses come slower
     if gpu_layers == "auto":
         need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB + draft_gpu + cache
         room = (total - reserve_gib) if total else need
