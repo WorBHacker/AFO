@@ -519,6 +519,33 @@ Sheet {
                     onPicked: (id) => ModelSetup.setLaunch("cache_type", id)
                 }
             }
+            // a Mixture-of-Experts model's experts (44.5): on the card, those of the first N layers in RAM, or all in
+            // RAM with a cache of them on the card
+            Row {
+                objectName: "launchExperts"
+                visible: ModelSetup.launch.editable === true && ModelSetup.launchDraft.moe_mode !== undefined
+                spacing: 10
+                Label { text: qsTr("Эксперты MoE"); anchors.verticalCenter: parent.verticalCenter }
+                Segmented {
+                    options: [{ id: "card", name: qsTr("на видеокарте") }, { id: "n", name: qsTr("первых слоёв — в ОЗУ") }, { id: "ram", name: qsTr("все в ОЗУ") }]
+                    value: ModelSetup.launchDraft.moe_mode || "card"
+                    onPicked: (id) => ModelSetup.setLaunch("moe_mode", id)
+                }
+                Field {
+                    visible: ModelSetup.launchDraft.moe_mode === "n"
+                    width: 90
+                    placeholderText: qsTr("слоёв")
+                    text: ModelSetup.launchDraft.moe_n || ""
+                    onEditingFinished: ModelSetup.setLaunch("moe_n", text)
+                }
+                Field {
+                    visible: ModelSetup.launchDraft.moe_mode === "ram"
+                    width: 170
+                    placeholderText: qsTr("кэш на видеокарте, МБ")
+                    text: ModelSetup.launchDraft.moe_cache || ""
+                    onEditingFinished: ModelSetup.setLaunch("moe_cache", text)
+                }
+            }
             LaunchField { fieldId: "ttl_min"; label: qsTr("Выгружать без запросов, мин"); hint: qsTr("0 — никогда"); width: 210 }
             // launch settings by measurement (15.2): llama-bench of the same build, the fastest written and checked
             Column {
@@ -533,6 +560,16 @@ Sheet {
                     wrapMode: Text.Wrap
                     text: ModelSetup.tuneText
                     color: ModelSetup.tuneTone === "error" ? Theme.p.error : ModelSetup.tuneTone === "ok" ? Theme.p.ok : Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 13
+                }
+                Text {
+                    objectName: "moeText"
+                    visible: text !== ""
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: ModelSetup.moeText
+                    color: ModelSetup.moeTone === "error" ? Theme.p.error : ModelSetup.moeTone === "ok" ? Theme.p.ok : Theme.p.text_soft
                     font.family: Theme.uiFont
                     font.pixelSize: 13
                 }

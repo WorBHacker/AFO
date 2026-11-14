@@ -580,7 +580,8 @@ class Tuner:
         """Where a Mixture-of-Experts model's experts go (44.2), with the settings llama-bench left: each placement
         (moe_variants) measured by llama-server itself - its answers and its reading of a long question - the pick
         (moe_choice) written and checked as the rest. None - not such a model, or nothing to measure. {status: better
-        (written) | same, kind, settings, before and after ({tg, pp}), measured}."""
+        (written) | same, kind, settings, placed (where the command keeps the experts after it), before and after
+        ({tg, pp}), measured}."""
         text = await asyncio.to_thread(llama_config.config_path().read_text, encoding="utf-8")
         view = llama_config.model_view(text, model_id)
         info = await asyncio.to_thread(model_info, Path(view["file"]))
@@ -617,7 +618,9 @@ class Tuner:
         pick = moe_choice(measured)
         if "tg" not in pick:
             raise TuneError(pick.get("error") or tr("llama-server не ответил"))
-        out = {"kind": pick["name"], "settings": pick["changes"],
+        placed = {"gpu_layers": view["gpu_layers"], "cpu_moe": view["cpu_moe"], "n_cpu_moe": view["n_cpu_moe"],
+                  "moe_cache_mib": view["moe_cache_mib"], **pick["changes"]}  # fmt: skip
+        out = {"kind": pick["name"], "settings": pick["changes"], "placed": placed,  # 44.5: the window's «as it left»
                "before": {key: measured[0][key] for key in ("tg", "pp") if key in measured[0]},
                "after": {key: pick[key] for key in ("tg", "pp") if key in pick},
                "measured": [{key: m[key] for key in ("name", "changes", "tg", "pp", "error") if key in m}

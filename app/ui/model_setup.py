@@ -256,12 +256,69 @@ def preset_of(draft: dict[str, str], trained: int | None) -> str:
 
 
 def launch_draft(view: dict[str, Any]) -> dict[str, str]:
-    """A llama-swap model's launch settings as the panel's fields."""
+    """A llama-swap model's launch settings as the panel's fields; a Mixture-of-Experts model's - where its experts
+    are too (44.5: `moe_mode` card / n / ram, `moe_n` layers, `moe_cache` MB)."""
     layers = view.get("gpu_layers", "all")
-    return {"context": str(view.get("context") or ""), "gpu_mode": layers if layers in ("all", "auto") else "n",
-            "gpu_n": "" if layers in ("all", "auto") else str(layers), "flash_attn": view.get("flash_attn", "auto"),
-            "cache_type": view.get("cache_type", "f16"), "parallel": str(view.get("parallel") or 1),
-            "ttl_min": shown(round(view.get("ttl", 0) / 60, 1))}  # fmt: skip
+    out = {"context": str(view.get("context") or ""), "gpu_mode": layers if layers in ("all", "auto") else "n",
+           "gpu_n": "" if layers in ("all", "auto") else str(layers), "flash_attn": view.get("flash_attn", "auto"),
+           "cache_type": view.get("cache_type", "f16"), "parallel": str(view.get("parallel") or 1),
+           "ttl_min": shown(round(view.get("ttl", 0) / 60, 1))}  # fmt: skip
+    if (view.get("info") or {}).get("experts"):
+        out.update(moe_mode="ram" if view.get("cpu_moe") else "n" if view.get("n_cpu_moe") else "card",
+                   moe_n=str(view.get("n_cpu_moe") or ""), moe_cache=str(view.get("moe_cache_mib") or ""))  # fmt: skip
+    return out
+
+
+def _experts(draft: dict[str, str]) -> dict[str, Any]:
+    """Where the fields keep the experts, as the hub's settings (ValueError when unreadable)."""
+    mode = draft["moe_mode"]
+    layers = number(draft["moe_n"], tr("Эксперты скольких первых слоёв в ОЗУ"), whole=True) if mode == "n" else 0
+    cache = number(draft["moe_cache"], tr("Кэш экспертов, МБ"), whole=True) if mode == "ram" else 0
+    return {"cpu_moe": mode == "ram", "n_cpu_moe": layers or 0, "moe_cache_mib": cache or 0}
+
+
+def placement(view: dict[str, Any]) -> dict[str, Any]:
+    """Where a command keeps a Mixture-of-Experts model's experts - as the tuning keeps it (`placed`, 44.2)."""
+    return {"gpu_layers": view.get("gpu_layers"), "cpu_moe": bool(view.get("cpu_moe")),
+            "n_cpu_moe": int(view.get("n_cpu_moe") or 0),
+            "moe_cache_mib": int(view.get("moe_cache_mib") or 0)}  # fmt: skip
+
+
+def experts_words(view: dict[str, Any]) -> str:
+    """Where a command keeps the experts, in words (44.5)."""
+    if view.get("cpu_moe"):
+        cache = view.get("moe_cache_mib") or 0
+        return tr("все в ОЗУ, их кэш {gb} ГБ на видеокарте", gb=decimal(f"{cache / 1024:.1f}")) if cache else \
+            tr("все в ОЗУ")  # fmt: skip
+    if view.get("n_cpu_moe"):
+        n = int(view["n_cpu_moe"])
+        return tr("{n} {layers} в ОЗУ", n=n, layers=presenter.plural(n, "первый слой", "первых слоя", "первых слоёв"))
+    if view.get("gpu_layers") == "auto":
+        return tr("как раскладывает llama.cpp (--fit)")
+    return tr("все на видеокарте")
+
+
+def moe_text(state: dict[str, Any], model_id: str, launch: dict[str, Any]) -> tuple[str, str]:
+    """The models view's line about a Mixture-of-Experts model's experts (44.5) and its tone: what the tuning found,
+    while the command keeps them as it left them; else where the command keeps them. ('', '') - no experts."""
+    if not (launch.get("info") or {}).get("experts"):
+        return "", ""
+    result = ((state.get("results") or {}).get(model_id) or {}).get("moe") or {}
+    where = experts_words(launch)
+    if result.get("status") == "failed":
+        return tr("Эксперты MoE не подобраны: {error}", error=result.get("error") or ""), "error"
+    if result.get("status") in ("better", "same") and result.get("placed") == placement(launch):
+        before, after = result.get("before") or {}, result.get("after") or {}
+        if result.get("kind") == "now":
+            return tr("Эксперты MoE: быстрее всего как сейчас — {where} (ответ {speed} ток/с).", where=where,
+                      speed=f"{after.get('tg', 0):.0f}"), ""  # fmt: skip
+        text = tr("Эксперты MoE: {where} — ответ {before} → {after} ток/с", where=where,
+                  before=f"{before.get('tg', 0):.0f}", after=f"{after.get('tg', 0):.0f}")  # fmt: skip
+        if before.get("pp") and after.get("pp"):
+            text += tr(", чтение подсказки {before} → {after} ток/с", before=f"{before['pp']:.0f}",
+                       after=f"{after['pp']:.0f}")  # fmt: skip
+        return text + ".", "ok"
+    return tr("Эксперты MoE: {where}.", where=where), ""
 
 
 def launch_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +344,9 @@ def launch_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any
     parallel = number(draft["parallel"], tr("Параллельных запросов"), whole=True)
     if parallel and parallel != view.get("parallel"):
         out["parallel"] = parallel
+    if "moe_mode" in draft:  # 44.5: the experts, where the fields keep them
+        now = placement(view)
+        out.update({key: value for key, value in _experts(draft).items() if value != now[key]})
     return out
 
 
@@ -307,12 +367,13 @@ def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: i
         layers: str | int = draft["gpu_mode"]
         if layers == "n":
             layers = number(draft["gpu_n"], tr("Слои"), whole=True) or 0
+        moe = moe_load(_experts(draft)) if "moe_mode" in draft else moe_load(view)  # the fields' experts (44.5)
     except ValueError as exc:
         return str(exc), ""
     found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
                      mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
                      vram_total_mib=vram_total_mib, reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib,
-                     draft=draft_load(view), moe=moe_load(view))  # the draft (42.2), experts in RAM (44.1)  # fmt: skip
+                     draft=draft_load(view), moe=moe)  # the draft (42.2), experts in RAM (44.1)  # fmt: skip
     return found["text"], ESTIMATE_TONES.get(found["verdict"], "")
 
 
@@ -359,6 +420,8 @@ SPEC_KINDS = {"draft": N_("черновая модель {draft}"),
               "draft_fewer": N_("черновая модель {draft}, часть слоёв модели в ОЗУ"),
               "mtp": N_("слой MTP самой модели"),
               "ngram": N_("ngram (повторы уже написанного)")}  # fmt: skip
+# a draft made for one model (44.4), by the kind of guessing it takes
+DRAFT_WORDS = {"draft-dflash": N_("черновик DFlash {draft}"), "draft-eagle3": N_("черновик EAGLE-3 {draft}")}
 
 
 def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], drafting: dict[str, Any]
@@ -392,6 +455,9 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
                                  gb=decimal(f"{short['short_gb']:.1f}"))  # fmt: skip
             return text, ""
         what = tr(SPEC_KINDS[spec["kind"]], draft=spec.get("draft") or "")
+        if spec["kind"] in ("draft", "draft_fewer") and spec.get("spec_type") in DRAFT_WORDS:
+            what = tr(DRAFT_WORDS[spec["spec_type"]], draft=spec.get("draft") or "")
+            what += tr(", часть слоёв модели в ОЗУ") if spec["kind"] == "draft_fewer" else ""
         text = tr("Ускорение — {what}: ответ {before} → {after} ток/с", what=what, before=f"{spec['before']:.0f}",
                   after=f"{spec['after']:.0f}")  # fmt: skip
         if spec.get("accepted") is not None and spec["kind"] != "ngram":
@@ -399,8 +465,13 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
         return text + ".", "ok"
     if kinds:
         draft = re.split(r"[\\/]", current.get("draft") or "")[-1]
+        own = next((k for k in kinds.split(",") if k in DRAFT_WORDS), None)
+        if draft and own:
+            return tr("Сейчас: {what}.", what=tr(DRAFT_WORDS[own], draft=draft)), ""
         if draft:
             return tr("Сейчас: черновая модель {draft}.", draft=draft), ""
+        if "draft-mtp" in kinds.split(","):
+            return tr("Сейчас: {what}.", what=tr(SPEC_KINDS["mtp"])), ""
         return tr("Сейчас: {kinds}.", kinds="ngram" if kinds.startswith("ngram") else kinds), ""
     return tr("Угадывание вперёд не настроено. «Ускорить» скачает черновую модель, если она есть для этой модели, и "
               "замерит, что быстрее."), ""  # fmt: skip
@@ -413,6 +484,9 @@ def tune_text(state: dict[str, Any], model_id: str) -> str:
     if mine and job.get("status") == "measuring" and job.get("step") == "spec":
         return tr("Меряю угадывание вперёд: {done} из {total}… На это время модели выгружены из видеопамяти.",
                   done=job.get("done", 0), total=job.get("total") or "?")  # fmt: skip
+    if mine and job.get("status") == "measuring" and job.get("step") == "moe":  # 44.2
+        return tr("Меряю, где держать экспертов MoE: {done} из {total}… На это время модели выгружены из "
+                  "видеопамяти.", done=job.get("done", 0), total=job.get("total") or "?")  # fmt: skip
     if mine and job.get("status") == "measuring":
         return tr("Меряю: {done} из {total}… На это время модели выгружены из видеопамяти.", done=job.get("done", 0),
                   total=job.get("total") or "?")  # fmt: skip
@@ -803,6 +877,14 @@ class ModelSetup(QObject):
     @Property(str, notify=changed)
     def specTone(self) -> str:
         return spec_text(self._tune, self._tune_id(), self._launch, self._drafting)[1]
+
+    @Property(str, notify=changed)
+    def moeText(self) -> str:
+        return moe_text(self._tune, self._tune_id(), self._launch)[0]
+
+    @Property(str, notify=changed)
+    def moeTone(self) -> str:
+        return moe_text(self._tune, self._tune_id(), self._launch)[1]
 
     @Property(bool, notify=changed)
     def specOn(self) -> bool:

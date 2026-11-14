@@ -735,6 +735,28 @@ def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file
     assert outside(bare) == outside(old)
 
 
+def test_the_window_writes_the_experts_cache_by_the_builds_word(hub, tmp_path):
+    """44.5: the experts' cache the window asks for is written only for a build that has --moe-cache-mib: the API asks
+    the config's llama-server (its --help, once per file); a build without it - refused, the file as it was."""
+    server = help_server(tmp_path / "b11899")
+    text = CONFIG.replace('"D:/llama.cpp/llama-server.exe"', f'"{server.as_posix()}"')
+    hub.config.write_text(text, encoding="utf-8")
+    done = hub.put("/v1/llama/models/big", json={"changes": {"gpu_layers": "all", "cpu_moe": True,
+                                                             "moe_cache_mib": 4096}})  # fmt: skip
+    assert done.status_code == 200, done.text
+    view = lc.model_view(hub.config.read_text(encoding="utf-8"), "big")
+    assert (view["cpu_moe"], view["moe_cache_mib"]) == (True, 4096)
+    older = HELP.replace(MOE_CACHE_HELP, "")
+    (tmp_path / "b11899" / "help.py").write_text(f"import sys\nsys.stdout.write({older!r})\n", encoding="utf-8")
+    server.write_text(server.read_text(encoding="utf-8") + "rem another build\n", encoding="utf-8")
+    before = hub.config.read_text(encoding="utf-8")
+    refused = hub.put("/v1/llama/models/big", json={"changes": {"moe_cache_mib": 2048}})
+    assert refused.status_code == 422 and "кэша экспертов" in refused.json()["detail"]
+    assert hub.config.read_text(encoding="utf-8") == before
+    off = hub.put("/v1/llama/models/big", json={"changes": {"cpu_moe": False, "moe_cache_mib": 0}})
+    assert off.status_code == 200 and not lc.model_view(hub.config.read_text(encoding="utf-8"), "big")["cpu_moe"]
+
+
 def test_a_model_under_a_new_id_and_name():
     """36.1 (2026-11-08): a model added under its file's name gets its own: the block's key, its name and the name in
     its description; every other line as it was."""

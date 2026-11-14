@@ -391,6 +391,7 @@ class FakeClient:
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
         self.llama_spec = {"type": "", "draft": ""}  # guessing ahead in «big»'s command (42.6)
+        self.llama_big = {}  # «big» otherwise: a Mixture-of-Experts model, its experts where (44.5)
         self.setup = {
             "needed": False,
             "answering": True,
@@ -510,7 +511,8 @@ class FakeClient:
     llama_reserve = 1.0  # the video memory a model may not count on, as the hub says it (38.3)
 
     def llama_models(self):
-        models = [{**m, "spec": dict(self.llama_spec)} if m["id"] == "big" else dict(m) for m in LLAMA]
+        big = {"spec": dict(self.llama_spec), **self.llama_big}
+        models = [{**m, **big} if m["id"] == "big" else dict(m) for m in LLAMA]
         return {"models": models, "vram_total_mib": 16384, "vram_reserve_gib": self.llama_reserve,
                 "backups": []}  # fmt: skip
 
@@ -7999,6 +8001,94 @@ def test_guessing_ahead_in_the_models_sheet(app):
     wait_until(lambda: ("launch", "big", {"spec_type": "none"}) in app.client.model_calls)
 
 
+MOE_INFO = {"layers": 48, "kv_layers": 48, "kv_heads": 4, "key_length": 128, "value_length": 128,  # Qwen3-30B-A3B
+            "context_trained": 40960, "size_bytes": 18_556_368_896, "experts": 128, "experts_used": 8,
+            "mtp_layers": 0, "expert_bytes": [339_738_624, 391_643_136] * 24}  # fmt: skip
+MOE_BIG = {"gpu_layers": "auto", "cpu_moe": False, "n_cpu_moe": 0, "moe_cache_mib": 0, "info": MOE_INFO}
+
+
+def test_where_the_experts_are_in_the_models_sheet(app):
+    """44.5: «Модели → Запуск» of a Mixture-of-Experts model says where its experts are - on the card, those of the
+    first N layers in RAM, or all in RAM with a cache of them on the card - and they are changed by hand there, the
+    memory estimate counting them; what the tuning found for them, and that it measures them now. A model without
+    experts has no such row. Guessing ahead by the model's MTP layer or by a DFlash / EAGLE-3 draft - in words."""
+    from app.ui import model_setup as ms
+
+    moe = {**LLAMA[1], **MOE_BIG}
+    draft = ms.launch_draft(moe)
+    assert (draft["moe_mode"], draft["moe_n"], draft["moe_cache"]) == ("card", "", "")
+    assert "moe_mode" not in ms.launch_draft(LLAMA[1])  # no experts: no such fields
+    assert ms.launch_changes(draft, moe) == {}
+    by_layers = {**draft, "gpu_mode": "all", "moe_mode": "n", "moe_n": "14"}
+    assert ms.launch_changes(by_layers, moe) == {"gpu_layers": "all", "n_cpu_moe": 14}
+    in_ram = {**draft, "gpu_mode": "all", "moe_mode": "ram", "moe_cache": "8000"}
+    assert ms.launch_changes(in_ram, moe) == {"gpu_layers": "all", "cpu_moe": True, "moe_cache_mib": 8000}
+    placed = {**moe, "gpu_layers": "all", "cpu_moe": True, "moe_cache_mib": 8000}
+    assert (ms.launch_draft(placed)["moe_mode"], ms.launch_draft(placed)["moe_cache"]) == ("ram", "8000")
+    back = {**ms.launch_draft(placed), "moe_mode": "card"}
+    assert ms.launch_changes(back, placed) == {"cpu_moe": False, "moe_cache_mib": 0}
+    with pytest.raises(ValueError, match="не число"):
+        ms.launch_changes({**by_layers, "moe_n": "много"}, moe)
+    assert "не поместится" in ms.launch_estimate({**draft, "gpu_mode": "all"}, moe, 16384)
+    fits = ms.launch_estimate(by_layers, moe, 16384)
+    assert "эксперты MoE" in fits and "помещается: эксперты MoE в ОЗУ" in fits
+
+    state = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}
+    assert ms.moe_text(state, "big", LLAMA[1]) == ("", "")  # no experts: no line
+    assert ms.moe_text(state, "big", moe) == ("Эксперты MoE: как раскладывает llama.cpp (--fit).", "")
+    tuned = {**moe, "gpu_layers": "all", "n_cpu_moe": 14}
+    found = {"status": "better", "kind": "layers", "before": {"tg": 102.4, "pp": 1455.0},
+             "after": {"tg": 110.6, "pp": 1425.0},
+             "placed": {"gpu_layers": "all", "cpu_moe": False, "n_cpu_moe": 14, "moe_cache_mib": 0}}  # fmt: skip
+
+    def said(result, launch=tuned):
+        return ms.moe_text({**state, "results": {"big": {"status": "same", "moe": result}}}, "big", launch)
+
+    assert said(found) == ("Эксперты MoE: 14 первых слоёв в ОЗУ — ответ 102 → 111 ток/с, чтение подсказки 1455 → "
+                           "1425 ток/с.", "ok")  # fmt: skip
+    same = {**found, "status": "same", "kind": "now", "after": found["before"],
+            "placed": {"gpu_layers": "auto", "cpu_moe": False, "n_cpu_moe": 0, "moe_cache_mib": 0}}  # fmt: skip
+    assert said(same, moe) == ("Эксперты MoE: быстрее всего как сейчас — как раскладывает llama.cpp (--fit) "
+                               "(ответ 102 ток/с).", "")  # fmt: skip
+    assert said(found, placed) == ("Эксперты MoE: все в ОЗУ, их кэш 7,8 ГБ на видеокарте.", "")  # changed since
+    assert said({"status": "failed", "error": "не встала"}) == ("Эксперты MoE не подобраны: не встала", "error")
+    measuring = {"status": "measuring", "model_id": "big", "step": "moe", "done": 1, "total": 4}
+    assert ms.tune_text({**state, "job": measuring}, "big").startswith("Меряю, где держать экспертов MoE: 1 из 4…")
+
+    def spec(launch_spec, result=None):
+        results = {"big": {"status": "same", "spec": result}} if result else {}
+        return ms.spec_text({**state, "results": results}, "big", {"spec": launch_spec}, {})
+
+    flash = {"type": "draft-dflash", "draft": "D:/AFO/models/drafts/Qwen3.6-35B-A3B-DFlash-Q8_0.gguf"}
+    assert spec(flash) == ("Сейчас: черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf.", "")
+    assert spec({"type": "draft-mtp", "draft": ""}) == ("Сейчас: слой MTP самой модели.", "")
+    won = {"status": "better", "kind": "draft", "spec_type": "draft-dflash", "before": 40.2, "after": 70.4,
+           "accepted": 0.81, "draft": "Qwen3.6-35B-A3B-DFlash-Q8_0.gguf", "short": {}}  # fmt: skip
+    assert spec(flash, won) == ("Ускорение — черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf: ответ 40 → 70 ток/с, "
+                                "угадано 81 %.", "ok")  # fmt: skip
+    eagle = {**won, "spec_type": "draft-eagle3", "kind": "draft_fewer", "draft": "e.gguf"}
+    assert spec({"type": "draft-eagle3", "draft": "e.gguf"}, eagle)[0].startswith(
+        "Ускорение — черновик EAGLE-3 e.gguf, часть слоёв модели в ОЗУ")  # fmt: skip
+
+    app.client.llama_big = MOE_BIG
+    app.client.tune_status["results"] = {"big": {"status": "same", "moe": {**found, "placed": {
+        "gpu_layers": "all", "cpu_moe": False, "n_cpu_moe": 14, "moe_cache_mib": 0}}}}  # fmt: skip
+    app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                               "provider": "llama-swap", "prices": {}}])  # fmt: skip
+    setup = app.model_setup
+    setup.open("llama-swap/big")
+    wait_until(lambda: not app.bg.busy and setup.launch.get("editable"))
+    assert setup.launchDraft["moe_mode"] == "card" and setup.moeText.startswith("Эксперты MoE: как раскладывает")
+    setup.setLaunch("gpu_mode", "all")
+    setup.setLaunch("moe_mode", "n")
+    setup.setLaunch("moe_n", "14")
+    assert setup.launchDirty and "эксперты MoE" in setup.launchEstimate
+    setup.saveLaunch()
+    wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+    launched = next(c for c in reversed(app.client.model_calls) if c[0] == "launch")
+    assert launched == ("launch", "big", {"gpu_layers": "all", "n_cpu_moe": 14})
+
+
 def test_guessing_ahead_in_the_window(qapp):
     """42.6: the models sheet's launch part has the line about guessing ahead and its two buttons - shown with the
     model's launch, «Снять ускорение» only while the command has it."""
@@ -8024,6 +8114,37 @@ def test_guessing_ahead_in_the_window(qapp):
         assert line is not None and line.property("text") == "Сейчас: ngram."
         assert quick.window.findChild(QObject, "speedUp") is not None
         assert quick.window.findChild(QObject, "speedOff").property("visible")
+        assert not quick.window.findChild(QObject, "launchExperts").property("visible")  # 44.5: no experts
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_experts_in_the_window(qapp):
+    """44.5: a Mixture-of-Experts model's launch part has the row of where its experts are, and the line of what the
+    tuning found for them."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.llama_big = {**MOE_BIG, "gpu_layers": "all", "cpu_moe": True, "moe_cache_mib": 8000}
+        app.attach(client, start_events=False)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        app.model_setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and app.model_setup.launch.get("editable") and sheet.property("opened"))
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.window.findChild(QObject, "launchExperts").property("visible")
+        line = quick.window.findChild(QObject, "moeText")
+        assert line.property("visible")
+        assert line.property("text") == "Эксперты MoE: все в ОЗУ, их кэш 7,8 ГБ на видеокарте."
         assert quick.warnings == []
     finally:
         quick.close()

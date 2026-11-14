@@ -797,6 +797,7 @@ def test_the_experts_go_where_the_model_answers_fastest(hub, setup, spec_server)
     assert (moe["status"], moe["kind"], moe["before"], moe["after"]) == (
         "better", "layers", {"tg": 40.0, "pp": 1400.0}, {"tg": 44.0, "pp": 1380.0})  # fmt: skip
     assert [m["name"] for m in moe["measured"]] == ["now", "layers", "layers_more", "cache"]
+    assert moe["placed"] == {**WHOLE, "n_cpu_moe": 14}  # 44.5: the window tells it while the command keeps it
     view = lc.model_view(setup.read_text(encoding="utf-8"), "big")
     assert (view["gpu_layers"], view["n_cpu_moe"], view["cpu_moe"], view["moe_cache_mib"]) == ("all", 14, False, 0)
     assert "--fit" not in setup.read_text(encoding="utf-8").split('"big"')[1].split('"huge"')[0]
@@ -815,6 +816,7 @@ def test_the_experts_go_where_the_model_answers_fastest(hub, setup, spec_server)
     same = tune({"now": [40.0, 1400.0], "layers14": [41.0, 1400.0], "layers17": [40.5, 1400.0],
                  "cache": [30.0, 800.0]})  # fmt: skip
     assert (same["moe"]["status"], same["moe"]["kind"]) == ("same", "now")
+    assert same["moe"]["placed"] == {**WHOLE, "gpu_layers": "auto"}
     assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["gpu_layers"] == "auto"
 
 

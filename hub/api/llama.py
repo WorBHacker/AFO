@@ -22,6 +22,7 @@ from common.llama_memory import draft_load, estimate, moe_load
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
+from ..tuning import server_path
 from .deps import require_client
 from .model_settings import run_check
 
@@ -104,8 +105,11 @@ async def change(request: Request, model_id: str, body: Change, client: Annotate
     path = llama_config.config_path()
     async with llama_config.writing():  # 34.4: an install or the tuning does not write in between
         text = _read(path)
+        build = None
+        if body.changes.get("moe_cache_mib"):  # 44.5: only for a build that has --moe-cache-mib - its --help says
+            build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
         try:
-            new = llama_config.edit(text, model_id, body.changes)
+            new = llama_config.edit(text, model_id, body.changes, build=build)
         except llama_config.ConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if new == text:
