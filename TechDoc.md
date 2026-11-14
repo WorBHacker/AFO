@@ -741,6 +741,12 @@
   «Высокую производительность» (`EnumAdapterByGpuPreference`, DXGI 1.6 через ctypes; `two` — их два);
   `process_memory()` — (pid, luid) → МиБ. У автора: Intel Graphics и RTX 5080 (`two`), в счётчиках NVIDIA Overlay
   6,7 ГБ, dwm 3,8 ГБ, проводник 0,5 ГБ. Тесты — `tests/test_gpu_prefs.py`.
+  Находка (2026-11-14, весь pytest шага 44.2): страж реестра человека в `tests/conftest.py` возвращал «Графику» как
+  была до прогона — и забрал у настоящего AFO автора (он запускается с Windows) Wallpaper Engine, переведённую им во
+  время прогона; запись в `gpu.moved` у AFO осталась, и сам он её больше не писал (значение возвращено руками).
+  Исправлено: изменение, которое AFO человека записал в свою базу (`gpu.moved`, только чтение) — перевёл или вернул,
+  — его (`persons_afo_did`); остальное страж по-прежнему возвращает, и прогон падает. Тест —
+  `test_the_registry_guard_leaves_the_persons_own_afo_alone`.
 - 43.6 ✓ Кого переводить: программы на дискретной видеокарте, кроме игр (список игр Windows `GameConfigStore`, папки
   Steam, Epic, GOG, долгая нагрузка 3D), программ, которым она нужна (OBS, Blender, DaVinci, Unity, Unreal, CUDA,
   llama-server, llama-swap, Strata), частей Windows, программ с уже выбранной графикой и списка человека «оставить на

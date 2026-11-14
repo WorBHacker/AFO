@@ -187,3 +187,23 @@ def test_the_api(hub):  # noqa: F811
     assert hub.put("/v1/gpu/programs", json={"exe": r"C:\Apps\x.exe", "where": "moon"}).status_code == 422
     back = hub.post("/v1/gpu/give-back").json()
     assert back["state"]["on"] is False and back["given_back"] == []
+
+
+def test_the_registry_guard_leaves_the_persons_own_afo_alone():
+    """The tests' guard of the person's registry (conftest): the person's own AFO starts with Windows and keeps
+    writing «Графика» while the tests run. Its changes - what its database says it wrote, or gave back - are its own
+    and stay; any other is a test's, put back (2026-11-14: the guard took back the AFO's Wallpaper Engine, and the
+    AFO, holding its record, did not write it again)."""
+    from tests.conftest import persons_afo_did
+
+    wrote = ("GpuPreference=1;", 1)
+    exe = r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper64.exe"
+    record = {exe.lower(): {"before": None, "wrote": "GpuPreference=1;"}}
+    assert persons_afo_did(exe.upper(), None, wrote, {}, record)  # moved by it (its record has the path's own case)
+    assert not persons_afo_did(exe, None, wrote, {}, {})  # a stray hub: no record of the person's AFO
+    assert not persons_afo_did(exe, None, ("GpuPreference=2;", 1), {}, record)  # not what it wrote
+    assert persons_afo_did(exe, wrote, None, record, {})  # given back by it: the value goes with its record
+    assert not persons_afo_did(exe, wrote, None, record, record)  # taken away by another: it still holds its record
+    own = {exe.lower(): {"before": "AppStatus=0;", "wrote": "AppStatus=0;GpuPreference=1;"}}
+    assert persons_afo_did(exe, ("AppStatus=0;GpuPreference=1;", 1), ("AppStatus=0;", 1), own, {})  # Windows' own back
+    assert not persons_afo_did(exe, ("AppStatus=0;GpuPreference=1;", 1), None, own, {})

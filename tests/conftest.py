@@ -1,5 +1,7 @@
 import contextlib
+import json
 import logging
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -8,12 +10,14 @@ import uuid
 import pytest
 
 from common import i18n
-from common.paths import DATA_DIR_ENV, HOME_ENV, MODELS_ENV
+from common.paths import DATA_DIR_ENV, HOME_ENV, MODELS_ENV, data_paths
 from hub import secret_filter
 from hub.autostart import LLAMA_SWAP_START_ENV, RUN_STORE_ENV
 from hub.claude_code import CLI_ENV
 from hub.engines import GITHUB_ENV
+from hub.gpu_prefs import KEY as GPU_PREFS_KEY
 from hub.gpu_prefs import KEY_ENV as GPU_PREFS_KEY_ENV
+from hub.gpu_prefs import MOVED_SETTING
 from hub.hf import BASE_ENV as HF_ENV
 from hub.llama_config import CONFIG_ENV as LLAMA_SWAP_CONFIG_ENV
 from hub.secrets import STORE_ENV
@@ -43,9 +47,36 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
 
 PERSONS_KEYS = (  # the person's own registry values a stray hub could write: «Графика» (43.5), AFO at sign-in (43.4)
-    (r"Software\Microsoft\DirectX\UserGpuPreferences", None),
+    (GPU_PREFS_KEY, None),
     (r"Software\Microsoft\Windows\CurrentVersion\Run", ("AFO", "AFO hub", "LocalChat hub")),
 )
+PERSONS_DB = data_paths().db  # the person's own AFO's database: read before any test sets a data folder of its own
+
+
+def _persons_moved() -> dict[str, dict]:
+    """What the person's own AFO says it wrote in «Графика» (43.5: `gpu.moved` in its hub.db, read only), by the
+    program's path in lower case; {} - no such AFO, or its database not read."""
+    try:
+        with contextlib.closing(sqlite3.connect(f"{PERSONS_DB.as_uri()}?mode=ro", uri=True)) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (MOVED_SETTING,)).fetchone()
+        moved = json.loads(row[0]) if row else {}
+    except sqlite3.Error, ValueError, TypeError, OSError:
+        return {}
+    return {exe.lower(): record for exe, record in moved.items() if isinstance(record, dict)}
+
+
+def persons_afo_did(name: str, old, new, moved_before: dict[str, dict], moved_after: dict[str, dict]) -> bool:
+    """Whether the person's own AFO, running beside the tests (it starts with Windows, 43.4), made this change of a
+    «Графика» value: it wrote what its record says it wrote, or gave back what it had written - its own work, which
+    the guard must not take back (2026-11-14: it took back the AFO's Wallpaper Engine, and the AFO, holding its record,
+    would not write it again). `old`, `new` - (data, kind) or None."""
+    low = name.lower()
+    now, then = moved_after.get(low), moved_before.get(low)
+    if new is not None and now is not None and now.get("wrote") == new[0]:
+        return True
+    if then is None or now is not None or old is None or old[0] != then.get("wrote"):
+        return False
+    return new is None if then.get("before") is None else new is not None and new[0] == then["before"]
 
 
 def _values(path: str, names) -> dict[str, object]:
@@ -68,24 +99,36 @@ def _values(path: str, names) -> dict[str, object]:
 @pytest.fixture(scope="session", autouse=True)
 def persons_registry_untouched():
     """Whatever a test starts (a hub with too little of the isolation in its environment wrote the person's «Графика»
-    once, 2026-11-13): the person's values as they were before the run - put back if changed, and the run fails."""
+    once, 2026-11-13): the person's values as they were before the run - put back if changed, and the run fails.
+    What the person's own AFO did in «Графика» meanwhile (persons_afo_did) is the person's: it stays."""
     if sys.platform != "win32":
         yield
         return
     import winreg
 
+    moved_before = _persons_moved()
     before = {path: _values(path, names) for path, names in PERSONS_KEYS}
     yield
+    moved_after = _persons_moved()
     changed = []
     for path, names in PERSONS_KEYS:
         now = _values(path, names)
-        if now == before[path]:
+        kept = dict(before[path])
+        if path == GPU_PREFS_KEY:
+            for name in set(now) | set(kept):
+                if now.get(name) != kept.get(name) and persons_afo_did(name, kept.get(name), now.get(name),
+                                                                       moved_before, moved_after):  # fmt: skip
+                    if name in now:
+                        kept[name] = now[name]
+                    else:
+                        del kept[name]
+        if now == kept:
             continue
         changed.append(path)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
-            for name in set(now) - set(before[path]):
+            for name in set(now) - set(kept):
                 winreg.DeleteValue(key, name)
-            for name, (value, kind) in before[path].items():
+            for name, (value, kind) in kept.items():
                 if now.get(name) != (value, kind):
                     winreg.SetValueEx(key, name, 0, kind, value)
     assert not changed, f"tests changed the person's registry (put back): {changed}"
