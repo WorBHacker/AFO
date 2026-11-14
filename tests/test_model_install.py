@@ -100,7 +100,12 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
             "test/Umt5-GGUF": {"umt5-Q4_K_M.gguf": b"U" * 40_000},
             "test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
             "test/Words-GGUF": {"words-Q4_K_M.gguf": b"W" * 60_000},
-            "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000}}  # fmt: skip
+            "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000},
+            # a found model of Draw's family (47.5), quantized by someone else: its variants, no encoder or VAE
+            "someone/Draw-More-GGUF": {"draw-more-Q2_K.gguf": b"d" * 20_000, "draw-more-Q4_0.gguf": b"d" * 40_000,
+                                       "draw-more-Q8_0.gguf": b"d" * 80_000,
+                                       "draw-more-F16.gguf": b"d" * 160_000}}  # fmt: skip
+BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"]}  # its tags (47.2)
 # draft models guessing ahead (42.3): their vocabulary is the model's, or one token is another
 WORDS = [f"w{i}" for i in range(400)]
 DRAFTS = {
@@ -191,7 +196,7 @@ class FakeHub(BaseHTTPRequestHandler):
         elif picture := next((r for r in REPOS if path.startswith((f"/api/models/{r}", f"/{r}/"))), None):
             files = REPOS[picture]
             if path == f"/api/models/{picture}":
-                self._json({"id": picture, "sha": "def456", "tags": ["license:apache-2.0"]})
+                self._json({"id": picture, "sha": "def456", "tags": ["license:apache-2.0", *BASES.get(picture, [])]})
             elif path == f"/api/models/{picture}/tree/main":
                 self._json([{"type": "file", "path": name, "size": len(data),
                              "lfs": {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}}
@@ -678,7 +683,8 @@ def test_a_model_installed_tried_and_removed(hub):
 
 
 DRAW = {"id": "draw", "name": "Draw", "purposes": ["image"], "tier": "main", "license": "apache-2.0",
-        "original": "test/Draw", "size": 1024, "flags": ["--cfg-scale", "1", "--steps", "4"], "about": {"ru": "Рисует"},
+        "original": "test/Draw", "bases": ["test/Draw"], "size": 1024, "flags": ["--cfg-scale", "1", "--steps", "4"],
+        "about": {"ru": "Рисует"},
         "files": [{"role": "diffusion-model", "repo": "test/Draw-GGUF", "path": "draw-Q4_0.gguf"},
                   {"role": "llm", "repo": "test/Words-GGUF", "path": "words-Q4_K_M.gguf"},
                   {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
@@ -863,6 +869,55 @@ def test_a_picture_familys_encoder_and_vae_are_one_copy_for_its_models(hub, monk
     assert (old / words.name).exists() and not (old / "draw-Q4_0.gguf").exists()  # best names them
     hub.delete("/v1/install/models/best")
     assert not old.exists()
+
+
+def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub, monkeypatch):
+    """47.4-47.5: a found model of a known family - its variants, each judged here with the family's encoder and VAE as
+    stable-diffusion.cpp places them itself (auto-fit): the model with its room for computing on the card - fast; the
+    model in RAM, on the card in pieces - slower, not «does not fit»; not even the RAM holds them all - no. The parts
+    already on the disk (47.3) are not counted as coming; a repository of no known family is refused in words."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW]}), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    with monkeypatch.context() as small:  # the stand's files are kilobytes: so are the memory and the room
+        for name in ("PICTURE_COMPUTE_GIB", "PARTS_COMPUTE_GIB", "SD_MARGIN_GIB"):
+            small.setattr(mi, name, 0.0, raising=False)
+        small.setattr(installer, "space", lambda: {"vram_gib": 70_000 / mi.GIB, "ram_gib": 200_000 / mi.GIB})
+        found = hub.get("/v1/install/pictures/repo/someone/Draw-More-GGUF")
+        assert found.status_code == 200, found.text
+        shown = found.json()
+        assert (shown["family"], shown["name"], shown["kind"], shown["engine"]) == ("draw", "Draw", "image", True)
+        assert [(v["quant"], v["verdict"]) for v in shown["variants"]] == [
+            ("Q2_K", "gpu"), ("Q4_0", "gpu"), ("Q8_0", "split"), ("F16", "no")]  # fmt: skip
+        assert shown["recommended"] == "Q4_0"  # the largest that is fast here
+        assert [(p["role"], p["size"], p["have"]) for p in shown["parts"]] == [
+            ("llm", 60_000, False), ("vae", 30_000, False)]  # fmt: skip
+        q4 = shown["variants"][1]
+        assert (q4["size"], q4["with_parts"], q4["coming"]) == (40_000, 130_000, 130_000)
+
+        job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]  # the family's parts come with it
+        assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
+        shown = hub.get("/v1/install/pictures/repo/someone/Draw-More-GGUF").json()
+        assert [p["have"] for p in shown["parts"]] == [True, True] and not shown["engine"]
+        assert (shown["variants"][1]["with_parts"], shown["variants"][1]["coming"]) == (130_000, 40_000)
+        other = hub.get("/v1/install/pictures/repo/test/Words-GGUF")
+        assert other.status_code == 404 and "семейств" in other.json()["detail"]
+
+    # as sd.cpp's auto-fit places them, with its own room for computing (2 GiB a model) - real sizes; the encoder and
+    # VAE wait in RAM when the card has no room for them: they run once a picture
+    space, laptop = {"vram_gib": 15.0, "ram_gib": 60.0}, {"vram_gib": 5.0, "ram_gib": 13.0}
+    assert mi.picture_fit(15_400_000_000, 4_930_000_000, space, side=1024, own=1024) == "split"  # 2512 Q5_K_M
+    assert mi.picture_fit(4_200_000_000, 5_710_000_000, space, side=1024, own=1024) == "gpu"  # Qwen-Image-2.1 Q4
+    assert mi.picture_fit(4_200_000_000, 5_710_000_000, laptop, side=1024, own=1024) == "split"
+    assert mi.picture_fit(2_470_000_000, 5_710_000_000, laptop, side=1024, own=1024) == "gpu"  # its Q2_K
+    assert mi.picture_fit(7_740_000_000, 4_930_000_000, space, side=1024, own=1024) == "gpu"
+    assert mi.picture_fit(7_740_000_000, 4_930_000_000, space, side=2048, own=1024) == "split"  # 4 times the pixels
+    assert mi.picture_fit(40_870_000_000, 4_930_000_000, {"vram_gib": 15.0, "ram_gib": 29.0}, side=1024,
+                          own=1024) == "no"  # fmt: skip
+    assert mi.picture_fit(2_470_000_000, 5_710_000_000, {"vram_gib": 0.0, "ram_gib": 13.0}, side=1024,
+                          own=1024) == "cpu"  # fmt: skip
 
 
 def test_a_model_that_will_not_start_tries_smaller_settings_then_leaves_the_config(hub):

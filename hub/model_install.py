@@ -74,6 +74,12 @@ SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (
 PICTURE_MAIN = ("model", "diffusion-model")  # a picture set's own model among its files (the rest: encoders, VAE)
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 SHARED = "_shared"  # under `pictures`: a family's encoders and VAE, one copy for all its models (47.3)
+# a picture model judged by its sizes (47.4) as stable-diffusion.cpp's auto-fit places it (master-1053,
+# backend_fit.cpp): the room it keeps on the card for computing - the model's 2 GiB, the encoder's 2 and the VAE's 1 -
+# and the free video memory it leaves; the model's room grows with the picture's pixels (47.9 measures it)
+PICTURE_COMPUTE_GIB = 2.0
+PARTS_COMPUTE_GIB = 3.0
+SD_MARGIN_GIB = 0.5
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -152,6 +158,33 @@ def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
     if entry["tier"] == "quality":
         return "fast" if machine.get("quality") else "slow"
     return "fast" if machine.get("pictures") == "main" else "slow"
+
+
+def picture_fit(model: int, parts: int, space: dict[str, Any], *, side: int, own: int) -> str:
+    """How a picture model of `model` bytes with its encoders and VAE (`parts`) runs here (47.4), as sd.cpp's
+    auto-fit places them: gpu - the model with its room for computing on the card (the parts may wait in RAM: they run
+    once a picture); split - the model in RAM, on the card in pieces: slower; cpu - no graphics card, all in RAM; no -
+    not even the RAM holds them all. The room for computing grows with the pixels: `side` against the family's `own`."""
+    compute = PICTURE_COMPUTE_GIB * max(1.0, (side / own) ** 2) if own else PICTURE_COMPUTE_GIB
+    card = max(space["vram_gib"] - SD_MARGIN_GIB, 0.0) if space["vram_gib"] else 0.0
+    if card and model / GIB + compute <= card:
+        left = card - model / GIB - compute
+        if parts / GIB + PARTS_COMPUTE_GIB <= left or parts / GIB <= space["ram_gib"]:
+            return "gpu"
+    if (model + parts) / GIB > space["ram_gib"]:
+        return "no"
+    return "split" if card else "cpu"
+
+
+def picture_family(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """The picture set whose family a found repository's model is (47.2): the set's own main repository, or the base
+    model its files are quantized or trained from (hf.bases) - the set's encoders, VAE and flags are then its too."""
+    listed = picture_sets() if listed is None else listed
+    own = next((e for e in listed for f in e["files"] if f["repo"] == repo and f["role"] in PICTURE_MAIN), None)
+    if own is not None:
+        return own
+    wanted = {b.lower() for b in bases}
+    return next((e for e in listed if wanted & {b.lower() for b in e.get("bases") or []}), None)
 
 
 def picture_offer(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1007,11 +1040,10 @@ class Installer:
         space = self.space()
         listed = picture_sets()
         sets = {f["repo"]: entry["id"] for entry in listed for f in entry["files"] if f["role"] in PICTURE_MAIN}
-        kin = {base.lower(): entry["id"] for entry in listed for base in entry.get("bases") or []}
         out = []
         for each in found:
             picture = sets.get(each["repo"], "")
-            family = picture or next((kin[b.lower()] for b in each["bases"] if b.lower() in kin), "")
+            family = (picture_family(each["repo"], each["bases"], listed) or {}).get("id", "")
             drawn = bool(family) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
             out.append({**each, "picture": picture, "family": family, "drawn": drawn,
                         "fit": None if drawn else search_fit(each, space)})  # fmt: skip
@@ -1070,6 +1102,46 @@ class Installer:
             listed.append(shown)
         await self._keep_answers()
         return listed
+
+    async def picture_details(self, repo: str) -> dict[str, Any]:
+        """A found model that draws (47.5): its family's set (picture_family), its variants - each judged here with the
+        set's encoders and VAE (picture_fit), with them (`with_parts`) and with what is not on the disk yet
+        (`coming`, 47.3) - the one recommended, the parts and whether each is here, whether the engine comes too."""
+        found = await self._listed(repo)
+        entry = picture_family(repo, found.get("bases") or [])
+        if entry is None:
+            raise InstallError(tr("AFO пока не умеет ставить {repo} сам: семейства этой модели нет в его списке",
+                                  repo=repo), 404)  # fmt: skip
+        variants, _ = hf.variants([{"path": path, **f} for path, f in found["files"].items()])
+        if not variants:
+            raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
+        parts = [f for f in await self.picture_files(entry) if f["role"] not in PICTURE_MAIN]
+        named = await self._db.acall(_named)
+        await asyncio.to_thread(_share, parts, named, models_home() / "pictures" / SHARED)
+        with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
+        space, params = self.space(), found.get("params") or 0
+        shown = []
+        for v in variants:
+            bits = round(v["size"] * 8 / params, 1) if params else None
+            verdict = picture_fit(v["size"], with_parts, space, side=entry["size"], own=entry["size"])
+            shown.append({"quant": v["quant"], "size": v["size"], "gb": round(v["size"] / 1e9, 1), "bits": bits,
+                          "quality": quality_of(bits), "verdict": verdict, "words": tr(VERDICTS[verdict]),
+                          "with_parts": v["size"] + with_parts, "coming": v["size"] + coming})  # fmt: skip
+        fast = [v for v in shown if v["verdict"] == "gpu" and (
+            v["bits"] <= MAX_BITS if v["bits"] is not None else v["quant"] not in hf.SIXTEEN_BITS)]  # fmt: skip
+        best = max(fast, key=lambda v: v["size"]) if fast else min(
+            (v for v in shown if v["verdict"] != "no"), key=lambda v: v["size"], default=None)  # fmt: skip
+        try:
+            engine = sd_server(await asyncio.to_thread(config_text)) is None
+        except InstallError:
+            engine = True
+        await self._keep_answers()
+        return {"repo": repo, "family": entry["id"], "name": entry["name"], "kind": entry.get("kind", "image"),
+                "size": entry["size"], "license": found["license"], "license_kind": found["license_kind"],
+                "gated": found["gated"], "page": found["page"], "variants": shown,
+                "recommended": best["quant"] if best else "", "engine": engine,
+                "parts": [{"role": p["role"], "repo": p["repo"], "path": p["path"], "size": p["size"],
+                           "have": p["done"]} for p in parts]}  # fmt: skip
 
     async def _engine_files(self, build: str) -> list[dict[str, Any]]:
         """The picture engine's archives the config does not name yet: its pinned build for this computer and, beside

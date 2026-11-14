@@ -11,7 +11,8 @@ tried); DELETE /jobs/<id> takes an unfinished one off the list (its files too); 
 installed model. POST /trial tries the models added from the drives, one after another in the order added (34.5);
 POST /trial/stop takes back those not begun.
 GET /pictures - the curated picture models (D55, 29.3) with how each runs here; POST /pictures starts one's install
-(the picture engine comes with the first).
+(the picture engine comes with the first); GET /pictures/repo/<a>/<b> - a found model that draws, of a family AFO
+knows (47.5): its variants judged with the family's encoders and VAE.
 """
 
 from __future__ import annotations
@@ -145,6 +146,16 @@ async def pictures(request: Request, client: Annotated[Client, Depends(require_a
     installer = _installer(request)
     machine = await asyncio.to_thread(installer.machine)
     return {"models": await installer.picture_catalog(), "machine": machine}
+
+
+@router.get("/pictures/repo/{author}/{name}")
+async def picture_repository(request: Request, author: str, name: str,
+                             client: Annotated[Client, Depends(require_app)]) -> dict:  # fmt: skip
+    """A found model that draws (47.5): its family, its variants judged with the family's encoders and VAE."""
+    try:
+        return await _installer(request).picture_details(f"{author}/{name}")
+    except (hf.HubError, mi.InstallError) as exc:
+        raise _refusal(exc) from exc
 
 
 class Pictures(BaseModel):
