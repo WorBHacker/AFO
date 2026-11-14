@@ -10,6 +10,7 @@ import json
 import socket
 import sys
 import time
+from pathlib import Path
 
 import httpx
 import psutil
@@ -179,11 +180,11 @@ def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_dra
         return {"ok": ok, "error": "" if ok else "out of memory", "seconds": 3.0}
 
     async def find(model_id, file):
-        return draft
+        return [draft] if isinstance(draft, Path) else list(draft or [])
 
     return tuning.Tuner(db_hub.app.state.db, Bus(), Chat(), url="http://127.0.0.1:9",
                         space=lambda: space or {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check,
-                        draft=find)  # fmt: skip
+                        drafts=find)  # fmt: skip
 
 
 def test_the_fastest_goes_into_the_config_and_is_checked(hub, setup):  # noqa: F811
@@ -574,22 +575,22 @@ def test_what_guessing_ahead_is_measured(tmp_path):
     draft = {"path": tmp_path / "draft.gguf", "info": {**info, "layers": 28, "kv_layers": 28,
                                                         "size_bytes": int(0.6 * 1024**3)}}  # fmt: skip
     view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
-    roomy, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+    roomy, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [draft])
     assert [v["name"] for v in roomy] == ["none", "ngram", "draft"] and short == {}
     assert roomy[1]["changes"] == {"spec_type": "ngram-mod"} and roomy[0]["changes"] == {"spec_type": "none"}
     assert roomy[2]["changes"] == {"spec_type": "draft-simple", "draft_model": str(tmp_path / "draft.gguf"),
                                    "draft_gpu_layers": "all", "draft_cache_type": "q8_0"}  # fmt: skip
-    tight, short = tuning.spec_variants(view, info, {"vram_gib": 10.2}, build, draft)  # 7,9 + 2,8 > 10,2
+    tight, short = tuning.spec_variants(view, info, {"vram_gib": 10.2}, build, [draft])  # 7,9 + 2,8 > 10,2
     assert [v["name"] for v in tight] == ["none", "ngram", "draft_fewer"]
     fewer = tight[2]["changes"]["gpu_layers"]
     assert 30 <= fewer < 36 and tight[2]["changes"]["draft_gpu_layers"] == "all"
     assert short == {"short_gb": 0.4, "context": 16384}  # 16 thousand tokens and the draft fits
-    alone, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, None)  # no draft for it
+    alone, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [])  # no draft for it
     assert [v["name"] for v in alone] == ["none", "ngram"] and short == {}
-    placed, _ = tuning.spec_variants({**view, "gpu_layers": "auto"}, info, {"vram_gib": 10.0}, build, draft)
+    placed, _ = tuning.spec_variants({**view, "gpu_layers": "auto"}, info, {"vram_gib": 10.0}, build, [draft])
     assert [v["name"] for v in placed] == ["none", "ngram", "draft"]  # llama.cpp's --fit places them itself
     old = lc.parse_help(HELP.replace(",ngram-mod", ""))  # a build without ngram-mod
-    assert tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, None)[0][1]["changes"] == {
+    assert tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, [])[0][1]["changes"] == {
         "spec_type": "ngram-simple"}  # fmt: skip
 
 
@@ -834,12 +835,12 @@ def test_a_model_with_a_layer_of_its_own_guesses_ahead_with_it(hub, setup, spec_
     draft = {"path": setup.parent / "draft.gguf", "info": {**info, "layers": 28, "kv_layers": 28, "mtp_layers": 0,
                                                             "size_bytes": int(0.6 * 1024**3)}}  # fmt: skip
     view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
-    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [draft])
     assert [v["name"] for v in found] == ["none", "ngram", "mtp", "draft"]
     assert found[2]["changes"] == {"spec_type": "draft-mtp"}
     old = lc.parse_help(HELP.replace(",draft-mtp", ""))
-    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, None)[0]] == ["none", "ngram"]
-    plain = tuning.spec_variants(view, {**info, "mtp_layers": 0}, {"vram_gib": 15.0}, build, None)[0]
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, [])[0]] == ["none", "ngram"]
+    plain = tuning.spec_variants(view, {**info, "mtp_layers": 0}, {"vram_gib": 15.0}, build, [])[0]
     assert [v["name"] for v in plain] == ["none", "ngram"]
 
     keys = {"general.architecture": "tiny", "tiny.block_count": 8, "tiny.context_length": 65536,
@@ -874,11 +875,11 @@ def test_a_draft_made_for_its_model_guesses_its_own_way(hub, setup, spec_server)
     view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
     for arch, kind in (("dflash", "draft-dflash"), ("eagle3", "draft-eagle3"), ("qwen3", "draft-simple")):
         draft = {"path": setup.parent / "draft.gguf", "info": {**small, "architecture": arch}}
-        found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+        found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [draft])
         assert [v["name"] for v in found] == ["none", "ngram", "draft"] and found[2]["changes"]["spec_type"] == kind
     old = lc.parse_help(HELP.replace(",draft-dflash", ""))
     dflash = {"path": setup.parent / "draft.gguf", "info": {**small, "architecture": "dflash"}}
-    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, dflash)[0]] == [
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, [dflash])[0]] == [
         "none", "ngram"]  # fmt: skip
 
     keys = {"general.architecture": "dflash", "dflash.block_count": 5, "dflash.context_length": 65536,
@@ -906,17 +907,17 @@ def test_an_mtp_head_of_its_own_file_guesses_ahead(hub, setup, spec_server):  # 
             "value_length": 256, "context_trained": 262144, "size_bytes": 9 * 1024**3, "mtp_layers": 0}  # fmt: skip
     head = {**info, "layers": 41, "kv_layers": 1, "mtp_layers": 1, "mtp_head": True, "size_bytes": 2 * 1024**3}
     view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
-    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, {"path": setup.parent / "h.gguf",
-                                                                            "info": head})  # fmt: skip
+    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [{"path": setup.parent / "h.gguf",
+                                                                             "info": head}])  # fmt: skip
     assert [v["name"] for v in found] == ["none", "ngram", "draft"]
     assert found[2]["changes"]["spec_type"] == "draft-mtp" and found[2]["changes"]["draft_model"].endswith("h.gguf")
     small = {**info, "layers": 24, "kv_layers": 6, "mtp_layers": 1, "size_bytes": 1024**3}  # a whole model
-    plain = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, {"path": setup.parent / "s.gguf",
-                                                                         "info": small})[0]  # fmt: skip
+    plain = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [{"path": setup.parent / "s.gguf",
+                                                                          "info": small}])[0]  # fmt: skip
     assert plain[2]["changes"]["spec_type"] == "draft-simple"
     old = lc.parse_help(HELP.replace(",draft-mtp", ""))
-    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, {
-        "path": setup.parent / "h.gguf", "info": head})[0]] == ["none", "ngram"]  # fmt: skip
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, [{
+        "path": setup.parent / "h.gguf", "info": head}])[0]] == ["none", "ngram"]  # fmt: skip
 
     keys = {"general.architecture": "tiny", "tiny.block_count": 9, "tiny.context_length": 65536,
             "tiny.embedding_length": 256, "tiny.attention.head_count": 4, "tiny.attention.head_count_kv": 2,
@@ -930,3 +931,54 @@ def test_an_mtp_head_of_its_own_file_guesses_ahead(hub, setup, spec_server):  # 
     assert launched(spec_server) == ["none", "ngram-mod", "draft-mtp"] and spec["draft"] == "mtp-big.gguf"
     written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
     assert written["type"] == "draft-mtp" and written["draft"].endswith("mtp-big.gguf")
+
+
+def test_each_draft_made_for_the_model_is_measured(hub, setup, spec_server):  # noqa: F811
+    """44.8: ggml-org puts a DFlash draft and an MTP head beside the model - which guesses better on this computer
+    only measuring says: each one is measured, the smaller first (a costlier one wins only by more than CLOSE), and
+    the fastest is written. A draft that does not fit as the model is placed - the least it lacks goes to the window,
+    while none fits."""
+    from tests.test_llama_config import F32, HELP
+
+    build = lc.parse_help(HELP)
+    info = {"architecture": "qwen35moe", "layers": 40, "kv_layers": 10, "kv_heads": 2, "key_length": 256,
+            "value_length": 256, "context_trained": 262144, "size_bytes": 9 * 1024**3, "mtp_layers": 0}  # fmt: skip
+    head = {"path": setup.parent / "mtp-big.gguf", "info": {**info, "layers": 41, "kv_layers": 1, "mtp_layers": 1,
+                                                             "mtp_head": True, "size_bytes": 2 * 1024**3}}  # fmt: skip
+    small = {**info, "architecture": "dflash", "layers": 6, "kv_layers": 6, "size_bytes": 1024**3 // 2}
+    flash = {"path": setup.parent / "dflash-big.gguf", "info": small}
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
+    found, short = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, [head, flash])
+    assert [(v["name"], v["changes"]["spec_type"], v.get("draft")) for v in found] == [
+        ("none", "none", None), ("ngram", "ngram-mod", None), ("draft", "draft-dflash", "dflash-big.gguf"),
+        ("draft", "draft-mtp", "mtp-big.gguf")] and short == {}  # fmt: skip
+    tight, short = tuning.spec_variants(view, info, {"vram_gib": 11.5}, build, [head, flash])
+    placed = [(v["name"], v.get("draft")) for v in tight][2:]
+    assert placed == [("draft", "dflash-big.gguf"), ("draft_fewer", "mtp-big.gguf")] and short == {}
+    none_fit, short = tuning.spec_variants(view, info, {"vram_gib": 10.2}, build, [head, flash])
+    assert [v["name"] for v in none_fit] == ["none", "ngram", "draft_fewer", "draft_fewer"]
+    alone = tuning.spec_variants(view, info, {"vram_gib": 10.2}, build, [flash])[1]
+    assert short == alone and alone["short_gb"] > 0  # DFlash's: it lacks the least
+
+    keys = {"general.architecture": "tiny", "tiny.block_count": 9, "tiny.context_length": 65536,
+            "tiny.embedding_length": 256, "tiny.attention.head_count": 4,
+            "tiny.attention.head_count_kv": 2}  # fmt: skip
+    gguf(setup.parent / "dflash-big.gguf", {**keys, "general.architecture": "dflash", "dflash.block_count": 5})
+    gguf(setup.parent / "mtp-big.gguf", {**keys, "tiny.nextn_predict_layers": 1}, [
+        ("token_embd.weight", (256, 3), F32), ("blk.8.nextn.eh_proj.weight", (512, 256), F32)])  # fmt: skip
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-dflash": 66.0, "draft-mtp": 58.0})
+    files = [setup.parent / "mtp-big.gguf", setup.parent / "dflash-big.gguf"]
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=files).tune("big"))
+    spec = result["spec"]
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-dflash", "draft-mtp"]
+    assert (spec["kind"], spec["spec_type"], spec["draft"], spec["after"]) == ("draft", "draft-dflash",
+                                                                               "dflash-big.gguf", 66.0)  # fmt: skip
+    assert [m.get("draft") for m in spec["measured"]] == [None, None, "dflash-big.gguf", "mtp-big.gguf"]
+    written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
+    assert written["type"] == "draft-dflash" and written["draft"].endswith("dflash-big.gguf")
+
+    # measured again with nothing found: the command's own draft, as before 44.8; with the head found - both
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-dflash": 66.0, "draft-mtp": 75.0})
+    again = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=files[:1]).tune("big"))["spec"]
+    assert [m.get("draft") for m in again["measured"]][2:] == ["dflash-big.gguf", "mtp-big.gguf"]
+    assert (again["spec_type"], again["draft"]) == ("draft-mtp", "mtp-big.gguf")

@@ -107,6 +107,7 @@ DRAFTS = {
     "test/Small-GGUF": {
         "Small-Q8_0.gguf": tiny_gguf(40_000, tokens=WORDS),
         "Big-Q8_0.gguf": tiny_gguf(200_000, tokens=WORDS),
+        "Head-Q8_0.gguf": tiny_gguf(30_000, tokens=WORDS),  # 44.8: an MTP head beside the model
     },
     "test/Other-GGUF": {"Other-Q8_0.gguf": tiny_gguf(40_000, tokens=[*WORDS[:200], "x", *WORDS[201:]])},
 }
@@ -1350,29 +1351,30 @@ def test_a_draft_model_is_paired_by_its_tokenizer(hub, tmp_path):
     mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
     installer = hub.app.state.installer
     FakeHub.spans.clear()
-    found = hub.portal.call(installer.draft_for, model)
+    (found,) = hub.portal.call(installer.drafts_for, model)
     assert (found["id"], found["repo"], found["file"], found["size"]) == ("small", "test/Small-GGUF",
                                                                           "Small-Q8_0.gguf", 40_000)  # fmt: skip
     assert found["sha256"] and found["revision"] == "def456"
     read = {name for name, _, _ in FakeHub.spans}
     assert read == {"Other-Q8_0.gguf", "Small-Q8_0.gguf"}  # the big one is not worth it: its header not even read
     model.write_bytes(tiny_gguf(150_000, tokens=WORDS))  # a small model: no draft is DRAFT_RATIO times smaller
-    assert hub.portal.call(installer.draft_for, model) is None
+    assert hub.portal.call(installer.drafts_for, model) == []
     # each its own size: model_info keeps what it read while a file's size and time stay
     model.write_bytes(tiny_gguf(410_000, tokens=WORDS, architecture="llama"))  # its family: only «elsewhere»
-    assert hub.portal.call(installer.draft_for, model)["id"] == "elsewhere"
+    assert [d["id"] for d in hub.portal.call(installer.drafts_for, model)] == ["elsewhere"]
     model.write_bytes(tiny_gguf(420_000, tokens=WORDS, architecture="qwen3"))  # no draft for this family
-    assert hub.portal.call(installer.draft_for, model) is None
+    assert hub.portal.call(installer.drafts_for, model) == []
     coder = tmp_path / "Tiny-Coder-Q4_K_M.gguf"
     coder.write_bytes(tiny_gguf(430_000, tokens=WORDS))
-    assert hub.portal.call(installer.draft_for, coder)["id"] == "coder"
+    assert [d["id"] for d in hub.portal.call(installer.drafts_for, coder)] == ["coder"]  # the first that fits
 
 
 def test_a_draft_made_for_the_model_comes_before_its_familys(hub, tmp_path):
     """44.4: a DFlash or EAGLE-3 draft is made for one model (converted with its tokenizer and embeddings): the
     catalog names it with that model's files (`names`) and its kind, and it is taken before a draft of the family -
     when the build knows its kind (`kinds`: llama-server's --spec-type), else the family's. Its vocabulary is checked
-    the same way."""
+    the same way. 44.8: each draft made for the model - ggml-org's DFlash and MTP head beside it - the tuning
+    measures them all; the family's then is not even looked at."""
     model = tmp_path / "Main-Q4_K_M.gguf"
     model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
     catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
@@ -1381,33 +1383,50 @@ def test_a_draft_made_for_the_model_comes_before_its_familys(hub, tmp_path):
          "architectures": ["tiny"]},
         {"id": "flash", "kind": "dflash", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Main DFlash",
          "architectures": ["tiny"], "names": "(?i)^main-"},
+        {"id": "head", "kind": "mtp", "repo": "test/Small-GGUF", "file": "Head-Q8_0.gguf", "name": "Main MTP",
+         "architectures": ["tiny"], "names": "(?i)^main-"},
     ]  # fmt: skip
     mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
     installer = hub.app.state.installer
-    found = hub.portal.call(installer.draft_for, model)
-    assert (found["id"], found["kind"]) == ("flash", "dflash")
-    assert hub.portal.call(installer.draft_for, model, ("none", "draft-simple", "draft-dflash"))["id"] == "flash"
-    older = hub.portal.call(installer.draft_for, model, ("none", "draft-simple"))  # a build without draft-dflash
-    assert (older["id"], older["kind"]) == ("small", "simple")
+    FakeHub.spans.clear()
+    found = hub.portal.call(installer.drafts_for, model)
+    assert [(d["id"], d["kind"]) for d in found] == [("flash", "dflash"), ("head", "mtp")]
+    assert all(d["sha256"] and d["size"] for d in found)
+    assert {name for name, _, _ in FakeHub.spans} == {"Small-Q8_0.gguf", "Head-Q8_0.gguf"}  # two vocabularies
+    kinds = ("none", "draft-simple", "draft-dflash")  # a build without draft-mtp
+    assert [d["id"] for d in hub.portal.call(installer.drafts_for, model, kinds)] == ["flash"]
+    older = hub.portal.call(installer.drafts_for, model, ("none", "draft-simple"))  # nor draft-dflash
+    assert [(d["id"], d["kind"]) for d in older] == [("small", "simple")]
     other = tmp_path / "Other-Q4_K_M.gguf"  # of the family, not the model the DFlash draft was made for
     other.write_bytes(tiny_gguf(410_000, tokens=WORDS))
-    assert hub.portal.call(installer.draft_for, other)["id"] == "small"
+    assert [d["id"] for d in hub.portal.call(installer.drafts_for, other)] == ["small"]
 
 
 def test_the_catalogs_drafts():
     """42.3: each draft in the catalog names its repository, file and the families it is tried for; the file is a
     8-bit one (a draft guesses: its own quality decides how often it is right). 44.4: a DFlash or EAGLE-3 draft
     (`kind`) names the model it was made for (`names`)."""
-    drafts = json.loads(mi.CATALOG.read_text(encoding="utf-8"))["drafts"]
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    drafts = catalog["drafts"]
     assert drafts and len({d["id"] for d in drafts}) == len(drafts)
     for draft in drafts:
         assert set(draft) >= {"id", "repo", "file", "name", "architectures"} and draft["architectures"]
         assert re.compile(draft.get("names") or "")  # a pattern of model file names, when it is given
-        assert draft.get("kind", "simple") in ("simple", "dflash", "eagle3")
+        assert draft.get("kind", "simple") in ("simple", "dflash", "eagle3", "mtp")
         if draft.get("kind", "simple") == "simple":
             assert hf.quant_of(draft["file"]) == "Q8_0"
         else:  # 44.4: made for one model - the catalog names its files; not quantized past 8 bits
             assert draft.get("names") and hf.quant_of(draft["file"]) in ("Q8_0", "BF16", "F16")
+    # 44.8: ggml-org's own beside the catalog's models (dflash-…, mtp-… in the model's repository, as llama.cpp's
+    # --dflash / --mtp look for them), for those models' files only
+    beside = {d["file"].split("-")[0]: d for d in drafts if d["repo"] == "ggml-org/Qwen3.6-35B-A3B-GGUF"}
+    assert {k: d["kind"] for k, d in beside.items()} == {"dflash": "dflash", "mtp": "mtp"}
+    for draft in (d for d in drafts if d.get("kind", "simple") != "simple"):
+        model = next(m for m in catalog["models"] if m["repo"] == draft["repo"])
+        file = draft["file"].split("-", 1)[1]  # dflash-Qwen3.6-35B-A3B-Q8_0.gguf: the model's own name
+        assert draft["file"].startswith(f"{draft['kind']}-") and re.search(draft["names"], file)
+        assert re.search(draft["names"], file.replace("Q8_0", "UD-Q4_K_XL").lower())  # another's quantization
+        assert not re.search(draft["names"], draft["file"]), model["id"]  # not a model to pair with itself
     # the live check (42.7, 2026-11-13): Qwen3-VL's vocabulary is Qwen3's - Qwen3 0.6B guessed 89 % of a code edit
     # for Qwen3-VL-8B, and the catalog had not named its family
     qwen3 = next(d for d in drafts if d["id"] == "qwen3-0.6b")
@@ -1449,11 +1468,11 @@ def test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing(hub, tmp_p
     assert sped_up("tinyone") == ("tinyone", False)  # then its tuning, at once
     draft = mi.models_root(installer.drives()[0]) / "drafts" / "Small-Q8_0.gguf"
     assert draft.read_bytes() == DRAFTS["test/Small-GGUF"]["Small-Q8_0.gguf"]
-    assert hub.portal.call(installer.draft_path, "tinyone", model) == draft  # what the tuning measures
+    assert hub.portal.call(installer.draft_paths, "tinyone", model) == [draft]  # what the tuning measures
     assert hub.get("/v1/install/speedup").json()["drafting"] == {}  # nothing on its way
 
     hub.portal.call(installer.tuned, "tinyone", {"spec": {"kind": "ngram"}})  # the draft gave nothing
-    assert not draft.exists() and hub.portal.call(installer.draft_path, "tinyone", model) is None
+    assert not draft.exists() and hub.portal.call(installer.draft_paths, "tinyone", model) == []
 
     sped_up("tinyone")
     assert draft.exists()

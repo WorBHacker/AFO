@@ -260,29 +260,42 @@ def draft_kind(info: dict[str, Any]) -> str:
 
 
 def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
-                  draft: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
+                  drafts: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
     """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the model's own MTP layers (44.3: its
-    header has them, the build has draft-mtp - no file of their own); the draft model ({path, info}; 44.4: a DFlash or
-    EAGLE-3 draft guesses its own way, 44.7: an MTP head of its own file too - its kind by its header, draft_kind,
-    when the build has it) beside
-    the model as it is - or, when it does not fit so (the user's word, 2026-11-13), wholly on the graphics card and the
-    model with as few layers fewer there as it needs; the context is never made smaller by itself. And what the draft
-    lacks to fit beside the model as it is ({short_gb, context} - the largest context it would fit with; {} - it
-    fits, or there is no draft)."""
+    header has them, the build has draft-mtp - no file of their own); each draft model ({path, info}; 44.8: ggml-org's
+    DFlash and MTP head beside one model - the smaller first) - its variants by draft_variants. And what a draft lacks
+    to fit beside the model as it is - the least of them, while none fits ({} - one fits, or there is none)."""
     out: list[dict[str, Any]] = [{"name": "none", "changes": {"spec_type": "none"}}]
     ngram = next((kind for kind in NGRAMS if kind in build["spec_types"]), None)
     if ngram:
         out.append({"name": "ngram", "changes": {"spec_type": ngram}})
     if info.get("mtp_layers") and "draft-mtp" in build["spec_types"]:  # 44.3: the model's own layers guess ahead
         out.append({"name": "mtp", "changes": {"spec_type": "draft-mtp"}})
-    kind = draft_kind(draft["info"]) if draft else ""
-    if draft is None or kind not in build["spec_types"]:
-        return out, {}
+    shorts = []
+    for draft in sorted(drafts, key=lambda d: d["info"].get("size_bytes") or 0):
+        variants, short = draft_variants(view, info, space, build, draft)
+        out += variants
+        shorts += [short] if short else []
+    fits = any(v["name"] == "draft" for v in out)
+    return out, {} if fits else min(shorts, key=lambda s: s["short_gb"], default={})
+
+
+def draft_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
+                   draft: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
+    """A draft model's variants (42.4), its file's name with them: its kind by its header (draft_kind; 44.4: DFlash,
+    EAGLE-3; 44.7: an MTP head), when the build has it; beside the model as it is - or, when it does not fit so (the
+    user's word, 2026-11-13), wholly on the graphics card and the model with as few layers fewer there as it needs;
+    the context is never made smaller by itself. And what it lacks to fit beside the model as it is ({short_gb,
+    context} - the largest context it would fit with; {} - it fits, or is not measured)."""
+    kind = draft_kind(draft["info"])
+    if kind not in build["spec_types"]:
+        return [], {}
     cache = view.get("cache_type") or "f16"  # the draft's KV cache as the model's: q8_0 takes half of f16
     load = {"info": draft["info"], "gpu_layers": "all", "cache_type": cache}
     changes = {"spec_type": kind, "draft_model": str(draft["path"]), "draft_gpu_layers": "all",
                "draft_cache_type": cache}  # fmt: skip
     context = view.get("context") or 4096
+    name = Path(draft["path"]).name
 
     def need(layers: str | int, tokens: int = context) -> float:
         return estimate(info, context=tokens, cache_type=cache, gpu_layers=layers, draft=load,
@@ -290,11 +303,10 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
 
     room = space.get("vram_gib") or 0.0
     if view["gpu_layers"] == "auto" or need(view["gpu_layers"]) <= room:  # --fit places them itself
-        return [*out, {"name": "draft", "changes": changes}], {}
+        return [{"name": "draft", "changes": changes, "draft": name}], {}
     layers = info["layers"] if view["gpu_layers"] == "all" else int(view["gpu_layers"])
     fewer = next((n for n in range(layers - 1, 0, -1) if need(n) <= room), None)
-    if fewer is not None:
-        out.append({"name": "draft_fewer", "changes": {**changes, "gpu_layers": fewer}})
+    out = [] if fewer is None else [{"name": "draft_fewer", "changes": {**changes, "gpu_layers": fewer}, "draft": name}]
     smaller = [context // 2**i for i in range(1, 5) if context // 2**i >= 4096]
     return out, {"short_gb": round(need(view["gpu_layers"]) - room, 1),
                  "context": next((c for c in smaller if need(view["gpu_layers"], c) <= room), 0)}  # fmt: skip
@@ -419,9 +431,9 @@ class Tuner:
                  check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
                  gpu: Callable[[], dict[str, Any] | None] | None = None,
                  installing: Callable[[], bool] | None = None,
-                 draft: Callable[[str, Path], Awaitable[Path | None]] | None = None):  # fmt: skip
+                 drafts: Callable[[str, Path], Awaitable[list[Path]]] | None = None):  # fmt: skip
         self._db = db
-        self._draft = draft  # a draft model's file for a model (42.5: found and downloaded); None - none
+        self._drafts = drafts  # the draft models' files for a model (42.5: found and downloaded; 44.8: each one)
         self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None  # a result kept (42.5: drafts)
         self._bus = bus
         self._chat = chat
@@ -641,15 +653,15 @@ class Tuner:
         """Guessing ahead (42.4), with the settings llama-bench left: each variant (spec_variants) measured by
         llama-server itself, the pick (spec_choice) written and checked as the rest. {status: better (written) |
         same | unsupported (the build has no --spec-type), kind, spec_type, before (tokens a second without it),
-        after, accepted, measured, short (what a draft lacks), draft (its file's name)}."""
+        after, accepted, measured, short (what a draft lacks), draft (the picked one's file name)}."""
         text = await asyncio.to_thread(llama_config.config_path().read_text, encoding="utf-8")
         build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
         if build is None or llama_config.spelled("spec_type", build)[1] is None:
             return {"status": "unsupported"}
         view = llama_config.model_view(text, model_id)
         info = await asyncio.to_thread(model_info, Path(view["file"]))
-        draft = await self._find_draft(model_id, view)
-        variants, short = spec_variants(view, info, self._space(), build, draft)
+        drafts = await self._find_drafts(model_id, view)
+        variants, short = spec_variants(view, info, self._space(), build, drafts)
         params = await self._db.acall(lambda conn: sampling(conn, model_id))
         self.job.update(status="measuring", step="spec", done=0, total=len(variants))
         await self._publish()
@@ -673,7 +685,8 @@ class Tuner:
                 if variant["name"] == "none":  # nothing to compare with
                     raise
                 log.info("guessing ahead for %s, %s: %s", model_id, variant["name"], exc)
-                measured.append({"name": variant["name"], "error": str(exc)})
+                measured.append({key: variant[key] for key in ("name", "draft") if key in variant} | {
+                    "error": str(exc)})  # fmt: skip
                 continue
             finally:
                 self.job["done"] = self.job.get("done", 0) + 1
@@ -682,26 +695,26 @@ class Tuner:
         log.info("guessing ahead for %s measured: %s", model_id, measured)
         pick = spec_choice([m for m in measured if "tg" in m])
         out = {"kind": pick["name"], "spec_type": pick["changes"]["spec_type"], "before": measured[0]["tg"],
-               "after": pick["tg"], "accepted": pick.get("accepted"), "short": short,
-               "draft": draft["path"].name if draft else "",
-               "measured": [{key: m[key] for key in ("name", "tg", "accepted", "error") if key in m}
+               "after": pick["tg"], "accepted": pick.get("accepted"), "short": short, "draft": pick.get("draft", ""),
+               "measured": [{key: m[key] for key in ("name", "draft", "tg", "accepted", "error") if key in m}
                             for m in measured]}  # fmt: skip
         backup = await self._write(model_id, lambda now: llama_config.edit(now, model_id, pick["changes"], build=build))
         return {"status": "better", **out, "backup": backup} if backup else {"status": "same", **out}
 
-    async def _find_draft(self, model_id: str, view: dict[str, Any]) -> dict[str, Any] | None:
-        """The draft model to measure: the one found for this model (42.5: paired, downloaded), else the one its
-        command has; with its file's header (the memory estimate)."""
-        path = await self._draft(model_id, Path(view["file"])) if self._draft is not None else None
-        if path is None and view["spec"]["draft"] and Path(view["spec"]["draft"]).is_file():
-            path = Path(view["spec"]["draft"])
-        if path is None:
-            return None
-        try:
-            return {"path": path, "info": await asyncio.to_thread(model_info, path)}
-        except (OSError, GGUFError) as exc:
-            log.info("the draft %s for %s: %s", path, model_id, exc)
-            return None
+    async def _find_drafts(self, model_id: str, view: dict[str, Any]) -> list[dict[str, Any]]:
+        """The draft models to measure: those found for this model (42.5: paired, downloaded; 44.8: each made for
+        it) and the one its command has; each with its file's header (the memory estimate, its kind)."""
+        paths = list(await self._drafts(model_id, Path(view["file"]))) if self._drafts is not None else []
+        own = Path(view["spec"]["draft"]) if view["spec"]["draft"] else None
+        if own is not None and own.is_file() and own not in paths:
+            paths.append(own)
+        out = []
+        for path in paths:
+            try:
+                out.append({"path": path, "info": await asyncio.to_thread(model_info, path)})
+            except (OSError, GGUFError) as exc:
+                log.info("the draft %s for %s: %s", path, model_id, exc)
+        return out
 
     async def _write(self, model_id: str, edit: Callable[[str], str | None]) -> str | None:
         """The config changed under the writers' lock - `edit` of the file as it is now, not as it was before the

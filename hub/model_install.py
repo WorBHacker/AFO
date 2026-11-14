@@ -646,42 +646,55 @@ class Installer:
             self._answers_new = True
         return self._headers[repo, path]
 
-    async def draft_for(self, model_file: Path, kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None:
-        """The catalog's draft model for this model (42.3): of its family, DRAFT_RATIO times smaller at least, its
-        vocabulary the model's - read from the first bytes of its file on Hugging Face, before any download; with its
-        file as Hugging Face has it now (size, sha256, commit). A draft made for this one model (44.4: DFlash,
-        EAGLE-3 - the catalog's `kind`, the model's files its `names`) comes first, when the build knows its kind
-        (`kinds`: llama-server's --spec-type; None - any). None - none fits; a repository that does not answer is
-        passed over."""
+    async def drafts_for(self, model_file: Path, kinds: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        """The catalog's draft models for this model (42.3): DRAFT_RATIO times smaller at least, its vocabulary the
+        model's - read from the first bytes of its file on Hugging Face, before any download; with its file as Hugging
+        Face has it now (size, sha256, commit). Those made for this one model (44.4: DFlash, EAGLE-3; 44.8: an MTP
+        head - the catalog's `kind`, the model's files its `names`) whose kind the build knows (`kinds`:
+        llama-server's --spec-type; None - any) - each one, the tuning measures them all; none such - the first of its
+        family that fits. [] - none fits; a repository that does not answer is passed over."""
         info = await asyncio.to_thread(model_info, model_file)
-        own: dict[str, Any] | None = None
+        vocabulary: list[dict[str, Any]] = []  # the model's own, read once when a draft needs it
+        made: list[dict[str, Any]] = []
         for entry in sorted(drafts(), key=lambda d: (d.get("kind") or "simple") == "simple"):
             entry = {**entry, "kind": entry.get("kind") or "simple"}
+            if made and entry["kind"] == "simple":  # those made for it: the family's is not looked at
+                break
             if info.get("architecture") not in entry["architectures"]:
                 continue
             if kinds is not None and f"draft-{entry['kind']}" not in kinds:
                 continue
             if entry.get("names") and not re.search(entry["names"], model_file.name):  # a coder's draft for a coder
                 continue
-            try:
-                listed = await self._listed(entry["repo"])
-            except hf.HubError as exc:
-                log.info("no draft %s: %s", entry["repo"], exc)
-                continue
-            file = listed["files"].get(entry["file"])
-            if file is None or file["size"] * DRAFT_RATIO > info["size_bytes"]:
-                continue
-            if own is None:
-                own = await asyncio.to_thread(tokenizer_info, model_file)
-            try:
-                theirs = await asyncio.to_thread(hf.tokenizer, entry["repo"], entry["file"], self.token(),
-                                                 listed["revision"])  # fmt: skip
-            except (hf.HubError, GGUFError) as exc:
-                log.info("no vocabulary of %s/%s: %s", entry["repo"], entry["file"], exc)
-                continue
-            if same_vocabulary(own, theirs):
-                return {**entry, "size": file["size"], "sha256": file["sha256"], "revision": listed["revision"]}
-        return None
+            found = await self._draft_fits(entry, info, model_file, vocabulary)
+            if found is not None and entry["kind"] == "simple":
+                return [found]
+            made += [found] if found is not None else []
+        return made
+
+    async def _draft_fits(self, entry: dict[str, Any], info: dict[str, Any], model_file: Path,
+                          vocabulary: list[dict[str, Any]]) -> dict[str, Any] | None:  # fmt: skip
+        """A catalog's draft with its file as Hugging Face has it now - when it is DRAFT_RATIO times smaller than the
+        model and its vocabulary the model's (42.3); None - not."""
+        try:
+            listed = await self._listed(entry["repo"])
+        except hf.HubError as exc:
+            log.info("no draft %s: %s", entry["repo"], exc)
+            return None
+        file = listed["files"].get(entry["file"])
+        if file is None or file["size"] * DRAFT_RATIO > info["size_bytes"]:
+            return None
+        if not vocabulary:
+            vocabulary.append(await asyncio.to_thread(tokenizer_info, model_file))
+        try:
+            theirs = await asyncio.to_thread(hf.tokenizer, entry["repo"], entry["file"], self.token(),
+                                             listed["revision"])  # fmt: skip
+        except (hf.HubError, GGUFError) as exc:
+            log.info("no vocabulary of %s/%s: %s", entry["repo"], entry["file"], exc)
+            return None
+        if not same_vocabulary(vocabulary[0], theirs):
+            return None
+        return {**entry, "size": file["size"], "sha256": file["sha256"], "revision": listed["revision"]}
 
     # --- the draft model guessing ahead (42.5) ---
 
@@ -715,10 +728,10 @@ class Installer:
             self.on_speed_up(model_id, automatic)
 
     async def _fetch_draft(self, model_id: str) -> None:
-        """The catalog's draft paired with this model on the disk (draft_for): one AFO has is taken again, another
-        waits for the installs' downloads (one at a time) and comes to the fastest drive with room, its sha256
-        checked; the model waits for its tuning to measure it. Nothing without a graphics card (a draft only slows the
-        processor down - ngram is measured) or for a model not llama.cpp's."""
+        """The catalog's drafts paired with this model on the disk (drafts_for; 44.8: each of those made for it): one
+        AFO has is taken again, another waits for the installs' downloads (one at a time) and comes to the fastest
+        drive with room, its sha256 checked; the model waits for its tuning to measure it. Nothing without a graphics
+        card (a draft only slows the processor down - ngram is measured) or for a model not llama.cpp's."""
         if not self.space().get("vram_gib"):
             return
         text = await asyncio.to_thread(config_text)
@@ -726,9 +739,10 @@ class Installer:
         if view["engine"] != "llama.cpp" or not view.get("file"):
             return
         build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
-        entry = await self.draft_for(Path(view["file"]), build["spec_types"] if build else None)  # 44.4: its kinds
-        if entry is None:
-            return
+        for entry in await self.drafts_for(Path(view["file"]), build["spec_types"] if build else None):  # 44.4
+            await self._fetch_one_draft(model_id, entry)
+
+    async def _fetch_one_draft(self, model_id: str, entry: dict[str, Any]) -> None:
         same = (entry["repo"], entry["file"])
         dest = next((Path(file) for file, d in self._drafts.items()
                      if (d["repo"], d["file"]) == same and Path(file).is_file()), None)  # fmt: skip
@@ -780,10 +794,11 @@ class Installer:
         drafts = json.loads(json.dumps(self._drafts))
         await self._db.acall(lambda conn: _put_setting(conn, DRAFTS_SETTING, drafts))
 
-    async def draft_path(self, model_id: str, model_file: Path) -> Path | None:
-        """The draft downloaded for this model whose tuning has not measured it yet (42.5) - the tuner's `draft`."""
-        return next((Path(file) for file, d in self._drafts.items()
-                     if model_id in d.get("waiting", []) and Path(file).is_file()), None)  # fmt: skip
+    async def draft_paths(self, model_id: str, model_file: Path) -> list[Path]:
+        """The drafts downloaded for this model whose tuning has not measured them yet (42.5; 44.8: each one) - the
+        tuner's `drafts`."""
+        return [Path(file) for file, d in self._drafts.items()
+                if model_id in d.get("waiting", []) and Path(file).is_file()]  # fmt: skip
 
     async def tuned(self, model_id: str, result: dict[str, Any]) -> None:
         """A model's tuning ended (42.5): it waits for its draft no more. A draft no model's command uses and none

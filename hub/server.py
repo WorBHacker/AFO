@@ -210,7 +210,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.tuner = Tuner(db, bus, app.state.chat, url=settings.llama_swap_url, space=app.state.installer.space,
                                 gpu=lambda: (app.state.status.latest or {}).get("gpu"),
                                 installing=app.state.installer.busy,
-                                draft=app.state.installer.draft_path)  # fmt: skip
+                                drafts=app.state.installer.draft_paths)  # fmt: skip
         # guessing ahead (42.5): after an install its draft model comes by itself, then the tuning measures with it;
         # a draft that gave nothing goes once no model uses it
         app.state.installer.on_done = lambda model_id: app.state.installer.speed_up(model_id, automatic=True)
