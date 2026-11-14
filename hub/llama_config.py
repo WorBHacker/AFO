@@ -52,6 +52,9 @@ FLAGS = {
     "ubatch": ("-ub", "--ubatch-size"),
     "threads": ("-t", "--threads"),
     "n_cpu_moe": ("-ncmoe", "--n-cpu-moe"),
+    # a Mixture-of-Experts model's experts (44.1): all in RAM - a flag without a value - and their cache on the card
+    "cpu_moe": ("-cmoe", "--cpu-moe"),
+    "moe_cache_mib": ("--moe-cache-mib",),
     "mmproj": ("--mmproj",),
     "model": ("-m", "--model"),
     # guessing ahead (speculative decoding, 42.1): their names change between llama.cpp's builds - b11899 took away
@@ -70,6 +73,9 @@ SPEC_CHANGES = ("spec_type", "draft_model", "draft_gpu_layers", "draft_max", "dr
 _SPEC_FAMILY = re.compile(r"^--(?:spec-|draft)")  # a flag of guessing ahead the hub does not set itself
 HELP_TIMEOUT_S = 30.0
 COUNTS = {"batch": (32, 65536), "ubatch": (32, 65536), "threads": (1, 512), "n_cpu_moe": (1, 999)}  # 0: llama.cpp's
+MOE = ("cpu_moe", "n_cpu_moe", "moe_cache_mib")
+SWITCHES = ("cpu_moe",)  # flags without a value
+MOE_CACHE_MAX_MIB = 1 << 20
 CACHE_TYPES = ("f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0")
 SD_ENGINE = "stable-diffusion.cpp"  # a picture model's sd-server (D55, 29.3)
 _TOKEN = re.compile(r'"[^"]*"|\'[^\']*\'|\S+')
@@ -336,6 +342,7 @@ def match_build(text: str, build: dict[str, Any]) -> str:
         known = ",".join(k for k in kinds.split(",") if k in build["spec_types"] and k != "none") if kinds else ""
         if kinds and not known:  # nothing of it the build knows: guessing off, its draft too
             names = {setting: (every, None) for setting, (every, _) in names.items()}
+        names.update({setting: spelled(setting, build) for setting in MOE})  # 44.1: the experts' flags it has
         for i in range(last - 1, first - 1, -1):
             indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
             tokens = _TOKEN.findall(lines[i])
@@ -350,7 +357,8 @@ def match_build(text: str, build: dict[str, Any]) -> str:
                     at += 1
                 elif setting is not None or tokens[at] in build["removed"] or (
                         _SPEC_FAMILY.match(tokens[at]) and tokens[at] not in build["known"]):  # fmt: skip
-                    del tokens[at : at + (2 if _has_value(tokens, at) else 1)]
+                    alone = setting in SWITCHES or not _has_value(tokens, at)
+                    del tokens[at : at + (1 if alone else 2)]
                 else:
                     at += 1
             if tokens:
@@ -417,6 +425,8 @@ def model_view(text: str, model_id: str) -> dict[str, Any]:
             "ubatch": int(value("ubatch") or 0),
             "threads": int(value("threads") or 0),
             "n_cpu_moe": int(value("n_cpu_moe") or 0),
+            "cpu_moe": _flag(tokens, FLAGS["cpu_moe"]) is not None,  # 44.1: no value - the word after it is another's
+            "moe_cache_mib": int(value("moe_cache_mib") or 0),
             # guessing ahead (42.1): its kinds ('' - off), the draft model and how it runs
             "spec": {"type": value("spec_type") or "", "draft": value("draft_model") or "",
                      "draft_gpu_layers": _layers(value("draft_gpu_layers")), "draft_max": _whole(value("draft_max")),
@@ -466,7 +476,7 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str
     """The settings asked for, checked; a Strata model takes only its ttl. Guessing ahead is checked against
     `build` - the server_flags of the llama-server in the config."""
     allowed = {"ttl"} if not view["editable"] else {"ttl", "context", "gpu_layers", "flash_attn", "cache_type",
-                                                    "parallel", *COUNTS, *SPEC_CHANGES}  # fmt: skip
+                                                    "parallel", *COUNTS, *MOE, *SPEC_CHANGES}  # fmt: skip
     out: dict[str, Any] = {}
     for key, value in changes.items():
         if value is None:
@@ -492,6 +502,14 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str
             if value not in ("auto", "all") and (isinstance(value, bool) or not isinstance(value, int)
                                                  or not 0 <= value <= 999):  # fmt: skip
                 raise ConfigError(tr("слои на видеокарте: auto, all или число от 0 до 999"))
+        elif key == "cpu_moe" and not isinstance(value, bool):
+            raise ConfigError(tr("все эксперты MoE в ОЗУ: да или нет"))
+        elif key == "moe_cache_mib":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MOE_CACHE_MAX_MIB:
+                raise ConfigError(tr("кэш экспертов MoE: от 0 до {high} МБ", high=MOE_CACHE_MAX_MIB))
+            if value and (build is None or spelled("moe_cache_mib", build)[1] is None):
+                raise ConfigError(tr("эта сборка llama.cpp не знает кэша экспертов MoE (--moe-cache-mib) — обновите "
+                                     "её в мастере первого запуска"))  # fmt: skip
         elif key == "flash_attn" and value not in ("on", "off", "auto"):
             raise ConfigError(tr("flash attention: on, off или auto"))
         elif key == "cache_type" and value not in CACHE_TYPES:
@@ -526,12 +544,35 @@ def _set_flag(lines: list[str], first: int, last: int, names: tuple[str, ...], v
         return
     if value is None:
         return
+    home = _home(lines, first, last)
+    lines[home] = lines[home].rstrip() + f" {write_as or names[0]} {value}"
+
+
+def _home(lines: list[str], first: int, last: int) -> int:
+    """The line a new flag goes to: the one with the other options (-c / -ngl / -fa), else the one before --host."""
     home = next((i for i in range(first, last) if any(_flag(_TOKEN.findall(lines[i]), FLAGS[k]) is not None
                                                       for k in ("context", "gpu_layers", "flash_attn", "fit"))),
                 None)  # fmt: skip
     if home is None:
         home = next((i - 1 for i in range(first + 1, last) if "--host" in lines[i]), last - 1)
-    lines[home] = lines[home].rstrip() + f" {write_as or names[0]} {value}"
+    return home
+
+
+def _set_switch(lines: list[str], first: int, last: int, names: tuple[str, ...], on: bool) -> None:
+    """A flag without a value (--cpu-moe, 44.1) written once, or taken off alone - each time it is there: the word
+    after it is another flag's."""
+    found = False
+    for i in range(first, last):
+        tokens = _TOKEN.findall(lines[i])
+        if _flag(tokens, names) is None:
+            continue
+        found = True
+        if not on:
+            indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+            lines[i] = indent + " ".join(t for t in tokens if t not in names)
+    if on and not found:
+        home = _home(lines, first, last)
+        lines[home] = lines[home].rstrip() + f" {names[-1]}"
 
 
 def _set_spec(lines: list[str], first: int, last: int, changes: dict[str, Any], view: dict[str, Any],
@@ -609,6 +650,11 @@ def edit(text: str, model_id: str, changes: dict[str, Any], *, build: dict[str, 
     for key in COUNTS:
         if key in changes:
             _set_flag(lines, first, last, FLAGS[key], str(changes[key]) if changes[key] else None)
+    if "cpu_moe" in changes:
+        _set_switch(lines, first, last, FLAGS["cpu_moe"], changes["cpu_moe"])
+    if "moe_cache_mib" in changes:  # checked: a build that has it
+        cache = changes["moe_cache_mib"]
+        _set_flag(lines, first, last, FLAGS["moe_cache_mib"], str(cache) if cache else None)
     if set(SPEC_CHANGES) & changes.keys():  # checked: without a build only taking it off
         _set_spec(lines, first, last, changes, view, build)
     out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")

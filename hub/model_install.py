@@ -53,6 +53,7 @@ from common.llama_memory import (
     draft_load,
     estimate,
     kv_bytes,
+    moe_load,
     short_now,
 )
 from common.paths import NAME, engines_home, models_home
@@ -1803,7 +1804,7 @@ def _estimated(text: str, model_id: str, vram_total_mib: int | None) -> dict[str
     return estimate(info, context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=mmproj,
                     mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=vram_total_mib,
-                    draft=draft_load(view))  # fmt: skip
+                    draft=draft_load(view), moe=moe_load(view))  # fmt: skip
 
 
 def _ours(text: str, model_id: str, job_id: str) -> bool:

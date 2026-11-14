@@ -38,13 +38,22 @@ def estimate(
     vram_total_mib: int | None = None,
     reserve_gib: float = RESERVE_GIB,
     draft: dict[str, Any] | None = None,
+    moe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """{vram_gb, ram_gb, kv_gb, weights_gb, verdict, text} (+ draft_gb). `gpu_layers`: "all", a number, or "auto"
-    (llama.cpp's --fit: it puts on the GPU what fits and the rest in RAM). `reserve_gib` - the video memory a model may
-    not count on: the user's (38.3), else the default. `draft` - the draft model guessing ahead (42.2, draft_load):
-    its weights and its own KV cache for the whole context, on the graphics card first."""
+    """{vram_gb, ram_gb, kv_gb, weights_gb, verdict, text} (+ draft_gb, experts_gb, experts_cache_gb). `gpu_layers`:
+    "all", a number, or "auto" (llama.cpp's --fit: it puts on the GPU what fits and the rest in RAM). `reserve_gib` -
+    the video memory a model may not count on: the user's (38.3), else the default. `draft` - the draft model guessing
+    ahead (42.2, draft_load): its weights and its own KV cache for the whole context, on the graphics card first.
+    `moe` - the experts of a Mixture-of-Experts model kept in RAM (44.1, moe_load): what they weigh by the file's table
+    of tensors, and the cache of them on the card."""
     weights = float(info["size_bytes"])
     kv = kv_bytes(info, context, cache_type)
+    held = cache = 0.0  # the experts in RAM, and their cache on the card (GiB)
+    if moe and info.get("expert_bytes"):
+        experts = info["expert_bytes"] if moe.get("all") else info["expert_bytes"][: max(moe.get("layers") or 0, 0)]
+        held = min(float(sum(experts)), weights)
+        cache = (moe.get("cache_mib") or 0) / 1024 if held else 0.0
+    weights -= held
     blocks = max(info["layers"], 1) + 1  # the layers and the output
     total = vram_total_mib * 1024**2 / GIB if vram_total_mib else None
     vision_gpu = mmproj_bytes if mmproj_on_gpu else 0
@@ -57,28 +66,34 @@ def estimate(
         draft_gpu = held * part + (DRAFT_COMPUTE_GIB if part else 0)
         draft_ram = held * (1 - part)  # its layers kept in RAM: its guesses come slower
     if gpu_layers == "auto":
-        need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB + draft_gpu
+        need = (weights + kv) / GIB + COMPUTE_GIB + vision_gpu / GIB + draft_gpu + cache
         room = (total - reserve_gib) if total else need
         vram = min(need, room)
         spill = need - vram  # the layers that did not fit: in RAM
-        ram = spill + (mmproj_bytes - vision_gpu) / GIB + draft_ram
+        ram = spill + (mmproj_bytes - vision_gpu) / GIB + draft_ram + held / GIB
         spill += draft_ram
     else:
         share = 1.0 if gpu_layers == "all" else min(max(int(gpu_layers), 0), blocks) / blocks
-        vram = (weights + kv) * share / GIB + (COMPUTE_GIB if share else 0) + vision_gpu / GIB + draft_gpu
+        vram = (weights + kv) * share / GIB + (COMPUTE_GIB + cache if share else 0) + vision_gpu / GIB + draft_gpu
         spill = (weights + kv) * (1 - share) / GIB + draft_ram
-        ram = spill + (mmproj_bytes - vision_gpu) / GIB  # the vision projector kept in RAM is not slower layers
+        # the vision projector and the experts kept in RAM are not slower layers: each word uses a few experts
+        ram = spill + (mmproj_bytes - vision_gpu) / GIB + held / GIB
     out = {"vram_gb": round(vram, 1), "ram_gb": round(ram, 1), "kv_gb": round(kv / GIB, 2),
-           "weights_gb": round(weights / GIB, 1), "total_gb": round(total, 1) if total else None}  # fmt: skip
+           "weights_gb": round((weights + held) / GIB, 1), "total_gb": round(total, 1) if total else None}  # fmt: skip
+    parts = [tr("KV-кэш {kv} ГБ", kv=out["kv_gb"])]
     if draft:
         out["draft_gb"] = round(draft_gpu + draft_ram, 1)
+        parts.append(tr("черновая модель {draft} ГБ", draft=out["draft_gb"]))
+    if held:
+        out["experts_gb"] = round(held / GIB, 1)
+        parts.append(tr("эксперты MoE {gb} ГБ в ОЗУ", gb=out["experts_gb"]))
+    if cache:
+        out["experts_cache_gb"] = round(cache, 1)
+        parts.append(tr("кэш экспертов {gb} ГБ", gb=out["experts_cache_gb"]))
     where = tr("≈ {vram} ГБ видеопамяти из {total:g}", vram=out["vram_gb"], total=out["total_gb"]) if total else \
         tr("≈ {vram} ГБ видеопамяти", vram=out["vram_gb"])  # fmt: skip
     where += tr(" и {ram} ГБ ОЗУ", ram=out["ram_gb"]) if out["ram_gb"] >= 0.1 else ""
-    if draft:
-        where += tr(" (KV-кэш {kv} ГБ, черновая модель {draft} ГБ)", kv=out["kv_gb"], draft=out["draft_gb"])
-    else:
-        where += tr(" (KV-кэш {kv} ГБ)", kv=out["kv_gb"])
+    where += " (" + ", ".join(parts) + ")"
     if total is None:
         out["verdict"] = "unknown"
     elif gpu_layers == "auto":
@@ -90,7 +105,9 @@ def estimate(
     out["text"] = (
         where
         + {
-            "fits": tr(" — помещается в видеопамять целиком"),
+            "fits": tr(" — помещается: эксперты MoE в ОЗУ, остальное на видеокарте")
+            if held
+            else tr(" — помещается в видеопамять целиком"),
             "split": tr(" — часть слоёв в ОЗУ: работать будет медленнее"),
             "auto": tr(" — llama.cpp сам положит в видеопамять, что поместится, остальное — в ОЗУ (медленнее)"),
             "over": tr(
@@ -111,6 +128,16 @@ def draft_load(view: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {"info": view["draft_info"], "gpu_layers": spec.get("draft_gpu_layers") or "auto",
             "cache_type": spec.get("draft_cache_type") or "f16"}  # fmt: skip
+
+
+def moe_load(view: dict[str, Any]) -> dict[str, Any] | None:
+    """Where a launch keeps a Mixture-of-Experts model's experts, as estimate() wants it (44.1): from a model's view
+    (hub.llama_config's cpu_moe, n_cpu_moe, moe_cache_mib) - all of them in RAM, or those of the first `layers`
+    layers, and the cache of them on the card; None - all on the card, as llama.cpp keeps them by itself."""
+    if not view.get("cpu_moe") and not view.get("n_cpu_moe"):
+        return None
+    return {"all": bool(view.get("cpu_moe")), "layers": int(view.get("n_cpu_moe") or 0),
+            "cache_mib": int(view.get("moe_cache_mib") or 0)}  # fmt: skip
 
 
 def short_now(need: dict[str, Any], status: dict[str, Any] | None, own: dict[str, float] | None = None) -> str:

@@ -34,7 +34,7 @@ import psutil
 
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
-from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes
+from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes, moe_load
 from common.paths import data_paths
 
 from . import llama_config, model_settings
@@ -258,7 +258,8 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
     context = view.get("context") or 4096
 
     def need(layers: str | int, tokens: int = context) -> float:
-        return estimate(info, context=tokens, cache_type=cache, gpu_layers=layers, draft=load)["vram_gb"]
+        return estimate(info, context=tokens, cache_type=cache, gpu_layers=layers, draft=load,
+                        moe=moe_load(view))["vram_gb"]  # fmt: skip
 
     room = space.get("vram_gib") or 0.0
     if view["gpu_layers"] == "auto" or need(view["gpu_layers"]) <= room:  # --fit places them itself

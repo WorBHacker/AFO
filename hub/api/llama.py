@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from common.gguf import GGUFError, model_info
 from common.i18n import tr
-from common.llama_memory import draft_load, estimate
+from common.llama_memory import draft_load, estimate, moe_load
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
@@ -166,7 +166,8 @@ async def _estimate(request: Request, model_id: str) -> dict[str, Any] | None:
     return estimate(view["info"], context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
                     gpu_layers=view.get("gpu_layers") or "all", mmproj_bytes=view.get("mmproj_bytes") or 0,
                     mmproj_on_gpu=bool(view.get("mmproj_on_gpu")), vram_total_mib=total,
-                    reserve_gib=request.app.state.installer.reserve["vram_gib"], draft=draft_load(view))  # fmt: skip
+                    reserve_gib=request.app.state.installer.reserve["vram_gib"], draft=draft_load(view),
+                    moe=moe_load(view))  # fmt: skip
 
 
 class Restore(BaseModel):

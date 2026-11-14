@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.i18n import N_, decimal, tr
-from common.llama_memory import RESERVE_GIB, draft_load, estimate
+from common.llama_memory import RESERVE_GIB, draft_load, estimate, moe_load
 from hub.gateway.base import PRICES_FRESH_DAYS
 
 from .. import presenter
@@ -312,7 +312,7 @@ def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: i
     found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
                      mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
                      vram_total_mib=vram_total_mib, reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib,
-                     draft=draft_load(view))  # the draft model guessing ahead takes its share (42.2)  # fmt: skip
+                     draft=draft_load(view), moe=moe_load(view))  # the draft (42.2), experts in RAM (44.1)  # fmt: skip
     return found["text"], ESTIMATE_TONES.get(found["verdict"], "")
 
 

@@ -19,7 +19,7 @@ from starlette.testclient import TestClient
 
 from app.ui import model_setup as ms
 from common.gguf import GGUFError, model_info, read_header
-from common.llama_memory import estimate
+from common.llama_memory import estimate, moe_load
 from common.paths import data_paths
 from hub import llama_config as lc
 from hub import model_install as mi
@@ -106,14 +106,15 @@ def test_the_settings_as_read_and_changed_only_where_they_must():
             lc.edit(CONFIG, model, changes)
 
 
-def gguf(path, keys):
-    """A GGUF file's header with these keys (strings, ints, a long token list), and no weights."""
+def gguf(path, keys, tensors=()):
+    """A GGUF file's header with these keys (strings, ints, a long token list) and the table of these tensors (name,
+    dimensions, ggml's type), and no weights."""
 
     def string(text):
         data = text.encode()
         return struct.pack("<Q", len(data)) + data
 
-    out = b"GGUF" + struct.pack("<IQQ", 3, 0, len(keys) + 1)
+    out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(keys) + 1)
     for key, value in keys.items():
         out += string(key)
         if isinstance(value, str):
@@ -121,6 +122,8 @@ def gguf(path, keys):
         else:
             out += struct.pack("<II", 4, value)
     out += string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 3) + b"".join(string(t) for t in "abc")
+    for name, dims, kind in tensors:
+        out += string(name) + struct.pack(f"<I{len(dims)}QIQ", len(dims), *dims, kind, 0)
     path.write_bytes(out + b"\0" * 1000)
     return path
 
@@ -192,6 +195,110 @@ def test_the_draft_model_takes_its_share_of_the_memory(tmp_path):
     missing = text.replace("draft.gguf", "gone.gguf")  # its file away: the model's own estimate still
     assert "draft_gb" not in mi._estimated(missing, "big", card)
     assert lc_files(lc.model_view(missing, "big"))["draft_error"]
+
+
+F32, Q4_K, Q6_K = 0, 12, 14  # ggml's types
+MOE = {"general.architecture": "qwen3moe", "qwen3moe.block_count": 48, "qwen3moe.attention.head_count": 32,
+       "qwen3moe.attention.head_count_kv": 4, "qwen3moe.attention.key_length": 128,
+       "qwen3moe.attention.value_length": 128, "qwen3moe.embedding_length": 2048, "qwen3moe.context_length": 40960,
+       "qwen3moe.expert_count": 128, "qwen3moe.expert_used_count": 8,
+       "qwen3moe.expert_feed_forward_length": 768}  # fmt: skip
+NOT_EXPERTS = 1_003_206_656  # what moe_tensors() has besides the experts, in bytes
+
+
+def moe_tensors(layers=range(48), *, head=True, down=None):
+    """Qwen3-30B-A3B's tensors as its Q4_K_M has them, near enough: in each layer the attention, the router, and its
+    128 experts (gate, up, down) - most of the weights."""
+    out = [("token_embd.weight", (2048, 151936), Q4_K), ("output_norm.weight", (2048,), F32),
+           ("output.weight", (2048, 151936), Q6_K)] if head else []  # fmt: skip
+    for i in layers:
+        out += [(f"blk.{i}.attn_q.weight", (2048, 4096), Q4_K), (f"blk.{i}.attn_k.weight", (2048, 512), Q4_K),
+                (f"blk.{i}.attn_v.weight", (2048, 512), Q6_K), (f"blk.{i}.attn_output.weight", (4096, 2048), Q4_K),
+                (f"blk.{i}.ffn_gate_inp.weight", (2048, 128), F32),
+                (f"blk.{i}.ffn_gate_exps.weight", (2048, 768, 128), Q4_K),
+                (f"blk.{i}.ffn_up_exps.weight", (2048, 768, 128), Q4_K),
+                (f"blk.{i}.ffn_down_exps.weight", (768, 2048, 128), down or (Q6_K if i % 2 else Q4_K))]  # fmt: skip
+    return out
+
+
+def test_moe_experts_in_ram_and_their_cache_on_the_card(tmp_path):
+    """44.1: a Mixture-of-Experts model's experts are most of its weights, and each word uses few of them: llama.cpp
+    keeps them in RAM (--cpu-moe, or those of the first N layers: --n-cpu-moe) and the rest on the graphics card -
+    and a cache of the experts used most there too (--moe-cache-mib). The header's table of tensors says what the
+    experts weigh in each layer; the estimate counts them where the launch keeps them: a model twice the card fits."""
+    info = model_info(gguf(tmp_path / "moe.gguf", MOE, moe_tensors()))
+    assert (info["experts"], info["experts_used"], info["mtp_layers"]) == (128, 8, 0)
+    assert len(info["expert_bytes"]) == 48 and info["expert_bytes"][:2] == [339_738_624, 391_643_136]  # Q4_K, Q6_K
+    experts = sum(info["expert_bytes"])
+    info = {**info, "size_bytes": experts + NOT_EXPERTS}  # the weights its table says: the test's file has none
+    card = 8 * 1024
+    assert info["size_bytes"] > 2 * card * 1024**2
+
+    def on(moe, **kw):
+        return estimate(info, context=16384, cache_type="q8_0", vram_total_mib=card, moe=moe, **kw)
+
+    assert on(None)["verdict"] == "over"
+    out = on({"all": True, "layers": 0, "cache_mib": 0})
+    assert (out["verdict"], out["vram_gb"], out["ram_gb"], out["experts_gb"]) == ("fits", 2.5, 16.3, 16.3)
+    assert "эксперты MoE 16.3 ГБ в ОЗУ" in out["text"] and "целиком" not in out["text"]
+    assert on({"all": True, "layers": 0, "cache_mib": 0}, gpu_layers="auto")["verdict"] == "fits"
+    by_layers = {n: on({"all": False, "layers": n, "cache_mib": 0})["verdict"] for n in (30, 36, 99)}
+    assert by_layers == {30: "over", 36: "fits", 99: "fits"}  # those of the first 36 layers: the rest fits
+    cached = on({"all": True, "layers": 0, "cache_mib": 4096})
+    assert (cached["verdict"], cached["vram_gb"]) == ("fits", 6.5) and "кэш экспертов 4.0 ГБ" in cached["text"]
+    assert on({"all": True, "layers": 0, "cache_mib": 6144})["verdict"] == "over"
+
+    # a dense model has no experts; a type ggml's table here does not know - its share of the file's bytes
+    assert "expert_bytes" not in model_info(gguf(tmp_path / "dense.gguf", {**MOE, "qwen3moe.expert_count": 0}))
+    odd = model_info(gguf(tmp_path / "odd.gguf", MOE, moe_tensors(down=99)))
+    assert len(odd["expert_bytes"]) == 48 and odd["expert_bytes"][0] >= 2 * 113_246_208
+
+    # a model split into files (`-00001-of-00002.gguf`): its size and its experts are those of every part
+    gguf(tmp_path / "moe-00001-of-00002.gguf", {**MOE, "split.count": 2}, moe_tensors(range(24)))
+    gguf(tmp_path / "moe-00002-of-00002.gguf", {"split.no": 1, "split.count": 2},
+         moe_tensors(range(24, 48), head=False))  # fmt: skip
+    split = model_info(tmp_path / "moe-00001-of-00002.gguf")
+    assert split["expert_bytes"] == model_info(tmp_path / "moe.gguf")["expert_bytes"]
+    assert split["size_bytes"] == sum(p.stat().st_size for p in tmp_path.glob("moe-0000*-of-00002.gguf"))
+
+    # the launch's flags: the hub, the installer and the window count the experts where the command keeps them
+    gguf(tmp_path / "big.gguf", MOE, moe_tensors())
+    (tmp_path / "mmproj.gguf").write_bytes(b"\0" * 100)
+    text = CONFIG.replace("F:/models/", tmp_path.as_posix() + "/").replace(
+        "-ngl 99 -fa on", "-ngl 99 --cpu-moe --moe-cache-mib 512 -fa on")  # fmt: skip
+    view = {**lc.model_view(text, "big"), **lc_files(lc.model_view(text, "big"))}
+    assert moe_load(view) == {"all": True, "layers": 0, "cache_mib": 512}
+    assert moe_load(lc.model_view(CONFIG, "big")) is None
+    assert "experts_gb" in mi._estimated(text, "big", card)
+    assert "experts_gb" not in mi._estimated(text.replace("--cpu-moe ", ""), "big", card)
+    assert "эксперты MoE" in ms.launch_estimate(ms.launch_draft(view), view, card)
+
+
+def test_the_experts_flags_in_the_config():
+    """44.1: --cpu-moe has no value - written once, read, and taken off alone: not with the word after it, as a flag
+    with a value is. The experts' cache only for a build that has --moe-cache-mib."""
+    build = lc.parse_help(HELP)
+    new = lc.edit(CONFIG, "big", {"cpu_moe": True, "moe_cache_mib": 4096}, build=build)
+    assert "      -ngl 99 -fa on -c 32768 -ctk q8_0 -ctv q8_0 -np 1 --cpu-moe --moe-cache-mib 4096" in new.splitlines()
+    view = lc.model_view(new, "big")
+    assert (view["cpu_moe"], view["n_cpu_moe"], view["moe_cache_mib"], view["flash_attn"]) == (True, 0, 4096, "on")
+    assert lc.edit(new, "big", {"cpu_moe": True}, build=build) == new  # once
+    assert lc.edit(new, "big", {"cpu_moe": False, "moe_cache_mib": 0}) == CONFIG  # off: needs no build
+    first = CONFIG.replace("-ngl 99 -fa on", "-ngl 99 --cpu-moe -fa on")
+    assert lc.model_view(first, "big")["flash_attn"] == "on"
+    assert lc.edit(first, "big", {"cpu_moe": False}) == CONFIG  # «-fa on» after it stays
+    by_layers = lc.edit(CONFIG, "big", {"n_cpu_moe": 12})
+    assert lc.model_view(by_layers, "big")["n_cpu_moe"] == 12 and not lc.model_view(by_layers, "big")["cpu_moe"]
+    older = lc.parse_help(HELP.replace(MOE_CACHE_HELP, ""))
+    for changes, how, said in (({"cpu_moe": 1}, build, "да или нет"), ({"moe_cache_mib": -1}, build, "от 0"),
+                               ({"moe_cache_mib": 4096}, None, "кэша экспертов"),
+                               ({"moe_cache_mib": 4096}, older, "кэша экспертов")):  # fmt: skip
+        with pytest.raises(lc.ConfigError, match=said):
+            lc.edit(CONFIG, "big", changes, build=how)
+    # a build without the cache: llama-swap would not start the model with it - its flag goes, the rest stays
+    with_cache = CONFIG.replace("-ngl 99 -fa on", "-ngl 99 --cpu-moe --moe-cache-mib 4096 -ncmoe 4 -fa on")
+    assert lc.match_build(with_cache, build) == with_cache
+    assert lc.match_build(with_cache, older) == CONFIG.replace("-ngl 99 -fa on", "-ngl 99 --cpu-moe -ncmoe 4 -fa on")
 
 
 _noise = random.Random(7)
@@ -453,6 +560,12 @@ def test_a_write_waits_out_a_reader_of_the_file(tmp_path, monkeypatch):
 # takes, out of 750
 KINDS = ("none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,"
          "ngram-map-k4v,ngram-mod,ngram-cache")  # fmt: skip
+MOE_CACHE_HELP = """\
+--moe-cache-mib N                       GPU cache size in MiB for the MoE experts kept in the CPU. with
+                                        multiple GPUs, it is split among them like the layers (--tensor-split)
+                                        (default: 0, disabled)
+                                        (env: LLAMA_ARG_MOE_CACHE_MIB)
+"""
 HELP = f"""----- common params -----
 
 -h,    --help, --usage                  print usage and exit
@@ -460,7 +573,12 @@ HELP = f"""----- common params -----
                                         (env: LLAMA_ARG_CTX_SIZE)
 -fa,   --flash-attn [on|off|auto]       set Flash Attention use ('on', 'off', or 'auto', default: 'auto')
                                         (env: LLAMA_ARG_FLASH_ATTN)
--ngl,  --gpu-layers, --n-gpu-layers N   max. number of layers to store in VRAM, either an exact number,
+-cmoe, --cpu-moe                        keep all Mixture of Experts (MoE) weights in the CPU
+                                        (env: LLAMA_ARG_CPU_MOE)
+-ncmoe, --n-cpu-moe N                   keep the Mixture of Experts (MoE) weights of the first N layers in the
+                                        CPU
+                                        (env: LLAMA_ARG_N_CPU_MOE)
+{MOE_CACHE_HELP}-ngl,  --gpu-layers, --n-gpu-layers N   max. number of layers to store in VRAM, either an exact number,
                                         'auto', or 'all' (default: auto)
                                         (env: LLAMA_ARG_N_GPU_LAYERS)
 -m,    --model FNAME                    model path to load
