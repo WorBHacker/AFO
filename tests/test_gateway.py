@@ -176,6 +176,58 @@ def test_the_loading_banner_in_pieces():
         assert [(e.kind, e.text) for e in events if e.kind != "end"] == kinds
 
 
+def test_a_local_model_is_asked_only_the_depths_its_template_takes():
+    """0.1.13: Qwen3.8's chat template takes xhigh, medium and low only - «max» was a 500 from llama.cpp. The levels
+    llama-swap's models take (read from their templates, hub/llama_config.model_efforts) are in the catalog for the
+    window, and a request asks the nearest one the model takes at or below the chat's; a model whose template names
+    none is asked as the chat says."""
+    sent = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "qwen38", "aliases": ["qwen"]}, {"id": "coder"}]})
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, content=sse('{"choices":[{"delta":{"content":"ok"}}]}'))
+
+    provider = provider_with(handler)
+    asked = []
+
+    async def efforts():
+        asked.append(1)
+        return {"qwen38": ["low", "medium", "xhigh"]}
+
+    provider.efforts = efforts
+    models = {m.model_ref: m for m in asyncio.run(provider.list_models())}
+    assert models["qwen38"].capabilities["efforts"] == ["low", "medium", "xhigh"]
+    assert "efforts" not in models["coder"].capabilities
+
+    async def ask(model, effort):
+        return [e async for e in provider.stream_chat(model, [{"role": "user", "content": "hi"}], effort,
+                                                      asyncio.Event())]  # fmt: skip
+
+    for model, effort, wanted in (("qwen38", "max", "xhigh"), ("qwen38", "high", "medium"), ("qwen38", "low", "low"),
+                                  ("qwen", "max", "xhigh"), ("coder", "max", "max")):  # fmt: skip
+        asyncio.run(ask(model, effort))
+        assert sent[-1]["reasoning_effort"] == wanted, (model, effort)
+    assert len(asked) == 6  # read anew for each answer (the hub keeps the files' reading): a template changed is seen
+
+
+def test_a_refusal_after_the_loading_banner_is_an_error_not_an_empty_answer():
+    """0.1.13 (found 2026-11-14, then on a stand llama-swap v267): while a model loads, llama-swap answers 200 and
+    sends its banner; when the model then refuses the request, llama-swap passes its JSON error on as is - not a
+    `data:` line, so the answer was empty and no error was shown."""
+    banner = ["llama-swap loading model: qwen38\n", "Done! (290s)\n"]
+    lines = [json.dumps({"choices": [{"delta": {"reasoning_content": piece}}]}) for piece in banner]
+    refusal = ('{"error": {"code": 500, "message": "Jinja Exception: Unexpected reasoning effort max. Supported types '
+               'are xhigh (default), medium, and low.", "type": "server_error"}}')  # fmt: skip
+    body = "".join(f"data: {line}\n\n" for line in lines).encode() + refusal.encode()
+
+    from hub.gateway.base import ProviderError
+
+    with pytest.raises(ProviderError, match=r"llama-swap: HTTP 500: .*Unexpected reasoning effort max"):
+        asyncio.run(collect(provider_with(lambda request: httpx.Response(200, content=body))))
+
+
 def test_http_error_becomes_provider_error():
     from hub.gateway.base import ProviderError
 

@@ -490,17 +490,24 @@ class Controller(QObject):
         n = len(self.model_list)
         return f"{n} {presenter.plural(n, 'модель', 'модели', 'моделей')}"
 
+    def _depth(self) -> str:
+        """The depth a message goes with (0.1.13): the one chosen, or the nearest the chat's model takes at or below
+        it - the choice itself stays for the next model."""
+        return presenter.effort_for(self.models.get(self._model_id), self._effort)
+
     @Property(str, notify=effortChanged)
     def effort(self) -> str:
-        return self._effort
+        return self._depth()
 
     @Property(str, notify=effortChanged)
     def effortLabel(self) -> str:
-        return dict(presenter.efforts()).get(self._effort, self._effort)
+        return dict(presenter.efforts()).get(self._depth(), self._depth())
 
-    @Property(list, constant=True)
+    @Property(list, notify=effortChanged)
     def efforts(self) -> list:
-        return [{"value": v, "label": label} for v, label in presenter.efforts()]
+        """The depths the chat's model takes (0.1.13: Qwen3.8 - three of the five)."""
+        only = presenter.model_efforts(self.models.get(self._model_id))
+        return [{"value": v, "label": label} for v, label in presenter.efforts(only)]
 
     @Property(bool, notify=busyChanged)
     def busyNow(self) -> bool:
@@ -992,6 +999,7 @@ class Controller(QObject):
             ordered = presenter.sorted_models(models)
             self._model_id = ordered[0]["id"] if ordered else ""
         self.modelChanged.emit()
+        self.effortChanged.emit()  # the depths the model takes may be new (0.1.13)
         self.chatsChanged.emit()
 
     @Slot(str)
@@ -1000,6 +1008,7 @@ class Controller(QObject):
             self._model_id = model_id
             self.settings.setValue("chat/model", model_id)
             self.modelChanged.emit()
+            self.effortChanged.emit()  # its own depths (0.1.13)
             if self.models[model_id].get("effort"):  # the model's own reasoning depth (D39)
                 self.chooseEffort(self.models[model_id]["effort"])
 
@@ -1601,7 +1610,7 @@ class Controller(QObject):
             self.show_error(tr("Нет доступной модели"))
             self.draftRestored.emit(text)
             return
-        self._send(text, self._model_id, self._effort, self.current)
+        self._send(text, self._model_id, self._depth(), self.current)
 
     def _send(self, text: str, model_id: str, effort: str, target: str | None, *, confirmed: bool = False,
               sending: list[dict[str, Any]] | None = None) -> None:  # fmt: skip

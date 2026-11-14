@@ -979,9 +979,12 @@ class ModelSetup(QObject):
     def presets(self) -> list:
         return [{"id": i, "name": tr(n)} for i, n in PRESETS]
 
-    @Property(list, constant=True)
+    @Property(list, notify=changed)
     def efforts(self) -> list:
-        return [{"id": "", "name": tr("как в чате")}] + [{"id": v, "name": label} for v, label in presenter.efforts()]
+        """«As in the chat» and the depths this model takes (0.1.13)."""
+        model = None if self._model == GENERAL else self._info.get("model") or self.app.models.get(self._model)
+        own = [{"id": v, "name": label} for v, label in presenter.efforts(presenter.model_efforts(model))]
+        return [{"id": "", "name": tr("как в чате")}, *own]
 
     @Property("QVariantMap", notify=changed)
     def draft(self) -> dict:

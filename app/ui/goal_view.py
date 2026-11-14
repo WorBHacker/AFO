@@ -545,7 +545,7 @@ class GoalView(QObject):
     @Slot()
     def start(self) -> None:
         """«Подтвердить и запустить»: the goal is set (its commands approved), its first turn starts."""
-        contract, wrong = contract_of(self._editor, self.app._model_id, self.app._effort)
+        contract, wrong = contract_of(self._editor, self.app._model_id, self.app._depth())
         if contract is None:
             self._error = wrong
             self.editorChanged.emit()

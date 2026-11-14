@@ -256,6 +256,13 @@ def test_openrouter_takes_each_models_efforts():
     asyncio.run(go())
     assert "reasoning" not in api.sent[1]  # a model without a reasoning setting gets none
 
+    # 0.1.13: the window offers a model the depths it takes - the hub's of those OpenRouter names
+    chosen = OpenRouterProvider(lambda: KEY, chosen=lambda: _async(["qwen/qwen3.8-coder", "plain/model"]),
+                                transport=api.transport())  # fmt: skip
+    listed = {m.model_ref: m.capabilities for m in asyncio.run(chosen.list_models())}
+    assert listed["qwen/qwen3.8-coder"]["efforts"] == ["low", "medium", "high"] and "efforts" not in listed[
+        "plain/model"]  # fmt: skip
+
 
 def settled(hub):  # noqa: F811
     """Waits for the hub's startup catalog sync."""

@@ -55,6 +55,9 @@ def test_the_catalog():
     assert [m.id for m in models] == ["openai/gpt-6.1-sol", "openai/gpt-5.5"]
     assert models[0].prices == MODELS["gpt-6.1-sol"][1] and models[0].locality == "cloud"
     assert asyncio.run(OpenAIProvider(lambda: None).list_models()) == []
+    # 0.1.13: the depths each takes, for the window - the hub's names («none» is not one of them)
+    assert models[0].capabilities["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert models[1].capabilities["efforts"] == ["low", "medium", "high", "xhigh"]  # 5.5 stops at xhigh
 
 
 def test_efforts_each_model_takes():

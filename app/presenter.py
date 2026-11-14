@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from common.efforts import nearest_effort, own_efforts
 from common.i18n import N_, decimal, plural, tr
 from hub.fit import room
 
@@ -22,9 +23,21 @@ STATE_NAMES = {"ready": N_("готова"), "starting": N_("загружаетс
                "shutdown": N_("выгружается")}  # fmt: skip
 
 
-def efforts() -> list[tuple[str, str]]:
-    """(value, label) in the window's language."""
-    return [(value, tr(label)) for value, label in EFFORTS]
+def efforts(only: list[str] | None = None) -> list[tuple[str, str]]:
+    """(value, label) in the window's language; `only` - those of them (a model's own, model_efforts)."""
+    return [(value, tr(label)) for value, label in EFFORTS if only is None or value in only]
+
+
+def model_efforts(model: dict[str, Any] | None) -> list[str]:
+    """The depths a model takes, weakest first (0.1.13: the hub says them in its capabilities - a local model's chat
+    template, OpenRouter's and OpenAI's lists); every one when it does not say."""
+    named = ((model or {}).get("capabilities") or {}).get("efforts") or []
+    return own_efforts(named) or [value for value, _label in EFFORTS]
+
+
+def effort_for(model: dict[str, Any] | None, wanted: str) -> str:
+    """The depth chosen, or the nearest the model takes at or below it (common.efforts, as the hub asks it)."""
+    return nearest_effort(wanted, model_efforts(model))
 
 
 def _state(state: str) -> str:

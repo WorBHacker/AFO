@@ -3123,6 +3123,33 @@ def test_the_picker_leaves_hidden_models_out_and_a_model_sets_its_depth(app):
     assert app._effort == "low"  # the model's own depth (D39)
 
 
+def test_the_depth_menu_offers_what_the_model_takes(app):
+    """0.1.13: Qwen3.8's chat template takes xhigh, medium and low only (the hub reads them into its capabilities):
+    the depth menu offers those, the chip and a message say the nearest at or below the chosen one; back on a model
+    that takes any, the depth chosen is as it was."""
+    qwen = {"id": "llama-swap/qwen38", "model_ref": "qwen38", "name": "Qwen3.8", "locality": "local", "prices": {},
+            "capabilities": {"efforts": ["low", "medium", "xhigh"]}}  # fmt: skip
+    app._set_models([*MODELS, qwen])
+    app.chooseModel("anthropic/claude-opus-5-5")
+    app.chooseEffort("max")
+    assert len(app.efforts) == 5
+    app.chooseModel("llama-swap/qwen38")
+    assert [e["value"] for e in app.efforts] == ["low", "medium", "xhigh"]
+    assert (app.effort, app.effortLabel) == ("xhigh", "очень высокая")
+    app.send("привет")
+    wait_until(lambda: app.client.sent)
+    assert app.client.sent[-1][2:4] == ("llama-swap/qwen38", "xhigh")
+    app.chooseEffort("high")  # not one of its own: as near as it takes
+    assert app.effort == "medium"
+    app.chooseModel("anthropic/claude-opus-5-5")
+    assert app.effort == "high" and len(app.efforts) == 5  # the depth chosen, as it was
+    # the models sheet's own depth for a model: «as in the chat» and the ones it takes
+    from app import presenter
+
+    assert presenter.model_efforts(qwen) == ["low", "medium", "xhigh"] and len(presenter.model_efforts(MODELS[0])) == 5
+    assert [v for v, _ in presenter.efforts(["xhigh", "low"])] == ["low", "xhigh"]
+
+
 def test_program_rows_filters_and_questions():
     from app.ui import programs
 

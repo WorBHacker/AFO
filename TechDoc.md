@@ -27,6 +27,7 @@
 - `common/__init__.py` — пакет общего кода
 - `common/crashes.py` — след от аварийного падения окна и хаба
 - `common/disks.py` — диски компьютера и их тип (NVMe, SSD, HDD, USB) для установки моделей
+- `common/efforts.py` — глубины размышлений по порядку и ближайшая, которую берёт модель, — для хаба и окна
 - `common/gguf.py` — чтение заголовка файла GGUF для оценки памяти; словарь модели для пары с черновиком
 - `common/hardlinks.py` — все имена одного файла (жёсткие ссылки)
 - `common/hardware.py` — видеокарты компьютера для мастера первого запуска
@@ -1308,6 +1309,37 @@ block size 32 does not divide n_embd_head_v=72» (голова V — 72), у gem
   `test_the_commands_are_fitted_to_the_build_when_the_hub_starts`,
   `test_a_model_a_quantized_cache_does_not_fit_is_measured_with_f16`, `test_this_computer_against_a_model`,
   `test_faster_or_better_for_a_local_model`.
+
+### Исправление 0.1.13: глубина размышлений, которую берёт сама модель
+
+Найдено 2026-11-14 после 0.1.12 (снимки пользователя: Qwen3.8-27B RVN Q8_0 загрузилась и не ответила, на второе
+сообщение — «HTTP 500 … Jinja Exception: Unexpected reasoning effort max»). Хаб отдавал llama.cpp глубину чата как
+есть (`reasoning_effort`), а шаблон чата Qwen3.8 (RVN, и Flash-Next в llama.cpp — у того «high» сначала становится
+«xhigh») берёт только `xhigh`, `medium`, `low`, на прочие — исключение; «высокая» и «максимальная» так не работали.
+Первое сообщение пришло во время загрузки: llama-swap уже ответил 200 ради хода загрузки и отдал отказ модели после
+него как есть — JSON без `data:`; хаб такие строки пропускал, ответ был пустым и без ошибки (повторено на стенде:
+копия llama-swap v267 на своём порту, поддельный llama-server на Python).
+
+- 0.1.13 ✓ (по слову пользователя «теперь нужно делать так чтобы глубина рассуждения была которую имеет сама модель»).
+  А — уровни модели: `llama_config.template_efforts` — слова в скобках проверки `reasoning_effort … in (…)` шаблона,
+  в именах хаба (`common/efforts.py`: `EFFORTS`, `own_efforts`, `nearest_effort` — перенесён из `cloud_openai`);
+  `efforts_now`/`model_efforts` — шаблон, который запускает команда: `--chat-template-file`, иначе
+  `--chat-template`, иначе из заголовка файла модели (`tokenizer.chat_template`, после словаря — несколько МБ), без
+  Jinja (`--no-jinja`) — никаких; файл читается раз, пока не изменились размер и время (`_TEMPLATES`), в потоке. На
+  конфиге пользователя — 19 моделей за 1,5 с, из кэша 4 мс; ограничены пять Qwen3.8 (`low`, `medium`, `xhigh`),
+  остальные шаблоны уровней не называют. Б — хаб: провайдер llama-swap на этом компьютере (`efforts`, как `gate`)
+  кладёт уровни в `capabilities.efforts` и перед каждым ответом спрашивает модель ближайший уровень не выше
+  выбранного («максимальная» → `xhigh`, «высокая» → `medium`, псевдонимы llama-swap тоже); у OpenRouter —
+  его `supported_efforts`, у OpenAI — таблица `MODELS`; Gemini, Claude и Claude Code переводят любой из пяти сами —
+  у них все пять. В — окно: меню «Глубина» и лист «Настройка моделей» предлагают уровни модели
+  (`presenter.model_efforts`), кнопка и сообщение — ближайший (`App._depth`), выбор человека остаётся для следующей
+  модели. Г — отказ после хода загрузки: строка JSON с `error` вне `data:` — ошибка (`_refusal`), как ответ 500;
+  `plain_errors` — «Шаблон чата модели не принял запрос». Тесты — `test_the_reasoning_depths_a_models_chat_template_takes`,
+  `test_each_models_depths_from_its_file_or_its_template_file`,
+  `test_a_local_model_is_asked_only_the_depths_its_template_takes`,
+  `test_a_refusal_after_the_loading_banner_is_an_error_not_an_empty_answer`, `test_openrouter_takes_each_models_efforts`,
+  `test_the_catalog` (OpenAI), `test_a_chat_template_that_refuses_in_plain_words`,
+  `test_the_depth_menu_offers_what_the_model_takes`.
 
 ### Выпуски
 

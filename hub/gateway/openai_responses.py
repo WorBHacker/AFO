@@ -33,6 +33,8 @@ from typing import Any
 
 import httpx
 
+from common.efforts import own_efforts
+
 from .base import Model, ProviderError, StreamEvent, long_tier, scheduled
 
 log = logging.getLogger("hub.gateway.openai")
@@ -111,15 +113,16 @@ class OpenAIProvider:
             raise ProviderError(f"{self.name}: cannot list models ({_describe(response.status_code, response.text)})")
         available = {m.get("id") for m in response.json().get("data", [])}
         models = []
-        for ref, (label, prices, _efforts) in MODELS.items():
+        for ref, (label, prices, takes) in MODELS.items():
             if ref not in available:
                 continue
             caps: dict[str, Any] = {"prices_asof": PRICES_ASOF}
             if ref in PROMOS:
                 ends, usual = PROMOS[ref]
                 prices, caps = scheduled([("", prices), (ends, usual)], self._today(), PRICES_ASOF, promo_until=ends)
+            caps = {"vision": True, **caps, "efforts": own_efforts(takes)}  # 0.1.13: its depths, for the window
             models.append(Model(id=f"{self.name}/{ref}", provider=self.name, model_ref=ref, name=label,
-                                locality="cloud", capabilities={"vision": True, **caps}, prices=prices))  # fmt: skip
+                                locality="cloud", capabilities=caps, prices=prices))  # fmt: skip
         return models
 
     def accepts(self, model_ref: str) -> frozenset[str]:

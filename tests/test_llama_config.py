@@ -6,6 +6,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import random
 import struct
 import sys
@@ -822,6 +823,66 @@ def test_flags_a_build_took_away_without_a_word():
     assert "--no-mmap --fork-only 2" in new  # another llama-server's command: its own flags
     small = lc.parse_help(HELP)  # a help that has not even --port: not read whole - nothing taken off
     assert lc.match_build(CONFIG, small) == CONFIG and lc.unknown_flags(CONFIG, small) == {}
+
+
+# the reasoning part of Qwen3.8's chat template (RVN Q8_0, read from the user's file 2026-11-14): any depth but its own
+# three is an exception, and llama.cpp answers 500; Flash-Next's takes «high» for «xhigh» first
+QWEN38 = """{%- if enable_thinking is undefined or enable_thinking is true %}
+    {%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}
+    {%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}
+        {{- raise_exception('Unexpected reasoning effort ' ~ reasoning_effort ~ '. Supported types are xhigh.') }}
+    {%- endif %}
+{%- endif %}"""
+FLASH_NEXT = QWEN38.replace("    {%- if resolved_reasoning_effort not in",
+                            "    {%- if resolved_reasoning_effort == 'high' %}\n"
+                            "        {%- set resolved_reasoning_effort = 'xhigh' %}\n    {%- endif %}\n"
+                            "    {%- if resolved_reasoning_effort not in")  # fmt: skip
+GPT_OSS = "{%- if reasoning_effort is defined %}{{- 'Reasoning: ' + reasoning_effort }}{%- endif %}"
+
+
+def test_the_reasoning_depths_a_models_chat_template_takes():
+    """0.1.13 (found 2026-11-14: «Глубина: максимальная» with Qwen3.8 RVN - «Jinja Exception: Unexpected reasoning
+    effort max»): the depths a template checks reasoning_effort against, in the hub's names, weakest first; a template
+    that names none takes any word, or does not read it."""
+    assert lc.template_efforts(QWEN38) == ["low", "medium", "xhigh"]
+    assert lc.template_efforts(FLASH_NEXT) == ["low", "medium", "xhigh"]
+    listed = "{%- if reasoning_effort in ['minimal', 'low', 'high'] %}x{% endif %}"
+    assert lc.template_efforts(listed) == ["low", "high"]  # «minimal» is not one of the hub's
+    for template in (GPT_OSS, "{{ messages }}", "", "{%- set x = join(['a']) %}"):
+        assert lc.template_efforts(template) == []
+
+
+def test_each_models_depths_from_its_file_or_its_template_file(tmp_path):
+    """The template llama-server runs: the command's --chat-template-file, else its --chat-template, else the one in
+    the model's file (its header only); none with --no-jinja. Read once per file, again when the file changes."""
+    qwen = gguf(tmp_path / "qwen.gguf", {"general.architecture": "qwen35", "tokenizer.chat_template": QWEN38})
+    plain = gguf(tmp_path / "plain.gguf", {"general.architecture": "llama"})  # no template of its own
+    own = tmp_path / "own.jinja"
+    own.write_bytes(FLASH_NEXT.replace("'low'", "'low', 'max'").encode())
+
+    def model(name, flags):
+        return (f'  "{name}":\n    cmd: |\n      ${{llama_server}}\n      {flags}\n'
+                "      --host 127.0.0.1 --port ${PORT}\n\n")  # fmt: skip
+
+    config = tmp_path / "config.yaml"
+    check = QWEN38.splitlines()[2]  # the line that names the three, as a --chat-template of its own
+    config.write_bytes(CONFIG.replace('  "big":', model("qwen", f'-m "{qwen.as_posix()}" --jinja')
+                                      + model("own", f'-m "{qwen.as_posix()}" --chat-template-file "{own.as_posix()}"')
+                                      + model("inline", f'-m "{plain.as_posix()}" --chat-template "{check}"')
+                                      + model("legacy", f'-m "{qwen.as_posix()}" --no-jinja')
+                                      + model("plain", f'-m "{plain.as_posix()}"')
+                                      + model("gone", '-m "F:/nowhere/gone.gguf"')
+                                      + '  "big":').encode())  # fmt: skip
+    found = lc.efforts_now(config)
+    assert found == {"qwen": ["low", "medium", "xhigh"], "own": ["low", "medium", "xhigh", "max"],
+                     "inline": ["low", "medium", "xhigh"]}  # fmt: skip
+    assert asyncio.run(lc.model_efforts(config)) == found
+
+    own.write_bytes(GPT_OSS.encode())  # the template file changed: read anew
+    os.utime(own, ns=(time.time_ns(), time.time_ns() + 10**9))
+    assert "own" not in lc.efforts_now(config)
+    config.unlink()  # no config: nothing known, no error
+    assert asyncio.run(lc.model_efforts(config)) == {}
 
 
 def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file(tmp_path):

@@ -27,6 +27,8 @@ from urllib.parse import quote
 
 import httpx
 
+from common.efforts import own_efforts
+from common.gguf import read_header
 from common.i18n import N_, tr
 from common.paths import PROJECT_ROOT, engines_home
 
@@ -821,6 +823,82 @@ async def said(base_url: str, model_id: str) -> str:
     except httpx.HTTPError, TimeoutError:  # the stream waits for more: what came is all it kept
         pass
     return cause(got.decode("utf-8", "replace"))
+
+
+# --- the reasoning depths a model's chat template takes (0.1.13) ---
+
+# a template that checks reasoning_effort against its own list - Qwen3.8's `not in ('xhigh', 'medium', 'low')` and an
+# exception for any other, so llama.cpp answers 500 to «max» (found 2026-11-14): the words in its brackets
+_EFFORT_CHECK = re.compile(r"reasoning_effort\b[^\n]*?\bin\s*[(\[]([^)\]\n]*)[)\]]")
+_QUOTED = re.compile(r"['\"]([\w-]+)['\"]")
+_TEMPLATES: dict[tuple[str, int, int], list[str]] = {}  # a template's file (path, size, time) -> its depths
+
+
+def template_efforts(template: str) -> list[str]:
+    """The reasoning depths a chat template takes, in the hub's names, weakest first: those it checks reasoning_effort
+    against; [] - it names none (it takes any word, or does not read it)."""
+    for match in _EFFORT_CHECK.finditer(template):
+        if named := own_efforts(_QUOTED.findall(match.group(1))):
+            return named
+    return []
+
+
+def _file_efforts(path: Path, read: Callable[[Path], str]) -> list[str]:
+    """A template's depths from a file, read once while its size and time stay; [] - it cannot be read."""
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        if key not in _TEMPLATES:
+            _TEMPLATES[key] = template_efforts(read(path))
+        return _TEMPLATES[key]
+    except OSError, ValueError:  # gone, locked by another program, not a GGUF (GGUFError is a ValueError)
+        return []
+
+
+def _gguf_template(path: Path) -> str:
+    """The chat template in a model file's header (after its vocabulary: a few MB read, the weights not)."""
+    return str(read_header(path, ("tokenizer.chat_template",)).get("tokenizer.chat_template") or "")
+
+
+def _command_efforts(view: dict[str, Any]) -> list[str]:
+    """The depths of the template a llama.cpp model's command runs: its --chat-template-file, else its --chat-template
+    (a template's text, or a built-in's name - that names none), else the one in its file's header; none without
+    Jinja (--no-jinja: llama.cpp's own formatting, which does not read reasoning_effort)."""
+    tokens = _TOKEN.findall(view["command"])
+
+    def value(flag: str) -> str | None:
+        at = _flag(tokens, (flag,))
+        return _unquote(tokens[at + 1]) if at is not None and at + 1 < len(tokens) else None
+
+    if _flag(tokens, ("--no-jinja",)) is not None:
+        return []
+    if (file := value("--chat-template-file")) is not None:
+        return _file_efforts(Path(file), lambda p: p.read_bytes().decode("utf-8", "replace"))
+    if (inline := value("--chat-template")) is not None:
+        return template_efforts(inline)
+    return _file_efforts(Path(view["file"]), _gguf_template) if view.get("file") else []
+
+
+def efforts_now(path: Path | None = None) -> dict[str, list[str]]:
+    """Each llama.cpp model of the config whose chat template names the depths it takes, with them; a model whose
+    template names none is not here. The config is read each time, a template once per file (_TEMPLATES)."""
+    text = (path or config_path()).read_bytes().decode("utf-8")
+    out: dict[str, list[str]] = {}
+    for model_id in model_blocks(text):
+        with contextlib.suppress(ConfigError):
+            view = model_view(text, model_id)
+            if view["engine"] == "llama.cpp" and (levels := _command_efforts(view)):
+                out[model_id] = levels
+    return out
+
+
+async def model_efforts(path: Path | None = None) -> dict[str, list[str]]:
+    """efforts_now off the event loop (a model file's header is read from its disk, a slow HDD among them); {} - no
+    config yet, or one that cannot be read (ConfigError is a ValueError)."""
+    try:
+        return await asyncio.to_thread(efforts_now, path)
+    except OSError, ValueError:
+        return {}
 
 
 async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,

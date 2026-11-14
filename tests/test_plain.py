@@ -44,6 +44,18 @@ def test_why_a_local_model_did_not_start_in_plain_words():
     assert no_words[0] == "Модель не запустилась"  # llama.cpp's own words not found: the old guess
 
 
+def test_a_chat_template_that_refuses_in_plain_words():
+    """0.1.13: a model's chat template that raises an exception (Qwen3.8's for a depth it does not take) - the
+    person reads it is the model's own rule, not the raw JSON alone."""
+    from common import plain_errors
+
+    said = ('llama-swap: HTTP 500: {"error":{"code":500,"message":"\\n------------\\nWhile executing CallExpression at '
+            "line 49, column 28 in source:\\n...\\nError: Jinja Exception: Unexpected reasoning effort max. Supported "
+            'types are xhigh (default), medium, and low.","type":"server_error"}}')  # fmt: skip
+    title, hint = plain_errors.explain(said)
+    assert title == "Шаблон чата модели не принял запрос" and "Глубин" in hint
+
+
 def test_faster_or_better_for_a_local_model():
     draft = {"context": "32768", "gpu_mode": "auto", "gpu_n": "", "flash_attn": "on", "cache_type": "q4_0",
              "parallel": "1", "ttl_min": "0"}  # fmt: skip

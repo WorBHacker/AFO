@@ -21,6 +21,8 @@ from typing import Any, ClassVar
 
 import httpx
 
+from common.efforts import nearest_effort, own_efforts
+
 from .base import Model, ProviderError
 from .openai_compat import OpenAICompatProvider, wire_messages
 
@@ -200,7 +202,8 @@ class OpenRouterProvider(CloudOpenAIProvider):
         if not chosen:
             return []
         return [Model(id=f"{self.name}/{m['id']}", provider=self.name, model_ref=m["id"], name=m["name"],
-                      locality="cloud", capabilities={"context": m["context"], "reasoning": m["reasoning"]},
+                      locality="cloud", capabilities={"context": m["context"], "reasoning": m["reasoning"],
+                                                      **_efforts_of(m)},  # 0.1.13: the depths for the window
                       prices={"input": m["input"], "output": m["output"], "cache_read": m["cache_read"],
                               **m.get("long", {})})
                 for m in await self.everything() if m["id"] in chosen]  # fmt: skip
@@ -246,17 +249,11 @@ def long_prompt(pricing: dict[str, Any]) -> dict[str, float]:
     return out if len(out) > 1 else {}
 
 
-EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"]
-
-
-def nearest_effort(wanted: str, supported: list[str]) -> str:
-    """The hub's effort if the model takes it, else the strongest it takes below it (or its weakest)."""
-    if not supported or wanted in supported:
-        return wanted
-    rank = {e: n for n, e in enumerate(EFFORTS)}
-    below = [e for e in supported if rank.get(e, -1) <= rank.get(wanted, 2) and e in rank]
-    return max(below, key=rank.__getitem__) if below else min((e for e in supported if e in rank),
-                                                               key=rank.__getitem__, default=wanted)  # fmt: skip
+def _efforts_of(model: dict[str, Any]) -> dict[str, list[str]]:
+    """A reasoning model's depths in the hub's names, as OpenRouter names them (0.1.13: the window offers those); {} -
+    it names none, and a chat's depth goes as chosen."""
+    own = own_efforts(model.get("efforts") or []) if model.get("reasoning") else []
+    return {"efforts": own} if own else {}
 
 
 def join_details(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:

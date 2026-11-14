@@ -4,7 +4,9 @@
 llama-swap streams model-swap progress in the reasoning field, prefixed `llama-swap loading model:`
 (sendLoadingState). Those lines are separated out as "loading" events, so they never land in the saved
 reasoning, and the time-to-first-token clock starts only once loading is done. Since llama-swap v267 the banner
-comes in pieces of a few characters between two lines of ━ (`_Banner`; found live 2026-10-28).
+comes in pieces of a few characters between two lines of ━ (`_Banner`; found live 2026-10-28). A model that refuses
+the request once loaded - its answer already begun by the banner - comes after it as llama-swap got it: a JSON error
+outside the `data:` lines, which is an error, not an empty answer (`_refusal`, 0.1.13).
 
 Tools go out as OpenAI functions (llama.cpp serves them for models started with --jinja); a call streams in
 fragments by index and is put together at the end. Arguments that are not valid JSON are passed on marked
@@ -22,6 +24,7 @@ from typing import Any, ClassVar
 
 import httpx
 
+from common.efforts import nearest_effort
 from common.i18n import tr
 
 from .. import llama_config
@@ -116,6 +119,11 @@ class OpenAICompatProvider:
         self._vectors: set[str] = set()  # the models (and their aliases) with a refusal vector to switch, as listed
         # llama-swap's: the hub's card gate (29.8а) - a video holds the card, an answer waits for its end
         self.gate: Callable[[asyncio.Event], Awaitable[bool]] | None = None
+        # llama-swap's on this computer (0.1.13): each model's reasoning depths, as its chat template names them
+        # (hub/llama_config.model_efforts) - in the catalog for the window, and a request asks one the model takes
+        self.efforts: Callable[[], Awaitable[dict[str, list[str]]]] | None = None
+        self._levels: dict[str, list[str]] = {}  # a model (or its alias) -> the depths it takes, when it names them
+        self._aliases: dict[str, str] = {}  # llama-swap's aliases of a model -> its id, as listed
 
     def _headers(self) -> dict[str, str]:
         key = self._key_getter()
@@ -130,6 +138,10 @@ class OpenAICompatProvider:
                 raise ProviderError(f"{self.name}: cannot list models ({exc})") from exc
         models = []
         vectors: set[str] = set()
+        known = await self.efforts() if self.efforts is not None else {}
+        self._aliases = {alias: item["id"] for item in response.json().get("data", [])
+                         for alias in item.get("aliases") or []}  # fmt: skip
+        self._levels = self._with_aliases(known)
         for item in response.json().get("data", []):
             ref = item["id"]
             # llama-swap nests the config's metadata (meta.llamaswap) and also says the context itself
@@ -153,12 +165,17 @@ class OpenAICompatProvider:
                         "context": meta.get("context"),
                         "description": item.get("description", ""),
                         **({"refusal_vector": True} if refusal_vector(meta) else {}),
+                        **({"efforts": known[ref]} if known.get(ref) else {}),  # 0.1.13: the depths it takes
                     },
                     prices={},  # local models are free; a cloud OpenAI-compat provider fills this in
                 )
             )
         self._vectors = vectors
         return models
+
+    def _with_aliases(self, known: dict[str, list[str]]) -> dict[str, list[str]]:
+        """The models' depths under their aliases too (a client may ask a model by one)."""
+        return {**{alias: known[ref] for alias, ref in self._aliases.items() if ref in known}, **known}
 
     async def stream_chat(
         self,
@@ -169,6 +186,8 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]] | None = None,
         params: dict[str, Any] | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        if self.efforts is not None:  # 0.1.13: as the templates are now (a file changed is read again, else cached)
+            self._levels = self._with_aliases(await self.efforts())
         body = self.request_body(model_ref, messages, effort, tools, params)
         calls: dict[int, dict[str, str]] = {}  # tool calls being put together, by index
         thought: list[str] = []  # the reasoning as it came, for a provider that wants it back (DeepSeek)
@@ -211,6 +230,10 @@ class OpenAICompatProvider:
                     if cancel.is_set():
                         break
                     if not line.startswith("data:"):
+                        if (refused := _refusal(line)) is not None:  # 0.1.13: after llama-swap's loading banner
+                            code = refused.get("code")
+                            raise ProviderError(f"{self.name}: {self.describe(code if isinstance(code, int) else 500,
+                                                                              line.strip()[:500])}")  # fmt: skip
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
@@ -282,7 +305,8 @@ class OpenAICompatProvider:
             "messages": self.wire(messages),
             "stream": True,
             "stream_options": {"include_usage": True},
-            "reasoning_effort": effort,
+            # 0.1.13: one the model takes - Qwen3.8's template raises an exception for any but its own three
+            "reasoning_effort": nearest_effort(effort, self._levels.get(model_ref)),
         }
         if tools:
             body["tools"] = [
@@ -320,6 +344,20 @@ class OpenAICompatProvider:
 
     def price(self, model_ref: str, counted: dict[str, int], reported: dict[str, Any]) -> int | None:
         return None
+
+
+def _refusal(line: str) -> dict[str, Any] | None:
+    """The error of a JSON object outside the stream's `data:` lines: llama-swap had answered 200 for its loading
+    banner, and passes the model's refusal on as is (found 2026-11-14 with Qwen3.8 and «max», then on a stand
+    llama-swap v267); None - any other line."""
+    if not line.lstrip().startswith("{"):
+        return None
+    try:
+        found = json.loads(line)
+    except ValueError:
+        return None
+    error = found.get("error") if isinstance(found, dict) else None
+    return error if isinstance(error, dict) else None
 
 
 def refusal_vector(meta: dict[str, Any]) -> bool:

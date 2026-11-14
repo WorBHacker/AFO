@@ -72,6 +72,15 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
             "движок в «Первом запуске»."
         ),
     ),
+    (  # 0.1.13: the model's chat template refused the request (Qwen3.8's - a reasoning depth it does not take)
+        re.compile(r"Jinja Exception|raise_exception"),
+        N_("Шаблон чата модели не принял запрос"),
+        N_(
+            "Это правило самой модели — её шаблона чата; что ему не подошло, написано ниже. Если это глубина "
+            "размышлений (reasoning effort) — выберите другую «Глубину» у поля ввода; если другое — напишите "
+            "иначе или возьмите другую сборку модели."
+        ),
+    ),
     (
         re.compile(
             r"(?i)upstream command exited|exited prematurely|exit status|failed to load model|"

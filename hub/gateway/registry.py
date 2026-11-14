@@ -101,6 +101,7 @@ def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStor
     by API key (D6), Gemini on Vertex AI by a service account's key file (stage 30), and Claude Code when its CLI is
     installed (stage 4, D8) - the chat runs those through hub/claude_code.py. A provider without its key offers no
     models and makes no network call."""
+    from .. import llama_config
     from ..claude_code import ClaudeCodeProvider
     from ..connections import (
         DEEPSEEK_API_KEY,
@@ -118,7 +119,10 @@ def build_default_gateway(db: Database, llama_swap_url: str, secrets: SecretStor
     from .vertex_provider import VertexProvider
 
     gateway = Gateway(db)
-    gateway.register(OpenAICompatProvider("llama-swap", llama_swap_url, locality=locality_of(llama_swap_url)))
+    swap = OpenAICompatProvider("llama-swap", llama_swap_url, locality=locality_of(llama_swap_url))
+    if swap.locality == "local":  # its config and model files are on this computer: each model's depths (0.1.13)
+        swap.efforts = llama_config.model_efforts
+    gateway.register(swap)
     gateway.register(AnthropicProvider(lambda: secrets.get(ANTHROPIC_API_KEY)))
     gateway.register(GeminiProvider(lambda: secrets.get(GEMINI_API_KEY)))
     gateway.register(VertexProvider(lambda: secrets.get(VERTEX_ACCOUNT)))
