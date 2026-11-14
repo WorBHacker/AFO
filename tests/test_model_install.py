@@ -735,9 +735,10 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     view = lc.model_view(text, "draw")
     assert on_cpu["command"].replace(cpu.as_posix(), server.as_posix()) == view["command"]  # the same files
     folder = hub.tmp / "localchat-model" / "pictures" / "draw"
+    vae = folder.parent / "_shared" / "test" / "Vae" / "vae.safetensors"  # one copy for the family (47.3)
     assert view["engine"] == lc.SD_ENGINE and "--steps 4" in view["command"]
-    assert f'--vae "{(folder / "vae.safetensors").as_posix()}"' in view["command"]
-    assert (folder / "vae.safetensors").read_bytes() == PICTURES["test/Vae"]["split_files/vae/vae.safetensors"]
+    assert f'--vae "{vae.as_posix()}"' in view["command"]
+    assert vae.read_bytes() == PICTURES["test/Vae"]["split_files/vae/vae.safetensors"]
     assert FakeLlamaSwap.asked[-1] | {"prompt": ""} == {"model": "draw", "prompt": "", "size": "512x512", "n": 1,
                                                         "response_format": "b64_json"}  # fmt: skip
     assert FakeHub.picture_auth and set(FakeHub.picture_auth) == {"Bearer hf_good"}
@@ -752,6 +753,7 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
 
     gone = hub.delete("/v1/install/models/draw").json()["job"]
     assert gone["status"] == "removed" and not folder.exists() and server.exists()  # the engine stays for others
+    assert not vae.exists() and not vae.parents[2].exists()  # nobody else names it: away, its folders too
     text = hub.config.read_text(encoding="utf-8")
     assert not {"draw", "draw-cpu"} & set(lc.model_blocks(text)) and "sd_server" in lc.macros(text)
 
@@ -805,6 +807,62 @@ def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):
     assert hub.get("/v1/install/pictures").json()["models"][1]["verdict"] == "no"
     refused = hub.post("/v1/install/pictures", json={"id": "clip"})
     assert refused.status_code == 409 and "облак" in refused.json()["detail"]
+
+
+def test_a_picture_familys_encoder_and_vae_are_one_copy_for_its_models(hub, monkeypatch):
+    """47.3: picture models of one family share their encoder and VAE - the same repository, path and sha256. A new
+    install takes the file where an earlier install keeps it (the four sets' own folders too) and downloads only its
+    own model; one with nobody to take from downloads them into `pictures/_shared`. Removing a model deletes a shared
+    file only when no other install names it - counted from the installs, not kept in a counter."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, {**DRAW, "id": "best", "tier": "quality", "name": "Best"}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setattr(hub.app.state.installer, "machine", lambda: MACHINE)
+    pictures = hub.tmp / "localchat-model" / "pictures"
+    shared = pictures / "_shared"
+    words, vae = shared / "test" / "Words-GGUF" / "words-Q4_K_M.gguf", shared / "test" / "Vae" / "vae.safetensors"
+
+    def install(set_id: str) -> dict:
+        job = hub.post("/v1/install/pictures", json={"id": set_id}).json()["job"]
+        done = wait_for(hub, job["id"], "done", "failed")
+        assert done["status"] == "done", done["error"]
+        return done
+
+    def parts(job: dict) -> list:
+        return [(f["role"], f.get("at")) for f in job["files"] if f["role"] != "engine"]
+
+    draw = install("draw")  # nobody to take from: one copy for the family
+    assert parts(draw) == [("diffusion-model", None), ("llm", str(words)), ("vae", str(vae))]
+    assert vae.read_bytes() == PICTURES["test/Vae"]["split_files/vae/vae.safetensors"]
+    best = install("best")
+    assert parts(best) == parts(draw) and best["percent"] == 100.0
+    assert sorted(p.name for p in (pictures / "best").iterdir()) == ["draw-Q4_0.gguf"]  # only its own model came
+    command = lc.model_view(hub.config.read_text(encoding="utf-8"), "best")["command"]
+    assert f'--llm "{words.as_posix()}"' in command and f'--vae "{vae.as_posix()}"' in command
+    hub.delete("/v1/install/models/draw")
+    assert words.exists() and vae.exists() and not (pictures / "draw").exists()  # best's too
+    hub.delete("/v1/install/models/best")
+    assert not shared.exists() and not (pictures / "best").exists()  # nobody names them now: away, folders too
+
+    # an install from before 47.3 keeps them in its own folder: a new one takes them there
+    draw = install("draw")
+    old = pictures / "draw"
+    files = [{k: v for k, v in f.items() if k != "at"} for f in draw["files"]]
+    for f in draw["files"]:
+        if f.get("at"):
+            Path(f["at"]).replace(old / Path(f["at"]).name)
+    for empty in [*sorted(shared.rglob("*"), reverse=True), shared]:  # there was no `_shared` then
+        empty.rmdir()
+    hub.app.state.db.call(lambda c: c.execute("UPDATE model_installs SET files = ? WHERE id = ?",
+                                              (json.dumps(files), draw["id"])))  # fmt: skip
+    best = install("best")
+    assert parts(best) == [("diffusion-model", None), ("llm", str(old / words.name)), ("vae", str(old / vae.name))]
+    assert not shared.exists()  # nothing downloaded again
+    hub.delete("/v1/install/models/draw")
+    assert (old / words.name).exists() and not (old / "draw-Q4_0.gguf").exists()  # best names them
+    hub.delete("/v1/install/models/best")
+    assert not old.exists()
 
 
 def test_a_model_that_will_not_start_tries_smaller_settings_then_leaves_the_config(hub):

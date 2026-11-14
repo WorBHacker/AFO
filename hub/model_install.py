@@ -73,6 +73,7 @@ PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_
 SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
 PICTURE_MAIN = ("model", "diffusion-model")  # a picture set's own model among its files (the rest: encoders, VAE)
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
+SHARED = "_shared"  # under `pictures`: a family's encoders and VAE, one copy for all its models (47.3)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -444,6 +445,8 @@ class Installer:
         self.tuning: Callable[[], bool] = lambda: False
         self.chat_busy: Callable[[], bool] = lambda: False
         self.drawing: Callable[[], bool] = lambda: False
+        # a picture install choosing its files and a deletion counting who else names a file (47.3): one at a time
+        self._files = asyncio.Lock()
         # the engine on its way (39.3: the scanner, the wizard): an install waits for it, not a 409; set by the server
         self.engine_coming: Callable[[], bool] = lambda: False
         self.machine: Callable[[], dict[str, Any]] = this_computer  # what pictures it can make (tests give their own)
@@ -1179,12 +1182,6 @@ class Installer:
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
         folder = root / "pictures" / entry["id"]
-        try:
-            _check_room(folder, sum(f["size"] for f in files))
-        except OSError as exc:
-            raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
-                               422) from exc  # fmt: skip
-        model_id = llama_config.free_id(await asyncio.to_thread(config_text), entry["id"])
         flags = list(entry["flags"])
         if video and machine.get("tiles") and "--vae-tiling" not in flags:  # Vulkan falls without (29.1)
             flags.append("--vae-tiling")
@@ -1192,17 +1189,28 @@ class Installer:
                 "size": entry["size"], **({"kind": "video"} if video else {})}  # fmt: skip
         job_id = uuid.uuid4().hex[:12]
         everything = [*engine, *files]
+        # the family's encoders and VAE: where another install keeps them, or one copy in `_shared` (47.3) - chosen
+        # and written down under the lock a deletion counts who names a file under
+        async with self._files:
+            named = await self._db.acall(_named)
+            await asyncio.to_thread(_share, files, named, root / "pictures" / SHARED)
+            try:
+                await asyncio.to_thread(_check_room, folder, sum(f["size"] for f in files if not f["done"]))
+            except OSError as exc:
+                raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
+                                   422) from exc  # fmt: skip
+            model_id = llama_config.free_id(await asyncio.to_thread(config_text), entry["id"])
 
-        def add(conn) -> None:
-            conn.execute(
-                "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
-                "license, status, total_bytes, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-                (job_id, files[0]["repo"], files[0]["revision"], hf.quant_of(files[0]["path"]), json.dumps(everything),
-                 str(folder), model_id, entry["name"], json.dumps(entry["purposes"]), entry["license"],
-                 sum(f["size"] for f in everything), json.dumps(plan)),
-            )  # fmt: skip
+            def add(conn) -> None:
+                conn.execute(
+                    "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
+                    "license, status, total_bytes, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                    (job_id, files[0]["repo"], files[0]["revision"], hf.quant_of(files[0]["path"]),
+                     json.dumps(everything), str(folder), model_id, entry["name"], json.dumps(entry["purposes"]),
+                     entry["license"], sum(f["size"] for f in everything), json.dumps(plan)),
+                )  # fmt: skip
 
-        await self._db.acall(add)
+            await self._db.acall(add)
         self._clients[job_id] = client
         await self._publish(job_id)
         self._kick()
@@ -1374,16 +1382,24 @@ class Installer:
             self._wanted[job_id] = "cancelled"
             self._cancel[job_id].set()
             return found
-        await asyncio.to_thread(_delete_files, found)
+        await self._throw_away(found)
         await self._set(job_id, status="cancelled", error="")
         return await self._get(job_id)
+
+    async def _throw_away(self, found: dict[str, Any]) -> None:
+        """An install's files deleted - but not one another install still names (47.3: a family's encoder and VAE),
+        counted from the installs under the lock a picture install chooses its files under."""
+        async with self._files:
+            named = await self._db.acall(lambda conn: _named(conn, found["id"]))
+            kept = {_key(_dest(Path(r["folder"]), f)) for r in named for f in r["files"] if f["role"] != "engine"}
+            await asyncio.to_thread(_delete_files, found, kept)
 
     async def forget(self, job_id: str) -> None:
         """An install that did not finish off the list - with its files."""
         found = await self._get(job_id)
         if found["status"] in (*LIVE, *IN_CONFIG):
             raise InstallError(tr("эта установка ещё идёт или модель установлена"))
-        await asyncio.to_thread(_delete_files, found)
+        await self._throw_away(found)
         await self._db.acall(lambda conn: conn.execute("DELETE FROM model_installs WHERE id = ?", (job_id,)))
         await self._bus.publish("install.forgotten", {"id": job_id})
 
@@ -1412,7 +1428,7 @@ class Installer:
                     await asyncio.to_thread(llama_config.restore, path, backup)
                     raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
                                           problem=problem), 502)  # fmt: skip
-        await asyncio.to_thread(_delete_files, found)
+        await self._throw_away(found)
         await self._set(found["id"], status="removed", error="")
         await self._sync()
         return await self._get(found["id"])
@@ -1482,7 +1498,7 @@ class Installer:
         except hf.Cancelled:
             wanted = self._wanted.pop(job_id, "paused")
             if wanted == "cancelled":
-                await asyncio.to_thread(_delete_files, await self._get(job_id))
+                await self._throw_away(await self._get(job_id))
                 await self._set(job_id, status="cancelled", error="")
             else:  # paused - or, a trial stopped before it began (34.5), added again
                 await self._set(job_id, status=wanted, error="")
@@ -1906,10 +1922,51 @@ def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, 
 
 
 def _dest(folder: Path, f: dict[str, Any]) -> Path:
-    """Where a file of an install goes: the model's folder; the picture engine's archive - the engines' downloads."""
+    """Where a file of an install goes: the model's folder; the picture engine's archive - the engines' downloads; a
+    picture family's encoder or VAE (47.3) - where it lies for all its models (`at`)."""
     if f["role"] == "engine":
         return engines_home() / "downloads" / f["path"]
+    if f.get("at"):
+        return Path(f["at"])
     return folder / PurePosixPath(f["path"]).name
+
+
+def _key(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _named(conn, but: str = "") -> list[dict[str, Any]]:
+    """The installs whose files may still be needed (47.3): all but the cancelled and the removed - a failed one keeps
+    its files for «Повторить», a model added from the drives names the person's own - and but `but`."""
+    rows = conn.execute("SELECT id, folder, files FROM model_installs WHERE status NOT IN ('cancelled', 'removed') "
+                        "AND id != ?", (but,)).fetchall()  # fmt: skip
+    return [{"id": r["id"], "folder": r["folder"], "files": json.loads(r["files"] or "[]")} for r in rows]
+
+
+def _share(files: list[dict[str, Any]], named: list[dict[str, Any]], shared: Path) -> None:
+    """A picture install's encoders and VAE (47.3), in place: one another install names - the same repository, path
+    and sha256 - is taken where it lies (`at`; down already - `done`), whosever folder it is in; another goes to
+    `shared`, one copy for the family - beside an older file of the same name, in a folder of its sha256."""
+    have: dict[tuple[str, str, str], Path] = {}
+    taken: dict[str, str] = {}  # where the other installs keep a file -> its sha256
+    for row in named:
+        for g in row["files"]:
+            if g["role"] == "engine":
+                continue
+            where = _dest(Path(row["folder"]), g)
+            taken[_key(where)] = g.get("sha256") or ""
+            if g.get("repo") and g.get("sha256"):
+                have.setdefault((g["repo"], g["path"], g["sha256"]), where)
+    for f in files:
+        if f["role"] in (*PICTURE_MAIN, "engine") or not f.get("sha256"):
+            continue
+        there = have.get((f["repo"], f["path"], f["sha256"]))
+        if there is None:
+            there = shared / f["repo"].replace("/", os.sep) / PurePosixPath(f["path"]).name
+            if taken.get(_key(there), f["sha256"]) != f["sha256"]:
+                there = there.parent / f["sha256"][:12] / there.name
+        f["at"] = str(there)
+        f["done"] = there.is_file() and there.stat().st_size == f["size"]  # one still coming: the queue's next
 
 
 def _check_room(folder: Path, size: int) -> None:
@@ -1920,16 +1977,20 @@ def _check_room(folder: Path, size: int) -> None:
                               disk=anchor, need=size / GIB + DISK_MARGIN_GIB, free=free / GIB), 507)  # fmt: skip
 
 
-def _delete_files(found: dict[str, Any]) -> None:
+def _delete_files(found: dict[str, Any], kept: set[str] | frozenset[str] = frozenset()) -> None:
     """This install's files (their parts and lists of pieces too) gone, then its folder and the author's folder if
-    they are empty - only files AFO downloaded: a model found on the drives keeps its files whatever happens (15.1)."""
+    they are empty - only files AFO downloaded: a model found on the drives keeps its files whatever happens (15.1);
+    and not those another install names (`kept`, 47.3) - a shared one's empty folders go with its last model."""
     if not found.get("own_files", 1):
         return
     folder = Path(found["folder"])
+    away: list[Path] = []
     for f in found["files"]:
         if f["role"] == "engine":
             continue  # the picture engine stays: the other picture models run on it
-        dest = folder / PurePosixPath(f["path"]).name
+        dest = _dest(folder, f)
+        if _key(dest) in kept:
+            continue
         for path in (dest, dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".parts")):
             for _ in range(10):  # a server that just let go of the file: Windows may hold it a moment longer
                 try:
@@ -1937,6 +1998,16 @@ def _delete_files(found: dict[str, Any]) -> None:
                     break
                 except PermissionError:
                     time.sleep(0.5)
+        if f.get("at"):
+            away.append(dest.parent)
     for empty in (folder, folder.parent):
         with contextlib.suppress(OSError):
             empty.rmdir()
+    for each in away:  # up to `pictures`, while empty
+        for up in (each, *each.parents):
+            if up.name == "pictures" or up == up.parent:
+                break
+            try:
+                up.rmdir()
+            except OSError:
+                break
