@@ -16,6 +16,7 @@ import httpx
 import psutil
 import pytest
 
+from common.llama_memory import estimate
 from hub import llama_config as lc
 from hub import model_settings, tuning
 from tests.test_llama_config import CONFIG, gguf
@@ -931,6 +932,42 @@ def test_an_mtp_head_of_its_own_file_guesses_ahead(hub, setup, spec_server):  # 
     assert launched(spec_server) == ["none", "ngram-mod", "draft-mtp"] and spec["draft"] == "mtp-big.gguf"
     written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
     assert written["type"] == "draft-mtp" and written["draft"].endswith("mtp-big.gguf")
+
+
+def test_a_draft_beside_a_moe_model_takes_the_room_of_its_experts():
+    """44.9 (the live check 44.6, Qwen3.6-35B-A3B on 16 GB): a draft that does not fit beside a Mixture-of-Experts
+    model as it is placed gets its room from the experts of a few more layers in RAM, not from whole layers of the
+    model - the MTP head 120 tok/s so against 70 with five layers off the card, DFlash 128 against 118. The fewest
+    more that let it fit; all the experts in RAM already, or a model without experts - fewer layers, as before."""
+    from tests.test_llama_config import HELP
+
+    build = lc.parse_help(HELP)
+    gib = 1024**3
+    info = {"architecture": "qwen35moe", "layers": 40, "kv_layers": 10, "kv_heads": 2, "key_length": 256,
+            "value_length": 256, "context_trained": 262144, "size_bytes": int(19.1 * gib), "mtp_layers": 0,
+            "experts": 256, "experts_used": 8, "expert_bytes": [int(0.45 * gib)] * 40}  # fmt: skip
+    small = {**info, "architecture": "dflash", "layers": 6, "kv_layers": 6, "size_bytes": int(0.4 * gib)}
+    small.pop("expert_bytes")
+    flash = {"path": Path("dflash-big.gguf"), "info": small}
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0", "n_cpu_moe": 13, "cpu_moe": False}
+
+    def need(n, draft=None):
+        load = {"info": small, "gpu_layers": "all", "cache_type": "q8_0"} if draft else None
+        return estimate(info, context=32768, cache_type="q8_0", gpu_layers="all", draft=load,
+                        moe={"all": False, "layers": n, "cache_mib": 0})["vram_gb"]  # fmt: skip
+
+    room = need(13) + 0.3  # the model fits as it is; with the draft it does not
+    found, short = tuning.spec_variants(view, info, {"vram_gib": room}, build, [flash])
+    fewest = next(n for n in range(14, 40) if need(n, flash) <= room)
+    assert [v["name"] for v in found] == ["none", "ngram", "draft_experts"] and fewest > 14
+    assert found[2]["changes"]["n_cpu_moe"] == fewest and "gpu_layers" not in found[2]["changes"]
+    assert found[2]["draft"] == "dflash-big.gguf" and short["short_gb"] > 0  # as the model is now, it lacks room
+    held = {**view, "cpu_moe": True, "n_cpu_moe": 0}  # all the experts in RAM already: fewer layers
+    assert tuning.spec_variants(held, info, {"vram_gib": need(40) + 0.3}, build, [flash])[0][2]["name"] == (
+        "draft_fewer")  # fmt: skip
+    dense = {key: value for key, value in info.items() if key not in ("experts", "expert_bytes")}
+    assert tuning.spec_variants({**view, "n_cpu_moe": 0}, dense, {"vram_gib": 17.0}, build, [flash])[0][2]["name"] == (
+        "draft_fewer")  # fmt: skip
 
 
 def test_each_draft_made_for_the_model_is_measured(hub, setup, spec_server):  # noqa: F811

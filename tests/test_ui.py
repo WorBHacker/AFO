@@ -8072,6 +8072,11 @@ def test_where_the_experts_are_in_the_models_sheet(app):
            "accepted": 0.81, "draft": "Qwen3.6-35B-A3B-DFlash-Q8_0.gguf", "short": {}}  # fmt: skip
     assert spec(flash, won) == ("Ускорение — черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf: ответ 40 → 70 ток/с, "
                                 "угадано 81 %.", "ok")  # fmt: skip
+    roomy = {**won, "kind": "draft_experts", "before": 105.4, "after": 127.8, "accepted": 0.64}  # 44.9
+    assert spec(flash, roomy) == ("Ускорение — черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf, ещё часть экспертов "
+                                  "MoE в ОЗУ: ответ 105 → 128 ток/с, угадано 64 %.", "ok")  # fmt: skip
+    assert spec({"type": "draft-simple", "draft": "s.gguf"}, {**roomy, "spec_type": "draft-simple", "draft": "s.gguf"})[
+        0].startswith("Ускорение — черновая модель s.gguf, ещё часть экспертов MoE в ОЗУ")  # fmt: skip
     eagle = {**won, "spec_type": "draft-eagle3", "kind": "draft_fewer", "draft": "e.gguf"}
     assert spec({"type": "draft-eagle3", "draft": "e.gguf"}, eagle)[0].startswith(
         "Ускорение — черновик EAGLE-3 e.gguf, часть слоёв модели в ОЗУ")  # fmt: skip

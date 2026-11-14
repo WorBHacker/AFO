@@ -284,9 +284,10 @@ def draft_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, 
                    draft: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
     """A draft model's variants (42.4), its file's name with them: its kind by its header (draft_kind; 44.4: DFlash,
     EAGLE-3; 44.7: an MTP head), when the build has it; beside the model as it is - or, when it does not fit so (the
-    user's word, 2026-11-13), wholly on the graphics card and the model with as few layers fewer there as it needs;
-    the context is never made smaller by itself. And what it lacks to fit beside the model as it is ({short_gb,
-    context} - the largest context it would fit with; {} - it fits, or is not measured)."""
+    user's word, 2026-11-13), wholly on the graphics card and the model with as few layers fewer there as it needs
+    (44.9: a Mixture-of-Experts model - the experts of as few more layers in RAM, `draft_experts`); the context is
+    never made smaller by itself. And what it lacks to fit beside the model as it is ({short_gb, context} - the
+    largest context it would fit with; {} - it fits, or is not measured)."""
     kind = draft_kind(draft["info"])
     if kind not in build["spec_types"]:
         return [], {}
@@ -297,16 +298,26 @@ def draft_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, 
     context = view.get("context") or 4096
     name = Path(draft["path"]).name
 
-    def need(layers: str | int, tokens: int = context) -> float:
+    def need(layers: str | int, tokens: int = context, moe: dict[str, Any] | None = None) -> float:
         return estimate(info, context=tokens, cache_type=cache, gpu_layers=layers, draft=load,
-                        moe=moe_load(view))["vram_gb"]  # fmt: skip
+                        moe=moe or moe_load(view))["vram_gb"]  # fmt: skip
 
     room = space.get("vram_gib") or 0.0
     if view["gpu_layers"] == "auto" or need(view["gpu_layers"]) <= room:  # --fit places them itself
         return [{"name": "draft", "changes": changes, "draft": name}], {}
     layers = info["layers"] if view["gpu_layers"] == "all" else int(view["gpu_layers"])
-    fewer = next((n for n in range(layers - 1, 0, -1) if need(n) <= room), None)
-    out = [] if fewer is None else [{"name": "draft_fewer", "changes": {**changes, "gpu_layers": fewer}, "draft": name}]
+    out: list[dict[str, Any]] = []
+    if info.get("expert_bytes") and not view.get("cpu_moe") and llama_config.spelled("n_cpu_moe", build)[1]:
+        # 44.9: each word uses few experts - those of a few more layers in RAM cost less than whole layers off the card
+        held = int(view.get("n_cpu_moe") or 0)
+        more = next((n for n in range(held + 1, layers + 1) if need(view["gpu_layers"], moe={
+            "all": False, "layers": n, "cache_mib": 0}) <= room), None)  # fmt: skip
+        if more is not None:
+            out.append({"name": "draft_experts", "changes": {**changes, "n_cpu_moe": more}, "draft": name})
+    if not out:
+        fewer = next((n for n in range(layers - 1, 0, -1) if need(n) <= room), None)
+        out = [] if fewer is None else [{"name": "draft_fewer", "changes": {**changes, "gpu_layers": fewer},
+                                         "draft": name}]  # fmt: skip
     smaller = [context // 2**i for i in range(1, 5) if context // 2**i >= 4096]
     return out, {"short_gb": round(need(view["gpu_layers"]) - room, 1),
                  "context": next((c for c in smaller if need(view["gpu_layers"], c) <= room), 0)}  # fmt: skip

@@ -418,6 +418,7 @@ def settings_words(settings: dict[str, Any]) -> str:
 # what guessing ahead the tuning chose (hub/tuning.py spec_variants), in words
 SPEC_KINDS = {"draft": N_("черновая модель {draft}"),
               "draft_fewer": N_("черновая модель {draft}, часть слоёв модели в ОЗУ"),
+              "draft_experts": N_("черновая модель {draft}, ещё часть экспертов MoE в ОЗУ"),
               "mtp": N_("слой MTP самой модели"),
               "ngram": N_("ngram (повторы уже написанного)")}  # fmt: skip
 # a draft made for one model (44.4; 44.7: an MTP head of its own file), by the kind of guessing it takes
@@ -456,9 +457,10 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
                                  gb=decimal(f"{short['short_gb']:.1f}"))  # fmt: skip
             return text, ""
         what = tr(SPEC_KINDS[spec["kind"]], draft=spec.get("draft") or "")
-        if spec["kind"] in ("draft", "draft_fewer") and spec.get("spec_type") in DRAFT_WORDS:
+        if spec["kind"] in ("draft", "draft_fewer", "draft_experts") and spec.get("spec_type") in DRAFT_WORDS:
             what = tr(DRAFT_WORDS[spec["spec_type"]], draft=spec.get("draft") or "")
             what += tr(", часть слоёв модели в ОЗУ") if spec["kind"] == "draft_fewer" else ""
+            what += tr(", ещё часть экспертов MoE в ОЗУ") if spec["kind"] == "draft_experts" else ""
         text = tr("Ускорение — {what}: ответ {before} → {after} ток/с", what=what, before=f"{spec['before']:.0f}",
                   after=f"{spec['after']:.0f}")  # fmt: skip
         if spec.get("accepted") is not None and spec["kind"] != "ngram":
