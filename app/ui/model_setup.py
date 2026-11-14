@@ -357,6 +357,7 @@ def settings_words(settings: dict[str, Any]) -> str:
 # what guessing ahead the tuning chose (hub/tuning.py spec_variants), in words
 SPEC_KINDS = {"draft": N_("черновая модель {draft}"),
               "draft_fewer": N_("черновая модель {draft}, часть слоёв модели в ОЗУ"),
+              "mtp": N_("слой MTP самой модели"),
               "ngram": N_("ngram (повторы уже написанного)")}  # fmt: skip
 
 

@@ -250,7 +250,8 @@ def spec_command(text: str, model_id: str, changes: dict[str, Any], build: dict[
 
 def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
                   draft: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
-    """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the draft model ({path, info}) beside
+    """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the model's own MTP layers (44.3: its
+    header has them, the build has draft-mtp - no file of their own); the draft model ({path, info}) beside
     the model as it is - or, when it does not fit so (the user's word, 2026-11-13), wholly on the graphics card and the
     model with as few layers fewer there as it needs; the context is never made smaller by itself. And what the draft
     lacks to fit beside the model as it is ({short_gb, context} - the largest context it would fit with; {} - it
@@ -259,6 +260,8 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
     ngram = next((kind for kind in NGRAMS if kind in build["spec_types"]), None)
     if ngram:
         out.append({"name": "ngram", "changes": {"spec_type": ngram}})
+    if info.get("mtp_layers") and "draft-mtp" in build["spec_types"]:  # 44.3: the model's own layers guess ahead
+        out.append({"name": "mtp", "changes": {"spec_type": "draft-mtp"}})
     if draft is None or "draft-simple" not in build["spec_types"]:
         return out, {}
     cache = view.get("cache_type") or "f16"  # the draft's KV cache as the model's: q8_0 takes half of f16
@@ -645,6 +648,10 @@ class Tuner:
                     # speed is the model's own and the noise, the draft held in the memory all the same
                     raise TuneError(tr("llama.cpp не взял черновую модель: {error}", error=_said(server_log(), "draft")
                                        or tr("за замер она не угадала ни одного токена")))  # fmt: skip
+                if variant["changes"]["spec_type"] == "draft-mtp" and found["accepted"] is None:  # 44.3, as 42.7
+                    raise TuneError(tr("llama.cpp не стал угадывать слоем MTP модели: {error}",
+                                       error=_said(server_log(), "mtp")
+                                       or tr("за замер он не угадал ни одного токена")))  # fmt: skip
             except (TuneError, llama_config.ConfigError) as exc:
                 if variant["name"] == "none":  # nothing to compare with
                     raise

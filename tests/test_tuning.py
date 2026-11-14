@@ -816,3 +816,43 @@ def test_the_experts_go_where_the_model_answers_fastest(hub, setup, spec_server)
                  "cache": [30.0, 800.0]})  # fmt: skip
     assert (same["moe"]["status"], same["moe"]["kind"]) == ("same", "now")
     assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["gpu_layers"] == "auto"
+
+
+def test_a_model_with_a_layer_of_its_own_guesses_ahead_with_it(hub, setup, spec_server):  # noqa: F811
+    """44.3: a model trained with layers that guess the next words (MTP: the header's nextn_predict_layers - GLM,
+    DeepSeek, Qwen3.5) guesses ahead with them - llama.cpp's draft-mtp, no file of its own: measured after ngram and
+    before a draft model, written without -md. A build without draft-mtp, or a model without the layer - not
+    measured; a layer llama.cpp starts with but guesses nothing with is not a measurement (42.7)."""
+    from tests.test_llama_config import HELP
+
+    build = lc.parse_help(HELP)
+    info = {"architecture": "glm4moe", "layers": 47, "kv_layers": 47, "kv_heads": 8, "key_length": 128,
+            "value_length": 128, "context_trained": 131072, "size_bytes": int(4.7 * 1024**3),
+            "mtp_layers": 1}  # fmt: skip
+    draft = {"path": setup.parent / "draft.gguf", "info": {**info, "layers": 28, "kv_layers": 28, "mtp_layers": 0,
+                                                            "size_bytes": int(0.6 * 1024**3)}}  # fmt: skip
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
+    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+    assert [v["name"] for v in found] == ["none", "ngram", "mtp", "draft"]
+    assert found[2]["changes"] == {"spec_type": "draft-mtp"}
+    old = lc.parse_help(HELP.replace(",draft-mtp", ""))
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, None)[0]] == ["none", "ngram"]
+    plain = tuning.spec_variants(view, {**info, "mtp_layers": 0}, {"vram_gib": 15.0}, build, None)[0]
+    assert [v["name"] for v in plain] == ["none", "ngram"]
+
+    keys = {"general.architecture": "tiny", "tiny.block_count": 8, "tiny.context_length": 65536,
+            "tiny.embedding_length": 256, "tiny.attention.head_count": 4, "tiny.attention.head_count_kv": 2,
+            "tiny.nextn_predict_layers": 1}  # fmt: skip
+    gguf(setup.parent / "big.gguf", keys)
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-mtp": 52.0})
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}).tune("big"))
+    spec = result["spec"]
+    assert (spec["status"], spec["kind"], spec["spec_type"], spec["after"]) == ("better", "mtp", "draft-mtp", 52.0)
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-mtp"]
+    written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
+    assert (written["type"], written["draft"]) == ("draft-mtp", "")  # the model's own layer: no file
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 40.5, "draft-mtp": 43.0}, rejects=["draft-mtp"])
+    nothing = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}).tune("big"))["spec"]
+    assert nothing["kind"] == "none" and "tg" not in nothing["measured"][2]
+    assert "MTP" in nothing["measured"][2]["error"]
