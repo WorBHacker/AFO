@@ -162,6 +162,9 @@
       "tier": "light",
       "license": "openrail++",
       "original": "IDKiro/sdxs-512-0.9",
+      "bases": [
+        "IDKiro/sdxs-512-0.9"
+      ],
       "size": 512,
       "files": [
         {
@@ -190,6 +193,9 @@
       "tier": "main",
       "license": "apache-2.0",
       "original": "black-forest-labs/FLUX.2-klein-4B",
+      "bases": [
+        "black-forest-labs/FLUX.2-klein-4B"
+      ],
       "size": 1024,
       "files": [
         {
@@ -228,6 +234,9 @@
       "tier": "quality",
       "license": "apache-2.0",
       "original": "Tongyi-MAI/Z-Image-Turbo",
+      "bases": [
+        "Tongyi-MAI/Z-Image-Turbo"
+      ],
       "size": 1024,
       "files": [
         {
@@ -267,6 +276,9 @@
       "tier": "video",
       "license": "apache-2.0",
       "original": "Wan-AI/Wan2.2-TI2V-5B",
+      "bases": [
+        "quanhaol/Wan2.2-TI2V-5B-Turbo"
+      ],
       "size": 832,
       "files": [
         {

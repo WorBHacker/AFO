@@ -46,6 +46,7 @@ TASKS = {"chat": "conversational", "code": "code", "vision": "image-text-to-text
          "video": "text-to-video"}  # fmt: skip
 PICTURE_TASKS = ("image", "video")  # models that draw and film (41.2): sd-server's, not llama.cpp's
 PICTURE_PIPELINES = ("text-to-image", "image-to-image", "text-to-video", "image-to-video")
+BASES = ("quantized", "finetune")  # whose files a repository's are (47.2): not a LoRA's (`adapter`) or a merge's
 SORTS = {"downloads": "downloads", "trending": "trendingScore", "likes": "likes", "updated": "lastModified",
          "new": "createdAt"}  # fmt: skip
 # the search's other filters (41.2): Hugging Face's - a language tag, who put the files there; the hub's own - how the
@@ -178,6 +179,17 @@ def params_of(info: dict[str, Any]) -> int:
     return named if named > 2 * read else read
 
 
+def bases(info: dict[str, Any]) -> list[str]:
+    """The models a repository's files are made of (47.2): Hugging Face's `base_model:quantized:<id>` and
+    `base_model:finetune:<id>` tags - a LoRA (`adapter`) or a merge is not the model itself."""
+    out: list[str] = []
+    for tag in info.get("tags") or []:
+        kind, _, name = str(tag).removeprefix("base_model:").partition(":")
+        if str(tag).startswith("base_model:") and kind in BASES and name and name not in out:
+            out.append(name)
+    return out
+
+
 def experts(info: dict[str, Any], repo: str) -> bool:
     """A mixture of experts (41.1): its architecture says so (qwen3moe), its tags, or its name («30B-A3B») - not every
     repository tags it."""
@@ -200,6 +212,7 @@ def summary(info: dict[str, Any]) -> dict[str, Any]:
         "pipeline": info.get("pipeline_tag") or "",
         "params": params_of({**info, "id": repo}),
         "moe": experts(info, repo),
+        "bases": bases(info),
         "unrestricted": bool(UNRESTRICTED.search(repo)) or any(UNRESTRICTED.search(t) for t in info.get("tags") or []),
         "page": f"{base_url()}/{repo}",
     }

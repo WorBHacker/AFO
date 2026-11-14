@@ -1308,6 +1308,53 @@ def test_the_search_by_build_language_licence_author_and_newest(hub):
         del SEARCH[-len(extra) :]
 
 
+def test_a_found_picture_model_is_known_by_its_family(hub):
+    """47.2: a model that draws is one of AFO's picture sets by the base model its files are made of - Hugging Face's
+    `base_model:quantized:` and `base_model:finetune:` tags - not only by the set's own repository: unsloth's
+    Z-Image-Turbo is the set's model as leejet's is. A LoRA (`adapter:`) or a merge is not the model; the plain
+    Wan2.2-TI2V-5B is not the Turbo set (the Turbo's steps are not its). `picture` stays the set's own repository (the
+    window leads to its card), `family` is new."""
+
+    def found(repo: str, tags: list[str]) -> dict:
+        made = "2026-11-15T00:00:00.000Z"
+        return {"id": repo, "downloads": 1, "likes": 0, "trendingScore": 0, "createdAt": made, "lastModified": made,
+                "tags": ["gguf", *tags], "gguf": {}}  # fmt: skip
+
+    z = "Tongyi-MAI/Z-Image-Turbo"
+    extra = [
+        found("leejet/Z-Image-Turbo-GGUF", ["text-to-image", f"base_model:{z}", f"base_model:quantized:{z}"]),
+        found("unsloth/Z-Image-Turbo-GGUF", ["text-to-image", f"base_model:{z}", f"base_model:quantized:{z}"]),
+        found("someone/Z-Image-Turbo-Realism-GGUF", ["text-to-image", f"base_model:finetune:{z.lower()}"]),
+        found("someone/Z-Image-Turbo-Lora", ["text-to-image", f"base_model:{z}", f"base_model:adapter:{z}"]),
+        found("someone/Z-Image-Turbo-Merge-GGUF", ["text-to-image", f"base_model:merge:{z}"]),
+        found("QuantStack/Wan2.2-TI2V-5B-GGUF", ["text-to-video", "base_model:quantized:Wan-AI/Wan2.2-TI2V-5B"]),
+        found("someone/Wan2.2-TI2V-5B-Turbo-Q8-GGUF",
+              ["text-to-video", "base_model:quantized:quanhaol/Wan2.2-TI2V-5B-Turbo"]),
+        found("unsloth/Qwen3-4B-GGUF", ["conversational", "base_model:quantized:Qwen/Qwen3-4B"]),
+    ]  # fmt: skip
+    leejet, unsloth, realism, lora, merge, plain, turbo, chat = (m["id"] for m in extra)
+    shipped = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    kept = json.loads(mi.CATALOG.read_text(encoding="utf-8"))  # the test's catalog, with AFO's own picture sets
+    mi.CATALOG.write_text(json.dumps({**kept, "pictures": shipped}), encoding="utf-8")
+    SEARCH.extend(extra)
+    try:
+        listed = {m["repo"]: m for m in hub.get("/v1/install/search", params={"q": "z-image"}).json()["models"]}
+        assert {r: (m.get("picture"), m.get("family"), m["drawn"]) for r, m in listed.items()} == {
+            leejet: ("z-image-turbo", "z-image-turbo", True),  # the set's own repository, as before
+            unsloth: ("", "z-image-turbo", True),  # the same model quantized by another: AFO knows its other parts
+            realism: ("", "z-image-turbo", True),  # trained further: the same parts; its tag in lower case
+            lora: ("", "", False), merge: ("", "", False)}  # fmt: skip
+        assert listed[unsloth]["bases"] == [z] and listed[lora]["bases"] == [] and listed[merge]["bases"] == []
+        filmed = hub.get("/v1/install/search", params={"task": "video"}).json()["models"]
+        assert {m["repo"]: m["family"] for m in filmed if m["repo"] in (plain, turbo)} == {
+            plain: "", turbo: "wan2.2-ti2v-5b-turbo"}  # fmt: skip
+        said = hub.get("/v1/install/search", params={"q": "qwen3"}).json()["models"]
+        assert [(m["repo"], m["family"], m["drawn"], m["bases"]) for m in said] == [
+            (chat, "", False, ["Qwen/Qwen3-4B"])]  # fmt: skip
+    finally:
+        del SEARCH[-len(extra) :]
+
+
 def test_a_variants_quality_in_words():
     """41.3: how much of the model a variant kept, in words instead of «bits per weight»: from about Q8_0 the same as
     the original, from about Q4_K_M (GOOD_BITS) nearly, down to MIN_BITS a little worse, below it - noticeably."""

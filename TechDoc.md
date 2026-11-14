@@ -1290,11 +1290,16 @@ VAE при нехватке повторяет плитками.
   `_running`: между двумя картинками пробная не проскочит); сервер связывает `installer.drawing` с ним. Подмена
   llama-swap (`tests/test_llama_config.py`) отвечает на `/sdapi/v1/txt2img`, пока не отпущено `held`. Тест —
   `test_an_installs_trial_picture_waits_while_the_hub_draws` (на старом коде пробная прошла посреди картинки).
-- 47.2 Семейство — по базовой модели. `hf.summary` — `bases`: модели тегов `base_model:quantized:` и
+- 47.2 ✓ Семейство — по базовой модели. `hf.summary` — `bases`: модели тегов `base_model:quantized:` и
   `base_model:finetune:`. У набора каталога — `bases`: для каких исходных моделей верны его флаги (у
   Wan2.2-TI2V-5B-Turbo их нет: обычной TI2V-5B нужны другие шаги). Поиск: `picture` — набор по репозиторию или по
   базовой модели. Файлы: `hub/hf.py`, `hub/model_install.py`, `hub/model_catalog.json`. Тест:
-  `unsloth/Z-Image-Turbo-GGUF` — `z-image-turbo`; LoRA (`adapter:`) и обычная TI2V-5B — нет.
+  `unsloth/Z-Image-Turbo-GGUF` — `z-image-turbo`; LoRA (`adapter:`) и обычная TI2V-5B — нет. Сделано: `hf.bases`
+  (`BASES`: quantized, finetune; без учёта регистра при сравнении), у строки поиска — `family` рядом с прежним
+  `picture` (его окно ведёт к карточке набора — до 47.7 окно то же), `drawn` — и у узнанной по семейству. `bases`
+  наборов: sdxs — `IDKiro/sdxs-512-0.9` (у `concedo/…` тегов нет), FLUX.2-klein-4B и Z-Image-Turbo — свои, видео
+  Turbo — `quanhaol/Wan2.2-TI2V-5B-Turbo` (база `hum-ma/…`; обычная `Wan-AI/Wan2.2-TI2V-5B` — не его). Тест —
+  `test_a_found_picture_model_is_known_by_its_family`.
 - 47.3 Общие файлы. Файл — по репозиторию, пути и sha256. Новая установка сначала ищет его среди файлов установок
   (`model_installs.files`) и берёт на месте; нет — качает в `pictures/_shared`. Удаление и отмена удаляют общий файл,
   только если его не называет ни одна другая установка (кроме отменённых и удалённых): счёт — по `model_installs`, под

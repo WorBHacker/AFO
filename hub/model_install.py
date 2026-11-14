@@ -136,7 +136,8 @@ def drafts() -> list[dict[str, Any]]:
 
 def picture_sets() -> list[dict[str, Any]]:
     """The curated picture models (model_catalog.json `pictures`, D55): {id, name, purposes, tier, license, original,
-    size, files: [{role (sd-server's flag), repo, path}], flags, about}."""
+    bases - the models whose quantizations and finetunes its flags and other parts fit (47.2), size, files: [{role
+    (sd-server's flag), repo, path}], flags, about}."""
     return json.loads(CATALOG.read_text(encoding="utf-8")).get("pictures") or []
 
 
@@ -992,7 +993,8 @@ class Installer:
         holds), in what order (hf.SORTS), and `plain` - none whose refusals were taken out; `more` (41.2): language,
         author, build, licence (hf.search). Each found says whether it fits this computer (41.1); a model that draws
         or films - which picture set of AFO's it is (`picture`, its main repository), or none: AFO cannot put it
-        together itself."""
+        together itself; and (47.2) whose family it is (`family`: the set by its repository or by the base model the
+        files are made of - the other parts, encoders and VAE, are the set's)."""
         fewest, most = (0, fits_params(self.space())) if size == "fits" else SIZES.get(size, (0, 0))
         if size == "fits" and not most:
             return []  # nothing fits here
@@ -1000,13 +1002,16 @@ class Installer:
             found = await hf.search(http, query, token=self.token(), task=task, fewest=fewest, most=most, sort=sort,
                                     plain=plain, **more)  # fmt: skip
         space = self.space()
-        sets = {f["repo"]: entry["id"] for entry in picture_sets() for f in entry["files"]
-                if f["role"] in PICTURE_MAIN}  # fmt: skip
+        listed = picture_sets()
+        sets = {f["repo"]: entry["id"] for entry in listed for f in entry["files"] if f["role"] in PICTURE_MAIN}
+        kin = {base.lower(): entry["id"] for entry in listed for base in entry.get("bases") or []}
         out = []
         for each in found:
             picture = sets.get(each["repo"], "")
-            drawn = bool(picture) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
-            out.append({**each, "picture": picture, "drawn": drawn, "fit": None if drawn else search_fit(each, space)})
+            family = picture or next((kin[b.lower()] for b in each["bases"] if b.lower() in kin), "")
+            drawn = bool(family) or task in hf.PICTURE_TASKS or each.get("pipeline") in hf.PICTURE_PIPELINES
+            out.append({**each, "picture": picture, "family": family, "drawn": drawn,
+                        "fit": None if drawn else search_fit(each, space)})  # fmt: skip
         return out
 
     # --- picture models (29.3) ---
