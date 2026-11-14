@@ -156,10 +156,11 @@ class Chat:
         self.busy: list[str] = []
 
 
-def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_draft=False):
+def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_draft=False, space=None):
     """A Tuner with llama-bench and the check as stand-ins: `measured` - llama-bench's numbers by KV cache type;
     `draft` - the draft model's file found for any model (42.4); `refuse_draft` - the check fails only for a model
-    whose command has a draft model (llama-swap: «speculative decoding not supported by this context»)."""
+    whose command has a draft model (llama-swap: «speculative decoding not supported by this context»); `space` - the
+    memory a model may take (a 24 GB card)."""
 
     def run(command, progress):
         asked is not None and asked.append(command)
@@ -181,7 +182,7 @@ def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_dra
         return draft
 
     return tuning.Tuner(db_hub.app.state.db, Bus(), Chat(), url="http://127.0.0.1:9",
-                        space=lambda: {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check,
+                        space=lambda: space or {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check,
                         draft=find)  # fmt: skip
 
 
@@ -428,8 +429,9 @@ def test_a_renamed_model_keeps_what_was_measured(hub, setup):  # noqa: F811
 # --- guessing ahead, measured by llama-server itself (42.4) ---
 
 SERVER = r'''"""A stand-in llama-server (42.4): says its --help; else serves /health (503 while «loading») and
-answers with llama.cpp's timings - its speed by --spec-type, and by -ngl when it is not all the layers. Each launch
-and each request are written down beside it."""
+answers with llama.cpp's timings - its speed by --spec-type, and by -ngl when it is not all the layers; by where the
+experts are (44.2: «now», «layersN», «all», «cache») when speeds.json says. Each launch and each request are written
+down beside it."""
 import json, pathlib, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -452,6 +454,11 @@ if kind in how.get("crash", []):
     print("common_speculative_init: speculative decoding not supported by this context", flush=True)
     sys.exit(1)
 speed = how["fewer"] if flag("-ngl", "99") != "99" else how["speeds"][kind]
+reads = 1000.0
+experts = ("cache" if flag("--moe-cache-mib") else "all") if "--cpu-moe" in args else \
+    "layers" + flag("-ncmoe") if "-ncmoe" in args else "now"
+if experts in how.get("moe", {}):
+    speed, reads = how["moe"][experts]
 rejected = kind in how.get("rejects", [])  # as llama.cpp with a draft of another vocabulary: on without guessing
 if rejected:
     print("0.05.726.435 E spec common_specu: the target and draft vocabs are not compatible", flush=True)
@@ -480,7 +487,7 @@ class Handler(BaseHTTPRequestHandler):
             f.write(json.dumps(body) + "\n")
         drafted = 0 if kind == "none" or rejected else 100
         self._send(200, {"choices": [{"message": {"content": "ok"}}],
-                         "timings": {"predicted_per_second": speed, "draft_n": drafted,
+                         "timings": {"predicted_per_second": speed, "prompt_per_second": reads, "draft_n": drafted,
                                      "draft_n_accepted": int(drafted * how.get("accepted", 0.7))}})
 
 
@@ -510,12 +517,12 @@ def spec_server(setup, tmp_path):
     return folder
 
 
-def speeds(folder, by_kind, *, fewer=0.0, crash=(), rejects=(), load_s=0.3):
+def speeds(folder, by_kind, *, fewer=0.0, crash=(), rejects=(), load_s=0.3, moe=None):
     """How fast the stand-in llama-server answers: by --spec-type; with fewer layers on the card; which kinds of
     guessing it cannot start with; which it starts with but guesses nothing (llama.cpp with a draft of another
-    vocabulary); how long it «loads the model»."""
+    vocabulary); how long it «loads the model»; `moe` - by where the experts are, [answer, reading] (44.2)."""
     (folder / "speeds.json").write_text(json.dumps({"speeds": by_kind, "fewer": fewer, "crash": list(crash),
-                                                    "rejects": list(rejects), "load_s": load_s}),
+                                                    "rejects": list(rejects), "load_s": load_s, "moe": moe or {}}),
                                         encoding="utf-8")  # fmt: skip
 
 
@@ -708,3 +715,104 @@ def stand_ins():
             if any(part.endswith("server.py") for part in process.info["cmdline"] or []):
                 alive.append(process.pid)
     return alive
+
+
+# --- where a Mixture-of-Experts model's experts go, measured by llama-server itself (44.2) ---
+
+ROOM = {"vram_gib": 15.0, "ram_gib": 60.0}  # a 16 GB card less the desktop's share
+WHOLE = {"gpu_layers": "all", "cpu_moe": False, "n_cpu_moe": 0, "moe_cache_mib": 0}
+
+
+def test_where_the_experts_are_measured(tmp_path):
+    """44.2: a Mixture-of-Experts model that does not fit on the card whole - Qwen3-30B-A3B's 17,3 GB on a 16 GB
+    card: its command's own placement first (llama.cpp's --fit after an install); the experts of the fewest first
+    layers in RAM with which the rest fits, and of three layers more; every expert in RAM and a cache of them as large
+    as the room leaves. Nothing for a model that fits whole or has no experts; no cache without a build that has it,
+    nor experts past the RAM there is; a placement the command has already is not measured twice."""
+    from tests.test_llama_config import HELP, MOE, MOE_CACHE_HELP, moe_tensors
+
+    build = lc.parse_help(HELP)
+    info = tuning.model_info(gguf(tmp_path / "moe.gguf", MOE, moe_tensors()))
+    view = {"context": 32768, "gpu_layers": "auto", "cache_type": "q8_0", "cpu_moe": False, "n_cpu_moe": 0,
+            "moe_cache_mib": 0}  # fmt: skip
+    found = tuning.moe_variants(view, info, ROOM, build)
+    assert [v["name"] for v in found] == ["now", "layers", "layers_more", "cache"] and found[0]["changes"] == {}
+    assert [v["changes"] for v in found[1:]] == [{**WHOLE, "n_cpu_moe": 14}, {**WHOLE, "n_cpu_moe": 17},
+                                                 {**WHOLE, "cpu_moe": True, "moe_cache_mib": 11776}]  # fmt: skip
+    assert tuning.moe_variants(view, info, {"vram_gib": 24.0, "ram_gib": 60.0}, build) == []  # it fits whole
+    held = {**view, "gpu_layers": "all", "cpu_moe": True}  # fits whole, its experts kept in RAM by hand
+    assert [v["name"] for v in tuning.moe_variants(held, info, {"vram_gib": 24.0}, build)] == ["now", "card"]
+    older = lc.parse_help(HELP.replace(MOE_CACHE_HELP, ""))
+    assert [v["name"] for v in tuning.moe_variants(view, info, ROOM, older)] == ["now", "layers", "layers_more"]
+    little = tuning.moe_variants(view, info, {**ROOM, "ram_gib": 8.0}, build)  # every expert: 16,3 GB of RAM
+    assert [v["name"] for v in little] == ["now", "layers", "layers_more"]
+    placed = {**view, "gpu_layers": "all", "n_cpu_moe": 14}  # tuned before
+    assert [v["name"] for v in tuning.moe_variants(placed, info, ROOM, build)] == ["now", "layers_more", "cache"]
+    assert tuning.moe_variants(view, {**info, "expert_bytes": []}, ROOM, build) == []
+
+    # the pick: an answer faster by more than 3 %, its reading of a long question at most 10 % slower
+    now = {"name": "now", "tg": 40.0, "pp": 1400.0}
+    assert tuning.moe_choice([now, {"name": "layers", "tg": 41.0, "pp": 1500.0}])["name"] == "now"  # noise
+    assert tuning.moe_choice([now, {"name": "layers", "tg": 44.0, "pp": 1300.0},
+                              {"name": "cache", "tg": 46.0, "pp": 900.0}])["name"] == "layers"  # fmt: skip
+    assert tuning.moe_choice([{"name": "now", "error": "out of memory"}, {"name": "layers", "tg": 30.0}])["name"] == (
+        "layers")  # fmt: skip
+
+
+def placements(folder):
+    """Where each launch of the stand-in llama-server kept the experts (44.2)."""
+    out = []
+    for line in (folder / "launches.txt").read_text(encoding="utf-8").splitlines():
+        args = json.loads(line)
+        if "--cpu-moe" in args:
+            out.append("cache" if "--moe-cache-mib" in args else "all")
+        else:
+            out.append("layers" + args[args.index("-ncmoe") + 1] if "-ncmoe" in args else "now")
+    return out
+
+
+def test_the_experts_go_where_the_model_answers_fastest(hub, setup, spec_server):  # noqa: F811
+    """44.2: after llama-bench's settings, each placement of the experts is measured by llama-server itself - its
+    answers and its reading of a long question; the fastest answer by more than 3 % is written and checked, unless it
+    reads more than 10 % slower than the command's own; guessing ahead is measured after, with it. Within the noise
+    nothing is written; a model without experts has no such step."""
+    from tests.test_llama_config import MOE, moe_tensors
+
+    text = setup.read_text(encoding="utf-8")
+    dense = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}).tune("big"))
+    assert "moe" not in dense and dense["spec"]["kind"] == "ngram"
+    gguf(setup.parent / "big.gguf", MOE, moe_tensors())  # Qwen3-30B-A3B's header: 17,3 GB by its table
+    fit = lc.edit(text, "big", {"gpu_layers": "auto"})  # as an install leaves it: llama.cpp's --fit
+
+    def tune(by_place):
+        setup.write_text(fit, encoding="utf-8")
+        (spec_server / "launches.txt").unlink(missing_ok=True)
+        (spec_server / "asked.txt").unlink(missing_ok=True)
+        speeds(spec_server, {"none": 40.0, "ngram-mod": 40.0}, moe=by_place)
+        return asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, space=ROOM).tune("big"))
+
+    result = tune({"now": [40.0, 1400.0], "layers14": [44.0, 1380.0], "layers17": [42.0, 1300.0],
+                   "cache": [36.0, 900.0]})  # fmt: skip
+    moe = result["moe"]
+    assert (moe["status"], moe["kind"], moe["before"], moe["after"]) == (
+        "better", "layers", {"tg": 40.0, "pp": 1400.0}, {"tg": 44.0, "pp": 1380.0})  # fmt: skip
+    assert [m["name"] for m in moe["measured"]] == ["now", "layers", "layers_more", "cache"]
+    view = lc.model_view(setup.read_text(encoding="utf-8"), "big")
+    assert (view["gpu_layers"], view["n_cpu_moe"], view["cpu_moe"], view["moe_cache_mib"]) == ("all", 14, False, 0)
+    assert "--fit" not in setup.read_text(encoding="utf-8").split('"big"')[1].split('"huge"')[0]
+    # guessing ahead after, with the experts where they were written
+    assert placements(spec_server) == ["now", "layers14", "layers17", "cache", "layers14", "layers14"]
+    asked = [json.loads(line) for line in (spec_server / "asked.txt").read_text(encoding="utf-8").splitlines()]
+    long = [a for a in asked if a["messages"][0]["content"] == tuning.LONG_PROMPT]
+    assert len(long) == 4 and {a["max_tokens"] for a in long} == {1}  # a long question read by each placement
+    assert hub.app.state.db.call(tuning.load_results)["big"]["moe"]["kind"] == "layers"  # kept
+
+    slower = tune({"now": [40.0, 1400.0], "layers14": [44.0, 1000.0], "layers17": [43.5, 1350.0],
+                   "cache": [36.0, 900.0]})  # fmt: skip
+    assert slower["moe"]["kind"] == "layers_more"  # 14 layers answer faster but read 29 % slower
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["n_cpu_moe"] == 17
+
+    same = tune({"now": [40.0, 1400.0], "layers14": [41.0, 1400.0], "layers17": [40.5, 1400.0],
+                 "cache": [30.0, 800.0]})  # fmt: skip
+    assert (same["moe"]["status"], same["moe"]["kind"]) == ("same", "now")
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["gpu_layers"] == "auto"

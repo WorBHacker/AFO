@@ -3,9 +3,10 @@ same llama.cpp build measures what a few settings give on this computer - flash 
 type, the ubatch - with a filled context (DEPTH tokens already in it, as a chat with some history). The fastest answer
 wins (answers within CLOSE of each other: the faster prompt decides), and the config changes only when the winner is
 faster than its own settings by more than CLOSE - less is the measurement's noise; the model's placement stays as the
-config has it (all on the graphics card, a number of layers, or llama.cpp's own --fit). The winner goes into the
-config - a copy of the old one beside it - and the model is loaded with its whole context to check it still fits; if
-not, the old config comes back.
+config has it (all on the graphics card, a number of layers, or llama.cpp's own --fit), but for a Mixture-of-Experts
+model that does not fit whole: where its experts go is measured by llama-server (44.2), then guessing ahead (42.4).
+The winner goes into the config - a copy of the old one beside it - and the model is loaded with its whole context to
+check it still fits; if not, the old config comes back.
 
 Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no chat has run for
 IDLE_S and the graphics card itself has been quiet as long - the hub's own checks, the editor's completion, another
@@ -84,6 +85,15 @@ SPEC_PROMPTS = (  # a code edit (ngram guesses its copied lines) and a plain ans
     N_("Объясни простыми словами, как работает холодильник: откуда берётся холод и куда уходит тепло. "
        "Пять-шесть предложений."),
 )  # fmt: skip
+# where a Mixture-of-Experts model's experts go (44.2): measured by llama-server too - llama-bench has no --cpu-moe
+MOE_MORE = 3  # the experts of this many layers more in RAM than the fewest with which the rest fits: room for buffers
+MOE_CACHE_MIN_MIB = 1024  # a smaller cache of experts is not measured
+MOE_CACHE_STEP_MIB = 256
+READ_DROP = 0.10  # a placement that answers faster may read a long question this much slower, no more
+READ_MIN_CONTEXT = 4096  # the long question's reading is measured with a context of at least this
+# a long question (~3 thousand tokens): the experts in RAM slow its reading most (46.1: three times with --cpu-moe)
+LONG_PROMPT = "\n".join(f"{i}. The value of item {i} is {i * 7919 % 10007}." for i in range(200)) + \
+    "\nWhich item has the largest value? Answer with its number only."  # fmt: skip
 
 
 class TuneError(Exception):
@@ -282,6 +292,66 @@ def spec_choice(measured: list[dict[str, Any]]) -> dict[str, Any]:
         if variant["tg"] > max(m["tg"] for m in measured[:at]) * (1 + CLOSE):
             pick = variant
     return pick
+
+
+def _placed(view: dict[str, Any], changes: dict[str, Any]) -> bool:
+    """Whether the command keeps the experts as these changes would."""
+    return (view.get("gpu_layers"), bool(view.get("cpu_moe")), view.get("n_cpu_moe") or 0,
+            view.get("moe_cache_mib") or 0) == (changes["gpu_layers"], changes["cpu_moe"], changes["n_cpu_moe"],
+                                                changes["moe_cache_mib"])  # fmt: skip
+
+
+def moe_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any] | None,
+                 *, mmproj: int = 0) -> list[dict[str, Any]]:  # fmt: skip
+    """Where to keep a Mixture-of-Experts model's experts (44.2), measured when the model does not fit on the card
+    whole: the command's own placement first (after an install - llama.cpp's --fit); the experts of the fewest first
+    layers in RAM with which the rest fits (--n-cpu-moe), and of MOE_MORE layers more; every expert in RAM and as large
+    a cache of them on the card as the room leaves (--cpu-moe --moe-cache-mib, a build that has it). Each with all the
+    rest on the card, its experts within the RAM there is. A model that fits whole while its command keeps experts in
+    RAM: whole on the card. [] - nothing to measure: no experts, no graphics card, or it fits as it is."""
+    experts = info.get("expert_bytes") or []
+    room, ram = space.get("vram_gib") or 0.0, space.get("ram_gib") or 0.0
+    if not experts or not room:
+        return []
+
+    def judged(moe: dict[str, Any] | None) -> dict[str, Any]:
+        return estimate(info, context=view.get("context") or 4096, cache_type=view.get("cache_type") or "f16",
+                        gpu_layers="all", mmproj_bytes=mmproj, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
+                        moe=moe)  # fmt: skip
+
+    def fits(moe: dict[str, Any] | None) -> bool:
+        need = judged(moe)
+        return need["vram_gb"] <= room and (not ram or need["ram_gb"] <= ram)
+
+    whole = {"gpu_layers": "all", "cpu_moe": False, "n_cpu_moe": 0, "moe_cache_mib": 0}
+    out = [{"name": "card", "changes": whole}] if fits(None) and moe_load(view) else []
+    if not fits(None):
+        fewest = next((n for n in range(1, len(experts) + 1) if fits({"all": False, "layers": n})), None)
+        if fewest is not None:
+            out.append({"name": "layers", "changes": {**whole, "n_cpu_moe": fewest}})
+            if fewest + MOE_MORE <= len(experts):
+                out.append({"name": "layers_more", "changes": {**whole, "n_cpu_moe": fewest + MOE_MORE}})
+        if build is not None and llama_config.spelled("moe_cache_mib", build)[1] is not None:
+            alone = judged({"all": True})
+            mib = min(int((room - alone["vram_gb"]) * 1024), sum(experts) // 1024**2)
+            mib -= mib % MOE_CACHE_STEP_MIB
+            if mib >= MOE_CACHE_MIN_MIB and (not ram or alone["ram_gb"] <= ram):
+                out.append({"name": "cache", "changes": {**whole, "cpu_moe": True, "moe_cache_mib": mib}})
+    out = [v for v in out if not _placed(view, v["changes"])]
+    return [{"name": "now", "changes": {}}, *out] if out else []
+
+
+def moe_choice(measured: list[dict[str, Any]]) -> dict[str, Any]:
+    """The placement of the experts to write (44.2): the command's own, unless another answers faster by more than
+    CLOSE - the fastest such - and reads the long question at most READ_DROP slower. The command's own that did not
+    start: the fastest that did."""
+    now = measured[0]
+    ran = [m for m in measured[1:] if "tg" in m]
+    if "tg" not in now:
+        return max(ran, key=lambda m: m["tg"]) if ran else now
+    better = [m for m in ran if m["tg"] > now["tg"] * (1 + CLOSE)
+              and (not now.get("pp") or not m.get("pp") or m["pp"] >= now["pp"] * (1 - READ_DROP))]  # fmt: skip
+    return max(better, key=lambda m: m["tg"]) if better else now
 
 
 def sampling(conn, model_id: str) -> dict[str, Any]:
@@ -483,17 +553,69 @@ class Tuner:
         return result
 
     async def _tune(self, model_id: str) -> dict[str, Any]:
-        """llama-bench's settings, then guessing ahead with them (42.4): its result is `spec` - its failure is its
-        own, what llama-bench gave stays."""
+        """llama-bench's settings, then with them where the experts go (44.2: `moe`, only a Mixture-of-Experts model),
+        then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays."""
         result = await self._tune_bench(model_id)
-        try:
-            result["spec"] = await self._tune_spec(model_id)
-        except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
-            if self._halt.is_set():
-                raise
-            log.info("guessing ahead for %s: %s", model_id, exc)
-            result["spec"] = {"status": "failed", "error": str(exc)}
+        for key, step in (("moe", self._tune_moe), ("spec", self._tune_spec)):
+            try:
+                found = await step(model_id)
+            except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+                if self._halt.is_set():
+                    raise
+                log.info("%s for %s: %s", key, model_id, exc)
+                found = {"status": "failed", "error": str(exc)}
+            if found is not None:
+                result[key] = found
         return result
+
+    async def _tune_moe(self, model_id: str) -> dict[str, Any] | None:
+        """Where a Mixture-of-Experts model's experts go (44.2), with the settings llama-bench left: each placement
+        (moe_variants) measured by llama-server itself - its answers and its reading of a long question - the pick
+        (moe_choice) written and checked as the rest. None - not such a model, or nothing to measure. {status: better
+        (written) | same, kind, settings, before and after ({tg, pp}), measured}."""
+        text = await asyncio.to_thread(llama_config.config_path().read_text, encoding="utf-8")
+        view = llama_config.model_view(text, model_id)
+        info = await asyncio.to_thread(model_info, Path(view["file"]))
+        if not info.get("expert_bytes"):
+            return None
+        build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
+        mmproj = 0
+        if view.get("mmproj"):
+            with contextlib.suppress(OSError):
+                mmproj = Path(view["mmproj"]).stat().st_size
+        variants = moe_variants(view, info, self._space(), build, mmproj=mmproj)
+        if not variants:
+            return None
+        params = await self._db.acall(lambda conn: sampling(conn, model_id))
+        reading = not view.get("context") or view["context"] >= READ_MIN_CONTEXT
+        self.job.update(status="measuring", step="moe", done=0, total=len(variants))
+        await self._publish()
+        await self._unload()  # the check of llama-bench's settings loaded the model in llama-swap
+        measured: list[dict[str, Any]] = []
+        for variant in variants:
+            port = free_port()
+            try:
+                argv = spec_command(text, model_id, variant["changes"], build, port)
+                found = await asyncio.to_thread(self._serve, argv, port, params, reading=reading)
+            except (TuneError, llama_config.ConfigError) as exc:
+                log.info("the experts of %s, %s: %s", model_id, variant["name"], exc)
+                measured.append({**variant, "error": str(exc)})
+                continue
+            finally:
+                self.job["done"] = self.job.get("done", 0) + 1
+                await self._publish(False)
+            measured.append({**variant, **found})
+        log.info("the experts of %s measured: %s", model_id, measured)
+        pick = moe_choice(measured)
+        if "tg" not in pick:
+            raise TuneError(pick.get("error") or tr("llama-server не ответил"))
+        out = {"kind": pick["name"], "settings": pick["changes"],
+               "before": {key: measured[0][key] for key in ("tg", "pp") if key in measured[0]},
+               "after": {key: pick[key] for key in ("tg", "pp") if key in pick},
+               "measured": [{key: m[key] for key in ("name", "changes", "tg", "pp", "error") if key in m}
+                            for m in measured]}  # fmt: skip
+        backup = await self._write(model_id, lambda now: llama_config.edit(now, model_id, pick["changes"], build=build))
+        return {"status": "better", **out, "backup": backup} if backup else {"status": "same", **out}
 
     async def _tune_spec(self, model_id: str) -> dict[str, Any]:
         """Guessing ahead (42.4), with the settings llama-bench left: each variant (spec_variants) measured by
@@ -674,11 +796,12 @@ class Tuner:
             log.warning("llama-bench stopped (exit %s) after %d measurements: %s", code, len(lines), tail)
         return lines
 
-    def _serve(self, argv: list[str], port: int, params: dict[str, Any]) -> dict[str, Any]:
+    def _serve(self, argv: list[str], port: int, params: dict[str, Any], *, reading: bool = False) -> dict[str, Any]:
         """llama-server run with this command past llama-swap and its answers measured (42.4; blocking: in a thread):
         a short warm-up, then each of SPEC_PROMPTS at the model's sampling (`params`) - tokens a second by llama.cpp's
-        own timings, and how many of the guessed tokens were right; then the server is let go. A server that does not
-        start says why in its log; stopped for a chat - _Halted."""
+        own timings, and how many of the guessed tokens were right; `reading` - and how fast it reads LONG_PROMPT
+        (44.2: `pp`); then the server is let go. A server that does not start says why in its log; stopped for a
+        chat - _Halted."""
         log_path = server_log()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "wb") as out:  # not a pipe: llama-server writes a lot, and an unread pipe stops it
@@ -697,6 +820,10 @@ class Tuner:
                     speeds.append(float(timings["predicted_per_second"]))
                     drafted += int(timings.get("draft_n") or 0)
                     right += int(timings.get("draft_n_accepted") or 0)
+                if reading:
+                    timings = self._ask(http, url, {**body, "messages": [{"role": "user", "content": LONG_PROMPT}],
+                                                    "max_tokens": 1})  # fmt: skip
+                    read = float(timings["prompt_per_second"])
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
             if self._halt.is_set():
                 raise _Halted from exc
@@ -705,7 +832,10 @@ class Tuner:
             self._kill()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self._process.wait(10)
-        return {"tg": round(sum(speeds) / len(speeds), 1), "accepted": round(right / drafted, 2) if drafted else None}
+        out = {"tg": round(sum(speeds) / len(speeds), 1), "accepted": round(right / drafted, 2) if drafted else None}
+        if reading:
+            out["pp"] = round(read, 1)
+        return out
 
     def _healthy(self, http: httpx.Client, url: str, log_path: Path) -> None:
         """Until llama-server has loaded the model (its /health answers 200); it quit - its log's last words."""

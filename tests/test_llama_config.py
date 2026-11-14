@@ -230,7 +230,8 @@ def test_moe_experts_in_ram_and_their_cache_on_the_card(tmp_path):
     assert (info["experts"], info["experts_used"], info["mtp_layers"]) == (128, 8, 0)
     assert len(info["expert_bytes"]) == 48 and info["expert_bytes"][:2] == [339_738_624, 391_643_136]  # Q4_K, Q6_K
     experts = sum(info["expert_bytes"])
-    info = {**info, "size_bytes": experts + NOT_EXPERTS}  # the weights its table says: the test's file has none
+    header = info["size_bytes"] - experts - NOT_EXPERTS  # 44.2: what its table says it weighs - the file has none
+    assert 0 < header < 64 * 1024 < (tmp_path / "moe.gguf").stat().st_size + 64 * 1024 < info["size_bytes"]
     card = 8 * 1024
     assert info["size_bytes"] > 2 * card * 1024**2
 
@@ -259,7 +260,12 @@ def test_moe_experts_in_ram_and_their_cache_on_the_card(tmp_path):
          moe_tensors(range(24, 48), head=False))  # fmt: skip
     split = model_info(tmp_path / "moe-00001-of-00002.gguf")
     assert split["expert_bytes"] == model_info(tmp_path / "moe.gguf")["expert_bytes"]
-    assert split["size_bytes"] == sum(p.stat().st_size for p in tmp_path.glob("moe-0000*-of-00002.gguf"))
+    assert 0 < split["size_bytes"] - model_info(tmp_path / "moe.gguf")["size_bytes"] < 64 * 1024  # a header more
+    dense = {**MOE, "qwen3moe.expert_count": 0, "split.count": 2}
+    gguf(tmp_path / "dense-00001-of-00002.gguf", dense)
+    gguf(tmp_path / "dense-00002-of-00002.gguf", {"split.no": 1, "split.count": 2})
+    assert model_info(tmp_path / "dense-00001-of-00002.gguf")["size_bytes"] == sum(
+        p.stat().st_size for p in tmp_path.glob("dense-0000*-of-00002.gguf"))  # fmt: skip
 
     # the launch's flags: the hub, the installer and the window count the experts where the command keeps them
     gguf(tmp_path / "big.gguf", MOE, moe_tensors())

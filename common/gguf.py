@@ -190,23 +190,26 @@ def _tensors(f: BinaryIO, count: int) -> list[tuple[str, int, int | None]]:
     return out
 
 
-def _expert_bytes(files: list[Path]) -> list[int]:
-    """What the experts weigh in each layer (44.1), from the tables of the model's files: the whole header is read,
-    a few megabytes. A tensor of a type ggml has added since - its share, by its values, of the file's bytes the
-    others do not take."""
+def _weights(files: list[Path]) -> tuple[list[int], int]:
+    """What the experts weigh in each layer (44.1), and the whole model - its headers and tensors (44.2: a real
+    file's size to its alignment; a header without its weights weighs what the model would), from the tables of the
+    model's files: the whole header is read, a few megabytes. A tensor of a type ggml has added since - its share,
+    by its values, of the file's bytes the others do not take."""
     layers: dict[int, float] = {}
+    whole = 0.0
     for file in files:
         with open(file, "rb") as f:
             table = _tensors(f, _keys(f, file.name, (), False)["gguf.tensors"])
-            data = file.stat().st_size - f.tell()
-        known = sum(size for _, _, size in table if size is not None)
+            header = f.tell()
+        rest = max(file.stat().st_size - header - sum(size or 0 for _, _, size in table), 0)
         unknown = sum(values for _, values, size in table if size is None)
+        whole += header
         for name, values, size in table:
+            weight = rest * values / unknown if size is None else size
+            whole += weight
             if match := EXPERTS.match(name):
-                layer = int(match.group(1))
-                share = max(data - known, 0) * values / unknown if size is None else size
-                layers[layer] = layers.get(layer, 0.0) + share
-    return [round(layers.get(i, 0.0)) for i in range(max(layers, default=-1) + 1)]
+                layers[int(match.group(1))] = layers.get(int(match.group(1)), 0.0) + weight
+    return [round(layers.get(i, 0.0)) for i in range(max(layers, default=-1) + 1)], round(whole)
 
 
 def parts(path: Path) -> list[Path]:
@@ -224,15 +227,15 @@ def parts(path: Path) -> list[Path]:
 def _model_info(files: tuple[tuple[str, int, float], ...]) -> dict[str, Any]:
     info = header_info(read_header(Path(files[0][0]), until_tokenizer=True))
     if info["experts"]:
-        info["expert_bytes"] = _expert_bytes([Path(name) for name, _, _ in files])
+        info["expert_bytes"], info["size_bytes"] = _weights([Path(name) for name, _, _ in files])
     return info
 
 
 def model_info(path: Path) -> dict[str, Any]:
-    """What a memory estimate needs from a model file, and its size - of each of its files when it is split; cached
-    while its files stay the same."""
+    """What a memory estimate needs from a model file, and its size - of each of its files when it is split (of a
+    Mixture-of-Experts model: by its tables); cached while its files stay the same."""
     files = []
     for part in parts(path):
         stat = part.stat()
         files.append((str(part), stat.st_size, stat.st_mtime))
-    return {**_model_info(tuple(files)), "size_bytes": sum(size for _, size, _ in files)}
+    return {"size_bytes": sum(size for _, size, _ in files), **_model_info(tuple(files))}
