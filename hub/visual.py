@@ -579,6 +579,12 @@ class Visual:
         """Whether a video holds the card now (29.8а)."""
         return not self._free.is_set()
 
+    @property
+    def busy(self) -> bool:
+        """Whether pictures or videos are drawn now: their worker goes through the queue (47.1) - an install's trial
+        waits, its model would be loaded in place of the one drawing."""
+        return self._task is not None and not self._task.done()
+
     async def gpu_gate(self, cancel: asyncio.Event) -> bool:
         """A local chat model's answer waits here while a video holds the card (the llama-swap provider asks before
         each); whether it waited. The user's «Стоп» ends the wait."""

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -19,8 +20,9 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import claude_code, goals, tuning
+from hub import claude_code, engines, goals, tuning
 from hub import llama_config as lc
+from hub import model_install as mi
 from hub.api_reference import event_types
 from hub.auth import create_client
 from hub.chat import Limits
@@ -36,6 +38,9 @@ from tests.test_autonomous import PLAN, Scripted, use
 from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
+from tests.test_llama_config import FakeLlamaSwap
+from tests.test_model_install import DRAW, MACHINE, FakeHub, fake_hub, wait_for  # noqa: F401 - the fake_hub fixture
+from tests.test_model_install import hub as installs  # noqa: F401 - the installer's hub, as a fixture of this name
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
 
@@ -671,3 +676,40 @@ def test_a_chat_that_begins_stops_tuning_by_hand_and_it_goes_on_after(hub, setup
     spec = wait(lambda: hub.get("/v1/tune").json()["results"].get("big", {}).get("spec"), timeout=60)
     assert spec["status"] == "better" and spec["kind"] == "ngram"
     assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]["type"] == "ngram-mod"
+
+
+# --- an install's trial meets a picture being drawn (47.1) ---
+
+
+def test_an_installs_trial_picture_waits_while_the_hub_draws(installs, monkeypatch):  # noqa: F811
+    """47.1 × the pictures: an install's trial picture loads its model into llama-swap, one model on the card - a
+    picture the hub was drawing lost its model in the middle. Its files down, the install waits «ждёт пробного
+    запуска» while pictures are drawn, as it waits for tuning and a chat's answer (34.4); its trial comes after."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, {**DRAW, "id": "best", "tier": "quality", "name": "Best"}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    first = installs.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert wait_for(installs, first["id"], "done", "failed")["status"] == "done"
+
+    FakeLlamaSwap.held = held = threading.Event()
+    try:
+        picture = installs.post("/v1/visual/images", json={"prompt": "a fox", "model": "draw"}).json()["job"]
+        wait(lambda: any(b.get("prompt") == "a fox" for b in FakeLlamaSwap.asked), timeout=10)  # being drawn
+        job = installs.post("/v1/install/pictures", json={"id": "best"}).json()["job"]
+        waiting = wait_for(installs, job["id"], "trialwait", "done", "failed")
+        assert waiting["status"] == "trialwait", "its trial loaded «best» in the middle of the picture"
+        assert waiting["percent"] == 100.0  # its files are down
+        time.sleep(0.4)
+        assert wait_for(installs, job["id"], "trialwait")
+        assert "best" not in [b.get("model") for b in FakeLlamaSwap.asked]  # nothing loaded meanwhile
+    finally:
+        held.set()
+    done = wait_for(installs, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    drawn = installs.get(f"/v1/visual/jobs/{picture['id']}").json()["job"]
+    assert drawn["status"] == "done", drawn["error"]
+    asked = [b.get("prompt") == "a fox" or b.get("model") for b in FakeLlamaSwap.asked]
+    assert asked.index(True) < asked.index("best")  # the picture first, then the trial

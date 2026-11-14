@@ -219,9 +219,11 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
-        # one at a time on the graphics card (34.4): a trial waits while tuning measures, and for a chat's answer
+        # one at a time on the graphics card (34.4): a trial waits while tuning measures, for a chat's answer and
+        # while pictures are drawn (47.1)
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
         app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)
+        app.state.installer.drawing = lambda: app.state.visual.busy
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs

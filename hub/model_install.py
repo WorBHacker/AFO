@@ -438,9 +438,11 @@ class Installer:
         self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
         self._naming: asyncio.Task | None = None
         # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
-        # filled the memory) and while a chat answers (its model would be swapped out); set by the server (34.4)
+        # filled the memory), while a chat answers and while pictures are drawn (their model would be swapped out);
+        # set by the server (34.4, 47.1)
         self.tuning: Callable[[], bool] = lambda: False
         self.chat_busy: Callable[[], bool] = lambda: False
+        self.drawing: Callable[[], bool] = lambda: False
         # the engine on its way (39.3: the scanner, the wizard): an install waits for it, not a 409; set by the server
         self.engine_coming: Callable[[], bool] = lambda: False
         self.machine: Callable[[], dict[str, Any]] = this_computer  # what pictures it can make (tests give their own)
@@ -1498,9 +1500,10 @@ class Installer:
 
     async def _card(self, job_id: str, cancel: threading.Event) -> None:
         """Until the graphics card is free for the trial (34.4): «Подбор параметров» measures - llama-bench runs past
-        llama-swap, and two models at once filled the memory (2026-11-08) - or a chat answers - its model would be
-        swapped out in the middle of the answer. Meanwhile «ждёт пробного запуска»."""
-        while self.tuning() or self.chat_busy():
+        llama-swap, and two models at once filled the memory (2026-11-08) - or a chat answers or the hub draws (47.1) -
+        its model would be swapped out in the middle of the answer or the picture. Meanwhile «ждёт пробного
+        запуска»."""
+        while self.tuning() or self.chat_busy() or self.drawing():
             if cancel.is_set():
                 raise hf.Cancelled()
             if (await self._get(job_id))["status"] != "trialwait":

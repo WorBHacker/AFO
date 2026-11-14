@@ -332,6 +332,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     video: ClassVar[list] = []  # a video model's trial (29.8): vid_gen, then its job
     banner: ClassVar[list] = []  # the pieces of llama-swap's «loading model» lines before an answer (38.2)
     logs: ClassVar[dict] = {}  # each model's llama-server output, as llama-swap keeps it (/logs/stream/<id>, 0.1.12)
+    held: ClassVar = None  # a picture being drawn (47.1): sd-server's txt2img answers once this Event is set
 
     def log_message(self, *args):
         pass
@@ -383,6 +384,11 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         if self.fail:
             self._send(502, {"error": "upstream command exited prematurely"})
             return
+        if self.path == "/sdapi/v1/txt2img":  # a picture asked of the hub (29.4): drawn until `held` is set
+            if self.held is not None:
+                self.held.wait(30.0)
+            self._send(200, {"images": [base64.b64encode(PICTURE).decode()]})
+            return
         if self.path == "/v1/images/generations":  # a picture model's trial (29.3)
             blank = self.blank is True or (isinstance(self.blank, set) and body.get("model") in self.blank)
             picture = GREY if blank else PICTURE
@@ -404,7 +410,7 @@ def hub(tmp_path, monkeypatch):
     gguf(tmp_path / "big.gguf", {"general.architecture": "x", "x.block_count": 8})
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
-    FakeLlamaSwap.blank, FakeLlamaSwap.video, FakeLlamaSwap.logs = False, [], {}
+    FakeLlamaSwap.blank, FakeLlamaSwap.video, FakeLlamaSwap.logs, FakeLlamaSwap.held = False, [], {}, None
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)
