@@ -1160,6 +1160,8 @@ class Installer:
             v["bits"] <= MAX_BITS if v["bits"] is not None else v["quant"] not in hf.SIXTEEN_BITS)]  # fmt: skip
         best = max(fast, key=lambda v: v["size"]) if fast else min(
             (v for v in shown if v["verdict"] != "no"), key=lambda v: v["size"], default=None)  # fmt: skip
+        for v in shown:
+            v["recommended"] = best is not None and v["quant"] == best["quant"]  # as a chat model's variants say it
         try:
             engine = sd_server(await asyncio.to_thread(config_text)) is None
         except InstallError:

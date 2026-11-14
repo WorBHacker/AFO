@@ -18,6 +18,8 @@ from common.i18n import N_, decimal, language, tr
 from common.plain_errors import explain
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .controller import Controller
 
 PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_("Код")), ("vision", N_("Понимать картинки")),
@@ -73,6 +75,7 @@ LICENCE_TONES = {"free": "ok", "terms": "warn", "closed": "error"}
 # a found model that draws or films (41.2): one of AFO's picture sets, or one AFO cannot put together itself
 PICTURE_OWN = N_("AFO ставит её сам — «Установить» в «Рисовать»")
 PICTURE_OTHER = N_("AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face")
+PICTURE_FAMILY = N_("AFO ставит её сам — щелчок покажет её варианты")  # one of a family AFO knows (47.7б)
 
 
 def status_words(status: str) -> str:
@@ -220,11 +223,25 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         badges = ([tr("снятые ограничения")] if m.get("unrestricted") else []) + (
             [tr("лицензия на сайте")] if m.get("gated") else [])  # fmt: skip
         fit = fit_of(m.get("fit"))
-        if m.get("drawn"):  # it draws or films: AFO's own picture set, or its page
-            fit = {"fit": tr(PICTURE_OWN), "fitTone": "ok"} if m.get("picture") else {"fit": tr(PICTURE_OTHER),
-                                                                                      "fitTone": ""}  # fmt: skip
+        if m.get("drawn"):  # it draws or films: AFO's own picture set, one of a family AFO knows (47.7б), or its page
+            if m.get("picture"):
+                fit = {"fit": tr(PICTURE_OWN), "fitTone": "ok"}
+            elif m.get("family"):
+                fit = picture_fit_of(m.get("fit"))
+            else:
+                fit = {"fit": tr(PICTURE_OTHER), "fitTone": ""}
         out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges, **fit})
     return out
+
+
+def picture_fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
+    """A found model of a family AFO knows (47.7б): what it would take here with the family's encoder and VAE - «AFO
+    ставит её сам: ≈ 6,6 ГБ с кодировщиком и VAE — помещается в видеопамять — быстро» - or, unknown, that AFO
+    installs it."""
+    if not fit:
+        return {"fit": tr(PICTURE_FAMILY), "fitTone": "ok"}
+    return {"fit": tr("AFO ставит её сам: ≈ {size} с кодировщиком и VAE — {words}", size=gb(fit["gb"], of_bytes=False),
+                      words=fit["words"]), "fitTone": TONES.get(fit.get("verdict", ""), "")}  # fmt: skip
 
 
 def fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
@@ -650,6 +667,13 @@ class InstallView(QObject):
             notes.append(tr("контекст до {size}K", size=r["context_trained"] // 1024))
         if r.get("moe"):
             notes.append(tr("из «экспертов»"))
+        if r.get("family"):  # a found model that draws (47.7б): its family, and what comes with it
+            notes.insert(0, tr("семейство «{name}»", name=r.get("name", "")))
+            coming = sum(p["size"] for p in r.get("parts") or [] if not p.get("have"))
+            notes.append(tr("докачаются кодировщик и VAE — {size}", size=gb(coming)) if coming else
+                         tr("кодировщик и VAE уже есть"))  # fmt: skip
+            if r.get("engine"):
+                notes.append(tr("и программа для рисования"))
         lens = r.get("projector")
         kind = r.get("license_kind") or ""
         licence = tr("Лицензия не указана — прочитайте условия на странице модели")
@@ -984,7 +1008,8 @@ class InstallView(QObject):
     @Slot(str)
     def openFound(self, repo: str) -> None:
         """A found model clicked: its repository - or, a model that draws or films (41.2), AFO's picture set among
-        «Рисовать», or its page on Hugging Face: AFO would misread its files as a chat model's."""
+        «Рисовать», one of a family AFO knows - its variants with the family's parts (47.7б), or its page on Hugging
+        Face: AFO would misread its files as a chat model's."""
         row = next((m for m in self._found if m["repo"] == repo), None)
         if row is None or not row.get("drawn"):
             self.openRepo(repo)
@@ -992,6 +1017,8 @@ class InstallView(QObject):
             self._shown_set = row["picture"]
             self.setTab("catalog")
             self.setPurpose("image")
+        elif row.get("family"):
+            self._open_repo(repo, lambda: self.app.client.install_picture_repo(repo))
         elif row.get("page"):
             self.app.openLink(row["page"])
 
@@ -1017,6 +1044,9 @@ class InstallView(QObject):
 
     @Slot(str)
     def openRepo(self, repo: str) -> None:
+        self._open_repo(repo, lambda: self.app.client.install_repo(repo))
+
+    def _open_repo(self, repo: str, ask: Callable[[], dict[str, Any]]) -> None:
         self._repo_name, self._repo, self._repo_loading, self._repo_error = repo, {}, True, ""
         self._projector = True
         self.changed.emit()
@@ -1031,7 +1061,7 @@ class InstallView(QObject):
                 self._repo_loading, self._repo_error = False, str(error)
                 self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.install_repo(repo), show, failed)
+        self.app.call_or_fail(ask, show, failed)
 
     @Slot()
     def closeRepo(self) -> None:
@@ -1101,7 +1131,9 @@ class InstallView(QObject):
 
     @Slot(str)
     def install(self, quant: str) -> None:
-        if self._repo:
+        if self._repo.get("family"):  # a found model that draws (47.7б): beside its family's set
+            self._start({"id": self._repo["family"], "repo": self._repo["repo"], "quant": quant}, pictures=True)
+        elif self._repo:
             spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": quant}
             if self._repo.get("projector"):
                 spec["projector"] = self._projector

@@ -174,6 +174,10 @@ class HubClient:
     def install_pictures_start(self, spec: dict) -> dict:
         return self._call("POST", "/v1/install/pictures", spec, timeout=60)
 
+    def install_picture_repo(self, repo: str) -> dict:
+        """A found model that draws, of a family AFO knows (47.5): its variants judged with the family's parts."""
+        return self._call("GET", f"/v1/install/pictures/repo/{repo}", timeout=60)
+
     def visual_models(self) -> dict:
         return self._call("GET", "/v1/visual/models")
 

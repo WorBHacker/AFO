@@ -6331,6 +6331,62 @@ def test_the_search_s_filters_licences_and_pictures_in_the_window(qapp, monkeypa
         quick.close()
 
 
+def test_a_found_picture_model_installed_from_the_search(qapp):
+    """47.7б: a found model of a family AFO knows (47.2) says in the search what it would take here with the family's
+    encoder and VAE (47.7а); a click shows its variants judged with them, what comes with it - and «Установить»
+    installs the variant beside the family's set (47.6)."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        repo = "unsloth/Z-Image-Turbo-GGUF"
+        found = [{"repo": repo, "downloads": 9, "likes": 1, "params": 6_150_000_000, "license": "apache-2.0",
+                  "license_kind": "free", "picture": "", "family": "z-image-turbo", "drawn": True,
+                  "fit": {"gb": 6.6, "quant": "Q4_K_M", "verdict": "gpu", "words": "помещается в видеопамять — быстро",
+                          "parts": 2_830_000_000}},
+                 {"repo": "someone/Z-Image-Turbo-Other-GGUF", "downloads": 1, "likes": 0, "params": 0,
+                  "license": "", "license_kind": "", "picture": "", "family": "z-image-turbo", "drawn": True,
+                  "fit": None}]  # fmt: skip
+        details = {"repo": repo, "family": "z-image-turbo", "name": "Z-Image-Turbo", "kind": "image", "size": 1024,
+                   "license": "apache-2.0", "license_kind": "free", "gated": False, "page": "https://huggingface.co/"
+                   + repo, "engine": True, "recommended": "Q8_0",
+                   "parts": [{"role": "llm", "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF", "size": 2_500_000_000,
+                              "have": False}, {"role": "vae", "repo": "Comfy-Org/z_image_turbo", "size": 330_000_000,
+                                               "have": True}],
+                   "variants": [{"quant": "Q4_K_M", "size": 3_850_000_000, "bits": 5.0, "quality": "near",
+                                 "verdict": "gpu", "words": "помещается в видеопамять — быстро", "recommended": False},
+                                {"quant": "Q8_0", "size": 7_220_000_000, "bits": 9.4, "quality": "same",
+                                 "verdict": "gpu", "words": "помещается в видеопамять — быстро",
+                                 "recommended": True}]}  # fmt: skip
+        client.install_search = lambda query, **asked: {"models": found}
+        client.install_picture_repo = lambda asked: details if asked == repo else {}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        app.openUi("install-models")
+        view.setTab("search")
+        view.search("z-image")
+        wait_until(lambda: not app.bg.busy and view.found)
+        rows_ = {r["repo"]: r for r in view.found}
+        assert (rows_[repo]["fit"], rows_[repo]["fitTone"]) == (
+            "AFO ставит её сам: ≈ 6,6 ГБ с кодировщиком и VAE — помещается в видеопамять — быстро", "ok")  # fmt: skip
+        assert rows_["someone/Z-Image-Turbo-Other-GGUF"]["fit"] == "AFO ставит её сам — щелчок покажет её варианты"
+        view.openFound(repo)
+        wait_until(lambda: not app.bg.busy and view.variants)
+        assert view.repoName == repo and "Z-Image-Turbo" in view.repo["notes"]
+        assert "докачаются кодировщик и VAE — 2,5 ГБ" in view.repo["notes"]  # the VAE is here already
+        assert "и программа для рисования" in view.repo["notes"]
+        assert [(v["quant"], v["recommended"]) for v in view.variants] == [("Q4_K_M", False), ("Q8_0", True)]
+        view.install("Q8_0")
+        wait_until(lambda: not app.bg.busy and client.install_calls)
+        assert client.install_calls[-1] == ("pictures", {"id": "z-image-turbo", "repo": repo, "quant": "Q8_0"})
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_installing_a_local_model_from_the_window(qapp):
     from PySide6.QtCore import QObject
 
