@@ -54,6 +54,7 @@ from common.llama_memory import (
     estimate,
     kv_bytes,
     moe_load,
+    quantized_cache,
     short_now,
 )
 from common.paths import NAME, engines_home, models_home
@@ -314,13 +315,14 @@ def launch_plan(info: dict[str, Any], size: int, space: dict[str, Any], *, mmpro
     vision projector in RAM if that is what lets it fit), else llama.cpp's --fit and a timer to unload."""
     trained = info.get("context_trained") or CONTEXTS[0]
     contexts = sorted({min(c, trained) for c in CONTEXTS}, reverse=True)
+    cache = "q8_0" if quantized_cache(info) else "f16"  # 0.1.12: a head q8_0's blocks do not divide - f16
     for on_gpu in (True, False) if mmproj else (True,):
         for context in contexts:
-            need = size / GIB + _kv_gib(info, context) + COMPUTE_GIB + (mmproj / GIB if on_gpu else 0)
+            need = size / GIB + _kv_gib(info, context, cache) + COMPUTE_GIB + (mmproj / GIB if on_gpu else 0)
             if space["vram_gib"] and need <= space["vram_gib"]:
-                return {"context": context, "gpu_layers": "all", "cache_type": "q8_0", "mmproj_on_gpu": on_gpu,
+                return {"context": context, "gpu_layers": "all", "cache_type": cache, "mmproj_on_gpu": on_gpu,
                         "ttl": 0, "where": "gpu"}  # fmt: skip
-    return {"context": min(FIT_CONTEXT, trained), "gpu_layers": "auto", "cache_type": "q8_0",
+    return {"context": min(FIT_CONTEXT, trained), "gpu_layers": "auto", "cache_type": cache,
             "mmproj_on_gpu": False, "ttl": SPLIT_TTL_S, "where": "split"}  # fmt: skip
 
 
@@ -475,6 +477,7 @@ class Installer:
         left = await self._db.acall(pause)
         self._naming = asyncio.create_task(self.name_ollama_models())  # in the background: llama-swap may not be up
         self._keep(self._quietly(self.unhook_lost_drafts()))  # a draft's file gone while the hub was off (42.5)
+        self._keep(self._quietly(self.fit_to_build()))  # a flag the build took away (0.1.12)
         return left
 
     async def load_reserve(self) -> None:
@@ -846,6 +849,36 @@ class Installer:
         log.info("draft models gone from the disk: guessing ahead off for %s", changed)
         await self._bus.publish("llama.config", {"changes": {"spec_type": "none"}, "models": changed})
         return changed
+
+    async def fit_to_build(self) -> dict[str, list[str]]:
+        """The commands as the config's llama-server takes them (llama_config.match_build), at the hub's start too
+        (0.1.12: the person's 0.1.11 kept «--no-mmap», which b11899 had taken away, and the model did not start): under
+        the writers' lock, a copy kept; llama-swap does not take it - the copy back. {model: the flags it did not take};
+        {} - nothing to change, or no config or build to read."""
+        path = llama_config.config_path()
+        try:
+            text = await asyncio.to_thread(config_text)
+            build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
+        except (InstallError, llama_config.ConfigError, OSError) as exc:
+            log.info("commands not fitted to the build: %s", exc)
+            return {}
+        if build is None:
+            return {}
+        async with llama_config.writing():
+            text = await asyncio.to_thread(config_text)
+            found = llama_config.unknown_flags(text, build)
+            new = llama_config.match_build(text, build)
+            if new == text:
+                return {}
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
+        log.info("commands fitted to the build (copy %s): %s", backup.name, found)
+        await self._bus.publish("llama.config", {"fitted": found, "backup": backup.name})
+        return found
 
     def space(self) -> dict[str, Any]:
         return room(self._status() or self._kept_machine(), self.reserve)
@@ -1603,8 +1636,8 @@ class Installer:
                     result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
             tries.append({"context": plan["context"], "gpu_layers": plan["gpu_layers"], "ok": bool(result.get("ok")),
                           "seconds": result.get("seconds"), "error": result.get("error") or ""})  # fmt: skip
-            if result.get("ok") or model is None:
-                break
+            if result.get("ok") or model is None or llama_config.hopeless(result.get("error") or ""):
+                break  # 0.1.12: llama.cpp's own words say smaller settings would not start it either
             plan = smaller(plan)
             if plan is None:
                 break

@@ -1277,6 +1277,38 @@ KTransformers (`kvcache-ai/ktransformers`, Apache-2.0) держит экспер
 пользователя и после `nvidia-smi`; весь pytest — один раз в конце этапа (Правило 4). Пункты аудита — между этапами,
 по слову пользователя.
 
+### Исправление 0.1.12: модели, которые не запускались
+
+Найдено 2026-11-14 в AFO 0.1.11 пользователя (его снимок: «Модель не запустилась» у Qwen3.8-27B RVN Q8_0). llama-swap
+пишет только «upstream command exited prematurely», и AFO гадало: «файл повреждён, слишком новый или не помещается».
+Слова самого llama.cpp — в журнале модели, который держит llama-swap (`/logs/stream/<id>`; адрес `/upstream/<id>/…`
+модель запускает — его не трогать): у Qwen3.8 RVN — `invalid argument: --no-mmap` (b11899 заменила флаг на
+`--load-mode`, а `--help` о нём молчит — `match_build` 42.1 его не снял), у Kimi-Linear-48B — «V cache type q8_0 with
+block size 32 does not divide n_embd_head_v=72» (голова V — 72), у gemma3:4b и qwen3.5 из Ollama — «key not found» и
+«wrong array length» (свой формат Ollama). Пробный запуск убрал последние три, перебрав контексты зря.
+
+- 0.1.12 ✓ (по слову пользователя «сделай полный исправление с patch note», версия — 0.1.12 по его выбору: 0.1.11
+  читает версию только тремя числами). А — настоящая причина: `llama_config.said(url, id)` читает журнал модели
+  `LOG_READ_S` (поток ждёт новых строк — что пришло, то и есть) и `cause()` берёт строку после последнего старта
+  (`llama_server: initializing`), самую говорящую по `CAUSES` (флаг → кэш → файл → память → прочее), первую своего
+  рода; её слова идут за «exited prematurely» — в чате и проверке (`openai_compat`), в проверке подбора
+  (`Tuner._load`); пробный запуск не уменьшает настройки, когда они «безнадёжны» (`hopeless`: флаг, кэш, файл), и
+  пишет их; `common/plain_errors.py` — три правила раньше общего: «Сборка llama.cpp не знает флаг из команды модели»,
+  «Сжатие KV-кэша не подходит модели», «llama.cpp не читает этот файл модели» (Ollama, модель новее сборки). Б —
+  флаги, убранные молча: `match_build` пишет известные переименования (`RENAMED`: `--no-mmap` → `--load-mode none`,
+  `--mlock` → `mlock`, `--mmap` → `mmap`) и снимает прочие незнакомые сборке флаги со значением — только в командах
+  её llama-server и только когда её `--help` прочитан целиком (`WHOLE`: `-m`, `-c`, `--host`, `--port`; разбор b11899
+  — 417 флагов, ни одного пропущенного); `unknown_flags` — что не так; `Installer.fit_to_build` — при старте хаба, под
+  замком писателей, с копией, llama-swap не принял — копия назад. На конфиге пользователя (в памяти, без записи) —
+  ровно одна правка: `qwen27b-q8`, `--no-mmap` → `--load-mode none`. В — сжатие кэша по модели:
+  `llama_memory.quantized_cache` (блоки по 32 должны делить `key_length` и `value_length`) — установщик пишет f16,
+  подбор не меряет сжатые, заготовки окна дают f16, оценка в «Запуске» — ошибка с объяснением до записи. Тесты —
+  `test_why_a_model_did_not_start_in_llama_cpps_own_words`, `test_why_a_local_model_did_not_start_in_plain_words`,
+  `test_a_model_llama_cpp_cannot_read_is_not_tried_smaller`, `test_flags_a_build_took_away_without_a_word`,
+  `test_the_commands_are_fitted_to_the_build_when_the_hub_starts`,
+  `test_a_model_a_quantized_cache_does_not_fit_is_measured_with_f16`, `test_this_computer_against_a_model`,
+  `test_faster_or_better_for_a_local_model`.
+
 ### Выпуски
 
 - AFO 0.1.11 — 2026-11-14 (`https://github.com/WorBHacker/AFO/releases/tag/v0.1.11`; слово пользователя — «тогда

@@ -369,6 +369,10 @@ def test_this_computer_against_a_model():
 
     plan = mi.launch_plan(info, 9 * GIB, space)
     assert (plan["context"], plan["gpu_layers"], plan["cache_type"]) == (32768, "all", "q8_0")
+    # 0.1.12: Kimi-Linear's V head is 72 values - q8_0 keeps blocks of 32, llama.cpp makes no context with it
+    kimi = {**info, "key_length": 576, "value_length": 72}
+    assert mi.launch_plan(kimi, 9 * GIB, space)["cache_type"] == "f16"
+    assert mi.launch_plan(kimi, 20 * GIB, space)["cache_type"] == "f16"
     tight = mi.launch_plan(info, 13 * GIB, space, mmproj=2 * GIB)
     assert (tight["gpu_layers"], tight["mmproj_on_gpu"]) == ("all", False)  # the projector to RAM lets it fit
     big = mi.launch_plan(info, 20 * GIB, space)
@@ -594,7 +598,7 @@ def hub(tmp_path, monkeypatch, fake_hub):
     config.write_text(CONFIG, encoding="utf-8")
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
-    FakeLlamaSwap.blank = False
+    FakeLlamaSwap.blank, FakeLlamaSwap.logs = False, {}
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)
@@ -1400,6 +1404,41 @@ def test_a_draft_made_for_the_model_comes_before_its_familys(hub, tmp_path):
     other = tmp_path / "Other-Q4_K_M.gguf"  # of the family, not the model the DFlash draft was made for
     other.write_bytes(tiny_gguf(410_000, tokens=WORDS))
     assert [d["id"] for d in hub.portal.call(installer.drafts_for, other)] == ["small"]
+
+
+def test_a_model_llama_cpp_cannot_read_is_not_tried_smaller(hub):
+    """0.1.12: the trial ran each model that did not start four times, smaller each time (34.6: 32768 → … → --fit) -
+    in vain when llama.cpp's own words say it is not the memory: a file it cannot read (Ollama's own format), a flag
+    the build does not know, a cache the model's head does not fit. One try, and its words in the error."""
+    from tests.test_llama_config import LOGS
+
+    FakeLlamaSwap.fail = True
+    FakeLlamaSwap.logs = {"tiny-q4_k_m": LOGS["file"]}
+    job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False,
+                                        "folder": str(hub.tmp / "models")}).json()["job"]  # fmt: skip
+    failed = wait_for(hub, job["id"], "failed", "done")
+    assert failed["status"] == "failed" and len(failed["trial"]["tries"]) == 1
+    assert "key not found in model: gemma3.attention.layer_norm_rms_epsilon" in failed["error"]
+    FakeLlamaSwap.fail = False
+
+
+def test_the_commands_are_fitted_to_the_build_when_the_hub_starts(hub):
+    """0.1.12: the person's AFO 0.1.11 kept «--no-mmap» in a model's command though llama.cpp b11899 had taken it away
+    - fitting the commands to the build (match_build) ran only after the wizard updated llama.cpp. Now also when the
+    hub starts: under the writers' lock, a copy kept, llama-swap rereads it; nothing to change - nothing written."""
+    from tests.test_llama_config import full_help, help_server
+
+    server = help_server(hub.tmp / "b11899", full_help(CONFIG, SMALL_BLOCK))
+    text = lc.set_macro(hub.config.read_text(encoding="utf-8"), "llama_server", "'\"" + server.as_posix() + "\"'")
+    slow = SMALL_BLOCK.format(name="slow", path="F:/slow.gguf").replace("-c 4096", "-c 4096 --no-mmap")
+    hub.config.write_text(text + slow, encoding="utf-8")
+    before = set(lc.backups(hub.config))
+    assert hub.portal.call(hub.app.state.installer.fit_to_build) == {"huge": ["--no-mmap"], "slow": ["--no-mmap"]}
+    after = hub.config.read_text(encoding="utf-8")
+    assert "-ngl 99 -c 4096 --load-mode none" in after and "--no-mmap" not in after
+    assert set(lc.backups(hub.config)) - before  # the person's file as it was, kept
+    assert hub.portal.call(hub.app.state.installer.fit_to_build) == {}
+    assert hub.config.read_text(encoding="utf-8") == after
 
 
 def test_the_catalogs_drafts():

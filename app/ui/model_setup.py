@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.i18n import N_, decimal, tr
-from common.llama_memory import RESERVE_GIB, draft_load, estimate, moe_load
+from common.llama_memory import RESERVE_GIB, draft_load, estimate, moe_load, quantized_cache
 from hub.gateway.base import PRICES_FRESH_DAYS
 
 from .. import presenter
@@ -243,16 +243,18 @@ LAUNCH_PRESETS = {"fast": {"context": 8192, "cache_type": "q8_0", "gpu_mode": "a
                   "quality": {"context": 65536, "cache_type": "f16", "gpu_mode": "all"}}  # fmt: skip
 
 
-def preset_draft(preset: str, draft: dict[str, str], trained: int | None) -> dict[str, str]:
-    """The launch fields for a preset: its context (no longer than the model was trained for), cache and layers."""
+def preset_draft(preset: str, draft: dict[str, str], trained: int | None,
+                 info: dict[str, Any] | None = None) -> dict[str, str]:  # fmt: skip
+    """The launch fields for a preset: its context (no longer than the model was trained for), cache and layers - f16
+    for a model a quantized cache does not fit (0.1.12, quantized_cache)."""
     chosen = LAUNCH_PRESETS[preset]
     context = min(chosen["context"], trained) if trained else chosen["context"]
-    return {**draft, "context": str(context), "cache_type": chosen["cache_type"], "gpu_mode": chosen["gpu_mode"],
-            "gpu_n": ""}  # fmt: skip
+    cache = chosen["cache_type"] if quantized_cache(info) else "f16"
+    return {**draft, "context": str(context), "cache_type": cache, "gpu_mode": chosen["gpu_mode"], "gpu_n": ""}
 
 
-def preset_of(draft: dict[str, str], trained: int | None) -> str:
-    return next((p for p in LAUNCH_PRESETS if draft and preset_draft(p, draft, trained) == draft), "")
+def preset_of(draft: dict[str, str], trained: int | None, info: dict[str, Any] | None = None) -> str:
+    return next((p for p in LAUNCH_PRESETS if draft and preset_draft(p, draft, trained, info) == draft), "")
 
 
 def launch_draft(view: dict[str, Any]) -> dict[str, str]:
@@ -370,6 +372,11 @@ def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: i
         moe = moe_load(_experts(draft)) if "moe_mode" in draft else moe_load(view)  # the fields' experts (44.5)
     except ValueError as exc:
         return str(exc), ""
+    if draft["cache_type"] not in ("f16", "bf16", "f32") and not quantized_cache(info):  # 0.1.12
+        head = next(n for n in (info.get("value_length"), info.get("key_length")) if n and n % 32)
+        return tr("Сжатие KV-кэша {type} этой модели не подходит: её голова внимания — {head} значений, а {type} "
+                  "хранит их блоками по 32. llama.cpp её так не запустит — выберите f16.", type=draft["cache_type"],
+                  head=head), "error"  # fmt: skip
     found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
                      mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
                      vram_total_mib=vram_total_mib, reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib,
@@ -617,13 +624,14 @@ class ModelSetup(QObject):
 
     @Property(str, notify=changed)
     def launchPreset(self) -> str:
-        return preset_of(self._launch_draft, (self._launch.get("info") or {}).get("context_trained"))
+        info = self._launch.get("info") or {}
+        return preset_of(self._launch_draft, info.get("context_trained"), info)
 
     @Slot(str)
     def applyLaunchPreset(self, preset: str) -> None:
         if self._launch_draft and preset in LAUNCH_PRESETS:
-            trained = (self._launch.get("info") or {}).get("context_trained")
-            self._launch_draft = preset_draft(preset, self._launch_draft, trained)
+            info = self._launch.get("info") or {}
+            self._launch_draft = preset_draft(preset, self._launch_draft, info.get("context_trained"), info)
             self._launch_status, self._launch_failed = "", False
             self.changed.emit()
 

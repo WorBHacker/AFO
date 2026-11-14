@@ -12,15 +12,18 @@ the window each read the file, change it and write it under one lock - else the 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import shutil
 import subprocess
 import time
 import weakref
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -323,13 +326,57 @@ def _has_value(tokens: list[str], at: int) -> bool:
     return at + 1 < len(tokens) and not _OPTION.fullmatch(tokens[at + 1])
 
 
+# flags a build took away without a word in its --help, and what it takes for them now (0.1.12: b11899's --load-mode -
+# llama-server refused the person's model, «invalid argument: --no-mmap»)
+RENAMED = {"--no-mmap": ("--load-mode", "none"), "--mlock": ("--load-mode", "mlock"), "--mmap": ("--load-mode", "mmap")}
+WHOLE = ("-m", "-c", "--host", "--port")  # a help read whole has these: only then is a flag it lacks taken off
+
+
+def _fitted(text: str, build: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
+    """Whether a model's command is to be fitted to this build flag by flag (0.1.12): its help was read whole (WHOLE)
+    and the command runs the config's own llama-server - a fork's under another macro keeps its own flags."""
+    try:
+        own = server_command(text)
+    except ConfigError:
+        return lambda view: False
+    own = (macros(text).get(own.strip("${}"), "") if own.startswith("${") else own).strip("'\" ")
+    if not own or not all(flag in build["known"] for flag in WHOLE):
+        return lambda view: False
+    return lambda view: bool(arguments(view["command"])) and Path(arguments(view["command"])[0]) == Path(own)
+
+
+def unknown_flags(text: str, build: dict[str, Any]) -> dict[str, list[str]]:
+    """The flags of each model's command this build does not take - unknown to its help or taken away by it - where
+    the command is fitted to it (_fitted); {} - none."""
+    fitted, out = _fitted(text, build), {}
+    for view in _llama_views(text):
+        if fitted(view):
+            lost = [w for w in arguments(view["command"]) if _OPTION.fullmatch(w) and (
+                w not in build["known"] or w in build["removed"])]  # fmt: skip
+            if lost:
+                out[view["id"]] = lost
+    return out
+
+
+def _llama_views(text: str) -> list[dict[str, Any]]:
+    out = []
+    for model_id in model_blocks(text):
+        with contextlib.suppress(ConfigError):
+            view = model_view(text, model_id)
+            if view["engine"] == "llama.cpp" and view["editable"]:
+                out.append(view)
+    return out
+
+
 def match_build(text: str, build: dict[str, Any]) -> str:
     """The commands as this build takes them (42.1: after the wizard updates llama.cpp - a flag it took away stops
     llama-swap from starting the model): a flag of guessing ahead under the build's own name, the kinds it does not
     know left out (none left - guessing off); a flag it says was removed, or one of guessing ahead it does not know,
-    taken off with its value; a line left empty goes. Only the commands the window edits; every other line as it
-    was."""
+    taken off with its value; a line left empty goes. 0.1.12: a flag it took away without a word - under its new name
+    (RENAMED), any other it does not know taken off with its value, where the command is fitted to it (_fitted). Only
+    the commands the window edits; every other line as it was."""
     lines = text.splitlines()
+    fitted = _fitted(text, build)
     for model_id, (start, end) in sorted(model_blocks(text).items(), key=lambda m: -m[1][0]):  # from the end
         try:
             view = model_view(text, model_id)
@@ -337,6 +384,7 @@ def match_build(text: str, build: dict[str, Any]) -> str:
             continue
         if view["engine"] != "llama.cpp" or not view["editable"]:
             continue
+        whole = fitted(view)
         first, last = _cmd_lines(lines, start, end)
         names = {setting: spelled(setting, build) for setting in SPEC}
         kinds = view["spec"]["type"]
@@ -360,6 +408,12 @@ def match_build(text: str, build: dict[str, Any]) -> str:
                         _SPEC_FAMILY.match(tokens[at]) and tokens[at] not in build["known"]):  # fmt: skip
                     alone = setting in SWITCHES or not _has_value(tokens, at)
                     del tokens[at : at + (1 if alone else 2)]
+                elif whole and tokens[at] in RENAMED and tokens[at] not in build["known"] and (
+                        RENAMED[tokens[at]][0] in build["known"]):  # fmt: skip
+                    tokens[at : at + 1] = list(RENAMED[tokens[at]])
+                    at += 2
+                elif whole and _OPTION.fullmatch(tokens[at]) and tokens[at] not in build["known"]:
+                    del tokens[at : at + (2 if _has_value(tokens, at) else 1)]
                 else:
                     at += 1
             if tokens:
@@ -704,6 +758,69 @@ def _replace(partial: Path, path: Path) -> None:
                 partial.unlink(missing_ok=True)
                 raise
             time.sleep(wait)
+
+
+# --- why a model did not start, in its llama-server's own words (0.1.12) ---
+
+LOG_READ_S = 1.5  # llama-swap's log of a model is a stream: what it kept comes at once, then it waits for more
+LOG_MAX = 1 << 20
+_START = "llama_server: initializing"  # b11899's first line of a llama-server run
+_STAMP = re.compile(r"^\d+(?:\.\d+){3} [A-Z] +(?:[a-z]+ +)?")  # «0.00.222.198 E srv    » before each line
+# what tells why, the most telling first: a flag the build does not know, a cache the model's head does not fit, a
+# file it cannot read, the memory - then any failure to load
+CAUSES = (
+    re.compile(r"invalid argument"),
+    re.compile(r"does not divide n_embd_head"),
+    re.compile(
+        r"key not found in model|wrong array length|unknown model architecture|invalid magic|"
+        r"error loading model hyperparameters"
+    ),
+    re.compile(r"(?i)out of memory|cudaMalloc failed|failed to allocate|unable to allocate"),
+    re.compile(r"error loading model|failed to load model|failed to create context"),
+)
+HOPELESS = re.compile("|".join(c.pattern for c in CAUSES[:3]))  # a smaller context does not help these
+
+
+def cause(log: str) -> str:
+    """The line of a model's log (its llama-server's own words) that says why its last start failed: after the last
+    start, the most telling of CAUSES - of its kind the first, the others follow from it; '' - none."""
+    lines = log.splitlines()
+    start = max((i for i, line in enumerate(lines) if _START in line), default=0)
+    words = [_STAMP.sub("", line).strip() for line in lines[start:]]
+    for kind in CAUSES:
+        found = next((w for w in words if kind.search(w)), None)
+        if found:
+            return found[:300]
+    return ""
+
+
+def hopeless(error: str) -> bool:
+    """Whether llama.cpp's words say the model will not start with any context or layers: not the memory."""
+    return bool(HOPELESS.search(error or ""))
+
+
+async def said(base_url: str, model_id: str) -> str:
+    """Why a model's last start failed, in its llama-server's own words (0.1.12: llama-swap says only «upstream
+    command exited prematurely», and AFO guessed): the model's log llama-swap keeps (/logs/stream/<id>), read for
+    LOG_READ_S - cause(); '' - llama-swap does not answer, or keeps nothing that tells."""
+    got = bytearray()
+    url = f"{base_url.rstrip('/')}/logs/stream/{quote(model_id, safe='')}"
+    timeout = httpx.Timeout(3.0, read=LOG_READ_S)
+    try:
+        async with (
+            asyncio.timeout(LOG_READ_S + 3),
+            httpx.AsyncClient(timeout=timeout) as http,
+            http.stream("GET", url) as answer,
+        ):
+            if answer.status_code != 200:
+                return ""
+            async for chunk in answer.aiter_bytes():
+                got += chunk
+                if len(got) > LOG_MAX:
+                    break
+    except httpx.HTTPError, TimeoutError:  # the stream waits for more: what came is all it kept
+        pass
+    return cause(got.decode("utf-8", "replace"))
 
 
 async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,

@@ -35,7 +35,7 @@ import psutil
 
 from common.gguf import GGUFError, model_info
 from common.i18n import N_, tr
-from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes, moe_load
+from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes, moe_load, quantized_cache
 from common.paths import data_paths
 
 from . import llama_config, model_settings
@@ -125,7 +125,10 @@ def bench_path(text: str) -> Path:
 
 def caches(view: dict[str, Any], info: dict[str, Any], size: int, space: dict[str, Any]) -> list[str]:
     """The KV cache types to measure: the config's and q8_0; f16 too when the model keeps its whole context with it on
-    the graphics card (it takes twice q8_0's memory)."""
+    the graphics card (it takes twice q8_0's memory). 0.1.12: a model whose head a quantized cache's blocks do not
+    divide (quantized_cache) - none of those, the config's included: llama.cpp makes no context with them."""
+    if not quantized_cache(info):
+        return list(dict.fromkeys(c for c in (view.get("cache_type") or "f16", "f16") if c in UNQUANTIZED))
     out = list(dict.fromkeys([view.get("cache_type") or "f16", "q8_0"]))
     if "f16" not in out and view["gpu_layers"] == "all":
         need = size / GIB + kv_bytes(info, view["context"] or 4096, "f16") / GIB + COMPUTE_GIB
@@ -922,5 +925,7 @@ class Tuner:
         except httpx.HTTPError as exc:
             return {"ok": False, "error": exc.__class__.__name__}
         ok = answer.status_code == 200 and bool((answer.json() or {}).get("choices"))
-        return {"ok": ok, "error": "" if ok else f"llama-swap {answer.status_code}: {answer.text[:200]}",
-                "seconds": round(time.monotonic() - started, 1)}  # fmt: skip
+        error = "" if ok else f"llama-swap {answer.status_code}: {answer.text[:200]}"
+        if "exited prematurely" in error and (words := await llama_config.said(self._url, model_id)):  # 0.1.12
+            error += f" - llama.cpp: {words}"
+        return {"ok": ok, "error": error, "seconds": round(time.monotonic() - started, 1)}

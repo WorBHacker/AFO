@@ -42,6 +42,36 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
             "покажет, где он."
         ),
     ),
+    # 0.1.12: llama.cpp's own words beside llama-swap's «exited prematurely» (hub/llama_config.said) - each its own
+    (
+        re.compile(r"invalid argument: --?[A-Za-z]"),
+        N_("Сборка llama.cpp не знает флаг из команды модели"),
+        N_(
+            "В команде модели в config.yaml есть флаг, которого эта сборка llama.cpp не знает: его убрали или "
+            "переименовали. AFO исправляет такие флаги сам при запуске хаба; если он остался — уберите его из "
+            "config.yaml."
+        ),
+    ),
+    (
+        re.compile(r"does not divide n_embd_head"),
+        N_("Сжатие KV-кэша не подходит модели"),
+        N_(
+            "Голова внимания этой модели не делится на блоки сжатого KV-кэша (q8_0, q4_0). Выберите сжатие f16 в "
+            "«Настройке моделей → Запуск в llama-swap»."
+        ),
+    ),
+    (
+        re.compile(
+            r"key not found in model|wrong array length|unknown model architecture|invalid magic|"
+            r"error loading model hyperparameters"
+        ),
+        N_("llama.cpp не читает этот файл модели"),
+        N_(
+            "Файл записан так, как эта сборка llama.cpp не понимает: часто это файл Ollama (у Ollama свой формат "
+            "некоторых моделей) или модель новее сборки. Возьмите эту модель в GGUF с Hugging Face или обновите "
+            "движок в «Первом запуске»."
+        ),
+    ),
     (
         re.compile(
             r"(?i)upstream command exited|exited prematurely|exit status|failed to load model|"

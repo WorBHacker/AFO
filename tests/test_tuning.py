@@ -23,6 +23,17 @@ from tests.test_llama_config import CONFIG, gguf
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
 
+def test_a_model_a_quantized_cache_does_not_fit_is_measured_with_f16():
+    """0.1.12: a quantized KV cache keeps blocks of 32 values - Kimi-Linear's V head of 72 they do not divide, and
+    llama.cpp makes no context with q8_0 («V cache type q8_0 with block size 32 does not divide n_embd_head_v=72»):
+    llama-bench is not asked for it, the config's own included."""
+    view = {"cache_type": "q8_0", "gpu_layers": "auto", "context": 8192}
+    plain = {"layers": 27, "kv_layers": 7, "kv_heads": 1, "key_length": 128, "value_length": 128}
+    assert tuning.caches(view, plain, 10 * 1024**3, {"vram_gib": 15.0}) == ["q8_0"]
+    kimi = {**plain, "key_length": 576, "value_length": 72}
+    assert tuning.caches(view, kimi, 10 * 1024**3, {"vram_gib": 15.0}) == ["f16"]
+
+
 def test_batch_ubatch_threads_and_moe_experts_are_settings():
     big = lc.model_view(CONFIG, "big")
     assert (big["batch"], big["ubatch"], big["threads"], big["n_cpu_moe"]) == (0, 0, 0, 0)  # llama.cpp's defaults
@@ -99,6 +110,8 @@ def test_the_check_asks_again_while_llama_swap_rereads_its_file(monkeypatch):
     asked = []
 
     def answer(request):
+        if request.method == "GET":  # 0.1.12: the model's log llama-swap keeps - llama.cpp's own words
+            return httpx.Response(200, text="error: invalid argument: --no-mmap\n")
         asked.append(json.loads(request.content)["model"])
         code, error = answers[min(len(asked), len(answers)) - 1]
         body = {"choices": [{"message": {"content": "Hi"}}]} if code == 200 else {"error": {"message": error}}
@@ -113,6 +126,7 @@ def test_the_check_asks_again_while_llama_swap_rereads_its_file(monkeypatch):
     asked.clear()
     checked = asyncio.run(found._load("big"))
     assert not checked["ok"] and "exited prematurely" in checked["error"] and len(asked) == 1
+    assert checked["error"].endswith(" - llama.cpp: error: invalid argument: --no-mmap")
 
 
 @pytest.fixture

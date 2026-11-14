@@ -13,6 +13,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
+from urllib.parse import unquote
 
 import pytest
 from starlette.testclient import TestClient
@@ -329,9 +330,19 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     asked: ClassVar[list] = []
     video: ClassVar[list] = []  # a video model's trial (29.8): vid_gen, then its job
     banner: ClassVar[list] = []  # the pieces of llama-swap's «loading model» lines before an answer (38.2)
+    logs: ClassVar[dict] = {}  # each model's llama-server output, as llama-swap keeps it (/logs/stream/<id>, 0.1.12)
 
     def log_message(self, *args):
         pass
+
+    def _stream_log(self, model_id):
+        """llama-swap's log of a model: what it kept comes at once, then the stream waits for more."""
+        self.send_response(200)
+        self.send_header("content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(self.logs.get(model_id, "").encode())
+        self.wfile.flush()
+        time.sleep(1.5)
 
     def _send(self, status, body, kind="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -342,6 +353,9 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if self.path.startswith("/logs/stream/"):
+            self._stream_log(unquote(self.path.rsplit("/", 1)[1]))
+            return
         if "/sdcpp/v1/jobs/" in self.path:
             from tests.test_visual import WEBP
 
@@ -389,7 +403,7 @@ def hub(tmp_path, monkeypatch):
     gguf(tmp_path / "big.gguf", {"general.architecture": "x", "x.block_count": 8})
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
-    FakeLlamaSwap.blank, FakeLlamaSwap.video = False, []
+    FakeLlamaSwap.blank, FakeLlamaSwap.video, FakeLlamaSwap.logs = False, [], {}
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)
@@ -424,6 +438,61 @@ def test_the_api_writes_with_a_copy_and_checks_llama_swap_read_it(hub):
 
     other = hub.app.state.db.call(lambda c: create_client(c, "cline"))
     assert hub.get("/v1/llama/models", headers={"Authorization": f"Bearer {other}"}).status_code == 403
+
+
+# llama-swap's log of a model (/logs/stream/<id>): its llama-server's own words, as b11899 wrote them on the person's
+# computer (2026-11-14) - a flag the build took away, a cache the model's head does not fit, Ollama's own file format
+LOGS = {
+    "flag": "error: invalid argument: --no-mmap\nerror: invalid argument: --no-mmap\n",
+    "cache": "0.00.002.028 I srv  llama_server: initializing ...\n"
+    "0.00.294.290 E llama_init_from_model: V cache type q8_0 with block size 32 does not divide n_embd_head_v=72\n"
+    "0.00.316.001 E common_fit_params: encountered an error while trying to fit params to free device memory: failed "
+    "to create llama_context from model\n"
+    "1.43.237.179 E cmn  common_init_: failed to create context with model 'D:/m/k.gguf'\n"
+    "1.43.239.814 E srv  server_run_i: exiting due to model loading error\n",
+    "file": "0.00.002.028 I srv  llama_server: initializing ...\n"
+    "0.00.222.198 E llama_model_load: error loading model: error loading model hyperparameters: key not found in "
+    "model: gemma3.attention.layer_norm_rms_epsilon\n"
+    "0.00.222.206 E llama_model_load_from_file_impl: failed to load model\n"
+    "0.00.295.368 E srv  server_run_i: exiting due to model loading error\n",
+    "memory": "0.00.002.028 I srv  llama_server: initializing ...\n"
+    "0.01.100.000 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 9000.00 MiB on device 0: cudaMalloc "
+    "failed: out of memory\n"
+    "0.01.100.100 E llama_model_load: error loading model: unable to allocate CUDA0 buffer\n",
+}
+
+
+def test_why_a_model_did_not_start_in_llama_cpps_own_words(hub, monkeypatch):
+    """0.1.12 (found 2026-11-14): llama-swap says only «upstream command exited prematurely», and AFO guessed «the
+    file is damaged, too new or too big» - for a flag the build had taken away, a cache the model's head does not
+    fit, Ollama's own file format. llama-swap keeps each model's llama-server output (/logs/stream/<id>, a stream
+    that waits for more): the line that tells why, after the model's last start, goes with the error - to the
+    window's check and trial, the install's trial, the chat and the tuning's check."""
+    assert lc.cause(LOGS["flag"]) == "error: invalid argument: --no-mmap"
+    assert lc.cause(LOGS["cache"]) == ("llama_init_from_model: V cache type q8_0 with block size 32 does not divide "
+                                       "n_embd_head_v=72")  # fmt: skip
+    assert lc.cause(LOGS["file"]) == ("llama_model_load: error loading model: error loading model hyperparameters: "
+                                      "key not found in model: gemma3.attention.layer_norm_rms_epsilon")  # fmt: skip
+    assert "cudaMalloc failed: out of memory" in lc.cause(LOGS["memory"])
+    assert lc.cause(LOGS["file"] + LOGS["cache"]).startswith("llama_init_from_model")  # its last start's
+    assert lc.cause("0.00.002.028 I srv  llama_server: initializing ...\n") == ""
+    assert lc.hopeless(lc.cause(LOGS["file"])) and lc.hopeless(LOGS["flag"]) and lc.hopeless(LOGS["cache"])
+    assert not lc.hopeless(lc.cause(LOGS["memory"]))  # a smaller context may fit
+
+    monkeypatch.setattr(lc, "LOG_READ_S", 0.3)
+    url = hub.app.state.settings.llama_swap_url
+    FakeLlamaSwap.logs = {"big": LOGS["flag"]}
+    started = time.monotonic()
+    assert asyncio.run(lc.said(url, "big")) == "error: invalid argument: --no-mmap"
+    assert time.monotonic() - started < 1.4  # the stream waits for more: what it kept is read, then let go
+    assert asyncio.run(lc.said(url, "nobody")) == "" and asyncio.run(lc.said("http://127.0.0.1:9", "big")) == ""
+    FakeLlamaSwap.fail = True
+    trial = hub.post("/v1/llama/models/big/trial").json()
+    assert not trial["ok"] and "llama.cpp: error: invalid argument: --no-mmap" in trial["error"]
+    from hub import tuning
+
+    checked = asyncio.run(tuning.Tuner(None, None, None, url=url, space=dict)._load("big"))
+    assert not checked["ok"] and "llama.cpp: error: invalid argument: --no-mmap" in checked["error"]
 
 
 def test_a_model_that_does_not_start_gets_its_old_settings_back(hub):
@@ -635,14 +704,14 @@ HELP = f"""----- common params -----
 """
 
 
-def help_server(folder):
+def help_server(folder, help_text=HELP):
     """A llama-server that only says its --help - a real process (a .cmd: Windows starts it as a program); each run
     leaves a line in runs.txt."""
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "help.py").write_text("import pathlib, sys\n"
                                     "with open(pathlib.Path(__file__).with_name('runs.txt'), 'a') as f:\n"
                                     "    f.write('run\\n')\n"
-                                    f"sys.stdout.write({HELP!r})\n", encoding="utf-8")  # fmt: skip
+                                    f"sys.stdout.write({help_text!r})\n", encoding="utf-8")  # fmt: skip
     server = folder / "llama-server.cmd"
     server.write_text(f'@"{sys.executable}" "%~dp0help.py" %*\n', encoding="utf-8")
     return server
@@ -720,6 +789,39 @@ def test_an_mtp_head_in_a_file_of_its_own(tmp_path):
     own = lc.model_view(lc.edit(new, "big", {"spec_type": "draft-mtp"}, build=build), "big")["spec"]
     assert (own["type"], own["draft"], own["draft_gpu_layers"]) == ("draft-mtp", "", "auto")
     assert lc.edit(new, "big", {"spec_type": "none"}, build=build) == CONFIG
+
+
+def full_help(*configs):
+    """b11899's --help, whole enough: HELP and the options these configs' models use - but not --no-mmap, --mlock,
+    --mmap: the build took them away for --load-mode and says nothing of them (0.1.12)."""
+    used = {t for text in configs for line in text.splitlines() for t in line.split() if lc._OPTION.fullmatch(t)}
+    options = "".join(f"{flag} X                               an option\n" for flag in sorted(used - set(lc.RENAMED)))
+    return HELP + options + "-t,    --threads N                      threads\n-lm,   --load-mode MODE   loading mode\n"
+
+
+FULL_HELP = full_help(CONFIG)
+
+
+def test_flags_a_build_took_away_without_a_word():
+    """0.1.12 (found 2026-11-14 in the user's AFO 0.1.11): b11899 took away --no-mmap (and --mlock, --mmap) for
+    --load-mode and its --help says nothing of them - llama-server refuses the model («invalid argument: --no-mmap»),
+    and match_build (42.1) took off only what the help calls removed. Now a known rename is written as the build takes
+    it and any other option it does not know goes with its value - only in the commands of the config's own
+    llama-server, and only when its help was read whole (its basic options are in it)."""
+    full = lc.parse_help(FULL_HELP)
+    text = CONFIG.replace("--fit on -fa on -c 16384 --no-mmap",
+                          "--fit on -fa on -c 16384 --no-mmap --mlock --log-colors --bogus 3 -t 8")  # fmt: skip
+    fork = ('  "fork":\n    name: "A fork\'s own"\n    cmd: |\n      "D:/fork/llama-server.exe" -m "F:/f.gguf"'
+            " --no-mmap --fork-only 2\n      --host 127.0.0.1 --port ${PORT}\n\n")  # fmt: skip
+    text = text.replace('  "huge":', fork + '  "huge":')
+    assert lc.unknown_flags(text, full) == {"huge": ["--no-mmap", "--mlock", "--log-colors", "--bogus"]}
+    new = lc.match_build(text, full)
+    assert "      --fit on -fa on -c 16384 --load-mode none --load-mode mlock -t 8" in new.splitlines()
+    assert lc.unknown_flags(new, full) == {} and lc.match_build(new, full) == new
+    assert lc.model_view(new, "big") == lc.model_view(text, "big")  # what the build knows stays as it was
+    assert "--no-mmap --fork-only 2" in new  # another llama-server's command: its own flags
+    small = lc.parse_help(HELP)  # a help that has not even --port: not read whole - nothing taken off
+    assert lc.match_build(CONFIG, small) == CONFIG and lc.unknown_flags(CONFIG, small) == {}
 
 
 def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file(tmp_path):

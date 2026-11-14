@@ -22,6 +22,17 @@ RESERVE_GIB = 1.0
 RAM_RESERVE_GIB = 3.0
 
 
+QUANT_BLOCK = 32  # llama.cpp's quantized KV cache types (q8_0, q4_0, q5_1, ...) keep blocks of 32 values
+
+
+def quantized_cache(info: dict[str, Any] | None) -> bool:
+    """Whether llama.cpp makes a context with a quantized KV cache for this model (0.1.12): its blocks must divide
+    each attention head - Kimi-Linear's V head of 72 they do not («V cache type q8_0 with block size 32 does not
+    divide n_embd_head_v=72»), and the model did not start at any context; a header that does not say - yes."""
+    info = info or {}
+    return all(not size or size % QUANT_BLOCK == 0 for size in (info.get("key_length"), info.get("value_length")))
+
+
 def kv_bytes(info: dict[str, Any], context: int, cache_type: str) -> float:
     per_token = info["kv_layers"] * info["kv_heads"] * (info["key_length"] + info["value_length"])
     return context * per_token * CACHE_BYTES.get(cache_type, 2.0)

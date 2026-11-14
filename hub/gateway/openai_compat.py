@@ -24,6 +24,7 @@ import httpx
 
 from common.i18n import tr
 
+from .. import llama_config
 from .base import Model, ProviderError, StreamEvent
 
 log = logging.getLogger("hub.gateway.openai")
@@ -201,7 +202,11 @@ class OpenAICompatProvider:
             ):
                 if response.status_code != 200:
                     detail = (await response.aread()).decode("utf-8", "replace")[:500]
-                    raise ProviderError(f"{self.name}: {self.describe(response.status_code, detail)}")
+                    said = self.describe(response.status_code, detail)
+                    if self.locality == "local" and "exited prematurely" in detail:  # 0.1.12: llama.cpp's own words
+                        words = await llama_config.said(self.base_url, model_ref)
+                        said += f" - llama.cpp: {words}" if words else ""
+                    raise ProviderError(f"{self.name}: {said}")
                 async for line in response.aiter_lines():
                     if cancel.is_set():
                         break

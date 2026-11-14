@@ -22,6 +22,28 @@ def test_an_error_card_says_what_to_do():
     assert "IAM" in role["hint"]
 
 
+def test_why_a_local_model_did_not_start_in_plain_words():
+    """0.1.12: with llama.cpp's own words beside llama-swap's «exited prematurely», the person reads what to do -
+    not «the file is damaged, too new or too big» for each of them."""
+    from common import plain_errors
+
+    said = "llama-swap: HTTP 502: upstream command exited prematurely - llama.cpp: "
+    flag = plain_errors.explain(said + "error: invalid argument: --no-mmap")
+    assert flag[0] == "Сборка llama.cpp не знает флаг из команды модели" and "config.yaml" in flag[1]
+    cache = plain_errors.explain(said + "llama_init_from_model: V cache type q8_0 with block size 32 does not divide "
+                                        "n_embd_head_v=72")  # fmt: skip
+    assert cache[0] == "Сжатие KV-кэша не подходит модели" and "f16" in cache[1]
+    for words in ("llama_model_load: error loading model: error loading model hyperparameters: key not found in "
+                  "model: gemma3.attention.layer_norm_rms_epsilon", "error loading model hyperparameters: key "
+                  "qwen35.rope.dimension_sections has wrong array length; expected 4, got 3"):  # fmt: skip
+        found = plain_errors.explain(said + words)
+        assert found[0] == "llama.cpp не читает этот файл модели" and "Ollama" in found[1]
+    memory = plain_errors.explain(said + "ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory")
+    assert memory[0] == "Не хватает памяти"
+    no_words = plain_errors.explain("llama-swap: HTTP 502: upstream command exited prematurely")
+    assert no_words[0] == "Модель не запустилась"  # llama.cpp's own words not found: the old guess
+
+
 def test_faster_or_better_for_a_local_model():
     draft = {"context": "32768", "gpu_mode": "auto", "gpu_n": "", "flash_attn": "on", "cache_type": "q4_0",
              "parallel": "1", "ttl_min": "0"}  # fmt: skip
@@ -31,6 +53,15 @@ def test_faster_or_better_for_a_local_model():
     quality = model_setup.preset_draft("quality", draft, 40960)  # never past what the model was trained for
     assert (quality["context"], quality["cache_type"]) == ("40960", "f16")
     assert model_setup.preset_of(quality, 40960) == "quality" and fast["parallel"] == "1"  # the rest as it was
+    # 0.1.12: a model whose attention head a quantized cache's blocks of 32 do not divide (Kimi-Linear's V: 72)
+    kimi = {"key_length": 576, "value_length": 72, "context_trained": 131072}
+    assert model_setup.preset_draft("fast", draft, 131072, kimi)["cache_type"] == "f16"
+    assert model_setup.preset_of(model_setup.preset_draft("fast", draft, 131072, kimi), 131072, kimi) == "fast"
+    view = {"editable": True, "context": 8192, "info": {**kimi, "architecture": "kimi-linear", "layers": 27,
+            "kv_layers": 7, "kv_heads": 1, "size_bytes": 10 * 1024**3}}  # fmt: skip
+    said, tone = model_setup.launch_judged({**fast, "gpu_mode": "auto"}, view, 16303)
+    assert tone == "error" and "q8_0" in said and "72" in said and "f16" in said
+    assert model_setup.launch_judged({**fast, "gpu_mode": "auto", "cache_type": "f16"}, view, 16303)[1] != "error"
 
 
 def test_faster_or_better_among_the_variants():
