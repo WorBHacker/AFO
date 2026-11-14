@@ -271,6 +271,7 @@
  "{path} — не модель GGUF: {error}": "{path} is not a GGUF model: {error}",
  "{provider}: цены на {date}, старше {days} дней": "{provider}: prices as of {date}, older than {days} days",
  "{repo} {quant}, установлена AFO: {purposes}.": "{repo} {quant}, installed by AFO: {purposes}.",
+ "{repo} — не модель семейства «{name}»": "{repo} is not a model of the «{name}» family",
  "{said} — проверьте текст": "{said} — check the text",
  "{seconds} с": "{seconds} s",
  "{size:.0f} КБ": "{size:.0f} KB",

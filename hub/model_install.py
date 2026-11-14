@@ -1082,7 +1082,7 @@ class Installer:
     async def picture_catalog(self) -> list[dict[str, Any]]:
         """The curated picture models, each with its size and how it runs here."""
         machine = await asyncio.to_thread(self.machine)
-        mine = {r["plan"].get("set"): r for r in await self._db.acall(installed)}
+        mine = {r["plan"].get("set"): r for r in await self._db.acall(installed) if not r["plan"].get("found")}
         listed = []
         for entry in picture_sets():
             verdict = picture_verdict(entry, machine)
@@ -1113,6 +1113,7 @@ class Installer:
             raise InstallError(tr("AFO пока не умеет ставить {repo} сам: семейства этой модели нет в его списке",
                                   repo=repo), 404)  # fmt: skip
         variants, _ = hf.variants([{"path": path, **f} for path, f in found["files"].items()])
+        variants = [v for v in variants if len(v["files"]) == 1]  # sd-server takes one file a part (47.6)
         if not variants:
             raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
         parts = [f for f in await self.picture_files(entry) if f["role"] not in PICTURE_MAIN]
@@ -1234,13 +1235,34 @@ class Installer:
         self._kick()
         return await self._db.acall(lambda conn: job(conn, job_id))
 
+    async def _found_main(self, entry: dict[str, Any], repo: str, quant: str) -> tuple[dict[str, Any], str]:
+        """A found model's variant as a picture set's model (47.6): its file - in the set's role for it - and the
+        repository's licence; refused when the repository is not of the set's family or has no such variant in one
+        file (sd-server takes one file a part)."""
+        listed = await self._listed(repo)
+        family = picture_family(repo, listed.get("bases") or [])
+        if family is None or family["id"] != entry["id"]:
+            raise InstallError(tr("{repo} — не модель семейства «{name}»", repo=repo, name=entry["name"]), 422)
+        variants, _ = hf.variants([{"path": path, **f} for path, f in listed["files"].items()])
+        variant = next((v for v in variants if v["quant"] == quant and len(v["files"]) == 1), None)
+        if variant is None:
+            raise InstallError(tr("у {repo} нет варианта {quant}", repo=repo, quant=quant), 404)
+        role = next(f["role"] for f in entry["files"] if f["role"] in PICTURE_MAIN)
+        file = variant["files"][0]
+        return {"path": file["path"], "repo": repo, "revision": listed["revision"], "done": False, "size": file["size"],
+                "sha256": file["sha256"], "role": role}, listed.get("license") or entry["license"]  # fmt: skip
+
     async def install_pictures(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
-        """A picture model from the curated list: {id, drive or folder}; the engine comes with the first one."""
+        """A picture model from the curated list: {id, drive or folder}; or (47.6) a found one of the set's family -
+        `repo` and `quant`: that variant is the model, the set's encoders, VAE and flags are its; an install of its own,
+        named by its repository. The engine comes with the first one."""
         entry = next((e for e in picture_sets() if e["id"] == spec["id"]), None)
         if entry is None:
             raise InstallError(tr("в списке нет модели {model}", model=spec["id"]), 404)
+        found_repo, main = spec.get("repo") or "", next(f for f in entry["files"] if f["role"] in PICTURE_MAIN)
+        repo, quant = (found_repo, spec.get("quant") or "") if found_repo else (main["repo"], hf.quant_of(main["path"]))
         rows = await self._db.acall(jobs)
-        same = next((r for r in rows if r["plan"].get("set") == entry["id"]
+        same = next((r for r in rows if r["plan"].get("set") == entry["id"] and (r["repo"], r["quant"]) == (repo, quant)
                      and r["status"] not in ("cancelled", "removed")), None)  # fmt: skip
         if same and same["status"] == "done":
             raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
@@ -1250,15 +1272,18 @@ class Installer:
         video = entry.get("kind") == "video"
         if video and picture_verdict(entry, machine) == "no":
             raise InstallError(tr("видео на этом компьютере — только в облаке: {why}", why=machine.get("why", "")))
-        files = await self.picture_files(entry)
+        parts = {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}
+        own, licence = (await self._found_main(entry, repo, quant)) if found_repo else (None, entry["license"])
+        files = [*([own] if own else []), *await self.picture_files(entry if own is None else parts)]
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
-        folder = root / "pictures" / entry["id"]
+        folder = root / "pictures" / (repo.replace("/", os.sep) if own else entry["id"])
         flags = list(entry["flags"])
         if video and machine.get("tiles") and "--vae-tiling" not in flags:  # Vulkan falls without (29.1)
             flags.append("--vae-tiling")
         plan = {"engine": "sd", "set": entry["id"], "tier": entry["tier"], "build": machine["build"], "flags": flags,
-                "size": entry["size"], **({"kind": "video"} if video else {})}  # fmt: skip
+                "size": entry["size"], **({"kind": "video"} if video else {}),
+                **({"found": repo} if own else {})}  # fmt: skip
         job_id = uuid.uuid4().hex[:12]
         everything = [*engine, *files]
         # the family's encoders and VAE: where another install keeps them, or one copy in `_shared` (47.3) - chosen
@@ -1271,15 +1296,16 @@ class Installer:
             except OSError as exc:
                 raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
                                    422) from exc  # fmt: skip
-            model_id = llama_config.free_id(await asyncio.to_thread(config_text), entry["id"])
+            text = await asyncio.to_thread(config_text)
+            model_id = llama_config.free_id(text, id_base(repo, quant) if own else entry["id"])
+            name = f"{repo_name(repo)} {quant}" if own else entry["name"]
 
             def add(conn) -> None:
                 conn.execute(
                     "INSERT INTO model_installs (id, repo, revision, quant, files, folder, model_id, name, purposes, "
                     "license, status, total_bytes, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-                    (job_id, files[0]["repo"], files[0]["revision"], hf.quant_of(files[0]["path"]),
-                     json.dumps(everything), str(folder), model_id, entry["name"], json.dumps(entry["purposes"]),
-                     entry["license"], sum(f["size"] for f in everything), json.dumps(plan)),
+                    (job_id, repo, files[0]["revision"], quant, json.dumps(everything), str(folder), model_id, name,
+                     json.dumps(entry["purposes"]), licence, sum(f["size"] for f in everything), json.dumps(plan)),
                 )  # fmt: skip
 
             await self._db.acall(add)

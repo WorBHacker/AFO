@@ -160,6 +160,8 @@ async def picture_repository(request: Request, author: str, name: str,
 
 class Pictures(BaseModel):
     id: str = Field(min_length=1, max_length=80)
+    repo: str = Field(default="", max_length=200)  # a found model of the set's family and its variant (47.6)
+    quant: str = Field(default="", max_length=40)
     drive: str = Field(default="", max_length=3)
     folder: str = Field(default="", max_length=400)
 

@@ -14,6 +14,7 @@ import threading
 import time
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
@@ -713,3 +714,55 @@ def test_an_installs_trial_picture_waits_while_the_hub_draws(installs, monkeypat
     assert drawn["status"] == "done", drawn["error"]
     asked = [b.get("prompt") == "a fox" or b.get("model") for b in FakeLlamaSwap.asked]
     assert asked.index(True) < asked.index("best")  # the picture first, then the trial
+
+
+# --- a found model that draws, installed beside its family's set (47.6) ---
+
+
+def test_a_found_picture_model_installs_with_its_familys_parts_and_draws(installs, monkeypatch):  # noqa: F811
+    """47.6: a model found on Hugging Face whose family AFO knows (47.2) installs as the family's set does - the
+    engine, a block for sd-server, a trial picture - with its own variant as the model and the encoder and VAE the set
+    already keeps (47.3), not downloaded again. It is its own install: the set's card does not take it for the set,
+    the same variant twice is refused, another variant is another model; removing it keeps the set's parts."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    repo = "someone/Draw-More-GGUF"
+
+    def install(spec: dict) -> dict:
+        answer = installs.post("/v1/install/pictures", json=spec)
+        assert answer.status_code == 200, answer.text
+        done = wait_for(installs, answer.json()["job"]["id"], "done", "failed")
+        assert done["status"] == "done", done["error"]
+        return done
+
+    draw = install({"id": "draw"})
+    found = install({"id": "draw", "repo": repo, "quant": "Q4_0"})
+    pictures = installs.tmp / "localchat-model" / "pictures"
+    model = pictures / "someone" / "Draw-More-GGUF" / "draw-more-Q4_0.gguf"
+    shared = {f["role"]: f.get("at") for f in draw["files"] if f["role"] not in ("engine", "diffusion-model")}
+    assert [(f["role"], f.get("repo"), f.get("at")) for f in found["files"]] == [
+        ("diffusion-model", repo, None), ("llm", "test/Words-GGUF", shared["llm"]),
+        ("vae", "test/Vae", shared["vae"])]  # fmt: skip
+    assert model.read_bytes() == b"d" * 40_000 and (found["repo"], found["quant"]) == (repo, "Q4_0")
+    assert (found["model_id"], found["name"], found["plan"]["set"]) == ("draw-more-q4_0", "Draw-More Q4_0", "draw")
+    command = lc.model_view(installs.config.read_text(encoding="utf-8"), found["model_id"])["command"]
+    assert f'--diffusion-model "{model.as_posix()}"' in command
+    assert f'--llm "{Path(shared["llm"]).as_posix()}"' in command
+    assert "draw-more-q4_0" in [b.get("model") for b in FakeLlamaSwap.asked]  # its trial picture
+    drawing = {m["model_id"] for m in installs.get("/v1/visual/models").json()["models"]}
+    assert drawing == {"draw", "draw-more-q4_0"}
+    assert installs.get("/v1/install/pictures").json()["models"][0]["installed"] == ["draw"]  # the set's card: its own
+
+    again = installs.post("/v1/install/pictures", json={"id": "draw", "repo": repo, "quant": "Q4_0"})
+    assert again.status_code == 409 and "уже установлена" in again.json()["detail"]
+    for wrong, status in (({"id": "draw", "repo": repo, "quant": "Q5_K"}, 404),
+                          ({"id": "draw", "repo": "test/Words-GGUF", "quant": "Q4_K_M"}, 422)):  # fmt: skip
+        assert installs.post("/v1/install/pictures", json=wrong).status_code == status, wrong
+    other = install({"id": "draw", "repo": repo, "quant": "Q2_K"})  # another variant: another model
+    assert other["model_id"] == "draw-more-q2_k"
+
+    installs.delete(f"/v1/install/models/{found['model_id']}")
+    assert not model.exists() and Path(shared["llm"]).exists()  # the set and the other variant name them

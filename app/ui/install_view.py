@@ -521,8 +521,9 @@ class InstallView(QObject):
                 for r in catalog_rows(self._catalog, self._purpose)]  # fmt: skip
 
     def _job_for_set(self, set_id: str) -> dict[str, Any] | None:
-        """A picture model's install still on the list - the newest."""
+        """A picture model's install still on the list - the newest; a found model of its family (47.6) is not it."""
         found = [j for j in self._jobs if (j.get("plan") or {}).get("set") == set_id
+                 and not (j.get("plan") or {}).get("found")
                  and j["status"] not in ("cancelled", "removed")]  # fmt: skip
         return found[0] if found else None
 
