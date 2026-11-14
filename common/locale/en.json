@@ -2665,6 +2665,7 @@
  "слово проверяющей модели": "the judge's word",
  "слои на видеокарте: auto, all или число от 0 до 999": "layers on the GPU: auto, all or a number from 0 to 999",
  "слои черновой модели на видеокарте: auto, all или число от 0 до 999": "the draft model's layers on the graphics card: auto, all or a number from 0 to 999",
+ "слой MTP из файла {draft}": "the MTP layer from the file {draft}",
  "слой MTP самой модели": "the model's own MTP layer",
  "сломала то, что работало": "broke what worked",
  "слоёв": "layers",

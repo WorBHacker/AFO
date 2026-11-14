@@ -420,8 +420,9 @@ SPEC_KINDS = {"draft": N_("черновая модель {draft}"),
               "draft_fewer": N_("черновая модель {draft}, часть слоёв модели в ОЗУ"),
               "mtp": N_("слой MTP самой модели"),
               "ngram": N_("ngram (повторы уже написанного)")}  # fmt: skip
-# a draft made for one model (44.4), by the kind of guessing it takes
-DRAFT_WORDS = {"draft-dflash": N_("черновик DFlash {draft}"), "draft-eagle3": N_("черновик EAGLE-3 {draft}")}
+# a draft made for one model (44.4; 44.7: an MTP head of its own file), by the kind of guessing it takes
+DRAFT_WORDS = {"draft-dflash": N_("черновик DFlash {draft}"), "draft-eagle3": N_("черновик EAGLE-3 {draft}"),
+               "draft-mtp": N_("слой MTP из файла {draft}")}  # fmt: skip
 
 
 def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], drafting: dict[str, Any]

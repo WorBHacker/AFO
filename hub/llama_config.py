@@ -314,7 +314,8 @@ def spelled(setting: str, build: dict[str, Any] | None) -> tuple[tuple[str, ...]
 
 
 def _uses_draft(kinds: str) -> bool:
-    """Whether these kinds of guessing ahead take a draft model of their own (`-md`); MTP is the model's own layer."""
+    """Whether these kinds of guessing ahead need a draft model of their own (`-md`); MTP is the model's own layer -
+    or its head in a file of its own (44.7), which it may go without."""
     return any(k.startswith("draft-") and k != "draft-mtp" for k in kinds.split(","))
 
 
@@ -578,8 +579,11 @@ def _set_switch(lines: list[str], first: int, last: int, names: tuple[str, ...],
 def _set_spec(lines: list[str], first: int, last: int, changes: dict[str, Any], view: dict[str, Any],
               build: dict[str, Any] | None) -> None:  # fmt: skip
     """Guessing ahead written (42.1): its kinds, and the draft model's flags while a kind takes one - off, each of
-    its flags goes (no build: only off, under the names the hub knows)."""
+    its flags goes (no build: only off, under the names the hub knows). draft-mtp keeps a file - its head (44.7) -
+    while the changes give one, or say nothing of the kind; written without one, it is the model's own layer."""
     kinds = changes.get("spec_type", view["spec"]["type"] or "none")
+    given = changes.get("draft_model") if "spec_type" in changes else view["spec"]["draft"]
+    head = "draft-mtp" in kinds.split(",") and bool(given)
 
     def put(setting: str, value: str | None) -> None:
         every, name = spelled(setting, build)
@@ -589,7 +593,7 @@ def _set_spec(lines: list[str], first: int, last: int, changes: dict[str, Any], 
             _set_flag(lines, first, last, every, value, name)
 
     put("spec_type", None if kinds == "none" else kinds)
-    if kinds == "none" or not _uses_draft(kinds):
+    if kinds == "none" or not (_uses_draft(kinds) or head):
         for setting in DRAFT:
             put(setting, None)
         return

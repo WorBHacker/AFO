@@ -251,11 +251,20 @@ def spec_command(text: str, model_id: str, changes: dict[str, Any], build: dict[
     return argv
 
 
+def draft_kind(info: dict[str, Any]) -> str:
+    """The kind of guessing ahead a draft's file takes, by its header: an MTP head of its own file (44.7, gguf's
+    `mtp_head`) - draft-mtp; a DFlash or EAGLE-3 draft (44.4) - its own; a whole small model - draft-simple."""
+    if info.get("mtp_head"):
+        return "draft-mtp"
+    return DRAFT_KINDS.get(info.get("architecture") or "", "draft-simple")
+
+
 def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
                   draft: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
     """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the model's own MTP layers (44.3: its
     header has them, the build has draft-mtp - no file of their own); the draft model ({path, info}; 44.4: a DFlash or
-    EAGLE-3 draft guesses its own way - its kind by its header, DRAFT_KINDS, when the build has it) beside
+    EAGLE-3 draft guesses its own way, 44.7: an MTP head of its own file too - its kind by its header, draft_kind,
+    when the build has it) beside
     the model as it is - or, when it does not fit so (the user's word, 2026-11-13), wholly on the graphics card and the
     model with as few layers fewer there as it needs; the context is never made smaller by itself. And what the draft
     lacks to fit beside the model as it is ({short_gb, context} - the largest context it would fit with; {} - it
@@ -266,7 +275,7 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
         out.append({"name": "ngram", "changes": {"spec_type": ngram}})
     if info.get("mtp_layers") and "draft-mtp" in build["spec_types"]:  # 44.3: the model's own layers guess ahead
         out.append({"name": "mtp", "changes": {"spec_type": "draft-mtp"}})
-    kind = DRAFT_KINDS.get(draft["info"].get("architecture") or "", "draft-simple") if draft else ""
+    kind = draft_kind(draft["info"]) if draft else ""
     if draft is None or kind not in build["spec_types"]:
         return out, {}
     cache = view.get("cache_type") or "f16"  # the draft's KV cache as the model's: q8_0 takes half of f16

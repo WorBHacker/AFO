@@ -8062,6 +8062,12 @@ def test_where_the_experts_are_in_the_models_sheet(app):
     flash = {"type": "draft-dflash", "draft": "D:/AFO/models/drafts/Qwen3.6-35B-A3B-DFlash-Q8_0.gguf"}
     assert spec(flash) == ("Сейчас: черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf.", "")
     assert spec({"type": "draft-mtp", "draft": ""}) == ("Сейчас: слой MTP самой модели.", "")
+    head = {"type": "draft-mtp", "draft": "D:/AFO/models/drafts/mtp-Qwen3.6-35B-A3B-Q8_0.gguf"}  # 44.7
+    assert spec(head) == ("Сейчас: слой MTP из файла mtp-Qwen3.6-35B-A3B-Q8_0.gguf.", "")
+    by_head = {"status": "better", "kind": "draft", "spec_type": "draft-mtp", "before": 40.2, "after": 61.0,
+               "accepted": 0.74, "draft": "mtp-Qwen3.6-35B-A3B-Q8_0.gguf", "short": {}}  # fmt: skip
+    assert spec(head, by_head) == ("Ускорение — слой MTP из файла mtp-Qwen3.6-35B-A3B-Q8_0.gguf: ответ 40 → 61 "
+                                   "ток/с, угадано 74 %.", "ok")  # fmt: skip
     won = {"status": "better", "kind": "draft", "spec_type": "draft-dflash", "before": 40.2, "after": 70.4,
            "accepted": 0.81, "draft": "Qwen3.6-35B-A3B-DFlash-Q8_0.gguf", "short": {}}  # fmt: skip
     assert spec(flash, won) == ("Ускорение — черновик DFlash Qwen3.6-35B-A3B-DFlash-Q8_0.gguf: ответ 40 → 70 ток/с, "

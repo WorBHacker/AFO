@@ -688,6 +688,40 @@ def test_the_speculative_flags_are_the_builds_own(tmp_path):
             lc.edit(CONFIG, "big", changes, build=how)
 
 
+def test_an_mtp_head_in_a_file_of_its_own(tmp_path):
+    """44.7: the layers that guess ahead (MTP) also come in a file of their own beside a model that has none -
+    ggml-org's `mtp-<model>.gguf`: the model's header with one block more, and only that block's tensors (and the
+    vocabulary's). llama.cpp takes it as the draft of draft-mtp (`-md`, as `--mtp` with `-hf` does). Its header says
+    so - not a whole model with such a layer of its own, a small draft of a Qwen3.5 family has one too - and its KV
+    cache is of that one layer. The config keeps the file while the kind is draft-mtp; draft-mtp written without one
+    is the model's own layer - the file goes."""
+    head_keys = {**MOE, "qwen3moe.block_count": 49, "qwen3moe.nextn_predict_layers": 1}
+    nextn = [("blk.48.nextn.eh_proj.weight", (4096, 2048), Q4_K), ("blk.48.nextn.enorm.weight", (2048,), F32)]
+    head = model_info(gguf(tmp_path / "mtp-moe.gguf", head_keys, moe_tensors([48]) + nextn))
+    assert (head["mtp_head"], head["mtp_layers"], head["layers"], head["kv_layers"]) == (True, 1, 49, 1)
+    whole = model_info(gguf(tmp_path / "whole.gguf", head_keys, moe_tensors(range(49)) + nextn))
+    assert "mtp_head" not in whole and whole["kv_layers"] == 49
+    assert head["size_bytes"] * 10 < whole["size_bytes"]  # one block and the vocabulary
+    dense = {"general.architecture": "qwen35", "qwen35.block_count": 65, "qwen35.nextn_predict_layers": 1,
+             "qwen35.attention.head_count": 24, "qwen35.attention.head_count_kv": 4,
+             "qwen35.full_attention_interval": 4}  # fmt: skip
+    dense_head = model_info(gguf(tmp_path / "mtp-dense.gguf", dense, [
+        ("token_embd.weight", (5120, 4096), Q4_K), ("blk.64.attn_q.weight", (5120, 6144), Q4_K),
+        ("blk.64.nextn.eh_proj.weight", (10240, 5120), Q4_K)]))  # fmt: skip
+    assert dense_head["mtp_head"] and dense_head["kv_layers"] == 1  # no experts: its table is read all the same
+    assert "mtp_head" not in model_info(gguf(tmp_path / "glm.gguf", dense))  # a header without tensors: no head
+
+    build = lc.parse_help(HELP)
+    file = "F:/models/drafts/mtp-moe.gguf"
+    new = lc.edit(CONFIG, "big", {"spec_type": "draft-mtp", "draft_model": file, "draft_gpu_layers": "all"},
+                  build=build)  # fmt: skip
+    assert " -np 1 --spec-type draft-mtp" in new and f'-md "{file}" -ngld 99' in new
+    assert lc.model_view(lc.edit(new, "big", {"draft_max": 4}, build=build), "big")["spec"]["draft"] == file
+    own = lc.model_view(lc.edit(new, "big", {"spec_type": "draft-mtp"}, build=build), "big")["spec"]
+    assert (own["type"], own["draft"], own["draft_gpu_layers"]) == ("draft-mtp", "", "auto")
+    assert lc.edit(new, "big", {"spec_type": "none"}, build=build) == CONFIG
+
+
 def test_a_new_llama_cpp_gets_the_flags_it_takes_while_llama_swap_reads_the_file(tmp_path):
     """42.1: after the wizard updates llama.cpp, a flag the new build took away would stop llama-swap from starting
     the model. Under the lock the config's commands are written as the build spells them - the old name under its

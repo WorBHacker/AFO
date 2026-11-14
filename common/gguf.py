@@ -32,6 +32,7 @@ TYPE_SIZES = {0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20), 6: (32, 22), 7: (3
 # the experts' tensors as llama.cpp's --cpu-moe and --n-cpu-moe find them (b11899: «blk\.\d+\.ffn_(up|down|gate_up|
 # gate)_(ch|)exps»), with the layer's number
 EXPERTS = re.compile(r"^blk\.(\d+)\.ffn_(?:up|down|gate_up|gate)_(?:ch)?exps")
+BLOCK = re.compile(r"^blk\.(\d+)\.")
 PART = re.compile(r"^(.+)-00001-of-(\d{5})(\.gguf)$", re.IGNORECASE)  # the first of a model's files: gguf-split's
 
 
@@ -190,13 +191,14 @@ def _tensors(f: BinaryIO, count: int) -> list[tuple[str, int, int | None]]:
     return out
 
 
-def _weights(files: list[Path]) -> tuple[list[int], int]:
-    """What the experts weigh in each layer (44.1), and the whole model - its headers and tensors (44.2: a real
-    file's size to its alignment; a header without its weights weighs what the model would), from the tables of the
-    model's files: the whole header is read, a few megabytes. A tensor of a type ggml has added since - its share,
-    by its values, of the file's bytes the others do not take."""
+def _weights(files: list[Path]) -> tuple[list[int], int, set[int]]:
+    """What the experts weigh in each layer (44.1), the whole model - its headers and tensors (44.2: a real file's
+    size to its alignment; a header without its weights weighs what the model would) - and the blocks it has tensors
+    of (44.7), from the tables of the model's files: the whole header is read, a few megabytes. A tensor of a type
+    ggml has added since - its share, by its values, of the file's bytes the others do not take."""
     layers: dict[int, float] = {}
     whole = 0.0
+    blocks: set[int] = set()
     for file in files:
         with open(file, "rb") as f:
             table = _tensors(f, _keys(f, file.name, (), False)["gguf.tensors"])
@@ -207,9 +209,11 @@ def _weights(files: list[Path]) -> tuple[list[int], int]:
         for name, values, size in table:
             weight = rest * values / unknown if size is None else size
             whole += weight
+            if block := BLOCK.match(name):
+                blocks.add(int(block.group(1)))
             if match := EXPERTS.match(name):
                 layers[int(match.group(1))] = layers.get(int(match.group(1)), 0.0) + weight
-    return [round(layers.get(i, 0.0)) for i in range(max(layers, default=-1) + 1)], round(whole)
+    return [round(layers.get(i, 0.0)) for i in range(max(layers, default=-1) + 1)], round(whole), blocks
 
 
 def parts(path: Path) -> list[Path]:
@@ -226,8 +230,15 @@ def parts(path: Path) -> list[Path]:
 @functools.lru_cache(maxsize=32)
 def _model_info(files: tuple[tuple[str, int, float], ...]) -> dict[str, Any]:
     info = header_info(read_header(Path(files[0][0]), until_tokenizer=True))
+    if not info["experts"] and not info["mtp_layers"]:
+        return info
+    experts, whole, blocks = _weights([Path(name) for name, _, _ in files])
     if info["experts"]:
-        info["expert_bytes"], info["size_bytes"] = _weights([Path(name) for name, _, _ in files])
+        info["expert_bytes"], info["size_bytes"] = experts, whole
+    if blocks and min(blocks) >= info["layers"] - info["mtp_layers"]:
+        # 44.7: only the layers that guess ahead (MTP) - a head in a file of its own (ggml-org's mtp-<model>.gguf),
+        # the draft of llama.cpp's draft-mtp; its KV cache is theirs alone
+        info["mtp_head"], info["kv_layers"] = True, info["mtp_layers"]
     return info
 
 

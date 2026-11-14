@@ -1141,6 +1141,23 @@
   `test_the_experts_in_the_window`, `test_the_window_writes_the_experts_cache_by_the_builds_word`.
 - 44.6 Весь pytest (`--ignore=tests/test_computer.py`) и живая проверка на настоящих моделях — по слову пользователя,
   после `nvidia-smi`: модель MoE с кэшем и без, модель с MTP, пара с DFlash; цифры — в этот файл.
+- 44.7 ✓ Слой MTP отдельным файлом (найдено 2026-11-14, после 44.5): ggml-org кладёт рядом с моделями каталога
+  `mtp-<модель>-Q8_0.gguf` и `dflash-<модель>-Q8_0.gguf` (Qwen3.6-35B-A3B, Qwen3.8-27B), а в самой модели слоя MTP нет
+  — 44.3 его не видел. Сверено по исходникам b11899: `common/speculative.cpp` (`common_speculative_init_result`) — файл
+  `-md` грузится своей моделью, при `draft-mtp` её контекст — MTP; без `-md` — контекст MTP на самой модели;
+  `common/arg.cpp` — `-hf … --mtp` кладёт файл `mtp-` в путь черновика, вид без `--spec-type` — по тензору
+  `blk.{block_count-1}.nextn.eh_proj.weight`. Файл ggml-org: `qwen35moe`, `block_count` 41, `nextn_predict_layers` 1,
+  23 тензора — блок 40 и словарь (`token_embd`, `output`), без блоков 0–39; в основной Q4_K_M — 40 блоков.
+  Сделано: `common/gguf.py` — у заголовка со слоем MTP читается таблица тензоров (`_weights` даёт и блоки); все блоки
+  не ниже `layers − mtp_layers` — `mtp_head`, и KV-кэш — только этих слоёв (`kv_layers = mtp_layers`); целая модель
+  со своим слоем MTP (маленький черновик семейства Qwen3.5) — не голова. `hub/tuning.py` — `draft_kind`: голова —
+  `draft-mtp` с `-md`, вариант `draft` (память — её блок и KV); сборка без `draft-mtp` — не мерится.
+  `hub/llama_config.py` — `_set_spec`: `draft-mtp` держит файл, пока изменения его дают или вид не трогают; `draft-mtp`
+  без файла — слой самой модели, `-md` снимается. Окно: «слой MTP из файла …». Тесты —
+  `test_an_mtp_head_in_a_file_of_its_own`, `test_an_mtp_head_of_its_own_file_guesses_ahead`,
+  `test_where_the_experts_are_in_the_models_sheet`.
+- 44.8 Каталог черновиков: файлы ggml-org (`dflash-`, `mtp-`) для Qwen3.6-35B-A3B и Qwen3.8-27B — вид, `names`,
+  лицензия (Apache-2.0 у обоих, сверено на Hugging Face 2026-11-14); поправить итог 44.4 («готовых нет»).
 - Риски: угадывание бывает медленнее (RTX 3090) — пишется только измеренный выигрыш; кэш экспертов и черновик делят
   видеопамять с контекстом — оценка 44.1 считает всё вместе; флаги меняются между сборками — имена из `--help`;
   черновики сообщества бывают под ответвления llama.cpp — их нет в каталоге; замер многих вариантов долог — сетка

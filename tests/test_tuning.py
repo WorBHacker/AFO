@@ -892,3 +892,41 @@ def test_a_draft_made_for_its_model_guesses_its_own_way(hub, setup, spec_server)
     assert launched(spec_server) == ["none", "ngram-mod", "draft-dflash"]
     written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
     assert written["type"] == "draft-dflash" and written["draft"].endswith("draft.gguf")
+
+
+def test_an_mtp_head_of_its_own_file_guesses_ahead(hub, setup, spec_server):  # noqa: F811
+    """44.7: a model without layers that guess ahead may have them in a file of their own (ggml-org's
+    `mtp-<model>.gguf`, its header with one block more and only that block's tensors) - its draft for draft-mtp:
+    measured with `-md`, the head's memory its one block and its one layer's KV cache; written with its file. A whole
+    small model with such a layer of its own (a Qwen3.5 family's draft) stays draft-simple."""
+    from tests.test_llama_config import F32, HELP, gguf
+
+    build = lc.parse_help(HELP)
+    info = {"architecture": "qwen35moe", "layers": 40, "kv_layers": 10, "kv_heads": 2, "key_length": 256,
+            "value_length": 256, "context_trained": 262144, "size_bytes": 9 * 1024**3, "mtp_layers": 0}  # fmt: skip
+    head = {**info, "layers": 41, "kv_layers": 1, "mtp_layers": 1, "mtp_head": True, "size_bytes": 2 * 1024**3}
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
+    found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, {"path": setup.parent / "h.gguf",
+                                                                            "info": head})  # fmt: skip
+    assert [v["name"] for v in found] == ["none", "ngram", "draft"]
+    assert found[2]["changes"]["spec_type"] == "draft-mtp" and found[2]["changes"]["draft_model"].endswith("h.gguf")
+    small = {**info, "layers": 24, "kv_layers": 6, "mtp_layers": 1, "size_bytes": 1024**3}  # a whole model
+    plain = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, {"path": setup.parent / "s.gguf",
+                                                                         "info": small})[0]  # fmt: skip
+    assert plain[2]["changes"]["spec_type"] == "draft-simple"
+    old = lc.parse_help(HELP.replace(",draft-mtp", ""))
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, {
+        "path": setup.parent / "h.gguf", "info": head})[0]] == ["none", "ngram"]  # fmt: skip
+
+    keys = {"general.architecture": "tiny", "tiny.block_count": 9, "tiny.context_length": 65536,
+            "tiny.embedding_length": 256, "tiny.attention.head_count": 4, "tiny.attention.head_count_kv": 2,
+            "tiny.nextn_predict_layers": 1}  # fmt: skip
+    file = gguf(setup.parent / "mtp-big.gguf", keys, [("token_embd.weight", (256, 3), F32),
+                                                      ("blk.8.nextn.eh_proj.weight", (512, 256), F32)])  # fmt: skip
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-mtp": 58.0})
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=file).tune("big"))
+    spec = result["spec"]
+    assert (spec["status"], spec["kind"], spec["spec_type"], spec["after"]) == ("better", "draft", "draft-mtp", 58.0)
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-mtp"] and spec["draft"] == "mtp-big.gguf"
+    written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
+    assert written["type"] == "draft-mtp" and written["draft"].endswith("mtp-big.gguf")
