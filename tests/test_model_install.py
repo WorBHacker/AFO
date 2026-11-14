@@ -15,7 +15,7 @@ import threading
 import time
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import ClassVar
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -25,7 +25,7 @@ from starlette.testclient import TestClient
 
 from common import gguf, llama_memory
 from common.paths import data_paths, engines_home
-from hub import engines, hf, tuning
+from hub import engines, hf, tuning, visual
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.auth import create_client
@@ -1656,6 +1656,53 @@ def test_the_catalogs_drafts():
     # for Qwen3-VL-8B, and the catalog had not named its family
     qwen3 = next(d for d in drafts if d["id"] == "qwen3-0.6b")
     assert {"qwen3", "qwen3moe", "qwen3vl", "qwen3vlmoe"} <= set(qwen3["architectures"])
+
+
+SD_PARTS = {"model", "diffusion-model", "llm", "vae", "t5xxl", "clip_l", "clip_g"}  # sd-server's own (master-1053)
+
+
+def test_the_catalogs_picture_families(hub):
+    """47.8: the picture families of sd.cpp's own documentation at the pinned build. The user's search of 2026-11-14,
+    with the base models Hugging Face tagged each with: nine of the ten are a family AFO installs; AtomicChat's is a
+    text encoder (Qwen3-VL-8B), not a model that draws. Each family: one model among sd-server's parts, its files named
+    apart (they lie side by side), its steps and guidance in its flags (the window asks with them - none would be 4
+    steps), base models of its own; only the four sets are cards among «Рисовать» (the user's word, 2026-11-15)."""
+    shipped = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    seen = {"unsloth/Qwen-Image-2.1-GGUF": "Qwen/Qwen-Image-2.1",
+            "unsloth/Qwen-Image-2.1-Turbo-GGUF": "Qwen/Qwen-Image-2.1-Turbo",
+            "unsloth/Z-Image-Turbo-GGUF": "Tongyi-MAI/Z-Image-Turbo",
+            "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF": "Qwen/Qwen3-VL-8B-Instruct",
+            "unsloth/FLUX.2-klein-4B-GGUF": "black-forest-labs/FLUX.2-klein-4B",
+            "unsloth/Qwen-Image-2512-GGUF": "Qwen/Qwen-Image-2512",
+            "unsloth/flux-3-image-klein-GGUF": "black-forest-labs/flux-3-image-klein",
+            "DogukanUrker/Qwen-Image-2.1-Turbo-GGUF": "Qwen/Qwen-Image-2.1-Turbo",
+            "leejet/Z-Image-Turbo-GGUF": "Tongyi-MAI/Z-Image-Turbo",
+            "city96/FLUX.1-dev-gguf": "black-forest-labs/FLUX.1-dev"}  # fmt: skip
+    assert {r: (mi.picture_family(r, [b], shipped) or {}).get("id") for r, b in seen.items()} == {
+        "unsloth/Qwen-Image-2.1-GGUF": "qwen-image-2.1", "unsloth/Qwen-Image-2.1-Turbo-GGUF": "qwen-image-2.1-turbo",
+        "unsloth/Z-Image-Turbo-GGUF": "z-image-turbo", "AtomicChat/Qwen-Image-2.1-Turbo-Uncensored-GGUF": None,
+        "unsloth/FLUX.2-klein-4B-GGUF": "flux2-klein-4b", "unsloth/Qwen-Image-2512-GGUF": "qwen-image",
+        "unsloth/flux-3-image-klein-GGUF": "flux3-image-klein", "DogukanUrker/Qwen-Image-2.1-Turbo-GGUF":
+        "qwen-image-2.1-turbo", "leejet/Z-Image-Turbo-GGUF": "z-image-turbo",
+        "city96/FLUX.1-dev-gguf": "flux1-dev"}  # fmt: skip
+    bases = [b.lower() for e in shipped for b in e["bases"]]
+    assert len(bases) == len(set(bases))  # one family a base model
+    for entry in shipped:
+        roles = [f["role"] for f in entry["files"]]
+        assert set(roles) <= SD_PARTS and sum(r in mi.PICTURE_MAIN for r in roles) == 1, entry["id"]
+        names = [PurePosixPath(f["path"]).name for f in entry["files"]]
+        assert len(names) == len(set(names)), entry["id"]
+        assert {"--steps", "--cfg-scale"} <= set(entry["flags"]), entry["id"]
+        assert entry["license"] and entry["size"] and entry["tier"] in visual.RANK.keys() | {"video"}, entry["id"]
+        assert entry["about"]["ru"] and entry["about"]["en"], entry["id"]
+    assert [e["id"] for e in shipped if e.get("card", True)] == [
+        "sdxs-512", "flux2-klein-4b", "z-image-turbo", "wan2.2-ti2v-5b-turbo"]  # fmt: skip
+
+    kept = json.loads(mi.CATALOG.read_text(encoding="utf-8"))  # a family that is not a card: not among «Рисовать»
+    hidden = {**DRAW, "id": "found-only", "card": False, "bases": ["test/Other"]}
+    mi.CATALOG.write_text(json.dumps({**kept, "pictures": [DRAW, hidden]}), encoding="utf-8")
+    hub.app.state.installer.machine = lambda: MACHINE
+    assert [m["id"] for m in hub.get("/v1/install/pictures").json()["models"]] == ["draw"]
 
 
 def test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing(hub, tmp_path, monkeypatch):

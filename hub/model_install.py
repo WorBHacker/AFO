@@ -143,8 +143,9 @@ def drafts() -> list[dict[str, Any]]:
 
 def picture_sets() -> list[dict[str, Any]]:
     """The curated picture models (model_catalog.json `pictures`, D55): {id, name, purposes, tier, license, original,
-    bases - the models whose quantizations and finetunes its flags and other parts fit (47.2), size, files: [{role
-    (sd-server's flag), repo, path}], flags, about}."""
+    bases - the models whose quantizations and finetunes its flags and other parts fit (47.2), card - false: a family
+    found by search only, not a card among «Рисовать» (47.8), size, files: [{role (sd-server's flag), repo, path}],
+    flags, about}."""
     return json.loads(CATALOG.read_text(encoding="utf-8")).get("pictures") or []
 
 
@@ -1112,7 +1113,7 @@ class Installer:
         machine = await asyncio.to_thread(self.machine)
         mine = {r["plan"].get("set"): r for r in await self._db.acall(installed) if not r["plan"].get("found")}
         listed = []
-        for entry in picture_sets():
+        for entry in (e for e in picture_sets() if e.get("card", True)):  # a family found by search only: no card
             verdict = picture_verdict(entry, machine)
             words = {"fast": tr("быстро"), "slow": tr("медленно — минуты на картинку"),
                      "no": tr("видео на этом компьютере — только в облаке")}  # fmt: skip

@@ -1365,8 +1365,21 @@ VAE при нехватке повторяет плитками.
   (Qwen2.5-VL-7B и VAE: `Comfy-Org/Qwen-Image_ComfyUI`, откуда его советует sd.cpp, Hugging Face не отдаёт — найти
   другой), FLUX.1 dev и schnell (clip_l, t5xxl, ae), Z-Image base, FLUX.2-klein-9B и base. Флаги — из документации
   sd.cpp той же сборки. Тест: у каждого — роли, которые знает sd-server, и разные имена файлов.
+  ✓ Сделано: 11 семейств с `"card": false` (`picture_catalog` их не показывает, поиск и установка — знают):
+  `qwen-image-2.1` и `-turbo` (Qwen3-VL-8B, VAE 2.1; Turbo — главный файл unsloth: у leejet его нет), `flux3-image-klein`
+  и `-base` (Qwen3-VL-4B, VAE FLUX.2 — общий с `flux2-klein-4b`), `qwen-image` (база — и Qwen-Image, и 2512;
+  Qwen2.5-VL-7B; VAE — `Comfy-Org/Qwen-Image`: `…_ComfyUI` переименован, Hugging Face отвечает 307), `flux1-dev` и
+  `flux1-schnell` (clip_l, t5xxl Q8_0 city96, ae — общий с `z-image-turbo`), `z-image` (Qwen3-4B-Instruct-2507 и ae —
+  общие с Turbo), `flux2-klein-9b`, `flux2-klein-base-4b`, `flux2-klein-base-9b` (Qwen3-8B или Qwen3-4B, VAE FLUX.2).
+  Шаги у каждого — явно: окно шлёт `steps` из флагов, без `--steps` было бы 4 (у sd.cpp по умолчанию 20). Лицензии —
+  исходных моделей: `qwen-research` у Qwen-Image 2.1, некоммерческие у FLUX.1-dev и FLUX.2-klein-9B/base-9B,
+  `flux-kommunity-license` у FLUX.3, Apache-2.0 у остальных. Все файлы есть на Hugging Face с sha256 (проверено
+  2026-11-15: от 5,3 ГБ у klein-base-4B до 18,0 у Qwen-Image). Тест — `test_the_catalogs_picture_families`: девять из
+  десяти строк поиска пользователя узнаются, AtomicChat (кодировщик) — нет.
 - 47.9 Живая проверка на RTX 5080 — по слову пользователя и после `nvidia-smi`: картинка каждого нового семейства; по
-  журналу sd-server (`compute buffer size … peak`) — запас на вычисления при 512², 1024², 1536² для 47.4.
+  журналу sd-server (`compute buffer size … peak`) — запас на вычисления при 512², 1024², 1536² для 47.4. Заодно:
+  берёт ли sd-server через `/sdapi` `--sigmas` из командной строки (Turbo 2.1), читает ли веса unsloth и city96, и
+  где на самом деле граница «быстро» у Qwen-Image-2512 Q4_K_M на 16 ГБ.
 - Риски: веса city96 и unsloth документация sd.cpp называет рабочими — подтвердит только картинка; дообучению
   (`finetune:`) могут быть нужны другие шаги, чем базовой, — покажет пробная картинка; квантование дообучения (его
   база — не модель семейства) не узнаётся — позже, одним запросом к Hugging Face; общий файл держит sd-server другой
