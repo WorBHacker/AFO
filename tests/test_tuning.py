@@ -856,3 +856,37 @@ def test_a_model_with_a_layer_of_its_own_guesses_ahead_with_it(hub, setup, spec_
     nothing = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}).tune("big"))["spec"]
     assert nothing["kind"] == "none" and "tg" not in nothing["measured"][2]
     assert "MTP" in nothing["measured"][2]["error"]
+
+
+def test_a_draft_made_for_its_model_guesses_its_own_way(hub, setup, spec_server):  # noqa: F811
+    """44.4: a DFlash or EAGLE-3 draft is made for one model - converted with its tokenizer and embeddings - and
+    guesses its own way: llama.cpp's draft-dflash and draft-eagle3, the kind by the draft's header (its
+    general.architecture, as b11899 names them); a build that does not know the kind - not measured. Written with
+    its kind and its file."""
+    from tests.test_llama_config import HELP
+
+    build = lc.parse_help(HELP)
+    info = {"architecture": "qwen35moe", "layers": 40, "kv_layers": 10, "kv_heads": 2, "key_length": 256,
+            "value_length": 256, "context_trained": 262144, "size_bytes": 9 * 1024**3}  # fmt: skip
+    small = {**info, "layers": 5, "kv_layers": 5, "size_bytes": int(0.9 * 1024**3)}
+    view = {"context": 32768, "gpu_layers": "all", "cache_type": "q8_0"}
+    for arch, kind in (("dflash", "draft-dflash"), ("eagle3", "draft-eagle3"), ("qwen3", "draft-simple")):
+        draft = {"path": setup.parent / "draft.gguf", "info": {**small, "architecture": arch}}
+        found, _ = tuning.spec_variants(view, info, {"vram_gib": 15.0}, build, draft)
+        assert [v["name"] for v in found] == ["none", "ngram", "draft"] and found[2]["changes"]["spec_type"] == kind
+    old = lc.parse_help(HELP.replace(",draft-dflash", ""))
+    dflash = {"path": setup.parent / "draft.gguf", "info": {**small, "architecture": "dflash"}}
+    assert [v["name"] for v in tuning.spec_variants(view, info, {"vram_gib": 15.0}, old, dflash)[0]] == [
+        "none", "ngram"]  # fmt: skip
+
+    keys = {"general.architecture": "dflash", "dflash.block_count": 5, "dflash.context_length": 65536,
+            "dflash.embedding_length": 128, "dflash.attention.head_count": 2,
+            "dflash.attention.head_count_kv": 1}  # fmt: skip
+    gguf(setup.parent / "draft.gguf", keys)
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 41.0, "draft-dflash": 70.0})
+    result = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=setup.parent / "draft.gguf").tune("big"))
+    spec = result["spec"]
+    assert (spec["status"], spec["kind"], spec["spec_type"], spec["after"]) == ("better", "draft", "draft-dflash", 70.0)
+    assert launched(spec_server) == ["none", "ngram-mod", "draft-dflash"]
+    written = lc.model_view(setup.read_text(encoding="utf-8"), "big")["spec"]
+    assert written["type"] == "draft-dflash" and written["draft"].endswith("draft.gguf")

@@ -64,6 +64,9 @@ RETRY_S = 1.0
 GIB = 1024**3
 # guessing ahead (42.4): measured by llama-server itself - llama-bench has no draft model
 NGRAMS = ("ngram-mod", "ngram-simple")  # the kind of ngram guessing measured: the first the build has
+# a draft made for one model guesses its own way (44.4): its header's general.architecture as llama.cpp b11899 names
+# it -> llama-server's --spec-type; any other draft model - draft-simple
+DRAFT_KINDS = {"dflash": "draft-dflash", "eagle3": "draft-eagle3"}
 SPEC_TOKENS = 256  # each answer measured
 SEED = 42
 SERVE_TIMEOUT_S = 600.0  # a large model read from a slow disk
@@ -251,7 +254,8 @@ def spec_command(text: str, model_id: str, changes: dict[str, Any], build: dict[
 def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, Any], build: dict[str, Any],
                   draft: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:  # fmt: skip
     """What guessing ahead to measure (42.4): none; ngram (it takes no memory); the model's own MTP layers (44.3: its
-    header has them, the build has draft-mtp - no file of their own); the draft model ({path, info}) beside
+    header has them, the build has draft-mtp - no file of their own); the draft model ({path, info}; 44.4: a DFlash or
+    EAGLE-3 draft guesses its own way - its kind by its header, DRAFT_KINDS, when the build has it) beside
     the model as it is - or, when it does not fit so (the user's word, 2026-11-13), wholly on the graphics card and the
     model with as few layers fewer there as it needs; the context is never made smaller by itself. And what the draft
     lacks to fit beside the model as it is ({short_gb, context} - the largest context it would fit with; {} - it
@@ -262,11 +266,12 @@ def spec_variants(view: dict[str, Any], info: dict[str, Any], space: dict[str, A
         out.append({"name": "ngram", "changes": {"spec_type": ngram}})
     if info.get("mtp_layers") and "draft-mtp" in build["spec_types"]:  # 44.3: the model's own layers guess ahead
         out.append({"name": "mtp", "changes": {"spec_type": "draft-mtp"}})
-    if draft is None or "draft-simple" not in build["spec_types"]:
+    kind = DRAFT_KINDS.get(draft["info"].get("architecture") or "", "draft-simple") if draft else ""
+    if draft is None or kind not in build["spec_types"]:
         return out, {}
     cache = view.get("cache_type") or "f16"  # the draft's KV cache as the model's: q8_0 takes half of f16
     load = {"info": draft["info"], "gpu_layers": "all", "cache_type": cache}
-    changes = {"spec_type": "draft-simple", "draft_model": str(draft["path"]), "draft_gpu_layers": "all",
+    changes = {"spec_type": kind, "draft_model": str(draft["path"]), "draft_gpu_layers": "all",
                "draft_cache_type": cache}  # fmt: skip
     context = view.get("context") or 4096
 

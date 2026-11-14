@@ -1104,11 +1104,25 @@
   запустился, но за замер не угадал ни одного токена, — ошибка варианта со словами llama.cpp (как черновик в 42.7), не
   замер. Окно знает вид (`SPEC_KINDS["mtp"]` — «слой MTP самой модели»). Тест —
   `test_a_model_with_a_layer_of_its_own_guesses_ahead_with_it`.
-- 44.4 DFlash и EAGLE-3: каталог черновиков (`drafts` в `hub/model_catalog.json`) получает вид (`dflash`, `eagle3`) и
+- 44.4 ✓ DFlash и EAGLE-3: каталог черновиков (`drafts` в `hub/model_catalog.json`) получает вид (`dflash`, `eagle3`) и
   модель, для которой черновик сделан (черновик DFlash обучен под одну модель — пара по ней, а не по словарю, как в
   42.3); `Installer.draft_for` — по виду; вариант `draft-dflash` / `draft-eagle3` с `-md`. В каталог — только черновики,
   что берёт обычный llama.cpp (не ответвления); перед записью сверить на Hugging Face файлы и лицензии. Отказ сборки
   взять черновик ловит 42.7. Файлы: `hub/model_catalog.json`, `hub/model_install.py`, `hub/tuning.py`.
+  Сделано (✓ механизм; каталог — после живой проверки): вид черновика — по его заголовку (`general.architecture`:
+  `dflash`, `eagle3` — так их называет b11899, строки в `llama.dll`), `DRAFT_KINDS` → `--spec-type draft-dflash` /
+  `draft-eagle3` с `-md`; сборка без вида — вариант не мерится; черновик из команды человека мерится своим видом.
+  Каталог: у записи `kind` (`simple` по умолчанию, `dflash`, `eagle3`) и обязательный `names` — файлы модели, для
+  которой черновик сделан; `draft_for(model_file, kinds)` берёт такой раньше черновика семейства, если сборка знает
+  его вид (`_fetch_draft` передаёт `--spec-type` сборки), словарь сверяется так же. Сверка на Hugging Face
+  (2026-11-14): документация llama.cpp (`docs/speculative.md`) не называет ни одного готового GGUF — черновики
+  DFlash (z-lab) и EAGLE-3 (AngelSlim, RedHatAI, lmsys, nvidia) выложены исходными весами и конвертируются
+  `convert_hf_to_gguf.py --target-model-dir <исходная модель>` (берут её словарь и вложения); готовые GGUF для
+  моделей каталога есть только у частных авторов (Qwen3.6-27B, Qwen3.6-35B-A3B, Gemma 4 26B-A4B), среди них пробные,
+  под ответвления, и сделанные до смены формата DFlash (их надо переконвертировать). Поэтому в каталог пока ничего не
+  записано: черновик туда попадает только после живой проверки с b11899 (44.6, по слову человека). Тесты —
+  `test_a_draft_made_for_its_model_guesses_its_own_way`, `test_a_draft_made_for_the_model_comes_before_its_familys`,
+  `test_the_catalogs_drafts`.
 - 44.5 Окно: в «Настройка модели» — где эксперты (видеокарта / ОЗУ / ОЗУ + кэш) и какое угадывание вперёд выбрал замер;
   можно поменять руками. Файлы: `app/ui/model_setup.py`, `ModelsSheet.qml`.
 - 44.6 Весь pytest (`--ignore=tests/test_computer.py`) и живая проверка на настоящих моделях — по слову пользователя,

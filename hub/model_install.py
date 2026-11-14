@@ -62,6 +62,7 @@ from . import engines, hf, llama_config, store, visual
 from .db import utc_now
 from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
+from .tuning import server_path
 
 log = logging.getLogger("hub.install")
 
@@ -645,15 +646,20 @@ class Installer:
             self._answers_new = True
         return self._headers[repo, path]
 
-    async def draft_for(self, model_file: Path) -> dict[str, Any] | None:
+    async def draft_for(self, model_file: Path, kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None:
         """The catalog's draft model for this model (42.3): of its family, DRAFT_RATIO times smaller at least, its
         vocabulary the model's - read from the first bytes of its file on Hugging Face, before any download; with its
-        file as Hugging Face has it now (size, sha256, commit). None - none fits; a repository that does not answer
-        is passed over."""
+        file as Hugging Face has it now (size, sha256, commit). A draft made for this one model (44.4: DFlash,
+        EAGLE-3 - the catalog's `kind`, the model's files its `names`) comes first, when the build knows its kind
+        (`kinds`: llama-server's --spec-type; None - any). None - none fits; a repository that does not answer is
+        passed over."""
         info = await asyncio.to_thread(model_info, model_file)
         own: dict[str, Any] | None = None
-        for entry in drafts():
+        for entry in sorted(drafts(), key=lambda d: (d.get("kind") or "simple") == "simple"):
+            entry = {**entry, "kind": entry.get("kind") or "simple"}
             if info.get("architecture") not in entry["architectures"]:
+                continue
+            if kinds is not None and f"draft-{entry['kind']}" not in kinds:
                 continue
             if entry.get("names") and not re.search(entry["names"], model_file.name):  # a coder's draft for a coder
                 continue
@@ -715,10 +721,12 @@ class Installer:
         processor down - ngram is measured) or for a model not llama.cpp's."""
         if not self.space().get("vram_gib"):
             return
-        view = llama_config.model_view(await asyncio.to_thread(config_text), model_id)
+        text = await asyncio.to_thread(config_text)
+        view = llama_config.model_view(text, model_id)
         if view["engine"] != "llama.cpp" or not view.get("file"):
             return
-        entry = await self.draft_for(Path(view["file"]))
+        build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
+        entry = await self.draft_for(Path(view["file"]), build["spec_types"] if build else None)  # 44.4: its kinds
         if entry is None:
             return
         same = (entry["repo"], entry["file"])

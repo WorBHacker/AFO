@@ -1368,15 +1368,46 @@ def test_a_draft_model_is_paired_by_its_tokenizer(hub, tmp_path):
     assert hub.portal.call(installer.draft_for, coder)["id"] == "coder"
 
 
+def test_a_draft_made_for_the_model_comes_before_its_familys(hub, tmp_path):
+    """44.4: a DFlash or EAGLE-3 draft is made for one model (converted with its tokenizer and embeddings): the
+    catalog names it with that model's files (`names`) and its kind, and it is taken before a draft of the family -
+    when the build knows its kind (`kinds`: llama-server's --spec-type), else the family's. Its vocabulary is checked
+    the same way."""
+    model = tmp_path / "Main-Q4_K_M.gguf"
+    model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [
+        {"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+         "architectures": ["tiny"]},
+        {"id": "flash", "kind": "dflash", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Main DFlash",
+         "architectures": ["tiny"], "names": "(?i)^main-"},
+    ]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    found = hub.portal.call(installer.draft_for, model)
+    assert (found["id"], found["kind"]) == ("flash", "dflash")
+    assert hub.portal.call(installer.draft_for, model, ("none", "draft-simple", "draft-dflash"))["id"] == "flash"
+    older = hub.portal.call(installer.draft_for, model, ("none", "draft-simple"))  # a build without draft-dflash
+    assert (older["id"], older["kind"]) == ("small", "simple")
+    other = tmp_path / "Other-Q4_K_M.gguf"  # of the family, not the model the DFlash draft was made for
+    other.write_bytes(tiny_gguf(410_000, tokens=WORDS))
+    assert hub.portal.call(installer.draft_for, other)["id"] == "small"
+
+
 def test_the_catalogs_drafts():
     """42.3: each draft in the catalog names its repository, file and the families it is tried for; the file is a
-    8-bit one (a draft guesses: its own quality decides how often it is right)."""
+    8-bit one (a draft guesses: its own quality decides how often it is right). 44.4: a DFlash or EAGLE-3 draft
+    (`kind`) names the model it was made for (`names`)."""
     drafts = json.loads(mi.CATALOG.read_text(encoding="utf-8"))["drafts"]
     assert drafts and len({d["id"] for d in drafts}) == len(drafts)
     for draft in drafts:
         assert set(draft) >= {"id", "repo", "file", "name", "architectures"} and draft["architectures"]
         assert re.compile(draft.get("names") or "")  # a pattern of model file names, when it is given
-        assert hf.quant_of(draft["file"]) == "Q8_0"
+        assert draft.get("kind", "simple") in ("simple", "dflash", "eagle3")
+        if draft.get("kind", "simple") == "simple":
+            assert hf.quant_of(draft["file"]) == "Q8_0"
+        else:  # 44.4: made for one model - the catalog names its files; not quantized past 8 bits
+            assert draft.get("names") and hf.quant_of(draft["file"]) in ("Q8_0", "BF16", "F16")
     # the live check (42.7, 2026-11-13): Qwen3-VL's vocabulary is Qwen3's - Qwen3 0.6B guessed 89 % of a code edit
     # for Qwen3-VL-8B, and the catalog had not named its family
     qwen3 = next(d for d in drafts if d["id"] == "qwen3-0.6b")
