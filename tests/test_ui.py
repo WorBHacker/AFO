@@ -7276,8 +7276,8 @@ def test_the_studios_queue_and_gallery(qapp):
         view.cancelJob(second["id"])
         wait_until(lambda: not app.bg.busy and client.visual_calls[-1] == ("cancel", second["id"]))
 
-        app.on_event({"type": "visual.changed", "payload": {"job": {**first, "status": "done",
-                                                                    "file": f"2026-11/{first['id']}.png"}}})  # fmt: skip
+        done = {**first, "status": "done", "file": f"2026-11/{first['id']}.png"}
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
         wait_until(lambda: not app.bg.busy and view.recent)
         app.on_event({"type": "visual.changed", "payload": {"job": {**second, "status": "cancelled"}}})
         assert view.queue == [] and [r["id"] for r in view.recent] == [first["id"]]
