@@ -1477,6 +1477,37 @@ def test_the_search_by_build_language_licence_author_and_newest(hub):
         del SEARCH[-len(extra) :]
 
 
+def test_the_video_search_finds_models_by_text_and_by_picture(hub):
+    """48.1: «Видео» finds the models that film from words and those that film from a picture - Hugging Face's
+    `text-to-video` and `image-to-video` (its filters all have to match: two searches), each once, in the order asked:
+    Wan2.2-I2V-A14B, the most downloaded of all, has only the second tag."""
+
+    def found(repo: str, downloads: int, trending: int, day: int, tags: list[str]) -> dict:
+        made = f"2026-11-1{day}T00:00:00.000Z"
+        return {"id": repo, "downloads": downloads, "likes": 0, "trendingScore": trending, "createdAt": made,
+                "lastModified": made, "tags": ["gguf", *tags], "gguf": {}}  # fmt: skip
+
+    extra = [found("QuantStack/Wan2.2-I2V-A14B-GGUF", 9, 1, 2, ["image-to-video"]),
+             found("unsloth/LTX-2.3-GGUF", 7, 3, 1, ["text-to-video", "image-to-video"]),
+             found("someone/Wan-T2V-GGUF", 5, 7, 3, ["text-to-video"])]  # fmt: skip
+    by_picture, both, by_text = (m["id"] for m in extra)
+
+    def look(**params):
+        return [m["repo"] for m in hub.get("/v1/install/search", params={"task": "video", **params}).json()["models"]]
+
+    SEARCH.extend(extra)
+    try:
+        assert look() == [by_picture, both, by_text]
+        assert [s["filter"] for s in FakeHub.searches[-2:]] == [["gguf", "text-to-video"], ["gguf", "image-to-video"]]
+        assert look(sort="trending") == [by_text, both, by_picture]
+        assert look(sort="new") == [by_text, by_picture, both]
+        assert look(q="LTX") == [both]
+        filmed = hub.get("/v1/install/search", params={"task": "video"}).json()["models"]
+        assert all(m["drawn"] for m in filmed)  # sd-server's, not llama.cpp's
+    finally:
+        del SEARCH[-len(extra) :]
+
+
 def test_a_found_picture_model_is_known_by_its_family(hub):
     """47.2: a model that draws is one of AFO's picture sets by the base model its files are made of - Hugging Face's
     `base_model:quantized:` and `base_model:finetune:` tags - not only by the set's own repository: unsloth's

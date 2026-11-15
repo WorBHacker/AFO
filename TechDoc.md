@@ -1450,7 +1450,9 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 
 - 48.1 Поиск «Видео» — оба тега, `text-to-video` и `image-to-video`: два запроса, найденное слито по имени, порядок —
   как просили. Файлы: `hub/hf.py`, `hub/model_install.py`. Тест — подставной Hugging Face: модель только с `image-to-video`
-  находится.
+  находится. ✓ Сделано: `TASKS["video"]` — два тега; `hf.search` спрашивает по запросу на тег одновременно
+  (`asyncio.gather`), сливает по имени и сортирует по полю Hugging Face (`SORTS`; для слияния оно просится в `expand[]`).
+  `hub/model_install.py` менять не пришлось. Тест — `test_the_video_search_finds_models_by_text_and_by_picture`.
 - 48.2 Модель внутри репозитория. Вариант — по модели: папка и имя без квантования (dev и distilled, fl2va и ref2va);
   кодировщик в репозитории модели — не её вариант; пара HighNoise и LowNoise одного квантования — один вариант, файлы
   с ролями `diffusion-model` и `high-noise-diffusion-model`. У семейства — каким файлам репозитория оно соответствует.

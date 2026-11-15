@@ -10,6 +10,7 @@ header on another host). A gated model's licence is accepted by the person on th
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -41,9 +42,10 @@ SEGMENT_TRIES = 3  # a piece whose connection breaks is asked again this many ti
 RETRY_S = 1.0
 SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag", "gguf")
 INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "sha")
-# a search's «для чего» (32.5): Hugging Face's tags - many chat models have no pipeline tag, but all have this one
+# a search's «для чего» (32.5): Hugging Face's tags - many chat models have no pipeline tag, but all have this one; a
+# video (48.1) - by words or by a picture: either tag
 TASKS = {"chat": "conversational", "code": "code", "vision": "image-text-to-text", "image": "text-to-image",
-         "video": "text-to-video"}  # fmt: skip
+         "video": ("text-to-video", "image-to-video")}  # fmt: skip
 PICTURE_TASKS = ("image", "video")  # models that draw and film (41.2): sd-server's, not llama.cpp's
 PICTURE_PIPELINES = ("text-to-image", "image-to-image", "text-to-video", "image-to-video")
 BASES = ("quantized", "finetune")  # whose files a repository's are (47.2): not a LoRA's (`adapter`) or a merge's
@@ -228,23 +230,37 @@ async def search(http: httpx.AsyncClient, query: str = "", *, limit: int = 30, t
     `task` (TASKS), a parameter count from `fewest` to `most` (0: no bound) and `plain` (none whose refusals were
     taken out) narrow it (32.5), and (41.2) the `language` tag, the `author`, the `build` (BUILDS) and the
     `licence` (LICENCES). Hugging Face bounds the count it read - some it read from a projector - so the hub bounds
-    params_of again; the build and the licence are the hub's own: it asks for more than it shows when some may drop."""
+    params_of again; the build and the licence are the hub's own: it asks for more than it shows when some may drop.
+    A task of several tags (48.1: a video by words or by a picture) - Hugging Face's filters all have to match: a
+    search a tag, the models found once each, in the order asked."""
     narrowed = bool(plain or fewest or most or build or licence)
-    tags = [*([TASKS[task]] if task in TASKS else []), *([language] if language in LANGUAGES else [])]
-    params: dict[str, Any] = {"filter": ["gguf", *tags], "sort": SORTS.get(sort, "downloads"), "direction": "-1",
-                              "limit": str(limit * 2 if narrowed else limit),
-                              "expand[]": list(SEARCH_FIELDS)}  # fmt: skip
+    wanted = TASKS.get(task, ())
+    kinds = [wanted] if isinstance(wanted, str) else list(wanted)
+    order = SORTS.get(sort, "downloads")
+    params: dict[str, Any] = {"sort": order, "direction": "-1", "limit": str(limit * 2 if narrowed else limit),
+                              "expand[]": [*SEARCH_FIELDS, *([order] if len(kinds) > 1 and order not in SEARCH_FIELDS
+                                                             else [])]}  # fmt: skip
     if query:
         params["search"] = query
     if author in AUTHORS:
         params["author"] = author
     if fewest or most:
         params["num_parameters"] = f"min:{fewest}" + (f",max:{most}" if most else "")
-    found = await _get(http, "/api/models", tr("Поиск"), token, **params)
+    spoken = [language] if language in LANGUAGES else []
+    answers = await asyncio.gather(*(_get(http, "/api/models", tr("Поиск"), token,
+                                          **params, filter=["gguf", *([kind] if kind else []), *spoken])
+                                     for kind in kinds or [""]))  # fmt: skip
+    found: dict[str, dict[str, Any]] = {}
+    for answer in answers:
+        for info in answer:
+            if isinstance(info, dict):
+                found.setdefault(str(info.get("id") or info.get("modelId") or ""), info)
+    infos = list(found.values())
+    if len(answers) > 1:  # two answers, one order: by Hugging Face's own field, as it sorts
+        empty = "" if order in ("lastModified", "createdAt") else 0
+        infos.sort(key=lambda info: info.get(order) or empty, reverse=True)
     out = []
-    for info in found:
-        if not isinstance(info, dict):
-            continue
+    for info in infos:
         shown = summary(info)
         count = shown["params"]
         if (plain and shown["unrestricted"]) or (count and (count < fewest or (most and count > most))):
