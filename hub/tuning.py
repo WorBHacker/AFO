@@ -8,12 +8,13 @@ model that does not fit whole: where its experts go is measured by llama-server 
 The winner goes into the config - a copy of the old one beside it - and the model is loaded with its whole context to
 check it still fits; if not, the old config comes back.
 
-Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no local model has
-been asked for IDLE_S and the graphics card itself has been quiet as long - measured beside another program the
-numbers are its too (stage 28, live). The local requests are the card's count (48.9а, hub/gpu_card.py): a chat on a
-local model, the editor's completion, an outside client, the hub's checks - not a cloud chat. One that starts while it
-measures stops it, nothing is written, and the model waits its turn again. Measuring unloads the models and takes the
-graphics card for minutes. The person's «Подобрать» waits only for the local requests going on now."""
+Automatic tuning (after a model is installed or added, after llama.cpp is updated) is background work: it waits until
+the card has been still for QUIET_S (48.9б2, hub/gpu_card.py) - no local request (a chat on a local model, the
+editor's completion, an outside client, the hub's checks - not a cloud chat), nobody holding the card, its load low,
+no game on it; measured beside another program the numbers are its too (stage 28, live). Measuring unloads the models
+and holds the card for minutes (48.9б1); a senior that needs it - the Studio, a local request, an install's trial -
+stops it, nothing is written, and the model waits its turn again as background work. The person's «Подобрать» waits
+only until the card is still now."""
 
 from __future__ import annotations
 
@@ -41,7 +42,7 @@ from common.paths import data_paths
 
 from . import llama_config, model_settings
 from .db import utc_now
-from .gpu_card import TUNE, GpuCard
+from .gpu_card import TUNE, GpuCard, Quiet
 
 log = logging.getLogger("hub.tuning")
 
@@ -55,9 +56,7 @@ BATCH = 2048
 UNQUANTIZED = ("f16", "bf16", "f32")  # KV cache types that work with flash attention off
 FIT_MARGIN_MIB = 1024  # what llama.cpp's fitting leaves free on the graphics card
 CLOSE = 0.03
-IDLE_S = 60.0
 WAIT_S = 2.0  # as often as the status monitor samples the graphics card
-BUSY_PCT = 15  # the graphics card at this much load or more works for someone: tuning waits
 BENCH_TIMEOUT_S = 1800.0
 CHECK_TIMEOUT_S = 300.0
 WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write with the same context is not seen
@@ -445,29 +444,23 @@ class Tuner:
     def __init__(self, db, bus, card: GpuCard, *, url: str, space: Callable[[], dict[str, Any]],
                  run: Callable[[list[str], Callable[[], None]], list[str]] | None = None,
                  check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
-                 gpu: Callable[[], dict[str, Any] | None] | None = None,
-                 installing: Callable[[], bool] | None = None,
                  drafts: Callable[[str, Path], Awaitable[list[Path]]] | None = None):  # fmt: skip
         self._db = db
         self._drafts = drafts  # the draft models' files for a model (42.5: found and downloaded; 44.8: each one)
         self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None  # a result kept (42.5: drafts)
         self._bus = bus
-        self._card = card  # its count of local requests (48.9а): chats on the card, the editor's, outside clients'
+        self._card = card  # held while it measures (48.9б1); still for QUIET_S - background work goes (48.9б2)
         self._url = url.rstrip("/")
         self._space = space
         self._run = run or self._bench
         self._check = check or self._load
         self.results: dict[str, Any] = {}
         self.job: dict[str, Any] = {"status": "idle"}  # idle | waiting | measuring | checking
-        self._queue: list[tuple[str, bool]] = []
+        # (model, automatic - off with the switch, background - waits for the card still QUIET_S: automatic, stopped)
+        self._queue: list[tuple[str, bool, bool]] = []
         self._task: asyncio.Task | None = None
         self._process: subprocess.Popen | None = None
-        self._quiet_since = time.monotonic()
-        self._gpu = gpu or (lambda: None)  # the status monitor's latest look at the graphics card
-        # the installs have work (34.4): llama-bench runs past llama-swap - beside an install's trial, two models at
-        # once filled the memory
-        self._installing = installing or (lambda: False)
-        self._halt = threading.Event()  # measuring is to stop: a local request or an install began
+        self._halt = threading.Event()  # measuring is to stop: a senior needs the card (48.9б1)
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -494,8 +487,8 @@ class Tuner:
             process.kill()
 
     def request(self, model_id: str, auto: bool = False) -> dict[str, Any]:
-        if model_id not in {m for m, _ in self._queue} and self.job.get("model_id") != model_id:
-            self._queue.append((model_id, auto))
+        if model_id not in {m for m, _a, _b in self._queue} and self.job.get("model_id") != model_id:
+            self._queue.append((model_id, auto, auto))
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
         return self.state_job()
@@ -522,36 +515,32 @@ class Tuner:
         return self.state_job()
 
     def state_job(self) -> dict[str, Any]:
-        return {**self.job, "queue": [m for m, _ in self._queue]}
+        return {**self.job, "queue": [m for m, _a, _b in self._queue]}
 
     async def _work(self) -> None:
         while self._queue:
-            model_id, automatic = self._queue[0]
+            model_id, automatic, background = self._queue[0]
             if automatic and not await self._db.acall(auto):
                 self._queue.pop(0)
                 continue
-            await self._wait(automatic, model_id)
+            await self._wait(background, model_id)
             self._queue.pop(0)
             try:
                 if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
-                    self._queue.append((model_id, automatic))  # measured again once all is quiet
+                    self._queue.append((model_id, automatic, True))  # background now: once the card is still
             finally:
                 self._card.give(TUNE)  # taken in `_wait`
 
-    async def _wait(self, automatic: bool, model_id: str) -> None:
-        """Until no local model is asked (48.9а: a chat on the card, the editor's completion, an outside client, a
-        check - a cloud chat is not on the card), the installs have no work (34.4) and the graphics card is quiet (by
-        hand too, 42.4: a game or another program's work is in its numbers) - and, for automatic tuning, all this for
-        IDLE_S; then the card is tuning's (48.9б1: TUNE, from local requests too), taken in the same step - the Studio
-        or a trial holding it, it waits on; a senior stops it (`_stop`)."""
+    async def _wait(self, background: bool, model_id: str) -> None:
+        """Until the card is still (48.9б2: no local request - a cloud chat is not on the card -, nobody holding it,
+        its load low, no game on it; a download is not on it) - by the person's «Подобрать» at once, background work
+        (automatic, stopped by a senior) once it has been still for QUIET_S, counted from now; then the card is
+        tuning's (48.9б1: TUNE, from local requests too), taken in the same step; a senior stops it (`_stop`)."""
+        quiet = Quiet(self._card)
         while True:
-            now = time.monotonic()
-            if self._card.asked or self._installing() or self._card_busy():
-                self._quiet_since = now
-            elif not automatic or now - self._quiet_since >= IDLE_S:
-                if self._card.try_take(TUNE, chats=True, stop=self._stop):
-                    return
-                self._quiet_since = now  # the Studio or a trial holds the card: quiet once it is let go
+            ready = quiet.look() if background else self._card.still()
+            if ready and self._card.try_take(TUNE, chats=True, stop=self._stop):
+                return
             if self.job.get("status") != "waiting":
                 self.job = {"status": "waiting", "model_id": model_id}
                 await self._publish()
@@ -564,19 +553,12 @@ class Tuner:
         self._halt.set()
         self._kill()
 
-    def _card_busy(self) -> bool:
-        util = (self._gpu() or {}).get("util_pct")
-        return util is not None and util >= BUSY_PCT
-
     async def _watch(self) -> None:
-        """While measuring goes on (by hand too, 42.4): a local request (48.9а) or an install that starts stops it -
-        llama-bench or llama-server let go; it is measured again once all is quiet."""
-        while self.job.get("status") == "measuring":
-            if self._card.asked or self._installing():
-                self._halt.set()
-                self._kill()
-                return
+        """While it measures: a local request stops it as a senior does (48.9б1) - one that is not llama-swap's (a
+        local chat model of another program's) does not pass the card's gate; the gate's are stopped there at once."""
+        while not self._card.asked:
             await asyncio.sleep(WAIT_S)
+        self._stop()
 
     async def _publish(self, persist: bool = True) -> None:
         await self._bus.publish("tune.changed", {"job": self.state_job()}, persist=persist)

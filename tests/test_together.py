@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import claude_code, completion, engines, goals, tuning
+from hub import claude_code, completion, engines, goals, gpu_card, tuning
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.api_reference import event_types
@@ -654,6 +654,7 @@ def test_a_chat_that_begins_stops_tuning_by_hand_and_it_goes_on_after(hub, setup
     from tests.test_tuning import line, speeds, stand_ins
 
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)  # stopped, it is background work (48.9б2)
     speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, load_s=1.5)
     tuner = hub.app.state.tuner
 
@@ -936,13 +937,15 @@ def test_an_installs_trial_waits_for_the_editors_completion_and_not_for_a_cloud_
 
 def _measuring(tuner, monkeypatch):
     """Tuning's measuring of «fast» as a stand-in: the first time until something stops it - `halted`, what had reached
-    llama-swap by then -, then at once. Another model (an install's automatic tuning) - at once."""
-    seen: dict = {"halted": None, "runs": 0}
+    llama-swap by then -, then at once; `at` - when each began. Another model (an install's automatic tuning) - at
+    once."""
+    seen: dict = {"halted": None, "runs": 0, "at": []}
 
     async def measure(model_id):
         if model_id != "fast":
             return {"status": "same"}
         seen["runs"] += 1
+        seen["at"].append(time.monotonic())
         deadline = time.monotonic() + 15
         while seen["runs"] == 1 and not tuner._halt.is_set() and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
@@ -967,6 +970,7 @@ def test_a_local_request_stops_tuning_and_goes_once_it_lets_the_card_go(installs
     (TUNE), from local requests too; a request - senior to it - stops it at the gate and goes once the card is let
     go, with words meanwhile. Not a result: the model is measured again after the chat."""
     monkeypatch.setattr(tuning, "WAIT_S", 0.5)
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)  # stopped, it is background work (48.9б2)
     tuner = installs.app.state.tuner
     seen = _measuring(tuner, monkeypatch)
     installs.portal.call(tuner.request, "fast")
@@ -993,7 +997,7 @@ def test_the_studio_stops_tuning_and_tuning_waits_for_the_studio(installs, monke
     first = installs.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
     assert wait_for(installs, first["id"], "done", "failed")["status"] == "done"
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
-    monkeypatch.setattr(tuning, "IDLE_S", 0.1)  # the install's automatic tuning of «draw» goes by
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.1)  # the install's automatic tuning of «draw» goes by
     tuner = installs.app.state.tuner
     seen = _measuring(tuner, monkeypatch)
 
@@ -1016,6 +1020,56 @@ def test_the_studio_stops_tuning_and_tuning_waits_for_the_studio(installs, monke
     assert not any(b.get("prompt") == "a cat" for b in seen["halted"]), "the Studio drew beside llama-bench"
     wait(lambda: drawn(cat) == "done", timeout=10)
     wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)  # measured again after it
+
+
+def test_tuning_a_chat_stopped_goes_on_after_quiet_not_at_once(installs, monkeypatch):  # noqa: F811
+    """48.9б2: «Подобрать» stopped by a chat went back at once when the answer ended - unloading the chat's model
+    before the person's next message, which loaded it again: models to and fro on each message (the user's word).
+    Stopped, it is background work: it goes on once the card has been still for QUIET_S."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 1.5)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    tuner = installs.app.state.tuner
+    seen = _measuring(tuner, monkeypatch)
+    installs.portal.call(tuner.request, "fast")
+    wait(lambda: seen["runs"] == 1, timeout=10)  # by hand: at once
+    conv = installs.post("/v1/conversations", json={}).json()["id"]
+    body = {"content": "привет", "model_id": "llama-swap/fast"}
+    assert installs.post(f"/v1/conversations/{conv}/messages", json=body).status_code == 202
+    wait(lambda: _answered(installs, conv) and not installs.app.state.card.asked, timeout=20)
+    ended = time.monotonic()
+    wait(lambda: seen["runs"] == 2, timeout=10)
+    assert seen["at"][1] - ended >= 1.0, "stopped tuning went back at once after the chat"
+
+
+def test_background_tuning_waits_for_a_game_and_not_for_a_download(installs, monkeypatch):  # noqa: F811
+    """48.9б2: the quiet tuning waited for was the card's load and the installer's work. A game in its menu or paused
+    loads the card little - tuning measured beside it; a download does not touch the card - tuning waited for it all
+    the same. A game on the card (43.6 knows them) keeps background work waiting, a download does not."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    tuner, installer, state = installs.app.state.tuner, installs.app.state.installer, installs.app.state
+    measured = []
+
+    async def tune(model_id, *, automatic=False):  # what it measures is not this test's
+        measured.append((model_id, installer.busy()))
+        return {"status": "same"}
+
+    monkeypatch.setattr(tuner, "tune", tune)
+    state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "util_pct": 3}}
+    game = {"exe": r"C:\Games\Quest\quest.exe", "name": "quest.exe", "mib": 900.0, "where": "kept", "why": "game"}
+    state.gpu.state = {**state.gpu.state, "programs": [game]}
+    installs.portal.call(tuner.request, "fast", True)
+    time.sleep(1.0)
+    assert not measured and tuner.job["status"] == "waiting", "tuning measured beside a game"
+    FakeHub.slow = 0.7  # a download goes on - seconds
+    spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+    job = installs.post("/v1/install", json=spec).json()["job"]
+    wait_for(installs, job["id"], "downloading")
+    state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
+    wait(lambda: measured, timeout=10)
+    assert measured[0] == ("fast", True), "tuning waited for a download"
+    FakeHub.slow = 0.0
+    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
 
 
 # --- a found model that draws, installed beside its family's set (47.6) ---

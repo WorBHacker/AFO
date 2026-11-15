@@ -17,9 +17,9 @@ import psutil
 import pytest
 
 from common.llama_memory import estimate
+from hub import gpu_card, model_settings, tuning
 from hub import llama_config as lc
-from hub import model_settings, tuning
-from hub.gpu_card import GpuCard
+from hub.gpu_card import TRIAL, GpuCard
 from tests.test_llama_config import CONFIG, gguf
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -238,7 +238,7 @@ def test_the_config_already_fastest_is_left_as_it_is(hub, setup):  # noqa: F811
 
 
 def test_automatic_tuning_waits_until_no_chat_uses_a_model(hub, setup, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(tuning, "IDLE_S", 0.3)
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
     found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
     found._card.asked = {"chat": 1}
@@ -252,7 +252,7 @@ def test_automatic_tuning_waits_until_no_chat_uses_a_model(hub, setup, monkeypat
         while "big" not in found.results:
             assert time.monotonic() - started < 10
             await asyncio.sleep(0.05)
-        assert time.monotonic() - started >= 0.25  # quiet for IDLE_S first
+        assert time.monotonic() - started >= 0.25  # still for QUIET_S first
 
     asyncio.run(scenario())
     assert found.results["big"]["status"] == "better"
@@ -261,12 +261,12 @@ def test_automatic_tuning_waits_until_no_chat_uses_a_model(hub, setup, monkeypat
 def test_automatic_tuning_waits_while_the_graphics_card_works(hub, setup, monkeypatch):  # noqa: F811
     """Live (stage 28): after llama.cpp's update, tuning measured while the hub's «Проверить» and other programs
     used the card - they answered at 11 tok/s instead of 89, and the numbers it wrote the config by were theirs too.
-    Not only chats keep it waiting: the card itself must have been quiet for IDLE_S."""
-    monkeypatch.setattr(tuning, "IDLE_S", 0.3)
+    Not only chats keep it waiting: the card itself must have been still for QUIET_S."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
     found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
     card = {"util_pct": 90}
-    found._gpu = lambda: card
+    found._card.load = lambda: card["util_pct"]
 
     async def scenario():
         found.request("big", auto=True)
@@ -286,7 +286,7 @@ def test_automatic_tuning_waits_while_the_graphics_card_works(hub, setup, monkey
 def test_a_chat_stops_automatic_measuring_and_it_is_measured_again(hub, setup, monkeypatch):  # noqa: F811
     """A chat that starts while automatic tuning measures: the measuring stops (llama-bench let go), nothing is
     written by its numbers, and the model waits its turn again - measured once all is quiet."""
-    monkeypatch.setattr(tuning, "IDLE_S", 0.2)
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
     before = setup.read_text(encoding="utf-8")
     runs = []
@@ -368,21 +368,22 @@ def test_what_an_install_added_while_it_measured_stays(hub, setup):  # noqa: F81
     assert setup.read_text(encoding="utf-8") == lc.add_model(before, "late", ADDED.replace("added", "late"))
 
 
-def test_tuning_waits_while_installs_have_work_and_gives_way_to_one(hub, setup, monkeypatch):  # noqa: F811
+def test_tuning_waits_for_an_installs_trial_and_gives_way_to_one(hub, setup, monkeypatch):  # noqa: F811
     """34.4 (2026-11-08): llama-bench runs past llama-swap - it measured one model while an install's trial loaded the
-    next one into llama-swap, and the memory filled up. Tuning, by hand too, waits while the installs have work;
-    automatic measuring gives way to an install that begins, as it does to a chat, and is measured again later."""
-    monkeypatch.setattr(tuning, "IDLE_S", 0.2)
+    next one into llama-swap, and the memory filled up. Tuning, by hand too, waits while a trial holds the card; a
+    trial that begins stops measuring (48.9б1: a trial before tuning), and it is measured again once the card is
+    still. A download is not on the card (48.9б2): tuning does not wait for it."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
-    installing = [True]
     found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
-    found._installing = lambda: installing[0]
+    card = found._card
 
     async def by_hand():
+        assert card.try_take(TRIAL)  # an install's trial holds the card
         found.request("big")
         await asyncio.sleep(0.4)
         assert found.job["status"] == "waiting" and "big" not in found.results
-        installing[0] = False
+        card.give(TRIAL)
         started = time.monotonic()
         while "big" not in found.results:
             assert time.monotonic() - started < 10
@@ -395,8 +396,7 @@ def test_tuning_waits_while_installs_have_work_and_gives_way_to_one(hub, setup, 
 
     def run(command, progress):
         runs.append(command)
-        if len(runs) == 1:  # the first: until an install begins and it is stopped
-            installing[0] = True
+        if len(runs) == 1:  # the first: until a trial stops it
             deadline = time.monotonic() + 10
             while not found._halt.is_set():
                 assert time.monotonic() < deadline, "the measuring did not give way"
@@ -406,17 +406,20 @@ def test_tuning_waits_while_installs_have_work_and_gives_way_to_one(hub, setup, 
                 line(True, "q8_0", 2048, 16, pp=900), line(True, "q8_0", 2048, 16, tg=40)]  # fmt: skip
 
     found = tuner(hub, measured={})
-    found._installing, found._run = (lambda: installing[0]), run
-    installing[0] = False
+    found._run, card = run, found._card
 
     async def automatic():
         found.request("big", auto=True)
         started = time.monotonic()
-        while found.job.get("status") != "waiting" or not runs:
+        while not runs:
             assert time.monotonic() - started < 10, found.job
             await asyncio.sleep(0.02)
-        assert "big" not in found.results  # nothing by its numbers
-        installing[0] = False
+        while not card.try_take(TRIAL):  # the trial stops it, and takes the card once it is let go
+            assert time.monotonic() - started < 10, found.job
+            await asyncio.sleep(0.02)
+        await asyncio.sleep(0.4)
+        assert found.job["status"] == "waiting" and "big" not in found.results  # nothing by its numbers
+        card.give(TRIAL)
         while "big" not in found.results:
             assert time.monotonic() - started < 10
             await asyncio.sleep(0.05)
@@ -689,12 +692,13 @@ def test_a_draft_llama_cpp_does_not_take_is_not_measured(hub, setup, spec_server
 def test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat(hub, setup, spec_server, monkeypatch):  # noqa: F811
     """42.4: «Подобрать» by hand measured beside a game or another program's work (their numbers in it), and a chat
     that began while llama-server measured put a second model on the card. By hand too, it waits for the card to be
-    quiet, and a chat stops it - llama-server let go - and it is measured again after."""
+    quiet, and a chat stops it - llama-server let go - and it is measured again after, once the card is still."""
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)
     speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, load_s=1.5)
     found = tuner(hub, measured={"q8_0": [(512, 900, 40)]})
     card = {"util_pct": 90}
-    found._gpu = lambda: card
+    found._card.load = lambda: card["util_pct"]
 
     async def scenario():
         found.request("big")

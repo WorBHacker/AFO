@@ -213,8 +213,6 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
         # it holds the card while it measures (48.9б1): it waits for the Studio and a trial, a senior stops it
         app.state.tuner = Tuner(db, bus, app.state.card, url=settings.llama_swap_url, space=app.state.installer.space,
-                                gpu=lambda: (app.state.status.latest or {}).get("gpu"),
-                                installing=app.state.installer.busy,
                                 drafts=app.state.installer.draft_paths)  # fmt: skip
         # guessing ahead (42.5): after an install its draft model comes by itself, then the tuning measures with it;
         # a draft that gave nothing goes once no model uses it
@@ -224,6 +222,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
+        # the card is still (48.9б2): its load low - the status monitor's look - and no game on it, even at low load
+        app.state.card.load = lambda: ((app.state.status.latest or {}).get("gpu") or {}).get("util_pct")
+        app.state.card.game = lambda: any(p.get("why") == "game" and p.get("where") != "moved"
+                                          for p in app.state.gpu.state.get("programs") or [])  # fmt: skip
         # one at a time on the graphics card (34.4): a trial waits for the local requests (the card's count, 48.9а) and
         # while the Studio holds the card (47.1), stops tuning (48.9б1), then holds it to its end (48's review)
         app.state.installer.card = app.state.card

@@ -1326,7 +1326,7 @@ def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     trial loaded the next into llama-swap - two models at once filled the memory. The install's trial stops tuning
     (48.9б1: a trial before tuning) and waits, its files down, until tuning lets the card go - «ждёт пробного запуска»
     - and, before its trial, while a chat answers (its model would be swapped out in the middle of an answer)."""
-    installer, tuner, card = hub.app.state.installer, hub.app.state.tuner, hub.app.state.card
+    installer, card = hub.app.state.installer, hub.app.state.card
     stopped = []
     assert hub.portal.call(lambda: card.try_take(TUNE, chats=True, stop=lambda: stopped.append(1)))  # tuning measures
     asked = len(FakeLlamaSwap.asked)
@@ -1337,7 +1337,6 @@ def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked  # nothing loaded meanwhile
     assert "tiny-q4_k_m" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
     assert stopped  # the trial asked tuning to stop
-    assert tuner._installing()  # and tuning, for its part, waits while the installs have work
     installer.card.asked["chat"] = 1  # a local chat answers
     hub.portal.call(card.give, TUNE)  # tuning has let go
     time.sleep(0.4)
