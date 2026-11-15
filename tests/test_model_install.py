@@ -1513,7 +1513,10 @@ def test_the_video_search_finds_models_by_text_and_by_picture(hub):
     SEARCH.extend(extra)
     try:
         assert look() == [by_picture, both, by_text]
-        assert [s["filter"] for s in FakeHub.searches[-2:]] == [["gguf", "text-to-video"], ["gguf", "image-to-video"]]
+        assert sorted(s["filter"] for s in FakeHub.searches[-2:]) == [
+            ["gguf", "image-to-video"],
+            ["gguf", "text-to-video"],
+        ]  # at once: any order
         assert look(sort="trending") == [by_text, both, by_picture]
         assert look(sort="new") == [by_text, by_picture, both]
         assert look(q="LTX") == [both]

@@ -1016,7 +1016,6 @@ class Visual:
         if model is None:
             await self._set(job_id, status="failed", error=tr("модель видео {model} удалена", model=model_id))
             return
-        await self._set(job_id, status="running", error="")
         upstream = f"{self._url}/upstream/{model_id}/sdcpp/v1"
         params = {"sample_method": model["sampler"], "sample_steps": model["steps"],
                   "guidance": {"txt_cfg": model["cfg"]},
@@ -1024,12 +1023,15 @@ class Visual:
         body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
                 "output_format": "webp", "sample_params": params}  # fmt: skip
-        for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
-            if kept and (self.media / kept).is_file():  # the engine crops and resizes it to the video's size
-                body[key] = base64.b64encode(await asyncio.to_thread((self.media / kept).read_bytes)).decode()
         start, error, result = time.monotonic(), "", None
-        self._free.clear()  # the card is the video's: local chat models wait
+        # the card is the video's before the job says «running» (stage 48's full run: one seeing it running found the
+        # card free - the status's write awaits the database): local chat models wait
+        self._free.clear()
         try:
+            await self._set(job_id, status="running", error="")
+            for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
+                if kept and (self.media / kept).is_file():  # the engine crops and resizes it to the video's size
+                    body[key] = base64.b64encode(await asyncio.to_thread((self.media / kept).read_bytes)).decode()
             async with httpx.AsyncClient(timeout=60.0) as http:
                 said = await http.post(f"{upstream}/vid_gen", json=body, timeout=600.0)  # the model loads first
                 if said.status_code >= 300:
@@ -1055,6 +1057,8 @@ class Visual:
                         error = error or tr("видео не готово и за час")
         except (httpx.HTTPError, ValueError) as exc:
             error = _no_answer(exc)
+        except OSError as exc:  # a frame kept beside the job, not read
+            error = tr("кадр задания не прочитан: {error}", error=exc.strerror or exc)
         finally:
             self._free.set()
         seconds = round(time.monotonic() - start, 1)

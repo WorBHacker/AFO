@@ -2250,6 +2250,7 @@
  "исчерпан": "used up",
  "июля": "July",
  "июня": "June",
+ "кадр задания не прочитан: {error}": "the job's frame was not read: {error}",
  "каждые {hours} ч": "every {hours} h",
  "каждый день в {at}": "every day at {at}",
  "как были": "as they were",
