@@ -2194,6 +2194,7 @@
  "ждёт пробного запуска": "waiting for its trial run",
  "ждёт программу для локальных моделей: она скачивается": "waits for the program for local models: it is downloading",
  "ждёт события": "waiting for an event",
+ "ждёт: на видеокарте игра": "waiting: a game is on the graphics card",
  "журналы терминалов": "terminal logs",
  "жёсткий диск (медленно)": "hard disk (slow)",
  "за {days} дней не было": "none in {days} days",

@@ -40,7 +40,7 @@ from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Cloudy, Gated, chat_with_project, set_goal, settled
 from tests.test_llama_config import FakeLlamaSwap
-from tests.test_model_install import CLIP, DRAW, MACHINE, FakeHub, fake_hub, wait_for  # noqa: F401 - the fake_hub fixture
+from tests.test_model_install import CLIP, DRAW, MACHINE, FakeHub, fake_hub, tiny_gguf, wait_for  # noqa: F401 - the fake_hub fixture
 from tests.test_model_install import hub as installs  # noqa: F401 - the installer's hub, as a fixture of this name
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
@@ -1217,17 +1217,46 @@ def test_a_game_that_takes_the_card_during_a_trial_leaves_no_verdict(installs, m
         answering.set()
     waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=20)
     assert waiting["status"] == "trialwait", ("a verdict beside a game", waiting["status"], waiting["error"])
-    assert not waiting["error"] and not (waiting.get("trial") or {}).get("tries")  # nothing of it written
+    assert waiting["error"] in ("", "ждёт: на видеокарте игра")  # not failed: waiting, and why (48.9б5)
+    assert not (waiting.get("trial") or {}).get("tries")  # nothing of it written
     text = lc.config_path().read_text(encoding="utf-8")
     assert "tiny-q4_k_m" in lc.model_blocks(text) and lc.model_view(text, "tiny-q4_k_m")["context"] == planned
     FakeLlamaSwap.fail = False
     time.sleep(1.2)
-    assert wait_for(installs, job["id"], "trialwait"), "tried again beside the game"
+    again = wait_for(installs, job["id"], "trialwait")  # not tried again beside the game
+    assert again["error"] == "ждёт: на видеокарте игра", again["error"]
     state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
     done = wait_for(installs, job["id"], "done", "failed", timeout=20)
     assert done["status"] == "done", done["error"]
     tries = done["trial"]["tries"]
     assert len(tries) == 1 and tries[0]["ok"] and tries[0]["context"] == planned  # not smaller
+
+
+def test_a_trial_by_the_button_with_a_game_on_the_card_loads_nothing(installs, monkeypatch):  # noqa: F811
+    """48.9б5: «Пробный запуск» by the person's button did not look at the quiet - with a game on the card the model
+    was loaded beside it and asked its question, and the answer thrown away after (48.9б4): the game hindered, the
+    work for nothing. The trial looks for a game before the model loads: with one, nothing is loaded, the row says
+    why, and the trial waits for the card still - then it goes."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.5)
+    state = installs.app.state
+    model = installs.tmp / "E" / "LLM" / "Mine-Q8_0.gguf"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(tiny_gguf(340_000))
+    job = installs.post("/v1/install/local", json={"path": str(model), "name": "Mine-Q8_0"}).json()["job"]
+    added = wait_for(installs, job["id"], "added", "failed")
+    assert added["status"] == "added", added["error"]
+    game = {"exe": r"E:\Games\Quest\quest.exe", "name": "quest.exe", "mib": 900.0, "where": "kept", "why": "game",
+            "playing": True}  # fmt: skip
+    state.gpu.state = {**state.gpu.state, "programs": [game]}  # a game on the card - in its menu
+    assert installs.post(f"/v1/install/jobs/{job['id']}/trial").status_code == 200
+    time.sleep(1.0)
+    asked = [b for b in FakeLlamaSwap.asked if b.get("model") == added["model_id"]]
+    assert not asked, "the model was loaded beside the game"
+    waiting = wait_for(installs, job["id"], "trialwait")
+    assert waiting["error"] == "ждёт: на видеокарте игра", waiting["error"]
+    state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20)
+    assert done["status"] == "done" and not done["error"], done["error"]
 
 
 def test_unload_stops_the_studio_as_by_x_and_its_queue_waits_for_the_person(installs, monkeypatch):  # noqa: F811

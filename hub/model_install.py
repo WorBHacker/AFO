@@ -106,6 +106,7 @@ RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection 
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
+GAME_WORDS = N_("ждёт: на видеокарте игра")  # a trial waiting for the quiet while a game is on the card (48.9б5)
 ENGINE_WAIT_S = 2.0  # how often a model downloaded before the engine looks for it again (39.3)
 ENGINE_WAIT = N_("ждёт программу для локальных моделей: она скачивается")
 # a draft model guesses ahead for a model at least this many times its size (42.3): a larger one guesses too slowly to
@@ -1747,13 +1748,19 @@ class Installer:
         not held, a chat waits only while it is. A chat model's trial does not hold it from chats - its own request
         goes through that gate. Meanwhile «ждёт пробного запуска». A senior stops the trial (48.9в, `_stop_trial`);
         stopped, it is background work (`background`): it waits for the card still for QUIET_S (48.9б2) - not as soon
-        as the chat ends, or the models go to and fro on each message."""
+        as the chat ends, or the models go to and fro on each message. A game on the card (48.9б5): nothing is loaded
+        beside it - the trial, by the person's button too, waits for the card still, and says why."""
         quiet = Quiet(self.card) if background else None
-        while not ((quiet.look() if quiet is not None else not self.card.asked)
-                   and self.card.try_take(TRIAL, chats=chats, stop=self._stop_trial)):  # fmt: skip
+        while True:
+            if quiet is None and self.card.game():  # 48.9б5: its answer would not be taken (48.9б4) - not loaded
+                quiet = Quiet(self.card)
+            if (quiet.look() if quiet is not None else not self.card.asked) and self.card.try_take(
+                    TRIAL, chats=chats, stop=self._stop_trial):  # fmt: skip
+                break
             if cancel.is_set():
                 raise hf.Cancelled()
-            why = tr(GIVEN_WORDS) if self.card.given else ""  # 48.9д: waiting for the person's card - and why
+            # waiting for the person's card (48.9д), for a game to end (48.9б5) - and why
+            why = tr(GIVEN_WORDS) if self.card.given else tr(GAME_WORDS) if self.card.game() else ""
             found = await self._get(job_id)
             if found["status"] != "trialwait" or found["error"] != why:
                 await self._set(job_id, status="trialwait", error=why)
@@ -1762,8 +1769,8 @@ class Installer:
         self._quiet.discard(job_id)
         self._played = Played(self.card)  # 48.9б4: a game on the card from now on - no verdict; looked at beside it
         self._seeing = asyncio.create_task(self._played.watch(CARD_WAIT_S))
-        if (await self._get(job_id))["error"] == tr(GIVEN_WORDS):  # the card is the trial's: no longer waiting
-            await self._set(job_id, error="")
+        if (await self._get(job_id))["error"] in (tr(GIVEN_WORDS), tr(GAME_WORDS)):  # the card is the trial's: no
+            await self._set(job_id, error="")  # longer waiting
 
     def _stop_trial(self) -> None:
         """A senior needs the card (48.9в: a chat, the Studio, any local request): the trial going on stops - its
