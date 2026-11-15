@@ -717,12 +717,13 @@ def test_an_installs_trial_picture_waits_while_the_hub_draws(installs, monkeypat
     assert asked.index(True) < asked.index("best")  # the picture first, then the trial
 
 
-def test_an_installs_trial_video_holds_the_card_from_the_studio(installs, monkeypatch):  # noqa: F811
-    """Stage 48's review, finding 2: an install's trial waited for the card once, before it began (`_card`) - a
-    Studio's video asked for while the trial's config was written, or while it filmed, went at once and loaded its
-    model into llama-swap in place of the trial's («пробное видео не вышло», the block withdrawn). The card is the
-    trial's from the checks it waits on to its end, taken in the same step as they are looked at; the Studio's video
-    waits «в очереди», then films."""
+def test_the_studio_stops_an_installs_trial_video_and_it_films_after_quiet(installs, monkeypatch):  # noqa: F811
+    """Stage 48's review, finding 2: a Studio's video asked for while an install's trial wrote its config went at once
+    and loaded its model into llama-swap in place of the trial's («пробное видео не вышло», the block withdrawn). The
+    trial holds the card from its checks on: the config is written whole while the Studio's video waits «в очереди».
+    48.9в: then the Studio - the person's, before a trial - stops the trial instead of waiting for it to end: back to
+    «ждёт пробного запуска», nothing failed; the Studio films, and the trial once the card has been still."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.5)
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
     catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
     catalog["pictures"] = [DRAW, CLIP, {**CLIP, "id": "clip2", "name": "Clip two"}]
@@ -754,30 +755,30 @@ def test_an_installs_trial_video_holds_the_card_from_the_studio(installs, monkey
         time.sleep(0.5)
         assert studio(video["id"]) == "queued", "the Studio's video went while the trial's config was written"
         writing.set()
-        wait(lambda: [v["path"] for v in FakeLlamaSwap.video] == ["/upstream/clip2/sdcpp/v1/vid_gen"], timeout=20)
-        time.sleep(0.5)
-        assert studio(video["id"]) == "queued", "the Studio's video went while the trial filmed"
-        assert len(FakeLlamaSwap.video) == 1
+        waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=20)
+        assert waiting["status"] == "trialwait" and not waiting["error"], "the trial went on before the Studio's video"
+        wait(lambda: [v["path"] for v in FakeLlamaSwap.video] == ["/upstream/clip/sdcpp/v1/vid_gen"], timeout=20)
     finally:
         writing.set()
         filming.set()
-    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
     wait(lambda: studio(video["id"]) in ("done", "failed"), timeout=20)
     assert studio(video["id"]) == "done"
+    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
     paths = [v["path"] for v in FakeLlamaSwap.video]
-    assert paths == ["/upstream/clip2/sdcpp/v1/vid_gen", "/upstream/clip/sdcpp/v1/vid_gen"]  # the trial, the Studio
+    assert paths == ["/upstream/clip/sdcpp/v1/vid_gen", "/upstream/clip2/sdcpp/v1/vid_gen"]  # the Studio, the trial
 
 
 def _chats(asked):
     return [b for b in asked if "messages" in b]
 
 
-def test_a_chat_waits_for_an_installs_trial_video_and_the_trial_for_a_chat_never_both(installs, monkeypatch):  # noqa: F811
+def test_a_chat_stops_an_installs_trial_video_and_the_trial_waits_for_a_chat(installs, monkeypatch):  # noqa: F811
     """Stage 48's review, finding 2б: a local chat's answer during a trial video went to llama-swap at once and swapped
-    the trial's model out. The trial holds the card from local chats too - a chat waits «на видеокарте пробный запуск
-    новой модели», then answers. And never the two waiting for each other: the trial waits for a chat answering only
-    while it does not hold the card - here the chat's answer first, the trial after it, the next chat after the
-    trial."""
+    the trial's model out. The trial waits for a chat answering. 48.9в: a chat that begins while the trial films - the
+    person's, before a trial - stops it: the engine's job cancelled, «ждёт пробного запуска», nothing failed; the chat
+    waits only for that, with words, and answers before the trial films again - once the card has been still. And never
+    the two waiting for each other."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 1.0)
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
     catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
     mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, CLIP]}), encoding="utf-8")
@@ -815,16 +816,17 @@ def test_a_chat_waits_for_an_installs_trial_video_and_the_trial_for_a_chat_never
         wait(lambda: answered(first), timeout=20)
         wait(lambda: FakeLlamaSwap.video, timeout=20)  # the trial films
         second = say("ещё раз")
-        time.sleep(0.6)
-        assert len(_chats(FakeLlamaSwap.asked)) == 1, "a chat's answer went to llama-swap in the middle of the trial"
+        waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=10)
+        assert waiting["status"] == "trialwait" and not waiting["error"], "the chat waited for the whole trial"
+        wait(lambda: answered(second), timeout=20)  # before the trial films again
+        assert len(FakeLlamaSwap.video) == 1 and len(_chats(FakeLlamaSwap.asked)) == 2
         loading = [p["text"] for k, p in seen if k == "chat.loading" and p["conversation_id"] == second]
         assert loading and "пробный запуск" in loading[0]
     finally:
         answering.set()
         filming.set()
     assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
-    wait(lambda: answered(second), timeout=20)
-    assert len(_chats(FakeLlamaSwap.asked)) == 2
+    assert len(FakeLlamaSwap.video) == 2  # filmed again
 
 
 def test_a_chat_models_trial_does_not_wait_for_itself(installs):  # noqa: F811
@@ -837,6 +839,35 @@ def test_a_chat_models_trial_does_not_wait_for_itself(installs):  # noqa: F811
     assert done["status"] == "done", done["error"]
     assert time.monotonic() - started < 20.0 and done["trial"]["tries"][-1]["ok"]  # its request through the gate
     assert not installs.app.state.visual.holding and not installs.app.state.card.holder
+
+
+def test_a_chat_stops_a_chat_models_trial_and_it_waits_for_quiet(installs, monkeypatch):  # noqa: F811
+    """48.9в (variant А, the user's word): a chat to another local model during a chat model's trial waited in
+    llama-swap's queue for the trial's answer - or the trial for the chat's: its time swollen, past 300 s «не
+    запустилась» and smaller settings for a sound model. By seniority the chat stops the trial: its question let go,
+    back to «ждёт пробного запуска», no try written, its settings as they were. It goes on once the card has been
+    still - not as soon as the chat ends, or the models go to and fro on each message."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 1.5)
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+        job = installs.post("/v1/install", json=spec).json()["job"]
+        wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
+        conv = installs.post("/v1/conversations", json={}).json()["id"]
+        body = {"content": "привет", "model_id": "llama-swap/fast"}
+        assert installs.post(f"/v1/conversations/{conv}/messages", json=body).status_code == 202
+        waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=10)
+        assert waiting["status"] == "trialwait" and not waiting["error"], "the trial went on under the chat"
+        assert not (waiting.get("trial") or {}).get("tries")  # nothing of it written
+    finally:
+        answering.set()
+    wait(lambda: _answered(installs, conv) and not installs.app.state.card.asked, timeout=20)
+    time.sleep(0.7)
+    assert wait_for(installs, job["id"], "trialwait"), "the trial came back as soon as the chat ended"
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20)
+    assert done["status"] == "done", done["error"]
+    tries = done["trial"]["tries"]
+    assert len(tries) == 1 and tries[0]["ok"] and tries[0]["context"] == waiting["plan"]["context"]  # not smaller
 
 
 # --- one owner of the graphics card (48.9) ---

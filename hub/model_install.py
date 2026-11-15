@@ -61,7 +61,7 @@ from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
 from .db import utc_now
-from .gpu_card import TRIAL, GpuCard, named
+from .gpu_card import TRIAL, GpuCard, Quiet, named
 from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
 from .tuning import server_path
@@ -131,6 +131,10 @@ class InstallError(Exception):
     def __init__(self, message: str, status: int = 409):
         super().__init__(message)
         self.status = status
+
+
+class _Deferred(Exception):
+    """A senior needed the card (48.9в): the trial going on was stopped - not failed, nothing of it kept."""
 
 
 def curated() -> list[dict[str, Any]]:
@@ -503,6 +507,11 @@ class Installer:
         # stops tuning (48.9б1: llama-bench runs past llama-swap - two models at once filled the memory); then the card
         # is the trial's to its end; set by the server (34.4, 47.1, stage 48's review)
         self.card = GpuCard()
+        # 48.9в: a senior that needs the card stops the trial going on - its question let go (`_asking`); the install
+        # is «ждёт пробного запуска» again and waits as background work, for the card still (`_quiet`)
+        self._deferring = False
+        self._asking: asyncio.Future | None = None
+        self._quiet: set[str] = set()
         # a picture install choosing its files and a deletion counting who else names a file (47.3): one at a time
         self._files = asyncio.Lock()
         # the engine on its way (39.3: the scanner, the wizard): an install waits for it, not a 409; set by the server
@@ -1661,9 +1670,11 @@ class Installer:
         cancel = self._cancel[job_id] = threading.Event()
         self._wanted.pop(job_id, None)
         try:
-            if found["status"] == "trialwait":  # «Пробный запуск» of a model added (34.5): in the config already
-                await self._card(job_id, cancel)
-                await self._try(await self._get(job_id), True)
+            if found["status"] == "trialwait":  # «Пробный запуск» of a model added (34.5), a trial a senior stopped
+                pictures = found["plan"].get("engine") == "sd"  # (48.9в): in the config already
+                await self._card(job_id, cancel, chats=pictures, background=job_id in self._quiet)
+                found = await self._get(job_id)
+                await (self._try_picture(found, True) if pictures else self._try(found, True))
                 return
             await self._download(found, cancel)
             await self._engine_wait(job_id, cancel)
@@ -1687,6 +1698,11 @@ class Installer:
                 await self._set(job_id, status="cancelled", error="")
             else:  # paused - or, a trial stopped before it began (34.5), added again
                 await self._set(job_id, status=wanted, error="")
+        except _Deferred:  # 48.9в: the card is a senior's - the trial waits for it still, nothing failed
+            log.info("install %s: its trial stopped for a senior on the card; tried again once the card is still",
+                     job_id)  # fmt: skip
+            self._quiet.add(job_id)
+            await self._set(job_id, status="trialwait", error="")
         except (hf.HubError, InstallError, llama_config.ConfigError, GGUFError, OSError) as exc:
             log.info("install %s failed: %s", job_id, exc)
             await self._set(job_id, status="failed", error=str(exc))
@@ -1705,7 +1721,9 @@ class Installer:
                 await self._set(job_id, status="queued", error=tr(ENGINE_WAIT))
             await asyncio.sleep(ENGINE_WAIT_S)
 
-    async def _card(self, job_id: str, cancel: threading.Event, *, chats: bool = False) -> None:
+    async def _card(
+        self, job_id: str, cancel: threading.Event, *, chats: bool = False, background: bool = False
+    ) -> None:
         """Until the graphics card is the trial's (34.4): a local model is asked (48.9а: the card's count - a chat's
         turn, the editor's completion, an outside client; a cloud chat is not on the card) or the Studio holds the
         card (47.1) - its model would be swapped out in the middle of the answer or the picture. Tuning holding it is
@@ -1715,13 +1733,44 @@ class Installer:
         to the trial's end (`_run`). `chats` - a picture or video model's trial holds it from local chats too (2б): they
         wait at the gate. Never the two waiting for each other: a local request is waited for only while the card is
         not held, a chat waits only while it is. A chat model's trial does not hold it from chats - its own request
-        goes through that gate. Meanwhile «ждёт пробного запуска»."""
-        while self.card.asked or not self.card.try_take(TRIAL, chats=chats):
+        goes through that gate. Meanwhile «ждёт пробного запуска». A senior stops the trial (48.9в, `_stop_trial`);
+        stopped, it is background work (`background`): it waits for the card still for QUIET_S (48.9б2) - not as soon
+        as the chat ends, or the models go to and fro on each message."""
+        quiet = Quiet(self.card) if background else None
+        while not ((quiet.look() if quiet is not None else not self.card.asked)
+                   and self.card.try_take(TRIAL, chats=chats, stop=self._stop_trial)):  # fmt: skip
             if cancel.is_set():
                 raise hf.Cancelled()
             if (await self._get(job_id))["status"] != "trialwait":
                 await self._set(job_id, status="trialwait", error="")
             await asyncio.sleep(CARD_WAIT_S)
+        self._deferring = False
+        self._quiet.discard(job_id)
+
+    def _stop_trial(self) -> None:
+        """A senior needs the card (48.9в: a chat, the Studio, any local request): the trial going on stops - its
+        question let go (a video's job cancelled in the engine), a config being written first written whole."""
+        if self._deferring:
+            return
+        self._deferring = True
+        if self._asking is not None:
+            self._asking.cancel()
+
+    async def _attempt(self, asked: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
+        """One question of the trial - let go when a senior stops it (48.9в): `_Deferred`."""
+        if self._deferring:
+            asked.close()
+            raise _Deferred
+        task = self._asking = asyncio.ensure_future(asked)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if self._deferring and task.cancelled() and not (current is not None and current.cancelling()):
+                raise _Deferred from None
+            raise
+        finally:
+            self._asking = None
 
     def _reporter(self, job_id: str, base: int, total: int) -> Callable[[int], None]:
         loop = asyncio.get_running_loop()
@@ -1848,7 +1897,9 @@ class Installer:
             else:
                 try:
                     with named(TRIAL):  # its request at the gate is the trial's (48.9а)
-                        result = await self.trial(model, client)
+                        result = await self._attempt(self.trial(model, client))
+                except _Deferred:
+                    raise
                 except Exception as exc:  # the check's own refusal (HTTPException) or a provider's trouble
                     result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
             tries.append({"context": plan["context"], "gpu_layers": plan["gpu_layers"], "ok": bool(result.get("ok")),
@@ -1858,6 +1909,8 @@ class Installer:
             plan = smaller(plan)
             if plan is None:
                 break
+            if self._deferring:  # 48.9в: stopped - not smaller settings for it
+                raise _Deferred
             await self._relaunch(model_id, plan)
         if result.get("ok"):
             await self._set(job_id, status="done", plan={**found["plan"], **plan}, trial={
@@ -1949,7 +2002,8 @@ class Installer:
         await self._set(job_id, status="trial")
         if found["plan"].get("kind") == "video":  # a short video (29.8а)
             only_picture = "text" not in (found["plan"].get("modes") or ["text"])  # (48.5) its trial: AFO's own frame
-            result = await visual.trial_video(self._url, model_id, clip=found["plan"].get("clip"), picture=only_picture)
+            result = await self._attempt(visual.trial_video(self._url, model_id, clip=found["plan"].get("clip"),
+                                                            picture=only_picture))  # fmt: skip
             if result["ok"]:
                 await self._set(job_id, status="done", trial={"seconds": result["seconds"], "frames": result["frames"]})
                 return
@@ -1958,8 +2012,8 @@ class Installer:
                 "модель скачана, но пробное видео не вышло: {error}. Файлы остались — «Повторить» попробует снова; или "
                 "удалите", error=result["error"]))  # fmt: skip
             return
-        result = await visual.trial(self._url, model_id)
-        on_cpu = await visual.trial(self._url, cpu_id) if not result["ok"] and cpu_id else None
+        result = await self._attempt(visual.trial(self._url, model_id))
+        on_cpu = await self._attempt(visual.trial(self._url, cpu_id)) if not result["ok"] and cpu_id else None
         if result["ok"] or (on_cpu and on_cpu["ok"]):
             # a picture on the card starts the ladder afresh; one only on the processor - pictures begin there
             rules = {model_id: {}} if result["ok"] else {model_id: {"instead": cpu_id}}

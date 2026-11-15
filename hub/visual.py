@@ -328,19 +328,23 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
             if said.status_code >= 300:
                 return {"ok": False, "error": _refused(said)}
             video_job = said.json().get("id", "")
-            while time.monotonic() - start < TRIAL_TIMEOUT_S:
-                looked = await http.get(f"{upstream}/jobs/{video_job}")
-                state = looked.json() if looked.status_code < 300 else {"status": "failed", "error": looked.text}
-                if state.get("status") == "completed":
-                    data = base64.b64decode((state.get("result") or {}).get("b64_json") or "")
-                    if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
-                        return {"ok": False, "error": tr("ответ без видео")}
-                    if not moving(data):  # (48.8 live) every frame the same: LTX's white ones passed as a trial
-                        return {"ok": False, "error": tr(STILL_WORDS)}
-                    return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
-                if state.get("status") in ("failed", "cancelled"):
-                    return {"ok": False, "error": _engine_error(state)}
-                await asyncio.sleep(VIDEO_STEP_S)
+            try:
+                while time.monotonic() - start < TRIAL_TIMEOUT_S:
+                    looked = await http.get(f"{upstream}/jobs/{video_job}")
+                    state = looked.json() if looked.status_code < 300 else {"status": "failed", "error": looked.text}
+                    if state.get("status") == "completed":
+                        data = base64.b64decode((state.get("result") or {}).get("b64_json") or "")
+                        if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+                            return {"ok": False, "error": tr("ответ без видео")}
+                        if not moving(data):  # (48.8 live) every frame the same: LTX's white ones passed as a trial
+                            return {"ok": False, "error": tr(STILL_WORDS)}
+                        return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
+                    if state.get("status") in ("failed", "cancelled"):
+                        return {"ok": False, "error": _engine_error(state)}
+                    await asyncio.sleep(VIDEO_STEP_S)
+            except asyncio.CancelledError:  # a senior needs the card (48.9в): the engine stops too, as by ✕
+                await halt(http, base_url, model_id, video_job)
+                raise
             await halt(http, base_url, model_id, video_job)  # past its time: the engine stops too (48's review)
     except (httpx.HTTPError, ValueError) as exc:
         return {"ok": False, "error": _no_answer(exc)}

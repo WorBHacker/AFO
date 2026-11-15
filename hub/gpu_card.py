@@ -21,7 +21,8 @@ The order of seniority (48.9б1, the user's word): the person now (a chat's mess
 work without them (an agent, a schedule, the editor's completion, an outside client) > an install's trial > tuning. A
 holder says how it is stopped (`stop`); a senior that needs the card - taking it, or asking at the gate - stops a
 junior holding it and waits until it is given. The interrupted is not failed and keeps nothing: tuning measures again
-later. Tuning holds the card (TUNE) from local requests too - llama-bench and llama-server run past llama-swap.
+later, an install's trial is «ждёт пробного запуска» again (48.9в), both as background work. Tuning holds the card
+(TUNE) from local requests too - llama-bench and llama-server run past llama-swap.
 
 One rule of quiet for background work (48.9б2) - automatic tuning, a stopped one, a deferred trial: the card has been
 still for QUIET_S (`Quiet`) - no local request, nobody holding it, its load under BUSY_PCT, no game on it even at low
@@ -53,10 +54,10 @@ QUIET_S = 180.0  # background work waits for the card still this long (48.9б2):
 BUSY_PCT = 15  # the card at this much load or more works for someone - a game, another program
 # each holder's and asker's rank: 1 the person now, 2 their work without them, 3 an install's trial, 4 tuning (48.9б1)
 RANKS = {CHAT: 1, BUTTON: 1, STUDIO: 1, AGENT: 2, COMPLETION: 2, OPENAI: 2, TRIAL: 3, TUNE: 4}
-# why a local chat waits, in words - who holds the card from it: the Studio only for a video, a trial of a picture or
-# video model (2б), tuning while it lets go (48.9б1)
+# why a local chat waits, in words - who holds the card from it: the Studio only for a video; a trial of a picture or
+# video model (2б) and tuning while they let go (48.9в, 48.9б1)
 WORDS = {STUDIO: N_("видеокарта снимает видео — ответ начнётся после него"),
-         TRIAL: N_("на видеокарте пробный запуск новой модели — ответ начнётся после него"),
+         TRIAL: N_("видеокарта откладывает пробный запуск новой модели — ответ начнётся сразу после"),
          TUNE: N_("видеокарта останавливает подбор параметров — ответ начнётся сразу после")}  # fmt: skip
 
 
@@ -152,11 +153,12 @@ class GpuCard:
 
     async def gate(self, cancel: asyncio.Event) -> bool:
         """A local chat model's answer waits here while the card is held from chats (the llama-swap provider asks
-        before each); whether it waited. A junior holding it - tuning - is stopped first (48.9б1). The user's «Стоп»
-        ends the wait."""
+        before each); whether it waited. A junior holding it - tuning, an install's trial - is stopped first (48.9б1,
+        48.9в), a chat model's trial too, which does not hold the card from chats: its question is let go and
+        llama-swap's queue is the asker's. The user's «Стоп» ends the wait."""
+        self._stop_for(ASKER.get())
         if self.free.is_set():
             return False
-        self._stop_for(ASKER.get())
         stopping = asyncio.ensure_future(cancel.wait())
         free = asyncio.ensure_future(self.free.wait())
         await asyncio.wait({stopping, free}, return_when=asyncio.FIRST_COMPLETED)
