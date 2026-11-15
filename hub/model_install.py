@@ -610,6 +610,22 @@ class Installer:
         """The installs have work: their worker goes on (34.4 - «Подбор параметров» waits for it)."""
         return self._task is not None and not self._task.done()
 
+    async def missing(self, model_id: str) -> str:
+        """The first file a model's install names that is not on the disk whole, by its name - or "" (48's review,
+        finding 8): a pair's high half deleted by hand, sd.cpp only warns and the low one films alone, «готово»."""
+        found = next((r for r in await self._db.acall(installed) if r["model_id"] == model_id), None)
+        if found is None:
+            return ""
+        folder = Path(found["folder"])
+
+        def look() -> str:
+            for f in found["files"]:
+                if f["role"] != "engine" and not _whole(_dest(folder, f), f["size"]):
+                    return PurePosixPath(f["path"]).name
+            return ""
+
+        return await asyncio.to_thread(look)
+
     async def mark_lost(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Each install whose block should be in llama-swap's config says whether it is not (34.4: tuning wrote over
         the file, and three models added meanwhile were gone - their rows said «установлена»)."""

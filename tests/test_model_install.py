@@ -1671,6 +1671,39 @@ def test_two_halves_of_one_name_in_two_folders_are_two_files(hub, monkeypatch):
     assert not low.exists() and not high.exists() and not low.parent.exists() and not high.parent.exists()
 
 
+def test_a_video_whose_half_was_deleted_by_hand_fails_in_words(hub, monkeypatch):
+    """Stage 48's review, finding 8: a pair's HighNoise file deleted by hand - sd.cpp only warns that it did not load
+    (diffusion_engine.cpp 698-702), the low half films alone, and the video came out «готово». Before vid_gen the
+    files the install names are looked at: one not there whole - «не вышло», in words, and nothing goes to the
+    engine."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0)
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
+    job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q4_0"})
+    done = wait_for(hub, job.json()["job"]["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    command = lc.model_view(hub.config.read_text(encoding="utf-8"), done["model_id"])["command"]
+    high = Path(re.search(r'--high-noise-diffusion-model "([^"]+)"', command).group(1))
+    high.unlink()
+    asked = len(FakeLlamaSwap.video)
+
+    frame = base64.b64encode(visual.trial_frame(480, 288)).decode()
+    video = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": done["model_id"], "from_png": frame})
+    assert video.status_code == 200, video.text
+    deadline = time.monotonic() + 20.0
+    while (found := hub.get(f"/v1/visual/jobs/{video.json()['job']['id']}").json()["job"])["status"] in (
+            "queued", "running") and time.monotonic() < deadline:  # fmt: skip
+        time.sleep(0.05)
+    assert found["status"] == "failed", "a video without its high half came out"
+    assert high.name in found["error"] and "удалите модель" in found["error"]
+    assert len(FakeLlamaSwap.video) == asked  # nothing went to the engine
+
+
 def test_a_found_video_model_judged_by_its_sizes(hub, monkeypatch):
     """48.4: a found video model is judged by its sizes as sd.cpp's auto-fit places it, not by the thresholds TI2V-5B's
     Turbo set was measured for (`pictures_for`: «only in the cloud» on a small card). A pair's halves: auto-fit plans

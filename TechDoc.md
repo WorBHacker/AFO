@@ -1611,7 +1611,8 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     `test_a_trial_video_past_its_time_is_stopped_in_the_engine`.
   - Р8 Половина, удалённая вручную, — ролик «готово» (sd.cpp лишь предупреждает, `diffusion_engine.cpp` 698–702): перед
     `vid_gen` файлы установки на месте и своего размера, нет — «не вышло» со словами. Файлы: `hub/visual.py`,
-    `hub/model_install.py`, `hub/server.py`.
+    `hub/model_install.py`, `hub/server.py`. ✓ Сделано: `Installer.missing` (через `_dest`, в потоке) —
+    `Visual.missing`; «Докачать» — не делали. Тест — `test_a_video_whose_half_was_deleted_by_hand_fails_in_words`.
 - 48.8 Живая проверка на RTX 5080 — по слову пользователя и после `nvidia-smi`: Wan2.2 TI2V-5B, Wan2.2 I2V A14B (по
   картинке), LTX-2.3 distilled; MiniMax-H3 — по отдельному слову (≈ 35 ГБ). Записать сюда: строку «auto-fit plan»
   журнала sd-server; что обе половины A14B загрузились (журнал sd-server); пик видеопамяти при смене половин; время

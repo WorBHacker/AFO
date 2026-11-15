@@ -2451,6 +2451,7 @@
  "нет такой картинки": "there is no such picture",
  "нет такой установки": "no such install",
  "нет токена приложения ({error})": "no app token ({error})",
+ "нет файла {name}: он удалён с диска — удалите модель в «Установке моделей» и поставьте её снова": "no file {name}: it was deleted from the disk - remove the model in «Install models» and install it again",
  "нет файла {path}": "no file {path}",
  "нет файла модели: {path}": "no model file: {path}",
  "нет файлов: {files}": "missing files: {files}",

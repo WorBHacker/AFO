@@ -53,7 +53,7 @@ import threading
 import time
 import uuid
 import zlib
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -607,6 +607,8 @@ class Visual:
         self.tools = ffmpeg.home()  # where ffmpeg is fetched to, for a video's MP4 (29.8в)
         self._ffmpeg = asyncio.Lock()  # one fetch, one conversion at a time
         self.card = card or GpuCard()  # the Studio's for each job, an install's trial's meanwhile (48's review)
+        # a model's file not on the disk, by its name, or "": the installer's, set by the server (48's review)
+        self.missing: Callable[[str], Awaitable[str]] | None = None
         self._more = False  # a job added since the worker last looked at the queue
 
     async def start(self) -> int:
@@ -1045,6 +1047,12 @@ class Visual:
                       if m["model_id"] == model_id), None)  # fmt: skip
         if model is None:
             await self._set(job_id, status="failed", error=tr("модель видео {model} удалена", model=model_id))
+            return
+        # (48's review, finding 8) a file deleted by hand: sd.cpp only warns that a pair's high half did not load
+        if gone := (await self.missing(model_id) if self.missing is not None else ""):
+            await self._set(job_id, status="failed", error=tr(
+                "нет файла {name}: он удалён с диска — удалите модель в «Установке моделей» и поставьте её снова",
+                name=gone))  # fmt: skip
             return
         upstream = f"{self._url}/upstream/{model_id}/sdcpp/v1"
         params = {"sample_method": model["sampler"], "sample_steps": model["steps"],

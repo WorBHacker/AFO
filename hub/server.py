@@ -242,6 +242,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
+        app.state.visual.missing = app.state.installer.missing  # a model's file deleted by hand (48's review)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
             swap.gate = app.state.card.gate
             swap.gate_words = app.state.card.words
