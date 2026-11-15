@@ -16,6 +16,7 @@ fragments by index and is put together at the end. Arguments that are not valid 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -121,6 +122,8 @@ class OpenAICompatProvider:
         # answer waits for its end; `gate_words` - who holds it, in words (stage 48's review)
         self.gate: Callable[[asyncio.Event], Awaitable[bool]] | None = None
         self.gate_words: Callable[[], str] | None = None
+        # llama-swap's: each request counted on the card while it goes on, waiting at the gate too (48.9а)
+        self.asking: Callable[[], contextlib.AbstractContextManager[None]] | None = None
         # llama-swap's on this computer (0.1.13): each model's reasoning depths, as its chat template names them
         # (hub/llama_config.model_efforts) - in the catalog for the window, and a request asks one the model takes
         self.efforts: Callable[[], Awaitable[dict[str, list[str]]]] | None = None
@@ -187,6 +190,20 @@ class OpenAICompatProvider:
         cancel: asyncio.Event,
         tools: list[dict[str, Any]] | None = None,
         params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        with self.asking() if self.asking is not None else contextlib.nullcontext():  # a local request (48.9а)
+            async with contextlib.aclosing(self._stream(model_ref, messages, effort, cancel, tools, params)) as events:
+                async for event in events:
+                    yield event
+
+    async def _stream(
+        self,
+        model_ref: str,
+        messages: list[dict[str, Any]],
+        effort: str,
+        cancel: asyncio.Event,
+        tools: list[dict[str, Any]] | None,
+        params: dict[str, Any] | None,
     ) -> AsyncIterator[StreamEvent]:
         if self.efforts is not None:  # 0.1.13: as the templates are now (a file changed is read again, else cached)
             self._levels = self._with_aliases(await self.efforts())

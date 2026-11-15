@@ -194,6 +194,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s,
                                          freed=lambda: _initial_sync(app))  # fmt: skip
         app.state.card = GpuCard()  # who holds the graphics card: the Studio, an install's trial (48's review)
+        # who asks its local models (48.9а): a local model's turn and the editor's completion count as a whole
+        app.state.chat.card = app.state.completions.card = app.state.card
         app.state.installer = Installer(
             db,
             bus,
@@ -209,7 +211,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
-        app.state.tuner = Tuner(db, bus, app.state.chat, url=settings.llama_swap_url, space=app.state.installer.space,
+        app.state.tuner = Tuner(db, bus, app.state.card, url=settings.llama_swap_url, space=app.state.installer.space,
                                 gpu=lambda: (app.state.status.latest or {}).get("gpu"),
                                 installing=app.state.installer.busy,
                                 drafts=app.state.installer.draft_paths)  # fmt: skip
@@ -221,10 +223,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
-        # one at a time on the graphics card (34.4): a trial waits while tuning measures, for a chat's answer and
-        # while the Studio holds the card (47.1), then holds it to its end (stage 48's review)
+        # one at a time on the graphics card (34.4): a trial waits while tuning measures, for the local requests (the
+        # card's count, 48.9а) and while the Studio holds the card (47.1), then holds it to its end (48's review)
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
-        app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)
         app.state.installer.card = app.state.card
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
@@ -246,6 +247,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
             swap.gate = app.state.card.gate
             swap.gate_words = app.state.card.words
+            swap.asking = app.state.card.asking  # each request counted on the card, with who asks (48.9а)
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes

@@ -17,6 +17,7 @@ from ..auth import Client
 from ..claude_code import PROVIDER as CLAUDE_CODE
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
+from ..gpu_card import OPENAI, ask_as
 from ..openai_proxy import (
     EFFORTS,
     Chunks,
@@ -54,6 +55,7 @@ async def completions(
 
 
 async def _complete(request: Request, client: Client, body: dict[str, Any]) -> JSONResponse | StreamingResponse:
+    ask_as(OPENAI)  # its local requests are an outside client's (48.9а) - the streamed answer's too
     state = request.app.state
     model_id = str(body.get("model") or "")
     model = await state.db.acall(lambda conn: store.get_model(conn, model_id))

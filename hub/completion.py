@@ -34,6 +34,7 @@ from . import model_settings, store
 from .db import Database
 from .gateway.base import ProviderError, cost_usd
 from .gateway.registry import Gateway
+from .gpu_card import COMPLETION, GpuCard, named
 from .projects import Project
 from .secret_filter import clean, is_secret_file
 from .system_status import llama_swap_sample
@@ -78,6 +79,8 @@ class Completions:
         self._transport = transport
         self._current: asyncio.Task | None = None
         self._no_fim: set[str] = set()  # models llama.cpp said have no fill-in-the-middle tokens
+        # the server's: a local model's completion counts on it as a whole - its /infill goes past the gate (48.9а)
+        self.card = GpuCard()
 
     async def start(self, project: Project, path: str, before: str, after: str, *, load: bool = False
                     ) -> tuple[dict[str, Any], AsyncIterator[str]]:  # fmt: skip
@@ -120,17 +123,20 @@ class Completions:
         first: list[float] = []
 
         async def produce() -> None:
+            local = model.get("locality") != "cloud"
             try:
-                pieces = (self._infill(ref, path, before, after, usage) if how == "infill"
-                          else self._chat(provider, ref, path, before, after, usage))  # fmt: skip
-                async for piece in pieces:
-                    if not first:
-                        first.append(time.monotonic() - began)
-                    await queue.put(piece)
-            except _NoFim:
-                self._no_fim.add(model["id"])
-                async for piece in self._chat(provider, ref, path, before, after, usage):
-                    await queue.put(piece)
+                with named(COMPLETION), self.card.asking(COMPLETION) if local else contextlib.nullcontext():
+                    try:
+                        pieces = (self._infill(ref, path, before, after, usage) if how == "infill"
+                                  else self._chat(provider, ref, path, before, after, usage))  # fmt: skip
+                        async for piece in pieces:
+                            if not first:
+                                first.append(time.monotonic() - began)
+                            await queue.put(piece)
+                    except _NoFim:
+                        self._no_fim.add(model["id"])
+                        async for piece in self._chat(provider, ref, path, before, after, usage):
+                            await queue.put(piece)
             except (ProviderError, httpx.HTTPError) as exc:  # no grey text this time; the next keystroke asks again
                 log.info("completion by %s failed: %s", model["id"], exc)
             finally:

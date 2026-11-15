@@ -17,6 +17,7 @@ from common.i18n import tr
 from .. import projects
 from ..auth import Client
 from ..completion import AFTER, BEFORE, Paused
+from ..gpu_card import BUTTON, ask_as
 from ..projects import ProjectError
 from ..rewrite import Refused, rewrite
 from .deps import require_client
@@ -124,6 +125,7 @@ async def edit(body: Edit, request: Request, client: Annotated[Client, Depends(r
     shows it as a diff, the person takes it or not. 409 {reason, message} when it may not be done (no model chosen,
     a cloud one for a local-only project, a secret file)."""
     state = request.app.state
+    ask_as(BUTTON)  # Ctrl+I: the person's, its local request too (48.9а)
     try:
         project = await state.db.acall(lambda conn: projects.get_project(conn, body.project_id))
     except ProjectError as exc:

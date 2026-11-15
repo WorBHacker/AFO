@@ -32,6 +32,7 @@ from ..cards import CardError
 from ..export import ExportError
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd, until_cancelled
+from ..gpu_card import BUTTON, ask_as
 from ..projects import ProjectError
 from .deps import require_client
 
@@ -164,6 +165,7 @@ async def draft_card(
         if current[0] is None:
             raise HTTPException(status_code=409, detail="there is no confirmed card to bring up to date")
     _drafting(request).add(project.id)
+    ask_as(BUTTON)  # «Набросать карточку»: the draft's task starts from here, its local requests the person's (48.9а)
     task = asyncio.create_task(_write_draft(request.app, project, model, client.id, current))
     task.add_done_callback(log_task_exception)
     await request.app.state.bus.publish(

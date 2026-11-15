@@ -22,6 +22,7 @@ from common.llama_memory import draft_load, estimate, moe_load
 
 from .. import llama_config, store
 from ..auth import APP_CLIENT, Client
+from ..gpu_card import BUTTON, ask_as
 from ..tuning import server_path
 from .deps import require_client
 from .model_settings import run_check
@@ -140,6 +141,7 @@ async def trial(request: Request, model_id: str, client: Annotated[Client, Depen
     model = await state.db.acall(lambda conn: store.get_model(conn, f"{PROVIDER}/{model_id}"))
     if model is None or not model["enabled"]:
         raise HTTPException(status_code=404, detail=f"llama-swap does not offer {model_id} now")
+    ask_as(BUTTON)  # the settings' trial: the person's (48.9а)
     result = await run_check(state, model, client)
     if result.get("ok") and (judged := await _estimate(request, model_id)) and judged["verdict"] == "over":
         result["over"] = judged["text"]  # it answered from the shared memory the driver lent it: slower (stage 28)

@@ -218,22 +218,21 @@ def test_models_added_are_tried_by_the_button_one_at_a_time_in_order(hub, tmp_pa
     while installer.busy() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert len(FakeLlamaSwap.asked) == asked and not installer.busy() and not hub.app.state.tuner.state_job()["queue"]
-    chatting = [True]
-    installer.chat_busy = lambda: chatting[0]  # a chat answers: the trials wait for it
+    installer.card.asked["chat"] = 1  # a local chat answers: the trials wait for it
     queued = hub.post("/v1/install/trial").json()["jobs"]
     assert [(j["id"], j["status"]) for j in queued] == [(j["id"], "trialwait") for j in jobs]
     db.call(lambda c: c.execute("UPDATE model_installs SET updated_at = '2099-01-01T00:00:00.000Z' WHERE id = ?",
                                 (jobs[0]["id"],)))  # the first added, changed last  # fmt: skip
     time.sleep(0.5)
     assert len(FakeLlamaSwap.asked) == asked
-    chatting[0] = False
+    installer.card.asked.pop("chat")
     for job in jobs:
         assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
     assert [a["model"] for a in FakeLlamaSwap.asked[asked:]] == [j["model_id"] for j in jobs]  # in the order added
     assert hub.post("/v1/install/trial").json()["jobs"] == []  # none left untried
 
     late = add("D", "E")
-    chatting[0] = True
+    installer.card.asked["chat"] = 1
     hub.post("/v1/install/trial")
     assert wait_for(hub, late[0]["id"], "trialwait")
     asked = len(FakeLlamaSwap.asked)
@@ -241,7 +240,7 @@ def test_models_added_are_tried_by_the_button_one_at_a_time_in_order(hub, tmp_pa
     assert {j["id"] for j in stopped} == {j["id"] for j in late}
     for job in late:
         assert wait_for(hub, job["id"], "added", "failed")["status"] == "added"
-    chatting[0] = False
+    installer.card.asked.pop("chat")
     time.sleep(0.5)
     assert len(FakeLlamaSwap.asked) == asked and [status(j) for j in late] == ["added", "added"]
 

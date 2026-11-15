@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import APP_CLIENT, Client
 from ..goals import GoalError
+from ..gpu_card import BUTTON, ask_as
 from .deps import own_conversation, require_client
 
 router = APIRouter(prefix="/v1")
@@ -105,6 +106,7 @@ async def draft_goal(conversation_id: str, body: Wish, request: Request,
                      client: Annotated[Client, Depends(require_client)]) -> dict:  # fmt: skip
     """A contract drafted by a model from the user's words, for the window to show and change; nothing is set."""
     _app_only(client)
+    ask_as(BUTTON)  # the person's: its local request too (48.9а)
     return await _call(request.app.state.goals.draft(conversation_id, body.text, body.model_id))
 
 

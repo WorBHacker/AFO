@@ -61,7 +61,7 @@ from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
 from .db import utc_now
-from .gpu_card import TRIAL, GpuCard
+from .gpu_card import TRIAL, GpuCard, named
 from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
 from .tuning import server_path
@@ -499,10 +499,10 @@ class Installer:
         self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
         self._naming: asyncio.Task | None = None
         # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
-        # filled the memory), while a chat answers and while the Studio holds the card (its model would be swapped
-        # out); then the card is the trial's to its end; set by the server (34.4, 47.1, stage 48's review)
+        # filled the memory), while a local model is asked (48.9а: the card's count - a chat, the editor's completion,
+        # an outside client; not a cloud chat) and while the Studio holds the card (its model would be swapped out);
+        # then the card is the trial's to its end; set by the server (34.4, 47.1, stage 48's review)
         self.tuning: Callable[[], bool] = lambda: False
-        self.chat_busy: Callable[[], bool] = lambda: False
         self.card = GpuCard()
         # a picture install choosing its files and a deletion counting who else names a file (47.3): one at a time
         self._files = asyncio.Lock()
@@ -1708,14 +1708,16 @@ class Installer:
 
     async def _card(self, job_id: str, cancel: threading.Event, *, chats: bool = False) -> None:
         """Until the graphics card is the trial's (34.4): «Подбор параметров» measures - llama-bench runs past
-        llama-swap, and two models at once filled the memory (2026-11-08) - or a chat answers or the Studio holds the
-        card (47.1) - its model would be swapped out in the middle of the answer or the picture. The card is taken in
-        the same step these are looked at in - no `await` between them, a Studio's job came in between (stage 48's
-        review, finding 2) - and held to the trial's end (`_run`). `chats` - a picture or video model's trial holds it
-        from local chats too (2б): they wait at the gate. Never the two waiting for each other: a chat answering is
-        waited for only while the card is not held, a chat waits only while it is. A chat model's trial does not hold
-        it from chats - its own request goes through that gate. Meanwhile «ждёт пробного запуска»."""
-        while self.tuning() or self.chat_busy() or not self.card.try_take(TRIAL, chats=chats):
+        llama-swap, and two models at once filled the memory (2026-11-08) - or a local model is asked (48.9а: the
+        card's count - a chat's turn, the editor's completion, an outside client; a cloud chat is not on the card) or
+        the Studio holds the card (47.1) - its model would be swapped out in the middle of the answer or the picture.
+        The card is taken in the same step these are looked at in - no `await` between them, a Studio's job came in
+        between (stage 48's review, finding 2) - and held to the trial's end (`_run`). `chats` - a picture or video
+        model's trial holds it from local chats too (2б): they wait at the gate. Never the two waiting for each other:
+        a local request is waited for only while the card is not held, a chat waits only while it is. A chat model's
+        trial does not hold it from chats - its own request goes through that gate. Meanwhile «ждёт пробного
+        запуска»."""
+        while self.tuning() or self.card.asked or not self.card.try_take(TRIAL, chats=chats):
             if cancel.is_set():
                 raise hf.Cancelled()
             if (await self._get(job_id))["status"] != "trialwait":
@@ -1846,7 +1848,8 @@ class Installer:
                 result = {"ok": False, "error": tr("хаб не видит модель в списке llama-swap")}
             else:
                 try:
-                    result = await self.trial(model, client)
+                    with named(TRIAL):  # its request at the gate is the trial's (48.9а)
+                        result = await self.trial(model, client)
                 except Exception as exc:  # the check's own refusal (HTTPException) or a provider's trouble
                     result = {"ok": False, "error": str(getattr(exc, "detail", "") or exc)}
             tries.append({"context": plan["context"], "gpu_layers": plan["gpu_layers"], "ok": bool(result.get("ok")),

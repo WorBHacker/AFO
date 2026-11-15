@@ -92,6 +92,7 @@ from .db import Database
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block, until_cancelled
+from .gpu_card import AGENT, CHAT, GpuCard, named
 from .projects import ProjectError, get_project, list_projects
 from .secret_filter import clean
 from .symbols import SymbolIndex
@@ -178,6 +179,7 @@ class ChatService:
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.visual: visual.Visual | None = None  # set by the server: pictures a model asks for (29.6, D55)
+        self.card = GpuCard()  # the server's: a local model's turn counts on it as a whole (48.9а)
         # set by the server: words when other programs hold the memory a loading model needs (38.2, the installer's)
         self.memory_now: Callable[[str, str], Awaitable[str]] | None = None
         self.proving: set[str] = set()  # the proving ground's runs' chats: nobody answers there (D45)
@@ -257,7 +259,7 @@ class ChatService:
         if agent:
             self._launch(self._run_agent(conversation_id, model, text, cancel, client_id, effort=effort))
         else:
-            self._launch(self._run(conversation_id, model, effort, cancel, client_id))
+            self._launch(self._run(conversation_id, model, effort, cancel, client_id, asker=CHAT))
         return user_msg.to_json()
 
     def _check_free(self, conversation_id: str) -> None:
@@ -459,11 +461,17 @@ class ChatService:
         limits: Limits | None = None,
         outcome: Outcome | None = None,
         on_end: Callable[[Outcome], Awaitable[None]] | None = None,
+        asker: str = AGENT,
     ):
+        """A turn - the person's message (`asker` CHAT) or a run's, a goal's (AGENT). Its local requests are its
+        asker's; with a local model it counts on the card from start to end (48.9а): between its requests - a tool
+        running - its model stays loaded for the next, and tuning or a trial must not take the card meanwhile."""
         outcome = outcome or Outcome()
         began = time.monotonic()
+        local = model.get("locality") != "cloud"
         try:
-            await self._steps(conversation_id, model, effort, cancel, client_id, limits or Limits(), outcome)
+            with named(asker), self.card.asking(asker) if local else contextlib.nullcontext():
+                await self._steps(conversation_id, model, effort, cancel, client_id, limits or Limits(), outcome)
             if outcome.status == "running":
                 outcome.status = "done"
         except GatewayError as exc:

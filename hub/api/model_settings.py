@@ -21,6 +21,7 @@ from ..auth import APP_CLIENT, Client
 from ..db import utc_now
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
+from ..gpu_card import BUTTON, ask_as
 from ..limits import LIMITS
 from .deps import require_client
 
@@ -127,6 +128,7 @@ async def check(request: Request, body: Check, client: Annotated[Client, Depends
     model = await _known(request, body.model_id)
     if model is None or not model["enabled"]:
         raise HTTPException(status_code=404, detail="this model is not offered now")
+    ask_as(BUTTON)  # «Проверить»: the person's (48.9а); an install's trial names itself
     return await run_check(request.app.state, model, client)
 
 

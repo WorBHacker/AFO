@@ -8,20 +8,54 @@ once and a Studio's video came in between (the review: «между `_card` и �
 answer waits at `gate` - llama-swap would swap the holder's model out under it; a holder whose own requests go through
 that gate (a chat model's trial) does not hold the card from chats, or it would wait for itself.
 
-After 48.8 this becomes the card's one owner - chat, tuning, trial, Studio, «Выгрузить» (48.9)."""
+After 48.8 this becomes the card's one owner - chat, tuning, trial, Studio, «Выгрузить» (48.9).
+
+The local requests (48.9а) - whoever asks a model on the card, waiting at the gate too - are counted here, with who
+asks: tuning and an install's trial wait for them (a cloud chat is not one). The llama-swap provider counts each of its
+requests; a local chat model's turn counts from its start to its end (between its requests its model stays for the
+next), the editor's completion as a whole (its fill in the middle goes through llama-swap's /upstream, past the gate).
+Who asks is named in the context (`ASKER`): a turn, a completion, a request of the hub's API sets it for what it
+does - the tasks it starts too."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import Iterator
+from contextvars import ContextVar
 
 from common.i18n import N_, tr
 
 STUDIO = "studio"  # the Studio's job: a picture or a video
-TRIAL = "trial"  # an install's trial
+TRIAL = "trial"  # an install's trial - and its requests (48.9а)
+# who asks a local model (48.9а)
+CHAT = "chat"  # a person's message (the window, Telegram) and its answer with tools
+BUTTON = "button"  # a person's button: «Проверить», a settings' trial, «Набросать карточку», a goal's draft, Ctrl+I
+AGENT = "agent"  # an agent's run, an autonomous run, a goal's turn, a task on a schedule
+COMPLETION = "completion"  # the editor's grey text
+OPENAI = "openai"  # an outside client through /v1/openai
+ASKER: ContextVar[str] = ContextVar("asker", default=AGENT)  # nobody named: a person's unattended work
 # why a local chat waits, in words - who holds the card from it: the Studio only for a video, a trial of a picture or
 # video model (2б)
 WORDS = {STUDIO: N_("видеокарта снимает видео — ответ начнётся после него"),
          TRIAL: N_("на видеокарте пробный запуск новой модели — ответ начнётся после него")}  # fmt: skip
+
+
+@contextlib.contextmanager
+def named(who: str) -> Iterator[None]:
+    """The local requests made in this scope - and in the tasks started in it - are `who`'s. In a coroutine, not an
+    async generator: its end may come in another context."""
+    token = ASKER.set(who)
+    try:
+        yield
+    finally:
+        ASKER.reset(token)
+
+
+def ask_as(who: str) -> None:
+    """The local requests of this request to the hub's API are `who`'s: its task is its own, the answer's stream
+    too (it starts from it)."""
+    ASKER.set(who)
 
 
 class GpuCard:
@@ -31,6 +65,21 @@ class GpuCard:
         self.free.set()
         self._given = asyncio.Event()  # the card was let go: those waiting for it look again
         self._given.set()
+        self.asked: dict[str, int] = {}  # who asks the local models now -> how many (48.9а)
+
+    @contextlib.contextmanager
+    def asking(self, who: str | None = None) -> Iterator[None]:
+        """A local request - or a turn, a completion - goes on in this scope: counted as `who`'s (by default, whose
+        the context says)."""
+        who = who or ASKER.get()
+        self.asked[who] = self.asked.get(who, 0) + 1
+        try:
+            yield
+        finally:
+            if (left := self.asked.get(who, 1) - 1) > 0:
+                self.asked[who] = left
+            else:
+                self.asked.pop(who, None)
 
     def try_take(self, holder: str, *, chats: bool = False) -> bool:
         """The card for `holder` if nobody holds it - at once, with no `await` between the look and the take; `chats` -

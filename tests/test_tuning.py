@@ -19,6 +19,7 @@ import pytest
 from common.llama_memory import estimate
 from hub import llama_config as lc
 from hub import model_settings, tuning
+from hub.gpu_card import GpuCard
 from tests.test_llama_config import CONFIG, gguf
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -90,7 +91,7 @@ def test_llama_bench_stopping_halfway_is_logged(tmp_path, caplog):
     bench.write_text(f"import sys\nfor text in {measured!r}:\n    print(text)\nsys.stdout.flush()\n"
                      "print('main: error: failed to create context with model', file=sys.stderr)\nsys.exit(1)\n",
                      encoding="utf-8")  # fmt: skip
-    found = tuning.Tuner(None, Bus(), Chat(), url="http://127.0.0.1:9", space=dict)
+    found = tuning.Tuner(None, Bus(), GpuCard(), url="http://127.0.0.1:9", space=dict)
     ticks = []
     with caplog.at_level("WARNING", logger="hub.tuning"):
         lines = found._bench([sys.executable, str(bench)], lambda: ticks.append(1))
@@ -120,7 +121,7 @@ def test_the_check_asks_again_while_llama_swap_rereads_its_file(monkeypatch):
     real = httpx.AsyncClient
     monkeypatch.setattr(tuning.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(answer), **kw))
     monkeypatch.setattr(tuning, "RETRY_S", 0.01)
-    found = tuning.Tuner(None, Bus(), Chat(), url="http://127.0.0.1:9", space=dict)
+    found = tuning.Tuner(None, Bus(), GpuCard(), url="http://127.0.0.1:9", space=dict)
     assert asyncio.run(found._load("big"))["ok"] and asked == ["big"] * 3
     answers[:] = [(500, "upstream command exited prematurely")]
     asked.clear()
@@ -167,11 +168,6 @@ class Bus:
         self.said.append((kind, payload))
 
 
-class Chat:
-    def __init__(self):
-        self.busy: list[str] = []
-
-
 def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_draft=False, space=None):
     """A Tuner with llama-bench and the check as stand-ins: `measured` - llama-bench's numbers by KV cache type;
     `draft` - the draft model's file found for any model (42.4); `refuse_draft` - the check fails only for a model
@@ -197,7 +193,7 @@ def tuner(db_hub, *, measured, check_ok=True, asked=None, draft=None, refuse_dra
     async def find(model_id, file):
         return [draft] if isinstance(draft, Path) else list(draft or [])
 
-    return tuning.Tuner(db_hub.app.state.db, Bus(), Chat(), url="http://127.0.0.1:9",
+    return tuning.Tuner(db_hub.app.state.db, Bus(), GpuCard(), url="http://127.0.0.1:9",
                         space=lambda: space or {"vram_gib": 24.0, "ram_gib": 64.0}, run=run, check=check,
                         drafts=find)  # fmt: skip
 
@@ -245,13 +241,13 @@ def test_automatic_tuning_waits_until_no_chat_uses_a_model(hub, setup, monkeypat
     monkeypatch.setattr(tuning, "IDLE_S", 0.3)
     monkeypatch.setattr(tuning, "WAIT_S", 0.05)
     found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
-    found._chat.busy = ["c1"]
+    found._card.asked = {"chat": 1}
 
     async def scenario():
         found.request("big", auto=True)
         await asyncio.sleep(0.3)
         assert found.job["status"] == "waiting" and "big" not in found.results
-        found._chat.busy = []
+        found._card.asked = {}
         started = time.monotonic()
         while "big" not in found.results:
             assert time.monotonic() - started < 10
@@ -314,12 +310,12 @@ def test_a_chat_stops_automatic_measuring_and_it_is_measured_again(hub, setup, m
         while not runs:
             assert time.monotonic() - started < 10
             await asyncio.sleep(0.02)
-        found._chat.busy = ["c1"]  # a chat starts while it measures
+        found._card.asked = {"chat": 1}  # a chat starts while it measures
         while found.job.get("status") != "waiting":
             assert time.monotonic() - started < 10, found.job
             await asyncio.sleep(0.02)
         assert setup.read_text(encoding="utf-8") == before and "big" not in found.results  # nothing by its numbers
-        found._chat.busy = []
+        found._card.asked = {}
         while "big" not in found.results:
             assert time.monotonic() - started < 10
             await asyncio.sleep(0.05)
@@ -709,12 +705,12 @@ def test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat(hub, setup, s
         while not (spec_server / "launches.txt").exists():
             assert time.monotonic() - started < 20, found.job
             await asyncio.sleep(0.05)
-        found._chat.busy = ["c1"]  # a chat begins while llama-server loads
+        found._card.asked = {"chat": 1}  # a chat begins while llama-server loads
         while found.job.get("status") != "waiting":
             assert time.monotonic() - started < 20, found.job
             await asyncio.sleep(0.05)
         assert "big" not in found.results and not stand_ins()  # nothing by its numbers, the server let go
-        found._chat.busy = []
+        found._card.asked = {}
         while "big" not in found.results:
             assert time.monotonic() - started < 30, found.job
             await asyncio.sleep(0.05)

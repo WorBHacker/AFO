@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import claude_code, engines, goals, tuning
+from hub import claude_code, completion, engines, goals, tuning
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.api_reference import event_types
@@ -38,7 +38,7 @@ from tests.test_attachments import b64
 from tests.test_autonomous import PLAN, Scripted, use
 from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
-from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
+from tests.test_goals import DEAD_END, DONE, WRITE, Cloudy, Gated, chat_with_project, set_goal, settled
 from tests.test_llama_config import FakeLlamaSwap
 from tests.test_model_install import CLIP, DRAW, MACHINE, FakeHub, fake_hub, wait_for  # noqa: F401 - the fake_hub fixture
 from tests.test_model_install import hub as installs  # noqa: F401 - the installer's hub, as a fixture of this name
@@ -836,6 +836,102 @@ def test_a_chat_models_trial_does_not_wait_for_itself(installs):  # noqa: F811
     assert done["status"] == "done", done["error"]
     assert time.monotonic() - started < 20.0 and done["trial"]["tries"][-1]["ok"]  # its request through the gate
     assert not installs.app.state.visual.holding and not installs.app.state.card.holder
+
+
+# --- one owner of the graphics card (48.9) ---
+
+
+def _meanwhile(call):
+    """`call` in a thread of its own - a request held at llama-swap; its answer, once it comes, in the list."""
+    answered: list = []
+    threading.Thread(target=lambda: answered.append(call()), daemon=True).start()
+    return answered
+
+
+def _cloud_chat(hub):  # noqa: F811
+    """A cloud model's answer under way, held at its gate."""
+    cloud = use(hub, Cloudy("sky", ["Облако отвечает."]))
+    cloud.gate.clear()
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    sent = hub.post(f"/v1/conversations/{conv}/messages", json={"content": "привет", "model_id": "sky/m"})
+    assert sent.status_code == 202, sent.text
+    wait(cloud.waiting.is_set)
+    return cloud
+
+
+def test_tuning_waits_for_any_local_request_and_not_for_a_cloud_chat(installs, monkeypatch):  # noqa: F811
+    """48.9а: tuning waited for `chat.busy` - the chats going on, cloud ones too, and nothing else. An outside client's
+    request through /v1/openai to a local model was not seen (nor the editor's completion, nor «Проверить»): tuning
+    unloaded the models and measured beside it. A cloud chat, which does not touch the card, kept it waiting. The
+    llama-swap provider's gate counts the local requests now, with who asks; tuning waits for them, not the cloud."""
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    tuner, card = installs.app.state.tuner, installs.app.state.card
+    measured = []
+
+    async def tune(model_id, *, automatic=False):  # what it measures is not this test's
+        measured.append(model_id)
+        return {"status": "same"}
+
+    monkeypatch.setattr(tuner, "tune", tune)
+    cloud = _cloud_chat(installs)
+    try:
+        installs.portal.call(tuner.request, "fast")
+        wait(lambda: measured == ["fast"], timeout=5)  # a cloud chat is not on the card
+    finally:
+        cloud.gate.set()
+
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        body = {"model": "llama-swap/fast", "messages": [{"role": "user", "content": "привет"}]}
+        answer = _meanwhile(lambda: installs.post("/v1/openai/chat/completions", json=body))
+        wait(lambda: len(_chats(FakeLlamaSwap.asked)) == 1, timeout=10)  # held at llama-swap
+        assert card.asked == {"openai": 1}
+        installs.portal.call(tuner.request, "fast")
+        time.sleep(0.5)
+        assert measured == ["fast"] and tuner.job["status"] == "waiting", "tuning measured beside a local request"
+    finally:
+        answering.set()
+    wait(lambda: answer and measured == ["fast", "fast"], timeout=10)
+    assert answer[0].status_code == 200 and not card.asked
+
+
+def test_an_installs_trial_waits_for_the_editors_completion_and_not_for_a_cloud_chat(installs, monkeypatch):  # noqa: F811
+    """48.9а: an install's trial waited for the chats going on: a cloud chat kept it «ждёт пробного запуска» for
+    nothing, and the editor's completion - fill in the middle through llama-swap's /upstream, past the gate - was not
+    seen: the trial swapped its model out under it. The completion counts on the card as a whole, its trial after it."""
+    cloud = _cloud_chat(installs)
+    try:
+        spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+        first = installs.post("/v1/install", json=spec).json()["job"]
+        done = wait_for(installs, first["id"], "done", "failed", timeout=15.0)
+        assert done["status"] == "done", done["error"]
+    finally:
+        cloud.gate.set()
+
+    folder = installs.tmp / "project"
+    folder.mkdir()
+    pid = installs.post("/v1/projects", json={"path": str(folder)}).json()["id"]
+    roles = {"model_id": "", "settings": {"roles": {"complete": "llama-swap/fast"}}}
+    assert installs.put("/v1/model_settings", json=roles).status_code == 200
+    monkeypatch.setattr(completion, "DEADLINE_S", 30.0)  # held longer than its 1.5 s: the test holds it
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        around = {"project_id": pid, "path": "app.py", "before": "def total(items):\n    return ", "after": "\n",
+                  "load": True}  # fmt: skip
+        completed = _meanwhile(lambda: installs.post("/v1/editor/complete", json=around))
+        wait(lambda: any("input_prefix" in b for b in FakeLlamaSwap.asked), timeout=10)  # its /infill, held
+        assert installs.app.state.card.asked == {"completion": 1}
+        job = installs.post("/v1/install", json={**spec, "quant": "Q8_0"}).json()["job"]
+        waiting = wait_for(installs, job["id"], "trialwait", "trial", "done", "failed", timeout=15.0)
+        assert waiting["status"] == "trialwait", "its trial loaded the model under the editor's completion"
+        time.sleep(0.4)
+        assert wait_for(installs, job["id"], "trialwait")
+        assert "tiny-q8_0" not in [b.get("model") for b in FakeLlamaSwap.asked]
+    finally:
+        answering.set()
+    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
+    wait(lambda: completed, timeout=10)
+    assert completed[0].status_code == 200 and not installs.app.state.card.asked
 
 
 # --- a found model that draws, installed beside its family's set (47.6) ---

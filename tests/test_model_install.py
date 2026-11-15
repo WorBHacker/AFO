@@ -1326,8 +1326,6 @@ def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     while tuning measures - «ждёт пробного запуска» - and, before its trial, while a chat answers (its model would be
     swapped out in the middle of an answer)."""
     installer, tuner = hub.app.state.installer, hub.app.state.tuner
-    chatting = [False]
-    installer.chat_busy = lambda: chatting[0]
     tuner.job = {"status": "measuring", "model_id": "big"}  # what the server's wiring tells the installer
     asked = len(FakeLlamaSwap.asked)
     job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False}).json()["job"]
@@ -1337,11 +1335,11 @@ def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked  # nothing loaded meanwhile
     assert "tiny-q4_k_m" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
     assert tuner._installing()  # and tuning, for its part, waits while the installs have work
-    chatting[0] = True
+    installer.card.asked["chat"] = 1  # a local chat answers
     tuner.job = {"status": "idle"}
     time.sleep(0.4)
     assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked
-    chatting[0] = False
+    installer.card.asked.pop("chat")
     assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
     assert FakeLlamaSwap.asked[-1]["model"] == "tiny-q4_k_m"
 

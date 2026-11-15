@@ -8,11 +8,12 @@ model that does not fit whole: where its experts go is measured by llama-server 
 The winner goes into the config - a copy of the old one beside it - and the model is loaded with its whole context to
 check it still fits; if not, the old config comes back.
 
-Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no chat has run for
-IDLE_S and the graphics card itself has been quiet as long - the hub's own checks, the editor's completion, another
-program are no chats, and measured beside them the numbers are theirs too (stage 28, live); a chat that starts while
-it measures stops it, nothing is written, and the model waits its turn again. Measuring unloads the models and takes
-the graphics card for minutes. The person's «Подобрать» waits only for the chats going on now."""
+Automatic tuning (after a model is installed or added, after llama.cpp is updated) waits until no local model has
+been asked for IDLE_S and the graphics card itself has been quiet as long - measured beside another program the
+numbers are its too (stage 28, live). The local requests are the card's count (48.9а, hub/gpu_card.py): a chat on a
+local model, the editor's completion, an outside client, the hub's checks - not a cloud chat. One that starts while it
+measures stops it, nothing is written, and the model waits its turn again. Measuring unloads the models and takes the
+graphics card for minutes. The person's «Подобрать» waits only for the local requests going on now."""
 
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ from common.paths import data_paths
 
 from . import llama_config, model_settings
 from .db import utc_now
+from .gpu_card import GpuCard
 
 log = logging.getLogger("hub.tuning")
 
@@ -440,7 +442,7 @@ def tunable(text: str) -> list[str]:
 class Tuner:
     """One model measured at a time, in the background; the queue goes on until it is empty."""
 
-    def __init__(self, db, bus, chat, *, url: str, space: Callable[[], dict[str, Any]],
+    def __init__(self, db, bus, card: GpuCard, *, url: str, space: Callable[[], dict[str, Any]],
                  run: Callable[[list[str], Callable[[], None]], list[str]] | None = None,
                  check: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
                  gpu: Callable[[], dict[str, Any] | None] | None = None,
@@ -450,7 +452,7 @@ class Tuner:
         self._drafts = drafts  # the draft models' files for a model (42.5: found and downloaded; 44.8: each one)
         self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None  # a result kept (42.5: drafts)
         self._bus = bus
-        self._chat = chat
+        self._card = card  # its count of local requests (48.9а): chats on the card, the editor's, outside clients'
         self._url = url.rstrip("/")
         self._space = space
         self._run = run or self._bench
@@ -465,7 +467,7 @@ class Tuner:
         # the installs have work (34.4): llama-bench runs past llama-swap - beside an install's trial, two models at
         # once filled the memory
         self._installing = installing or (lambda: False)
-        self._halt = threading.Event()  # measuring is to stop: a chat or an install began
+        self._halt = threading.Event()  # measuring is to stop: a local request or an install began
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -534,11 +536,13 @@ class Tuner:
                 self._queue.append((model_id, automatic))  # measured again once all is quiet
 
     async def _wait(self, automatic: bool, model_id: str) -> None:
-        """Until no chat runs, the installs have no work (34.4) and the graphics card is quiet (by hand too, 42.4: a
-        game or another program's work is in its numbers) - and, for automatic tuning, all this for IDLE_S."""
+        """Until no local model is asked (48.9а: a chat on the card, the editor's completion, an outside client, a
+        check - a cloud chat is not on the card), the installs have no work (34.4) and the graphics card is quiet (by
+        hand too, 42.4: a game or another program's work is in its numbers) - and, for automatic tuning, all this for
+        IDLE_S."""
         while True:
             now = time.monotonic()
-            if self._chat.busy or self._installing() or self._card_busy():
+            if self._card.asked or self._installing() or self._card_busy():
                 self._quiet_since = now
             elif not automatic or now - self._quiet_since >= IDLE_S:
                 return
@@ -552,10 +556,10 @@ class Tuner:
         return util is not None and util >= BUSY_PCT
 
     async def _watch(self) -> None:
-        """While measuring goes on (by hand too, 42.4): a chat or an install that starts stops it - llama-bench or
-        llama-server let go; it is measured again once all is quiet."""
+        """While measuring goes on (by hand too, 42.4): a local request (48.9а) or an install that starts stops it -
+        llama-bench or llama-server let go; it is measured again once all is quiet."""
         while self.job.get("status") == "measuring":
-            if self._chat.busy or self._installing():
+            if self._card.asked or self._installing():
                 self._halt.set()
                 self._kill()
                 return
@@ -566,7 +570,7 @@ class Tuner:
 
     async def tune(self, model_id: str, *, automatic: bool = False) -> dict[str, Any]:
         """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Measuring a
-        chat or an install stops is not a result: {"status": "halted"}, nothing kept."""
+        local request or an install stops is not a result: {"status": "halted"}, nothing kept."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
         self._halt.clear()
         watch = asyncio.create_task(self._watch())
@@ -574,8 +578,8 @@ class Tuner:
         try:
             result = await self._tune(model_id)
         except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
-            if self._halt.is_set():  # stopped for a chat or an install (llama-bench killed): not a result
-                log.info("tuning %s stopped: a chat or an install began; measured again later", model_id)
+            if self._halt.is_set():  # stopped for a local request or an install (llama-bench killed): not a result
+                log.info("tuning %s stopped: a local request or an install began; measured again later", model_id)
                 self.job = {"status": "idle"}
                 await self._publish()
                 return {"status": "halted"}
