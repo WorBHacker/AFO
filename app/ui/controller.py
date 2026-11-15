@@ -1035,6 +1035,18 @@ class Controller(QObject):
         self._call(lambda: self.client.unload_local(), lambda _r: self.flash(tr("Локальная модель выгружена")))
 
     @Slot()
+    def continueCard(self) -> None:
+        """«Продолжить» (48.9д): the card given by «Выгрузить» is everyone's again - what waited goes on."""
+
+        def done(result: dict[str, Any]) -> None:
+            card = result.get("card") or {}
+            self._status = {**self._status, "given": bool(card.get("given")),
+                            "studioHeld": bool(card.get("studio_held"))}  # fmt: skip
+            self.statusChanged.emit()
+
+        self._call(lambda: self.client.gpu_continue(), done)
+
+    @Slot()
     def askUnloadLocal(self) -> None:
         """The sidebar's button: the loaded local model gives its VRAM and RAM back - asked first."""
         names = ", ".join(self._status.get("loaded") or [])
@@ -1044,8 +1056,10 @@ class Controller(QObject):
                 self.unloadLocal()
 
         self._ask(tr("Выгрузить {name}?", name=names or tr("локальную модель")),
-                  tr("Освободятся видеопамять и оперативная память, которые она занимает. Следующий запрос к ней "
-                     "загрузит её заново — это займёт от 20 секунд до минуты."),
+                  tr("Освободятся видеопамять и оперативная память, которые она занимает. Видеокарта останется вашей: "
+                     "фоновые задачи, агенты и автодополнение её не займут, пока вы сами не напишете, не нажмёте "
+                     "что-то или «Продолжить». Ваш следующий запрос загрузит модель заново — от 20 секунд до "
+                     "минуты."),
                   tr("Выгрузить"), decide)  # fmt: skip
 
     # ================= the machine, money =================

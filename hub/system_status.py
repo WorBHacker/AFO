@@ -160,6 +160,8 @@ class StatusMonitor:
         self.latest: dict[str, Any] | None = None
         self.machine: dict[str, Any] | None = None  # the card and the memory: at once, llama-swap may be slow (35.2)
         self.on_machine: Callable[[dict[str, Any]], Any] | None = None  # who keeps them (computer.json)
+        # the graphics card's owner (48.9д): given to the person by «Выгрузить», the Studio's queue held - the server's
+        self.card: Callable[[], dict[str, Any]] | None = None
 
     async def sample(self) -> dict[str, Any]:
         if self._gpu is None:
@@ -173,6 +175,7 @@ class StatusMonitor:
             "gpu": gpu,
             "memory": memory,
             "local": await llama_swap_sample(self._llama_swap_url),
+            **({"card": self.card()} if self.card is not None else {}),
         }
         held = ((self.latest or {}).get("local") or {}).get("taken_by")
         if held and "taken_by" not in status["local"] and not status["local"]["reachable"] and self._freed:
@@ -182,6 +185,12 @@ class StatusMonitor:
             self.latest = status
             await self._bus.publish("system.status", status, persist=False)
         return status
+
+    async def card_changed(self) -> None:
+        """The card given away or back (48.9д): the latest picture with it, at once - not a new look at the machine."""
+        if self.latest is not None and self.card is not None:
+            self.latest = {**self.latest, "card": self.card()}
+            await self._bus.publish("system.status", self.latest, persist=False)
 
     def start(self) -> None:
         if self._interval > 0:

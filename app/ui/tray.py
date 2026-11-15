@@ -113,9 +113,13 @@ class TrayMenu(QObject):
             self.submenu.setEnabled(bool(self.projects))
             self.submenu.menuAction().setVisible(bool(shown.get("projects")))
         loaded = list((self.app.status or {}).get("loaded") or [])
-        self.model.setText(tr("Выгрузить модель: {name}", name=", ".join(loaded)) if loaded else
-                           tr("Модель не загружена"))  # fmt: skip
-        self.model.setEnabled(bool(loaded))
+        given = bool((self.app.status or {}).get("given") or (self.app.status or {}).get("studioHeld"))
+        if given:  # 48.9д: «Выгрузить» gave the card to the person - here it is given back
+            self.model.setText(tr("Продолжить — видеокарта отдана"))
+        else:
+            self.model.setText(tr("Выгрузить модель: {name}", name=", ".join(loaded)) if loaded else
+                               tr("Модель не загружена"))  # fmt: skip
+        self.model.setEnabled(bool(loaded) or given)
         quiet = self.app.schedules_view.quiet
         self.quiet.setChecked(bool(quiet.get("enabled")))
         self.quiet.setText(tr("Тихие часы ({start}–{end})", start=quiet.get("from", ""), end=quiet.get("to", "")))
@@ -138,6 +142,10 @@ class TrayMenu(QObject):
         self._show()
 
     def _unload(self) -> None:
+        status = self.app.status or {}
+        if status.get("given") or status.get("studioHeld"):  # the item says «Продолжить» now (48.9д)
+            self.app.continueCard()
+            return
         self.app.unloadLocal()  # the sidebar asks first; here the person chose it in the menu itself
 
     def _toggle_quiet(self) -> None:

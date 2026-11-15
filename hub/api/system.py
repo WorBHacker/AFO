@@ -95,7 +95,8 @@ async def status(request: Request, client: Annotated[Client, Depends(require_cli
     The same picture arrives as `system.status` events whenever it changes."""
     monitor = request.app.state.status
     sample = monitor.latest or await monitor.sample()
-    return {**sample, "busy": request.app.state.chat.busy}
+    card = {"card": monitor.card()} if monitor.card is not None else {}  # 48.9д: as it is now
+    return {**sample, **card, "busy": request.app.state.chat.busy}
 
 
 class Shutdown(BaseModel):

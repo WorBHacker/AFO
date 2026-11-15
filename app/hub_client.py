@@ -306,6 +306,10 @@ class HubClient:
         """«Вернуть как было»: {given_back, left, state}."""
         return self._call("POST", "/v1/gpu/give-back")
 
+    def gpu_continue(self) -> dict:
+        """«Продолжить» (48.9д): the card given by «Выгрузить» is everyone's again - {card: {given, studio_held}}."""
+        return self._call("POST", "/v1/gpu/continue")
+
     def install_remove(self, model_id: str) -> dict:
         return self._call("DELETE", f"/v1/install/models/{model_id}", timeout=60)
 

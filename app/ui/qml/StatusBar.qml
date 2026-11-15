@@ -165,8 +165,34 @@ Rectangle {
         anchors.rightMargin: 12
         height: parent.height
         spacing: 10
+        // 48.9д (the user's word): «Выгрузить» gave the card to the person - said here, with «Продолжить»
+        Row {
+            objectName: "statusCard"
+            visible: !!App.status.given || !!App.status.studioHeld
+            height: parent.height
+            spacing: 6
+            HoverHandler { id: cardHover }
+            ToolTip.visible: cardHover.hovered
+            ToolTip.text: App.status.given
+                          ? qsTr("После «Выгрузить» видеокарта ваша: фоновые задачи, агенты и автодополнение её не займут, пока вы сами не напишете, не нажмёте что-то или «Продолжить»")
+                          : qsTr("Очередь Студии ждёт вас после «Выгрузить»: «Продолжить» — и она пойдёт дальше")
+            Small {
+                objectName: "statusCardText"
+                text: App.status.given ? qsTr("Видеокарта отдана") : qsTr("Очередь Студии ждёт")
+                color: Theme.p.warn
+            }
+            Small {
+                objectName: "statusContinue"
+                text: qsTr("Продолжить")
+                color: Theme.p.accent
+                font.underline: continueHover.hovered
+                HoverHandler { id: continueHover; cursorShape: Qt.PointingHandCursor }
+                TapHandler { onTapped: App.continueCard() }
+            }
+            Separator { anchors.verticalCenter: parent.verticalCenter }
+        }
         HoverHandler { id: machineHover }
-        ToolTip.visible: machineHover.hovered && App.status.details !== ""
+        ToolTip.visible: machineHover.hovered && App.status.details !== "" && !cardHover.hovered
         ToolTip.text: App.status.details
         Icon { name: "cpu"; size: 13; anchors.verticalCenter: parent.verticalCenter }
         Small { text: App.status.local; width: Math.min(implicitWidth, bar.width * 0.14); elide: Text.ElideRight }

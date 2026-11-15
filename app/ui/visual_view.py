@@ -147,6 +147,8 @@ class VisualView(QObject):
         self._progress: dict[str, tuple[int, int]] = {}  # each job's step of its steps (48.7в: the queue)
         self._clock: dict[str, float] = {}  # a video's time so far, its model giving no step (48's review)
         self._gallery = "all"  # the gallery: all, pictures or videos (48.7в)
+        self._held = False  # the hub's queue waits for the person after «Выгрузить» (48.9д): its words change
+        app.statusChanged.connect(self._held_changed)
 
     # ================= for QML =================
 
@@ -392,6 +394,12 @@ class VisualView(QObject):
     def gallery(self) -> str:
         return self._gallery
 
+    def _held_changed(self) -> None:
+        held = bool(self.app.status.get("studioHeld"))
+        if held != self._held:
+            self._held = held
+            self.changed.emit()
+
     @Property(list, notify=changed)
     def queue(self) -> list:
         """The jobs going on (48.7в) - the hub's queue, as they came: each how far it is; ✕ cancels it."""
@@ -401,8 +409,8 @@ class VisualView(QObject):
                 continue
             video = j.get("kind") == "video"
             step, steps = self._progress.get(j["id"], (0, 0))
-            if j["status"] == "queued" and not steps:
-                words = tr("в очереди")
+            if j["status"] == "queued" and not steps:  # after «Выгрузить» it waits for the person (48.9д)
+                words = tr("видеокарта отдана — „Продолжить“") if self.app.status.get("studioHeld") else tr("в очереди")
             elif video:
                 words = filming((step, steps), self._clock.get(j["id"])) or tr("снимаю")
             else:

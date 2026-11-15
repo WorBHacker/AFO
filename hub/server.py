@@ -6,9 +6,10 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from typing import Any
 
 from fastapi import FastAPI
 from starlette.routing import Route
@@ -226,6 +227,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.card.load = lambda: ((app.state.status.latest or {}).get("gpu") or {}).get("util_pct")
         app.state.card.game = lambda: any(p.get("why") == "game" and p.get("where") != "moved"
                                           for p in app.state.gpu.state.get("programs") or [])  # fmt: skip
+        # the card given by «Выгрузить», the Studio's queue held - in the hub's status, at once when it changes (48.9д)
+        app.state.status.card = lambda: {**app.state.card.state(), "studio_held": app.state.visual.held}
+        app.state.card_news = set()
+        app.state.card.on_change = lambda: _keep(app.state.card_news, app.state.status.card_changed())
         # one at a time on the graphics card (34.4): a trial waits for the local requests (the card's count, 48.9а) and
         # while the Studio holds the card (47.1), stops tuning (48.9б1), then holds it to its end (48's review)
         app.state.installer.card = app.state.card
@@ -435,6 +440,13 @@ async def _resume_goals(app: FastAPI) -> None:
         return
     if resumed:
         log.info("chats' goals going on after a restart: %s", resumed)
+
+
+def _keep(tasks: set[asyncio.Task], work: Coroutine[Any, Any, Any]) -> None:
+    """`work` in the background, kept till it ends: a task nobody holds may vanish."""
+    task = asyncio.ensure_future(work)
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
 
 async def _initial_sync(app: FastAPI) -> None:

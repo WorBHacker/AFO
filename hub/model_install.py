@@ -61,7 +61,7 @@ from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
 from .db import utc_now
-from .gpu_card import TRIAL, GpuCard, Quiet, named
+from .gpu_card import GIVEN_WORDS, TRIAL, GpuCard, Quiet, named
 from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
 from .tuning import server_path
@@ -1744,11 +1744,15 @@ class Installer:
                    and self.card.try_take(TRIAL, chats=chats, stop=self._stop_trial)):  # fmt: skip
             if cancel.is_set():
                 raise hf.Cancelled()
-            if (await self._get(job_id))["status"] != "trialwait":
-                await self._set(job_id, status="trialwait", error="")
+            why = tr(GIVEN_WORDS) if self.card.given else ""  # 48.9д: waiting for the person's card - and why
+            found = await self._get(job_id)
+            if found["status"] != "trialwait" or found["error"] != why:
+                await self._set(job_id, status="trialwait", error=why)
             await asyncio.sleep(CARD_WAIT_S)
-        self._deferring = False
+        self._deferring = False  # before any `await`: a stop said from now on is this trial's
         self._quiet.discard(job_id)
+        if (await self._get(job_id))["error"] == tr(GIVEN_WORDS):  # the card is the trial's: no longer waiting
+            await self._set(job_id, error="")
 
     def _stop_trial(self) -> None:
         """A senior needs the card (48.9в: a chat, the Studio, any local request): the trial going on stops - its

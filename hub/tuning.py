@@ -541,8 +541,10 @@ class Tuner:
             ready = quiet.look() if background else self._card.still()
             if ready and self._card.try_take(TUNE, chats=True, stop=self._stop, model=model_id):
                 return
-            if self.job.get("status") != "waiting":
-                self.job = {"status": "waiting", "model_id": model_id}
+            # what it waits for, for the window (48.9д): the person's card, the quiet, the card free now
+            why = "given" if self._card.given else "quiet" if background else "busy"
+            if self.job.get("status") != "waiting" or self.job.get("why") != why:
+                self.job = {"status": "waiting", "model_id": model_id, "why": why}
                 await self._publish()
             await asyncio.sleep(WAIT_S)
 

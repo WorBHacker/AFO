@@ -704,4 +704,7 @@ def status_parts(status: dict[str, Any] | None) -> dict[str, Any]:
         "gpu": presenter.gpu_load(status),
         "details": presenter.status_text(status),
         "loaded": [r["model"] for r in ((status or {}).get("local") or {}).get("running", []) if r.get("model")],
+        # «Выгрузить» gave the card to the person, the Studio's queue waits for them (48.9д)
+        "given": bool(((status or {}).get("card") or {}).get("given")),
+        "studioHeld": bool(((status or {}).get("card") or {}).get("studio_held")),
     }

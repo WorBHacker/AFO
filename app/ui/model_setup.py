@@ -502,8 +502,12 @@ def tune_text(state: dict[str, Any], model_id: str) -> str:
                   total=job.get("total") or "?")  # fmt: skip
     if mine and job.get("status") == "checking":
         return tr("Проверяю, встаёт ли модель с новыми настройками и всем контекстом…")
+    if mine and job.get("status") == "waiting" and job.get("why") == "given":  # 48.9д
+        return tr("Жду: видеокарта отдана вам после «Выгрузить» — „Продолжить“ в строке состояния.")
+    if mine and job.get("status") == "waiting" and job.get("why") == "quiet":
+        return tr("Жду тишины на видеокарте: три минуты без разговоров, Студии и игры.")
     if mine and job.get("status") == "waiting":
-        return tr("Жду, пока модели освободятся: идёт разговор.")
+        return tr("Жду, пока видеокарта освободится: идёт разговор, Студия или другая программа.")
     if model_id in (job.get("queue") or []):
         return tr("В очереди на замер.")
     result = (state.get("results") or {}).get(model_id)

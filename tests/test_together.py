@@ -1174,7 +1174,8 @@ def test_unload_puts_a_trial_off_and_the_persons_unattended_work_waits_for_them(
         wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
         assert installs.post("/v1/models/unload").status_code == 200
         waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=10)
-        assert waiting["status"] == "trialwait" and not waiting["error"], "«Выгрузить» failed the trial"
+        assert waiting["status"] == "trialwait", "«Выгрузить» failed the trial"
+        assert "не запустилась" not in waiting["error"]
     finally:
         answering.set()
     assert state.card.given
@@ -1193,7 +1194,7 @@ def test_unload_puts_a_trial_off_and_the_persons_unattended_work_waits_for_them(
     around = {"project_id": pid, "path": "app.py", "before": "x = ", "after": "\n", "load": True}
     head = json.loads(installs.post("/v1/editor/complete", json=around).text.splitlines()[0])
     assert head.get("paused") == "given" and "Продолжить" in head["message"]
-    assert state.card.given and not wait_for(installs, job["id"], "trialwait")["error"]
+    assert state.card.given and wait_for(installs, job["id"], "trialwait")
 
     conv = installs.post("/v1/conversations", json={}).json()["id"]
     hello = {"content": "привет", "model_id": "llama-swap/fast"}
@@ -1223,6 +1224,45 @@ def test_unload_stops_tuning_and_it_waits_while_the_card_is_the_persons(installs
     assert installs.post(f"/v1/conversations/{conv}/messages", json=hello).status_code == 202
     wait(lambda: _answered(installs, conv), timeout=20)
     wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)
+
+
+def test_continue_gives_the_card_back_and_tuning_goes_on_at_once(installs, monkeypatch):  # noqa: F811
+    """48.9д: after «Выгрузить» the card is the person's - the window's status line says so (the hub's status), tuning
+    says what it waits for; «Продолжить» gives it back: what waited goes on at once, in the order of seniority, not
+    after QUIET_S of quiet."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 30.0)  # longer than the test: only «Продолжить» lets it go on
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    tuner = installs.app.state.tuner
+    seen = _measuring(tuner, monkeypatch)
+    installs.portal.call(tuner.request, "fast")
+    wait(lambda: seen["runs"] == 1, timeout=10)
+    assert installs.get("/v1/status").json()["card"] == {"given": False, "studio_held": False}
+    assert installs.post("/v1/models/unload").status_code == 200
+    wait(lambda: seen["halted"] is not None, timeout=10)
+    assert installs.get("/v1/status").json()["card"] == {"given": True, "studio_held": True}
+    wait(lambda: installs.get("/v1/tune").json()["job"].get("why") == "given", timeout=10)
+    went = installs.post("/v1/gpu/continue")
+    assert went.status_code == 200 and went.json()["card"] == {"given": False, "studio_held": False}
+    wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=10)
+
+
+def test_continue_lets_a_trial_put_off_by_unload_go_on_at_once(installs, monkeypatch):  # noqa: F811
+    """48.9д: an install's trial put off by «Выгрузить» says why it waits - «видеокарта отдана — „Продолжить“» - and
+    goes on at once by «Продолжить»."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 30.0)
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+        job = installs.post("/v1/install", json=spec).json()["job"]
+        wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
+        assert installs.post("/v1/models/unload").status_code == 200
+        assert wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=10)["status"] == "trialwait"
+    finally:
+        answering.set()
+    wait(lambda: "Продолжить" in wait_for(installs, job["id"], "trialwait")["error"], timeout=10)
+    assert installs.post("/v1/gpu/continue").status_code == 200
+    done = wait_for(installs, job["id"], "done", "failed", timeout=15)
+    assert done["status"] == "done" and not done["error"]
 
 
 # --- a found model that draws, installed beside its family's set (47.6) ---

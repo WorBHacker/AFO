@@ -38,6 +38,16 @@ async def choose(body: Choice, request: Request, client: Annotated[Client, Depen
     return await request.app.state.gpu.choose(body.exe, body.where)
 
 
+@router.post("/gpu/continue")
+async def go_on(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+    """«Продолжить» (48.9д): the card given by «Выгрузить» is everyone's again - the Studio's queue goes on, the
+    person's work without them, the trials and tuning put off, at once, in the order of seniority."""
+    state = request.app.state
+    state.visual.release()
+    state.card.go_on()
+    return {"card": state.status.card() if state.status.card is not None else state.card.state()}
+
+
 @router.post("/gpu/give-back")
 async def give_back(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     return await request.app.state.gpu.give_back()

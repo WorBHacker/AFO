@@ -1581,6 +1581,10 @@ class FakeClient:
         self.unloaded = getattr(self, "unloaded", 0) + 1
         return {"unloaded": True}
 
+    def gpu_continue(self):  # 48.9д
+        self.log.append(("gpu_continue",))
+        return {"card": {"given": False, "studio_held": False}}
+
     def autostart(self):
         return dict(self.started)
 
@@ -7602,6 +7606,42 @@ def test_an_install_going_on_shows_in_the_status_bar_from_the_start(qapp):
         for _ in range(10):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "statusInstall").property("visible")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_card_given_shows_in_the_status_bar_and_continue_gives_it_back(qapp):
+    """48.9д (the user's word): while «Выгрузить» has given the card to the person, the window's status line says so,
+    with «Продолжить» - which gives it back; the Studio's queue says why it waits, tuning what it waits for; the
+    question before «Выгрузить» says the card stays the person's."""
+    from PySide6.QtCore import QObject
+
+    from app.ui import model_setup as ms
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.status = lambda: {**STATUS, "card": {"given": True, "studio_held": True}}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.status.get("given"))
+        for _ in range(10):
+            QApplication.processEvents()
+        line = quick.window.findChild(QObject, "statusCard")
+        assert line is not None and line.property("visible")
+        assert "отдана" in quick.window.findChild(QObject, "statusCardText").property("text")
+        assert quick.window.findChild(QObject, "statusContinue").property("visible")
+        app.continueCard()
+        wait_until(lambda: ("gpu_continue",) in client.log)
+        app.on_event({"type": "system.status", "payload": {**STATUS, "card": {"given": False, "studio_held": False}}})
+        for _ in range(10):
+            QApplication.processEvents()
+        assert not line.property("visible")
+        waiting = {"status": "waiting", "model_id": "big", "why": "given"}
+        assert "Продолжить" in ms.tune_text({"results": {}, "job": waiting}, "big")
+        assert "тишины" in ms.tune_text({"results": {}, "job": {**waiting, "why": "quiet"}}, "big")
         assert quick.warnings == []
     finally:
         quick.close()

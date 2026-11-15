@@ -816,9 +816,17 @@ class Visual:
         """«Выгрузить» (48.9г): the queue does not take the card back by itself - the person's next job here does,
         or «Продолжить»."""
         self._held.clear()
+        self.card.changed()
 
     def release(self) -> None:
-        self._held.set()
+        if not self._held.is_set():
+            self._held.set()
+            self.card.changed()
+
+    @property
+    def held(self) -> bool:
+        """The queue waits for the person (48.9г) - the window says so at its jobs (48.9д)."""
+        return not self._held.is_set()
 
     def _stop_job(self) -> None:
         """«Выгрузить», or its model removed (48.9г): the job going on stops as by ✕ - a video cancelled in the engine,

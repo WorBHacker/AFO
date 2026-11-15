@@ -34,7 +34,9 @@ go to and fro.
 job as by ✕, a trial put off, tuning stopped - and the card is given to the person (`give_away`): until their next
 action of rank 1 (`take_back` - a chat's message, the Studio, their buttons) nobody takes it - background work, and the
 person's work without them neither: at the gate it waits, with words. A hub restarted forgets it. Removing a model
-stops the holder working with it (`let_go`), the card not given."""
+stops the holder working with it (`let_go`), the card not given. «Продолжить» (48.9д, `go_on`) gives it back: what
+waited goes on at once, in the order of seniority - the Studio's queue, the person's work without them, then background
+work, which does not wait QUIET_S then: the card still is enough."""
 
 from __future__ import annotations
 
@@ -107,6 +109,8 @@ class GpuCard:
         self.given = False  # «Выгрузить» (48.9г): the person's until their next action
         self._back = asyncio.Event()  # not given: those waiting for the person's card look again
         self._back.set()
+        self.pushed_at = 0.0  # when «Продолжить» was said (48.9д): background work begun before it goes once still
+        self.on_change: Callable[[], None] | None = None  # set by the server: the window hears of «отдана» (48.9д)
         self.asked: dict[str, int] = {}  # who asks the local models now -> how many (48.9а)
         # set by the server (48.9б2): the card's load now, % - the status monitor's look; a game on it - 43.6's
         self.load: Callable[[], float | None] = lambda: None
@@ -171,12 +175,27 @@ class GpuCard:
         self._back.clear()
         if self.holder and self._stop is not None:
             self._stop()
+        self.changed()
 
     def take_back(self) -> None:
         """The person's own action (48.9г: rank 1): the card given to them is theirs to use - and everyone's again."""
         if self.given:
             self.given = False
             self._back.set()
+            self.changed()
+
+    def go_on(self) -> None:
+        """«Продолжить» (48.9д): the card given back, and what waited goes on at once - background work too."""
+        self.pushed_at = time.monotonic()
+        self.take_back()
+
+    def state(self) -> dict[str, bool]:
+        return {"given": self.given}
+
+    def changed(self) -> None:
+        """«Отдана» or the Studio's queue held came or went: the window is told (48.9д)."""
+        if self.on_change is not None:
+            self.on_change()
 
     def let_go(self, model_id: str) -> None:
         """A model removed (48.9г): the holder working with it stops, as by «Выгрузить»; the card is not given."""
@@ -236,10 +255,12 @@ class Quiet:
 
     def __init__(self, card: GpuCard) -> None:
         self._card = card
-        self._since = time.monotonic()
+        self._since = self._began = time.monotonic()
 
     def look(self) -> bool:
+        """Whether it goes now - once still after «Продолжить» said since it began (48.9д)."""
         now = time.monotonic()
         if not self._card.still():
             self._since = now
-        return now - self._since >= QUIET_S
+            return False
+        return self._card.pushed_at >= self._began or now - self._since >= QUIET_S
