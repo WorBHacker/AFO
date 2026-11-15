@@ -254,15 +254,23 @@ def fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
     return {"fit": text, "fitTone": TONES.get(fit.get("verdict", ""), "")}
 
 
+def variant_key(variant: dict[str, Any]) -> str:
+    """A variant's own name in the window (48.2б): its quantization - and its family, a repository of two families
+    having a Q4_K_M each."""
+    return f"{variant['family']}/{variant['quant']}" if variant.get("family") else variant["quant"]
+
+
 def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
+    several = len(details.get("families") or []) > 1
     for v in details.get("variants") or []:
         words, tone = verdict_of(v)
         bits = tr("≈ {bits} бита на вес — сколько осталось от каждого веса (в оригинале 16)",
                   bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""  # fmt: skip
         quality = tr(QUALITY[v["quality"]]) if v.get("quality") in QUALITY else ""
-        out.append({"quant": v["quant"], "size": gb(v["size"]), "quality": quality, "bitsTip": bits, "words": words,
-                    "tone": tone,
+        shown = f"{v['name']} · {v['quant']}" if several and v.get("name") else v["quant"]
+        out.append({"quant": shown, "key": variant_key(v), "variant": v["quant"], "family": v.get("family", ""),
+                    "size": gb(v["size"]), "quality": quality, "bitsTip": bits, "words": words, "tone": tone,
                     "recommended": bool(v.get("recommended")), "parts": len(v.get("files") or []),
                     "pick": tr(PICKS[v["pick"]]) if v.get("pick") in PICKS else ""})  # fmt: skip
     return out
@@ -687,11 +695,14 @@ class InstallView(QObject):
 
     @Property(list, notify=changed)
     def variants(self) -> list:
-        return [{**v, "job": job_state(self._job_for(self._repo_name, v["quant"]))} for v in variant_rows(self._repo)]
+        return [{**v, "job": job_state(self._job_for(self._repo_name, v["variant"], v["family"]))}
+                for v in variant_rows(self._repo)]  # fmt: skip
 
-    def _job_for(self, repo: str, quant: str) -> dict[str, Any] | None:
-        """The install of this variant still on the list (not cancelled, not removed) - the newest."""
+    def _job_for(self, repo: str, quant: str, family: str = "") -> dict[str, Any] | None:
+        """The install of this variant still on the list (not cancelled, not removed) - the newest; of a family's
+        variant - an install as that family's (48.2б)."""
         found = [j for j in self._jobs if j["repo"] == repo and j.get("quant") == quant
+                 and (not family or (j.get("plan") or {}).get("set") == family)
                  and j["status"] not in ("cancelled", "removed")]  # fmt: skip
         return found[0] if found else None  # the list is newest first
 
@@ -1130,11 +1141,15 @@ class InstallView(QObject):
             self._start({"repo": repo, "quant": model["recommended"]["quant"]})
 
     @Slot(str)
-    def install(self, quant: str) -> None:
-        if self._repo.get("family"):  # a found model that draws (47.7б): beside its family's set
-            self._start({"id": self._repo["family"], "repo": self._repo["repo"], "quant": quant}, pictures=True)
+    def install(self, key: str) -> None:
+        """A variant's «Установить» - `key` its variant_key: its quantization, a family's with the family (48.2б)."""
+        if self._repo.get("family"):  # a found model that draws (47.7б): beside its own family's set
+            chosen = next((v for v in self._repo.get("variants") or [] if variant_key(v) == key), None)
+            family, quant = (chosen.get("family") or self._repo["family"], chosen["quant"]) if chosen else (
+                self._repo["family"], key)  # fmt: skip
+            self._start({"id": family, "repo": self._repo["repo"], "quant": quant}, pictures=True)
         elif self._repo:
-            spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": quant}
+            spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": key}
             if self._repo.get("projector"):
                 spec["projector"] = self._projector
             self._start(spec)

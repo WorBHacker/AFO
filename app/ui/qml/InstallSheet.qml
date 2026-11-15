@@ -758,11 +758,11 @@ Sheet {
                     anchors.right: parent.right
                     anchors.rightMargin: 10
                     anchors.verticalCenter: parent.verticalCenter
-                    name: "installVariant_" + variant.modelData.quant
+                    name: "installVariant_" + variant.modelData.key
                     job: variant.modelData.job
                     primary: variant.modelData.recommended
                     can: variant.modelData.tone !== "error"
-                    onInstall: Installer.install(variant.modelData.quant)
+                    onInstall: Installer.install(variant.modelData.key)  // 48.2б: a family's with the family
                 }
                 JobBar {
                     job: variant.modelData.job

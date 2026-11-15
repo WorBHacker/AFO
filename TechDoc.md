@@ -1467,6 +1467,10 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     семейства с его частями (`family`, `name`, `files`; бит на вес — у половины), `families`; рекомендуемый — сам
     вариант, не квантование. `_found_main` — файлы варианта списком. Тест —
     `test_a_found_video_model_among_the_others_of_its_repository`.
+  - 48.2б ✓ Окно: `variant_key` — квантование, у варианта семейства — с семейством; строка варианта — `key`,
+    `variant`, `family`, подпись «LTX-2.3 distilled · Q4_K_M», когда семейств два; «Установить» (`install(key)`) ставит
+    вариант как его семейства; загрузка видна на своём варианте (`_job_for` — по `plan.set`). Файлы:
+    `app/ui/install_view.py`, `app/ui/qml/InstallSheet.qml`. Тест — `test_a_found_repository_of_two_families_in_the_window`.
 - 48.3 Свой ролик у семейства: в каталоге `video` — к/с, шаг кадров (4 или 8), размеры обычный и HD; `Visual.video` и
   проба берут их вместо общих TI2V-5B. Файлы: `common/picture_sizes.py`, `hub/visual.py`, `hub/model_catalog.json`.
   Тест: у LTX кадров 8k+1, у Wan2.1 — 16 к/с.

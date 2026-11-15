@@ -6387,6 +6387,60 @@ def test_a_found_picture_model_installed_from_the_search(qapp):
         quick.close()
 
 
+def test_a_found_repository_of_two_families_in_the_window(qapp):
+    """48.2б: a repository holding two families' models (unsloth's LTX-2.3: dev and distilled) - each variant says its
+    family, «Установить» installs it as its own family's (not the repository's first), and an install going on shows on
+    its variant only, though both families have a Q4_K_M."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        repo = "unsloth/LTX-2.3-GGUF"
+
+        def variant(family: str, name: str, quant: str, size: int) -> dict:
+            return {"family": family, "name": name, "quant": quant, "size": size, "bits": 4.9, "quality": "near",
+                    "verdict": "split", "words": "часть в ОЗУ — медленнее", "recommended": False,
+                    "files": [{"path": f"{family}-{quant}.gguf", "role": "diffusion-model", "size": size}]}  # fmt: skip
+
+        details = {"repo": repo, "family": "ltx-2.3-dev", "name": "LTX-2.3 dev", "kind": "video", "size": 768,
+                   "families": [{"id": "ltx-2.3-dev", "name": "LTX-2.3 dev"},
+                                {"id": "ltx-2.3-distilled", "name": "LTX-2.3 distilled"}],
+                   "license": "ltx-2-community-license", "license_kind": "", "gated": False, "engine": False,
+                   "page": "https://huggingface.co/" + repo, "recommended": "", "parts": [],
+                   "variants": [variant("ltx-2.3-dev", "LTX-2.3 dev", "Q4_K_M", 14_300_000_000),
+                                variant("ltx-2.3-distilled", "LTX-2.3 distilled", "Q4_K_M",
+                                        14_300_000_000)]}  # fmt: skip
+        client.install_search = lambda query, **asked: {"models": [
+            {"repo": repo, "downloads": 9, "likes": 1, "params": 0, "license": "", "license_kind": "", "picture": "",
+             "family": "ltx-2.3-dev", "drawn": True, "fit": None}]}  # fmt: skip
+        client.install_picture_repo = lambda asked: details if asked == repo else {}
+        client.install_jobs_list = [
+            {"id": "j1", "repo": repo, "quant": "Q4_K_M", "status": "downloading", "done_bytes": 1, "total_bytes": 10,
+             "model_id": "ltx-2.3-q4_k_m", "name": "LTX-2.3 Q4_K_M", "error": "", "files": [], "trial": {},
+             "plan": {"engine": "sd", "set": "ltx-2.3-distilled", "found": repo, "kind": "video"}}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        app.openUi("install-models")
+        view.setTab("search")
+        view.search("ltx")
+        wait_until(lambda: not app.bg.busy and view.found)
+        view.openFound(repo)
+        wait_until(lambda: not app.bg.busy and view.variants)
+        rows_ = view.variants
+        assert [(r["quant"], r["job"].get("live", False)) for r in rows_] == [
+            ("LTX-2.3 dev · Q4_K_M", False), ("LTX-2.3 distilled · Q4_K_M", True)]  # fmt: skip
+        assert len({r["key"] for r in rows_}) == 2
+        view.install(rows_[1]["key"])
+        wait_until(lambda: not app.bg.busy and client.install_calls)
+        assert client.install_calls[-1] == ("pictures", {"id": "ltx-2.3-distilled", "repo": repo, "quant": "Q4_K_M"})
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_installing_a_local_model_from_the_window(qapp):
     from PySide6.QtCore import QObject
 
