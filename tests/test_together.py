@@ -934,6 +934,90 @@ def test_an_installs_trial_waits_for_the_editors_completion_and_not_for_a_cloud_
     assert completed[0].status_code == 200 and not installs.app.state.card.asked
 
 
+def _measuring(tuner, monkeypatch):
+    """Tuning's measuring of «fast» as a stand-in: the first time until something stops it - `halted`, what had reached
+    llama-swap by then -, then at once. Another model (an install's automatic tuning) - at once."""
+    seen: dict = {"halted": None, "runs": 0}
+
+    async def measure(model_id):
+        if model_id != "fast":
+            return {"status": "same"}
+        seen["runs"] += 1
+        deadline = time.monotonic() + 15
+        while seen["runs"] == 1 and not tuner._halt.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if seen["runs"] == 1 and tuner._halt.is_set():
+            seen["halted"] = list(FakeLlamaSwap.asked)
+            raise tuning._Halted
+        return {"status": "same"}
+
+    monkeypatch.setattr(tuner, "_tune", measure)
+    return seen
+
+
+def _answered(hub, conv):  # noqa: F811
+    messages = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    return any(m["role"] == "assistant" and "на связи" in json.dumps(m["content"], ensure_ascii=False)
+               for m in messages)  # fmt: skip
+
+
+def test_a_local_request_stops_tuning_and_goes_once_it_lets_the_card_go(installs, monkeypatch):  # noqa: F811
+    """48.9б1: tuning measured past the card - a chat that began meanwhile went to llama-swap at once and loaded its
+    model beside llama-bench until tuning saw it (`_watch`, every WAIT_S) and let go. Tuning holds the card now
+    (TUNE), from local requests too; a request - senior to it - stops it at the gate and goes once the card is let
+    go, with words meanwhile. Not a result: the model is measured again after the chat."""
+    monkeypatch.setattr(tuning, "WAIT_S", 0.5)
+    tuner = installs.app.state.tuner
+    seen = _measuring(tuner, monkeypatch)
+    installs.portal.call(tuner.request, "fast")
+    wait(lambda: tuner.job.get("status") == "measuring", timeout=10)
+    conv = installs.post("/v1/conversations", json={}).json()["id"]
+    body = {"content": "привет", "model_id": "llama-swap/fast"}
+    assert installs.post(f"/v1/conversations/{conv}/messages", json=body).status_code == 202
+    wait(lambda: _answered(installs, conv), timeout=20)
+    stopped = seen["halted"]
+    assert stopped is not None and not _chats(stopped), "the chat's request went to llama-swap while tuning measured"
+    wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)  # measured again after it
+    assert not installs.app.state.card.holder
+
+
+def test_the_studio_stops_tuning_and_tuning_waits_for_the_studio(installs, monkeypatch):  # noqa: F811
+    """48.9б1 (finding 3): tuning did not know the Studio - while a picture was drawn the card looked quiet to it, and
+    llama-bench measured beside sd-server, unloading every model; a picture asked for while it measured went at once.
+    Tuning waits while the Studio holds the card; the Studio's job, senior, stops it and draws once it lets go."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    first = installs.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert wait_for(installs, first["id"], "done", "failed")["status"] == "done"
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    monkeypatch.setattr(tuning, "IDLE_S", 0.1)  # the install's automatic tuning of «draw» goes by
+    tuner = installs.app.state.tuner
+    seen = _measuring(tuner, monkeypatch)
+
+    def drawn(job):
+        return installs.get(f"/v1/visual/jobs/{job['id']}").json()["job"]["status"]
+
+    FakeLlamaSwap.held = held = threading.Event()
+    try:
+        fox = installs.post("/v1/visual/images", json={"prompt": "a fox", "model": "draw"}).json()["job"]
+        wait(lambda: any(b.get("prompt") == "a fox" for b in FakeLlamaSwap.asked), timeout=10)  # being drawn
+        installs.portal.call(tuner.request, "fast")
+        time.sleep(0.5)
+        assert seen["runs"] == 0 and tuner.job["status"] == "waiting", "tuning measured while the Studio drew"
+    finally:
+        held.set()
+    wait(lambda: drawn(fox) == "done", timeout=10)
+    wait(lambda: seen["runs"] == 1, timeout=10)  # after the picture
+    cat = installs.post("/v1/visual/images", json={"prompt": "a cat", "model": "draw"}).json()["job"]
+    wait(lambda: seen["halted"] is not None, timeout=10)
+    assert not any(b.get("prompt") == "a cat" for b in seen["halted"]), "the Studio drew beside llama-bench"
+    wait(lambda: drawn(cat) == "done", timeout=10)
+    wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)  # measured again after it
+
+
 # --- a found model that draws, installed beside its family's set (47.6) ---
 
 

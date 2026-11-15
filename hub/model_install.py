@@ -498,11 +498,10 @@ class Installer:
         self._draft_cancel = threading.Event()
         self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
         self._naming: asyncio.Task | None = None
-        # a trial waits while «Подбор параметров» measures (llama-bench runs past llama-swap - two models at once
-        # filled the memory), while a local model is asked (48.9а: the card's count - a chat, the editor's completion,
-        # an outside client; not a cloud chat) and while the Studio holds the card (its model would be swapped out);
-        # then the card is the trial's to its end; set by the server (34.4, 47.1, stage 48's review)
-        self.tuning: Callable[[], bool] = lambda: False
+        # a trial waits while a local model is asked (48.9а: the card's count - a chat, the editor's completion, an
+        # outside client; not a cloud chat) and while the Studio holds the card (its model would be swapped out); it
+        # stops tuning (48.9б1: llama-bench runs past llama-swap - two models at once filled the memory); then the card
+        # is the trial's to its end; set by the server (34.4, 47.1, stage 48's review)
         self.card = GpuCard()
         # a picture install choosing its files and a deletion counting who else names a file (47.3): one at a time
         self._files = asyncio.Lock()
@@ -1707,17 +1706,17 @@ class Installer:
             await asyncio.sleep(ENGINE_WAIT_S)
 
     async def _card(self, job_id: str, cancel: threading.Event, *, chats: bool = False) -> None:
-        """Until the graphics card is the trial's (34.4): «Подбор параметров» measures - llama-bench runs past
-        llama-swap, and two models at once filled the memory (2026-11-08) - or a local model is asked (48.9а: the
-        card's count - a chat's turn, the editor's completion, an outside client; a cloud chat is not on the card) or
-        the Studio holds the card (47.1) - its model would be swapped out in the middle of the answer or the picture.
-        The card is taken in the same step these are looked at in - no `await` between them, a Studio's job came in
-        between (stage 48's review, finding 2) - and held to the trial's end (`_run`). `chats` - a picture or video
-        model's trial holds it from local chats too (2б): they wait at the gate. Never the two waiting for each other:
-        a local request is waited for only while the card is not held, a chat waits only while it is. A chat model's
-        trial does not hold it from chats - its own request goes through that gate. Meanwhile «ждёт пробного
-        запуска»."""
-        while self.tuning() or self.card.asked or not self.card.try_take(TRIAL, chats=chats):
+        """Until the graphics card is the trial's (34.4): a local model is asked (48.9а: the card's count - a chat's
+        turn, the editor's completion, an outside client; a cloud chat is not on the card) or the Studio holds the
+        card (47.1) - its model would be swapped out in the middle of the answer or the picture. Tuning holding it is
+        stopped (48.9б1: a trial before tuning) - llama-bench runs past llama-swap, and two models at once filled the
+        memory (2026-11-08) - and the card is the trial's once it lets go. The card is taken in the same step these are
+        looked at in - no `await` between them, a Studio's job came in between (stage 48's review, finding 2) - and held
+        to the trial's end (`_run`). `chats` - a picture or video model's trial holds it from local chats too (2б): they
+        wait at the gate. Never the two waiting for each other: a local request is waited for only while the card is
+        not held, a chat waits only while it is. A chat model's trial does not hold it from chats - its own request
+        goes through that gate. Meanwhile «ждёт пробного запуска»."""
+        while self.card.asked or not self.card.try_take(TRIAL, chats=chats):
             if cancel.is_set():
                 raise hf.Cancelled()
             if (await self._get(job_id))["status"] != "trialwait":

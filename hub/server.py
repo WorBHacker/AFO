@@ -211,6 +211,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.trial = lambda model, client: run_check(app.state, model, client)
         app.state.scanner = Scanner(db, bus)  # models already on the drives (15.1)
         # launch settings by measurement (15.2): after an install, after llama.cpp's update, on the window's word
+        # it holds the card while it measures (48.9б1): it waits for the Studio and a trial, a senior stops it
         app.state.tuner = Tuner(db, bus, app.state.card, url=settings.llama_swap_url, space=app.state.installer.space,
                                 gpu=lambda: (app.state.status.latest or {}).get("gpu"),
                                 installing=app.state.installer.busy,
@@ -223,9 +224,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.installer.on_renamed = app.state.tuner.rename  # what was measured stays the model's (36.1)
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
-        # one at a time on the graphics card (34.4): a trial waits while tuning measures, for the local requests (the
-        # card's count, 48.9а) and while the Studio holds the card (47.1), then holds it to its end (48's review)
-        app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
+        # one at a time on the graphics card (34.4): a trial waits for the local requests (the card's count, 48.9а) and
+        # while the Studio holds the card (47.1), stops tuning (48.9б1), then holds it to its end (48's review)
         app.state.installer.card = app.state.card
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(

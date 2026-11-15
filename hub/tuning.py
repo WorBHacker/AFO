@@ -41,7 +41,7 @@ from common.paths import data_paths
 
 from . import llama_config, model_settings
 from .db import utc_now
-from .gpu_card import GpuCard
+from .gpu_card import TUNE, GpuCard
 
 log = logging.getLogger("hub.tuning")
 
@@ -532,24 +532,37 @@ class Tuner:
                 continue
             await self._wait(automatic, model_id)
             self._queue.pop(0)
-            if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
-                self._queue.append((model_id, automatic))  # measured again once all is quiet
+            try:
+                if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
+                    self._queue.append((model_id, automatic))  # measured again once all is quiet
+            finally:
+                self._card.give(TUNE)  # taken in `_wait`
 
     async def _wait(self, automatic: bool, model_id: str) -> None:
         """Until no local model is asked (48.9а: a chat on the card, the editor's completion, an outside client, a
         check - a cloud chat is not on the card), the installs have no work (34.4) and the graphics card is quiet (by
         hand too, 42.4: a game or another program's work is in its numbers) - and, for automatic tuning, all this for
-        IDLE_S."""
+        IDLE_S; then the card is tuning's (48.9б1: TUNE, from local requests too), taken in the same step - the Studio
+        or a trial holding it, it waits on; a senior stops it (`_stop`)."""
         while True:
             now = time.monotonic()
             if self._card.asked or self._installing() or self._card_busy():
                 self._quiet_since = now
             elif not automatic or now - self._quiet_since >= IDLE_S:
-                return
+                if self._card.try_take(TUNE, chats=True, stop=self._stop):
+                    return
+                self._quiet_since = now  # the Studio or a trial holds the card: quiet once it is let go
             if self.job.get("status") != "waiting":
                 self.job = {"status": "waiting", "model_id": model_id}
                 await self._publish()
             await asyncio.sleep(WAIT_S)
+
+    def _stop(self) -> None:
+        """A senior needs the card (48.9б1: the Studio, a local request, an install's trial): what measures is let go -
+        llama-bench or llama-server -, a check of written settings ends first, no step starts after it. «halted»:
+        nothing kept, the model waits its turn again."""
+        self._halt.set()
+        self._kill()
 
     def _card_busy(self) -> bool:
         util = (self._gpu() or {}).get("util_pct")
@@ -604,6 +617,8 @@ class Tuner:
         then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays."""
         result = await self._tune_bench(model_id)
         for key, step in (("moe", self._tune_moe), ("spec", self._tune_spec)):
+            if self._halt.is_set():  # stopped during the check before: no step unloads a senior's model (48.9б1)
+                raise _Halted
             try:
                 found = await step(model_id)
             except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
@@ -820,7 +835,10 @@ class Tuner:
         return {"status": "better", "before": before, "after": choice, "settings": changes, "backup": backup}
 
     async def _unload(self) -> None:
-        """The graphics card free for measuring: llama-swap lets its models go."""
+        """The graphics card free for measuring: llama-swap lets its models go - not once tuning is stopped
+        (48.9б1): the model loaded now is a senior's."""
+        if self._halt.is_set():
+            raise _Halted
         with contextlib.suppress(httpx.HTTPError):
             async with httpx.AsyncClient(timeout=30.0) as http:
                 await http.post(f"{self._url}/api/models/unload")
@@ -831,6 +849,8 @@ class Tuner:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         self._process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                          encoding="utf-8", errors="replace", creationflags=flags)  # fmt: skip
+        if self._halt.is_set():  # stopped while it started (48.9б1): `_stop` looked before it was here
+            self._kill()
         lines: list[str] = []
         timer = threading.Timer(BENCH_TIMEOUT_S, self._kill)
         timer.start()

@@ -126,6 +126,8 @@ class Completions:
             local = model.get("locality") != "cloud"
             try:
                 with named(COMPLETION), self.card.asking(COMPLETION) if local else contextlib.nullcontext():
+                    if how == "infill":  # past the provider's gate: the card's own - tuning stopped first (48.9б1)
+                        await self.card.gate(asyncio.Event())
                     try:
                         pieces = (self._infill(ref, path, before, after, usage) if how == "infill"
                                   else self._chat(provider, ref, path, before, after, usage))  # fmt: skip

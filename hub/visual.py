@@ -31,7 +31,8 @@
   its job looked at (`/sdcpp/v1/jobs/<id>`), through llama-swap's `/upstream/<model>/` (it loads the model) - and
   so llama-swap holds nothing meanwhile: a local chat model's request would swap the video's engine out under it
   (29.8 live). The hub holds the card itself (hub/gpu_card.py): while a video is drawn its llama-swap provider waits
-  before each answer (`GpuCard.gate`; a «loading» line says why); an install's trial holding it, a job waits. The
+  before each answer (`GpuCard.gate`; a «loading» line says why); an install's trial holding it, a job waits;
+  tuning holding it is stopped first (48.9б1: the Studio is the person's, before tuning). The
   result is an animated WebP (the engine's own, 29.8 live); its MP4 (29.8в) is made once by ffmpeg when asked for -
   ffmpeg fetched the first time (hub/ffmpeg.py) - and kept beside it.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as

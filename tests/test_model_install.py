@@ -32,6 +32,7 @@ from hub import engines, hf, tuning, visual
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.auth import create_client
+from hub.gpu_card import TUNE
 from hub.server import create_app
 from hub.settings import HubSettings
 from tests.test_chat import WS_HOST, drain_until
@@ -1322,11 +1323,12 @@ def test_what_hugging_face_said_is_kept_for_the_next_start(hub, monkeypatch):
 
 def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     """34.4 (2026-11-08): «Подбор параметров» measured one model with llama-bench (past llama-swap) while an install's
-    trial loaded the next into llama-swap - two models at once filled the memory. The install waits, its files down,
-    while tuning measures - «ждёт пробного запуска» - and, before its trial, while a chat answers (its model would be
-    swapped out in the middle of an answer)."""
-    installer, tuner = hub.app.state.installer, hub.app.state.tuner
-    tuner.job = {"status": "measuring", "model_id": "big"}  # what the server's wiring tells the installer
+    trial loaded the next into llama-swap - two models at once filled the memory. The install's trial stops tuning
+    (48.9б1: a trial before tuning) and waits, its files down, until tuning lets the card go - «ждёт пробного запуска»
+    - and, before its trial, while a chat answers (its model would be swapped out in the middle of an answer)."""
+    installer, tuner, card = hub.app.state.installer, hub.app.state.tuner, hub.app.state.card
+    stopped = []
+    assert hub.portal.call(lambda: card.try_take(TUNE, chats=True, stop=lambda: stopped.append(1)))  # tuning measures
     asked = len(FakeLlamaSwap.asked)
     job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False}).json()["job"]
     waiting = wait_for(hub, job["id"], "trialwait")
@@ -1334,9 +1336,10 @@ def test_an_install_waits_for_tuning_and_a_chat_before_its_trial(hub):
     time.sleep(0.4)
     assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked  # nothing loaded meanwhile
     assert "tiny-q4_k_m" not in lc.model_blocks(hub.config.read_text(encoding="utf-8"))
+    assert stopped  # the trial asked tuning to stop
     assert tuner._installing()  # and tuning, for its part, waits while the installs have work
     installer.card.asked["chat"] = 1  # a local chat answers
-    tuner.job = {"status": "idle"}
+    hub.portal.call(card.give, TUNE)  # tuning has let go
     time.sleep(0.4)
     assert wait_for(hub, job["id"], "trialwait") and len(FakeLlamaSwap.asked) == asked
     installer.card.asked.pop("chat")
