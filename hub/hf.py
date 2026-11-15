@@ -68,6 +68,8 @@ SPLIT = re.compile(r"-(\d{5})-of-(\d{5})$")
 # files beside the model that are not a variant of it: vision projectors (offered apart), speculative drafts, imatrix
 # data (imatrix.gguf, model.imatrix.gguf) - a model's own name may say «imatrix» too (32.3: …-iMatrix-NVFP4.gguf)
 NOT_MODEL = re.compile(r"(?i)^(mmproj|mtp-|dflash-|eagle\d*-|draft|imatrix)|[._-]imatrix\.gguf$")
+# a half of a video model in two (48.2, Wan2.2 A14B): QuantStack's «HighNoise/…-HighNoise-», bullerwins' «_high_noise_»
+NOISE = re.compile(r"(?i)(?<![a-z])(high|low)[_-]?noise(?![a-z])")
 UNRESTRICTED = re.compile(r"(?i)abliterat|uncensor|heretic|unfilter|unrestrict|refusal")
 # a model's size in its repository's name: 27B, 0.8B, 135M - not the active 3B of «30B-A3B», not «E4B» or «8x7B»
 NAMED_SIZE = re.compile(r"(?i)(?<![A-Z0-9.])(\d+(?:\.\d+)?)([BM])(?![A-Z0-9])")
@@ -313,6 +315,51 @@ def variants(files: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[di
             by_quant[quant] = variant
     out = sorted(by_quant.values(), key=lambda v: v["size"])
     return out, sorted(projectors, key=lambda p: p["size"])
+
+
+def model_of(path: str) -> str:
+    """Which model of a repository a file is (48.2): its path without the quantization and the half's word - lower case;
+    a model's variants and a pair's halves share it, unsloth's dev and distilled LTX-2.3 do not."""
+    stem = SPLIT.sub("", path.removesuffix(".gguf"))
+    found = list(QUANT.finditer(stem))
+    if found:
+        stem = stem[: found[-1].start()].rstrip("-_.") + stem[found[-1].end() :]
+    return NOISE.sub("noise", stem).strip("-_.").lower()
+
+
+def picture_variants(files: list[dict[str, Any]], *, has: list[str] | tuple[str, ...] = (),
+                     lacks: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:  # fmt: skip
+    """A repository's variants of the model that draws or films (48.2): the GGUF files of one model (model_of) and one
+    quantization - one file (`diffusion-model`), or a pair's halves (HighNoise and LowNoise: the low one the model, the
+    high one `high-noise-diffusion-model`; a half without its pair is not offered). `has` and `lacks` - words the path
+    has and has not (lower case): a family's model among the repository's others. A split file is not offered:
+    sd-server takes one file a part. Several models left - a variant's `quant` names its model too."""
+    groups: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    for f in files:
+        path, low = f["path"], f["path"].lower()
+        name = PurePosixPath(path).name
+        if not low.endswith(".gguf") or NOT_MODEL.search(name) or SPLIT.search(name.removesuffix(".gguf")):
+            continue
+        if any(word not in low for word in has) or any(word in low for word in lacks):
+            continue
+        quant = quant_of(path)
+        if quant:
+            half = NOISE.search(name) or NOISE.search(path)
+            groups.setdefault((model_of(path), quant), {})[half.group(1).lower() if half else ""] = f
+    models = {model for model, _ in groups}
+    out = []
+    for (model, quant), halves in groups.items():
+        if "" in halves:
+            files_ = [(halves[""], "diffusion-model")]
+        elif "high" in halves and "low" in halves:
+            files_ = [(halves["low"], "diffusion-model"), (halves["high"], "high-noise-diffusion-model")]
+        else:
+            continue
+        label = quant if len(models) == 1 else f"{PurePosixPath(model).name} {quant}"
+        out.append({"quant": label, "model": model, "size": sum(f["size"] for f, _ in files_),
+                    "files": [{"path": f["path"], "size": f["size"], "sha256": f.get("sha256"), "role": role}
+                              for f, role in files_]})  # fmt: skip
+    return sorted(out, key=lambda v: v["size"])
 
 
 async def repository(http: httpx.AsyncClient, repo: str, token: str | None = None) -> dict[str, Any]:

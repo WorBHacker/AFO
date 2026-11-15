@@ -105,8 +105,22 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
             # a found model of Draw's family (47.5), quantized by someone else: its variants, no encoder or VAE
             "someone/Draw-More-GGUF": {"draw-more-Q2_K.gguf": b"d" * 20_000, "draw-more-Q4_0.gguf": b"d" * 40_000,
                                        "draw-more-Q8_0.gguf": b"d" * 80_000,
-                                       "draw-more-F16.gguf": b"d" * 160_000}}  # fmt: skip
-BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"]}  # its tags (47.2)
+                                       "draw-more-F16.gguf": b"d" * 160_000},
+            # 48.2: a video model in two halves (Wan2.2 A14B: HighNoise and LowNoise), its set's and a found one's -
+            # one half without its pair; and a repository of two models and an encoder (unsloth's LTX-2.3, MiniMax)
+            "test/Pair-GGUF": {"HighNoise/pair-HighNoise-Q4_0.gguf": b"H" * 30_000,
+                               "LowNoise/pair-LowNoise-Q4_0.gguf": b"L" * 30_000},
+            "someone/Pair-More-GGUF": {"pair_high_noise_Q4_0.gguf": b"h" * 25_000,
+                                       "pair_low_noise_Q4_0.gguf": b"l" * 25_000,
+                                       "pair_high_noise_Q8_0.gguf": b"h" * 50_000,
+                                       "pair_low_noise_Q8_0.gguf": b"l" * 50_000,
+                                       "pair_high_noise_Q2_K.gguf": b"h" * 12_000},
+            "someone/Film-Two-GGUF": {"film-dev-Q4_0.gguf": b"f" * 40_000, "film-dev-UD-Q4_0.gguf": b"f" * 44_000,
+                                      "distilled/film-distilled-Q4_0.gguf": b"F" * 41_000,
+                                      "encoder-Q4_K_M.gguf": b"E" * 30_000}}  # fmt: skip
+BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"],  # its tags (47.2)
+         "someone/Pair-More-GGUF": ["base_model:quantized:test/Pair"],
+         "someone/Film-Two-GGUF": ["base_model:quantized:test/Film"]}  # fmt: skip
 RENAMED = {"test/Old-Words-GGUF": "test/Words-GGUF"}  # a renamed repository: Hugging Face's 307 to the new name (47.9)
 # draft models guessing ahead (42.3): their vocabulary is the model's, or one token is another
 WORDS = [f"w{i}" for i in range(400)]
@@ -1506,6 +1520,78 @@ def test_the_video_search_finds_models_by_text_and_by_picture(hub):
         assert all(m["drawn"] for m in filmed)  # sd-server's, not llama.cpp's
     finally:
         del SEARCH[-len(extra) :]
+
+
+PAIR = {"id": "pair", "name": "Pair", "kind": "video", "purposes": ["video"], "tier": "video", "license": "apache-2.0",
+        "original": "test/Pair", "bases": ["test/Pair"], "size": 832, "card": False, "about": {"ru": "Снимает"},
+        "flags": ["--cfg-scale", "3.5", "--steps", "4", "--high-noise-steps", "2"],
+        "files": [{"role": "diffusion-model", "repo": "test/Pair-GGUF", "path": "LowNoise/pair-LowNoise-Q4_0.gguf"},
+                  {"role": "high-noise-diffusion-model", "repo": "test/Pair-GGUF",
+                   "path": "HighNoise/pair-HighNoise-Q4_0.gguf"},
+                  {"role": "t5xxl", "repo": "test/Umt5-GGUF", "path": "umt5-Q4_K_M.gguf"},
+                  {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
+FILM = {"id": "film-dev", "name": "Film dev", "kind": "video", "purposes": ["video"], "tier": "video",
+        "license": "apache-2.0", "original": "test/Film", "bases": ["test/Film"], "size": 768, "card": False,
+        "about": {"ru": "Снимает"}, "names": {"has": ["dev"]}, "flags": ["--cfg-scale", "3", "--steps", "20"],
+        "files": [{"role": "diffusion-model", "repo": "someone/Film-Two-GGUF", "path": "film-dev-Q4_0.gguf"},
+                  {"role": "llm", "repo": "test/Words-GGUF", "path": "words-Q4_K_M.gguf"},
+                  {"role": "vae", "repo": "test/Vae", "path": "split_files/vae/vae.safetensors"}]}  # fmt: skip
+DISTILLED = {**FILM, "id": "film-distilled", "name": "Film distilled", "names": {"has": ["distilled"]},
+             "flags": ["--cfg-scale", "1", "--steps", "8"],
+             "files": [{"role": "diffusion-model", "repo": "someone/Film-Two-GGUF",
+                        "path": "distilled/film-distilled-Q4_0.gguf"}, *FILM["files"][1:]]}  # fmt: skip
+
+
+def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch):
+    """48.2: a repository may hold several models - unsloth's LTX-2.3 the dev one and the distilled one (two families of
+    one base model), MiniMax-H3 its encoder beside it - and Wan2.2 A14B comes in two halves, HighNoise and LowNoise, a
+    pair of each quantization. A variant is of one model: its family's (`names` - words its path has), not one file
+    a quantization kept and the others dropped; a pair is one variant - the low half the model, the high one
+    `--high-noise-diffusion-model`, a half without its pair not offered; both come and go together."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR, FILM, DISTILLED]}), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0)
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
+
+    film = hub.get("/v1/install/pictures/repo/someone/Film-Two-GGUF")
+    assert film.status_code == 200, film.text
+    film = film.json()
+    assert sorted(v["size"] for v in film["variants"]) == [40_000, 41_000, 44_000]  # both Q4_0, the encoder not
+    assert [(f["id"], f["name"]) for f in film["families"]] == [("film-dev", "Film dev"),
+                                                                 ("film-distilled", "Film distilled")]  # fmt: skip
+    assert sorted((v["family"], v["quant"], v["size"]) for v in film["variants"]) == [
+        ("film-dev", "Q4_0", 40_000), ("film-dev", "UD-Q4_0", 44_000),
+        ("film-distilled", "Q4_0", 41_000)]  # no encoder among them  # fmt: skip
+
+    pair = hub.get("/v1/install/pictures/repo/someone/Pair-More-GGUF").json()
+    assert (pair["family"], [v["quant"] for v in pair["variants"]]) == ("pair", ["Q4_0", "Q8_0"])  # Q2_K: half
+    assert pair["variants"][0]["size"] == 50_000 and [(f["role"], f["path"]) for f in pair["variants"][0]["files"]] == [
+        ("diffusion-model", "pair_low_noise_Q4_0.gguf"),
+        ("high-noise-diffusion-model", "pair_high_noise_Q4_0.gguf")]  # fmt: skip
+
+    job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q4_0"})
+    assert job.status_code == 200, job.text
+    done = wait_for(hub, job.json()["job"]["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    folder = Path(done["folder"])
+    view = lc.model_view(hub.config.read_text(encoding="utf-8"), done["model_id"])
+    assert f'--diffusion-model "{(folder / "pair_low_noise_Q4_0.gguf").as_posix()}"' in view["command"]
+    assert f'--high-noise-diffusion-model "{(folder / "pair_high_noise_Q4_0.gguf").as_posix()}"' in view["command"]
+    assert "--high-noise-steps 2" in view["command"]
+    job = hub.post("/v1/install/pictures", json={"id": "film-distilled", "repo": "someone/Film-Two-GGUF",
+                                                 "quant": "Q4_0"}).json()["job"]  # fmt: skip
+    assert [f["path"] for f in job["files"] if f["role"] == "diffusion-model"] == ["distilled/film-distilled-Q4_0.gguf"]
+    assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
+    wrong = hub.post("/v1/install/pictures", json={"id": "film-distilled", "repo": "someone/Film-Two-GGUF",
+                                                   "quant": "UD-Q4_0"})  # fmt: skip
+    assert wrong.status_code == 404  # the dev model's variant, not the distilled one's
+
+    hub.delete(f"/v1/install/models/{done['model_id']}")
+    assert not (folder / "pair_low_noise_Q4_0.gguf").exists() and not (folder / "pair_high_noise_Q4_0.gguf").exists()
 
 
 def test_a_found_picture_model_is_known_by_its_family(hub):

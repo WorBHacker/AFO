@@ -71,7 +71,8 @@ CATALOG = Path(__file__).with_name("model_catalog.json")
 PURPOSES = {"chat": N_("Разговоры"), "code": N_("Код"), "vision": N_("Понимать картинки"), "image": N_("Рисовать"),
             "video": N_("Видео")}  # fmt: skip
 SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (29.3)
-PICTURE_MAIN = ("model", "diffusion-model")  # a picture set's own model among its files (the rest: encoders, VAE)
+# a picture set's own model among its files (the rest: encoders, VAE) - and a video model's other half (48.2)
+PICTURE_MAIN = ("model", "diffusion-model", "high-noise-diffusion-model")
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 SHARED = "_shared"  # under `pictures`: a family's encoders and VAE, one copy for all its models (47.3)
 # a picture model judged by its sizes (47.4) as stable-diffusion.cpp's auto-fit places it when it starts (master-1053,
@@ -178,15 +179,29 @@ def picture_fit(model: int, parts: int, space: dict[str, Any]) -> str:
     return "split" if card else "cpu"
 
 
-def picture_family(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
-    """The picture set whose family a found repository's model is (47.2): the set's own main repository, or the base
-    model its files are quantized or trained from (hf.bases) - the set's encoders, VAE and flags are then its too."""
+def picture_families(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """The picture sets whose family a found repository's models are (47.2): the sets whose main repository it is, or
+    the base model its files are quantized or trained from (hf.bases) - the set's encoders, VAE and flags are then its
+    too. Several (48.2): unsloth's LTX-2.3 holds the dev model and the distilled one - one base, two families."""
     listed = picture_sets() if listed is None else listed
-    own = next((e for e in listed for f in e["files"] if f["repo"] == repo and f["role"] in PICTURE_MAIN), None)
-    if own is not None:
+    own = [e for e in listed if any(f["repo"] == repo and f["role"] in PICTURE_MAIN for f in e["files"])]
+    if own:
         return own
     wanted = {b.lower() for b in bases}
-    return next((e for e in listed if wanted & {b.lower() for b in e.get("bases") or []}), None)
+    return [e for e in listed if wanted & {b.lower() for b in e.get("bases") or []}]
+
+
+def picture_family(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    """The first of picture_families: the set a search row names."""
+    return next(iter(picture_families(repo, bases, listed)), None)
+
+
+def family_variants(entry: dict[str, Any], files: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """A found repository's variants of a family's model (48.2): its files that `names` says (words the path has and
+    has not), one file or a pair of halves (hf.picture_variants)."""
+    names = entry.get("names") or {}
+    return hf.picture_variants([{"path": path, **f} for path, f in files.items()], has=names.get("has") or (),
+                               lacks=names.get("lacks") or ())  # fmt: skip
 
 
 def picture_offer(entry: dict[str, Any]) -> dict[str, Any]:
@@ -1138,44 +1153,52 @@ class Installer:
         set's encoders and VAE (picture_fit), with them (`with_parts`) and with what is not on the disk yet
         (`coming`, 47.3) - the one recommended, the parts and whether each is here, whether the engine comes too."""
         found = await self._listed(repo)
-        entry = picture_family(repo, found.get("bases") or [])
-        if entry is None:
+        families = picture_families(repo, found.get("bases") or [])
+        if not families:
             raise InstallError(tr("AFO пока не умеет ставить {repo} сам: семейства этой модели нет в его списке",
                                   repo=repo), 404)  # fmt: skip
-        variants, _ = hf.variants([{"path": path, **f} for path, f in found["files"].items()])
-        variants = [v for v in variants if len(v["files"]) == 1]  # sd-server takes one file a part (47.6)
-        if not variants:
-            raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
-        parts = [f for f in await self.picture_files(entry) if f["role"] not in PICTURE_MAIN]
         named = await self._db.acall(_named)
-        await asyncio.to_thread(_share, parts, named, models_home() / "pictures" / SHARED)
-        with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
         space, params = self.space(), found.get("params") or 0
-        shown = []
-        for v in variants:
-            bits = round(v["size"] * 8 / params, 1) if params else None
-            verdict = picture_fit(v["size"], with_parts, space)
-            shown.append({"quant": v["quant"], "size": v["size"], "gb": round(v["size"] / 1e9, 1), "bits": bits,
-                          "quality": quality_of(bits), "verdict": verdict, "words": tr(VERDICTS[verdict]),
-                          "with_parts": v["size"] + with_parts, "coming": v["size"] + coming})  # fmt: skip
+        shown: list[dict[str, Any]] = []
+        parts_of: dict[str, list[dict[str, Any]]] = {}
+        for entry in families:  # 48.2: each family's model of the repository, with that family's parts
+            variants = family_variants(entry, found["files"])
+            if not variants:
+                continue
+            listed = await self.picture_files(entry)
+            parts = parts_of[entry["id"]] = [f for f in listed if f["role"] not in PICTURE_MAIN]
+            await asyncio.to_thread(_share, parts, named, models_home() / "pictures" / SHARED)
+            with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
+            for v in variants:  # a pair's halves - each the parameters Hugging Face counted in one
+                bits = round(v["size"] / len(v["files"]) * 8 / params, 1) if params else None
+                verdict = picture_fit(v["size"], with_parts, space)
+                shown.append({"family": entry["id"], "name": entry["name"], "quant": v["quant"], "size": v["size"],
+                              "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits),
+                              "verdict": verdict, "words": tr(VERDICTS[verdict]), "with_parts": v["size"] + with_parts,
+                              "coming": v["size"] + coming,
+                              "files": [{k: f[k] for k in ("path", "role", "size")} for f in v["files"]]})  # fmt: skip
+        if not shown:
+            raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
         fast = [v for v in shown if v["verdict"] == "gpu" and (
             v["bits"] <= MAX_BITS if v["bits"] is not None else v["quant"] not in hf.SIXTEEN_BITS)]  # fmt: skip
         best = max(fast, key=lambda v: v["size"]) if fast else min(
             (v for v in shown if v["verdict"] != "no"), key=lambda v: v["size"], default=None)  # fmt: skip
         for v in shown:
-            v["recommended"] = best is not None and v["quant"] == best["quant"]  # as a chat model's variants say it
+            v["recommended"] = v is best  # as a chat model's variants say it
         try:
             engine = sd_server(await asyncio.to_thread(config_text)) is None
         except InstallError:
             engine = True
         await self._keep_answers()
+        entry = next(e for e in families if e["id"] == (best or shown[0])["family"])  # the recommended one's family
         licence = found["license"] or entry["license"]  # none on its page (leejet's FLUX.3 klein): the family's (47.9)
         return {"repo": repo, "family": entry["id"], "name": entry["name"], "kind": entry.get("kind", "image"),
+                "families": [{"id": e["id"], "name": e["name"]} for e in families if e["id"] in parts_of],
                 "size": entry["size"], "license": licence, "license_kind": hf.license_kind(licence),
                 "gated": found["gated"], "page": found["page"], "variants": shown,
                 "recommended": best["quant"] if best else "", "engine": engine,
                 "parts": [{"role": p["role"], "repo": p["repo"], "path": p["path"], "size": p["size"],
-                           "have": p["done"]} for p in parts]}  # fmt: skip
+                           "have": p["done"]} for p in parts_of[entry["id"]]]}  # fmt: skip
 
     async def _engine_files(self, build: str) -> list[dict[str, Any]]:
         """The picture engine's archives the config does not name yet: its pinned build for this computer and, beside
@@ -1268,22 +1291,19 @@ class Installer:
         self._kick()
         return await self._db.acall(lambda conn: job(conn, job_id))
 
-    async def _found_main(self, entry: dict[str, Any], repo: str, quant: str) -> tuple[dict[str, Any], str]:
-        """A found model's variant as a picture set's model (47.6): its file - in the set's role for it - and the
-        repository's licence; refused when the repository is not of the set's family or has no such variant in one
-        file (sd-server takes one file a part)."""
+    async def _found_main(self, entry: dict[str, Any], repo: str, quant: str) -> tuple[list[dict[str, Any]], str]:
+        """A found model's variant as a picture set's model (47.6): its files - one, or a pair's halves (48.2), each in
+        its role - and the repository's licence; refused when the repository is not of the set's family or has no such
+        variant of the family's model (family_variants)."""
         listed = await self._listed(repo)
-        family = picture_family(repo, listed.get("bases") or [])
-        if family is None or family["id"] != entry["id"]:
+        if entry["id"] not in {e["id"] for e in picture_families(repo, listed.get("bases") or [])}:
             raise InstallError(tr("{repo} — не модель семейства «{name}»", repo=repo, name=entry["name"]), 422)
-        variants, _ = hf.variants([{"path": path, **f} for path, f in listed["files"].items()])
-        variant = next((v for v in variants if v["quant"] == quant and len(v["files"]) == 1), None)
+        variant = next((v for v in family_variants(entry, listed["files"]) if v["quant"] == quant), None)
         if variant is None:
             raise InstallError(tr("у {repo} нет варианта {quant}", repo=repo, quant=quant), 404)
-        role = next(f["role"] for f in entry["files"] if f["role"] in PICTURE_MAIN)
-        file = variant["files"][0]
-        return {"path": file["path"], "repo": repo, "revision": listed["revision"], "done": False, "size": file["size"],
-                "sha256": file["sha256"], "role": role}, listed.get("license") or entry["license"]  # fmt: skip
+        files = [{"path": f["path"], "repo": repo, "revision": listed["revision"], "done": False, "size": f["size"],
+                  "sha256": f["sha256"], "role": f["role"]} for f in variant["files"]]  # fmt: skip
+        return files, listed.get("license") or entry["license"]
 
     async def install_pictures(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
         """A picture model from the curated list: {id, drive or folder}; or (47.6) a found one of the set's family -
@@ -1306,8 +1326,8 @@ class Installer:
         if video and picture_verdict(entry, machine) == "no":
             raise InstallError(tr("видео на этом компьютере — только в облаке: {why}", why=machine.get("why", "")))
         parts = {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}
-        own, licence = (await self._found_main(entry, repo, quant)) if found_repo else (None, entry["license"])
-        files = [*([own] if own else []), *await self.picture_files(entry if own is None else parts)]
+        own, licence = (await self._found_main(entry, repo, quant)) if found_repo else ([], entry["license"])
+        files = [*own, *await self.picture_files(parts if own else entry)]
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
         folder = root / "pictures" / (repo.replace("/", os.sep) if own else entry["id"])

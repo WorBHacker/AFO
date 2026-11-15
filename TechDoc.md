@@ -1457,6 +1457,16 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   кодировщик в репозитории модели — не её вариант; пара HighNoise и LowNoise одного квантования — один вариант, файлы
   с ролями `diffusion-model` и `high-noise-diffusion-model`. У семейства — каким файлам репозитория оно соответствует.
   Файлы: `hub/hf.py`, `hub/model_install.py`. Тест — подставной репозиторий «две модели и кодировщик» и пара.
+  Разделён (Правило 2): 48.2а — хаб, 48.2б — окно ставит вариант его семейства.
+  - 48.2а ✓ `hf.model_of` — путь без квантования и слова половины (`NOISE`: «HighNoise», «_high_noise_»);
+    `hf.picture_variants(files, has, lacks)` — вариант одной модели одного квантования: файл (`diffusion-model`) или
+    пара (низкая — модель, высокая — `high-noise-diffusion-model`; половина без пары не предлагается), разбитые на
+    части — нет; осталось несколько моделей — в `quant` и имя модели. `PICTURE_MAIN` знает вторую половину. У
+    семейства каталога — `names` (`has`, `lacks`); `picture_families` — все семейства репозитория (свой главный
+    репозиторий или база), `picture_family` — первое; `family_variants`. `picture_details` — варианты каждого
+    семейства с его частями (`family`, `name`, `files`; бит на вес — у половины), `families`; рекомендуемый — сам
+    вариант, не квантование. `_found_main` — файлы варианта списком. Тест —
+    `test_a_found_video_model_among_the_others_of_its_repository`.
 - 48.3 Свой ролик у семейства: в каталоге `video` — к/с, шаг кадров (4 или 8), размеры обычный и HD; `Visual.video` и
   проба берут их вместо общих TI2V-5B. Файлы: `common/picture_sizes.py`, `hub/visual.py`, `hub/model_catalog.json`.
   Тест: у LTX кадров 8k+1, у Wan2.1 — 16 к/с.
