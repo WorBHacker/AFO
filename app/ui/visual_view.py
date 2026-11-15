@@ -38,7 +38,8 @@ SHAPE_NAMES = [("square", N_("Квадрат")), ("wide", N_("Широкая")),
 QUALITY = [("fast", N_("Быстрее")), ("quality", N_("Качественнее"))]
 STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done": N_("готово"), "failed": N_("не вышло"),
           "cancelled": N_("остановлено")}  # fmt: skip
-RECENT = 12
+RECENT = 30  # the Studio's gallery (48.7в) - and its queue: the jobs going on are among the latest
+GALLERY = [("all", N_("Всё")), ("image", N_("Картинки")), ("video", N_("Видео"))]  # 48.7в
 MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
 # a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
 # the switch's short word (the Studio's column is narrow), the model menu's whole one
@@ -126,6 +127,8 @@ class VisualView(QObject):
         self._video_mode = "text"  # by words, by a picture, by two frames (48.7б)
         self._last: dict[str, str] = {}  # a video's last frame: {last_job | last_blob | last_png: value, shown: url}
         self._shown_last = 0
+        self._progress: dict[str, tuple[int, int]] = {}  # each job's step of its steps (48.7в: the queue)
+        self._gallery = "all"  # the gallery: all, pictures or videos (48.7в)
 
     # ================= for QML =================
 
@@ -326,9 +329,10 @@ class VisualView(QObject):
 
     @Property(list, notify=changed)
     def recent(self) -> list:
+        """The gallery: the latest pictures and videos done - all, or one kind (48.7в)."""
         out = []
         for j in self._recent:
-            if j["status"] != "done":
+            if j["status"] != "done" or self._gallery not in ("all", "video" if j.get("kind") == "video" else "image"):
                 continue
             if (video := self._video_file(j)) is not None:  # its first frame (29.8б)
                 out.append({"id": j["id"], "prompt": j["prompt"], "source": QUrl.fromLocalFile(str(video)).toString(),
@@ -336,6 +340,38 @@ class VisualView(QObject):
             elif j["id"] in self.provider.pictures:
                 out.append({"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
                             "chosen": j["id"] == self._job.get("id"), "video": False})  # fmt: skip
+        return out
+
+    @Property(bool, notify=changed)
+    def shownVideo(self) -> bool:
+        """Whether the job on the canvas is a video - not the mode chosen for the next one (48.7в)."""
+        return self._job.get("kind") == "video"
+
+    @Property(list, notify=changed)
+    def galleryFilters(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in GALLERY]
+
+    @Property(str, notify=changed)
+    def gallery(self) -> str:
+        return self._gallery
+
+    @Property(list, notify=changed)
+    def queue(self) -> list:
+        """The jobs going on (48.7в) - the hub's queue, as they came: each how far it is; ✕ cancels it."""
+        out = []
+        for j in self._recent:
+            if j["status"] not in ("queued", "running"):
+                continue
+            video = j.get("kind") == "video"
+            step, steps = self._progress.get(j["id"], (0, 0))
+            if j["status"] == "queued" and not steps:
+                words = tr("в очереди")
+            else:
+                doing = tr("снимаю") if video else tr("рисую")
+                words = tr("{doing}: шаг {step} из {steps}", doing=doing, step=step, steps=steps) if steps else doing
+            out.append({"id": j["id"], "kind": "video" if video else "image", "prompt": j.get("prompt", ""),
+                        "words": words, "percent": round(100.0 * step / steps, 1) if steps else 0.0,
+                        "shown": j["id"] == self._job.get("id")})  # fmt: skip
         return out
 
     def _video_file(self, found: dict[str, Any]) -> Path | None:
@@ -520,7 +556,7 @@ class VisualView(QObject):
             self._film(seed=seed)
             return
         model, width, height, _why = self._plan()
-        if not self._prompt.strip() or model is None or self.busy:
+        if not self._prompt.strip() or model is None:
             return
         spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "seed": seed}
         if self._source:  # its shape sizes it, in the hub (29.6б)
@@ -528,27 +564,53 @@ class VisualView(QObject):
             spec["strength"] = next(v for k, _n, v in STRENGTHS if k == self._strength)
         else:
             spec |= {"width": width, "height": height}
+        self._send(spec, video=False)
+
+    def _send(self, spec: dict[str, Any], *, video: bool) -> None:
+        """A job to the hub: on the canvas - or (48.7в) one already drawn there, into the hub's queue, the canvas
+        kept; the queue shows it."""
+        queued = self.busy
         if self.app.currentId:
             spec["conversation_id"] = self.app.currentId
-        self._job, self._step = {"status": "queued", "prompt": spec["prompt"]}, (0, 0)
-        self.changed.emit()
+        if not queued:
+            self._job, self._step = {"status": "queued", "prompt": spec["prompt"],
+                                     **({"kind": "video"} if video else {})}, (0, 0)  # fmt: skip
+            self.changed.emit()
 
         def started(result: dict[str, Any]) -> None:
-            self._job = result.get("job") or {}
+            job = result.get("job") or {}
+            self._keep(job)  # among the latest as it came: the queue keeps the hub's order
+            if not queued:
+                self._job = job
             self.changed.emit()
 
         def failed(error: Exception) -> None:
-            self._job = {}
-            self.app.show_error(tr("Не нарисовать: {error}", error=error))
+            if not queued:
+                self._job = {}
+            self.app.show_error(tr("Не снять видео: {error}", error=error) if video else tr(
+                "Не нарисовать: {error}", error=error))  # fmt: skip
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.visual_draw(spec), started, failed)
+        if video:
+            self.app.call_or_fail(lambda: self.app.client.visual_video(spec), started, failed)
+        else:
+            self.app.call_or_fail(lambda: self.app.client.visual_draw(spec), started, failed)
+
+    def _keep(self, job: dict[str, Any]) -> None:
+        """A job among the latest: a new one first, a known one where it was (48.7в: the queue keeps its order)."""
+        if not job.get("id"):
+            return
+        at = next((i for i, j in enumerate(self._recent) if j["id"] == job["id"]), None)
+        if at is None:
+            self._recent = [job, *self._recent][:RECENT]
+        else:
+            self._recent[at] = job
 
     def _film(self, *, seed: int) -> None:
         """A video (29.8б): the description, the shape, how long, «Качественнее» - the family's larger size; (48.7б)
         its model as chosen, by a picture - the first frame as «По картинке» takes one - and by two frames."""
         model = self._video_model()
-        if not self._prompt.strip() or model is None or self.busy:
+        if not self._prompt.strip() or model is None:
             return
         if self._video_mode != "text" and not self._source:
             self.app.flash(tr("Выберите первый кадр"), ms=2500)
@@ -559,21 +621,7 @@ class VisualView(QObject):
             spec |= {k: v for k, v in self._source.items() if k != "shown"}
         if self._video_mode == "frames" and self._last:
             spec |= {k: v for k, v in self._last.items() if k != "shown"}
-        if self.app.currentId:
-            spec["conversation_id"] = self.app.currentId
-        self._job, self._step = {"status": "queued", "kind": "video", "prompt": spec["prompt"]}, (0, 0)
-        self.changed.emit()
-
-        def started(result: dict[str, Any]) -> None:
-            self._job = result.get("job") or {}
-            self.changed.emit()
-
-        def failed(error: Exception) -> None:
-            self._job = {}
-            self.app.show_error(tr("Не снять видео: {error}", error=error))
-            self.changed.emit()
-
-        self.app.call_or_fail(lambda: self.app.client.visual_video(spec), started, failed)
+        self._send(spec, video=True)
 
     # ================= «По картинке» (29.6б) =================
 
@@ -651,6 +699,17 @@ class VisualView(QObject):
             self.app._call(lambda: self.app.client.visual_cancel(job_id), lambda _r: None, lambda _e: None)
 
     @Slot(str)
+    def cancelJob(self, job_id: str) -> None:
+        """✕ of a job in the queue (48.7в)."""
+        if any(j["id"] == job_id and j["status"] in ("queued", "running") for j in self._recent):
+            self.app._call(lambda: self.app.client.visual_cancel(job_id), lambda _r: None, lambda _e: None)
+
+    @Slot(str)
+    def setGallery(self, kind: str) -> None:
+        self._gallery = kind if kind in {k for k, _n in GALLERY} else "all"
+        self.changed.emit()
+
+    @Slot(str)
     def pick(self, job_id: str) -> None:
         """One of the latest pictures to the big frame."""
         found = next((j for j in self._recent if j["id"] == job_id), None)
@@ -707,9 +766,12 @@ class VisualView(QObject):
 
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         if kind == "visual.progress":
+            step = (int(payload.get("step") or 0), int(payload.get("steps") or 0))
+            self._progress[str(payload.get("id") or "")] = step  # the queue's (48.7в)
             if payload.get("id") != self._job.get("id"):
+                self.changed.emit()
                 return
-            self._step = (int(payload.get("step") or 0), int(payload.get("steps") or 0))
+            self._step = step
             try:
                 preview = base64.b64decode(payload.get("preview") or "")
             except ValueError:  # binascii.Error is one
@@ -721,7 +783,9 @@ class VisualView(QObject):
         job = payload.get("job") or {}
         if not job.get("id"):
             return
-        self._recent = [job, *[j for j in self._recent if j["id"] != job["id"]]][:RECENT]
+        self._keep(job)
+        if job["status"] not in ("queued", "running"):
+            self._progress.pop(job["id"], None)
         if job["id"] == self._job.get("id"):
             self._job = job
             if job["status"] != "running":

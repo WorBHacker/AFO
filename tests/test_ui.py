@@ -7241,6 +7241,58 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         quick.close()
 
 
+def test_the_studios_queue_and_gallery(qapp):
+    """48.7в: while one picture is drawn another goes into the hub's queue («В очередь») without taking the canvas; the
+    queue shows each job with how far it is and ✕ to cancel it; the gallery - pictures and videos, all of them or only
+    one kind; a click puts one on the canvas."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasModels and view.hasVideo)
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        first = client.visual_jobs_list[0]
+        assert view.busy
+        view.setMode("video")
+        view.draw()  # the first still drawn: the video goes into the queue («В очередь», Enter)
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 2)
+        second = client.visual_jobs_list[0]
+        assert client.visual_calls[-1][0] == "video" and view._job["id"] == first["id"]  # the canvas keeps the first
+        app.on_event({"type": "visual.changed", "payload": {"job": {**first, "status": "running"}}})
+        app.on_event({"type": "visual.progress", "payload": {"id": second["id"], "step": 1, "steps": 4}})
+        assert [(q["id"], q["kind"], q["percent"]) for q in view.queue] == [
+            (second["id"], "video", 25.0), (first["id"], "image", 0.0)]  # fmt: skip
+        assert view.queue[0]["words"] == "снимаю: шаг 1 из 4" and view.queue[1]["words"] == "рисую"
+        view.cancelJob(second["id"])
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1] == ("cancel", second["id"]))
+
+        app.on_event({"type": "visual.changed", "payload": {"job": {**first, "status": "done",
+                                                                    "file": f"2026-11/{first['id']}.png"}}})  # fmt: skip
+        wait_until(lambda: not app.bg.busy and view.recent)
+        app.on_event({"type": "visual.changed", "payload": {"job": {**second, "status": "cancelled"}}})
+        assert view.queue == [] and [r["id"] for r in view.recent] == [first["id"]]
+        assert [f["id"] for f in view.galleryFilters] == ["all", "image", "video"]
+        view.setGallery("video")
+        assert view.recent == []
+        view.setGallery("image")
+        assert [r["id"] for r in view.recent] == [first["id"]]
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_studio_chooses_its_model_and_films_by_two_frames(qapp, tmp_path):
     """48.7б: in the Studio the model is chosen - «Авто» as «Быстрее ↔ Качественнее» says, or one of those installed;
     a video by words, by a picture or by two frames as its model films (the hub's `modes`): the first frame as «По

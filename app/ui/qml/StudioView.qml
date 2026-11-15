@@ -276,6 +276,15 @@ Item {
                     text: Visual.busy ? qsTr("Стоп") : (Visual.mode === "video" ? qsTr("Снять видео") : qsTr("Нарисовать"))
                     onClicked: Visual.busy ? Visual.stop() : Visual.draw()
                 }
+                PlainButton {  // 48.7в: one drawn - the next into the hub's queue, the canvas kept
+                    objectName: "visualEnqueue"
+                    visible: Visual.busy
+                    width: parent.width
+                    iconName: "plus"
+                    enabled: promptArea.text.trim() !== ""
+                    text: qsTr("В очередь")
+                    onClicked: Visual.draw()
+                }
                 Note { text: Visual.modelText; color: Theme.p.faint; visible: text !== "" }
             }
         }
@@ -321,7 +330,7 @@ Item {
             x: 20
             y: 46
             width: parent.width - 40
-            height: parent.height - y - actions.height - latest.height - 36
+            height: parent.height - y - actions.height - latest.height - queueStrip.height - 36
             radius: 8
             color: Theme.p.card
             border.color: Theme.p.hairline
@@ -349,7 +358,7 @@ Item {
             Text {
                 anchors.centerIn: parent
                 visible: Visual.pictureSource === "" && Visual.videoSource === ""
-                text: Visual.busy ? (Visual.mode === "video" ? qsTr("Снимаю видео — это минута или больше…")
+                text: Visual.busy ? (Visual.shownVideo ? qsTr("Снимаю видео — это минута или больше…")
                                                                : qsTr("Загружаю модель…"))
                                   : (Visual.mode === "video" ? qsTr("Здесь появится видео") : qsTr("Здесь появится картинка"))
                 color: Theme.p.faint
@@ -390,16 +399,100 @@ Item {
                 onClicked: Visual.openFolder()
             }
         }
+        // 48.7в: the jobs going on - each how far it is, ✕ to cancel
+        ListView {
+            id: queueStrip
+            objectName: "visualQueue"
+            x: 20
+            anchors.bottom: latest.top
+            anchors.bottomMargin: latest.visible ? 10 : 0
+            width: parent.width - 40
+            height: Visual.queue.length > 0 ? 56 : 0
+            visible: Visual.queue.length > 0
+            orientation: ListView.Horizontal
+            spacing: 8
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: Visual.queue
+            delegate: Rectangle {
+                id: queued
+                required property var modelData
+                width: 240
+                height: 56
+                radius: 6
+                color: Theme.p.card
+                border.color: queued.modelData.shown ? Theme.p.accent : Theme.p.hairline
+                Icon {
+                    x: 10
+                    y: 10
+                    name: queued.modelData.kind === "video" ? "play" : "image"
+                    size: 14
+                }
+                Text {
+                    x: 32
+                    y: 8
+                    width: parent.width - 32 - 34
+                    text: queued.modelData.prompt
+                    elide: Text.ElideRight
+                    color: Theme.p.text
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                Text {
+                    x: 32
+                    y: 26
+                    width: parent.width - 32 - 34
+                    text: queued.modelData.words
+                    elide: Text.ElideRight
+                    color: Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                }
+                Rectangle {
+                    x: 10
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 6
+                    width: parent.width - 20
+                    height: 2
+                    radius: 1
+                    color: Theme.p.hairline
+                    Rectangle {
+                        width: parent.width * queued.modelData.percent / 100
+                        height: parent.height
+                        radius: 1
+                        color: Theme.p.accent
+                    }
+                }
+                IconButton {
+                    objectName: "visualCancel_" + queued.modelData.id
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    y: 6
+                    iconName: "close"
+                    tip: qsTr("Отменить")
+                    onClicked: Visual.cancelJob(queued.modelData.id)
+                }
+            }
+        }
         Column {
             id: latest
             x: 20
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 12
             width: parent.width - 40
-            height: Visual.recent.length > 0 ? 112 : 0
+            height: Visual.recent.length > 0 || Visual.gallery !== "all" ? 124 : 0
             spacing: 6
-            visible: Visual.recent.length > 0
-            Label { text: qsTr("Последние") }
+            visible: height > 0
+            Row {
+                spacing: 12
+                Label { text: qsTr("Последние"); anchors.verticalCenter: parent.verticalCenter }
+                Segmented {  // 48.7в: all, pictures or videos
+                    objectName: "visualGallery"
+                    options: Visual.galleryFilters
+                    value: Visual.gallery
+                    onPicked: (id) => Visual.setGallery(id)
+                }
+            }
             ListView {
                 objectName: "visualRecent"
                 width: parent.width
@@ -425,6 +518,17 @@ Item {
                         sourceSize.height: 160
                         fillMode: Image.PreserveAspectCrop
                         asynchronous: true
+                    }
+                    Rectangle {  // a video: its first frame, marked
+                        visible: thumb.modelData.video
+                        x: 6
+                        y: 6
+                        width: 20
+                        height: 20
+                        radius: 10
+                        color: Theme.p.window
+                        opacity: 0.85
+                        Icon { anchors.centerIn: parent; name: "play"; size: 12; tint: Theme.p.text }
                     }
                     MouseArea {
                         id: thumbMouse
