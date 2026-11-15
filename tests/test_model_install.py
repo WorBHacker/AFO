@@ -25,7 +25,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from common import gguf, llama_memory
+from common import gguf, llama_memory, picture_sizes
 from common.paths import data_paths, engines_home
 from hub import engines, hf, tuning, visual
 from hub import llama_config as lc
@@ -1668,7 +1668,7 @@ def test_a_found_picture_model_is_known_by_its_family(hub):
         assert listed[unsloth]["bases"] == [z] and listed[lora]["bases"] == [] and listed[merge]["bases"] == []
         filmed = hub.get("/v1/install/search", params={"task": "video"}).json()["models"]
         assert {m["repo"]: m["family"] for m in filmed if m["repo"] in (plain, turbo)} == {
-            plain: "", turbo: "wan2.2-ti2v-5b-turbo"}  # fmt: skip
+            plain: "wan2.2-ti2v-5b", turbo: "wan2.2-ti2v-5b-turbo"}  # fmt: skip  # not the Turbo's: its own (48.6)
         said = hub.get("/v1/install/search", params={"q": "qwen3"}).json()["models"]
         assert [(m["repo"], m["family"], m["drawn"], m["bases"]) for m in said] == [
             (chat, "", False, ["Qwen/Qwen3-4B"])]  # fmt: skip
@@ -1866,7 +1866,74 @@ def test_the_catalogs_drafts():
     assert {"qwen3", "qwen3moe", "qwen3vl", "qwen3vlmoe"} <= set(qwen3["architectures"])
 
 
-SD_PARTS = {"model", "diffusion-model", "llm", "vae", "t5xxl", "clip_l", "clip_g"}  # sd-server's own (master-1053)
+# sd-server's own parts (master-1053); (48.6) a video's second half, Wan2.1 I2V's image encoder, LTX-2.3's connectors
+SD_PARTS = {"model", "diffusion-model", "llm", "vae", "t5xxl", "clip_l", "clip_g", "high-noise-diffusion-model",
+            "clip_vision", "embeddings-connectors"}  # fmt: skip
+
+
+def test_the_catalogs_video_families():
+    """48.6: the video families of sd.cpp's documentation and recipes - Wan2.1 and 2.2, LTX-2.3 and 2.5, HunyuanVideo
+    1.5, MiniMax-H3 (without sound). The video search of 2026-11-15 with the base models Hugging Face tagged each:
+    the families AFO installs, VACE and S2V not yet (stage 49); and their files as those repositories name them - the
+    family's model among the others: LTX's dev apart from the distilled, MiniMax's encoder not a variant, a pair of
+    halves one variant."""
+    shipped = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    seen = {"QuantStack/Wan2.2-T2V-A14B-GGUF": "Wan-AI/Wan2.2-T2V-A14B",
+            "QuantStack/Wan2.2-I2V-A14B-GGUF": "Wan-AI/Wan2.2-I2V-A14B",
+            "bullerwins/Wan2.2-I2V-A14B-GGUF": "Wan-AI/Wan2.2-I2V-A14B",
+            "unsloth/LTX-2.3-GGUF": "Lightricks/LTX-2.3", "unsloth/LTX-2.5-GGUF": "Lightricks/LTX-2.5",
+            "unsloth/Wan2.2-TI2V-5B-GGUF": "Wan-AI/Wan2.2-TI2V-5B",
+            "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF": "quanhaol/Wan2.2-TI2V-5B-Turbo",
+            "unsloth/MiniMax-H3-GGUF": "MiniMaxAI/MiniMax-H3", "Abiray/MiniMax-H3-Pruned-GGUF": "MiniMaxAI/MiniMax-H3",
+            "city96/Wan2.1-I2V-14B-480P-gguf": "Wan-AI/Wan2.1-I2V-14B-480P",
+            "samuelchristlie/Wan2.1-T2V-1.3B-GGUF": "Wan-AI/Wan2.1-T2V-1.3B",
+            "jayn7/HunyuanVideo-1.5_T2V_480p-GGUF": "tencent/HunyuanVideo-1.5",
+            "QuantStack/Wan2.1_14B_VACE-GGUF": "Wan-AI/Wan2.1-VACE-14B",
+            "QuantStack/Wan2.2-S2V-14B-GGUF": "Wan-AI/Wan2.2-S2V-14B"}  # fmt: skip
+    assert {r: [e["id"] for e in mi.picture_families(r, [b], shipped)] for r, b in seen.items()} == {
+        "QuantStack/Wan2.2-T2V-A14B-GGUF": ["wan2.2-t2v-a14b"], "QuantStack/Wan2.2-I2V-A14B-GGUF": ["wan2.2-i2v-a14b"],
+        "bullerwins/Wan2.2-I2V-A14B-GGUF": ["wan2.2-i2v-a14b"],
+        "unsloth/LTX-2.3-GGUF": ["ltx-2.3-dev", "ltx-2.3-distilled"],
+        "unsloth/LTX-2.5-GGUF": ["ltx-2.5-dev", "ltx-2.5-distilled"],
+        "unsloth/Wan2.2-TI2V-5B-GGUF": ["wan2.2-ti2v-5b"], "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF": ["wan2.2-ti2v-5b-turbo"],
+        "unsloth/MiniMax-H3-GGUF": ["minimax-h3"], "Abiray/MiniMax-H3-Pruned-GGUF": ["minimax-h3"],
+        "city96/Wan2.1-I2V-14B-480P-gguf": ["wan2.1-i2v-14b-480p"],
+        "samuelchristlie/Wan2.1-T2V-1.3B-GGUF": ["wan2.1-t2v-1.3b"],
+        "jayn7/HunyuanVideo-1.5_T2V_480p-GGUF": ["hunyuanvideo-1.5-t2v", "hunyuanvideo-1.5-i2v"],  # by its files
+        "QuantStack/Wan2.1_14B_VACE-GGUF": [], "QuantStack/Wan2.2-S2V-14B-GGUF": []}  # fmt: skip
+    by_id = {e["id"]: e for e in shipped}
+
+    def files(*paths: str) -> dict[str, dict]:
+        return {p: {"size": 1000 + i, "sha256": "x"} for i, p in enumerate(paths)}
+
+    def variants(family: str, tree: dict[str, dict]) -> list[tuple[str, list[str]]]:
+        return [(v["quant"], [f["role"] for f in v["files"]]) for v in mi.family_variants(by_id[family], tree)]
+
+    ltx = files(
+        "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        "ltx-2.3-22b-dev-UD-Q4_K_M.gguf",
+        "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+        "distilled-1.1/ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+    )
+    assert [q for q, _ in variants("ltx-2.3-dev", ltx)] == ["Q4_K_M", "UD-Q4_K_M"]
+    assert {q for q, _ in variants("ltx-2.3-distilled", ltx)} == {"ltx-2.3-22b-distilled Q4_K_M",
+                                                                  "ltx-2.3-22b-distilled-1.1 Q4_K_M"}  # fmt: skip
+    minimax = files(
+        "minimax_h3_fl2va_pruned-Q4_K.gguf", "minimax_h3_ref2va_pruned-Q4_K.gguf", "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    )
+    assert variants("minimax-h3", minimax) == [("Q4_K", ["diffusion-model"])]  # not ref2va (49), not the encoder
+    pairs = files(
+        "wan2.2_i2v_high_noise_14B_Q4_K_M.gguf",
+        "wan2.2_i2v_low_noise_14B_Q4_K_M.gguf",
+        "wan2.2_i2v_high_noise_14B_Q3_K_L.gguf",
+    )  # bullerwins' names; a half without its pair
+    assert variants("wan2.2-i2v-a14b", pairs) == [("Q4_K_M", ["diffusion-model", "high-noise-diffusion-model"])]
+    hunyuan = files(
+        "480p/hunyuanvideo1.5_480p_t2v-Q4_K_M.gguf", "480p_distilled/hunyuanvideo1.5_480p_t2v_cfg_distilled-Q4_K_M.gguf"
+    )
+    assert variants("hunyuanvideo-1.5-t2v", hunyuan) == [("Q4_K_M", ["diffusion-model"])]
+    assert variants("hunyuanvideo-1.5-i2v", hunyuan) == []  # this repository holds no picture-to-video model
+    assert by_id["wan2.2-ti2v-5b-turbo"]["modes"] == ["text", "picture"]  # TI2V: from a picture too
 
 
 def test_the_catalogs_picture_families(hub):
@@ -1893,11 +1960,16 @@ def test_the_catalogs_picture_families(hub):
         "unsloth/flux-3-image-klein-GGUF": "flux3-image-klein", "DogukanUrker/Qwen-Image-2.1-Turbo-GGUF":
         "qwen-image-2.1-turbo", "leejet/Z-Image-Turbo-GGUF": "z-image-turbo",
         "city96/FLUX.1-dev-gguf": "flux1-dev"}  # fmt: skip
-    bases = [b.lower() for e in shipped for b in e["bases"]]
-    assert len(bases) == len(set(bases))  # one family a base model
+    by_base: dict[str, list[dict]] = {}
+    for entry in shipped:
+        for base in entry["bases"]:
+            by_base.setdefault(base.lower(), []).append(entry)
+    for base, sharing in by_base.items():  # one family a base model - or (48.2) told apart by the words of its files
+        assert len(sharing) == 1 or all((e.get("names") or {}).get("has") for e in sharing), base
     for entry in shipped:
         roles = [f["role"] for f in entry["files"]]
-        assert set(roles) <= SD_PARTS and sum(r in mi.PICTURE_MAIN for r in roles) == 1, entry["id"]
+        assert set(roles) <= SD_PARTS and roles.count("diffusion-model") + roles.count("model") == 1, entry["id"]
+        assert roles.count("high-noise-diffusion-model") <= 1, entry["id"]  # a pair's other half (48.2)
         names = [PurePosixPath(f["path"]).name for f in entry["files"]]
         assert len(names) == len(set(names)), entry["id"]
         assert {"--steps", "--cfg-scale"} <= set(entry["flags"]), entry["id"]
@@ -1905,6 +1977,11 @@ def test_the_catalogs_picture_families(hub):
         assert entry["about"]["ru"] and entry["about"]["en"], entry["id"]
     assert [e["id"] for e in shipped if e.get("card", True)] == [
         "sdxs-512", "flux2-klein-4b", "z-image-turbo", "wan2.2-ti2v-5b-turbo"]  # fmt: skip
+    for entry in (e for e in shipped if e.get("kind") == "video"):  # 48.3, 48.5: its clip and how it films
+        clip = picture_sizes.clip_of(entry.get("clip"))
+        grid = clip["grid"]
+        assert all(w % grid == 0 and h % grid == 0 for k in ("sizes", "hd") for w, h in clip[k].values()), entry["id"]
+        assert entry["modes"] and set(entry["modes"]) <= set(visual.VIDEO_MODES), entry["id"]
 
     kept = json.loads(mi.CATALOG.read_text(encoding="utf-8"))  # a family that is not a card: not among «Рисовать»
     hidden = {**DRAW, "id": "found-only", "card": False, "bases": ["test/Other"]}

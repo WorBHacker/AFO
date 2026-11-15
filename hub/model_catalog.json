@@ -268,6 +268,7 @@
     },
     {
       "id": "wan2.2-ti2v-5b-turbo",
+      "modes": ["text", "picture"],
       "name": "Wan2.2 TI2V 5B Turbo",
       "kind": "video",
       "purposes": [
@@ -801,6 +802,1305 @@
       "about": {
         "ru": "Базовая FLUX.2 [klein] 9B — для дообучения: 20 шагов. Лицензия — не для коммерции.",
         "en": "The base FLUX.2 [klein] 9B - for finetuning: 20 steps. Licence: non-commercial."
+      }
+    },
+    {
+      "id": "wan2.1-t2v-1.3b",
+      "name": "Wan2.1 T2V 1.3B",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.1-T2V-1.3B",
+      "bases": [
+        "Wan-AI/Wan2.1-T2V-1.3B"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        }
+      },
+      "modes": [
+        "text"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "samuelchristlie/Wan2.1-T2V-1.3B-GGUF",
+          "path": "Wan2.1-T2V-1.3B-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "6",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "3",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Маленькая Wan2.1 — по описанию, 480p, 16 кадров в секунду; идёт и на небольшой видеокарте.",
+        "en": "The small Wan2.1 - from a description, 480p, 16 frames a second; runs on a small graphics card too."
+      }
+    },
+    {
+      "id": "wan2.1-t2v-14b",
+      "name": "Wan2.1 T2V 14B",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.1-T2V-14B",
+      "bases": [
+        "Wan-AI/Wan2.1-T2V-14B"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "city96/Wan2.1-T2V-14B-gguf",
+          "path": "wan2.1-t2v-14b-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "5",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "5",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.1 14B — по описанию, до 720p, 16 кадров в секунду.",
+        "en": "Wan2.1 14B - from a description, up to 720p, 16 frames a second."
+      }
+    },
+    {
+      "id": "wan2.1-i2v-14b-480p",
+      "name": "Wan2.1 I2V 14B 480p",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.1-I2V-14B-480P",
+      "bases": [
+        "Wan-AI/Wan2.1-I2V-14B-480P"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        }
+      },
+      "modes": [
+        "picture"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "city96/Wan2.1-I2V-14B-480P-gguf",
+          "path": "wan2.1-i2v-14b-480p-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "clip_vision",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/clip_vision/clip_vision_h.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "5",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "3",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.1 — оживляет картинку: только по первому кадру, 480p.",
+        "en": "Wan2.1 - brings a picture to life: only from a first frame, 480p."
+      }
+    },
+    {
+      "id": "wan2.1-i2v-14b-720p",
+      "name": "Wan2.1 I2V 14B 720p",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.1-I2V-14B-720P",
+      "bases": [
+        "Wan-AI/Wan2.1-I2V-14B-720P"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "picture"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "city96/Wan2.1-I2V-14B-720P-gguf",
+          "path": "wan2.1-i2v-14b-720p-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "clip_vision",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/clip_vision/clip_vision_h.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "5",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "3",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.1 — оживляет картинку: только по первому кадру, до 720p.",
+        "en": "Wan2.1 - brings a picture to life: only from a first frame, up to 720p."
+      }
+    },
+    {
+      "id": "wan2.1-flf2v-14b-720p",
+      "name": "Wan2.1 FLF2V 14B 720p",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.1-FLF2V-14B-720P",
+      "bases": [
+        "Wan-AI/Wan2.1-FLF2V-14B-720P"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "city96/Wan2.1-FLF2V-14B-720P-gguf",
+          "path": "wan2.1-flf2v-14b-720p-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "clip_vision",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/clip_vision/clip_vision_h.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "5",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "16",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.1 — ролик между двумя кадрами: первым и последним.",
+        "en": "Wan2.1 - a clip between two frames: the first and the last."
+      }
+    },
+    {
+      "id": "wan2.2-ti2v-5b",
+      "name": "Wan2.2 TI2V 5B",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.2-TI2V-5B",
+      "bases": [
+        "Wan-AI/Wan2.2-TI2V-5B"
+      ],
+      "card": false,
+      "size": 832,
+      "modes": [
+        "text",
+        "picture"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+          "path": "Wan2.2-TI2V-5B-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+          "path": "split_files/vae/wan2.2_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "5",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "5",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Обычная Wan2.2 TI2V 5B — по описанию или по картинке, 20 шагов: медленнее Turbo, точнее.",
+        "en": "The plain Wan2.2 TI2V 5B - from a description or a picture, 20 steps: slower than Turbo, closer."
+      }
+    },
+    {
+      "id": "wan2.2-t2v-a14b",
+      "name": "Wan2.2 T2V A14B",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.2-T2V-A14B",
+      "bases": [
+        "Wan-AI/Wan2.2-T2V-A14B"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "QuantStack/Wan2.2-T2V-A14B-GGUF",
+          "path": "LowNoise/Wan2.2-T2V-A14B-LowNoise-Q4_K_M.gguf"
+        },
+        {
+          "role": "high-noise-diffusion-model",
+          "repo": "QuantStack/Wan2.2-T2V-A14B-GGUF",
+          "path": "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "3",
+        "--high-noise-cfg-scale",
+        "4",
+        "--sampling-method",
+        "euler",
+        "--high-noise-sampling-method",
+        "euler",
+        "--flow-shift",
+        "12",
+        "--moe-boundary",
+        "0.875",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.2 A14B — по описанию, две половины по 14 млрд весов (на карте — одна), до 720p.",
+        "en": "Wan2.2 A14B - from a description, two halves of 14 billion weights (one on the card), up to 720p."
+      }
+    },
+    {
+      "id": "wan2.2-i2v-a14b",
+      "name": "Wan2.2 I2V A14B",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "apache-2.0",
+      "original": "Wan-AI/Wan2.2-I2V-A14B",
+      "bases": [
+        "Wan-AI/Wan2.2-I2V-A14B"
+      ],
+      "card": false,
+      "size": 832,
+      "clip": {
+        "fps": 16,
+        "sizes": {
+          "wide": [
+            832,
+            480
+          ],
+          "tall": [
+            480,
+            832
+          ],
+          "square": [
+            624,
+            624
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "QuantStack/Wan2.2-I2V-A14B-GGUF",
+          "path": "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q4_K_M.gguf"
+        },
+        {
+          "role": "high-noise-diffusion-model",
+          "repo": "QuantStack/Wan2.2-I2V-A14B-GGUF",
+          "path": "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "city96/umt5-xxl-encoder-gguf",
+          "path": "umt5-xxl-encoder-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+          "path": "split_files/vae/wan_2.1_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "3.5",
+        "--high-noise-cfg-scale",
+        "3.5",
+        "--sampling-method",
+        "euler",
+        "--high-noise-sampling-method",
+        "euler",
+        "--flow-shift",
+        "5",
+        "--moe-boundary",
+        "0.9",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "Wan2.2 A14B — оживляет картинку: по первому кадру или между первым и последним, до 720p.",
+        "en": "Wan2.2 A14B - brings a picture to life: from a first frame or between the first and the last, up to 720p."
+      }
+    },
+    {
+      "id": "ltx-2.3-dev",
+      "name": "LTX-2.3 dev",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "ltx-2-community-license-agreement",
+      "original": "Lightricks/LTX-2.3",
+      "bases": [
+        "Lightricks/LTX-2.3"
+      ],
+      "card": false,
+      "size": 768,
+      "clip": {
+        "fps": 24,
+        "step": 8,
+        "grid": 32,
+        "sizes": {
+          "wide": [
+            768,
+            512
+          ],
+          "tall": [
+            512,
+            768
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1216,
+            704
+          ],
+          "tall": [
+            704,
+            1216
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text",
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "ltx-2.3-22b-dev-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/gemma-3-12b-it-qat-GGUF",
+          "path": "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf"
+        },
+        {
+          "role": "embeddings-connectors",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "3",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "LTX-2.3 (22 млрд весов) — по описанию, по картинке, между двумя кадрами; 20 шагов. Пока без звука.",
+        "en": "LTX-2.3 (22 billion weights) - from a description, a picture, between two frames; 20 steps. No sound yet."
+      },
+      "names": {
+        "has": [
+          "dev"
+        ]
+      }
+    },
+    {
+      "id": "ltx-2.3-distilled",
+      "name": "LTX-2.3 distilled",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "ltx-2-community-license-agreement",
+      "original": "Lightricks/LTX-2.3",
+      "bases": [
+        "Lightricks/LTX-2.3"
+      ],
+      "card": false,
+      "size": 768,
+      "clip": {
+        "fps": 24,
+        "step": 8,
+        "grid": 32,
+        "sizes": {
+          "wide": [
+            768,
+            512
+          ],
+          "tall": [
+            512,
+            768
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1216,
+            704
+          ],
+          "tall": [
+            704,
+            1216
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text",
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/gemma-3-12b-it-qat-GGUF",
+          "path": "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf"
+        },
+        {
+          "role": "embeddings-connectors",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "8"
+      ],
+      "about": {
+        "ru": "Быстрая LTX-2.3 — 8 шагов вместо 20. Пока без звука.",
+        "en": "The fast LTX-2.3 - 8 steps instead of 20. No sound yet."
+      },
+      "names": {
+        "has": [
+          "distilled"
+        ]
+      }
+    },
+    {
+      "id": "ltx-2.5-dev",
+      "name": "LTX-2.5 dev",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "ltx-2.x-community-license-agreement",
+      "original": "Lightricks/LTX-2.5",
+      "bases": [
+        "Lightricks/LTX-2.5"
+      ],
+      "card": false,
+      "size": 768,
+      "clip": {
+        "fps": 24,
+        "step": 8,
+        "grid": 32,
+        "sizes": {
+          "wide": [
+            768,
+            512
+          ],
+          "tall": [
+            512,
+            768
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1216,
+            704
+          ],
+          "tall": [
+            704,
+            1216
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text",
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "ltx-2.5-22b-dev-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "elix3r/gemma4-12b-with-proj-ltx-2.5-GGUF",
+          "path": "gemma4-12b-with-proj-ltx-2.5-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "3",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "20"
+      ],
+      "about": {
+        "ru": "LTX-2.5 — по описанию, по картинке, между двумя кадрами; кодировщик — Gemma 4 12B. Пока без звука.",
+        "en": "LTX-2.5 - from a description, a picture, between two frames; Gemma 4 12B as the encoder. No sound yet."
+      },
+      "names": {
+        "has": [
+          "dev"
+        ]
+      }
+    },
+    {
+      "id": "ltx-2.5-distilled",
+      "name": "LTX-2.5 distilled",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "ltx-2.x-community-license-agreement",
+      "original": "Lightricks/LTX-2.5",
+      "bases": [
+        "Lightricks/LTX-2.5"
+      ],
+      "card": false,
+      "size": 768,
+      "clip": {
+        "fps": 24,
+        "step": 8,
+        "grid": 32,
+        "sizes": {
+          "wide": [
+            768,
+            512
+          ],
+          "tall": [
+            512,
+            768
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1216,
+            704
+          ],
+          "tall": [
+            704,
+            1216
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text",
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "distilled/ltx-2.5-22b-distilled-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "elix3r/gemma4-12b-with-proj-ltx-2.5-GGUF",
+          "path": "gemma4-12b-with-proj-ltx-2.5-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--sampling-method",
+        "euler",
+        "--steps",
+        "8"
+      ],
+      "about": {
+        "ru": "Быстрая LTX-2.5 — 8 шагов вместо 20. Пока без звука.",
+        "en": "The fast LTX-2.5 - 8 steps instead of 20. No sound yet."
+      },
+      "names": {
+        "has": [
+          "distilled"
+        ]
+      }
+    },
+    {
+      "id": "hunyuanvideo-1.5-t2v",
+      "name": "HunyuanVideo 1.5 T2V",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "tencent-hunyuan-community",
+      "original": "tencent/HunyuanVideo-1.5",
+      "bases": [
+        "tencent/HunyuanVideo-1.5"
+      ],
+      "card": false,
+      "size": 848,
+      "clip": {
+        "fps": 24,
+        "sizes": {
+          "wide": [
+            848,
+            480
+          ],
+          "tall": [
+            480,
+            848
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "jayn7/HunyuanVideo-1.5_T2V_720p-GGUF",
+          "path": "720p/hunyuanvideo1.5_720p_t2v-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+          "path": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "Comfy-Org/HunyuanVideo_1.5_repackaged",
+          "path": "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/HunyuanVideo_1.5_repackaged",
+          "path": "split_files/vae/hunyuanvideo15_vae_fp16.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "6",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "9",
+        "--steps",
+        "20",
+        "--vae-tiling"
+      ],
+      "about": {
+        "ru": "HunyuanVideo 1.5 — по описанию, до 720p; кодировщик — Qwen2.5-VL-7B (общий с Qwen-Image).",
+        "en": "HunyuanVideo 1.5 - from a description, up to 720p; Qwen2.5-VL-7B as the encoder (shared with Qwen-Image)."
+      },
+      "names": {
+        "has": [
+          "t2v"
+        ],
+        "lacks": [
+          "distilled"
+        ]
+      }
+    },
+    {
+      "id": "hunyuanvideo-1.5-i2v",
+      "name": "HunyuanVideo 1.5 I2V",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "tencent-hunyuan-community",
+      "original": "tencent/HunyuanVideo-1.5",
+      "bases": [
+        "tencent/HunyuanVideo-1.5"
+      ],
+      "card": false,
+      "size": 848,
+      "clip": {
+        "fps": 24,
+        "sizes": {
+          "wide": [
+            848,
+            480
+          ],
+          "tall": [
+            480,
+            848
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1280,
+            720
+          ],
+          "tall": [
+            720,
+            1280
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "picture"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "jayn7/HunyuanVideo-1.5_I2V_720p-GGUF",
+          "path": "720p/hunyuanvideo1.5_720p_i2v-Q4_K_M.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+          "path": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+        },
+        {
+          "role": "t5xxl",
+          "repo": "Comfy-Org/HunyuanVideo_1.5_repackaged",
+          "path": "split_files/text_encoders/byt5_small_glyphxl_fp16.safetensors"
+        },
+        {
+          "role": "vae",
+          "repo": "Comfy-Org/HunyuanVideo_1.5_repackaged",
+          "path": "split_files/vae/hunyuanvideo15_vae_fp16.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "6",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "7",
+        "--steps",
+        "20",
+        "--vae-tiling"
+      ],
+      "about": {
+        "ru": "HunyuanVideo 1.5 — оживляет картинку: только по первому кадру, до 720p.",
+        "en": "HunyuanVideo 1.5 - brings a picture to life: only from a first frame, up to 720p."
+      },
+      "names": {
+        "has": [
+          "i2v"
+        ],
+        "lacks": [
+          "distilled"
+        ]
+      }
+    },
+    {
+      "id": "minimax-h3",
+      "name": "MiniMax-H3",
+      "kind": "video",
+      "purposes": [
+        "video"
+      ],
+      "tier": "video",
+      "license": "minimax-h3-community-license-agreement",
+      "original": "MiniMaxAI/MiniMax-H3",
+      "bases": [
+        "MiniMaxAI/MiniMax-H3"
+      ],
+      "card": false,
+      "size": 864,
+      "clip": {
+        "fps": 24,
+        "sizes": {
+          "wide": [
+            864,
+            480
+          ],
+          "tall": [
+            480,
+            864
+          ],
+          "square": [
+            640,
+            640
+          ]
+        },
+        "hd": {
+          "wide": [
+            1344,
+            768
+          ],
+          "tall": [
+            768,
+            1344
+          ],
+          "square": [
+            960,
+            960
+          ]
+        }
+      },
+      "modes": [
+        "text",
+        "picture",
+        "frames"
+      ],
+      "files": [
+        {
+          "role": "diffusion-model",
+          "repo": "unsloth/MiniMax-H3-GGUF",
+          "path": "minimax_h3_fl2va_pruned-Q4_K.gguf"
+        },
+        {
+          "role": "llm",
+          "repo": "unsloth/MiniMax-H3-GGUF",
+          "path": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+        },
+        {
+          "role": "vae",
+          "repo": "unsloth/MiniMax-H3-GGUF",
+          "path": "vae/minimax_h3_video_vae_fp16.safetensors"
+        }
+      ],
+      "flags": [
+        "--cfg-scale",
+        "1",
+        "--sampling-method",
+        "euler",
+        "--flow-shift",
+        "12",
+        "--steps",
+        "20",
+        "--rng",
+        "cpu",
+        "--vae-tiling"
+      ],
+      "about": {
+        "ru": "MiniMax-H3 — по описанию, по картинке, между двумя кадрами; кодировщик — Qwen3-VL-32B (18 ГБ). На 16 ГБ — медленно. Пока без звука.",
+        "en": "MiniMax-H3 - from a description, a picture, between two frames; Qwen3-VL-32B as the encoder (18 GB). On 16 GB - slowly. No sound yet."
+      },
+      "names": {
+        "has": [
+          "fl2va"
+        ]
       }
     }
   ]

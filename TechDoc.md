@@ -1506,7 +1506,22 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 - 48.6 Семейства в каталог (как 47.8: `card: false`, флаги — по рецептам sd.cpp, sha256 у всех файлов): Wan2.1 T2V 1.3B
   и 14B, I2V 480p и 720p (`clip_vision`), FLF2V 720p; Wan2.2 TI2V-5B (обычная), T2V A14B, I2V A14B; LTX-2.3 и 2.5 — dev
   и distilled; HunyuanVideo 1.5 T2V и I2V; MiniMax-H3 fl2va — без `--audio-vae`. Общие части: umt5, VAE Wan2.1,
-  clip_vision_h. Тест — `test_the_catalogs_video_families`.
+  clip_vision_h. Тест — `test_the_catalogs_video_families`. ✓ Сделано (скрипт `videos48.py` сессии): 15 семейств,
+  у Turbo — `modes` (TI2V снимает и по картинке). Части: umt5 Q4_K_M (city96, общий с Turbo), VAE Wan2.1 и
+  `clip_vision_h` (Comfy-Org/Wan_2.1), VAE Wan2.2 (общий с Turbo); LTX-2.3 — Gemma-3-12B qat UD-Q4_K_XL (unsloth),
+  коннекторы и видео-VAE своей модели (dev или distilled); LTX-2.5 — Gemma-4-12B с проекцией Q4_K_M (elix3r), видео-VAE
+  unsloth; HunyuanVideo 1.5 — Qwen2.5-VL-7B Q4_K_M (общий с Qwen-Image), byT5 и VAE (Comfy-Org/HunyuanVideo_1.5);
+  MiniMax-H3 — кодировщик и VAE из своего репозитория. Флаги — рецепты sd.cpp (у A14B — `--high-noise-cfg-scale`,
+  `--high-noise-sampling-method`, `--moe-boundary`; `--high-noise-flow-shift` в командной строке нет); шаги — у всех
+  явно (MiniMax — 20). `names`: LTX — `dev` / `distilled` (distilled-1.1 — вариант distilled), Hunyuan — `t2v` / `i2v`
+  без `distilled` (cfg-distilled — другие флаги), MiniMax — `fl2va` (ref2va — этап 49). Сетки: у LTX 32 (768×512,
+  1216×704), у остальных 16. Лицензии — карточек исходных моделей: Apache-2.0 у Wan,
+  `ltx-2-community-license-agreement`, `ltx-2.x-…`, `tencent-hunyuan-community`,
+  `minimax-h3-community-license-agreement`. Проверено на Hugging Face
+  (`verify48.py`): все файлы есть с sha256, главный файл каждого семейства — среди его вариантов (`family_variants`), у
+  MiniMax кодировщик — не вариант; объёмы с частями — от 4,9 ГБ (Wan2.1 1.3B) до 34,8 (MiniMax-H3). В тесте 47.8 —
+  правила 48.2: семейства одной базы различаются `names`, у пары — два главных файла; обычная TI2V-5B — своё
+  семейство, не Turbo.
 - 48.7 «Студия», частями (Правило 2); тесты — настоящий QML без экрана, как `tests/test_ui_bounds.py`:
   - 48.7а Экран: режим «Студия» в боковой панели, три зоны; «Нарисовать» в поле ввода чата открывает Студию с текстом;
     окошко `VisualSheet` уходит. Файлы: `app/ui/qml/StudioView.qml` (новый), `app/ui/qml/Main.qml`,
