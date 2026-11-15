@@ -113,6 +113,7 @@ class GpuCard:
         self.on_change: Callable[[], None] | None = None  # set by the server: the window hears of «отдана» (48.9д)
         self.asked: dict[str, int] = {}  # who asks the local models now -> how many (48.9а)
         # set by the server (48.9б2): the card's load now, % - the status monitor's look; a game on it - 43.6's
+        # (48.9б3: one Windows or 43.6 knows, or drawing now - not a launcher by its folder's name)
         self.load: Callable[[], float | None] = lambda: None
         self.game: Callable[[], bool] = lambda: False
 

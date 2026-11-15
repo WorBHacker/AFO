@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt
 
 from app.events import TOPICS, EventThread
 from common.paths import data_paths
-from hub import claude_code, completion, engines, goals, gpu_card, tuning
+from hub import claude_code, completion, engines, goals, gpu_card, gpu_prefs, tuning
 from hub import llama_config as lc
 from hub import model_install as mi
 from hub.api_reference import event_types
@@ -1087,7 +1087,14 @@ def test_background_tuning_waits_for_a_game_and_not_for_a_download(installs, mon
 
     monkeypatch.setattr(tuner, "tune", tune)
     state.status.latest = {**state.status.latest, "gpu": {**state.status.latest["gpu"], "util_pct": 3}}
-    game = {"exe": r"C:\Games\Quest\quest.exe", "name": "quest.exe", "mib": 900.0, "where": "kept", "why": "game"}
+    game = {
+        "exe": r"C:\Games\Quest\quest.exe",
+        "name": "quest.exe",
+        "mib": 900.0,
+        "where": "kept",
+        "why": "game",
+        "playing": True,
+    }  # a game for the quiet (48.9б3): one 43.6 knows - in its menu now
     state.gpu.state = {**state.gpu.state, "programs": [game]}
     installs.portal.call(tuner.request, "fast", True)
     time.sleep(1.0)
@@ -1101,6 +1108,89 @@ def test_background_tuning_waits_for_a_game_and_not_for_a_download(installs, mon
     assert measured[0] == ("fast", True), "tuning waited for a download"
     FakeHub.slow = 0.0
     assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
+
+
+def _on_card(exe: str, mib: float, busy_3d: float = 0.0) -> dict:
+    return {"exe": exe, "name": exe.rsplit("\\", 1)[-1], "pids": [1], "mib": mib, "busy_3d": busy_3d}
+
+
+# what 43.6 saw on the user's computer before 48.9е (2026-11-15): Epic's launcher, its helper and overlay - «game» by
+# the folder's name, a few MiB, drawing nothing
+EPIC = [_on_card(r"C:\Program Files (x86)\Epic Games\Epic Online Services\managedArtifacts\98bc04bc842e4906993fd6d6644f"
+                 r"fb8d\EOSOverlayRenderer-Win64-Shipping.exe", 14.1),
+        _on_card(r"C:\Program Files\Epic Games\Launcher\Engine\Binaries\Win64\EpicWebHelper.exe", 13.0),
+        _on_card(r"C:\Program Files\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe",
+                 35.2)]  # fmt: skip
+
+
+def test_a_launcher_does_not_break_the_quiet_a_known_game_paused_does(installs, monkeypatch):  # noqa: F811
+    """48.9б3 (found before 48.9е): the quiet took any program 43.6 keeps on the card as a game for a game on the card -
+    Epic's launcher, its helper and overlay are «game» by their folder («Epic Games») and drew nothing, and background
+    work never went while the launcher was open, «Продолжить» neither. A game for the quiet is one Windows' Game Bar
+    knows, or 43.6 remembers drawing - in its menu, paused, it is still one - or any program drawing 3D at BUSY_3D now;
+    never AFO's own (its engines) nor Windows' compositor. 43.6's keeping a program on the card stays as it was."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    state = installs.app.state
+    tuner, watcher = state.tuner, state.gpu
+    measured = []
+
+    async def tune(model_id, *, automatic=False):  # what it measures is not this test's; it ends as tuning does
+        measured.append(model_id)
+        tuner.job = {"status": "idle"}
+        return {"status": "same"}
+
+    monkeypatch.setattr(tuner, "tune", tune)
+    seen: list = []
+    windows_games: set = set()
+    two = {
+        "two": True,
+        "power_saving": {"luid": "i", "name": "Intel"},
+        "high_performance": {"luid": "n", "vendor": "nvidia"},
+    }
+    monkeypatch.setattr(watcher, "_choice", lambda: two)
+    monkeypatch.setattr(watcher, "_adapters", lambda: [{"luid": "n", "vendor": "nvidia"}, {"luid": "i"}])
+    monkeypatch.setattr(watcher, "_look", lambda luids: list(seen))
+    monkeypatch.setattr(watcher, "_facts", lambda: {"games": set(windows_games), "game_folders": [],
+                                                    "windows": "c:\\windows\\", "own": []})  # fmt: skip
+
+    def on_card(*programs) -> None:
+        seen[:] = programs
+        installs.portal.call(watcher.check)
+
+    def tuned(model_id: str) -> bool:
+        measured.clear()
+        installs.portal.call(tuner.request, model_id, True)
+        time.sleep(1.0)
+        return bool(measured)
+
+    on_card(*EPIC)
+    assert {p["why"] for p in watcher.state["programs"]} == {"game"}  # 43.6 keeps them on the card, as before
+    assert tuned("fast"), "Epic's launcher, drawing nothing, kept background work waiting"
+    on_card(
+        _on_card(r"C:\Riot Games\Riot Client\RiotClientServices.exe", 22.0),
+        _on_card(r"C:\Program Files\Rockstar Games\Launcher\Launcher.exe", 41.0),
+        _on_card(r"C:\Windows\System32\dwm.exe", 1130.0, busy_3d=40.0),  # Windows' compositor
+        _on_card(r"D:\AI model\llama.cpp\b11899\llama-server.exe", 9000.0, busy_3d=80.0),  # AFO's own engine
+    )
+    assert tuned("big"), "another launcher, the compositor or AFO's engine kept background work waiting"
+
+    hades = r"D:\SteamLibrary\steamapps\common\Hades II\Ship\Hades2.exe"
+    windows_games.add(hades.lower())  # Game Bar knows it
+    on_card(_on_card(hades, 2100.0))  # paused: drawing nothing
+    assert not tuned("fast"), "a game Windows knows, paused, did not keep background work waiting"
+    on_card()
+    wait(lambda: measured == ["fast"], timeout=10)
+
+    quest = r"E:\Games\Quest\quest.exe"
+    installs.app.state.db.call(lambda conn: gpu_prefs._put(conn, gpu_prefs.GAMES_SETTING, [quest.lower()]))
+    on_card(_on_card(quest, 900.0))  # 43.6 saw it drawing once; in its menu now
+    assert not tuned("big"), "a game 43.6 remembers, in its menu, did not keep background work waiting"
+    on_card(_on_card(r"C:\Tools\new-game.exe", 1500.0, busy_3d=60.0))  # one nobody knows yet, drawing now
+    time.sleep(1.0)
+    assert not measured, "a program drawing 3D now did not keep background work waiting"
+    on_card()
+    wait(lambda: measured == ["big"], timeout=10)
 
 
 def test_unload_stops_the_studio_as_by_x_and_its_queue_waits_for_the_person(installs, monkeypatch):  # noqa: F811

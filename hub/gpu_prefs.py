@@ -382,6 +382,10 @@ NEVER = frozenset({"code.exe", "code - insiders.exe", "claude.exe"})  # VS Code 
 # a folder on its path says «game» (the stores', «Games», a game's own build - «GameDevelop»), or Unreal's build
 GAME_PATH = re.compile(r"(?i)\\[^\\]*game[^\\]*\\|\\binaries\\win64\\|-shipping\.exe$")
 ENGINE_FILES = ("UnityPlayer.dll", "GameAssembly.dll")  # a Unity game beside its program
+# 48.9б3: what never counts as a game on the card for the quiet of AFO's background work - its own engines (their
+# drawing is AFO's work) and Windows' compositor
+OWN_ENGINES = frozenset({"llama-server.exe", "llama-bench.exe", "llama-swap.exe", "sd-server.exe", "sd.exe"})
+COMPOSITOR = "dwm.exe"
 
 
 def why_kept(program: dict[str, Any], facts: dict[str, Any]) -> str | None:
@@ -413,6 +417,18 @@ def why_kept(program: dict[str, Any], facts: dict[str, Any]) -> str | None:
     if preference(value) is not None and low not in facts["moved"]:
         return "chosen"
     return None
+
+
+def playing(program: dict[str, Any], facts: dict[str, Any]) -> bool:
+    """A game on the card for the quiet of AFO's background work (48.9б3): one Windows' Game Bar knows or 43.6
+    remembers drawing - in its menu or paused it is still one, and comes back any moment -, or any program drawing 3D
+    at BUSY_3D now. Not a launcher whose folder only says «Games» (Epic's, Riot's, Rockstar's: they draw nothing);
+    never AFO's own programs nor Windows' compositor. Whether 43.6 keeps a program on the card is `why_kept`'s."""
+    exe = program["exe"]
+    low, name = exe.lower(), (program.get("name") or exe.rsplit("\\", 1)[-1]).lower()
+    if name == COMPOSITOR or name in OWN_ENGINES or any(low.startswith(own) for own in facts.get("afo", [])):
+        return False
+    return program.get("busy_3d", 0.0) >= BUSY_3D or low in facts["games"]
 
 
 def windows_games() -> set[str]:
@@ -494,9 +510,12 @@ def machine_facts() -> dict[str, Any]:
     from common.paths import engines_home
 
     own = {os.path.dirname(sys.executable), str(engines_home())}
+    # AFO's own programs, for the quiet (48.9б3): a venv's python runs as its base interpreter - that folder too
+    afo = own | {os.path.dirname(getattr(sys, "_base_executable", "") or sys.executable)}
     return {"games": windows_games(), "game_folders": store_folders(),
             "windows": (os.environ.get("SYSTEMROOT") or r"C:\Windows").lower().rstrip("\\") + "\\",
-            "own": [o.lower().rstrip("\\") + "\\" for o in own if o]}  # fmt: skip
+            "own": [o.lower().rstrip("\\") + "\\" for o in own if o],
+            "afo": [o.lower().rstrip("\\") + "\\" for o in afo if o]}  # fmt: skip
 
 
 def look_now(luids: set[str]) -> list[dict[str, Any]]:
@@ -612,13 +631,14 @@ class Watcher:
                     facts["moved"].add(low)
                 where = "waits" if low in facts["moved"] else "kept" if why else "card"
                 rows[low] = {"exe": program["exe"], "name": program["name"], "mib": round(program["mib"], 1),
-                             "where": where, "why": why or ""}  # fmt: skip
+                             "where": where, "why": why or "", "playing": playing(program, facts)}  # fmt: skip
             moved = await self._db.acall(load_moved)
             freed = 0.0
             for exe, record in moved.items():
                 if exe.lower() not in rows:
                     rows[exe.lower()] = {"exe": exe, "name": record.get("name") or exe.rsplit("\\", 1)[-1],
-                                         "mib": record.get("held_mib") or 0.0, "where": "moved", "why": ""}  # fmt: skip
+                                         "mib": record.get("held_mib") or 0.0, "where": "moved", "why": "",
+                                         "playing": False}  # fmt: skip
                     freed += record.get("held_mib") or 0.0
             state = {"available": bool(found.get("two")), "on": bool(on),
                      "integrated": (found.get("power_saving") or {}).get("name", ""), "card": high.get("name", ""),

@@ -225,7 +225,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
         # the card is still (48.9б2): its load low - the status monitor's look - and no game on it, even at low load
         app.state.card.load = lambda: ((app.state.status.latest or {}).get("gpu") or {}).get("util_pct")
-        app.state.card.game = lambda: any(p.get("why") == "game" and p.get("where") != "moved"
+        app.state.card.game = lambda: any(p.get("playing") and p.get("where") != "moved"  # 48.9б3: not a launcher
                                           for p in app.state.gpu.state.get("programs") or [])  # fmt: skip
         # the card given by «Выгрузить», the Studio's queue held - in the hub's status, at once when it changes (48.9д)
         app.state.status.card = lambda: {**app.state.card.state(), "studio_held": app.state.visual.held}
