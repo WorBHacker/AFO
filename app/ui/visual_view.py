@@ -226,9 +226,14 @@ class VisualView(QObject):
     def lastSource(self) -> str:
         return self._last.get("shown", "")
 
+    def _kinds(self) -> list[str]:
+        """What there is to make (48.8): pictures with a picture model, videos with a video model."""
+        return [k for k, _n in MODES if (self._videos if k == "video" else self._models)]
+
     @Property(list, notify=changed)
     def modes(self) -> list:
-        return [{"id": k, "name": tr(n)} for k, n in MODES]
+        """The switch's choices: the kinds there are models for - one kind, nothing to switch (48.8)."""
+        return [{"id": k, "name": tr(n)} for k, n in MODES if k in self._kinds()]
 
     @Property(str, notify=changed)
     def mode(self) -> str:
@@ -279,7 +284,8 @@ class VisualView(QObject):
 
     @Property(bool, notify=changed)
     def hasModels(self) -> bool:
-        return bool(self._models)
+        """A model to make anything with - a picture's or (48.8: video models alone) a video's."""
+        return bool(self._models or self._videos)
 
     @Property(str, notify=changed)
     def modelText(self) -> str:
@@ -487,8 +493,9 @@ class VisualView(QObject):
         def models(data: dict[str, Any]) -> None:
             self._models, self._default, self._loaded = data.get("models", []), data.get("default", ""), True
             self._videos = data.get("videos") or []
-            if not self._videos:
-                self._mode = "picture"
+            kinds = self._kinds()
+            if self._mode not in kinds:  # no video model: pictures; (48.8) no picture model: videos
+                self._mode = kinds[0] if kinds else "picture"
             if not self._chosen():  # a model gone (removed): «Авто» again (48.7б)
                 self._model = ""
             self._fit_video_mode()
@@ -538,7 +545,8 @@ class VisualView(QObject):
 
     @Slot(str)
     def setMode(self, mode: str) -> None:
-        wanted = mode if mode == "video" and self._videos else "picture"
+        kinds = self._kinds()
+        wanted = mode if mode in kinds else (kinds[0] if kinds else "picture")  # 48.8: videos alone - a video
         if wanted != self._mode:  # a picture model is no video model: «Авто» again (48.7б)
             self._model = ""
         self._mode = wanted

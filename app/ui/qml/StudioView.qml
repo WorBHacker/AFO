@@ -132,7 +132,7 @@ Item {
                 }
                 Segmented {  // 29.8б: once a video model is here
                     objectName: "visualMode"
-                    visible: Visual.hasVideo
+                    visible: Visual.modes.length > 1  // pictures and videos both: one kind - nothing to switch (48.8)
                     options: Visual.modes
                     value: Visual.mode
                     onPicked: (id) => Visual.setMode(id)

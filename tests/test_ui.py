@@ -7463,6 +7463,45 @@ def test_the_studio_shows_a_videos_steps_or_its_time(qapp):
         quick.close()
 
 
+def test_the_studio_with_only_video_models_films(qapp):
+    """48.8, found by the user on the stand: video models installed and no picture model - the Studio was empty, «Модели
+    для картинок ещё нет» and its panel hidden, no video to film (`hasModels` counted the pictures alone). Now it opens
+    on the video, the switch hidden (one kind to make), and films; a picture asked for is not to be had."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text", "picture"]}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded)
+        studio = quick.window.findChild(QObject, "studioView")
+        quick.window.grabWindow()
+        assert view.hasModels and view.mode == "video"
+        assert not item_named(studio, "visualInstall").property("visible")  # no «Поставить модель картинок» page
+        assert item_named(studio, "visualDraw").property("visible")
+        assert not item_named(studio, "visualMode").property("visible")  # nothing to switch to
+        view.setMode("picture")
+        assert view.mode == "video"
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        assert client.visual_calls[-1][0] == "video" and client.visual_calls[-1][1]["model"] == "wan"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_studio_chooses_its_model_and_films_by_two_frames(qapp, tmp_path):
     """48.7б: in the Studio the model is chosen - «Авто» as «Быстрее ↔ Качественнее» says, or one of those installed;
     a video by words, by a picture or by two frames as its model films (the hub's `modes`): the first frame as «По
