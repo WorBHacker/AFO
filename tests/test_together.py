@@ -1013,7 +1013,8 @@ def test_a_local_request_stops_tuning_and_goes_once_it_lets_the_card_go(installs
     stopped = seen["halted"]
     assert stopped is not None and not _chats(stopped), "the chat's request went to llama-swap while tuning measured"
     wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)  # measured again after it
-    assert not installs.app.state.card.holder
+    # the card let go once the tuning ends (its result is kept a moment before: the store, the window's news)
+    wait(lambda: not installs.app.state.card.holder, timeout=5)
 
 
 def test_the_studio_stops_tuning_and_tuning_waits_for_the_studio(installs, monkeypatch):  # noqa: F811
