@@ -106,6 +106,7 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
                                        "draw-more-Q8_0.gguf": b"d" * 80_000,
                                        "draw-more-F16.gguf": b"d" * 160_000}}  # fmt: skip
 BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"]}  # its tags (47.2)
+RENAMED = {"test/Old-Words-GGUF": "test/Words-GGUF"}  # a renamed repository: Hugging Face's 307 to the new name (47.9)
 # draft models guessing ahead (42.3): their vocabulary is the model's, or one token is another
 WORDS = [f"w{i}" for i in range(400)]
 DRAFTS = {
@@ -158,7 +159,13 @@ class FakeHub(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         path = unquote(url.path)
         repo = "test/Tiny-GGUF"
-        if path == "/api/models":  # as Hugging Face filters: every tag, the words in the id, the count it read
+        if old := next((o for o in RENAMED if path.startswith((f"/api/models/{o}/", f"/{o}/"))
+                        or path == f"/api/models/{o}"), None):  # fmt: skip
+            self.send_response(307)  # as Hugging Face sends it: the same path under the new name, on its own host
+            self.send_header("Location", self.path.replace(old, RENAMED[old], 1))
+            self.send_header("content-length", "0")
+            self.end_headers()
+        elif path == "/api/models":  # as Hugging Face filters: every tag, the words in the id, the count it read
             query = parse_qs(url.query)
             FakeHub.searches.append(query)
             words = query.get("search", [""])[0].lower()
@@ -196,7 +203,8 @@ class FakeHub(BaseHTTPRequestHandler):
         elif picture := next((r for r in REPOS if path.startswith((f"/api/models/{r}", f"/{r}/"))), None):
             files = REPOS[picture]
             if path == f"/api/models/{picture}":
-                self._json({"id": picture, "sha": "def456", "tags": ["license:apache-2.0", *BASES.get(picture, [])]})
+                licence = [] if picture in BASES else ["license:apache-2.0"]  # leejet's FLUX.3 klein says none (47.9)
+                self._json({"id": picture, "sha": "def456", "tags": [*licence, *BASES.get(picture, [])]})
             elif path == f"/api/models/{picture}/tree/main":
                 self._json([{"type": "file", "path": name, "size": len(data),
                              "lfs": {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}}
@@ -815,6 +823,26 @@ def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):
     assert refused.status_code == 409 and "облак" in refused.json()["detail"]
 
 
+def test_a_picture_set_whose_repository_hugging_face_renamed_installs(hub, monkeypatch):
+    """47.9: Hugging Face renames a repository (Comfy-Org/flux2-klein-4B became Comfy-Org/Flux-2-Klein-4B) and answers
+    the old name with a 307 to the new one: the set's file list and its download follow it. The set keeps the name its
+    catalog gives - the key its shared files are known by (47.3)."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    old = {**DRAW, "files": [{**f, "repo": "test/Old-Words-GGUF"} if f["role"] == "llm" else f for f in DRAW["files"]]}
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [old]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setattr(hub.app.state.installer, "machine", lambda: MACHINE)
+
+    asked = hub.post("/v1/install/pictures", json={"id": "draw"})
+    assert asked.status_code == 200, asked.text
+    done = wait_for(hub, asked.json()["job"]["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert next(f["repo"] for f in done["files"] if f["role"] == "llm") == "test/Old-Words-GGUF"
+    words = hub.tmp / "localchat-model" / "pictures" / "_shared" / "test" / "Old-Words-GGUF" / "words-Q4_K_M.gguf"
+    assert words.read_bytes() == PICTURES["test/Words-GGUF"]["words-Q4_K_M.gguf"]
+
+
 def test_a_picture_familys_encoder_and_vae_are_one_copy_for_its_models(hub, monkeypatch):
     """47.3: picture models of one family share their encoder and VAE - the same repository, path and sha256. A new
     install takes the file where an earlier install keeps it (the four sets' own folders too) and downloads only its
@@ -889,6 +917,7 @@ def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub,
         assert found.status_code == 200, found.text
         shown = found.json()
         assert (shown["family"], shown["name"], shown["kind"], shown["engine"]) == ("draw", "Draw", "image", True)
+        assert (shown["license"], shown["license_kind"]) == ("apache-2.0", "free")  # none on its page: the family's
         assert [(v["quant"], v["verdict"]) for v in shown["variants"]] == [
             ("Q2_K", "gpu"), ("Q4_0", "gpu"), ("Q8_0", "split"), ("F16", "no")]  # fmt: skip
         assert shown["recommended"] == "Q4_0"  # the largest that is fast here

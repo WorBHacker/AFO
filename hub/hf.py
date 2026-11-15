@@ -121,8 +121,11 @@ def _refused(response: httpx.Response, what: str) -> HubError:
 
 
 async def _get(http: httpx.AsyncClient, path: str, what: str, token: str | None, **params: Any) -> Any:
+    """One API answer. A renamed repository is answered with a 307 to its new name (47.9: Comfy-Org/flux2-klein-4B,
+    2026-11) - followed; httpx keeps the token only while the host is Hugging Face's own."""
     try:
-        response = await http.get(f"{base_url()}{path}", params=params or None, headers=headers(token))
+        response = await http.get(f"{base_url()}{path}", params=params or None, headers=headers(token),
+                                  follow_redirects=True)  # fmt: skip
     except httpx.HTTPError as exc:
         raise HubError(
             tr("{what}: нет связи с Hugging Face ({error})", what=what, error=exc.__class__.__name__)

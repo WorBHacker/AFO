@@ -1168,8 +1168,9 @@ class Installer:
         except InstallError:
             engine = True
         await self._keep_answers()
+        licence = found["license"] or entry["license"]  # none on its page (leejet's FLUX.3 klein): the family's (47.9)
         return {"repo": repo, "family": entry["id"], "name": entry["name"], "kind": entry.get("kind", "image"),
-                "size": entry["size"], "license": found["license"], "license_kind": found["license_kind"],
+                "size": entry["size"], "license": licence, "license_kind": hf.license_kind(licence),
                 "gated": found["gated"], "page": found["page"], "variants": shown,
                 "recommended": best["quant"] if best else "", "engine": engine,
                 "parts": [{"role": p["role"], "repo": p["repo"], "path": p["path"], "size": p["size"],
