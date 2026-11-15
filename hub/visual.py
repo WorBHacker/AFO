@@ -332,9 +332,11 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
                 state = looked.json() if looked.status_code < 300 else {"status": "failed", "error": looked.text}
                 if state.get("status") == "completed":
                     data = base64.b64decode((state.get("result") or {}).get("b64_json") or "")
-                    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-                        return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
-                    return {"ok": False, "error": tr("ответ без видео")}
+                    if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+                        return {"ok": False, "error": tr("ответ без видео")}
+                    if not moving(data):  # (48.8 live) every frame the same: LTX's white ones passed as a trial
+                        return {"ok": False, "error": tr(STILL_WORDS)}
+                    return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
                 if state.get("status") in ("failed", "cancelled"):
                     return {"ok": False, "error": _engine_error(state)}
                 await asyncio.sleep(VIDEO_STEP_S)
@@ -342,6 +344,24 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
     except (httpx.HTTPError, ValueError) as exc:
         return {"ok": False, "error": _no_answer(exc)}
     return {"ok": False, "error": tr("видео не готово и за {minutes} мин", minutes=round(TRIAL_TIMEOUT_S / 60))}
+
+
+STILL_WORDS = N_("вместо видео — одна неподвижная картинка: все кадры вышли одинаковыми, модель снимает неверно")
+
+
+def moving(data: bytes) -> bool:
+    """A WebP of frames, more than one (48.8 live): a model that films each frame the same - LTX's white ones, its gemma
+    under flash attention - comes back as one still picture, libwebp folding the same frames into one."""
+    if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        return False
+    at, frames = 12, 0
+    while at + 8 <= len(data):
+        size = int.from_bytes(data[at + 4 : at + 8], "little")
+        frames += data[at : at + 4] == b"ANMF"
+        if frames > 1:
+            return True
+        at += 8 + size + (size & 1)
+    return False
 
 
 def _engine_error(state: dict[str, Any]) -> str:
@@ -1130,6 +1150,8 @@ class Visual:
                 data = None
             if not data or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
                 data, error = None, tr("ответ без видео")
+            elif not moving(data):  # (48.8 live) LTX's white frames: «готово», and a player of one still picture
+                data, error = None, tr(STILL_WORDS)
         tries = [{"model_id": model_id, "width": found["width"], "height": found["height"], "rung": "asked",
                   "ok": data is not None, "error": error, "seconds": seconds}]  # fmt: skip
         if data is None:

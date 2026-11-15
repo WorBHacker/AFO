@@ -253,6 +253,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
     heeds = True  # a job told to stop stops (sd-server's cancel: at a step's end) - or goes on
     cancelling = False
     fails: ClassVar = None  # the error a video's job ends with, as sd-server says it: {code, message}
+    filmed: ClassVar = None  # the WebP a video's job ends with: None - WEBP, an animated one (48.8: or STILL)
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
     step = total = 0
@@ -292,8 +293,8 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
                 self._send(200, state)
                 return
             self._send(200, {"id": "job_v", "status": "completed", "result": {
-                "b64_json": base64.b64encode(WEBP).decode(), "mime_type": "image/webp", "output_format": "webp",
-                "fps": 24, "frame_count": cls.video[-1]["video_frames"]}})  # fmt: skip
+                "b64_json": base64.b64encode(cls.filmed or WEBP).decode(), "mime_type": "image/webp",
+                "output_format": "webp", "fps": 24, "frame_count": cls.video[-1]["video_frames"]}})  # fmt: skip
             return
         if self.path == "/running":  # llama-swap's: the video's model, until it is unloaded
             model = cls.video[-1]["path"].split("/")[2] if cls.video and not cls.stopped else ""
@@ -344,7 +345,19 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
 _rnd = random.Random(5)
 PICTURE = png(32, 32, lambda x, y: (_rnd.randrange(256), _rnd.randrange(256), _rnd.randrange(256)))
 GREY = png(32, 32, lambda x, y: (128, 128, 128))
-WEBP = b"RIFF" + struct.pack("<I", 30) + b"WEBPVP8X" + bytes(22)  # what sd-server's video comes as (29.8 live)
+
+
+def webp(*chunks: tuple[bytes, bytes]) -> bytes:
+    body = b"".join(name + struct.pack("<I", len(data)) + data + bytes(len(data) & 1) for name, data in chunks)
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+
+
+_SIDE = (31).to_bytes(3, "little") * 2  # 32x32, as VP8X and ANMF say a side: less one
+_FRAME = bytes(6) + _SIDE + (42).to_bytes(3, "little") + bytes(1) + b"VP8 " + struct.pack("<I", 2) + bytes(2)
+WEBP = webp((b"VP8X", bytes([2, 0, 0, 0]) + _SIDE), (b"ANIM", bytes(6)), (b"ANMF", _FRAME),
+            (b"ANMF", _FRAME))  # an animated WebP, as sd-server's video comes (29.8 live)  # fmt: skip
+# (48.8 live) LTX's white frames: libwebp folds the same frames into one - a still picture, no ANIM, no ANMF
+STILL = webp((b"VP8X", bytes([4, 0, 0, 0]) + _SIDE), (b"VP8 ", bytes(10)), (b"XMP ", b"<x:xmpmeta/>"))
 WAN_FLAGS = ["--cfg-scale", "1", "--sampling-method", "euler", "--steps", "4", "--flow-shift", "5"]
 CLIP_PLAN = {"engine": "sd", "set": "clip", "kind": "video", "tier": "video", "size": 832, "flags": WAN_FLAGS}
 DRAW_PLAN = {"engine": "sd", "set": "draw", "tier": "main", "size": 512, "flags": ["--cfg-scale", "1", "--steps", "4"]}
@@ -355,6 +368,7 @@ def hub(monkeypatch):
     FakeDrawSwap.steps_s, FakeDrawSwap.answer, FakeDrawSwap.asked, FakeDrawSwap.unloaded = 0.05, "picture", [], []
     FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls, FakeDrawSwap.passes = [], 3, 0, []
     FakeDrawSwap.cancels, FakeDrawSwap.heeds, FakeDrawSwap.cancelling, FakeDrawSwap.fails = [], True, False, None
+    FakeDrawSwap.filmed = None
     FakeDrawSwap.step = FakeDrawSwap.total = 0
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeDrawSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
@@ -710,6 +724,22 @@ def test_the_windows_client_asks_the_hub_for_a_video(hub):
     done = _wait(hub, job["id"], "done", "failed")
     assert done["status"] == "done", done["error"]
     assert (FakeDrawSwap.video[-1]["width"], FakeDrawSwap.video[-1]["height"]) == (1280, 704)
+
+
+def test_a_video_that_came_back_as_one_still_picture_fails_in_words(hub):
+    """48.8 live, found by the user: LTX filmed white - each frame the same, libwebp folding them into one still picture
+    - and the Studio said «готово за 104 с», its player «0:00 / 0:00»; the trial had passed it the same way. A video, or
+    a trial, the engine gives back as one still picture fails, in words; nothing is kept."""
+    _install(hub, "clip", CLIP_PLAN)
+    FakeDrawSwap.filmed = STILL
+    job = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "clip", "seconds": 2}).json()["job"]
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "failed" and "одна неподвижная картинка" in done["error"] and not done["file"]
+    trial = asyncio.run(visual.trial_video(hub.app.state.visual._url, "clip"))
+    assert not trial["ok"] and "одна неподвижная картинка" in trial["error"]
+
+    FakeDrawSwap.filmed = None  # an animated one: a video
+    assert asyncio.run(visual.trial_video(hub.app.state.visual._url, "clip"))["ok"]
 
 
 PAIR_PLAN = {**CLIP_PLAN, "set": "pair", "flags": [*WAN_FLAGS, "--high-noise-steps", "2"]}  # 2 high steps, 4 low

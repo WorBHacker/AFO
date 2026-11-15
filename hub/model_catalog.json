@@ -1541,7 +1541,9 @@
         "--sampling-method",
         "euler",
         "--steps",
-        "20"
+        "20",
+        "--flash-attn",
+        "auto,te=off"
       ],
       "about": {
         "ru": "LTX-2.3 (22 млрд весов) — по описанию, по картинке, между двумя кадрами; 20 шагов. Пока без звука.",
@@ -1634,7 +1636,9 @@
         "--sampling-method",
         "euler",
         "--steps",
-        "8"
+        "8",
+        "--flash-attn",
+        "auto,te=off"
       ],
       "about": {
         "ru": "Быстрая LTX-2.3 — 8 шагов вместо 20. Пока без звука.",
@@ -1722,7 +1726,9 @@
         "--sampling-method",
         "euler",
         "--steps",
-        "20"
+        "20",
+        "--flash-attn",
+        "auto,te=off"
       ],
       "about": {
         "ru": "LTX-2.5 — по описанию, по картинке, между двумя кадрами; кодировщик — Gemma 4 12B. Пока без звука.",
@@ -1810,7 +1816,9 @@
         "--sampling-method",
         "euler",
         "--steps",
-        "8"
+        "8",
+        "--flash-attn",
+        "auto,te=off"
       ],
       "about": {
         "ru": "Быстрая LTX-2.5 — 8 шагов вместо 20. Пока без звука.",

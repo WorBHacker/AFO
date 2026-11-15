@@ -2039,6 +2039,19 @@ def test_the_catalogs_video_families():
     assert by_id["wan2.2-ti2v-5b-turbo"]["modes"] == ["text", "picture"]  # TI2V: from a picture too
 
 
+def test_a_family_with_a_gemma_text_encoder_runs_it_without_flash_attention():
+    """48.8 live, found by the user: LTX-2.3 filmed white - every frame, its trial too - for its text encoder, gemma,
+    under sd.cpp's flash attention on CUDA (`--flash-attn off` filmed right; so did `auto,te=off`, the DiT keeping it,
+    at the same speed). A family whose encoder is a gemma (LTX-2.3's gemma-3, LTX-2.5's gemma-4) runs it without."""
+    shipped = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    gemma = [e for e in shipped if any(f["role"] == "llm" and "gemma" in (f["repo"] + f["path"]).lower()
+                                       for f in e.get("files", []))]  # fmt: skip
+    assert {e["id"] for e in gemma} >= {"ltx-2.3-dev", "ltx-2.3-distilled", "ltx-2.5-dev", "ltx-2.5-distilled"}
+    for e in gemma:
+        flags = e["flags"]
+        assert "--flash-attn" in flags and flags[flags.index("--flash-attn") + 1] == "auto,te=off", e["id"]
+
+
 def test_the_catalogs_picture_families(hub):
     """47.8: the picture families of sd.cpp's own documentation at the pinned build. The user's search of 2026-11-14,
     with the base models Hugging Face tagged each with: nine of the ten are a family AFO installs; AtomicChat's is a

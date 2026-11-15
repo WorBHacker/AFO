@@ -2085,6 +2085,7 @@
  "включено": "on",
  "включены": "on",
  "вместе файлы больше {size} МБ": "together the files are over {size} MB",
+ "вместо видео — одна неподвижная картинка: все кадры вышли одинаковыми, модель снимает неверно": "a single still picture instead of a video: every frame came out the same, the model films wrong",
  "внутренняя ошибка хаба — подробности в журнале": "an internal hub error — details in the log",
  "возвращена версия": "version taken back",
  "возможности": "capabilities",
