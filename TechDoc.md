@@ -1886,6 +1886,9 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     `test_continue_gives_the_card_back_and_tuning_goes_on_at_once`,
     `test_continue_lets_a_trial_put_off_by_unload_go_on_at_once`,
     `test_the_card_given_shows_in_the_status_bar_and_continue_gives_it_back`;
+    полный прогон после 48.9д (без `tests/test_computer.py`, 2026-11-15): 1268 тестов, одно падение —
+    `test_status_and_unload_endpoints` сверял поля `/v1/status` и не знал нового `card`; тест дополнен (поля и
+    `card` по умолчанию), его файл прошёл;
     48.9е — живая проверка на стенде (`D:\AFO-stand48\stand`): две чат-модели, Turbo, подбор, «Выгрузить»,
     «Продолжить», автодополнение и `/v1/openai` при отданной карте.
 - 48.10 Затем находки 5, 9, 10, 11. 5: ✕ у задания, которое работник только что взял из очереди, перетирается

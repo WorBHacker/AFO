@@ -121,7 +121,8 @@ def test_status_and_unload_endpoints():
     with TestClient(app, base_url=BASE) as hub:
         headers = {"Authorization": f"Bearer {(data_paths().tokens / 'app.token').read_text(encoding='utf-8')}"}
         status = hub.get("/v1/status", headers=headers).json()
-        assert set(status) == {"gpu", "memory", "local", "busy"}
+        assert set(status) == {"gpu", "memory", "local", "card", "busy"}
+        assert status["card"] == {"given": False, "studio_held": False}  # 48.9д: the card's owner, for the window
         assert status["local"]["reachable"] is False
         assert hub.get("/v1/status").status_code == 401
         unload = hub.post("/v1/models/unload", headers=headers)
