@@ -324,6 +324,59 @@ def test_a_chat_stops_automatic_measuring_and_it_is_measured_again(hub, setup, m
     assert found.results["big"]["status"] == "better" and len(runs) >= 2
 
 
+def test_what_tuning_measured_beside_a_game_is_not_kept(hub, setup, monkeypatch):  # noqa: F811
+    """48.9б4: a game started while tuning measured (the quiet is looked at before it starts, 48.9б2) - tuning does
+    not give way to it, and it wrote the config by numbers that were the game's too, and kept them as the model's
+    result. Not now: a game on the card when it is to write, or one seen while it measured even if gone by then - it
+    is stopped work: nothing written, no result, the model in the queue again as background work (the card still for
+    QUIET_S). The measuring itself goes on to its end beside the game."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.2)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    before = setup.read_text(encoding="utf-8")
+    game, what = {"on": False}, {"game": "stays"}
+    runs, stopped = [], []
+
+    def run(command, progress):  # llama-bench: faster than the config's own settings - by its numbers it writes
+        runs.append(command)
+        if what["game"] == "stays":  # a game begins while it measures, and stays
+            game["on"] = True
+            time.sleep(0.3)
+        elif what["game"] == "comes and goes":  # a game while it measures, gone before it is to write
+            what["game"] = "none"
+            game["on"] = True
+            time.sleep(0.3)
+            game["on"] = False
+        stopped.append(found._halt.is_set())
+        return [line(True, "q8_0", 2048, 16, pp=1500), line(True, "q8_0", 2048, 16, tg=52)]
+
+    found = tuner(hub, measured={})
+    found._run = run
+    found._card.game = lambda: game["on"]
+
+    async def until(condition, what_for):
+        started = time.monotonic()
+        while not condition():
+            assert time.monotonic() - started < 10, what_for
+            await asyncio.sleep(0.02)
+
+    async def scenario():
+        found.request("big")  # by hand: no game when it begins
+        await until(lambda: len(runs) == 2 and found.job.get("status") != "measuring", "the first measuring ends")
+        await asyncio.sleep(0.3)
+        assert setup.read_text(encoding="utf-8") == before, "the config written by numbers measured beside a game"
+        assert "big" not in found.results, "a result measured beside a game kept"
+        await until(lambda: found.job.get("status") == "waiting", "back in the queue")
+        assert found.job.get("why") == "quiet" and not runs[2:], "measured again beside the game"
+        what["game"] = "comes and goes"
+        game["on"] = False  # the game closed: still for QUIET_S, it measures again
+        await until(lambda: "big" in found.results, "measured in the quiet")
+
+    asyncio.run(scenario())
+    assert len(runs) == 6, "the one with a game coming and going while it measured was kept"  # two kinds of cache each
+    assert len(lc.backups(setup)) == 1 and found.results["big"]["status"] == "better"  # written once: in the quiet
+    assert not any(stopped), "the measuring was stopped beside the game"
+
+
 def test_the_window_asks_and_reads(hub, setup, monkeypatch):  # noqa: F811
     state = hub.get("/v1/tune").json()
     assert state["auto"] is True and state["job"]["status"] == "idle" and state["results"] == {}

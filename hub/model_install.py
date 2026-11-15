@@ -61,7 +61,7 @@ from common.paths import NAME, engines_home, models_home
 
 from . import engines, hf, llama_config, store, visual
 from .db import utc_now
-from .gpu_card import GIVEN_WORDS, TRIAL, GpuCard, Quiet, named
+from .gpu_card import GIVEN_WORDS, TRIAL, GpuCard, Played, Quiet, named
 from .model_scan import SPLIT, ollama_names
 from .system_status import memory_sample
 from .tuning import server_path
@@ -134,7 +134,8 @@ class InstallError(Exception):
 
 
 class _Deferred(Exception):
-    """A senior needed the card (48.9в): the trial going on was stopped - not failed, nothing of it kept."""
+    """A senior needed the card (48.9в), or a game was on it (48.9б4): the trial going on was stopped - not failed,
+    nothing of it kept."""
 
 
 def curated() -> list[dict[str, Any]]:
@@ -512,6 +513,10 @@ class Installer:
         self._deferring = False
         self._asking: asyncio.Future | None = None
         self._quiet: set[str] = set()
+        # 48.9б4: a game on the card while the trial goes on - its answers not taken, no verdict (`_played`, looked at
+        # beside it by `_seeing`); put off as by a senior
+        self._played: Played | None = None
+        self._seeing: asyncio.Task | None = None
         # a picture install choosing its files and a deletion counting who else names a file (47.3): one at a time
         self._files = asyncio.Lock()
         # the engine on its way (39.3: the scanner, the wizard): an install waits for it, not a 409; set by the server
@@ -1701,15 +1706,19 @@ class Installer:
                 await self._set(job_id, status="cancelled", error="")
             else:  # paused - or, a trial stopped before it began (34.5), added again
                 await self._set(job_id, status=wanted, error="")
-        except _Deferred:  # 48.9в: the card is a senior's - the trial waits for it still, nothing failed
-            log.info("install %s: its trial stopped for a senior on the card; tried again once the card is still",
-                     job_id)  # fmt: skip
+        except _Deferred as exc:  # 48.9в: the card is a senior's; 48.9б4: a game was on it - the trial waits for it
+            # still, nothing failed
+            log.info("install %s: its trial put off (%s); tried again once the card is still", job_id,
+                     str(exc) or "a senior on the card")  # fmt: skip
             self._quiet.add(job_id)
             await self._set(job_id, status="trialwait", error="")
         except (hf.HubError, InstallError, llama_config.ConfigError, GGUFError, OSError) as exc:
             log.info("install %s failed: %s", job_id, exc)
             await self._set(job_id, status="failed", error=str(exc))
         finally:
+            if self._seeing is not None:  # started in `_card`
+                self._seeing.cancel()
+            self._played = self._seeing = None
             self.card.give(TRIAL)  # taken in `_card`: the trial has ended, or never began
             self._cancel.pop(job_id, None)
             self.speed.pop(job_id, None)
@@ -1751,6 +1760,8 @@ class Installer:
             await asyncio.sleep(CARD_WAIT_S)
         self._deferring = False  # before any `await`: a stop said from now on is this trial's
         self._quiet.discard(job_id)
+        self._played = Played(self.card)  # 48.9б4: a game on the card from now on - no verdict; looked at beside it
+        self._seeing = asyncio.create_task(self._played.watch(CARD_WAIT_S))
         if (await self._get(job_id))["error"] == tr(GIVEN_WORDS):  # the card is the trial's: no longer waiting
             await self._set(job_id, error="")
 
@@ -1764,20 +1775,31 @@ class Installer:
             self._asking.cancel()
 
     async def _attempt(self, asked: Coroutine[Any, Any, dict[str, Any]]) -> dict[str, Any]:
-        """One question of the trial - let go when a senior stops it (48.9в): `_Deferred`."""
+        """One question of the trial - let go when a senior stops it (48.9в): `_Deferred`. Its answer, or its failure,
+        is not taken when a game was on the card meanwhile (48.9б4): `_Deferred` too - no try written, no smaller
+        settings, no verdict; the trial waits for the card still."""
         if self._deferring:
             asked.close()
             raise _Deferred
         task = self._asking = asyncio.ensure_future(asked)
         try:
-            return await task
+            answer = await task
         except asyncio.CancelledError:
             current = asyncio.current_task()
             if self._deferring and task.cancelled() and not (current is not None and current.cancelling()):
                 raise _Deferred from None
             raise
+        except Exception:
+            self._unless_played()
+            raise
         finally:
             self._asking = None
+        self._unless_played()
+        return answer
+
+    def _unless_played(self) -> None:
+        if self._played is not None and self._played.look():
+            raise _Deferred("a game was on the card")
 
     def _reporter(self, job_id: str, base: int, total: int) -> Callable[[int], None]:
         loop = asyncio.get_running_loop()

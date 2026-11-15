@@ -42,7 +42,7 @@ from common.paths import data_paths
 
 from . import llama_config, model_settings
 from .db import utc_now
-from .gpu_card import TUNE, GpuCard, Quiet
+from .gpu_card import TUNE, GpuCard, Played, Quiet
 
 log = logging.getLogger("hub.tuning")
 
@@ -461,6 +461,7 @@ class Tuner:
         self._task: asyncio.Task | None = None
         self._process: subprocess.Popen | None = None
         self._halt = threading.Event()  # measuring is to stop: a senior needs the card (48.9б1)
+        self._played = Played(card)  # a game on the card while it measures: nothing kept (48.9б4), anew each tuning
 
     async def start(self) -> None:
         self.results = await self._db.acall(load_results)
@@ -557,8 +558,10 @@ class Tuner:
 
     async def _watch(self) -> None:
         """While it measures: a local request stops it as a senior does (48.9б1) - one that is not llama-swap's (a
-        local chat model of another program's) does not pass the card's gate; the gate's are stopped there at once."""
+        local chat model of another program's) does not pass the card's gate; the gate's are stopped there at once. A
+        game on the card is only noted (48.9б4): the measuring goes on to its end, what it finds is not kept."""
         while not self._card.asked:
+            self._played.look()
             await asyncio.sleep(WAIT_S)
         self._stop()
 
@@ -567,16 +570,23 @@ class Tuner:
 
     async def tune(self, model_id: str, *, automatic: bool = False) -> dict[str, Any]:
         """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Measuring a
-        local request or an install stops is not a result: {"status": "halted"}, nothing kept."""
+        local request or an install stops is not a result: {"status": "halted"}, nothing kept - nor measuring with a
+        game on the card meanwhile (48.9б4: its numbers were the game's too), looked at when it is to write and at the
+        end; the model waits its turn again as background work."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
         self._halt.clear()
+        self._played = Played(self._card)
         watch = asyncio.create_task(self._watch())
         await self._publish()
         try:
             result = await self._tune(model_id)
+            if self._played.look():  # a game came meanwhile (48.9б4): stopped work, not a result
+                raise _Halted
         except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
-            if self._halt.is_set():  # stopped for a local request or an install (llama-bench killed): not a result
-                log.info("tuning %s stopped: a local request or an install began; measured again later", model_id)
+            if self._halt.is_set() or self._played.look():  # stopped for a local request or an install (llama-bench
+                # killed), or measured beside a game (48.9б4): not a result
+                why = "a local request or an install began" if self._halt.is_set() else "a game was on the card"
+                log.info("tuning %s stopped: %s; measured again later", model_id, why)
                 self.job = {"status": "idle"}
                 await self._publish()
                 return {"status": "halted"}
@@ -737,7 +747,10 @@ class Tuner:
         """The config changed under the writers' lock - `edit` of the file as it is now, not as it was before the
         measuring (34.4: an install may have written it since - a change over the old text took away three models added
         meanwhile, 2026-11-08); then the model loaded with it (the check). It does not start - its own lines back
-        (what others wrote meanwhile stays) and TuneError. The copy's name; None - nothing to change."""
+        (what others wrote meanwhile stays) and TuneError. The copy's name; None - nothing to change. Measured with a
+        game on the card (48.9б4) - nothing written: _Halted."""
+        if self._played.look():
+            raise _Halted
         path = llama_config.config_path()
         async with llama_config.writing():
             text = await asyncio.to_thread(path.read_text, encoding="utf-8")

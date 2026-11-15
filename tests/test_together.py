@@ -1193,6 +1193,42 @@ def test_a_launcher_does_not_break_the_quiet_a_known_game_paused_does(installs, 
     wait(lambda: measured == ["big"], timeout=10)
 
 
+def test_a_game_that_takes_the_card_during_a_trial_leaves_no_verdict(installs, monkeypatch):  # noqa: F811
+    """48.9б4: a game started during an install's trial (the quiet is looked at before it starts) took the card's
+    memory - the model did not start, and the trial wrote it smaller settings, then «не запустилась» and took it out of
+    the config: a verdict on a sound model, by the game. The trial does not give way to the game, but what it found
+    beside it is not kept: no try written, its settings as they were, «ждёт пробного запуска» again as background
+    work - tried once the card has been still for QUIET_S, the game gone."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.5)
+    state = installs.app.state
+    game = {"exe": r"E:\Games\Quest\quest.exe", "name": "quest.exe", "mib": 9000.0, "where": "card", "why": "",
+            "playing": True}  # fmt: skip
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+        job = installs.post("/v1/install", json=spec).json()["job"]
+        wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
+        planned = lc.model_view(lc.config_path().read_text(encoding="utf-8"), "tiny-q4_k_m")["context"]
+        state.gpu.state = {**state.gpu.state, "programs": [game]}  # a game begins and takes the card's memory
+        FakeLlamaSwap.logs["tiny-q4_k_m"] = "cudaMalloc failed: out of memory\n"
+        FakeLlamaSwap.fail = True  # the model does not start
+    finally:
+        answering.set()
+    waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=20)
+    assert waiting["status"] == "trialwait", ("a verdict beside a game", waiting["status"], waiting["error"])
+    assert not waiting["error"] and not (waiting.get("trial") or {}).get("tries")  # nothing of it written
+    text = lc.config_path().read_text(encoding="utf-8")
+    assert "tiny-q4_k_m" in lc.model_blocks(text) and lc.model_view(text, "tiny-q4_k_m")["context"] == planned
+    FakeLlamaSwap.fail = False
+    time.sleep(1.2)
+    assert wait_for(installs, job["id"], "trialwait"), "tried again beside the game"
+    state.gpu.state = {**state.gpu.state, "programs": []}  # the game closed
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20)
+    assert done["status"] == "done", done["error"]
+    tries = done["trial"]["tries"]
+    assert len(tries) == 1 and tries[0]["ok"] and tries[0]["context"] == planned  # not smaller
+
+
 def test_unload_stops_the_studio_as_by_x_and_its_queue_waits_for_the_person(installs, monkeypatch):  # noqa: F811
     """48.9г (finding 4): «Выгрузить модель» unloaded everything telling no one - the Studio's video looked at its job
     through /upstream and loaded the model again a second later; a picture lost its model and stepped a rung lower,

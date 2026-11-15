@@ -406,6 +406,9 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             return
         if self.answering is not None:
             self.answering.wait(30.0)
+            if self.fail:  # it did not start after all, while the answer was held (48.9б4: a game took the memory)
+                self._send(502, {"error": "upstream command exited prematurely"})
+                return
         chunks = [
             *({"choices": [{"delta": {"reasoning_content": piece}}]} for piece in self.banner),
             {"choices": [{"delta": {"content": "на связи"}}]},
