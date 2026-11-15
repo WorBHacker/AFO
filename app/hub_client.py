@@ -196,7 +196,7 @@ class HubClient:
 
     def visual_video(self, spec: dict) -> dict:
         """A video asked for (29.8б): {prompt, model, shape, seconds, hd, seed, conversation_id}."""
-        return self._call("POST", "/v1/visual/videos", json=spec)
+        return self._call("POST", "/v1/visual/videos", spec)
 
     def visual_mp4(self, job_id: str) -> bytes:
         """A video's MP4 (29.8в): the first one fetches ffmpeg in the hub - minutes on a slow line."""

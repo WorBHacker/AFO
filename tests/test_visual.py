@@ -16,6 +16,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from app.hub_client import HubClient
 from common.paths import data_paths
 from hub import visual
 from hub.server import create_app
@@ -694,6 +695,21 @@ def test_a_video_drawn_in_the_background_and_kept(hub):
     stopped = _wait(hub, long["id"], "cancelled", "failed", "done", timeout=10.0)
     assert stopped["status"] == "cancelled" and FakeDrawSwap.unloaded[-1] == "clip"
     assert not hub.app.state.visual.holding
+
+
+def test_the_windows_client_asks_the_hub_for_a_video(hub):
+    """48.8 live: «Снять видео» in the window never reached the hub - HubClient.visual_video passed `json=`, which
+    `_call` does not take (a TypeError each time since 29.8б); the window's tests stood in a fake client for it. The
+    real client against the real hub: the job comes back as the window takes it, HD's size, and it films."""
+    _install(hub, "clip", CLIP_PLAN)
+    client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+    job = client.visual_video({"prompt": "a fox running through snow", "model": "clip", "shape": "wide",
+                               "seconds": 2, "hd": True, "seed": 4})["job"]  # fmt: skip
+    assert (job["kind"], job["model_id"], job["frames"]) == ("video", "clip", 49)
+    assert (job["width"], job["height"]) == (1280, 704)
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert (FakeDrawSwap.video[-1]["width"], FakeDrawSwap.video[-1]["height"]) == (1280, 704)
 
 
 PAIR_PLAN = {**CLIP_PLAN, "set": "pair", "flags": [*WAN_FLAGS, "--high-noise-steps", "2"]}  # 2 high steps, 4 low
