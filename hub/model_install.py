@@ -1729,15 +1729,15 @@ class Installer:
         job_id, files = found["id"], found["files"]
         folder = Path(found["folder"])
         await asyncio.to_thread(folder.mkdir, parents=True, exist_ok=True)
-        left = sum(f["size"] for f in files if not f["done"])
-        await asyncio.to_thread(_check_room, folder, left)
+        await asyncio.to_thread(lambda: _check_room(folder, _left(folder, files)))
         await self._set(job_id, status="downloading", error="")
         done = sum(f["size"] for f in files if f["done"])
         for f in files:
             dest = _dest(folder, f)
-            if f["done"] and dest.exists() and dest.stat().st_size == f["size"]:
+            whole = await asyncio.to_thread(_whole, dest, f["size"])
+            if f["done"] and whole:
                 continue
-            if dest.exists() and dest.stat().st_size == f["size"]:  # got its name only once its sha256 matched
+            if whole:  # got its name only once its sha256 matched
                 f["done"] = True
             else:
                 await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)  # the engines' downloads
@@ -2145,6 +2145,24 @@ def _share(files: list[dict[str, Any]], named: list[dict[str, Any]], shared: Pat
                 there = there.parent / f["sha256"][:12] / there.name
         f["at"] = str(there)
         f["done"] = there.is_file() and there.stat().st_size == f["size"]  # one still coming: the queue's next
+
+
+def _left(folder: Path, files: list[dict[str, Any]]) -> int:
+    """The bytes an install's download still takes on the disk (stage 48's review, finding 7): a file not come yet, less
+    what its `.part` holds there - a big one's is as long as the file from its first piece (hf._pieces)."""
+    left = 0
+    for f in files:
+        if f["done"]:
+            continue
+        dest = _dest(folder, f)
+        part = dest.with_name(dest.name + ".part")
+        held = f["size"] if _whole(dest, f["size"]) else part.stat().st_size if part.is_file() else 0
+        left += max(f["size"] - held, 0)
+    return left
+
+
+def _whole(path: Path, size: int) -> bool:
+    return path.is_file() and path.stat().st_size == size
 
 
 def _check_room(folder: Path, size: int) -> None:

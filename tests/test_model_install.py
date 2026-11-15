@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import socket
 import stat
 import struct
@@ -1037,6 +1038,33 @@ def test_an_install_paused_resumed_and_cancelled(hub):
     assert hub.delete(f"/v1/install/jobs/{other['id']}").json() == {"forgotten": other["id"]}
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q3"}).status_code == 404
     assert hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "drive": "Q"}).status_code == 422
+
+
+def test_a_paused_download_goes_on_where_its_part_already_took_the_room(hub, monkeypatch):
+    """Stage 48's review, finding 7: a big file's `.part` is as long as the file from its first piece (hf._pieces) -
+    «Продолжить» asked for room for the whole file again and said «не хватает места» on a disk the part had filled. The
+    room a resumed download needs is what its parts do not hold yet. A real disk: the room left after the part is
+    less than the file by half of it, more than nothing."""
+    big = 128 * 1024**2
+    monkeypatch.setitem(FILES, "Tiny-Q6_K.gguf", tiny_gguf(big))
+    monkeypatch.setattr(hf, "SEGMENT", 8 * 1024**2)
+    monkeypatch.setattr(hf, "PARALLEL_MIN", 8 * 1024**2)
+    FakeHub.slow = 0.05
+    job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q6_K", "projector": False,
+                                        "drive": "T"}).json()["job"]  # fmt: skip
+    part = Path(job["folder"]) / "Tiny-Q6_K.gguf.part"
+    deadline = time.monotonic() + 30.0
+    while not (part.exists() and part.stat().st_size == big) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    hub.post(f"/v1/install/jobs/{job['id']}/pause")
+    assert wait_for(hub, job["id"], "paused")["files"][0]["done"] is False
+    FakeHub.slow = 0.0
+    free = shutil.disk_usage(part.anchor).free
+    monkeypatch.setattr(mi, "DISK_MARGIN_GIB", (free - big // 2) / mi.GIB)  # the room left: less than the file
+    hub.post(f"/v1/install/jobs/{job['id']}/resume")
+    done = wait_for(hub, job["id"], "done", "failed", timeout=120.0)
+    assert done["status"] == "done", done["error"]
+    assert (Path(job["folder"]) / "Tiny-Q6_K.gguf").stat().st_size == big
 
 
 def test_a_model_installed_while_the_engine_comes_waits_for_it(hub):
