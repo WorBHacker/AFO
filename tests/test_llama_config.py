@@ -334,6 +334,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     logs: ClassVar[dict] = {}  # each model's llama-server output, as llama-swap keeps it (/logs/stream/<id>, 0.1.12)
     held: ClassVar = None  # a picture being drawn (47.1): sd-server's txt2img answers once this Event is set
     filming: ClassVar = None  # a video being filmed (48's review): its job is «generating» until this Event is set
+    answering: ClassVar = None  # a chat's answer (48's review): it comes once this Event is set
 
     def log_message(self, *args):
         pass
@@ -398,6 +399,8 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             picture = GREY if blank else PICTURE
             self._send(200, {"data": [{"b64_json": base64.b64encode(picture).decode()}]})
             return
+        if self.answering is not None:
+            self.answering.wait(30.0)
         chunks = [
             *({"choices": [{"delta": {"reasoning_content": piece}}]} for piece in self.banner),
             {"choices": [{"delta": {"content": "на связи"}}]},
@@ -415,7 +418,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
     FakeLlamaSwap.blank, FakeLlamaSwap.video, FakeLlamaSwap.logs, FakeLlamaSwap.held = False, [], {}, None
-    FakeLlamaSwap.filming = None
+    FakeLlamaSwap.filming = FakeLlamaSwap.answering = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)

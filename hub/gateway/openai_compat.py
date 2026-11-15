@@ -117,8 +117,10 @@ class OpenAICompatProvider:
         self._key_getter = key_getter or (lambda: api_key)  # read on every use: the user may change the key
         self._transport = transport  # tests inject a mock; production leaves it None
         self._vectors: set[str] = set()  # the models (and their aliases) with a refusal vector to switch, as listed
-        # llama-swap's: the hub's card gate (29.8а) - a video holds the card, an answer waits for its end
+        # llama-swap's: the hub's card gate (29.8а, hub/gpu_card.py) - a video or an install's trial holds the card, an
+        # answer waits for its end; `gate_words` - who holds it, in words (stage 48's review)
         self.gate: Callable[[asyncio.Event], Awaitable[bool]] | None = None
+        self.gate_words: Callable[[], str] | None = None
         # llama-swap's on this computer (0.1.13): each model's reasoning depths, as its chat template names them
         # (hub/llama_config.model_efforts) - in the catalog for the window, and a request asks one the model takes
         self.efforts: Callable[[], Awaitable[dict[str, list[str]]]] | None = None
@@ -199,11 +201,12 @@ class OpenAICompatProvider:
         usage: dict = {}
         timings: dict = {}
         finish_reason: str | None = None
-        if self.gate is not None:  # a video holds the card (29.8а): llama-swap would swap it out under the video
+        if self.gate is not None:  # a video or a trial holds the card (29.8а): llama-swap would swap its model out
             waiting = asyncio.ensure_future(self.gate(cancel))
             await asyncio.sleep(0)
             if not waiting.done():
-                yield StreamEvent("loading", tr("видеокарта снимает видео — ответ начнётся после него"))
+                said = self.gate_words() if self.gate_words is not None else ""
+                yield StreamEvent("loading", said or tr("видеокарта снимает видео — ответ начнётся после него"))
             await waiting
             if cancel.is_set():
                 yield StreamEvent("end", usage=self.priced(model_ref, _usage({}, 0), {}),

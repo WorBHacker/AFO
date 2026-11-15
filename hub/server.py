@@ -244,6 +244,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
             swap.gate = app.state.card.gate
+            swap.gate_words = app.state.card.words
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes

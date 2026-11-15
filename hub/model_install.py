@@ -1657,7 +1657,7 @@ class Installer:
                 await self._sync()
                 await self._set(job_id, status="added", error="")
                 return
-            await self._card(job_id, cancel)
+            await self._card(job_id, cancel, chats=found["plan"].get("engine") == "sd")
             found = await self._get(job_id)
             if found["plan"].get("engine") == "sd":
                 reachable = await self._configure_pictures(found)
@@ -1690,14 +1690,16 @@ class Installer:
                 await self._set(job_id, status="queued", error=tr(ENGINE_WAIT))
             await asyncio.sleep(ENGINE_WAIT_S)
 
-    async def _card(self, job_id: str, cancel: threading.Event) -> None:
+    async def _card(self, job_id: str, cancel: threading.Event, *, chats: bool = False) -> None:
         """Until the graphics card is the trial's (34.4): «Подбор параметров» measures - llama-bench runs past
         llama-swap, and two models at once filled the memory (2026-11-08) - or a chat answers or the Studio holds the
         card (47.1) - its model would be swapped out in the middle of the answer or the picture. The card is taken in
         the same step these are looked at in - no `await` between them, a Studio's job came in between (stage 48's
-        review, finding 2) - and held to the trial's end (`_run`); a chat answering is waited for only while the card is
-        not held, so it never waits for the trial while the trial waits for it. Meanwhile «ждёт пробного запуска»."""
-        while self.tuning() or self.chat_busy() or not self.card.try_take(TRIAL):
+        review, finding 2) - and held to the trial's end (`_run`). `chats` - a picture or video model's trial holds it
+        from local chats too (2б): they wait at the gate. Never the two waiting for each other: a chat answering is
+        waited for only while the card is not held, a chat waits only while it is. A chat model's trial does not hold
+        it from chats - its own request goes through that gate. Meanwhile «ждёт пробного запуска»."""
+        while self.tuning() or self.chat_busy() or not self.card.try_take(TRIAL, chats=chats):
             if cancel.is_set():
                 raise hf.Cancelled()
             if (await self._get(job_id))["status"] != "trialwait":

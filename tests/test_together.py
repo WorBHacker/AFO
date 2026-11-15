@@ -767,6 +767,77 @@ def test_an_installs_trial_video_holds_the_card_from_the_studio(installs, monkey
     assert paths == ["/upstream/clip2/sdcpp/v1/vid_gen", "/upstream/clip/sdcpp/v1/vid_gen"]  # the trial, the Studio
 
 
+def _chats(asked):
+    return [b for b in asked if "messages" in b]
+
+
+def test_a_chat_waits_for_an_installs_trial_video_and_the_trial_for_a_chat_never_both(installs, monkeypatch):  # noqa: F811
+    """Stage 48's review, finding 2б: a local chat's answer during a trial video went to llama-swap at once and swapped
+    the trial's model out. The trial holds the card from local chats too - a chat waits «на видеокарте пробный запуск
+    новой модели», then answers. And never the two waiting for each other: the trial waits for a chat answering only
+    while it does not hold the card - here the chat's answer first, the trial after it, the next chat after the
+    trial."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, CLIP]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(FakeLlamaSwap, "video", [])
+    seen, publish = [], installs.app.state.bus.publish
+
+    async def recorded(kind, payload=None, **kw):
+        seen.append((kind, payload))
+        return await publish(kind, payload, **kw)
+
+    monkeypatch.setattr(installs.app.state.bus, "publish", recorded)
+
+    def say(text):
+        conv = installs.post("/v1/conversations", json={}).json()["id"]
+        body = {"content": text, "model_id": "llama-swap/fast"}
+        sent = installs.post(f"/v1/conversations/{conv}/messages", json=body)
+        assert sent.status_code == 202, sent.text
+        return conv
+
+    def answered(conv):
+        messages = installs.get(f"/v1/conversations/{conv}").json()["messages"]
+        return any(m["role"] == "assistant" and "на связи" in json.dumps(m["content"], ensure_ascii=False)
+                   for m in messages)  # fmt: skip
+
+    FakeLlamaSwap.answering = answering = threading.Event()
+    FakeLlamaSwap.filming = filming = threading.Event()
+    try:
+        first = say("привет")
+        wait(lambda: len(_chats(FakeLlamaSwap.asked)) == 1, timeout=10)  # its answer comes: held at llama-swap
+        job = installs.post("/v1/install/pictures", json={"id": "clip"}).json()["job"]
+        assert wait_for(installs, job["id"], "trialwait", "trial", "done", "failed")["status"] == "trialwait"
+        assert not FakeLlamaSwap.video  # the trial waits for the chat's answer
+        answering.set()
+        wait(lambda: answered(first), timeout=20)
+        wait(lambda: FakeLlamaSwap.video, timeout=20)  # the trial films
+        second = say("ещё раз")
+        time.sleep(0.6)
+        assert len(_chats(FakeLlamaSwap.asked)) == 1, "a chat's answer went to llama-swap in the middle of the trial"
+        loading = [p["text"] for k, p in seen if k == "chat.loading" and p["conversation_id"] == second]
+        assert loading and "пробный запуск" in loading[0]
+    finally:
+        answering.set()
+        filming.set()
+    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
+    wait(lambda: answered(second), timeout=20)
+    assert len(_chats(FakeLlamaSwap.asked)) == 2
+
+
+def test_a_chat_models_trial_does_not_wait_for_itself(installs):  # noqa: F811
+    """Stage 48's review, finding 2: a chat model's trial holds the card from the Studio, not from local chats - its own
+    request goes through the llama-swap provider's gate (run_check) and would wait for itself. Within a time limit."""
+    job = installs.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False,
+                                             "drive": "T"}).json()["job"]  # fmt: skip
+    started = time.monotonic()
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20.0)
+    assert done["status"] == "done", done["error"]
+    assert time.monotonic() - started < 20.0 and done["trial"]["tries"][-1]["ok"]  # its request through the gate
+    assert not installs.app.state.visual.holding and not installs.app.state.card.holder
+
+
 # --- a found model that draws, installed beside its family's set (47.6) ---
 
 

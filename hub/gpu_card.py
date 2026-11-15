@@ -14,8 +14,14 @@ from __future__ import annotations
 
 import asyncio
 
+from common.i18n import N_, tr
+
 STUDIO = "studio"  # the Studio's job: a picture or a video
 TRIAL = "trial"  # an install's trial
+# why a local chat waits, in words - who holds the card from it: the Studio only for a video, a trial of a picture or
+# video model (2б)
+WORDS = {STUDIO: N_("видеокарта снимает видео — ответ начнётся после него"),
+         TRIAL: N_("на видеокарте пробный запуск новой модели — ответ начнётся после него")}  # fmt: skip
 
 
 class GpuCard:
@@ -49,6 +55,10 @@ class GpuCard:
         self.holder = ""
         self.free.set()
         self._given.set()
+
+    def words(self) -> str:
+        """What a local chat waiting at the gate is told: who holds the card from it."""
+        return tr(WORDS[self.holder]) if self.holder in WORDS and not self.free.is_set() else ""
 
     async def gate(self, cancel: asyncio.Event) -> bool:
         """A local chat model's answer waits here while the card is held from chats (the llama-swap provider asks

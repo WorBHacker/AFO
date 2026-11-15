@@ -1589,7 +1589,10 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     `finally` `_run`; `installer.drawing` ушёл; работник `Visual` берёт карту (`STUDIO`, видео — и от чатов) до чтения
     задания заново (✕, пока ждало) и отдаёт по его концу, видео — как только движок встал. Тест —
     `test_an_installs_trial_video_holds_the_card_from_the_studio` (видео Студии ждёт, пока пишется конфиг пробы и пока
-    она снимает).
+    она снимает). ✓ 2б: проба модели картинок и видео берёт карту и от чатов (`_card(chats=…)`); `GpuCard.words` — кто
+    держит, словами, провайдер llama-swap — `gate_words`. Тесты —
+    `test_a_chat_waits_for_an_installs_trial_video_and_the_trial_for_a_chat_never_both` (ответ чата, потом проба, потом
+    следующий чат — с «пробный запуск») и `test_a_chat_models_trial_does_not_wait_for_itself` (за 20 с).
   - Ход видео: в `vid_gen` — `preview: proj` (шаг sd-server отдаёт только в `preview` опроса, `async_jobs.cpp` 249;
     проекция латентов в цвет, без VAE); шаг — в `visual.progress`, у пары — сквозной через два прохода (`pass`); у модели
     без проекции (HunyuanVideo 1.5: 32 канала латентов, `diffusion_engine.cpp` 2052–2120) — прошедшее время. Окно:
