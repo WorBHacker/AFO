@@ -669,6 +669,35 @@ def test_a_video_drawn_in_the_background_and_kept(hub):
     assert not hub.app.state.visual.holding
 
 
+def test_a_video_familys_own_clip(hub):
+    """48.3: each video family its own clip - its frames a second (Wan2.1's 16, not TI2V-5B's 24), its frames' step
+    (LTX's VAE takes 8k+1), its sizes and the grid its sides keep (LTX's 32) - from its install's plan; a model
+    installed before keeps TI2V-5B's."""
+    film = {**CLIP_PLAN, "set": "film", "size": 768,
+            "clip": {"fps": 16, "step": 8, "grid": 32, "sizes": {"wide": [768, 512], "tall": [512, 768],
+                                                                 "square": [640, 640]},
+                     "hd": {"wide": [1216, 704], "tall": [704, 1216], "square": [960, 960]}}}  # fmt: skip
+    _install(hub, "film", film)
+    _install(hub, "clip", CLIP_PLAN)
+    job = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "film", "shape": "wide",
+                                              "seconds": 2}).json()["job"]  # fmt: skip
+    assert (job["width"], job["height"], job["frames"], job["fps"]) == (768, 512, 33, 16)  # 2 s: 32 frames + 1
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    asked = FakeDrawSwap.video[-1]
+    assert (asked["width"], asked["height"], asked["video_frames"], asked["fps"]) == (768, 512, 33, 16)
+    tall = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "film", "shape": "tall", "hd": True,
+                                               "seconds": 1}).json()["job"]  # fmt: skip
+    assert (tall["width"], tall["height"], tall["frames"]) == (704, 1216, 17)
+    _wait(hub, tall["id"], "done", "failed")
+    before = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "clip", "seconds": 2}).json()["job"]
+    assert (before["width"], before["height"], before["frames"], before["fps"]) == (832, 480, 49, 24)
+    _wait(hub, before["id"], "done", "failed")
+    from common.picture_sizes import clip_of, trial_size  # a trial's size on the family's grid
+
+    assert trial_size(clip_of(film["clip"])) == (480, 288) and trial_size(clip_of(None)) == (480, 272)
+
+
 def test_a_videos_mp4_made_once_with_ffmpeg_fetched_once(hub, monkeypatch, tmp_path):
     """29.8в: «Сохранить как…» MP4 - the hub turns the video's WebP into MP4 with ffmpeg (fetched the first time,
     hub/ffmpeg.py), keeps it beside the WebP; a picture has none."""

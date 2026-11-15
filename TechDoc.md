@@ -1449,10 +1449,11 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 кадру; по видео (VACE по контурам), по образцам и по звуку (S2V) — этап 49.
 
 - 48.1 Поиск «Видео» — оба тега, `text-to-video` и `image-to-video`: два запроса, найденное слито по имени, порядок —
-  как просили. Файлы: `hub/hf.py`, `hub/model_install.py`. Тест — подставной Hugging Face: модель только с `image-to-video`
-  находится. ✓ Сделано: `TASKS["video"]` — два тега; `hf.search` спрашивает по запросу на тег одновременно
-  (`asyncio.gather`), сливает по имени и сортирует по полю Hugging Face (`SORTS`; для слияния оно просится в `expand[]`).
-  `hub/model_install.py` менять не пришлось. Тест — `test_the_video_search_finds_models_by_text_and_by_picture`.
+  как просили. Файлы: `hub/hf.py`, `hub/model_install.py`. Тест — подставной Hugging Face: модель только с
+  `image-to-video` находится. ✓ Сделано: `TASKS["video"]` — два тега; `hf.search` спрашивает по запросу на тег
+  одновременно (`asyncio.gather`), сливает по имени и сортирует по полю Hugging Face (`SORTS`; для слияния оно просится
+  в `expand[]`). `hub/model_install.py` менять не пришлось. Тест —
+  `test_the_video_search_finds_models_by_text_and_by_picture`.
 - 48.2 Модель внутри репозитория. Вариант — по модели: папка и имя без квантования (dev и distilled, fl2va и ref2va);
   кодировщик в репозитории модели — не её вариант; пара HighNoise и LowNoise одного квантования — один вариант, файлы
   с ролями `diffusion-model` и `high-noise-diffusion-model`. У семейства — каким файлам репозитория оно соответствует.
@@ -1470,10 +1471,16 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   - 48.2б ✓ Окно: `variant_key` — квантование, у варианта семейства — с семейством; строка варианта — `key`,
     `variant`, `family`, подпись «LTX-2.3 distilled · Q4_K_M», когда семейств два; «Установить» (`install(key)`) ставит
     вариант как его семейства; загрузка видна на своём варианте (`_job_for` — по `plan.set`). Файлы:
-    `app/ui/install_view.py`, `app/ui/qml/InstallSheet.qml`. Тест — `test_a_found_repository_of_two_families_in_the_window`.
+    `app/ui/install_view.py`, `app/ui/qml/InstallSheet.qml`. Тест —
+    `test_a_found_repository_of_two_families_in_the_window`.
 - 48.3 Свой ролик у семейства: в каталоге `video` — к/с, шаг кадров (4 или 8), размеры обычный и HD; `Visual.video` и
   проба берут их вместо общих TI2V-5B. Файлы: `common/picture_sizes.py`, `hub/visual.py`, `hub/model_catalog.json`.
-  Тест: у LTX кадров 8k+1, у Wan2.1 — 16 к/с.
+  Тест: у LTX кадров 8k+1, у Wan2.1 — 16 к/с. ✓ Сделано: у семейства в каталоге — `clip` (`fps`, `step`, `grid`,
+  `sizes`, `hd`), чего нет — TI2V-5B (`picture_sizes.CLIP`, `clip_of`); установка кладёт его в план, `installed` отдаёт
+  его у видеомодели (поставленная раньше — TI2V-5B). `video_size(shape, hd, clip)`, `frames_for(seconds, fps, step)`,
+  `trial_size(clip)` — проба 480×272 до сетки семейства (у сетки 32 — 480×288), к/с семейства, 9 кадров (и 4k+1, и
+  8k+1). Строка модели в окне — по её `clip` (`app/ui/visual_view.py`). Каталог наполнит 48.6. Тест —
+  `test_a_video_familys_own_clip` и проба пары в `test_a_found_video_model_among_the_others_of_its_repository`.
 - 48.4 Память видео — по размерам, правилами auto-fit sd.cpp (47.9), с парой экспертов (как sd.cpp держит вторую
   половину — по исходнику). Пороги `pictures_for` — для своего набора, найденные — по размерам. Файл:
   `hub/model_install.py`.

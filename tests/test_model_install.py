@@ -1525,6 +1525,7 @@ def test_the_video_search_finds_models_by_text_and_by_picture(hub):
 PAIR = {"id": "pair", "name": "Pair", "kind": "video", "purposes": ["video"], "tier": "video", "license": "apache-2.0",
         "original": "test/Pair", "bases": ["test/Pair"], "size": 832, "card": False, "about": {"ru": "Снимает"},
         "flags": ["--cfg-scale", "3.5", "--steps", "4", "--high-noise-steps", "2"],
+        "clip": {"fps": 16, "grid": 32},  # its own clip (48.3): Wan2.1's 16 a second; a grid of 32 for the trial
         "files": [{"role": "diffusion-model", "repo": "test/Pair-GGUF", "path": "LowNoise/pair-LowNoise-Q4_0.gguf"},
                   {"role": "high-noise-diffusion-model", "repo": "test/Pair-GGUF",
                    "path": "HighNoise/pair-HighNoise-Q4_0.gguf"},
@@ -1582,6 +1583,9 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
     assert f'--diffusion-model "{(folder / "pair_low_noise_Q4_0.gguf").as_posix()}"' in view["command"]
     assert f'--high-noise-diffusion-model "{(folder / "pair_high_noise_Q4_0.gguf").as_posix()}"' in view["command"]
     assert "--high-noise-steps 2" in view["command"]
+    trial = FakeLlamaSwap.video[-1]  # 48.3: the trial on the family's grid, at its frames a second
+    assert (trial["width"], trial["height"], trial["fps"], trial["video_frames"]) == (480, 288, 16, 9)
+    assert done["plan"]["clip"] == {"fps": 16, "grid": 32}
     job = hub.post("/v1/install/pictures", json={"id": "film-distilled", "repo": "someone/Film-Two-GGUF",
                                                  "quant": "Q4_0"}).json()["job"]  # fmt: skip
     assert [f["path"] for f in job["files"] if f["role"] == "diffusion-model"] == ["distilled/film-distilled-Q4_0.gguf"]

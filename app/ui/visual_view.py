@@ -27,7 +27,7 @@ from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
 from common.i18n import N_, tr
-from common.picture_sizes import CPU_PIXELS, SHAPES, fit, size_for, video_size
+from common.picture_sizes import CPU_PIXELS, SHAPES, clip_of, fit, size_for, video_size
 
 from ..hub_client import HubError
 
@@ -205,7 +205,8 @@ class VisualView(QObject):
         if self._mode == "video":
             if not self._videos:
                 return ""
-            width, height = video_size(self._shape, self._quality == "quality")
+            width, height = video_size(self._shape, self._quality == "quality",
+                                       clip_of(self._videos[0].get("clip")))  # the family's own (48.3)  # fmt: skip
             return tr("{name} · {width} × {height} · {seconds} с", name=self._videos[0]["name"], width=width,
                       height=height, seconds=self._length)  # fmt: skip
         model, width, height, why = self._plan()

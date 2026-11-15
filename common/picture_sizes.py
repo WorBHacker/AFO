@@ -25,16 +25,34 @@ VIDEO = {"wide": (832, 480), "tall": (480, 832), "square": (640, 640)}
 VIDEO_HD = {"wide": (1280, 704), "tall": (704, 1280), "square": (960, 960)}
 FPS = 24
 SECONDS = (0.5, 4.0)
+TRIAL = (480, 272)  # a video model's trial (29.8а): small and short
+# a video family's own clip (48.3): its frames a second, its frames' step (Wan's VAE takes 4k+1, LTX's 8k+1), the grid
+# its sides keep (LTX's 32), its sizes - TI2V-5B's unless its catalog entry (`clip`) says
+CLIP = {"fps": FPS, "step": 4, "grid": 16, "sizes": VIDEO, "hd": VIDEO_HD}
 
 
-def video_size(shape: str, hd: bool) -> tuple[int, int]:
-    sizes = VIDEO_HD if hd else VIDEO
-    return sizes.get(shape, sizes["wide"])
+def clip_of(clip: dict | None) -> dict:
+    """A family's clip (48.3) over TI2V-5B's: what it does not say is TI2V-5B's; its sizes as (width, height)."""
+    out = {**CLIP, **(clip or {})}
+    for key in ("sizes", "hd"):
+        out[key] = {shape: (int(side[0]), int(side[1])) for shape, side in out[key].items()}
+    return out
 
 
-def frames_for(seconds: float, fps: int = FPS) -> int:
-    """A video's frames for so many seconds: 4k+1, as Wan's VAE takes them."""
-    return max(1, round(seconds * fps / 4)) * 4 + 1
+def video_size(shape: str, hd: bool, clip: dict | None = None) -> tuple[int, int]:
+    sizes = (clip or CLIP)["hd" if hd else "sizes"]
+    return tuple(sizes.get(shape, sizes["wide"]))
+
+
+def frames_for(seconds: float, fps: int = FPS, step: int = 4) -> int:
+    """A video's frames for so many seconds: step·k+1, as the family's VAE takes them (Wan's 4k+1, LTX's 8k+1)."""
+    return max(1, round(seconds * fps / step)) * step + 1
+
+
+def trial_size(clip: dict | None = None) -> tuple[int, int]:
+    """A video model's trial size (29.8а): small, each side up to the family's grid (48.3)."""
+    grid = (clip or CLIP)["grid"]
+    return tuple(math.ceil(side / grid) * grid for side in TRIAL)
 
 
 def size_for(shape: str, side: int) -> tuple[int, int]:

@@ -62,15 +62,16 @@ import httpx
 from common.i18n import tr
 from common.picture_sizes import (
     CPU_PIXELS,
-    FPS,
     SHAPES,
     SIDES,
+    clip_of,
     fit,
     frames_for,
     half,
     moved,
     shaped,
     size_for,
+    trial_size,
     video_size,
 )
 
@@ -282,12 +283,16 @@ VIDEO_STEP_S = 1.0  # how often a video's job is looked at
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
 
 
-async def trial_video(base_url: str, model_id: str, *, frames: int = 9) -> dict[str, Any]:
-    """A video model's trial (29.8а): a short video through vid_gen - {ok, seconds, frames} or {ok: False, error}."""
+async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: dict[str, Any] | None = None
+                      ) -> dict[str, Any]:  # fmt: skip
+    """A video model's trial (29.8а): a short video through vid_gen - {ok, seconds, frames} or {ok: False, error}; its
+    size on the family's grid, its frames a second the family's (48.3; 9 frames - 4k+1 and 8k+1 alike)."""
     start = time.monotonic()
     upstream = f"{base_url}/upstream/{model_id}/sdcpp/v1"
-    body = {"prompt": TRIAL_PROMPT, "width": 480, "height": 272, "video_frames": frames, "fps": FPS, "seed": 1,
-            "output_format": "webp"}  # fmt: skip
+    clip = clip_of(clip)
+    width, height = trial_size(clip)
+    body = {"prompt": TRIAL_PROMPT, "width": width, "height": height, "video_frames": frames, "fps": clip["fps"],
+            "seed": 1, "output_format": "webp"}  # fmt: skip
     try:
         async with httpx.AsyncClient(timeout=TRIAL_TIMEOUT_S) as http:
             said = await http.post(f"{upstream}/vid_gen", json=body)
@@ -412,7 +417,8 @@ def _text_flag(flags: list[str], name: str, default: str) -> str:
 
 def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
     """The picture models AFO installed (29.3) - or its video models (`kind` video, 29.8): {model_id, name, tier,
-    size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, flow_shift}."""
+    size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, flow_shift, clip - a video
+    family's own (48.3; one installed before - TI2V-5B's)}."""
     out = []
     for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
         plan = json.loads(row["plan"] or "{}")
@@ -423,7 +429,7 @@ def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
                     "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
                     "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or "",
                     "sampler": _text_flag(flags, "--sampling-method", "default"),
-                    "flow_shift": _flag(flags, "--flow-shift", 0.0)})  # fmt: skip
+                    "flow_shift": _flag(flags, "--flow-shift", 0.0), "clip": clip_of(plan.get("clip"))})  # fmt: skip
     return out
 
 
@@ -607,8 +613,9 @@ class Visual:
             found[0] if found else None)  # fmt: skip
         if model is None:
             raise VisualError(tr("модели видео нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
-        width, height = video_size(str(spec.get("shape") or "wide"), bool(spec.get("hd")))
-        frames = frames_for(float(spec.get("seconds") or 2.0))
+        clip = model["clip"]  # the family's own (48.3)
+        width, height = video_size(str(spec.get("shape") or "wide"), bool(spec.get("hd")), clip)
+        frames = frames_for(float(spec.get("seconds") or 2.0), clip["fps"], clip["step"])
         seed = spec.get("seed")
         seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
         job_id = uuid.uuid4().hex[:12]
@@ -618,7 +625,7 @@ class Visual:
                 "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
                 "conversation_id, frames, fps) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
-                 spec.get("conversation_id"), frames, FPS),
+                 spec.get("conversation_id"), frames, clip["fps"]),
             )  # fmt: skip
 
         await self._db.acall(add)
