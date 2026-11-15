@@ -248,6 +248,10 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
     video_polls = 3  # a video's job is done at this look
     polls = 0
     passes: ClassVar[list] = []  # (pass, step, its steps) at each look, as sd-server's job says them with a preview
+    cancels: ClassVar[list] = []  # a video job's /cancel, each asked (48's review: routes_sdcpp.cpp 822)
+    heeds = True  # a job told to stop stops (sd-server's cancel: at a step's end) - or goes on
+    cancelling = False
+    fails: ClassVar = None  # the error a video's job ends with, as sd-server says it: {code, message}
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
     step = total = 0
@@ -271,6 +275,13 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
                 self._send(502, {"error": "upstream exited"})
                 return
             cls.polls += 1
+            if cls.cancelling and cls.heeds:
+                self._send(200, {"id": "job_v", "status": "cancelled", "result": None,
+                                 "error": {"code": "cancelled", "message": ""}})  # fmt: skip
+                return
+            if cls.fails is not None:
+                self._send(200, {"id": "job_v", "status": "failed", "result": None, "error": cls.fails})
+                return
             if cls.polls < cls.video_polls:
                 state = {"id": "job_v", "status": "generating", "result": None}
                 asked = cls.video[-1].get("preview") or "none"  # sd-server: the step only with a preview asked
@@ -282,6 +293,10 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
             self._send(200, {"id": "job_v", "status": "completed", "result": {
                 "b64_json": base64.b64encode(WEBP).decode(), "mime_type": "image/webp", "output_format": "webp",
                 "fps": 24, "frame_count": cls.video[-1]["video_frames"]}})  # fmt: skip
+            return
+        if self.path == "/running":  # llama-swap's: the video's model, until it is unloaded
+            model = cls.video[-1]["path"].split("/")[2] if cls.video and not cls.stopped else ""
+            self._send(200, {"running": [{"model": model, "state": "ready"}] if model else []})
             return
         if self.path.startswith("/upstream/") and self.path.endswith("/sdapi/v1/progress"):
             cls = FakeDrawSwap
@@ -297,10 +312,15 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
             cls.stopped = True
             self._send(200, {"msg": "ok"})
             return
+        if self.path.endswith("/sdcpp/v1/jobs/job_v/cancel"):
+            cls.cancels.append(self.path)
+            cls.cancelling = True
+            self._send(200, {"id": "job_v", "status": "generating"})
+            return
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         if self.path.endswith("/sdcpp/v1/vid_gen"):  # a video: accepted at once, drawn in the background (29.8)
             cls.video.append({**body, "path": self.path})
-            cls.polls, cls.stopped = 0, False
+            cls.polls, cls.stopped, cls.cancelling = 0, False, False
             self._send(202, {"id": "job_v", "kind": "vid_gen", "status": "queued", "poll_url": "/sdcpp/v1/jobs/job_v"})
             return
         cls.asked.append({**body, "path": self.path} if self.path.endswith("/img2img") else body)
@@ -333,6 +353,7 @@ DRAW_PLAN = {"engine": "sd", "set": "draw", "tier": "main", "size": 512, "flags"
 def hub(monkeypatch):
     FakeDrawSwap.steps_s, FakeDrawSwap.answer, FakeDrawSwap.asked, FakeDrawSwap.unloaded = 0.05, "picture", [], []
     FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls, FakeDrawSwap.passes = [], 3, 0, []
+    FakeDrawSwap.cancels, FakeDrawSwap.heeds, FakeDrawSwap.cancelling, FakeDrawSwap.fails = [], True, False, None
     FakeDrawSwap.step = FakeDrawSwap.total = 0
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeDrawSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
@@ -700,6 +721,51 @@ def test_a_videos_steps_shown_as_it_films(hub, monkeypatch):
     clock = [p for k, p in hub.seen if k == "visual.progress" and p["id"] == plain["id"]]
     assert clock and all(p["steps"] == 0 and p["preview"] == "" for p in clock)
     assert [p["seconds"] for p in clock] == sorted(p["seconds"] for p in clock) and clock[-1]["seconds"] > 0
+
+
+def test_a_video_that_stops_moving_is_stopped_in_the_engine(hub, monkeypatch):
+    """Stage 48's review, finding 6: past its hour a video was «не вышло», the card let go to a chat - and sd-server
+    filmed on: nobody told it to stop (POST /sdcpp/v1/jobs/<id>/cancel, routes_sdcpp.cpp 822); the next video stood in
+    its own queue behind it. And an hour was no limit for LTX and MiniMax on 16 GB. Now a video stops when it does not
+    move - no new step, pass, status or place in the engine's queue - for VIDEO_STALL_S (15 min); a model that gives no
+    step at all - after VIDEO_TIMEOUT_S (3 h). Stopped in the engine: its job cancelled (asked only of a model
+    llama-swap runs), the model unloaded if the cancel does not take within CANCEL_WAIT_S; the card let go after it.
+    The engine's error in words is its message, not its object."""
+    for name, value in (("VIDEO_STALL_S", 0.5), ("VIDEO_TIMEOUT_S", 0.6), ("CANCEL_WAIT_S", 0.4)):
+        monkeypatch.setattr(visual, name, value, raising=False)
+    _install(hub, "clip", CLIP_PLAN)
+
+    def film(**fake):
+        for key, value in fake.items():
+            setattr(FakeDrawSwap, key, value)
+        job = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "clip"}).json()["job"]
+        return _wait(hub, job["id"], "done", "failed", timeout=10.0)
+
+    moving = film(passes=[(1, i, 40) for i in range(1, 30)], video_polls=30)  # slowly, past the old limit
+    assert moving["status"] == "done", moving["error"]
+    assert not FakeDrawSwap.cancels
+
+    stalled = film(passes=[(1, 1, 4), (1, 2, 4), (1, 3, 4)], video_polls=10_000)  # three steps, then nothing
+    assert stalled["status"] == "failed" and "хода" in stalled["error"], stalled["error"]
+    assert FakeDrawSwap.cancels == ["/upstream/clip/sdcpp/v1/jobs/job_v/cancel"] and FakeDrawSwap.unloaded == []
+    assert not hub.app.state.visual.holding
+
+    deaf = film(passes=[], video_polls=10_000, heeds=False)  # no step at all, and a cancel that does not take
+    assert deaf["status"] == "failed" and "не готово" in deaf["error"], deaf["error"]
+    assert len(FakeDrawSwap.cancels) == 2 and FakeDrawSwap.unloaded == ["clip"]
+    assert not hub.app.state.visual.holding
+
+    broken = film(heeds=True, fails={"code": "generation_failed", "message": "CUDA error: out of memory"})
+    assert broken["status"] == "failed" and broken["error"].endswith("CUDA error: out of memory"), broken["error"]
+
+
+def test_a_trial_video_past_its_time_is_stopped_in_the_engine(hub, monkeypatch):
+    """Stage 48's review, finding 6: an install's trial video past its 15 minutes left sd-server filming too."""
+    monkeypatch.setattr(visual, "TRIAL_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(visual, "CANCEL_WAIT_S", 0.3, raising=False)
+    FakeDrawSwap.video_polls = 10_000
+    result = asyncio.run(visual.trial_video(hub.app.state.visual._url, "clip"))
+    assert not result["ok"] and FakeDrawSwap.cancels == ["/upstream/clip/sdcpp/v1/jobs/job_v/cancel"]
 
 
 def test_a_video_familys_own_clip(hub):

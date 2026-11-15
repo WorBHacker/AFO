@@ -1604,7 +1604,11 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     очередь. Отмена — `POST …/jobs/<id>/cancel` (только если модель в `/running` llama-swap: `/upstream` загрузил бы её
     ради отмены), «cancelled» ждётся до `CANCEL_WAIT_S`, иначе модель выгружается; карта — после. Предел — «нет хода»
     (`VIDEO_STALL_S`: статус, проход, шаг, место в очереди), у модели без шага — 3 ч на всё; у пробы — так же. Ошибка
-    движка — `message` его объекта `{code, message}`. Файл: `hub/visual.py`.
+    движка — `message` его объекта `{code, message}`. Файл: `hub/visual.py`. ✓ Сделано: `halt` (и у `trial_video`),
+    `_engine_error`; `VIDEO_STALL_S` = 15 мин — после первого шага, до него и у модели без шага — `VIDEO_TIMEOUT_S` =
+    3 ч от начала. Тесты — `test_a_video_that_stops_moving_is_stopped_in_the_engine` (медленное, но идущее не
+    обрывается; вставшее отменено в движке; неотменяемое выгружено; ошибка движка — словами),
+    `test_a_trial_video_past_its_time_is_stopped_in_the_engine`.
   - Р8 Половина, удалённая вручную, — ролик «готово» (sd.cpp лишь предупреждает, `diffusion_engine.cpp` 698–702): перед
     `vid_gen` файлы установки на месте и своего размера, нет — «не вышло» со словами. Файлы: `hub/visual.py`,
     `hub/model_install.py`, `hub/server.py`.

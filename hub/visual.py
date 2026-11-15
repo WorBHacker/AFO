@@ -281,7 +281,10 @@ MAX_TRIES = 5  # a picture's tries at most, the first among them
 STRENGTH = 0.6  # «По картинке»: how much a source is changed unless said («Заметно»)
 STRENGTHS = (0.1, 0.95)  # past it nothing of the source is left
 SOURCE_BYTES = 20 * 1024**2
-VIDEO_TIMEOUT_S = 3600.0  # an hour at most: a video on a slow card (29.1: 7.5 min for 0.7 s on an integrated one)
+VIDEO_STALL_S = 15 * 60.0  # (48's review) a video whose step, pass, status, place in the engine's queue stay this long
+# is stopped - an hour was no limit for LTX and MiniMax on 16 GB; 48.8 measures the longest gap (a half loaded, the VAE)
+VIDEO_TIMEOUT_S = 3 * 3600.0  # a model that gives no step at all (HunyuanVideo 1.5: no projection) - its whole time
+CANCEL_WAIT_S = 60.0  # a cancelled job stops at its step's end (sd.cpp's sampler looks at the flag each step)
 VIDEO_STEP_S = 1.0  # how often a video's job is looked at
 VIDEO_CLOCK_S = 5.0  # a video whose model gives no step (48's review): the time it has taken, to the window this often
 VIDEO_MODES = ("text", "picture", "frames")  # (48.5) by words, by a picture (its first frame), by the first and last
@@ -333,12 +336,42 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
                         return {"ok": True, "seconds": round(time.monotonic() - start, 1), "frames": frames}
                     return {"ok": False, "error": tr("ответ без видео")}
                 if state.get("status") in ("failed", "cancelled"):
-                    return {"ok": False, "error": tr("движок не снял видео: {error}",
-                                                     error=state.get("error") or state["status"])}  # fmt: skip
+                    return {"ok": False, "error": _engine_error(state)}
                 await asyncio.sleep(VIDEO_STEP_S)
+            await halt(http, base_url, model_id, video_job)  # past its time: the engine stops too (48's review)
     except (httpx.HTTPError, ValueError) as exc:
         return {"ok": False, "error": _no_answer(exc)}
     return {"ok": False, "error": tr("видео не готово и за {minutes} мин", minutes=round(TRIAL_TIMEOUT_S / 60))}
+
+
+def _engine_error(state: dict[str, Any]) -> str:
+    """sd-server's job's error in words: its message - the job says {code, message} (async_jobs.cpp 236), and the
+    object itself went into the words (48's review)."""
+    error = state.get("error")
+    if isinstance(error, dict):
+        error = error.get("message") or error.get("code")
+    return tr("движок не снял видео: {error}", error=error or state.get("status") or "")
+
+
+async def halt(http: httpx.AsyncClient, base_url: str, model_id: str, video_job: str) -> None:
+    """A video past its limit, stopped in the engine (48's review, finding 6): sd-server films on otherwise - the card
+    let go to a chat, the next video in the engine's own queue behind it. Its job cancelled (POST …/jobs/<id>/cancel,
+    routes_sdcpp.cpp 822: it stops at a step's end) - asked only of a model llama-swap runs: through /upstream one not
+    running would be loaded for it; still going after CANCEL_WAIT_S, or not answering - the model unloaded."""
+    upstream = f"{base_url}/upstream/{model_id}/sdcpp/v1"
+    with contextlib.suppress(httpx.HTTPError, ValueError):
+        running = (await http.get(f"{base_url}/running")).json().get("running") or []
+        if not any(r.get("model") == model_id for r in running):
+            return
+        await http.post(f"{upstream}/jobs/{video_job}/cancel")
+        deadline = time.monotonic() + CANCEL_WAIT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(VIDEO_STEP_S)
+            looked = await http.get(f"{upstream}/jobs/{video_job}")
+            if looked.status_code >= 300 or looked.json().get("status") in ("cancelled", "failed", "completed"):
+                return
+    with contextlib.suppress(httpx.HTTPError):
+        await http.post(f"{base_url}/api/models/unload/{model_id}")
 
 
 GENERATE_IMAGE = {
@@ -1037,7 +1070,8 @@ class Visual:
                     error = _refused(said)
                 else:
                     video_job = said.json().get("id", "")
-                    while job_id not in self._stopping and time.monotonic() - start < VIDEO_TIMEOUT_S:
+                    moved, where = start, None  # when it last moved - a step, a pass, its status, its place in line
+                    while job_id not in self._stopping:
                         await asyncio.sleep(VIDEO_STEP_S)
                         if job_id in self._stopping:
                             break
@@ -1050,7 +1084,7 @@ class Visual:
                             result = state.get("result") or {}
                             break
                         if state.get("status") in ("failed", "cancelled"):
-                            error = tr("движок не снял видео: {error}", error=state.get("error") or state["status"])
+                            error = _engine_error(state)
                             break
                         now = time.monotonic()
                         if (step := steps.seen(state.get("preview"))) is not None:  # each step once, as a picture's
@@ -1058,8 +1092,18 @@ class Visual:
                         elif steps.shown is None and now - clock >= VIDEO_CLOCK_S:  # no step yet, or none at all
                             clock = now
                             await self._said(job_id, 0, 0, now - start)
-                    else:
-                        error = error or tr("видео не готово и за час")
+                        if (state.get("status"), state.get("queue_position"), steps.shown) != where:
+                            moved, where = now, (state.get("status"), state.get("queue_position"), steps.shown)
+                        # (48's review, finding 6) one that moved and stopped moving; one that gives no step - its time
+                        if steps.shown is not None and now - moved >= VIDEO_STALL_S:
+                            error = tr("видео стоит без хода {minutes} мин — остановлено",
+                                       minutes=round(VIDEO_STALL_S / 60))  # fmt: skip
+                        elif steps.shown is None and now - start >= VIDEO_TIMEOUT_S:
+                            error = tr("видео не готово и за {hours} ч — остановлено",
+                                       hours=round(VIDEO_TIMEOUT_S / 3600))  # fmt: skip
+                        if error:
+                            await halt(http, self._url, model_id, video_job)  # the engine stops, then the card goes
+                            break
         except (httpx.HTTPError, ValueError) as exc:
             error = _no_answer(exc)
         except OSError as exc:  # a frame kept beside the job, not read
