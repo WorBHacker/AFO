@@ -1310,8 +1310,9 @@ class Installer:
         variant = next((v for v in family_variants(entry, listed["files"]) if v["quant"] == quant), None)
         if variant is None:
             raise InstallError(tr("у {repo} нет варианта {quant}", repo=repo, quant=quant), 404)
+        # `tree`: by its path in the repository (stage 48's review, finding 1) - two halves of one name are two files
         files = [{"path": f["path"], "repo": repo, "revision": listed["revision"], "done": False, "size": f["size"],
-                  "sha256": f["sha256"], "role": f["role"]} for f in variant["files"]]  # fmt: skip
+                  "sha256": f["sha256"], "role": f["role"], "tree": True} for f in variant["files"]]  # fmt: skip
         return files, listed.get("license") or entry["license"]
 
     async def install_pictures(self, spec: dict[str, Any], client: Any) -> dict[str, Any]:
@@ -2094,12 +2095,18 @@ def _block(found: dict[str, Any], model_id: str, server: str, model_file: Path, 
 
 def _dest(folder: Path, f: dict[str, Any]) -> Path:
     """Where a file of an install goes: the model's folder; the picture engine's archive - the engines' downloads; a
-    picture family's encoder or VAE (47.3) - where it lies for all its models (`at`)."""
+    picture family's encoder or VAE (47.3) - where it lies for all its models (`at`); a found model's file (`tree`,
+    stage 48's review) - by its path in its repository, inside the folder: a pair's halves of one name, each in its
+    folder (HighNoise, LowNoise), lay in one file by the name alone. One that would leave the folder - by the name."""
     if f["role"] == "engine":
         return engines_home() / "downloads" / f["path"]
     if f.get("at"):
         return Path(f["at"])
-    return folder / PurePosixPath(f["path"]).name
+    path = PurePosixPath(f["path"])
+    if f.get("tree") and not path.is_absolute() and all(p not in (".", "..") and ":" not in p and "\\" not in p
+                                                        for p in path.parts):  # fmt: skip
+        return folder.joinpath(*path.parts)
+    return folder / path.name
 
 
 def _key(path: Path) -> str:
@@ -2171,6 +2178,13 @@ def _delete_files(found: dict[str, Any], kept: set[str] | frozenset[str] = froze
                     time.sleep(0.5)
         if f.get("at"):
             away.append(dest.parent)
+        for up in dest.parents if f.get("tree") else ():  # its repository's folders inside the install's, while empty
+            if up == folder or folder not in up.parents:
+                break
+            try:
+                up.rmdir()
+            except OSError:
+                break
     for empty in (folder, folder.parent):
         with contextlib.suppress(OSError):
             empty.rmdir()

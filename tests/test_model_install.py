@@ -118,9 +118,13 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
                                        "pair_high_noise_Q2_K.gguf": b"h" * 12_000},
             "someone/Film-Two-GGUF": {"film-dev-Q4_0.gguf": b"f" * 40_000, "film-dev-UD-Q4_0.gguf": b"f" * 44_000,
                                       "distilled/film-distilled-Q4_0.gguf": b"F" * 41_000,
-                                      "encoder-Q4_K_M.gguf": b"E" * 30_000}}  # fmt: skip
+                                      "encoder-Q4_K_M.gguf": b"E" * 30_000},
+            # stage 48's review, finding 1: a pair whose halves have one name, each in its folder, of one size
+            "someone/Same-Name-GGUF": {"HighNoise/same-Q4_0.gguf": b"h" * 30_000,
+                                       "LowNoise/same-Q4_0.gguf": b"l" * 30_000}}  # fmt: skip
 BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"],  # its tags (47.2)
          "someone/Pair-More-GGUF": ["base_model:quantized:test/Pair"],
+         "someone/Same-Name-GGUF": ["base_model:quantized:test/Pair"],
          "someone/Film-Two-GGUF": ["base_model:quantized:test/Film"]}  # fmt: skip
 RENAMED = {"test/Old-Words-GGUF": "test/Words-GGUF"}  # a renamed repository: Hugging Face's 307 to the new name (47.9)
 # draft models guessing ahead (42.3): their vocabulary is the model's, or one token is another
@@ -1604,6 +1608,38 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
 
     hub.delete(f"/v1/install/models/{done['model_id']}")
     assert not (folder / "pair_low_noise_Q4_0.gguf").exists() and not (folder / "pair_high_noise_Q4_0.gguf").exists()
+
+
+def test_two_halves_of_one_name_in_two_folders_are_two_files(hub, monkeypatch):
+    """Stage 48's review, finding 1: a found pair whose halves have one name, each in its folder
+    (`HighNoise/same-Q4_0.gguf`, `LowNoise/same-Q4_0.gguf`), lay in one file - by its name in the repository's one
+    folder; the second of the same size counted as come without its sha256, both flags named one file. Each now lies by
+    its path in the repository, inside the install's folder; removed - both go, and their folders."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0)
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
+
+    job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Same-Name-GGUF", "quant": "Q4_0"})
+    assert job.status_code == 200, job.text
+    done = wait_for(hub, job.json()["job"]["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    command = lc.model_view(hub.config.read_text(encoding="utf-8"), done["model_id"])["command"]
+    low = Path(re.search(r'--diffusion-model "([^"]+)"', command).group(1))
+    high = Path(re.search(r'--high-noise-diffusion-model "([^"]+)"', command).group(1))
+    assert low != high  # two halves, two files
+    files = PICTURES["someone/Same-Name-GGUF"]
+    assert low.read_bytes() == files["LowNoise/same-Q4_0.gguf"]
+    assert high.read_bytes() == files["HighNoise/same-Q4_0.gguf"]
+    folder = Path(done["folder"])
+    assert (low.parent.name, high.parent.name) == ("LowNoise", "HighNoise") and folder in low.parents
+
+    hub.delete(f"/v1/install/models/{done['model_id']}")
+    assert not low.exists() and not high.exists() and not low.parent.exists() and not high.parent.exists()
 
 
 def test_a_found_video_model_judged_by_its_sizes(hub, monkeypatch):
