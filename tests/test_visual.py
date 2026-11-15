@@ -1177,3 +1177,34 @@ def test_pictures_a_stopped_hub_left_going_fail(hub):
     assert hub.portal.call(hub.app.state.visual.start) == 1
     left = hub.get("/v1/visual/jobs/left").json()["job"]
     assert left["status"] == "failed" and "перезапускался" in left["error"]
+
+
+def test_the_hub_stopping_with_a_queue_begins_nothing_and_says_what_was_left(hub):
+    """48.10г (stage 48's review, finding 11): the hub stopping stopped the job going on and waited for the worker -
+    which took the next one from the queue meanwhile and loaded its model while the hub was going away. The queue is
+    closed first: the job going on stops as by ✕, nothing else begins. What waited is failed once the hub starts again,
+    as before (the user's word: the queue does not go on after a restart) - in its own words: a video «не снято», not
+    «картинка не нарисована»."""
+    _install(hub)
+    _install(hub, "clip", CLIP_PLAN)
+    FakeDrawSwap.video_polls = 10_000  # a video films until it is stopped
+    state = hub.app.state.visual
+    videos = [hub.post("/v1/visual/videos", json={"prompt": f"the fox runs, take {n}", "model": "clip",
+                                                  "seconds": 1}).json()["job"] for n in (1, 2)]  # fmt: skip
+    picture = hub.post("/v1/visual/images", json={"prompt": "a fox", "model": "draw", "seed": 1}).json()["job"]
+    _wait(hub, videos[0]["id"], "running")
+    deadline = time.monotonic() + 10
+    while not FakeDrawSwap.video:  # its model asked for: it films
+        assert time.monotonic() < deadline, "the first video did not begin"
+        time.sleep(0.02)
+    hub.portal.call(state.stop)  # the hub stops
+    assert len(FakeDrawSwap.video) == 1 and not FakeDrawSwap.asked, "the worker began the next job as the hub stopped"
+    assert _wait(hub, videos[0]["id"], "cancelled", "failed", "done")["status"] == "cancelled"
+    left = [hub.get(f"/v1/visual/jobs/{j['id']}").json()["job"] for j in (videos[1], picture)]
+    assert [j["status"] for j in left] == ["queued", "queued"]
+    assert hub.portal.call(state.start) == 2  # the hub started again
+    left = [hub.get(f"/v1/visual/jobs/{j['id']}").json()["job"] for j in (videos[1], picture)]
+    assert [(j["status"], j["error"]) for j in left] == [
+        ("failed", "хаб перезапускался — видео не снято"),
+        ("failed", "хаб перезапускался — картинка не нарисована"),
+    ]

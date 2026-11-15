@@ -2855,6 +2855,7 @@
  "хаб не запустился за {seconds:.0f} с, подробности в {log}": "the hub did not start in {seconds:.0f} s, details in {log}",
  "хаб не запущен": "the hub is not running",
  "хаб не отвечает ({error})": "the hub is not answering ({error})",
+ "хаб перезапускался — видео не снято": "the hub restarted — the video was not filmed",
  "хаб перезапускался — загрузка продолжится по кнопке «Продолжить»": "the hub restarted — the download goes on when you press “Continue”",
  "хаб перезапускался — картинка не нарисована": "the hub restarted — the picture was not drawn",
  "хаб перезапустился": "the hub restarted",

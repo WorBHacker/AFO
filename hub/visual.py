@@ -639,18 +639,28 @@ class Visual:
         self._held = asyncio.Event()
         self._held.set()
         self._stops: set[asyncio.Task] = set()  # a job being stopped as by ✕ (48.9г)
+        self._closing = False  # the hub stops (48.10г): the worker begins no job
 
     async def start(self) -> int:
-        """Pictures a stopped hub left going are failed: llama-swap let them go with it."""
+        """Pictures and videos a stopped hub left going or waiting are failed: llama-swap let them go with it - each in
+        its own words (48.10г: a video «не снято», not «картинка не нарисована»)."""
 
         def fail(conn) -> int:
-            return conn.execute("UPDATE visual_jobs SET status = 'failed', error = ?, updated_at = ? WHERE status IN "
-                                "('queued', 'running')", (tr("хаб перезапускался — картинка не нарисована"),
-                                                          utc_now())).rowcount  # fmt: skip
+            failed = 0
+            for kind, words in (("image", N_("хаб перезапускался — картинка не нарисована")),
+                                ("video", N_("хаб перезапускался — видео не снято"))):  # fmt: skip
+                failed += conn.execute("UPDATE visual_jobs SET status = 'failed', error = ?, updated_at = ? WHERE "
+                                       "status IN ('queued', 'running') AND kind = ?",
+                                       (tr(words), utc_now(), kind)).rowcount  # fmt: skip
+            return failed
 
         return await self._db.acall(fail)
 
     async def stop(self) -> None:
+        """The hub stops (48.10г, the review's finding 11): the queue is closed first - the worker took the next job
+        meanwhile and loaded its model while the hub went away -, the job going on stops as by ✕; what waits is failed
+        when the hub starts again (`start`)."""
+        self._closing = True
         if self._running:
             with contextlib.suppress(Exception):
                 await self.cancel(self._running)
@@ -1000,6 +1010,8 @@ class Visual:
                                      "LIMIT 1").fetchone()  # fmt: skip
                 return _row(found) if found else None
 
+            if self._closing:  # the hub stops (48.10г): no next job - it waits, and is failed when the hub starts
+                return
             self._more = False
             found = await self._db.acall(oldest)
             if found is None:
@@ -1018,6 +1030,9 @@ class Visual:
                 if self._held.is_set():
                     break
                 self.card.give(STUDIO)
+            if self._closing:  # the hub began to stop while it waited for the card (48.10г): it does not begin
+                self.card.give(STUDIO)
+                return
             try:
                 self._running = job_id  # the worker's from now (48.10а): ✕ and «Выгрузить» stop it as one going on
                 found = await self._db.acall(functools.partial(job, job_id=job_id))  # «✕» while it waited for the card
