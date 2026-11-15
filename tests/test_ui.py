@@ -7291,9 +7291,21 @@ def test_the_studios_video_player(qapp):
         clip = app.paths.media / "2026-11" / "v9.gif"
         clip.parent.mkdir(parents=True, exist_ok=True)
         clip.write_bytes(animated_gif([(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
-        done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
-                "seconds": 9.0, "width": 8, "height": 8, "frames": 3, "fps": 1, "seed": 1, "error": "",
-                "file": "2026-11/v9.gif"}
+        done = {
+            "id": "v9",
+            "kind": "video",
+            "prompt": "лиса бежит",
+            "model_id": "wan",
+            "status": "done",
+            "seconds": 9.0,
+            "width": 8,
+            "height": 8,
+            "frames": 3,
+            "fps": 1,
+            "seed": 1,
+            "error": "",
+            "file": "2026-11/v9.gif",
+        }
         app.on_event({"type": "visual.changed", "payload": {"job": done}})
         view.pick("v9")
         wait_until(lambda: view.videoSource != "")
