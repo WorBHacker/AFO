@@ -30,7 +30,8 @@ Item {
             width: parent.width
             text: App.showProjectChat ? App.currentTitle
                   : App.mode === "projects" ? (Projects.currentName || qsTr("Проекты"))
-                  : App.mode === "agent" ? (Autonomy.task.goal || qsTr("Автономный агент")) : App.currentTitle
+                  : App.mode === "agent" ? (Autonomy.task.goal || qsTr("Автономный агент"))
+                  : App.mode === "studio" ? qsTr("Студия") : App.currentTitle
             elide: Text.ElideRight
             color: Theme.p.text
             font.family: Theme.uiFont
@@ -42,6 +43,7 @@ Item {
             visible: text !== ""
             text: App.mode === "agent" ? (Autonomy.task.statusLabel ? Autonomy.task.statusLabel + (Autonomy.task.progress ? qsTr(" · шаги %1").arg(Autonomy.task.progress) : "") : qsTr("новая задача"))
                   : App.showProjectChat ? [Projects.currentName, App.currentMeta].filter(s => !!s).join(" · ")
+                  : App.mode === "studio" ? qsTr("картинки и видео — локальными моделями")
                   : App.mode !== "projects" ? App.currentMeta
                   : Projects.currentId ? [Projects.git.summary, Projects.processesSummary].filter(s => !!s).join(" · ") : ""
             elide: Text.ElideRight

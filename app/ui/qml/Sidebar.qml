@@ -52,19 +52,24 @@ Rectangle {
         radius: 6
         color: Theme.p.window
         border.color: Theme.p.hairline
+        // four modes (48.7а: «Студия»): on a narrow sidebar the chosen one says its name, the others their icon
+        readonly property bool roomy: width >= 340
+        readonly property real slim: 34
         Row {
             x: 3
             y: 3
             Repeater {
                 model: [{ id: "chats", name: qsTr("Чаты"), icon: "chat", key: "Ctrl+1" },
                         { id: "projects", name: qsTr("Проекты"), icon: "folder", key: "Ctrl+2" },
-                        { id: "agent", name: qsTr("Агент"), icon: "agent", key: "Ctrl+3" }]
+                        { id: "agent", name: qsTr("Агент"), icon: "agent", key: "Ctrl+3" },
+                        { id: "studio", name: qsTr("Студия"), icon: "image", key: "Ctrl+4" }]
                 delegate: AbstractButton {
                     id: tab
                     required property var modelData
                     readonly property bool chosen: App.mode === modelData.id
+                    readonly property bool named: tabs.roomy || chosen
                     objectName: "tab-" + modelData.id
-                    width: (tabs.width - 6) / 3
+                    width: tabs.roomy ? (tabs.width - 6) / 4 : (chosen ? tabs.width - 6 - 3 * tabs.slim : tabs.slim)
                     height: tabs.height - 6
                     hoverEnabled: true
                     onClicked: App.setMode(modelData.id)
@@ -84,6 +89,7 @@ Rectangle {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             Text {
+                                visible: tab.named
                                 text: tab.modelData.name
                                 color: tab.chosen ? Theme.p.text : Theme.p.muted
                                 font.family: Theme.uiFont
@@ -94,8 +100,8 @@ Rectangle {
                         }
                     }
                     ToolTip.visible: hovered
-                    ToolTip.delay: 900
-                    ToolTip.text: modelData.key
+                    ToolTip.delay: tab.named ? 900 : 300
+                    ToolTip.text: tab.named ? modelData.key : modelData.name + " · " + modelData.key
                 }
             }
         }

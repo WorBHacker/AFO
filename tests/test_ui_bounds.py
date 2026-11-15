@@ -67,7 +67,7 @@ def test_a_question_keeps_a_long_title_and_its_answers_inside_the_card(quick):
 
 
 def test_a_sheets_long_title_stops_before_its_close_button(quick):
-    sheet = quick.window.findChild(QObject, "visualSheet")
+    sheet = quick.window.findChild(QObject, "budgetsSheet")  # any sheet (48.7а: «Нарисовать» is a screen now)
     sheet.setProperty("title", LONG)
     open_popup(quick, sheet)
     body = sheet.property("contentItem")

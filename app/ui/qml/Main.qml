@@ -131,6 +131,12 @@ Window {
             height: parent.height - titleBar.height
             reserveTop: approvalBanner.visible ? approvalBanner.height + 10 : 0
         }
+        StudioView {  // 48.7а: pictures and videos
+            visible: App.mode === "studio"
+            y: titleBar.height
+            width: parent.width
+            height: parent.height - titleBar.height
+        }
         ProjectView {
             visible: App.mode === "projects" && !App.showProjectChat
             y: titleBar.height
@@ -272,7 +278,6 @@ Window {
     GoalSheet { id: goalSheet }
     ProvingSheet { id: provingSheet }
     InstallSheet { id: installSheet }
-    VisualSheet { id: visualSheet }
     WizardSheet { id: wizardSheet }
     CheckSheet { id: checkSheet }
     TransferSheet { id: transferSheet }
@@ -317,7 +322,7 @@ Window {
             else if (what === "programs") programsSheet.open()
             else if (what === "model-settings") modelsSheet.openFor("")
             else if (what === "install-models") installSheet.open()
-            else if (what === "draw") visualSheet.open()
+            else if (what === "draw") App.setMode("studio")  // «Студия» (48.7а)
             else if (what === "setup") wizardSheet.open()
             else if (what === "setup-first-run") root.openWizardWhenFree()
             else if (what === "setup-first-model") { wizardSheet.revealModels = true; root.openWizardWhenFree() }
@@ -340,6 +345,7 @@ Window {
     Shortcut { sequence: "Ctrl+1"; onActivated: App.setMode("chats") }
     Shortcut { sequence: "Ctrl+2"; onActivated: App.setMode("projects") }
     Shortcut { sequence: "Ctrl+3"; onActivated: App.setMode("agent") }
+    Shortcut { sequence: "Ctrl+4"; onActivated: App.setMode("studio") }
     Shortcut { sequence: "F5"; enabled: App.mode === "projects"; onActivated: Projects.refresh() }
     Shortcut {
         sequences: ["Ctrl+J", "Ctrl+`"]

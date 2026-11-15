@@ -7051,11 +7051,15 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         app.attach(client, start_events=False)
         wait_until(lambda: not app.bg.busy)
         view = app.visual_view
-        sheet = quick.window.findChild(QObject, "visualSheet")
+        studio = quick.window.findChild(QObject, "studioView")  # 48.7а: a screen of its own, the fourth mode
         assert quick.window.findChild(QObject, "drawChip") is not None  # the chip in the chat's input
+        assert not studio.property("visible")
         view.open("рыжая лиса в снегу")
         app.openUi("draw")
-        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.hasModels)
+        wait_until(lambda: app.mode == "studio" and studio.property("visible") and not app.bg.busy and view.hasModels)
+        quick.window.grabWindow()
+        prompt = item_named(studio, "visualPrompt")
+        assert prompt.property("text") == "рыжая лиса в снегу"  # the chip's words, in the Studio's description
         assert view.prompt == "рыжая лиса в снегу" and view.choice
         assert view.modelText == "FLUX.2 [klein] 4B · 1024 × 1024"  # «Быстрее»: the hub's default
         view.setShape("wide")
