@@ -12,12 +12,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from common.i18n import tr
+
 from .. import budgets, model_settings, store
 from ..auth import Client
 from ..claude_code import PROVIDER as CLAUDE_CODE
 from ..gateway import GatewayError
 from ..gateway.base import cost_usd
-from ..gpu_card import OPENAI, ask_as
+from ..gpu_card import GIVEN_WORDS, OPENAI, ask_as
 from ..openai_proxy import (
     EFFORTS,
     Chunks,
@@ -34,6 +36,7 @@ from .deps import require_client
 
 log = logging.getLogger("hub.openai")
 router = APIRouter(prefix="/v1/openai")
+GIVEN_RETRY_S = 60  # «Выгрузить» (48.9г): an outside client asks again after this, the card may be the person's still
 
 
 @router.get("/models")
@@ -49,7 +52,7 @@ async def completions(
         body = await request.json()
         return await _complete(request, client, body if isinstance(body, dict) else {})
     except ProxyError as exc:
-        return JSONResponse(exc.body(), status_code=exc.status)
+        return JSONResponse(exc.body(), status_code=exc.status, headers=exc.headers)
     except ValueError:
         return JSONResponse(ProxyError(400, "invalid_request_error", "the body is not JSON").body(), status_code=400)
 
@@ -71,6 +74,8 @@ async def _complete(request: Request, client: Client, body: dict[str, Any]) -> J
         provider, ref = state.gateway.resolve(model_id)
     except GatewayError as exc:
         raise ProxyError(404, "model_not_found", str(exc)) from exc
+    if model["locality"] != "cloud" and state.card.given:  # «Выгрузить» (48.9г): not waiting at the gate for hours
+        raise ProxyError(503, "card_given", tr(GIVEN_WORDS), {"Retry-After": str(GIVEN_RETRY_S)})
     # the model's settings, and over them what the client asked for; only what the provider takes goes out
     params = model_settings.clean_params({**(own.get("params") or {}), **client_params(body)},
                                          state.gateway.accepts(model_id))  # fmt: skip

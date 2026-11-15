@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 import httpx
@@ -38,14 +39,28 @@ async def sync_models(request: Request, client: Annotated[Client, Depends(requir
     return {**result, "models": rows}
 
 
+LET_GO_S = 15.0  # «Выгрузить»: how long the stopped holder is waited for before the second unload (48.9г)
+
+
 @router.post("/models/unload")
 async def unload_local(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
-    """Frees the GPU: llama-swap stops whatever local model it runs (it loads one again on the next message)."""
-    url = f"{request.app.state.settings.llama_swap_url.rstrip('/')}/api/models/unload"
+    """Frees the GPU - «the card is needed by me now» (48.9г): through the card's owner. Whoever holds it stops - the
+    Studio's job as by ✕ (its queue waits for the person), an install's trial put off, tuning stopped - and the card is
+    the person's until their next action; llama-swap stops whatever local model it runs. Once the holder has let go,
+    llama-swap is asked again: a look of the stopped one's may have loaded its model in between."""
+    state = request.app.state
+    url = f"{state.settings.llama_swap_url.rstrip('/')}/api/models/unload"
+    held = bool(state.card.holder)
+    state.visual.hold()
+    state.card.give_away()
     try:
         async with httpx.AsyncClient(timeout=60.0) as http:
             response = await http.post(url)
             response.raise_for_status()
+            if held:
+                await state.card.until_let_go(LET_GO_S)
+                await asyncio.sleep(0.5)  # its last look answered
+                await http.post(url)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"llama-swap did not unload: {exc}") from exc
     await request.app.state.bus.publish("models.unloaded", {"by": client.name})

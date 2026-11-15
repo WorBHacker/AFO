@@ -28,7 +28,13 @@ One rule of quiet for background work (48.9б2) - automatic tuning, a stopped on
 still for QUIET_S (`Quiet`) - no local request, nobody holding it, its load under BUSY_PCT, no game on it even at low
 load (in its menu, paused). A download is not on the card. Started by the person's button, it goes once the card is
 still (`still`); stopped by a senior, it is background work - else it would come back at each message, and the models
-go to and fro."""
+go to and fro.
+
+«Выгрузить» goes through the owner (48.9г): «the card is needed by me now». Whoever holds it is stopped - the Studio's
+job as by ✕, a trial put off, tuning stopped - and the card is given to the person (`give_away`): until their next
+action of rank 1 (`take_back` - a chat's message, the Studio, their buttons) nobody takes it - background work, and the
+person's work without them neither: at the gate it waits, with words. A hub restarted forgets it. Removing a model
+stops the holder working with it (`let_go`), the card not given."""
 
 from __future__ import annotations
 
@@ -54,6 +60,7 @@ QUIET_S = 180.0  # background work waits for the card still this long (48.9б2):
 BUSY_PCT = 15  # the card at this much load or more works for someone - a game, another program
 # each holder's and asker's rank: 1 the person now, 2 their work without them, 3 an install's trial, 4 tuning (48.9б1)
 RANKS = {CHAT: 1, BUTTON: 1, STUDIO: 1, AGENT: 2, COMPLETION: 2, OPENAI: 2, TRIAL: 3, TUNE: 4}
+GIVEN_WORDS = N_("видеокарта отдана — „Продолжить“")  # what waits while the card is the person's (48.9г)
 # why a local chat waits, in words - who holds the card from it: the Studio only for a video; a trial of a picture or
 # video model (2б) and tuning while they let go (48.9в, 48.9б1)
 WORDS = {STUDIO: N_("видеокарта снимает видео — ответ начнётся после него"),
@@ -61,9 +68,14 @@ WORDS = {STUDIO: N_("видеокарта снимает видео — отве
          TUNE: N_("видеокарта останавливает подбор параметров — ответ начнётся сразу после")}  # fmt: skip
 
 
+def rank(who: str) -> int:
+    """`who`'s place on the card (48.9б1); one not ranked - as a person's unattended work."""
+    return RANKS.get(who, RANKS[AGENT])
+
+
 def senior(who: str, than: str) -> bool:
-    """Whether `who` comes before `than` on the card; one not ranked - as a person's unattended work."""
-    return RANKS.get(who, RANKS[AGENT]) < RANKS.get(than, RANKS[AGENT])
+    """Whether `who` comes before `than` on the card."""
+    return rank(who) < rank(than)
 
 
 @contextlib.contextmanager
@@ -91,6 +103,10 @@ class GpuCard:
         self._given = asyncio.Event()  # the card was let go: those waiting for it look again
         self._given.set()
         self._stop: Callable[[], None] | None = None  # how the holder is stopped by a senior (48.9б1)
+        self.model = ""  # the model the holder works with, when it says (48.9г: a model removed stops it)
+        self.given = False  # «Выгрузить» (48.9г): the person's until their next action
+        self._back = asyncio.Event()  # not given: those waiting for the person's card look again
+        self._back.set()
         self.asked: dict[str, int] = {}  # who asks the local models now -> how many (48.9а)
         # set by the server (48.9б2): the card's load now, % - the status monitor's look; a game on it - 43.6's
         self.load: Callable[[], float | None] = lambda: None
@@ -100,7 +116,8 @@ class GpuCard:
         """Nothing on the card now (48.9б2): no local request, nobody holds it, its load under BUSY_PCT, no game on
         it - one in its menu or paused loads it little and comes back any moment."""
         load = self.load()
-        return not self.asked and not self.holder and (load is None or load < BUSY_PCT) and not self.game()
+        return (not self.asked and not self.holder and not self.given and (load is None or load < BUSY_PCT)
+                and not self.game())  # fmt: skip
 
     @contextlib.contextmanager
     def asking(self, who: str | None = None) -> Iterator[None]:
@@ -116,31 +133,60 @@ class GpuCard:
             else:
                 self.asked.pop(who, None)
 
-    def try_take(self, holder: str, *, chats: bool = False, stop: Callable[[], None] | None = None) -> bool:
+    def try_take(self, holder: str, *, chats: bool = False, stop: Callable[[], None] | None = None,
+                 model: str = "") -> bool:  # fmt: skip
         """The card for `holder` if nobody holds it - at once, with no `await` between the look and the take; `chats` -
-        local chat models wait for it too; `stop` - how a senior stops it (48.9б1; said again, it changes nothing). A
-        junior holding the card is stopped here - the caller looks again once it is given."""
+        local chat models wait for it too; `stop` - how a senior stops it (48.9б1; said again, it changes nothing);
+        `model` - the one it works with (48.9г). A junior holding the card is stopped here - the caller looks again
+        once it is given. Given to the person, nobody takes it (48.9г): their own action takes it back first."""
+        if self.given:
+            return False
         if self.holder:
             self._stop_for(holder)
             return False
-        self.holder, self._stop = holder, stop
+        self.holder, self._stop, self.model = holder, stop, model
         self._given.clear()
         if chats:
             self.free.clear()
         return True
 
-    async def take(self, holder: str, *, chats: bool = False, stop: Callable[[], None] | None = None) -> None:
-        """The card for `holder`, once the one holding it lets it go - a junior is stopped first."""
-        while not self.try_take(holder, chats=chats, stop=stop):
-            await self._given.wait()
+    async def take(self, holder: str, *, chats: bool = False, stop: Callable[[], None] | None = None,
+                   model: str = "") -> None:  # fmt: skip
+        """The card for `holder`, once the one holding it lets it go - a junior is stopped first; given to the person
+        - once they take it back."""
+        while not self.try_take(holder, chats=chats, stop=stop, model=model):
+            await (self._back.wait() if self.given else self._given.wait())
 
     def give(self, holder: str) -> None:
         """`holder` lets the card go; one that does not hold it changes nothing."""
         if self.holder != holder:
             return
-        self.holder, self._stop = "", None
+        self.holder, self._stop, self.model = "", None, ""
         self.free.set()
         self._given.set()
+
+    def give_away(self) -> None:
+        """«Выгрузить» (48.9г): whoever holds the card is stopped - whatever its rank - and the card is the person's."""
+        self.given = True
+        self._back.clear()
+        if self.holder and self._stop is not None:
+            self._stop()
+
+    def take_back(self) -> None:
+        """The person's own action (48.9г: rank 1): the card given to them is theirs to use - and everyone's again."""
+        if self.given:
+            self.given = False
+            self._back.set()
+
+    def let_go(self, model_id: str) -> None:
+        """A model removed (48.9г): the holder working with it stops, as by «Выгрузить»; the card is not given."""
+        if self.holder and self.model == model_id and self._stop is not None:
+            self._stop()
+
+    async def until_let_go(self, seconds: float) -> None:
+        """Until nobody holds the card - `seconds` at most."""
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._given.wait(), seconds)
 
     def _stop_for(self, who: str) -> None:
         """`who` needs the card: a junior holding it is stopped - and gives it once it has let go (48.9б1)."""
@@ -148,23 +194,40 @@ class GpuCard:
             self._stop()
 
     def words(self) -> str:
-        """What a local chat waiting at the gate is told: who holds the card from it."""
+        """What a local chat waiting at the gate is told: who holds the card from it - or that it is the person's
+        (48.9г: their work without them waits)."""
+        if self.given and rank(ASKER.get()) > 1:
+            return tr(GIVEN_WORDS)
         return tr(WORDS[self.holder]) if self.holder in WORDS and not self.free.is_set() else ""
 
     async def gate(self, cancel: asyncio.Event) -> bool:
         """A local chat model's answer waits here while the card is held from chats (the llama-swap provider asks
         before each); whether it waited. A junior holding it - tuning, an install's trial - is stopped first (48.9б1,
         48.9в), a chat model's trial too, which does not hold the card from chats: its question is let go and
-        llama-swap's queue is the asker's. The user's «Стоп» ends the wait."""
-        self._stop_for(ASKER.get())
+        llama-swap's queue is the asker's. Given to the person (48.9г): their own request takes it back, their work
+        without them waits until they do. The user's «Стоп» ends the wait."""
+        who, waited = ASKER.get(), False
+        if self.given and rank(who) == 1:
+            self.take_back()
+        if self.given:
+            waited = True
+            await _either(cancel, self._back)
+            if cancel.is_set():
+                return True
+        self._stop_for(who)
         if self.free.is_set():
-            return False
-        stopping = asyncio.ensure_future(cancel.wait())
-        free = asyncio.ensure_future(self.free.wait())
-        await asyncio.wait({stopping, free}, return_when=asyncio.FIRST_COMPLETED)
-        for each in (stopping, free):
-            each.cancel()
+            return waited
+        await _either(cancel, self.free)
         return True
+
+
+async def _either(cancel: asyncio.Event, event: asyncio.Event) -> None:
+    """Until `event` is set or the user stops."""
+    stopping = asyncio.ensure_future(cancel.wait())
+    waiting = asyncio.ensure_future(event.wait())
+    await asyncio.wait({stopping, waiting}, return_when=asyncio.FIRST_COMPLETED)
+    for each in (stopping, waiting):
+        each.cancel()
 
 
 class Quiet:

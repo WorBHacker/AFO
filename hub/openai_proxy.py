@@ -25,9 +25,9 @@ EFFORTS = {"minimal": "low", "low": "low", "medium": "medium", "high": "high"}
 class ProxyError(Exception):
     """An OpenAI-style error: status, type, message."""
 
-    def __init__(self, status: int, kind: str, message: str):
+    def __init__(self, status: int, kind: str, message: str, headers: dict[str, str] | None = None):
         super().__init__(message)
-        self.status, self.kind, self.message = status, kind, message
+        self.status, self.kind, self.message, self.headers = status, kind, message, headers or {}
 
     def body(self) -> dict[str, Any]:
         return {"error": {"message": self.message, "type": self.kind, "code": self.kind}}

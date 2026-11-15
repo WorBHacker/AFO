@@ -634,7 +634,7 @@ def hub(tmp_path, monkeypatch, fake_hub):
     monkeypatch.setenv(lc.CONFIG_ENV, str(config))
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
     FakeLlamaSwap.blank, FakeLlamaSwap.logs, FakeLlamaSwap.held, FakeLlamaSwap.filming = False, {}, None, None
-    FakeLlamaSwap.answering = None
+    FakeLlamaSwap.answering, FakeLlamaSwap.unloaded = None, []
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)

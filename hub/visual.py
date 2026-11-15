@@ -81,7 +81,7 @@ from common.picture_sizes import (
 from . import ffmpeg, hf
 from .db import utc_now
 from .engines import EngineError
-from .gpu_card import STUDIO, GpuCard
+from .gpu_card import ASKER, STUDIO, GpuCard, rank
 
 log = logging.getLogger("hub.visual")
 
@@ -635,6 +635,10 @@ class Visual:
         # a model's file not on the disk, by its name, or "": the installer's, set by the server (48's review)
         self.missing: Callable[[str], Awaitable[str]] | None = None
         self._more = False  # a job added since the worker last looked at the queue
+        # «Выгрузить» (48.9г): the queue waits for the person - their next job here, or «Продолжить»
+        self._held = asyncio.Event()
+        self._held.set()
+        self._stops: set[asyncio.Task] = set()  # a job being stopped as by ✕ (48.9г)
 
     async def start(self) -> int:
         """Pictures a stopped hub left going are failed: llama-swap let them go with it."""
@@ -722,6 +726,7 @@ class Visual:
 
         await self._db.acall(add)
         self._more = True
+        self._persons()
         await self._publish(job_id)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
@@ -801,10 +806,36 @@ class Visual:
 
         await self._db.acall(add)
         self._more = True
+        self._persons()
         await self._publish(job_id)
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
         return await self._db.acall(lambda conn: job(conn, job_id))
+
+    def hold(self) -> None:
+        """«Выгрузить» (48.9г): the queue does not take the card back by itself - the person's next job here does,
+        or «Продолжить»."""
+        self._held.clear()
+
+    def release(self) -> None:
+        self._held.set()
+
+    def _stop_job(self) -> None:
+        """«Выгрузить», or its model removed (48.9г): the job going on stops as by ✕ - a video cancelled in the engine,
+        a picture without a rung lower (it is «отменено», not failed)."""
+        if self._running is None:
+            return
+        self._stopping.add(self._running)
+        task = asyncio.ensure_future(self.cancel(self._running))
+        self._stops.add(task)
+        task.add_done_callback(self._stops.discard)
+
+    def _persons(self) -> None:
+        """A job the person asked for themselves (48.9г: the Studio, their chat) - the card given away is theirs again,
+        and the queue goes on."""
+        if rank(ASKER.get()) == 1:
+            self.release()
+            self.card.take_back()
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
         found = await self._db.acall(lambda conn: job(conn, job_id))
@@ -962,8 +993,15 @@ class Visual:
                 return
             job_id = found["id"]
             # the card is the Studio's for the job (stage 48's review, finding 2): an install's trial holding it, the
-            # job waits «в очереди»; a video holds it from local chats too - before it says «running» (48's full run)
-            await self.card.take(STUDIO, chats=found.get("kind") == "video")
+            # job waits «в очереди»; a video holds it from local chats too - before it says «running» (48's full run).
+            # After «Выгрузить» the queue waits for the person (48.9г) - not taken back by a chat's message either
+            while True:
+                await self._held.wait()
+                await self.card.take(STUDIO, chats=found.get("kind") == "video", stop=self._stop_job,
+                                     model=found["model_id"])  # fmt: skip
+                if self._held.is_set():
+                    break
+                self.card.give(STUDIO)
             try:
                 found = await self._db.acall(functools.partial(job, job_id=job_id))  # «✕» while it waited for the card
                 if found is None or found["status"] != "queued":

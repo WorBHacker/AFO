@@ -57,6 +57,7 @@ PAUSES = {
     "local_only": N_("Дописывание: облачная модель, а проект — только локально (D10)"),
     "secret": N_("Дописывание: в файлах с секретами не работает"),
     "off": N_("Дописывание: модель недоступна"),
+    "given": N_("Дописывание ждёт: видеокарта отдана — „Продолжить“"),  # «Выгрузить» (48.9г)
 }
 
 
@@ -103,6 +104,8 @@ class Completions:
             if not project.cloud_ok:
                 raise Paused("local_only")
             before, after = clean(before), clean(after)
+        elif self.card.given:  # the person's work without them (48.9г): no grey text, and why - at once, not waiting
+            raise Paused("given")
         provider, ref = self._gateway.resolve(model_id)
         llama = provider.name == LLAMA_SWAP
         if llama and not load:

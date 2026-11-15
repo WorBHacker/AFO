@@ -21,6 +21,7 @@ from common.i18n import tr
 
 from .. import visual as v
 from ..auth import Client
+from ..gpu_card import STUDIO, ask_as
 from .llama import require_app
 
 router = APIRouter(prefix="/v1/visual")
@@ -57,6 +58,7 @@ class Image(BaseModel):
 
 @router.post("/images")
 async def image(request: Request, body: Image, client: Annotated[Client, Depends(require_app)]) -> dict:
+    ask_as(STUDIO)  # the person's, in the Studio: the card given away is theirs again (48.9г)
     try:
         return {"job": await _visual(request).draw(body.model_dump(), client.name)}
     except v.VisualError as exc:
@@ -85,6 +87,7 @@ class Video(BaseModel):
 
 @router.post("/videos")
 async def video(request: Request, body: Video, client: Annotated[Client, Depends(require_app)]) -> dict:
+    ask_as(STUDIO)  # the person's, in the Studio: the card given away is theirs again (48.9г)
     try:
         return {"job": await _visual(request).video(body.model_dump(), client.name)}
     except v.VisualError as exc:

@@ -539,7 +539,7 @@ class Tuner:
         quiet = Quiet(self._card)
         while True:
             ready = quiet.look() if background else self._card.still()
-            if ready and self._card.try_take(TUNE, chats=True, stop=self._stop):
+            if ready and self._card.try_take(TUNE, chats=True, stop=self._stop, model=model_id):
                 return
             if self.job.get("status") != "waiting":
                 self.job = {"status": "waiting", "model_id": model_id}

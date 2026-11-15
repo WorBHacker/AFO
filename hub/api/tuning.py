@@ -47,6 +47,7 @@ async def set_tune(body: Change, request: Request, client: Annotated[Client, Dep
 @router.post("/tune/all")
 async def tune_all(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     _config()
+    request.app.state.card.take_back()  # «Подобрать для всех»: the person's (48.9г)
     request.app.state.tuner.request_all()
     return await _state(request)
 
@@ -61,5 +62,6 @@ async def cancel(request: Request, client: Annotated[Client, Depends(require_app
 async def tune_one(model_id: str, request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     if model_id not in llama_config.model_blocks(_config()):
         raise HTTPException(status_code=404, detail=tr("в config.yaml нет модели {model}", model=model_id))
+    request.app.state.card.take_back()  # «Подобрать»: the person's (48.9г)
     request.app.state.tuner.request(model_id)
     return await _state(request)

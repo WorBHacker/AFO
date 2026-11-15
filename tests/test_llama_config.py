@@ -335,6 +335,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     held: ClassVar = None  # a picture being drawn (47.1): sd-server's txt2img answers once this Event is set
     filming: ClassVar = None  # a video being filmed (48's review): its job is «generating» until this Event is set
     answering: ClassVar = None  # a chat's answer (48's review): it comes once this Event is set
+    unloaded: ClassVar[list] = []  # the unloads asked for (48.9г): /api/models/unload, or …/unload/<model>
 
     def log_message(self, *args):
         pass
@@ -380,6 +381,10 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
         self._send(200, {"data": data})
 
     def do_POST(self):
+        if self.path.startswith("/api/models/unload"):
+            FakeLlamaSwap.unloaded.append(self.path)
+            self._send(200, {"msg": "ok"})
+            return
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         if self.path.endswith("/sdcpp/v1/vid_gen"):
             FakeLlamaSwap.video.append({**body, "path": self.path})
@@ -419,6 +424,7 @@ def hub(tmp_path, monkeypatch):
     FakeLlamaSwap.config, FakeLlamaSwap.frozen, FakeLlamaSwap.fail, FakeLlamaSwap.asked = config, None, False, []
     FakeLlamaSwap.blank, FakeLlamaSwap.video, FakeLlamaSwap.logs, FakeLlamaSwap.held = False, [], {}, None
     FakeLlamaSwap.filming = FakeLlamaSwap.answering = None
+    FakeLlamaSwap.unloaded = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlamaSwap)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr("hub.llama_config.RELOAD_S", 2.0)

@@ -1103,6 +1103,128 @@ def test_background_tuning_waits_for_a_game_and_not_for_a_download(installs, mon
     assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
 
 
+def test_unload_stops_the_studio_as_by_x_and_its_queue_waits_for_the_person(installs, monkeypatch):  # noqa: F811
+    """48.9г (finding 4): «Выгрузить модель» unloaded everything telling no one - the Studio's video looked at its job
+    through /upstream and loaded the model again a second later; a picture lost its model and stepped a rung lower,
+    remembered as the model's place. «Выгрузить» goes through the card's owner: the Studio's job stops as by ✕ -
+    «отменено» -, and the card is the person's: the Studio's queue does not take it back by itself, the person's next
+    Studio job does. Removing a model stops the job filming with it as ✕ does and unloads that model only."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, CLIP]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    first = installs.post("/v1/install/pictures", json={"id": "clip"}).json()["job"]
+    assert wait_for(installs, first["id"], "done", "failed")["status"] == "done"
+    monkeypatch.setattr(FakeLlamaSwap, "video", [])
+    state = installs.app.state
+
+    def film(prompt):
+        return installs.post("/v1/visual/videos", json={"prompt": prompt, "model": "clip"}).json()["job"]
+
+    def studio(job):
+        return installs.get(f"/v1/visual/jobs/{job['id']}").json()["job"]["status"]
+
+    FakeLlamaSwap.filming = filming = threading.Event()
+    try:
+        fox = film("a fox")
+        wait(lambda: len(FakeLlamaSwap.video) == 1, timeout=20)  # it films
+        cat = film("a cat")  # in the queue
+        assert installs.post("/v1/models/unload").status_code == 200
+        wait(lambda: studio(fox) in ("cancelled", "failed", "done"), timeout=20)
+        assert studio(fox) == "cancelled", "«Выгрузить» did not stop the video as ✕ does"
+        assert state.card.given
+        time.sleep(0.6)
+        assert studio(cat) == "queued" and len(FakeLlamaSwap.video) == 1, "the queue took the card back by itself"
+        filming.set()
+        dog = film("a dog")  # the person's own: the card is theirs again, and the queue goes on
+        wait(lambda: studio(dog) == "done", timeout=20)
+        assert studio(cat) == "done" and not state.card.given
+    finally:
+        filming.set()
+
+    FakeLlamaSwap.filming = filming = threading.Event()
+    try:
+        owl = film("an owl")
+        wait(lambda: len(FakeLlamaSwap.video) == 4, timeout=20)
+        state.status.latest = {**state.status.latest, "local": {"reachable": True, "running": [{"model": "clip"}]}}
+        FakeLlamaSwap.unloaded.clear()
+        removed = installs.delete("/v1/install/models/clip")
+        assert removed.status_code == 200, removed.text
+        wait(lambda: studio(owl) in ("cancelled", "failed", "done"), timeout=20)
+        assert studio(owl) == "cancelled", "removing its model failed the video instead of stopping it"
+        assert "/api/models/unload" not in FakeLlamaSwap.unloaded, "removing one model unloaded every model"
+    finally:
+        filming.set()
+
+
+def test_unload_puts_a_trial_off_and_the_persons_unattended_work_waits_for_them(installs, monkeypatch):  # noqa: F811
+    """48.9г: «Выгрузить» during an install's trial left it «не запустилась», and smaller settings went on a sound
+    model. Through the card's owner the trial is put off as a senior puts it off (48.9в) - «ждёт пробного
+    запуска», nothing written - and the card is the person's until their next action: background work does not take
+    it back, nor does the person's work without them - an outside client is told so (503, Retry-After), the editor's
+    completion says why it is silent. The person's chat takes the card back; the trial goes on once the card has been
+    still."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.5)
+    state = installs.app.state
+    FakeLlamaSwap.answering = answering = threading.Event()
+    try:
+        spec = {"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "projector": False, "drive": "T"}
+        job = installs.post("/v1/install", json=spec).json()["job"]
+        wait(lambda: any(b.get("model") == "tiny-q4_k_m" for b in FakeLlamaSwap.asked), timeout=20)  # its question
+        assert installs.post("/v1/models/unload").status_code == 200
+        waiting = wait_for(installs, job["id"], "trialwait", "done", "failed", timeout=10)
+        assert waiting["status"] == "trialwait" and not waiting["error"], "«Выгрузить» failed the trial"
+    finally:
+        answering.set()
+    assert state.card.given
+    time.sleep(1.0)
+    assert wait_for(installs, job["id"], "trialwait"), "the trial took the card the person was given"
+
+    body = {"model": "llama-swap/fast", "messages": [{"role": "user", "content": "привет"}]}
+    refused = installs.post("/v1/openai/chat/completions", json=body)
+    assert refused.status_code == 503 and refused.headers.get("retry-after"), refused.text
+    assert "Продолжить" in refused.json()["error"]["message"]
+    folder = installs.tmp / "project"
+    folder.mkdir()
+    pid = installs.post("/v1/projects", json={"path": str(folder)}).json()["id"]
+    roles = {"model_id": "", "settings": {"roles": {"complete": "llama-swap/fast"}}}
+    assert installs.put("/v1/model_settings", json=roles).status_code == 200
+    around = {"project_id": pid, "path": "app.py", "before": "x = ", "after": "\n", "load": True}
+    head = json.loads(installs.post("/v1/editor/complete", json=around).text.splitlines()[0])
+    assert head.get("paused") == "given" and "Продолжить" in head["message"]
+    assert state.card.given and not wait_for(installs, job["id"], "trialwait")["error"]
+
+    conv = installs.post("/v1/conversations", json={}).json()["id"]
+    hello = {"content": "привет", "model_id": "llama-swap/fast"}
+    assert installs.post(f"/v1/conversations/{conv}/messages", json=hello).status_code == 202
+    wait(lambda: _answered(installs, conv), timeout=20)
+    assert not state.card.given  # the person's own action takes the card back
+    done = wait_for(installs, job["id"], "done", "failed", timeout=20)
+    assert done["status"] == "done" and len(done["trial"]["tries"]) == 1
+
+
+def test_unload_stops_tuning_and_it_waits_while_the_card_is_the_persons(installs, monkeypatch):  # noqa: F811
+    """48.9г: «Выгрузить» while tuning measured unloaded the models under llama-bench, which measured on - and the
+    numbers it wrote by were not the card's. Through the card's owner tuning is stopped, nothing kept, and it does not
+    come back while the card is the person's; after their next action, once the card has been still."""
+    monkeypatch.setattr(gpu_card, "QUIET_S", 0.3)
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    tuner = installs.app.state.tuner
+    seen = _measuring(tuner, monkeypatch)
+    installs.portal.call(tuner.request, "fast")
+    wait(lambda: seen["runs"] == 1, timeout=10)
+    assert installs.post("/v1/models/unload").status_code == 200
+    wait(lambda: seen["halted"] is not None, timeout=10)
+    time.sleep(0.8)
+    assert seen["runs"] == 1 and installs.app.state.card.given, "tuning took the card the person was given"
+    conv = installs.post("/v1/conversations", json={}).json()["id"]
+    hello = {"content": "привет", "model_id": "llama-swap/fast"}
+    assert installs.post(f"/v1/conversations/{conv}/messages", json=hello).status_code == 202
+    wait(lambda: _answered(installs, conv), timeout=20)
+    wait(lambda: seen["runs"] == 2 and "fast" in tuner.results, timeout=20)
+
+
 # --- a found model that draws, installed beside its family's set (47.6) ---
 
 

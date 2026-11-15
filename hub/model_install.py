@@ -1538,6 +1538,7 @@ class Installer:
         ids = await self._db.acall(queue)
         if job_id and not ids:
             raise InstallError(tr("пробный запуск — у добавленной и ещё не проверенной модели"))
+        self.card.take_back()  # the person's button (48.9г): the card given away is theirs again
         for each in ids:
             self._clients[each] = client
             await self._publish(each)
@@ -1608,6 +1609,7 @@ class Installer:
             raise InstallError(tr("«{model}» ставил не AFO — удалите её из config.yaml сами", model=model_id), 404)
         ids = [model_id, *([found["plan"]["cpu"]] if found["plan"].get("cpu") else [])]  # its block on the processor
         for each in ids:
+            self.card.let_go(each)  # 48.9г: the Studio's job, tuning working with it - stopped as by ✕
             await self._unload(each)
         path = llama_config.config_path()
         async with llama_config.writing():
@@ -1628,12 +1630,13 @@ class Installer:
         return await self._get(found["id"])
 
     async def _unload(self, model_id: str) -> None:
+        """The model let go by llama-swap when it runs it - that one only (48.9г: the others are someone's)."""
         running = [r.get("model") for r in ((self._status() or {}).get("local") or {}).get("running", [])]
         if model_id not in running:
             return
         with contextlib.suppress(httpx.HTTPError):
             async with httpx.AsyncClient(timeout=30.0) as http:
-                await http.post(f"{self._url.rstrip('/')}/api/models/unload")
+                await http.post(f"{self._url.rstrip('/')}/api/models/unload/{model_id}")
         await asyncio.sleep(1.0)  # the server lets go of its files
 
     async def _sync(self) -> None:
