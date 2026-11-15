@@ -1183,7 +1183,7 @@ class Installer:
                 shown.append({"family": entry["id"], "name": entry["name"], "quant": v["quant"], "size": v["size"],
                               "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits),
                               "verdict": verdict, "words": tr(VERDICTS[verdict]), "with_parts": v["size"] + with_parts,
-                              "coming": v["size"] + coming,
+                              "coming": v["size"] + coming, "modes": entry.get("modes") or ["text"],
                               "files": [{k: f[k] for k in ("path", "role", "size")} for f in v["files"]]})  # fmt: skip
         if not shown:
             raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
@@ -1201,6 +1201,7 @@ class Installer:
         entry = next(e for e in families if e["id"] == (best or shown[0])["family"])  # the recommended one's family
         licence = found["license"] or entry["license"]  # none on its page (leejet's FLUX.3 klein): the family's (47.9)
         return {"repo": repo, "family": entry["id"], "name": entry["name"], "kind": entry.get("kind", "image"),
+                "modes": entry.get("modes") or ["text"],  # how a video family films (48.5) - the window says it
                 "families": [{"id": e["id"], "name": e["name"]} for e in families if e["id"] in parts_of],
                 "size": entry["size"], "license": licence, "license_kind": hf.license_kind(licence),
                 "gated": found["gated"], "page": found["page"], "variants": shown,

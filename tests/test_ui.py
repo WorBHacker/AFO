@@ -6442,6 +6442,49 @@ def test_a_found_repository_of_two_families_in_the_window(qapp):
         quick.close()
 
 
+def test_a_found_video_model_in_the_window(qapp):
+    """48.7д: a found video model of a family AFO knows - its page says how it films (by a picture, by two frames) and
+    a variant in two halves says so; «Установить» installs it beside its family's set, as a picture model (47.7б)."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        repo = "QuantStack/Wan2.2-I2V-A14B-GGUF"
+        half = {"role": "diffusion-model", "path": "LowNoise/x-LowNoise-Q4_K_M.gguf", "size": 9_700_000_000}
+        details = {"repo": repo, "family": "wan2.2-i2v-a14b", "name": "Wan2.2 I2V A14B", "kind": "video",
+                   "modes": ["picture", "frames"], "families": [{"id": "wan2.2-i2v-a14b", "name": "Wan2.2 I2V A14B"}],
+                   "license": "apache-2.0", "license_kind": "free", "gated": False, "engine": False,
+                   "page": "https://huggingface.co/" + repo, "recommended": "Q4_K_M", "parts": [],
+                   "variants": [{"family": "wan2.2-i2v-a14b", "name": "Wan2.2 I2V A14B", "quant": "Q4_K_M",
+                                 "size": 19_400_000_000, "bits": 4.9, "quality": "near", "verdict": "gpu",
+                                 "words": "помещается в видеопамять — быстро", "recommended": True,
+                                 "modes": ["picture", "frames"],
+                                 "files": [half, {**half, "role": "high-noise-diffusion-model"}]}]}  # fmt: skip
+        client.install_search = lambda query, **asked: {"models": [
+            {"repo": repo, "downloads": 9, "likes": 1, "params": 0, "license": "", "license_kind": "", "picture": "",
+             "family": "wan2.2-i2v-a14b", "drawn": True, "fit": None}]}  # fmt: skip
+        client.install_picture_repo = lambda asked: details if asked == repo else {}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        app.openUi("install-models")
+        view.setTab("search")
+        view.search("wan i2v")
+        wait_until(lambda: not app.bg.busy and view.found)
+        view.openFound(repo)
+        wait_until(lambda: not app.bg.busy and view.variants)
+        assert "видео: по картинке · по двум кадрам" in view.repo["notes"]
+        assert "две половины" in view.variants[0]["quality"]
+        view.install(view.variants[0]["key"])
+        wait_until(lambda: not app.bg.busy and client.install_calls)
+        assert client.install_calls[-1] == ("pictures", {"id": "wan2.2-i2v-a14b", "repo": repo, "quant": "Q4_K_M"})
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_installing_a_local_model_from_the_window(qapp):
     from PySide6.QtCore import QObject
 

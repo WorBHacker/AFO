@@ -17,6 +17,8 @@ from common import kept_json
 from common.i18n import N_, decimal, language, tr
 from common.plain_errors import explain
 
+from .visual_view import VIDEO_MODES
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -268,6 +270,8 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
         bits = tr("≈ {bits} бита на вес — сколько осталось от каждого веса (в оригинале 16)",
                   bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""  # fmt: skip
         quality = tr(QUALITY[v["quality"]]) if v.get("quality") in QUALITY else ""
+        if any(f.get("role") == "high-noise-diffusion-model" for f in v.get("files") or []):  # Wan2.2 A14B (48.7д)
+            quality = " · ".join(s for s in (quality, tr("две половины — на карте по одной")) if s)
         shown = f"{v['name']} · {v['quant']}" if several and v.get("name") else v["quant"]
         out.append({"quant": shown, "key": variant_key(v), "variant": v["quant"], "family": v.get("family", ""),
                     "size": gb(v["size"]), "quality": quality, "bitsTip": bits, "words": words, "tone": tone,
@@ -682,6 +686,9 @@ class InstallView(QObject):
                          tr("кодировщик и VAE уже есть"))  # fmt: skip
             if r.get("engine"):
                 notes.append(tr("и программа для рисования"))
+            if r.get("kind") == "video":  # how it films (48.7д): by words, by a picture, by two frames
+                how = [tr(whole) for mode, _short, whole in VIDEO_MODES if mode in (r.get("modes") or ["text"])]
+                notes.insert(1, tr("видео: {how}", how=" · ".join(how)))
         lens = r.get("projector")
         kind = r.get("license_kind") or ""
         licence = tr("Лицензия не указана — прочитайте условия на странице модели")

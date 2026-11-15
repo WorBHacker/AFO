@@ -1575,6 +1575,8 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
     assert pair["variants"][0]["size"] == 50_000 and [(f["role"], f["path"]) for f in pair["variants"][0]["files"]] == [
         ("diffusion-model", "pair_low_noise_Q4_0.gguf"),
         ("high-noise-diffusion-model", "pair_high_noise_Q4_0.gguf")]  # fmt: skip
+    assert pair["modes"] == ["picture", "frames"] and pair["variants"][0]["modes"] == ["picture", "frames"]  # 48.7д
+    assert film["modes"] == ["text"]  # a family that says none: by words (as an install before 48.5)
 
     job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q4_0"})
     assert job.status_code == 200, job.text
