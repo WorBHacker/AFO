@@ -7241,6 +7241,82 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         quick.close()
 
 
+def test_the_studio_chooses_its_model_and_films_by_two_frames(qapp, tmp_path):
+    """48.7б: in the Studio the model is chosen - «Авто» as «Быстрее ↔ Качественнее» says, or one of those installed;
+    a video by words, by a picture or by two frames as its model films (the hub's `modes`): the first frame as «По
+    картинке» takes one, the last one beside it."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [
+            {"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832, "steps": 4, "cfg": 1.0,
+             "modes": ["text", "picture"]},
+            {"model_id": "i2v", "name": "Wan2.2 I2V A14B", "tier": "video", "size": 832, "steps": 20, "cfg": 3.5,
+             "modes": ["picture", "frames"], "clip": {"fps": 16}}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasModels and view.hasVideo)
+        (tmp_path / "first.png").write_bytes(PICTURE)
+        (tmp_path / "last.png").write_bytes(PICTURE)
+        view.setMode("video")
+        view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "first.png")).toString())
+        view.draw()  # a video by a picture: the picture goes with it
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        assert client.visual_calls[-1][0] == "video" and "from_png" in client.visual_calls[-1][1]
+        client.visual_jobs_list[0]["status"] = "done"
+        app.on_event({"type": "visual.changed", "payload": {"job": client.visual_jobs_list[0]}})
+        view.clearSource()
+        view.setMode("picture")
+        assert [(c["id"], c["selected"]) for c in view.modelChoices] == [
+            ("", True), ("flux2-klein-4b", False), ("z-image-turbo", False)]  # «Авто» first  # fmt: skip
+        view.setModel("z-image-turbo")
+        assert view.modelName == "Z-Image-Turbo" and view.modelText.startswith("Z-Image-Turbo")
+        assert not view.choice  # a model chosen: «Быстрее ↔ Качественнее» has nothing to choose
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "draw")
+        assert client.visual_calls[-1][1]["model"] == "z-image-turbo"
+        client.visual_jobs_list[0]["status"] = "done"
+        app.on_event({"type": "visual.changed", "payload": {"job": client.visual_jobs_list[0]}})
+
+        view.setMode("video")
+        assert view.modelName == "Авто" and [c["id"] for c in view.modelChoices] == ["", "wan", "i2v"]
+        assert [m["id"] for m in view.videoModes] == ["text", "picture", "frames"]  # what one of them films
+        view.setVideoMode("frames")
+        assert view.modelText.startswith("Wan2.2 I2V A14B")  # «Авто»: the one that films by two frames
+        view.draw()  # no first frame yet: nothing goes
+        assert [c[0] for c in client.visual_calls] == ["video", "draw"]
+        view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "first.png")).toString())
+        view.chooseLast(QUrl.fromLocalFile(str(tmp_path / "last.png")).toString())
+        assert view.hasSource and view.hasLast and view.lastSource.startswith("image://pictures/last/")
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "video")
+        spec = client.visual_calls[-1][1]
+        assert spec["model"] == "i2v" and "from_png" in spec and "last_png" in spec and "strength" not in spec
+        assert QImage.fromData(base64.b64decode(spec["last_png"]), "PNG").size() == QSize(32, 32)
+
+        view.setModel("wan")
+        assert [m["id"] for m in view.videoModes] == ["text", "picture"] and view.videoMode == "picture"
+        assert not view.hasLast or view.videoMode != "frames"  # the last frame: not with this model
+        view.clearSource()
+        view.setVideoMode("text")
+        studio = quick.window.findChild(QObject, "studioView")
+        quick.window.grabWindow()
+        assert item_named(studio, "visualModel") is not None and item_named(studio, "visualVideoMode") is not None
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_an_install_going_on_shows_in_the_status_bar_from_the_start(qapp):
     """2026-10-28: the window learns of an install going on as it connects - the status bar shows it before the
     sheet is ever opened, and follows its progress."""

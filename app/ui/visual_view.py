@@ -40,6 +40,10 @@ STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done"
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 12
 MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
+# a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
+# the switch's short word (the Studio's column is narrow), the model menu's whole one
+VIDEO_MODES = [("text", N_("Описание"), N_("по описанию")), ("picture", N_("Кадр"), N_("по картинке")),
+               ("frames", N_("Два кадра"), N_("по двум кадрам"))]  # fmt: skip
 LENGTHS = [("1", N_("1 с")), ("2", N_("2 с")), ("3", N_("3 с"))]
 STRENGTHS = [("little", N_("Чуть"), 0.3), ("some", N_("Заметно"), 0.6), ("much", N_("Сильно"), 0.85)]
 _TIER = {"fast": ("main", "light", "quality"), "quality": ("quality", "main", "light")}
@@ -73,6 +77,7 @@ class PictureProvider(QQuickImageProvider):
         self.blobs: dict[str, bytes] = {}
         self.fetch: Callable[[str], bytes] | None = None  # a chat's picture from the hub
         self.source = b""  # «По картинке»: the source shown (29.6б)
+        self.last = b""  # a video's last frame shown (48.7б)
 
     def requestImage(self, picture_id: str, size: QSize, requested: QSize) -> QImage:
         kind, _, key = picture_id.partition("/")
@@ -83,8 +88,8 @@ class PictureProvider(QQuickImageProvider):
                     data = self.blobs[key] = self.fetch(key)
                 except HubError:
                     data = b""
-        elif kind == "source":
-            data = self.source
+        elif kind in ("source", "last"):
+            data = self.source if kind == "source" else self.last
         else:
             data = self.preview if kind == "preview" else self.pictures.get(key, b"")
         image = QImage()
@@ -117,6 +122,10 @@ class VisualView(QObject):
         self._mode = "picture"  # or video (29.8б)
         self._videos: list[dict[str, Any]] = []
         self._length = "2"
+        self._model = ""  # the model chosen in the Studio (48.7б): "" - «Авто», as «Быстрее ↔ Качественнее» says
+        self._video_mode = "text"  # by words, by a picture, by two frames (48.7б)
+        self._last: dict[str, str] = {}  # a video's last frame: {last_job | last_blob | last_png: value, shown: url}
+        self._shown_last = 0
 
     # ================= for QML =================
 
@@ -142,8 +151,59 @@ class VisualView(QObject):
 
     @Property(bool, notify=changed)
     def choice(self) -> bool:
-        """«Быстрее ↔ Качественнее» only when there is something to choose between - a video: 832×480 or 1280×704."""
-        return self._mode == "video" or len(self._models) > 1
+        """«Быстрее ↔ Качественнее» only when there is something to choose between - a video: its family's size or
+        its larger one; pictures: «Авто» among several (48.7б: a model chosen - nothing to choose)."""
+        return self._mode == "video" or (not self._model and len(self._models) > 1)
+
+    # ---- the Studio's choices (48.7б) ----
+
+    def _kind(self) -> list[dict[str, Any]]:
+        return self._videos if self._mode == "video" else self._models
+
+    def _chosen(self) -> dict[str, Any] | None:
+        """The model chosen by name, of this mode's kind; None - «Авто»."""
+        return next((m for m in self._kind() if self._model and m["model_id"] == self._model), None)
+
+    def _video_model(self) -> dict[str, Any] | None:
+        """The video's model: the one chosen, or (Авто) the first that films as asked."""
+        chosen = self._chosen()
+        if chosen is not None:
+            return chosen
+        return next((m for m in self._videos if self._video_mode in (m.get("modes") or ["text"])),
+                    self._videos[0] if self._videos else None)  # fmt: skip
+
+    @Property(list, notify=changed)
+    def modelChoices(self) -> list:
+        """The models of the mode: «Авто» first, then each installed."""
+        auto = tr("как скажет «Быстрее ↔ Качественнее»") if self._mode != "video" else tr("первая, что так снимает")
+        return [{"id": "", "name": tr("Авто"), "note": auto, "selected": not self._chosen()},
+                *({"id": m["model_id"], "name": m["name"], "selected": m["model_id"] == self._model,
+                   "note": " · ".join(tr(whole) for k, _n, whole in VIDEO_MODES if k in (m.get("modes") or ["text"]))
+                   if self._mode == "video" else ""} for m in self._kind())]  # fmt: skip
+
+    @Property(str, notify=changed)
+    def modelName(self) -> str:
+        chosen = self._chosen()
+        return chosen["name"] if chosen else tr("Авто")
+
+    @Property(list, notify=changed)
+    def videoModes(self) -> list:
+        """How a video may be made: as the chosen model films - «Авто»: as one of them does."""
+        chosen = self._chosen() if self._mode == "video" else None
+        allowed = {k for m in ([chosen] if chosen else self._videos) for k in (m.get("modes") or ["text"])}
+        return [{"id": k, "name": tr(n)} for k, n, _whole in VIDEO_MODES if k in allowed]
+
+    @Property(str, notify=changed)
+    def videoMode(self) -> str:
+        return self._video_mode
+
+    @Property(bool, notify=changed)
+    def hasLast(self) -> bool:
+        return bool(self._last)
+
+    @Property(str, notify=changed)
+    def lastSource(self) -> str:
+        return self._last.get("shown", "")
 
     @Property(list, notify=changed)
     def modes(self) -> list:
@@ -203,11 +263,15 @@ class VisualView(QObject):
     @Property(str, notify=changed)
     def modelText(self) -> str:
         if self._mode == "video":
-            if not self._videos:
+            model = self._video_model()
+            if model is None:
                 return ""
+            if self._video_mode != "text":  # by a picture (48.7б): the picture's shape - the hub sizes it
+                how = tr("по двум кадрам") if self._video_mode == "frames" else tr("по картинке")
+                return tr("{name} · {how} · {seconds} с", name=model["name"], how=how, seconds=self._length)
             width, height = video_size(self._shape, self._quality == "quality",
-                                       clip_of(self._videos[0].get("clip")))  # the family's own (48.3)  # fmt: skip
-            return tr("{name} · {width} × {height} · {seconds} с", name=self._videos[0]["name"], width=width,
+                                       clip_of(model.get("clip")))  # the family's own (48.3)  # fmt: skip
+            return tr("{name} · {width} × {height} · {seconds} с", name=model["name"], width=width,
                       height=height, seconds=self._length)  # fmt: skip
         model, width, height, why = self._plan()
         if model is None:
@@ -285,14 +349,15 @@ class VisualView(QObject):
         """What the next picture is drawn with: the model (the one that comes out here in place of the chosen), its
         size in this shape (no more pixels than come out here), and why it is not the chosen one as it is. From a
         source (29.6б): a model of several steps; its size - the hub's, by the source's shape."""
+        chosen = self._chosen()  # the Studio's (48.7б); none - «Авто»
         if self._source:
             followers = [m for m in self._models if int(m.get("steps") or 0) >= 2]
-            model = pick_model(followers, self._default, self._quality)
+            model = chosen if chosen in followers else pick_model(followers, self._default, self._quality)
             if model is None:
                 return None, 0, 0, tr("По картинке рисуют модели в несколько шагов: поставьте FLUX.2-klein или "
                                       "Z-Image-Turbo")  # fmt: skip
             return model, 0, 0, ""
-        model = pick_model(self._models, self._default, self._quality)
+        model = chosen or pick_model(self._models, self._default, self._quality)
         if model is None:
             return None, 0, 0, ""
         why, wanted = "", model.get("instead")
@@ -355,6 +420,9 @@ class VisualView(QObject):
             self._videos = data.get("videos") or []
             if not self._videos:
                 self._mode = "picture"
+            if not self._chosen():  # a model gone (removed): «Авто» again (48.7б)
+                self._model = ""
+            self._fit_video_mode()
             self.changed.emit()
 
         def jobs(data: dict[str, Any]) -> None:
@@ -401,8 +469,37 @@ class VisualView(QObject):
 
     @Slot(str)
     def setMode(self, mode: str) -> None:
-        self._mode = mode if mode == "video" and self._videos else "picture"
+        wanted = mode if mode == "video" and self._videos else "picture"
+        if wanted != self._mode:  # a picture model is no video model: «Авто» again (48.7б)
+            self._model = ""
+        self._mode = wanted
+        self._fit_video_mode()
         self.changed.emit()
+
+    @Slot(str)
+    def setModel(self, model_id: str) -> None:
+        """The Studio's model (48.7б): one installed of this mode's kind, or "" - «Авто»."""
+        self._model = model_id if any(m["model_id"] == model_id for m in self._kind()) else ""
+        self._fit_video_mode()
+        self.changed.emit()
+
+    @Slot(str)
+    def setVideoMode(self, mode: str) -> None:
+        """By words, by a picture, by two frames (48.7б) - as the model films."""
+        if mode in {m["id"] for m in self.videoModes}:
+            self._video_mode = mode
+        if self._video_mode != "frames":
+            self._last = {}
+        self.changed.emit()
+
+    def _fit_video_mode(self) -> None:
+        """A video model that does not film as chosen: its first way, and no last frame unless by two frames."""
+        allowed = [m["id"] for m in self.videoModes]
+        if allowed and self._video_mode not in allowed:  # the nearest it films: two frames - by the first one
+            near = {"frames": ("picture", "text"), "picture": ("frames", "text"), "text": ("picture", "frames")}
+            self._video_mode = next((m for m in near[self._video_mode] if m in allowed), allowed[0])
+        if self._video_mode != "frames":
+            self._last = {}
 
     @Slot(str)
     def setLength(self, length: str) -> None:
@@ -448,11 +545,20 @@ class VisualView(QObject):
         self.app.call_or_fail(lambda: self.app.client.visual_draw(spec), started, failed)
 
     def _film(self, *, seed: int) -> None:
-        """A video (29.8б): the description, the shape, how long, «Качественнее» - Wan's own 1280×704."""
-        if not self._prompt.strip() or not self._videos or self.busy:
+        """A video (29.8б): the description, the shape, how long, «Качественнее» - the family's larger size; (48.7б)
+        its model as chosen, by a picture - the first frame as «По картинке» takes one - and by two frames."""
+        model = self._video_model()
+        if not self._prompt.strip() or model is None or self.busy:
             return
-        spec = {"prompt": self._prompt.strip(), "model": self._videos[0]["model_id"], "shape": self._shape,
+        if self._video_mode != "text" and not self._source:
+            self.app.flash(tr("Выберите первый кадр"), ms=2500)
+            return
+        spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "shape": self._shape,
                 "seconds": float(self._length), "hd": self._quality == "quality", "seed": seed}  # fmt: skip
+        if self._video_mode != "text":  # the first frame; its shape - the video's, in the hub
+            spec |= {k: v for k, v in self._source.items() if k != "shown"}
+        if self._video_mode == "frames" and self._last:
+            spec |= {k: v for k, v in self._last.items() if k != "shown"}
         if self.app.currentId:
             spec["conversation_id"] = self.app.currentId
         self._job, self._step = {"status": "queued", "kind": "video", "prompt": spec["prompt"]}, (0, 0)
@@ -476,6 +582,8 @@ class VisualView(QObject):
             self.provider.source, self._shown = data, self._shown + 1
             shown = f"image://pictures/source/{self._shown}"
         self._source = {kind: value, "shown": shown}
+        if self._mode == "video" and self._video_mode == "text":  # a first frame chosen: a video by it (48.7б)
+            self.setVideoMode("picture")
         self.changed.emit()
 
     @Slot()
@@ -495,22 +603,41 @@ class VisualView(QObject):
     @Slot(str)
     def chooseSource(self, url: str) -> None:
         """«Выбрать картинку…»: any picture Qt reads, sent as PNG."""
-        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
-        image = QImage(path)
-        if image.isNull():
-            self.app.show_error(tr("Не открыть картинку: {path}", path=path))
-            return
-        array = QByteArray()
-        buffer = QBuffer(array)
-        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, "PNG")
-        data = bytes(array.data())
-        self._use("from_png", base64.b64encode(data).decode(), data)
+        data = self._png_of(url)
+        if data is not None:
+            self._use("from_png", base64.b64encode(data).decode(), data)
 
     @Slot()
     def clearSource(self) -> None:
         self._source = {}
         self.changed.emit()
+
+    @Slot(str)
+    def chooseLast(self, url: str) -> None:
+        """A video's last frame (48.7б): any picture Qt reads, sent as PNG."""
+        data = self._png_of(url)
+        if data is not None:
+            self.provider.last, self._shown_last = data, self._shown_last + 1
+            self._last = {"last_png": base64.b64encode(data).decode(),
+                          "shown": f"image://pictures/last/{self._shown_last}"}  # fmt: skip
+            self.changed.emit()
+
+    @Slot()
+    def clearLast(self) -> None:
+        self._last = {}
+        self.changed.emit()
+
+    def _png_of(self, url: str) -> bytes | None:
+        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
+        image = QImage(path)
+        if image.isNull():
+            self.app.show_error(tr("Не открыть картинку: {path}", path=path))
+            return None
+        array = QByteArray()
+        buffer = QBuffer(array)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(array.data())
 
     @Slot(str)
     def setStrength(self, strength: str) -> None:

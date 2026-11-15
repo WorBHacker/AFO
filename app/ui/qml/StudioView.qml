@@ -10,6 +10,8 @@ Item {
     id: studio
     objectName: "studioView"
     readonly property bool narrow: width < 860
+    // a picture to start from, in use: «По картинке», or a video's first frame unless the video is by words (48.7б)
+    readonly property bool fromPicture: Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
     onVisibleChanged: if (visible) Visual.load()
 
     component Note: Text {
@@ -33,6 +35,23 @@ Item {
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Картинки (*.png *.jpg *.jpeg *.webp *.bmp)")]
         onAccepted: Visual.chooseSource(selectedFile.toString())
+    }
+
+    FileDialog {
+        id: lastDialog  // a video's last frame (48.7б)
+        title: qsTr("Последний кадр")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Картинки (*.png *.jpg *.jpeg *.webp *.bmp)")]
+        onAccepted: Visual.chooseLast(selectedFile.toString())
+    }
+
+    MenuPopup {  // the model (48.7б): «Авто» or one installed
+        id: modelMenu
+        menuWidth: 340
+        below: true
+        wrapNotes: true
+        items: Visual.modelChoices
+        onChosen: (id) => Visual.setModel(id)
     }
 
     FileDialog {
@@ -118,9 +137,23 @@ Item {
                     value: Visual.mode
                     onPicked: (id) => Visual.setMode(id)
                 }
+                Chip {  // 48.7б: «Авто» or one of those installed
+                    id: modelChip
+                    objectName: "visualModel"
+                    iconName: "sparkle"
+                    text: qsTr("Модель: %1").arg(Visual.modelName)
+                    onClicked: { modelMenu.anchor = modelChip; modelMenu.open() }
+                }
+                Segmented {  // 48.7б: by words, by a picture, by two frames - as the model films
+                    objectName: "visualVideoMode"
+                    visible: Visual.mode === "video" && Visual.videoModes.length > 1
+                    options: Visual.videoModes
+                    value: Visual.videoMode
+                    onPicked: (id) => Visual.setVideoMode(id)
+                }
                 Segmented {
                     objectName: "visualShape"
-                    visible: !Visual.hasSource  // from a picture: its shape
+                    visible: !studio.fromPicture  // from a picture: its shape
                     options: Visual.shapes
                     value: Visual.shape
                     onPicked: (id) => Visual.setShape(id)
@@ -141,15 +174,15 @@ Item {
                 }
                 PlainButton {
                     objectName: "visualFromFile"
-                    visible: !Visual.hasSource && Visual.mode !== "video"
+                    visible: !Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
                     iconName: "image"
-                    text: qsTr("По картинке…")
+                    text: Visual.mode === "video" ? qsTr("Первый кадр…") : qsTr("По картинке…")
                     onClicked: sourceDialog.open()
                 }
                 // «По картинке» (29.6б): the source and how much to change it
                 Row {
                     objectName: "visualSource"
-                    visible: Visual.hasSource
+                    visible: studio.fromPicture
                     spacing: 10
                     Rectangle {
                         width: 64
@@ -171,21 +204,66 @@ Item {
                         spacing: 6
                         anchors.verticalCenter: parent.verticalCenter
                         Text {
-                            text: qsTr("По картинке — насколько менять:")
+                            text: Visual.mode === "video" ? qsTr("Первый кадр") : qsTr("По картинке — насколько менять:")
                             color: Theme.p.text_soft
                             font.family: Theme.uiFont
                             font.pixelSize: 12
                         }
                         Segmented {
                             objectName: "visualStrength"
+                            visible: Visual.mode !== "video"  // a video's first frame is kept as it is
                             options: Visual.strengths
                             value: Visual.strength
                             onPicked: (id) => Visual.setStrength(id)
                         }
                         PlainButton {
                             iconName: "close"
-                            text: qsTr("Без образца")
+                            text: Visual.mode === "video" ? qsTr("Без кадра") : qsTr("Без образца")
                             onClicked: Visual.clearSource()
+                        }
+                    }
+                }
+                // 48.7б: a video between two frames - its last one
+                PlainButton {
+                    objectName: "visualLastFromFile"
+                    visible: Visual.mode === "video" && Visual.videoMode === "frames" && !Visual.hasLast
+                    iconName: "image"
+                    text: qsTr("Последний кадр…")
+                    onClicked: lastDialog.open()
+                }
+                Row {
+                    objectName: "visualLast"
+                    visible: Visual.mode === "video" && Visual.videoMode === "frames" && Visual.hasLast
+                    spacing: 10
+                    Rectangle {
+                        width: 64
+                        height: 64
+                        radius: 6
+                        color: Theme.p.card
+                        border.color: Theme.p.hairline
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 3
+                            source: Visual.lastSource
+                            sourceSize.width: 128
+                            sourceSize.height: 128
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                        }
+                    }
+                    Column {
+                        spacing: 6
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text {
+                            text: qsTr("Последний кадр")
+                            color: Theme.p.text_soft
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                        PlainButton {
+                            iconName: "close"
+                            text: qsTr("Без последнего")
+                            onClicked: Visual.clearLast()
                         }
                     }
                 }
