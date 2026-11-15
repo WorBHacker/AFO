@@ -1351,6 +1351,7 @@ class Installer:
         plan = {"engine": "sd", "set": entry["id"], "tier": entry["tier"], "build": machine["build"], "flags": flags,
                 "size": entry["size"], **({"kind": "video"} if video else {}),
                 **({"clip": entry["clip"]} if video and entry.get("clip") else {}),  # its own clip (48.3)
+                **({"modes": entry["modes"]} if video and entry.get("modes") else {}),  # how it films (48.5)
                 **({"found": repo} if own else {})}  # fmt: skip
         job_id = uuid.uuid4().hex[:12]
         everything = [*engine, *files]
@@ -1921,7 +1922,8 @@ class Installer:
             return
         await self._set(job_id, status="trial")
         if found["plan"].get("kind") == "video":  # a short video (29.8а)
-            result = await visual.trial_video(self._url, model_id, clip=found["plan"].get("clip"))
+            only_picture = "text" not in (found["plan"].get("modes") or ["text"])  # (48.5) its trial: AFO's own frame
+            result = await visual.trial_video(self._url, model_id, clip=found["plan"].get("clip"), picture=only_picture)
             if result["ok"]:
                 await self._set(job_id, status="done", trial={"seconds": result["seconds"], "frames": result["frames"]})
                 return

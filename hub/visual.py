@@ -59,7 +59,7 @@ from typing import Any
 
 import httpx
 
-from common.i18n import tr
+from common.i18n import N_, tr
 from common.picture_sizes import (
     CPU_PIXELS,
     SHAPES,
@@ -69,6 +69,7 @@ from common.picture_sizes import (
     frames_for,
     half,
     moved,
+    shape_of,
     shaped,
     size_for,
     trial_size,
@@ -280,19 +281,40 @@ STRENGTHS = (0.1, 0.95)  # past it nothing of the source is left
 SOURCE_BYTES = 20 * 1024**2
 VIDEO_TIMEOUT_S = 3600.0  # an hour at most: a video on a slow card (29.1: 7.5 min for 0.7 s on an integrated one)
 VIDEO_STEP_S = 1.0  # how often a video's job is looked at
+VIDEO_MODES = ("text", "picture", "frames")  # (48.5) by words, by a picture (its first frame), by the first and last
+# what a video model does not do (48.5), in words - its catalog's `modes`; one installed before films by words only
+MODE_WORDS = {"text": N_("{name} снимает только по картинке — выберите первый кадр"),
+              "picture": N_("{name} не снимает по картинке — только по описанию"),
+              "frames": N_("{name} не снимает по двум кадрам — только по первому")}  # fmt: skip
 RUNGS = "visual.rungs"  # settings: {computer: {model: {"pixels": n} | {"instead": model}}} - what came out where
 
 
-async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: dict[str, Any] | None = None
-                      ) -> dict[str, Any]:  # fmt: skip
+def trial_frame(width: int, height: int) -> bytes:
+    """A first frame for the trial of a model that films only by a picture (48.5): a sky over snow, in a PNG."""
+    rows = b"".join(b"\0" + bytes(c for x in range(width) for c in (
+        (90 + y * 120 // height, 140 + y * 80 // height, 220) if y < height * 2 // 3 else (235, 240, 245)))
+        for y in range(height))  # fmt: skip
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    return SIGNATURE + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(
+        b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")  # fmt: skip
+
+
+async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: dict[str, Any] | None = None,
+                      picture: bool = False) -> dict[str, Any]:  # fmt: skip
     """A video model's trial (29.8а): a short video through vid_gen - {ok, seconds, frames} or {ok: False, error}; its
-    size on the family's grid, its frames a second the family's (48.3; 9 frames - 4k+1 and 8k+1 alike)."""
+    size on the family's grid, its frames a second the family's (48.3; 9 frames - 4k+1 and 8k+1 alike); a model that
+    films only by a picture - from AFO's own first frame (48.5)."""
     start = time.monotonic()
     upstream = f"{base_url}/upstream/{model_id}/sdcpp/v1"
     clip = clip_of(clip)
     width, height = trial_size(clip)
     body = {"prompt": TRIAL_PROMPT, "width": width, "height": height, "video_frames": frames, "fps": clip["fps"],
             "seed": 1, "output_format": "webp"}  # fmt: skip
+    if picture:
+        body["init_image"] = base64.b64encode(trial_frame(width, height)).decode()
     try:
         async with httpx.AsyncClient(timeout=TRIAL_TIMEOUT_S) as http:
             said = await http.post(f"{upstream}/vid_gen", json=body)
@@ -418,7 +440,8 @@ def _text_flag(flags: list[str], name: str, default: str) -> str:
 def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
     """The picture models AFO installed (29.3) - or its video models (`kind` video, 29.8): {model_id, name, tier,
     size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, flow_shift, clip - a video
-    family's own (48.3; one installed before - TI2V-5B's)}."""
+    family's own (48.3; one installed before - TI2V-5B's), modes - how it films (48.5; one installed before - by
+    words)}."""
     out = []
     for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
         plan = json.loads(row["plan"] or "{}")
@@ -429,7 +452,8 @@ def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
                     "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
                     "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or "",
                     "sampler": _text_flag(flags, "--sampling-method", "default"),
-                    "flow_shift": _flag(flags, "--flow-shift", 0.0), "clip": clip_of(plan.get("clip"))})  # fmt: skip
+                    "flow_shift": _flag(flags, "--flow-shift", 0.0), "clip": clip_of(plan.get("clip")),
+                    "modes": [m for m in plan.get("modes") or ["text"] if m in VIDEO_MODES]})  # fmt: skip
     return out
 
 
@@ -604,28 +628,46 @@ class Visual:
         return True
 
     async def video(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
-        """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}."""
+        """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}; (48.5) by a
+        picture - from_job, from_blob or from_png: its first frame, the video's shape its - and the last frame too
+        (last_job, last_blob, last_png). A family films as its `modes` say: by words, by a picture, by two frames."""
         prompt = (spec.get("prompt") or "").strip()
         if not prompt:
             raise VisualError(tr("нужно описание видео"), 422)
+        first = await self._source(spec)
+        last = await self._source({"from_job": spec.get("last_job"), "from_blob": spec.get("last_blob"),
+                                   "from_png": spec.get("last_png")})  # fmt: skip
+        if last is not None and first is None:
+            raise VisualError(tr("последний кадр — вместе с первым: сначала выберите первый"), 422)
+        mode = "frames" if last is not None else "picture" if first is not None else "text"
         found = await self._db.acall(lambda conn: installed(conn, "video"))
-        model = next((m for m in found if m["model_id"] == spec.get("model")), None) if spec.get("model") else (
-            found[0] if found else None)  # fmt: skip
+        model = next((m for m in found if m["model_id"] == spec.get("model")), None) if spec.get("model") else next(
+            (m for m in found if mode in m["modes"]), found[0] if found else None)  # fmt: skip
         if model is None:
             raise VisualError(tr("модели видео нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
+        if mode not in model["modes"]:
+            said = "text" if mode == "text" else "picture" if "picture" not in model["modes"] else "frames"
+            raise VisualError(tr(MODE_WORDS[said], name=model["name"]), 422)
         clip = model["clip"]  # the family's own (48.3)
-        width, height = video_size(str(spec.get("shape") or "wide"), bool(spec.get("hd")), clip)
+        shape = shape_of(*png_size(first)) if first is not None else str(spec.get("shape") or "wide")
+        width, height = video_size(shape, bool(spec.get("hd")), clip)
         frames = frames_for(float(spec.get("seconds") or 2.0), clip["fps"], clip["step"])
         seed = spec.get("seed")
         seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
         job_id = uuid.uuid4().hex[:12]
+        kept: dict[str, str] = {}
+        for key, data in (("source", first), ("last", last)):  # beside the job: its frames
+            if data is not None:
+                kept[key] = f"{datetime.now(UTC):%Y-%m}/{job_id}-{key}.png"
+                await asyncio.to_thread(_save, self.media / kept[key], data)
 
         def add(conn) -> None:
             conn.execute(
                 "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
-                "conversation_id, frames, fps) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                "conversation_id, frames, fps, source, last_frame) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, 'queued', ?, "
+                "?, ?, ?, ?, ?)",
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
-                 spec.get("conversation_id"), frames, clip["fps"]),
+                 spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", "")),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -982,6 +1024,9 @@ class Visual:
         body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
                 "output_format": "webp", "sample_params": params}  # fmt: skip
+        for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
+            if kept and (self.media / kept).is_file():  # the engine crops and resizes it to the video's size
+                body[key] = base64.b64encode(await asyncio.to_thread((self.media / kept).read_bytes)).decode()
         start, error, result = time.monotonic(), "", None
         self._free.clear()  # the card is the video's: local chat models wait
         try:

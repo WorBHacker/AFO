@@ -64,7 +64,8 @@ async def image(request: Request, body: Image, client: Annotated[Client, Depends
 
 
 class Video(BaseModel):
-    """A video (29.8а): its shape, how long, «Качественнее» - Wan's own 1280×704."""
+    """A video (29.8а): its shape, how long, «Качественнее» - the family's own larger size; (48.5) by a picture - its
+    first frame, as «По картинке» takes one (a job's picture, a chat's, a PNG sent) - and the last frame too."""
 
     prompt: str = Field(min_length=1, max_length=4000)
     negative: str = Field(default="", max_length=2000)
@@ -74,6 +75,12 @@ class Video(BaseModel):
     hd: bool = False
     seed: int | None = None
     conversation_id: str | None = Field(default=None, max_length=64)
+    from_job: str = Field(default="", max_length=64)
+    from_blob: str = Field(default="", max_length=64)
+    from_png: str = Field(default="", max_length=28_000_000)
+    last_job: str = Field(default="", max_length=64)
+    last_blob: str = Field(default="", max_length=64)
+    last_png: str = Field(default="", max_length=28_000_000)
 
 
 @router.post("/videos")

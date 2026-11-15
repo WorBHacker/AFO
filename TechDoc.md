@@ -238,6 +238,7 @@
 - `hub/db/migrations/050_visual_video.sql` — кадры и частота видео
 - `hub/db/migrations/051_full_autonomy.sql` — режим агента «Полный»
 - `hub/db/migrations/052_model_installs_trial_states.sql` — состояния пробного запуска
+- `hub/db/migrations/053_visual_last_frame.sql` — последний кадр видео по двум кадрам
 
 ### hub/gateway/ — шлюз моделей
 
@@ -1493,7 +1494,15 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 - 48.5 Режимы в хабе: видео по картинке и по двум кадрам — источник как у картинок (`from_job`, `from_blob`,
   `from_png`) и последний кадр, в `vid_gen` — `init_image` и `end_image`; у семейства — какие режимы оно умеет (по
   рецептам); модель «только по картинке» (Wan2.2-I2V-A14B, Wan2.1-I2V) без кадра не предлагается, её проба — с кадром.
-  Файлы: `hub/visual.py`, `hub/api/visual.py`, `hub/model_install.py`.
+  Файлы: `hub/visual.py`, `hub/api/visual.py`, `hub/model_install.py`. ✓ Сделано: `POST /v1/visual/videos` —
+  `from_job`/`from_blob`/`from_png` (первый кадр, как у «По картинке») и `last_job`/`last_blob`/`last_png`
+  (последний); оба — PNG рядом с заданием (`source`, новый `last_frame`, миграция 053); форма ролика — по первому
+  кадру (`picture_sizes.shape_of`); в `vid_gen` — `init_image` и `end_image` (base64, движок сам обрежет). У семейства
+  каталога — `modes` (`text`, `picture`, `frames`), установка кладёт их в план, `installed` отдаёт (поставленная
+  раньше — только `text`); без модели в запросе — первая, что так снимает; не умеет — отказ словами (`MODE_WORDS`);
+  последний кадр без первого — отказ. Проба модели только по картинке — с кадром AFO (`visual.trial_frame`: небо над
+  снегом, PNG размера пробы). Тест — `test_a_video_by_a_picture_and_by_two_frames`, проба — в
+  `test_a_found_video_model_among_the_others_of_its_repository`.
 - 48.6 Семейства в каталог (как 47.8: `card: false`, флаги — по рецептам sd.cpp, sha256 у всех файлов): Wan2.1 T2V 1.3B
   и 14B, I2V 480p и 720p (`clip_vision`), FLF2V 720p; Wan2.2 TI2V-5B (обычная), T2V A14B, I2V A14B; LTX-2.3 и 2.5 — dev
   и distilled; HunyuanVideo 1.5 T2V и I2V; MiniMax-H3 fl2va — без `--audio-vae`. Общие части: umt5, VAE Wan2.1,

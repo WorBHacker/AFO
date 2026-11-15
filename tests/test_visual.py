@@ -698,6 +698,46 @@ def test_a_video_familys_own_clip(hub):
     assert trial_size(clip_of(film["clip"])) == (480, 288) and trial_size(clip_of(None)) == (480, 272)
 
 
+def test_a_video_by_a_picture_and_by_two_frames(hub):
+    """48.5: a video by a picture - its first frame (`init_image`), the video's shape the picture's - and by two frames,
+    the first and the last (`end_image`); each kept beside the job. A family films as its catalog says (`modes`: text,
+    picture, frames): Wan2.2-I2V-A14B only by a picture; a model installed before - only by words."""
+    _install(hub, "film", {**CLIP_PLAN, "set": "film", "modes": ["text", "picture", "frames"]})
+    _install(hub, "still", {**CLIP_PLAN, "set": "still", "modes": ["picture", "frames"]})
+    _install(hub, "clip", CLIP_PLAN)
+    wide = png(64, 36, lambda x, y: (x * 4, y * 7, 128))
+    first, last = base64.b64encode(wide).decode(), base64.b64encode(PICTURE).decode()
+
+    job = hub.post("/v1/visual/videos", json={"prompt": "the fox runs", "model": "film", "from_png": first,
+                                              "shape": "tall"}).json()["job"]  # fmt: skip
+    assert (job["width"], job["height"]) == (832, 480)  # the picture's shape, not the one asked
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    asked = FakeDrawSwap.video[-1]
+    assert base64.b64decode(asked["init_image"]) == wide and "end_image" not in asked
+    assert (hub.app.state.visual.media / done["source"]).read_bytes() == wide
+
+    job = hub.post("/v1/visual/videos", json={"prompt": "the fox turns", "model": "film", "from_png": first,
+                                              "last_png": last}).json()["job"]  # fmt: skip
+    done = _wait(hub, job["id"], "done", "failed")
+    asked = FakeDrawSwap.video[-1]
+    assert base64.b64decode(asked["end_image"]) == PICTURE and base64.b64decode(asked["init_image"]) == wide
+    assert (hub.app.state.visual.media / done["last_frame"]).read_bytes() == PICTURE
+
+    picked = hub.post("/v1/visual/videos", json={"prompt": "the fox", "from_png": first}).json()["job"]
+    assert picked["model_id"] == "film"  # none named: the first that films by a picture
+    _wait(hub, picked["id"], "done", "failed")
+    for wrong, words in (({"model": "still"}, "только по картинке"), ({"model": "clip", "from_png": first},
+                         "не снимает по картинке"), ({"model": "still", "from_png": first, "last_png": last}, None),
+                         ({"model": "film", "last_png": last}, "первым")):  # fmt: skip
+        said = hub.post("/v1/visual/videos", json={"prompt": "the fox", **wrong})
+        if words is None:
+            assert said.status_code == 200, said.json()
+            _wait(hub, said.json()["job"]["id"], "done", "failed")
+            continue
+        assert said.status_code == 422 and words in said.json()["detail"], (wrong, said.json())
+
+
 def test_a_videos_mp4_made_once_with_ffmpeg_fetched_once(hub, monkeypatch, tmp_path):
     """29.8в: «Сохранить как…» MP4 - the hub turns the video's WebP into MP4 with ffmpeg (fetched the first time,
     hub/ffmpeg.py), keeps it beside the WebP; a picture has none."""

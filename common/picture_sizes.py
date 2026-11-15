@@ -39,6 +39,13 @@ def clip_of(clip: dict | None) -> dict:
     return out
 
 
+def shape_of(width: int, height: int) -> str:
+    """A video's shape by its first frame (48.5): the engine crops the picture to the video's - the nearest keeps
+    most."""
+    ratio = width / height
+    return "wide" if ratio >= 1.15 else "tall" if ratio <= 1 / 1.15 else "square"
+
+
 def video_size(shape: str, hd: bool, clip: dict | None = None) -> tuple[int, int]:
     sizes = (clip or CLIP)["hd" if hd else "sizes"]
     return tuple(sizes.get(shape, sizes["wide"]))

@@ -4,6 +4,7 @@ sha256, the model's block in the config, the trial run that tries smaller settin
 Hugging Face serves a tiny GGUF model; the stand-in llama-swap of the 8.5 tests reads the same config."""
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import io
@@ -1526,6 +1527,7 @@ PAIR = {"id": "pair", "name": "Pair", "kind": "video", "purposes": ["video"], "t
         "original": "test/Pair", "bases": ["test/Pair"], "size": 832, "card": False, "about": {"ru": "Снимает"},
         "flags": ["--cfg-scale", "3.5", "--steps", "4", "--high-noise-steps", "2"],
         "clip": {"fps": 16, "grid": 32},  # its own clip (48.3): Wan2.1's 16 a second; a grid of 32 for the trial
+        "modes": ["picture", "frames"],  # Wan2.2-I2V-A14B (48.5): only by a picture - its trial from AFO's own frame
         "files": [{"role": "diffusion-model", "repo": "test/Pair-GGUF", "path": "LowNoise/pair-LowNoise-Q4_0.gguf"},
                   {"role": "high-noise-diffusion-model", "repo": "test/Pair-GGUF",
                    "path": "HighNoise/pair-HighNoise-Q4_0.gguf"},
@@ -1585,7 +1587,8 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
     assert "--high-noise-steps 2" in view["command"]
     trial = FakeLlamaSwap.video[-1]  # 48.3: the trial on the family's grid, at its frames a second
     assert (trial["width"], trial["height"], trial["fps"], trial["video_frames"]) == (480, 288, 16, 9)
-    assert done["plan"]["clip"] == {"fps": 16, "grid": 32}
+    assert done["plan"]["clip"] == {"fps": 16, "grid": 32} and done["plan"]["modes"] == ["picture", "frames"]
+    assert visual.png_size(base64.b64decode(trial["init_image"])) == (480, 288)  # 48.5: a first frame of its own
     job = hub.post("/v1/install/pictures", json={"id": "film-distilled", "repo": "someone/Film-Two-GGUF",
                                                  "quant": "Q4_0"}).json()["job"]  # fmt: skip
     assert [f["path"] for f in job["files"] if f["role"] == "diffusion-model"] == ["distilled/film-distilled-Q4_0.gguf"]
