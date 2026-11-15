@@ -849,9 +849,12 @@ class Visual:
         found = await self._db.acall(lambda conn: job(conn, job_id))
         if found is None:
             raise VisualError(tr("нет такой картинки"), 404)
-        if found["status"] == "queued":
+        if found["status"] == "queued" and job_id != self._running:
+            self._stopping.add(job_id)  # (48.10а) the worker may take it before «отменено» is written: it looks here
             await self._set(job_id, status="cancelled", error="")
-        elif found["status"] == "running":
+        elif found["status"] in ("queued", "running"):  # going on - or (48.10а, stage 48's review, finding 5) one the
+            # worker has just taken, not yet «running»: «отменено» was written over by «running», and it went on. The
+            # worker looks at `_stopping` right before the model is asked for; one asked for already is unloaded
             self._stopping.add(job_id)
             if self._watching is not None:  # its next look at the progress would load the model again
                 self._watch_stop.set()
@@ -998,6 +1001,7 @@ class Visual:
             if found is None:
                 if self._more:  # one asked for while the queue was looked at: draw() saw this still going
                     continue
+                self._stopping.clear()  # ✕ said in the queue (48.10а): those jobs are «отменено», nothing goes on
                 return
             job_id = found["id"]
             # the card is the Studio's for the job (stage 48's review, finding 2): an install's trial holding it, the
@@ -1011,10 +1015,10 @@ class Visual:
                     break
                 self.card.give(STUDIO)
             try:
+                self._running = job_id  # the worker's from now (48.10а): ✕ and «Выгрузить» stop it as one going on
                 found = await self._db.acall(functools.partial(job, job_id=job_id))  # «✕» while it waited for the card
                 if found is None or found["status"] != "queued":
                     continue
-                self._running = job_id
                 await (self._run_video(found) if found.get("kind") == "video" else self._run(found))
             except Exception:  # one picture's trouble must not stop the rest
                 log.exception("picture %s", job_id)
@@ -1051,6 +1055,8 @@ class Visual:
                 break
             await self._set(job_id, status="running", error="", model_id=rung["model_id"], width=rung["width"],
                             height=rung["height"], tries=tries)  # fmt: skip
+            if job_id in self._stopping:  # ✕ or «Выгрузить» while «running» was written (48.10а): nothing asked for
+                break
             picture, error, gone, seconds = await self._try(job_id, found, rung, by_id[rung["model_id"]], source)
             if job_id in self._stopping:
                 break
@@ -1139,15 +1145,18 @@ class Visual:
         # the card is the video's, held from local chats, since before the job says «running» (`_work`; stage 48's full
         # run: one seeing it running found the card free - the status's write awaits the database)
         try:
-            await self._set(job_id, status="running", error="")
+            if job_id not in self._stopping:  # ✕ or «Выгрузить» since the worker took it (48.10а): not «running»
+                await self._set(job_id, status="running", error="")
             for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
                 if kept and (self.media / kept).is_file():  # the engine crops and resizes it to the video's size
                     body[key] = base64.b64encode(await asyncio.to_thread((self.media / kept).read_bytes)).decode()
             async with httpx.AsyncClient(timeout=60.0) as http:
-                said = await http.post(f"{upstream}/vid_gen", json=body, timeout=600.0)  # the model loads first
-                if said.status_code >= 300:
+                # looked at right before its model is asked for, no `await` between (48.10а): ✕ or «Выгрузить» meanwhile
+                said = None if job_id in self._stopping else await http.post(  # the model loads first
+                    f"{upstream}/vid_gen", json=body, timeout=600.0)  # fmt: skip
+                if said is not None and said.status_code >= 300:
                     error = _refused(said)
-                else:
+                elif said is not None:
                     video_job = said.json().get("id", "")
                     moved, where = start, None  # when it last moved - a step, a pass, its status, its place in line
                     while job_id not in self._stopping:

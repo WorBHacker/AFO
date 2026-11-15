@@ -309,7 +309,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
 
     def do_POST(self):
         cls = FakeDrawSwap
-        if self.path.startswith("/api/models/unload/"):
+        if self.path.startswith("/api/models/unload"):  # one model - or, «Выгрузить» (48.9г), all of them: "unload"
             cls.unloaded.append(self.path.rsplit("/", 1)[1])
             cls.stopped = True
             self._send(200, {"msg": "ok"})
@@ -450,6 +450,83 @@ def test_stop_unloads_the_model_and_the_picture_ends(hub):
     assert stopped["status"] == "cancelled" and FakeDrawSwap.unloaded == ["draw"]
     assert len(FakeDrawSwap.asked) == 1  # stopped: no rung lower
     assert hub.get(f"/v1/visual/jobs/{job['id']}/file").status_code == 404
+
+
+def _taken_not_running(hub, monkeypatch):
+    """The worker held where it has taken a job from the queue and not yet said «running» - its model not asked for: a
+    picture at its look at the computer, a video at its look for the model's files. `at` - it is there; `go` - on."""
+    state = hub.app.state.visual
+    at, go = threading.Event(), threading.Event()
+    machine, missing = state._machine, state.missing
+
+    def looked():
+        at.set()
+        go.wait(10)
+        return machine()
+
+    async def files(model_id):
+        at.set()
+        await asyncio.to_thread(go.wait, 10)
+        return await missing(model_id) if missing is not None else ""
+
+    monkeypatch.setattr(state, "_machine", looked)
+    monkeypatch.setattr(state, "missing", files)
+    return at, go
+
+
+JOBS = (("images", {"prompt": "a fox", "model": "draw", "seed": 1}, "asked"),
+        ("videos", {"prompt": "the fox runs", "model": "clip", "seconds": 1}, "video"))  # fmt: skip
+
+
+def test_x_on_a_job_the_worker_has_just_taken_stops_it_before_its_model_loads(hub, monkeypatch):
+    """48.10а (stage 48's review, finding 5): ✕ on a job the worker had just taken from the queue, not yet «running» -
+    `cancel` saw «в очереди» and wrote «отменено», the worker wrote «running» over it, and the picture was drawn, the
+    video filmed. Such a job is stopped as one going on: before its model is asked for the worker looks - a picture
+    and a video alike -, nothing is loaded, it ends «отменено»."""
+    _install(hub)
+    _install(hub, "clip", CLIP_PLAN)
+    at, go = _taken_not_running(hub, monkeypatch)
+    for kind, spec, asked in JOBS:
+        at.clear()
+        go.clear()
+        job = hub.post(f"/v1/visual/{kind}", json=spec).json()["job"]
+        assert at.wait(10), "the worker did not take it"
+        assert hub.post(f"/v1/visual/jobs/{job['id']}/cancel").status_code == 200
+        go.set()
+        stopped = _wait(hub, job["id"], "cancelled", "failed", "done")
+        assert stopped["status"] == "cancelled", (kind, stopped["status"])
+        assert not getattr(FakeDrawSwap, asked), f"{kind}: its model was asked for after ✕"
+
+
+def test_unload_in_the_same_instant_stops_a_job_the_worker_has_just_taken(hub, monkeypatch):
+    """48.10а: «Выгрузить» stops the Studio's job through the same `cancel` (48.9г) - in the instant the worker has
+    taken a job and not yet said «running», a video's model was asked for all the same: it filmed on the card the
+    person had been given. The job stops before its model is asked for, the card stays the person's, the queue waits."""
+    _install(hub)
+    _install(hub, "clip", CLIP_PLAN)
+    state = hub.app.state
+    at, go = _taken_not_running(hub, monkeypatch)
+    for kind, spec, asked in JOBS:
+        at.clear()
+        go.clear()
+        job = hub.post(f"/v1/visual/{kind}", json=spec).json()["job"]
+        assert at.wait(10), "the worker did not take it"
+        said: list = []
+        threading.Thread(target=lambda said=said: said.append(hub.post("/v1/models/unload")), daemon=True).start()
+        deadline = time.monotonic() + 5
+        while not state.card.given:  # «Выгрузить» said: the card is the person's
+            assert time.monotonic() < deadline, "«Выгрузить» was not said"
+            time.sleep(0.02)
+        go.set()
+        stopped = _wait(hub, job["id"], "cancelled", "failed", "done")
+        deadline = time.monotonic() + 30
+        while not said:  # it answers once the card is let go: no request left going when the test ends
+            assert time.monotonic() < deadline, "«Выгрузить» did not answer"
+            time.sleep(0.05)
+        assert stopped["status"] == "cancelled", (kind, stopped["status"])
+        assert not getattr(FakeDrawSwap, asked), f"{kind}: its model was asked for after «Выгрузить»"
+        assert said[0].status_code == 200 and state.card.given and state.visual.held
+        assert hub.post("/v1/gpu/continue").status_code == 200  # the card everyone's again, for the next one
 
 
 @pytest.mark.parametrize(("answer", "words"), [("blank", "пустой"), ("fail", "движок ответил 500")])
