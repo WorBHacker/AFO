@@ -938,7 +938,7 @@ def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub,
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
     with monkeypatch.context() as small:  # the stand's files are kilobytes: so are the memory and the room
-        for name in ("PICTURE_COMPUTE_GIB", "PARTS_COMPUTE_GIB", "SD_MARGIN_GIB"):
+        for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):
             small.setattr(mi, name, 0.0, raising=False)
         small.setattr(installer, "space", lambda: {"vram_gib": 70_000 / mi.GIB, "ram_gib": 200_000 / mi.GIB})
         found = hub.get("/v1/install/pictures/repo/someone/Draw-More-GGUF")
@@ -962,19 +962,18 @@ def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub,
         other = hub.get("/v1/install/pictures/repo/test/Words-GGUF")
         assert other.status_code == 404 and "семейств" in other.json()["detail"]
 
-    # as sd.cpp's auto-fit places them, with its own room for computing (2 GiB a model) - real sizes; the encoder and
-    # VAE wait in RAM when the card has no room for them: they run once a picture
-    space, laptop = {"vram_gib": 15.0, "ram_gib": 60.0}, {"vram_gib": 5.0, "ram_gib": 13.0}
-    assert mi.picture_fit(15_400_000_000, 4_930_000_000, space, side=1024, own=1024) == "split"  # 2512 Q5_K_M
-    assert mi.picture_fit(4_200_000_000, 5_710_000_000, space, side=1024, own=1024) == "gpu"  # Qwen-Image-2.1 Q4
-    assert mi.picture_fit(4_200_000_000, 5_710_000_000, laptop, side=1024, own=1024) == "split"
-    assert mi.picture_fit(2_470_000_000, 5_710_000_000, laptop, side=1024, own=1024) == "gpu"  # its Q2_K
-    assert mi.picture_fit(7_740_000_000, 4_930_000_000, space, side=1024, own=1024) == "gpu"
-    assert mi.picture_fit(7_740_000_000, 4_930_000_000, space, side=2048, own=1024) == "split"  # 4 times the pixels
-    assert mi.picture_fit(40_870_000_000, 4_930_000_000, {"vram_gib": 15.0, "ram_gib": 29.0}, side=1024,
-                          own=1024) == "no"  # fmt: skip
-    assert mi.picture_fit(2_470_000_000, 5_710_000_000, {"vram_gib": 0.0, "ram_gib": 13.0}, side=1024,
-                          own=1024) == "cpu"  # fmt: skip
+    # as sd.cpp's auto-fit places them, with its own room for computing (2 GiB for all the parts) and the encoder's
+    # largest tensor - real sizes; the encoder and VAE wait in RAM when the card has no room for them: they run once a
+    # picture. 47.9, on the RTX 5080 (14.9 GiB free): Qwen-Image-2512 Q4_K_M all in RAM, 37 s a 1024² picture;
+    # Qwen-Image 2.1 Turbo Q4_K_M all on the card, 6 s
+    space, laptop = {"vram_gib": 14.9, "ram_gib": 60.0}, {"vram_gib": 6.0, "ram_gib": 13.0}
+    assert mi.picture_fit(13_299_089_408, 4_930_000_000, space) == "split"  # 2512 Q4_K_M: 12 683 MiB, measured
+    assert mi.picture_fit(12_348_000_000, 4_930_000_000, space) == "gpu"  # its Q4_K_S
+    assert mi.picture_fit(4_199_546_880, 5_710_000_000, space) == "gpu"  # Qwen-Image 2.1 Turbo Q4_K_M, measured
+    assert mi.picture_fit(4_199_546_880, 5_710_000_000, laptop) == "split"
+    assert mi.picture_fit(2_470_000_000, 5_710_000_000, laptop) == "gpu"  # its Q2_K
+    assert mi.picture_fit(40_870_000_000, 4_930_000_000, {"vram_gib": 15.0, "ram_gib": 29.0}) == "no"
+    assert mi.picture_fit(2_470_000_000, 5_710_000_000, {"vram_gib": 0.0, "ram_gib": 13.0}) == "cpu"
 
 
 def test_a_model_that_will_not_start_tries_smaller_settings_then_leaves_the_config(hub):
@@ -1536,7 +1535,7 @@ def test_a_found_picture_model_says_what_it_needs_here(hub, monkeypatch):
               "lastModified": made, "tags": ["gguf", "text-to-image", *BASES["someone/Draw-More-GGUF"]],
               "gguf": {"total": 100_000}}]  # fmt: skip
     installer = hub.app.state.installer
-    for name in ("PICTURE_COMPUTE_GIB", "PARTS_COMPUTE_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
         monkeypatch.setattr(mi, name, 0.0, raising=False)
     SEARCH.extend(extra)
     try:

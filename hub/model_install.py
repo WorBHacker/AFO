@@ -74,11 +74,13 @@ SD_MACRO = "sd_server"  # the picture models' sd-server in llama-swap's config (
 PICTURE_MAIN = ("model", "diffusion-model")  # a picture set's own model among its files (the rest: encoders, VAE)
 SD_CPU_MACRO = "sd_server_cpu"  # the processor's build beside the card's: the ladder's last rung (29.4в)
 SHARED = "_shared"  # under `pictures`: a family's encoders and VAE, one copy for all its models (47.3)
-# a picture model judged by its sizes (47.4) as stable-diffusion.cpp's auto-fit places it (master-1053,
-# backend_fit.cpp): the room it keeps on the card for computing - the model's 2 GiB, the encoder's 2 and the VAE's 1 -
-# and the free video memory it leaves; the model's room grows with the picture's pixels (47.9 measures it)
+# a picture model judged by its sizes (47.4) as stable-diffusion.cpp's auto-fit places it when it starts (master-1053,
+# backend_fit.cpp) - before any picture's size is asked, the computing cut into pieces later to fit what is left: the
+# card's free memory less its 512 MiB; the model there when it leaves room for computing - 2 GiB, one for all the
+# parts, they compute in turn - and for the encoder's largest tensor, staged beside it (~0.5 GiB for Qwen's). 47.9,
+# measured: Qwen-Image-2512 Q4_K_M (12.4 GiB) on a 16 GB card did not fit - all in RAM, 37 s a 1024² picture
 PICTURE_COMPUTE_GIB = 2.0
-PARTS_COMPUTE_GIB = 3.0
+PICTURE_STAGING_GIB = 0.5
 SD_MARGIN_GIB = 0.5
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
@@ -161,17 +163,16 @@ def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
     return "fast" if machine.get("pictures") == "main" else "slow"
 
 
-def picture_fit(model: int, parts: int, space: dict[str, Any], *, side: int, own: int) -> str:
-    """How a picture model of `model` bytes with its encoders and VAE (`parts`) runs here (47.4), as sd.cpp's
-    auto-fit places them: gpu - the model with its room for computing on the card (the parts may wait in RAM: they run
-    once a picture); split - the model in RAM, on the card in pieces: slower; cpu - no graphics card, all in RAM; no -
-    not even the RAM holds them all. The room for computing grows with the pixels: `side` against the family's `own`."""
-    compute = PICTURE_COMPUTE_GIB * max(1.0, (side / own) ** 2) if own else PICTURE_COMPUTE_GIB
+def picture_fit(model: int, parts: int, space: dict[str, Any]) -> str:
+    """How a picture model of `model` bytes with its encoders and VAE (`parts`) runs here (47.4, 47.9), as sd.cpp's
+    auto-fit places them: gpu - the model with its room for computing on the card (the parts on the card's rest or in
+    RAM: they run once a picture); split - the model in RAM, on the card in pieces: slower - and the parts with it, an
+    encoder on the card would want room for the model's pieces too; cpu - no graphics card, all in RAM; no - not even
+    the RAM holds them all. Whatever the picture's size: the places are chosen before it is asked."""
     card = max(space["vram_gib"] - SD_MARGIN_GIB, 0.0) if space["vram_gib"] else 0.0
-    if card and model / GIB + compute <= card:
-        left = card - model / GIB - compute
-        if parts / GIB + PARTS_COMPUTE_GIB <= left or parts / GIB <= space["ram_gib"]:
-            return "gpu"
+    left = card - model / GIB - PICTURE_COMPUTE_GIB - PICTURE_STAGING_GIB
+    if card and left >= 0 and parts / GIB <= left + space["ram_gib"]:
+        return "gpu"
     if (model + parts) / GIB > space["ram_gib"]:
         return "no"
     return "split" if card else "cpu"
@@ -1071,8 +1072,8 @@ class Installer:
             rest = sizes.get(o["family"])
             if rest is None or not o.get("params"):
                 continue
-            entry, model = sets[o["family"]], int(o["params"] * FIT_BITS / 8)
-            verdict = picture_fit(model, rest, space, side=entry["size"], own=entry["size"])
+            model = int(o["params"] * FIT_BITS / 8)
+            verdict = picture_fit(model, rest, space)
             o["fit"] = {"gb": round((model + rest) / 1e9, 1), "quant": FIT_QUANT, "verdict": verdict,
                         "words": tr(VERDICTS[verdict]), "parts": rest}  # fmt: skip
         if wanted:
@@ -1153,7 +1154,7 @@ class Installer:
         shown = []
         for v in variants:
             bits = round(v["size"] * 8 / params, 1) if params else None
-            verdict = picture_fit(v["size"], with_parts, space, side=entry["size"], own=entry["size"])
+            verdict = picture_fit(v["size"], with_parts, space)
             shown.append({"quant": v["quant"], "size": v["size"], "gb": round(v["size"] / 1e9, 1), "bits": bits,
                           "quality": quality_of(bits), "verdict": verdict, "words": tr(VERDICTS[verdict]),
                           "with_parts": v["size"] + with_parts, "coming": v["size"] + coming})  # fmt: skip
