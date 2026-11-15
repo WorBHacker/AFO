@@ -1050,6 +1050,32 @@ def test_a_chat_model_films_a_video_and_the_chat_keeps_it(hub):
     assert picture.status_code == 200 and picture.headers["content-type"] == "image/webp"
 
 
+def test_a_chat_is_offered_a_video_by_words_only_with_a_model_that_films_by_words(hub):
+    """48.10в (stage 48's review, finding 10): generate_video films by words - a chat was offered it once any video
+    model was here, one that films only by a picture too (Wan2.2-I2V-A14B): each call was refused («снимает только по
+    картинке»). It is offered with a model that films by words; called all the same (a chat begun before keeps its
+    tools), the model hears why and where the person can film."""
+
+    def call(n):
+        return [{"id": f"v{n}", "name": "generate_video", "input": {"prompt": "a fox running through snow"}}]
+
+    provider = OncePerTurn([call(1), call(2)])
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    _install(hub, "still", {**CLIP_PLAN, "set": "still", "modes": ["picture", "frames"]})  # by a picture only
+    first = _chat(hub)
+    result = _drawn(_finished(hub, first))
+    assert "generate_video" not in [t["name"] for t in provider.calls[0][1]], "offered: no model films by words"
+    assert result["error"] and "only from a picture" in result["output"], result["output"]
+    assert not FakeDrawSwap.video
+
+    _install(hub, "clip", CLIP_PLAN)  # one installed before 48.5: by words
+    filmed = _chat(hub)
+    result = _drawn(_finished(hub, filmed))
+    assert "generate_video" in [t["name"] for t in provider.calls[-2][1]]
+    assert not result["error"], result["output"]
+
+
 def test_a_local_chat_model_waits_while_the_card_draws_a_video():
     """29.8а: the llama-swap provider asks the hub's gate before each answer: while a video holds the card it says so
     (a «loading» line, as llama-swap's own) and sends nothing until the video ends; the user may stop meanwhile."""

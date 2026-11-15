@@ -869,8 +869,9 @@ class Visual:
         return bool(await self._db.acall(installed))
 
     async def can_film(self) -> bool:
-        """Whether a video model is here: a new chat is offered generate_video (29.8б)."""
-        return bool(await self._db.acall(lambda conn: installed(conn, "video")))
+        """Whether a video model that films by words is here: a new chat is offered generate_video (29.8б), which films
+        by words only - one that films only by a picture is not enough (48.10в, the review's finding 10)."""
+        return any("text" in m["modes"] for m in await self._db.acall(lambda conn: installed(conn, "video")))
 
     async def _until_done(self, job_id: str, cancel: asyncio.Event) -> dict[str, Any] | None:
         """A job waited for by a chat's tool: the answer stopped - the job is stopped."""
@@ -892,6 +893,9 @@ class Visual:
         if not prompt:
             return "nothing filmed: `prompt` is empty - say what happens", True, None
         if not await self.can_film():
+            if await self._db.acall(lambda conn: installed(conn, "video")):  # (48.10в) by a picture only
+                return ("nothing filmed: the video models here film only from a picture, not from words alone - the "
+                        "user can film one from a picture in the window's Studio - say so"), True, None  # fmt: skip
             return (f"no video model is installed here: the user can install one in the window ({INSTALL_HERE}) - "
                     "say so"), True, None  # fmt: skip
         try:
