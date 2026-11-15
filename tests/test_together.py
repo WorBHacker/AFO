@@ -40,7 +40,7 @@ from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Gated, chat_with_project, set_goal, settled
 from tests.test_llama_config import FakeLlamaSwap
-from tests.test_model_install import DRAW, MACHINE, FakeHub, fake_hub, wait_for  # noqa: F401 - the fake_hub fixture
+from tests.test_model_install import CLIP, DRAW, MACHINE, FakeHub, fake_hub, wait_for  # noqa: F401 - the fake_hub fixture
 from tests.test_model_install import hub as installs  # noqa: F401 - the installer's hub, as a fixture of this name
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
@@ -714,6 +714,57 @@ def test_an_installs_trial_picture_waits_while_the_hub_draws(installs, monkeypat
     assert drawn["status"] == "done", drawn["error"]
     asked = [b.get("prompt") == "a fox" or b.get("model") for b in FakeLlamaSwap.asked]
     assert asked.index(True) < asked.index("best")  # the picture first, then the trial
+
+
+def test_an_installs_trial_video_holds_the_card_from_the_studio(installs, monkeypatch):  # noqa: F811
+    """Stage 48's review, finding 2: an install's trial waited for the card once, before it began (`_card`) - a
+    Studio's video asked for while the trial's config was written, or while it filmed, went at once and loaded its
+    model into llama-swap in place of the trial's («пробное видео не вышло», the block withdrawn). The card is the
+    trial's from the checks it waits on to its end, taken in the same step as they are looked at; the Studio's video
+    waits «в очереди», then films."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, CLIP, {**CLIP, "id": "clip2", "name": "Clip two"}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = installs.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    first = installs.post("/v1/install/pictures", json={"id": "clip"}).json()["job"]
+    assert wait_for(installs, first["id"], "done", "failed")["status"] == "done"
+    monkeypatch.setattr(FakeLlamaSwap, "video", [])
+
+    entered, writing = threading.Event(), threading.Event()
+    configure = installer._configure_pictures
+
+    async def held(found):  # the trial's config being written - as long as the test says
+        entered.set()
+        await asyncio.to_thread(writing.wait, 30.0)
+        return await configure(found)
+
+    def studio(job_id):
+        return installs.get(f"/v1/visual/jobs/{job_id}").json()["job"]["status"]
+
+    monkeypatch.setattr(installer, "_configure_pictures", held)
+    FakeLlamaSwap.filming = filming = threading.Event()
+    try:
+        job = installs.post("/v1/install/pictures", json={"id": "clip2"}).json()["job"]
+        assert entered.wait(30.0)
+        video = installs.post("/v1/visual/videos", json={"prompt": "a fox", "model": "clip"}).json()["job"]
+        time.sleep(0.5)
+        assert studio(video["id"]) == "queued", "the Studio's video went while the trial's config was written"
+        writing.set()
+        wait(lambda: [v["path"] for v in FakeLlamaSwap.video] == ["/upstream/clip2/sdcpp/v1/vid_gen"], timeout=20)
+        time.sleep(0.5)
+        assert studio(video["id"]) == "queued", "the Studio's video went while the trial filmed"
+        assert len(FakeLlamaSwap.video) == 1
+    finally:
+        writing.set()
+        filming.set()
+    assert wait_for(installs, job["id"], "done", "failed")["status"] == "done"
+    wait(lambda: studio(video["id"]) in ("done", "failed"), timeout=20)
+    assert studio(video["id"]) == "done"
+    paths = [v["path"] for v in FakeLlamaSwap.video]
+    assert paths == ["/upstream/clip2/sdcpp/v1/vid_gen", "/upstream/clip/sdcpp/v1/vid_gen"]  # the trial, the Studio
 
 
 # --- a found model that draws, installed beside its family's set (47.6) ---

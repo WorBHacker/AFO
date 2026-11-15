@@ -30,10 +30,10 @@
 - A video (29.8а): Wan2.2-TI2V-5B on the same engine; sd-server draws it only in the background - `vid_gen`, then
   its job looked at (`/sdcpp/v1/jobs/<id>`), through llama-swap's `/upstream/<model>/` (it loads the model) - and
   so llama-swap holds nothing meanwhile: a local chat model's request would swap the video's engine out under it
-  (29.8 live). The hub holds the card itself: while a video is drawn its llama-swap provider waits before each
-  answer (`gpu_gate`; a «loading» line says why). The result is an animated WebP (the engine's own, 29.8 live);
-  its MP4 (29.8в) is made once by ffmpeg when asked for - ffmpeg fetched the first time (hub/ffmpeg.py) - and kept
-  beside it.
+  (29.8 live). The hub holds the card itself (hub/gpu_card.py): while a video is drawn its llama-swap provider waits
+  before each answer (`GpuCard.gate`; a «loading» line says why); an install's trial holding it, a job waits. The
+  result is an animated WebP (the engine's own, 29.8 live); its MP4 (29.8в) is made once by ffmpeg when asked for -
+  ffmpeg fetched the first time (hub/ffmpeg.py) - and kept beside it.
 - What a picture was drawn from - the prompt, the seed, the steps - goes into its PNG under «parameters», as
   stable-diffusion.cpp and A1111 keep it; the engine's own text is kept, but written as PNG has it: its UTF-8 in a
   tEXt (Latin-1 by the rules) becomes an iTXt, so a Russian prompt reads back.
@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import json
 import logging
 import random
@@ -79,6 +80,7 @@ from common.picture_sizes import (
 from . import ffmpeg, hf
 from .db import utc_now
 from .engines import EngineError
+from .gpu_card import STUDIO, GpuCard
 
 log = logging.getLogger("hub.visual")
 
@@ -555,7 +557,7 @@ class Visual:
     """The hub's pictures (29.4): asked for, drawn one at a time through llama-swap, shown as they go, kept."""
 
     def __init__(self, db, bus, *, llama_swap_url: str, media: Path, machine: Callable[[], dict[str, Any]],
-                 blobs: Path | None = None):  # fmt: skip
+                 blobs: Path | None = None, card: GpuCard | None = None):  # fmt: skip
         self._db = db
         self._bus = bus
         self._url = llama_swap_url.rstrip("/")
@@ -569,8 +571,7 @@ class Visual:
         self._stopping: set[str] = set()  # jobs «Стоп» was pressed for
         self.tools = ffmpeg.home()  # where ffmpeg is fetched to, for a video's MP4 (29.8в)
         self._ffmpeg = asyncio.Lock()  # one fetch, one conversion at a time
-        self._free = asyncio.Event()  # the card: not held by a video (29.8а)
-        self._free.set()
+        self.card = card or GpuCard()  # the Studio's for each job, an install's trial's meanwhile (48's review)
         self._more = False  # a job added since the worker last looked at the queue
 
     async def start(self) -> int:
@@ -606,26 +607,13 @@ class Visual:
 
     @property
     def holding(self) -> bool:
-        """Whether a video holds the card now (29.8а)."""
-        return not self._free.is_set()
+        """Whether the card is held from local chats now - by a video (29.8а)."""
+        return not self.card.free.is_set()
 
     @property
     def busy(self) -> bool:
-        """Whether pictures or videos are drawn now: their worker goes through the queue (47.1) - an install's trial
-        waits, its model would be loaded in place of the one drawing."""
+        """Whether pictures or videos are drawn now: their worker goes through the queue (47.1)."""
         return self._task is not None and not self._task.done()
-
-    async def gpu_gate(self, cancel: asyncio.Event) -> bool:
-        """A local chat model's answer waits here while a video holds the card (the llama-swap provider asks before
-        each); whether it waited. The user's «Стоп» ends the wait."""
-        if self._free.is_set():
-            return False
-        stopping = asyncio.ensure_future(cancel.wait())
-        free = asyncio.ensure_future(self._free.wait())
-        await asyncio.wait({stopping, free}, return_when=asyncio.FIRST_COMPLETED)
-        for each in (stopping, free):
-            each.cancel()
-        return True
 
     async def video(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
         """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}; (48.5) by a
@@ -910,16 +898,23 @@ class Visual:
                 if self._more:  # one asked for while the queue was looked at: draw() saw this still going
                     continue
                 return
-            self._running = found["id"]
+            job_id = found["id"]
+            # the card is the Studio's for the job (stage 48's review, finding 2): an install's trial holding it, the
+            # job waits «в очереди»; a video holds it from local chats too - before it says «running» (48's full run)
+            await self.card.take(STUDIO, chats=found.get("kind") == "video")
             try:
+                found = await self._db.acall(functools.partial(job, job_id=job_id))  # «✕» while it waited for the card
+                if found is None or found["status"] != "queued":
+                    continue
+                self._running = job_id
                 await (self._run_video(found) if found.get("kind") == "video" else self._run(found))
             except Exception:  # one picture's trouble must not stop the rest
-                log.exception("picture %s", found["id"])
-                await self._set(found["id"], status="failed", error=tr("внутренняя ошибка хаба — подробности в "
-                                                                        "журнале"))  # fmt: skip
+                log.exception("picture %s", job_id)
+                await self._set(job_id, status="failed", error=tr("внутренняя ошибка хаба — подробности в журнале"))
             finally:
+                self.card.give(STUDIO)
                 self._running = None
-                self._stopping.discard(found["id"])
+                self._stopping.discard(job_id)
 
     async def _run(self, found: dict[str, Any]) -> None:
         job_id = found["id"]
@@ -1024,9 +1019,8 @@ class Visual:
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
                 "output_format": "webp", "sample_params": params}  # fmt: skip
         start, error, result = time.monotonic(), "", None
-        # the card is the video's before the job says «running» (stage 48's full run: one seeing it running found the
-        # card free - the status's write awaits the database): local chat models wait
-        self._free.clear()
+        # the card is the video's, held from local chats, since before the job says «running» (`_work`; stage 48's full
+        # run: one seeing it running found the card free - the status's write awaits the database)
         try:
             await self._set(job_id, status="running", error="")
             for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
@@ -1060,7 +1054,7 @@ class Visual:
         except OSError as exc:  # a frame kept beside the job, not read
             error = tr("кадр задания не прочитан: {error}", error=exc.strerror or exc)
         finally:
-            self._free.set()
+            self.card.give(STUDIO)  # the engine has stopped: the card is free before the video is kept
         seconds = round(time.monotonic() - start, 1)
         if job_id in self._stopping:
             await self._set(job_id, status="cancelled", error="", seconds=seconds)

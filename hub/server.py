@@ -81,6 +81,7 @@ from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .goals import Goals
+from .gpu_card import GpuCard
 from .gpu_prefs import Prefs as GpuPrefs
 from .gpu_prefs import Watcher as GpuWatcher
 from .history import History
@@ -192,6 +193,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # another program let llama-swap's port go: llama-swap starts, as the hub's start does it (23.4)
         app.state.status = StatusMonitor(bus, settings.llama_swap_url, settings.status_interval_s,
                                          freed=lambda: _initial_sync(app))  # fmt: skip
+        app.state.card = GpuCard()  # who holds the graphics card: the Studio, an install's trial (48's review)
         app.state.installer = Installer(
             db,
             bus,
@@ -220,10 +222,10 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # programs on the graphics card go to the integrated graphics, its memory stays the models' (43.6)
         app.state.gpu = GpuWatcher(db, bus, GpuPrefs(db), interval_s=settings.gpu_interval_s)
         # one at a time on the graphics card (34.4): a trial waits while tuning measures, for a chat's answer and
-        # while pictures are drawn (47.1)
+        # while the Studio holds the card (47.1), then holds it to its end (stage 48's review)
         app.state.installer.tuning = lambda: app.state.tuner.job.get("status") in ("measuring", "checking")
         app.state.installer.chat_busy = lambda: bool(app.state.chat.busy)
-        app.state.installer.drawing = lambda: app.state.visual.busy
+        app.state.installer.card = app.state.card
         app.state.releases = Releases(db, bus, paths.root / "updates")  # AFO's own updates (10.4d)
         app.state.setup = Setup(
             db, bus, gateway, app.state.installer, llama_swap_url=settings.llama_swap_url, logs=paths.logs
@@ -236,11 +238,12 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             db, app.state.setup, url=settings.llama_swap_url, enabled=settings.fetch_engines
         )
         app.state.visual = Visual(db, bus, llama_swap_url=settings.llama_swap_url, media=paths.media,
-                                  machine=lambda: app.state.installer.machine())  # pictures (29.4, D55)  # fmt: skip
+                                  machine=lambda: app.state.installer.machine(),
+                                  card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
-            swap.gate = app.state.visual.gpu_gate
+            swap.gate = app.state.card.gate
         app.state.started_monotonic = time.monotonic()
         app.state.card_drafts = set()  # projects whose card a model is drafting now
         # the hub's own data may sit inside a project (this repository): its writes are not project changes
