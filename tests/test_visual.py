@@ -529,6 +529,29 @@ def test_unload_in_the_same_instant_stops_a_job_the_worker_has_just_taken(hub, m
         assert hub.post("/v1/gpu/continue").status_code == 200  # the card everyone's again, for the next one
 
 
+def test_a_videos_frame_deleted_before_it_begins_fails_it_with_words(hub, monkeypatch):
+    """48.10б (stage 48's review, finding 9): a video's frame - the first, or the last - deleted from the disk while the
+    job waited in the queue was skipped without a word: one by a picture filmed by its words alone, one by two frames
+    without its last. As a picture by a sample does («образец этой картинки уже удалён»), the video fails with words,
+    and its model is not asked for."""
+    _install(hub, "film", {**CLIP_PLAN, "set": "film", "modes": ["text", "picture", "frames"]})
+    first, last = base64.b64encode(PICTURE).decode(), base64.b64encode(GREY).decode()
+    at, go = _taken_not_running(hub, monkeypatch)
+    media = hub.app.state.visual.media
+    for key, words in (("source", "первый кадр этого видео уже удалён"),
+                       ("last_frame", "последний кадр этого видео уже удалён")):  # fmt: skip
+        at.clear()
+        go.clear()
+        job = hub.post("/v1/visual/videos", json={"prompt": "the fox turns", "model": "film", "from_png": first,
+                                                  "last_png": last, "seconds": 1}).json()["job"]  # fmt: skip
+        assert at.wait(10), "the worker did not take it"
+        (media / job[key]).unlink()  # deleted by hand while it waited
+        go.set()
+        failed = _wait(hub, job["id"], "failed", "done", "cancelled")
+        assert failed["status"] == "failed" and failed["error"] == words, (key, failed["status"], failed["error"])
+    assert not FakeDrawSwap.video, "a video filmed without its frame"
+
+
 @pytest.mark.parametrize(("answer", "words"), [("blank", "пустой"), ("fail", "движок ответил 500")])
 def test_a_picture_that_does_not_come_out_says_why(hub, answer, words):
     _install(hub)

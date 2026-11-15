@@ -1131,6 +1131,13 @@ class Visual:
                 "нет файла {name}: он удалён с диска — удалите модель в «Установке моделей» и поставьте её снова",
                 name=gone))  # fmt: skip
             return
+        # (48.10б, the review's finding 9) a frame deleted from the disk while it waited: not filmed without it - one by
+        # a picture by its words alone -, but said, as a picture's sample is
+        for kept, words in ((found.get("source"), N_("первый кадр этого видео уже удалён")),
+                            (found.get("last_frame"), N_("последний кадр этого видео уже удалён"))):  # fmt: skip
+            if kept and not await asyncio.to_thread((self.media / kept).is_file):
+                await self._set(job_id, status="failed", error=tr(words))
+                return
         upstream = f"{self._url}/upstream/{model_id}/sdcpp/v1"
         params = {"sample_method": model["sampler"], "sample_steps": model["steps"],
                   "guidance": {"txt_cfg": model["cfg"]},
@@ -1148,7 +1155,7 @@ class Visual:
             if job_id not in self._stopping:  # ✕ or «Выгрузить» since the worker took it (48.10а): not «running»
                 await self._set(job_id, status="running", error="")
             for key, kept in (("init_image", found.get("source")), ("end_image", found.get("last_frame"))):  # 48.5
-                if kept and (self.media / kept).is_file():  # the engine crops and resizes it to the video's size
+                if kept:  # the engine crops and resizes it to the video's size; one gone since - not read, said
                     body[key] = base64.b64encode(await asyncio.to_thread((self.media / kept).read_bytes)).decode()
             async with httpx.AsyncClient(timeout=60.0) as http:
                 # looked at right before its model is asked for, no `await` between (48.10а): ✕ or «Выгрузить» meanwhile
