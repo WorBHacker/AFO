@@ -330,11 +330,13 @@ Item {
             x: 20
             y: 46
             width: parent.width - 40
-            height: parent.height - y - actions.height - latest.height - queueStrip.height - 36
+            height: parent.height - y - actions.height - latest.height - queueStrip.height
+                    - (player.visible ? player.height + 8 : 0) - 36
             radius: 8
             color: Theme.p.card
             border.color: Theme.p.hairline
             AnimatedImage {  // a video (29.8б): from the hub's file
+                id: video
                 objectName: "visualVideo"
                 anchors.fill: parent
                 anchors.margins: 8
@@ -342,7 +344,9 @@ Item {
                 source: Visual.videoSource
                 fillMode: Image.PreserveAspectFit
                 playing: visible
-                cache: false
+                paused: player.paused
+                // 48.7г: frames kept to go back and forth (Qt's WebP and GIF read only forward) - a short one only
+                cache: Visual.videoSeekable
             }
             Image {
                 objectName: "visualPicture"
@@ -366,11 +370,57 @@ Item {
                 font.pixelSize: 13
             }
         }
+        // 48.7г: the video's own controls - pause, a frame to go to, its time at its frames a second (no sound yet)
+        Row {
+            id: player
+            objectName: "visualPlayer"
+            property bool paused: false
+            x: 20
+            anchors.top: canvas.bottom
+            anchors.topMargin: 8
+            height: 28
+            spacing: 10
+            visible: Visual.videoSource !== ""
+            function toggle() { paused = !paused }
+            function seek(frame) { paused = true; video.currentFrame = Math.max(0, Math.min(frame, video.frameCount - 1)) }
+            function clock(frames) {
+                const seconds = Math.round(frames / Math.max(1, Visual.videoFps))
+                return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0")
+            }
+            onVisibleChanged: paused = false
+            IconButton {
+                objectName: "visualPlayPause"
+                anchors.verticalCenter: parent.verticalCenter
+                iconName: player.paused ? "play" : "stop"
+                tip: player.paused ? qsTr("Дальше") : qsTr("Пауза")
+                onClicked: player.toggle()
+            }
+            Slider {
+                objectName: "visualSeek"
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.max(80, stage.width - 40 - 40 - time.width - 20)
+                from: 0
+                to: Math.max(1, video.frameCount - 1)
+                stepSize: 1
+                value: video.currentFrame
+                enabled: Visual.videoSeekable  // a long one's frames are not kept: it plays and pauses only
+                onMoved: player.seek(value)
+            }
+            Text {
+                id: time
+                objectName: "visualTime"
+                anchors.verticalCenter: parent.verticalCenter
+                text: player.clock(video.currentFrame) + " / " + player.clock(video.frameCount)
+                color: Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+        }
         Flow {  // a narrow centre: the buttons go on a second row
             id: actions
             x: 20
             width: parent.width - 40
-            anchors.top: canvas.bottom
+            anchors.top: player.visible ? player.bottom : canvas.bottom
             anchors.topMargin: 10
             spacing: 8
             visible: Visual.done

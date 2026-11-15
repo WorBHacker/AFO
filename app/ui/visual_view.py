@@ -40,6 +40,7 @@ STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done"
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 30  # the Studio's gallery (48.7в) - and its queue: the jobs going on are among the latest
 GALLERY = [("all", N_("Всё")), ("image", N_("Картинки")), ("video", N_("Видео"))]  # 48.7в
+SEEKABLE_BYTES = 200 * 1024**2  # a video's frames kept to seek in (48.7г): 2 s of 1280×704 - not 4 s of it
 MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
 # a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
 # the switch's short word (the Studio's column is narrow), the model menu's whole one
@@ -341,6 +342,19 @@ class VisualView(QObject):
                 out.append({"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
                             "chosen": j["id"] == self._job.get("id"), "video": False})  # fmt: skip
         return out
+
+    @Property(bool, notify=changed)
+    def videoSeekable(self) -> bool:
+        """Whether the shown video's frames are kept to go back and forth in (48.7г): Qt reads WebP only forward - kept,
+        they are all in memory, so a short or small one only."""
+        job = self._job
+        frames = int(job.get("frames") or 0) * int(job.get("width") or 0) * int(job.get("height") or 0) * 4
+        return 0 < frames <= SEEKABLE_BYTES
+
+    @Property(int, notify=changed)
+    def videoFps(self) -> int:
+        """The shown video's frames a second (48.7г: the player's time) - its family's, as the hub filmed it."""
+        return int(self._job.get("fps") or 24)
 
     @Property(bool, notify=changed)
     def shownVideo(self) -> bool:

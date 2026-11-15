@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import struct
 import time
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
@@ -7234,6 +7235,81 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         assert app.messages.rows[1]["tools"][0]["picture"] == f"image://pictures/blob/{blob}"
         wait_until(lambda: ("picture", blob) in client.visual_calls)  # the frame asked the hub for it
         assert view.provider.requestImage(f"blob/{blob}", QSize(), QSize()).width() == 32
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def animated_gif(colours: list[tuple[int, int, int]], side: int = 8, delay_cs: int = 100) -> bytes:
+    """A GIF of one solid frame a colour (48.7г: the player's stand-in for the engine's animated WebP - Qt reads both,
+    writes neither): LZW of two-bit codes, a clear code before each pixel - the table never grows."""
+
+    def frame(index: int) -> bytes:
+        bits = 0
+        count = 0
+        out = bytearray()
+        for code in [*[c for _ in range(side * side) for c in (4, index)], 5]:  # clear, the pixel ... the end
+            bits |= code << count
+            count += 3
+            while count >= 8:
+                out.append(bits & 0xFF)
+                bits >>= 8
+                count -= 8
+        if count:
+            out.append(bits & 0xFF)
+        blocks = b"".join(bytes([len(out[i : i + 255])]) + bytes(out[i : i + 255]) for i in range(0, len(out), 255))
+        control = b"\x21\xf9\x04\x00" + struct.pack("<H", delay_cs) + b"\x00\x00"
+        return control + b"\x2c" + struct.pack("<HHHH", 0, 0, side, side) + b"\x00" + b"\x02" + blocks + b"\x00"
+
+    table = b"".join(bytes(c) for c in colours) + bytes(3 * (4 - len(colours)))
+    loop = b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"
+    return (b"GIF89a" + struct.pack("<HH", side, side) + b"\x91\x00\x00" + table + loop
+            + b"".join(frame(i) for i in range(len(colours))) + b"\x3b")  # fmt: skip
+
+
+def test_the_studios_video_player(qapp):
+    """48.7г: a video plays on the canvas with its own controls - pause, a frame to go to, its time at its frames a
+    second - without sound (stage 49)."""
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("лиса бежит")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasVideo)
+        clip = app.paths.media / "2026-11" / "v9.gif"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(animated_gif([(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
+        done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
+                "seconds": 9.0, "width": 8, "height": 8, "frames": 3, "fps": 1, "seed": 1, "error": "",
+                "file": "2026-11/v9.gif"}
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
+        view.pick("v9")
+        wait_until(lambda: view.videoSource != "")
+        studio = quick.window.findChild(QObject, "studioView")
+        quick.window.grabWindow()
+        video, player = item_named(studio, "visualVideo"), item_named(studio, "visualPlayer")
+        wait_until(lambda: video.property("frameCount") == 3)
+        assert player.property("visible") and item_named(studio, "visualSeek") is not None
+        QMetaObject.invokeMethod(player, "toggle")  # ‖
+        assert video.property("paused")
+        QMetaObject.invokeMethod(player, "seek", Q_ARG("QVariant", 2))
+        wait_until(lambda: video.property("currentFrame") == 2)  # the movie goes there in its own turn
+        quick.window.grabWindow()
+        assert item_named(studio, "visualTime").property("text") == "0:02 / 0:03"  # at 1 frame a second
+        QMetaObject.invokeMethod(player, "toggle")  # ▶
+        assert not video.property("paused")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

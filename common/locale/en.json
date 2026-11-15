@@ -546,6 +546,7 @@
  "Готовые задания на свежей копии учебного проекта: модель работает в режиме «Цель» и может там всё, а хаб проверяет результат — в том числе скрытыми проверками, которых модель не видит. Свои проекты не трогаются.": "Ready-made tasks on a fresh copy of a practice project: the model works in “Goal” mode and may do anything there, and the hub checks the result — including with hidden checks the model does not see. Your own projects are not touched.",
  "Графика программ возвращена как была: {n}": "The programs' graphics given back as they were: {n}",
  "Да": "Yes",
+ "Дальше": "Play",
  "Данные в таблицу": "Data into a table",
  "Два кадра": "Two frames",
  "Движка для локальных моделей ещё нет. AFO скачает llama.cpp и llama-swap с их страниц на GitHub (около 40–600 МБ, смотря по сборке) в {folder} и сам их запустит.": "There is no engine for local models yet. AFO downloads llama.cpp and llama-swap from their GitHub pages (about 40–600 MB, depending on the build) to {folder} and starts them itself.",
