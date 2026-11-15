@@ -214,6 +214,7 @@
  "{days} дней, не больше {gb} ГБ": "{days} days, at most {gb} GB",
  "{day} {at:%d.%m} в {at:%H:%M}": "{day} {at:%d.%m} at {at:%H:%M}",
  "{decision} — когда обзор найдёт её на этом компьютере": "{decision} — once the look finds it on this computer",
+ "{doing}: {time}": "{doing}: {time}",
  "{doing}: шаг {step} из {steps}": "{doing}: step {step} of {steps}",
  "{done} из {total}": "{done} of {total}",
  "{error} — новая попытка через {wait} с": "{error} — trying again in {wait} s",

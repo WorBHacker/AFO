@@ -283,6 +283,7 @@ STRENGTHS = (0.1, 0.95)  # past it nothing of the source is left
 SOURCE_BYTES = 20 * 1024**2
 VIDEO_TIMEOUT_S = 3600.0  # an hour at most: a video on a slow card (29.1: 7.5 min for 0.7 s on an integrated one)
 VIDEO_STEP_S = 1.0  # how often a video's job is looked at
+VIDEO_CLOCK_S = 5.0  # a video whose model gives no step (48's review): the time it has taken, to the window this often
 VIDEO_MODES = ("text", "picture", "frames")  # (48.5) by words, by a picture (its first frame), by the first and last
 # what a video model does not do (48.5), in words - its catalog's `modes`; one installed before films by words only
 MODE_WORDS = {"text": N_("{name} снимает только по картинке — выберите первый кадр"),
@@ -441,9 +442,9 @@ def _text_flag(flags: list[str], name: str, default: str) -> str:
 
 def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
     """The picture models AFO installed (29.3) - or its video models (`kind` video, 29.8): {model_id, name, tier,
-    size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, flow_shift, clip - a video
-    family's own (48.3; one installed before - TI2V-5B's), modes - how it films (48.5; one installed before - by
-    words)}."""
+    size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, high_steps - a pair's high half's
+    (--high-noise-steps, 0 - sd.cpp splits `steps` at --moe-boundary), flow_shift, clip - a video family's own (48.3;
+    one installed before - TI2V-5B's), modes - how it films (48.5; one installed before - by words)}."""
     out = []
     for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
         plan = json.loads(row["plan"] or "{}")
@@ -454,6 +455,7 @@ def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
                     "size": int(plan.get("size") or 512), "steps": int(_flag(flags, "--steps", 4)),
                     "cfg": _flag(flags, "--cfg-scale", 1.0), "cpu_id": plan.get("cpu") or "",
                     "sampler": _text_flag(flags, "--sampling-method", "default"),
+                    "high_steps": int(_flag(flags, "--high-noise-steps", 0)),  # a pair's high half's (48's review)
                     "flow_shift": _flag(flags, "--flow-shift", 0.0), "clip": clip_of(plan.get("clip")),
                     "modes": [m for m in plan.get("modes") or ["text"] if m in VIDEO_MODES]})  # fmt: skip
     return out
@@ -1015,10 +1017,13 @@ class Visual:
         params = {"sample_method": model["sampler"], "sample_steps": model["steps"],
                   "guidance": {"txt_cfg": model["cfg"]},
                   **({"flow_shift": model["flow_shift"]} if model["flow_shift"] else {})}  # fmt: skip
+        # `preview`: sd-server says a job's step only in its preview (48's review; async_jobs.cpp 249) - `proj`, the
+        # latents put into colour, no VAE
         body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
-                "output_format": "webp", "sample_params": params}  # fmt: skip
+                "output_format": "webp", "sample_params": params, "preview": "proj"}  # fmt: skip
         start, error, result = time.monotonic(), "", None
+        steps, clock = _Steps(model["steps"] + max(model["high_steps"], 0)), start
         # the card is the video's, held from local chats, since before the job says «running» (`_work`; stage 48's full
         # run: one seeing it running found the card free - the status's write awaits the database)
         try:
@@ -1047,6 +1052,12 @@ class Visual:
                         if state.get("status") in ("failed", "cancelled"):
                             error = tr("движок не снял видео: {error}", error=state.get("error") or state["status"])
                             break
+                        now = time.monotonic()
+                        if (step := steps.seen(state.get("preview"))) is not None:  # each step once, as a picture's
+                            await self._said(job_id, *step, now - start)
+                        elif steps.shown is None and now - clock >= VIDEO_CLOCK_S:  # no step yet, or none at all
+                            clock = now
+                            await self._said(job_id, 0, 0, now - start)
                     else:
                         error = error or tr("видео не готово и за час")
         except (httpx.HTTPError, ValueError) as exc:
@@ -1076,6 +1087,11 @@ class Visual:
         await asyncio.to_thread(_save, self.media / name, data)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
 
+    async def _said(self, job_id: str, step: int, steps: int, seconds: float) -> None:
+        """A video's step to the window - or, with none (`steps` 0), the time it has taken (48's review)."""
+        await self._bus.publish("visual.progress", {"id": job_id, "step": step, "steps": steps, "preview": "",
+                                                    "seconds": round(seconds, 1)}, persist=False)  # fmt: skip
+
     async def _watch(self, job_id: str, model_id: str, stop: asyncio.Event) -> None:
         """The picture's step and preview to the window while it is drawn - until `stop`: a cancel alone is not
         enough, httpx (anyio under it) can turn one that comes mid-request into an HTTPError, which this lets pass;
@@ -1092,6 +1108,30 @@ class Visual:
                         await self._bus.publish("visual.progress", {
                             "id": job_id, "step": state.get("sampling_step") or 0, "steps": state["sampling_steps"],
                             "preview": said.get("current_image") or ""}, persist=False)  # fmt: skip
+
+
+class _Steps:
+    """A video's step through its passes (48's review): sd-server's job says each pass's own (`preview`: pass, step,
+    total_steps) - a pair's high half first, then the low one; one count across them, out of `whole` (--steps and
+    --high-noise-steps: sd.cpp's total_steps)."""
+
+    def __init__(self, whole: int) -> None:
+        self.whole = whole
+        self.passes: dict[int, int] = {}  # each pass seen -> its steps
+        self.shown: tuple[int, int] | None = None  # the step said last, out of how many
+
+    def seen(self, preview: Any) -> tuple[int, int] | None:
+        """The step now and out of how many - when it is not the one said last."""
+        if not isinstance(preview, dict) or not preview.get("total_steps"):
+            return None
+        now = int(preview.get("pass") or 1)
+        self.passes[now] = int(preview["total_steps"])
+        before = sum(total for each, total in self.passes.items() if each < now)
+        step = (before + int(preview.get("step") or 0), max(self.whole, before + self.passes[now]))
+        if step == self.shown:
+            return None
+        self.shown = step
+        return step
 
 
 def _save(path: Path, data: bytes) -> None:

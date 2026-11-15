@@ -247,6 +247,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
     video: ClassVar[list] = []  # the videos asked for (29.8)
     video_polls = 3  # a video's job is done at this look
     polls = 0
+    passes: ClassVar[list] = []  # (pass, step, its steps) at each look, as sd-server's job says them with a preview
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
     step = total = 0
@@ -271,7 +272,12 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
                 return
             cls.polls += 1
             if cls.polls < cls.video_polls:
-                self._send(200, {"id": "job_v", "status": "generating", "result": None})
+                state = {"id": "job_v", "status": "generating", "result": None}
+                asked = cls.video[-1].get("preview") or "none"  # sd-server: the step only with a preview asked
+                if asked != "none" and cls.polls <= len(cls.passes):
+                    pass_, step, total = cls.passes[cls.polls - 1]
+                    state["preview"] = {"pass": pass_, "step": step, "total_steps": total, "b64_json": "cG5n"}
+                self._send(200, state)
                 return
             self._send(200, {"id": "job_v", "status": "completed", "result": {
                 "b64_json": base64.b64encode(WEBP).decode(), "mime_type": "image/webp", "output_format": "webp",
@@ -326,7 +332,7 @@ DRAW_PLAN = {"engine": "sd", "set": "draw", "tier": "main", "size": 512, "flags"
 @pytest.fixture
 def hub(monkeypatch):
     FakeDrawSwap.steps_s, FakeDrawSwap.answer, FakeDrawSwap.asked, FakeDrawSwap.unloaded = 0.05, "picture", [], []
-    FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls = [], 3, 0
+    FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls, FakeDrawSwap.passes = [], 3, 0, []
     FakeDrawSwap.step = FakeDrawSwap.total = 0
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeDrawSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
@@ -667,6 +673,33 @@ def test_a_video_drawn_in_the_background_and_kept(hub):
     stopped = _wait(hub, long["id"], "cancelled", "failed", "done", timeout=10.0)
     assert stopped["status"] == "cancelled" and FakeDrawSwap.unloaded[-1] == "clip"
     assert not hub.app.state.visual.holding
+
+
+PAIR_PLAN = {**CLIP_PLAN, "set": "pair", "flags": [*WAN_FLAGS, "--high-noise-steps", "2"]}  # 2 high steps, 4 low
+
+
+def test_a_videos_steps_shown_as_it_films(hub, monkeypatch):
+    """Stage 48's review: a video showed «снимаю», 0 %, for tens of minutes - sd-server gives a job's step only in its
+    `preview`, and only when the request asks for one (async_jobs.cpp 249); `proj` is the latents put into colour, no
+    VAE. Each step goes to the window as a picture's does; a pair's two passes (the high half's, then the low's) are
+    one count. A model that gives no step (no projection for its latents: HunyuanVideo 1.5) - the time it has taken."""
+    monkeypatch.setattr(visual, "VIDEO_CLOCK_S", 0.05, raising=False)
+    _install(hub, "pair", PAIR_PLAN)
+    FakeDrawSwap.passes = [(1, 1, 2), (1, 2, 2), (2, 1, 4), (2, 2, 4), (2, 3, 4), (2, 4, 4)]
+    FakeDrawSwap.video_polls = 8
+    job = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "pair"}).json()["job"]
+    assert _wait(hub, job["id"], "done", "failed")["status"] == "done"
+    assert FakeDrawSwap.video[-1].get("preview") == "proj"
+    shown = [(p["step"], p["steps"]) for k, p in hub.seen if k == "visual.progress" and p["id"] == job["id"]]
+    assert shown == [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]  # through both passes, each step once
+
+    FakeDrawSwap.passes = []  # no step: the time
+    FakeDrawSwap.video_polls = 12
+    plain = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "pair"}).json()["job"]
+    assert _wait(hub, plain["id"], "done", "failed")["status"] == "done"
+    clock = [p for k, p in hub.seen if k == "visual.progress" and p["id"] == plain["id"]]
+    assert clock and all(p["steps"] == 0 and p["preview"] == "" for p in clock)
+    assert [p["seconds"] for p in clock] == sorted(p["seconds"] for p in clock) and clock[-1]["seconds"] > 0
 
 
 def test_a_video_familys_own_clip(hub):

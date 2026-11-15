@@ -7424,6 +7424,45 @@ def test_the_studios_queue_and_gallery(qapp):
         quick.close()
 
 
+def test_the_studio_shows_a_videos_steps_or_its_time(qapp):
+    """Stage 48's review: a video on the canvas said «снимаю видео…» and its card «снимаю», 0 %, for tens of minutes.
+    Now its step, as a picture's - and a model that gives none (HunyuanVideo 1.5), the time it has taken."""
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("рыжая лиса")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasModels and view.hasVideo)
+        view.setMode("video")
+        view.draw()
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        video = {**client.visual_jobs_list[0], "status": "running"}
+        app.on_event({"type": "visual.changed", "payload": {"job": video}})
+        app.on_event({"type": "visual.progress", "payload": {"id": video["id"], "step": 0, "steps": 0,
+                                                              "seconds": 67.4, "preview": ""}})  # fmt: skip
+        assert view.statusText == "снимаю: 1:07" and view.queue[0]["words"] == "снимаю: 1:07"
+        app.on_event({"type": "visual.progress", "payload": {"id": video["id"], "step": 3, "steps": 20,
+                                                              "seconds": 3725.0, "preview": ""}})  # fmt: skip
+        assert view.statusText == "снимаю: шаг 3 из 20" and view.percent == 15.0
+        assert view.queue[0]["words"] == "снимаю: шаг 3 из 20"
+        app.on_event({"type": "visual.progress", "payload": {"id": video["id"], "step": 0, "steps": 0,
+                                                              "seconds": 3725.0, "preview": ""}})  # fmt: skip
+        assert view.statusText == "снимаю: 1:02:05"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_studio_chooses_its_model_and_films_by_two_frames(qapp, tmp_path):
     """48.7б: in the Studio the model is chosen - «Авто» as «Быстрее ↔ Качественнее» says, or one of those installed;
     a video by words, by a picture or by two frames as its model films (the hub's `modes`): the first frame as «По

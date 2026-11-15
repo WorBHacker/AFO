@@ -67,6 +67,22 @@ def seconds_text(seconds: float | None) -> str:
     return tr("{seconds} с", seconds=f"{seconds:.1f}".replace(".", ",") if seconds < 10 else round(seconds))
 
 
+def clock_text(seconds: float) -> str:
+    """The time a video has taken so far (48's review): 1:07, 1:02:05."""
+    hours, rest = divmod(int(seconds), 3600)
+    return f"{hours}:{rest // 60:02d}:{rest % 60:02d}" if hours else f"{rest // 60}:{rest % 60:02d}"
+
+
+def filming(step: tuple[int, int], seconds: float | None) -> str:
+    """A video going on, in words (48's review): its step out of its steps - or, its model giving none (HunyuanVideo
+    1.5), the time it has taken; "" with neither yet."""
+    if step[1]:
+        return tr("{doing}: шаг {step} из {steps}", doing=tr("снимаю"), step=step[0], steps=step[1])
+    if seconds is not None:
+        return tr("{doing}: {time}", doing=tr("снимаю"), time=clock_text(seconds))
+    return ""
+
+
 class PictureProvider(QQuickImageProvider):
     """image://pictures/preview/<n> - the picture as it is drawn; image://pictures/job/<id> - a finished one;
     image://pictures/blob/<sha256> - one a chat holds (29.6: a model drew it), asked of the hub the first time - on
@@ -129,6 +145,7 @@ class VisualView(QObject):
         self._last: dict[str, str] = {}  # a video's last frame: {last_job | last_blob | last_png: value, shown: url}
         self._shown_last = 0
         self._progress: dict[str, tuple[int, int]] = {}  # each job's step of its steps (48.7в: the queue)
+        self._clock: dict[str, float] = {}  # a video's time so far, its model giving no step (48's review)
         self._gallery = "all"  # the gallery: all, pictures or videos (48.7в)
 
     # ================= for QML =================
@@ -294,8 +311,8 @@ class VisualView(QObject):
         status, how = self._job.get("status", ""), self._how()
         if not status:
             return ""
-        if status == "running" and self._job.get("kind") == "video":
-            return tr("снимаю видео…")
+        if status == "running" and self._job.get("kind") == "video":  # its step, or its time (48's review)
+            return filming(self._step, self._clock.get(self._job.get("id", ""))) or tr("снимаю видео…")
         if status == "running" and self._step[1]:
             text = tr("рисую: шаг {step} из {steps}", step=self._step[0], steps=self._step[1])
             return tr("{text} — {how}", text=text, how=how) if how else text
@@ -380,8 +397,10 @@ class VisualView(QObject):
             step, steps = self._progress.get(j["id"], (0, 0))
             if j["status"] == "queued" and not steps:
                 words = tr("в очереди")
+            elif video:
+                words = filming((step, steps), self._clock.get(j["id"])) or tr("снимаю")
             else:
-                doing = tr("снимаю") if video else tr("рисую")
+                doing = tr("рисую")
                 words = tr("{doing}: шаг {step} из {steps}", doing=doing, step=step, steps=steps) if steps else doing
             out.append({"id": j["id"], "kind": "video" if video else "image", "prompt": j.get("prompt", ""),
                         "words": words, "percent": round(100.0 * step / steps, 1) if steps else 0.0,
@@ -782,6 +801,8 @@ class VisualView(QObject):
         if kind == "visual.progress":
             step = (int(payload.get("step") or 0), int(payload.get("steps") or 0))
             self._progress[str(payload.get("id") or "")] = step  # the queue's (48.7в)
+            if payload.get("seconds") is not None:
+                self._clock[str(payload.get("id") or "")] = float(payload["seconds"])
             if payload.get("id") != self._job.get("id"):
                 self.changed.emit()
                 return
@@ -800,6 +821,7 @@ class VisualView(QObject):
         self._keep(job)
         if job["status"] not in ("queued", "running"):
             self._progress.pop(job["id"], None)
+            self._clock.pop(job["id"], None)
         if job["id"] == self._job.get("id"):
             self._job = job
             if job["status"] != "running":

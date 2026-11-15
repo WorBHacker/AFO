@@ -1596,7 +1596,10 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   - Ход видео: в `vid_gen` — `preview: proj` (шаг sd-server отдаёт только в `preview` опроса, `async_jobs.cpp` 249;
     проекция латентов в цвет, без VAE); шаг — в `visual.progress`, у пары — сквозной через два прохода (`pass`); у модели
     без проекции (HunyuanVideo 1.5: 32 канала латентов, `diffusion_engine.cpp` 2052–2120) — прошедшее время. Окно:
-    «снимаю: шаг N из M» или «снимаю: 12:34». Файлы: `hub/visual.py`, `app/ui/visual_view.py`.
+    «снимаю: шаг N из M» или «снимаю: 12:34». Файлы: `hub/visual.py`, `app/ui/visual_view.py`. ✓ Сделано: `_Steps`
+    (проходы `pass`, всего — `--steps` и `--high-noise-steps`: `high_steps` в `installed`), `_said` — шаг или прошедшее
+    время (`seconds`, без шага — раз в `VIDEO_CLOCK_S`); окно — `filming`, `clock_text` (холст и карточка очереди).
+    Тесты — `test_a_videos_steps_shown_as_it_films`, `test_the_studio_shows_a_videos_steps_or_its_time`.
   - Р6 По пределу времени движку не говорили остановиться: sd-server снимал дальше, следующее видео вставало в его
     очередь. Отмена — `POST …/jobs/<id>/cancel` (только если модель в `/running` llama-swap: `/upstream` загрузил бы её
     ради отмены), «cancelled» ждётся до `CANCEL_WAIT_S`, иначе модель выгружается; карта — после. Предел — «нет хода»
