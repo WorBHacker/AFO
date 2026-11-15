@@ -179,6 +179,14 @@ def picture_fit(model: int, parts: int, space: dict[str, Any]) -> str:
     return "split" if card else "cpu"
 
 
+def variant_fit(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> str:
+    """picture_fit of a variant (48.4): one file - the model; a pair's halves - sd.cpp's auto-fit plans the low half
+    alone (`model.diffusion_model.`), the high one (`model.high_noise_diffusion_model.`) is the same module's: one on
+    the card while it computes - the larger half, the other waiting in RAM with the parts."""
+    largest = max(f["size"] for f in files)
+    return picture_fit(largest, parts + sum(f["size"] for f in files) - largest, space)
+
+
 def picture_families(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """The picture sets whose family a found repository's models are (47.2): the sets whose main repository it is, or
     the base model its files are quantized or trained from (hf.bases) - the set's encoders, VAE and flags are then its
@@ -1171,7 +1179,7 @@ class Installer:
             with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
             for v in variants:  # a pair's halves - each the parameters Hugging Face counted in one
                 bits = round(v["size"] / len(v["files"]) * 8 / params, 1) if params else None
-                verdict = picture_fit(v["size"], with_parts, space)
+                verdict = variant_fit(v["files"], with_parts, space)
                 shown.append({"family": entry["id"], "name": entry["name"], "quant": v["quant"], "size": v["size"],
                               "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits),
                               "verdict": verdict, "words": tr(VERDICTS[verdict]), "with_parts": v["size"] + with_parts,
@@ -1323,11 +1331,17 @@ class Installer:
             return same
         machine = await asyncio.to_thread(self.machine)
         video = entry.get("kind") == "video"
-        if video and picture_verdict(entry, machine) == "no":
+        if video and not found_repo and picture_verdict(entry, machine) == "no":  # the set's: its measured thresholds
             raise InstallError(tr("видео на этом компьютере — только в облаке: {why}", why=machine.get("why", "")))
         parts = {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}
         own, licence = (await self._found_main(entry, repo, quant)) if found_repo else ([], entry["license"])
         files = [*own, *await self.picture_files(parts if own else entry)]
+        if video and own:  # a found one (48.4): by its sizes, as sd.cpp places them
+            verdict = variant_fit(own, sum(f["size"] for f in files if f not in own), await asyncio.to_thread(
+                self.space))  # fmt: skip
+            if verdict == "no":
+                raise InstallError(tr("{name} на этом компьютере {words}", name=f"{repo_name(repo)} {quant}",
+                                      words=tr(VERDICTS["no"])))  # fmt: skip
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
         folder = root / "pictures" / (repo.replace("/", os.sep) if own else entry["id"])

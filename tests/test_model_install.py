@@ -1598,6 +1598,34 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
     assert not (folder / "pair_low_noise_Q4_0.gguf").exists() and not (folder / "pair_high_noise_Q4_0.gguf").exists()
 
 
+def test_a_found_video_model_judged_by_its_sizes(hub, monkeypatch):
+    """48.4: a found video model is judged by its sizes as sd.cpp's auto-fit places it, not by the thresholds TI2V-5B's
+    Turbo set was measured for (`pictures_for`: «only in the cloud» on a small card). A pair's halves: auto-fit plans
+    the low half alone (`model.diffusion_model.`; the high one, `model.high_noise_diffusion_model.`, is the same
+    module's - one on the card while it computes): the larger half on the card, the other waits in RAM with the
+    parts."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "video": "cloud"})  # TI2V-5B's thresholds say no
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0)
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 70_000 / mi.GIB, "ram_gib": 300_000 / mi.GIB})
+
+    pair = hub.get("/v1/install/pictures/repo/someone/Pair-More-GGUF").json()
+    assert [(v["quant"], v["verdict"]) for v in pair["variants"]] == [("Q4_0", "gpu"), ("Q8_0", "gpu")]  # a half: 50 K
+    job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q4_0"})
+    assert job.status_code == 200, job.text  # its sizes fit, whatever TI2V-5B's thresholds say
+    assert wait_for(hub, job.json()["job"]["id"], "done", "failed")["status"] == "done"
+
+    monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 0.0, "ram_gib": 130_000 / mi.GIB})
+    assert [v["verdict"] for v in hub.get("/v1/install/pictures/repo/someone/Pair-More-GGUF").json()["variants"]] == [
+        "cpu", "no"]  # with the encoder and VAE: Q4_0 120 K, Q8_0 170 K - more than the RAM  # fmt: skip
+    refused = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q8_0"})
+    assert refused.status_code == 409 and "не поместится" in refused.json()["detail"]
+
+
 def test_a_found_picture_model_is_known_by_its_family(hub):
     """47.2: a model that draws is one of AFO's picture sets by the base model its files are made of - Hugging Face's
     `base_model:quantized:` and `base_model:finetune:` tags - not only by the set's own repository: unsloth's

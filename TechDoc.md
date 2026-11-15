@@ -1483,7 +1483,13 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   `test_a_video_familys_own_clip` и проба пары в `test_a_found_video_model_among_the_others_of_its_repository`.
 - 48.4 Память видео — по размерам, правилами auto-fit sd.cpp (47.9), с парой экспертов (как sd.cpp держит вторую
   половину — по исходнику). Пороги `pictures_for` — для своего набора, найденные — по размерам. Файл:
-  `hub/model_install.py`.
+  `hub/model_install.py`. ✓ Сделано. По исходнику (`backend_fit.cpp` `classify_tensor`): auto-fit считает моделью
+  только `model.diffusion_model.`, вторая половина грузится как `model.high_noise_diffusion_model.`
+  (`diffusion_engine.cpp` 700) в тот же модуль diffusion и в план не входит; у модуля — вытеснение весов
+  (`device_residency_manager.h`: `evict_compute_backend_params`) — на карте половина, которая считает. `variant_fit`:
+  у пары на карте — большая половина, вторая ждёт в ОЗУ с частями; окно вариантов судит так. Найденное видео ставится
+  по размерам: отказ — только «не поместится» (`InstallError`), пороги TI2V-5B (`picture_verdict`) — только для своего
+  набора. Подтвердит живая проверка 48.8 (Wan2.2 A14B на 16 ГБ). Тест — `test_a_found_video_model_judged_by_its_sizes`.
 - 48.5 Режимы в хабе: видео по картинке и по двум кадрам — источник как у картинок (`from_job`, `from_blob`,
   `from_png`) и последний кадр, в `vid_gen` — `init_image` и `end_image`; у семейства — какие режимы оно умеет (по
   рецептам); модель «только по картинке» (Wan2.2-I2V-A14B, Wan2.1-I2V) без кадра не предлагается, её проба — с кадром.
