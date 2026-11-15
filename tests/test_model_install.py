@@ -10,6 +10,7 @@ import io
 import json
 import re
 import socket
+import stat
 import struct
 import threading
 import time
@@ -841,6 +842,33 @@ def test_a_picture_set_whose_repository_hugging_face_renamed_installs(hub, monke
     assert next(f["repo"] for f in done["files"] if f["role"] == "llm") == "test/Old-Words-GGUF"
     words = hub.tmp / "localchat-model" / "pictures" / "_shared" / "test" / "Old-Words-GGUF" / "words-Q4_K_M.gguf"
     assert words.read_bytes() == PICTURES["test/Words-GGUF"]["words-Q4_K_M.gguf"]
+
+
+def test_a_picture_engine_the_config_names_is_not_unpacked_again(hub, monkeypatch):
+    """47.9 (found live): picture installs queued before the first one names the engine in the config each carry its
+    archives, and the next one configured unpacked them again over the folder another model's sd-server runs from -
+    Windows refused (`ggml-base.dll`: Permission denied) and the model was not installed. The engine the config names
+    already is not unpacked again; here «Повторить» of a model whose trial failed, its engine's files held."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW]}), encoding="utf-8")
+    monkeypatch.setattr(hub.app.state.installer, "machine", lambda: MACHINE)
+    FakeLlamaSwap.blank = True  # its trial comes out grey on the card and on the processor: failed, its files kept
+    job = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert [f["role"] for f in job["files"]][:3] == ["engine"] * 3
+    assert wait_for(hub, job["id"], "failed", "done")["status"] == "failed"
+    held = [p for p in (engines_home() / "stable-diffusion.cpp").rglob("*") if p.is_file()]
+    assert held and "sd_server" in lc.macros(hub.config.read_text(encoding="utf-8"))
+    for path in held:  # as a running sd-server holds them: not to be written over
+        path.chmod(stat.S_IREAD)
+    try:
+        FakeLlamaSwap.blank = False
+        assert hub.post(f"/v1/install/jobs/{job['id']}/resume").json()["job"]["status"] != "failed"
+        done = wait_for(hub, job["id"], "done", "failed")
+    finally:
+        for path in held:
+            path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    assert done["status"] == "done", done["error"]
 
 
 def test_a_picture_familys_encoder_and_vae_are_one_copy_for_its_models(hub, monkeypatch):

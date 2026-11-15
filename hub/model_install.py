@@ -1819,6 +1819,9 @@ class Installer:
             engine = [f for f in found["files"] if f["role"] == "engine"]
             for build in dict.fromkeys(f["build"] for f in engine):  # the card's, the processor's (29.4в)
                 parts = [f for f in engine if f["build"] == build]
+                macro = SD_MACRO if build == found["plan"].get("build") else SD_CPU_MACRO
+                if sd_server(text, macro) is not None:  # 47.9: one queued beside the first that brought it - its
+                    continue  # files are another model's running sd-server's now; Windows refuses writing over them
                 target = engines_home() / "stable-diffusion.cpp" / f"{parts[0]['tag']}-{build}"
                 try:
                     for f in parts:
@@ -1826,7 +1829,6 @@ class Installer:
                     server = engines.sd_server_in(target)
                 except engines.EngineError as exc:
                     raise InstallError(str(exc), 502) from exc
-                macro = SD_MACRO if build == found["plan"].get("build") else SD_CPU_MACRO
                 text = llama_config.with_macro(text, macro, "'\"" + str(server).replace("\\", "/") + "\"'")
             if sd_server(text) is None:
                 raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
