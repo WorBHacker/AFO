@@ -9105,3 +9105,57 @@ def test_the_experts_in_the_window(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_a_preset_puts_all_of_a_model_on_the_card_only_when_it_fits(qapp):
+    """0.1.15 (the user's word at 0.1.14): «Быстрее / Баланс / Качественнее» put all the layers on the graphics card
+    only when the model fits it so, else as many as fit - all of a 12 GB model on a laptop's 6 GB card answered many
+    times slower; the line under the presets says whether it fits, in the window drawn."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    def drawn():
+        for _ in range(10):
+            QApplication.processEvents()
+        return quick.window.findChild(QObject, "launchVerdict")
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.llama_reserve = 10.0  # 6 GB of the card's 16 for models, as a laptop's; «big» weighs 12 GB
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)  # the hub's models read at the start: «big» is not among them
+        big = [*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                         "provider": "llama-swap", "prices": {}}]  # fmt: skip
+        app._set_models(big)
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        setup = app.model_setup
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("editable") and sheet.property("opened"))
+        setup.applyLaunchPreset("balanced")
+        assert setup.launchDraft["gpu_mode"] == "auto"  # «сколько поместится», not «все»
+        assert setup.launchPreset == "balanced"
+        line = drawn()
+        assert line.property("visible")
+        assert line.property("text") == "Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее."
+        setup.setLaunch("gpu_mode", "all")  # by hand
+        assert setup.launchPreset == "" and setup.launchVerdictTone == "error"
+        assert drawn().property("text") == ("Не поместится: с этими настройками модель больше видеокарты. Выберите "
+                                            "„сколько поместится“ или модель меньше.")  # fmt: skip
+
+        client.llama_reserve = 1.0  # the user's card: 15 GB for models
+        app._set_models(big)
+        setup.open("llama-swap/big")
+        wait_until(lambda: not app.bg.busy and setup.modelId == "llama-swap/big" and setup.launch.get("editable"))
+        setup.applyLaunchPreset("balanced")
+        assert setup.launchDraft["gpu_mode"] == "all" and setup.launchPreset == "balanced"
+        assert drawn().property("text") == "Поместится в видеокарту целиком — быстро."
+        setup.applyLaunchPreset("quality")  # 64K with an uncompressed cache: 4 GB more - not all of it fits
+        assert setup.launchDraft["gpu_mode"] == "auto" and setup.launchPreset == "quality"
+        assert drawn().property("text").startswith("Поместится не вся")
+        assert quick.warnings == []
+    finally:
+        quick.close()

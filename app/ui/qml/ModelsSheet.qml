@@ -470,9 +470,19 @@ Sheet {
                 value: ModelSetup.launchPreset
                 onPicked: (id) => ModelSetup.applyLaunchPreset(id)
             }
+            Text {  // 0.1.15: whether the model with these settings fits the graphics card, in plain words
+                objectName: "launchVerdict"
+                visible: ModelSetup.launch.editable === true && text !== ""
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: ModelSetup.launchVerdict
+                color: ModelSetup.launchVerdictTone === "error" ? Theme.p.error : ModelSetup.launchVerdictTone === "warn" ? Theme.p.warn : ModelSetup.launchVerdictTone === "ok" ? Theme.p.ok : Theme.p.text_soft
+                font.family: Theme.uiFont
+                font.pixelSize: 13
+            }
             Note {
                 visible: ModelSetup.launch.editable === true
-                text: qsTr("Быстрее — модель помнит последние ~8 тыс. токенов разговора и целиком на видеокарте; Баланс — ~32 тыс.; Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. Ниже — точные настройки и оценка, поместится ли.")
+                text: qsTr("Быстрее — модель помнит последние ~8 тыс. токенов разговора; Баланс — ~32 тыс.; Качественнее — до ~64 тыс. и кэш без сжатия, но больше видеопамяти. На видеокарту ляжет столько модели, сколько поместится. Ниже — точные настройки и оценка, поместится ли.")
             }
             Flow {
                 visible: ModelSetup.launch.editable === true

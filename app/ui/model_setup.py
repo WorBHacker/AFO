@@ -237,24 +237,31 @@ def history_rows(history: list[dict[str, Any]], current: int) -> list[dict[str, 
 
 CACHE_CHOICES = ("f16", "q8_0", "q4_0")
 # «Быстрее ↔ Качественнее» (10.6): the launch settings in plain words - how much the model remembers of a
-# conversation and how exactly; the memory estimate below says whether it fits
-LAUNCH_PRESETS = {"fast": {"context": 8192, "cache_type": "q8_0", "gpu_mode": "all"},
-                  "balanced": {"context": 32768, "cache_type": "q8_0", "gpu_mode": "all"},
-                  "quality": {"context": 65536, "cache_type": "f16", "gpu_mode": "all"}}  # fmt: skip
+# conversation and how exactly; the layers - all on the graphics card when the model fits it so, else as many as fit
+# (0.1.15); the line under the presets says whether it fits
+LAUNCH_PRESETS = {"fast": {"context": 8192, "cache_type": "q8_0"},
+                  "balanced": {"context": 32768, "cache_type": "q8_0"},
+                  "quality": {"context": 65536, "cache_type": "f16"}}  # fmt: skip
 
 
-def preset_draft(preset: str, draft: dict[str, str], trained: int | None,
-                 info: dict[str, Any] | None = None) -> dict[str, str]:  # fmt: skip
-    """The launch fields for a preset: its context (no longer than the model was trained for), cache and layers - f16
-    for a model a quantized cache does not fit (0.1.12, quantized_cache)."""
-    chosen = LAUNCH_PRESETS[preset]
+def preset_draft(preset: str, draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+                 reserve_gib: float | None = None) -> dict[str, str]:  # fmt: skip
+    """The launch fields for a preset: its context (no longer than the model was trained for), its cache - f16 for a
+    model a quantized cache does not fit (0.1.12, quantized_cache) - and all the layers on the graphics card only when
+    the model fits it so, else as many as fit, as the installer does (0.1.15: all of a 12 GB model on a laptop's 6 GB
+    card answered many times slower). A card or a model file not known - as many as fit."""
+    info = view.get("info") or {}
+    chosen, trained = LAUNCH_PRESETS[preset], info.get("context_trained")
     context = min(chosen["context"], trained) if trained else chosen["context"]
     cache = chosen["cache_type"] if quantized_cache(info) else "f16"
-    return {**draft, "context": str(context), "cache_type": cache, "gpu_mode": chosen["gpu_mode"], "gpu_n": ""}
+    out = {**draft, "context": str(context), "cache_type": cache, "gpu_mode": "all", "gpu_n": ""}
+    return out if _whole(out, view, vram_total_mib, reserve_gib) else {**out, "gpu_mode": "auto"}
 
 
-def preset_of(draft: dict[str, str], trained: int | None, info: dict[str, Any] | None = None) -> str:
-    return next((p for p in LAUNCH_PRESETS if draft and preset_draft(p, draft, trained, info) == draft), "")
+def preset_of(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+              reserve_gib: float | None = None) -> str:  # fmt: skip
+    return next((p for p in LAUNCH_PRESETS
+                 if draft and preset_draft(p, draft, view, vram_total_mib, reserve_gib) == draft), "")  # fmt: skip
 
 
 def launch_draft(view: dict[str, Any]) -> dict[str, str]:
@@ -353,6 +360,44 @@ def launch_changes(draft: dict[str, str], view: dict[str, Any]) -> dict[str, Any
 
 
 ESTIMATE_TONES = {"over": "error", "split": "warn", "auto": "warn"}  # the estimate's verdict: the text's colour
+# the line under the presets (0.1.15): the estimate's verdict in plain words, and its colour
+SLOWER = N_("Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее.")
+VERDICTS = {"fits": (N_("Поместится в видеокарту целиком — быстро."), "ok"), "split": (SLOWER, "warn"),
+            "auto": (SLOWER, "warn"),
+            "over": (N_("Не поместится: с этими настройками модель больше видеокарты. Выберите „сколько поместится“ "
+                        "или модель меньше."), "error")}  # fmt: skip
+# a Mixture-of-Experts model whose experts the fields keep in RAM, the rest on the card - the fastest for it (44)
+EXPERTS_FIT = N_("Поместится: часть модели в обычной памяти — так она быстрее всего.")
+
+
+def _cache_refused(draft: dict[str, str], info: dict[str, Any]) -> bool:
+    """A quantized KV cache this model's attention head does not take - llama.cpp will not start it (0.1.12)."""
+    return draft["cache_type"] not in ("f16", "bf16", "f32") and not quantized_cache(info)
+
+
+def _found(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+           reserve_gib: float | None) -> dict[str, Any]:  # fmt: skip
+    """estimate() for the fields of a model whose file was read (ValueError when a field is unreadable)."""
+    context = number(draft["context"], tr("Контекст"), whole=True) or view.get("context") or 4096
+    layers: str | int = draft["gpu_mode"]
+    if layers == "n":
+        layers = number(draft["gpu_n"], tr("Слои"), whole=True) or 0
+    moe = moe_load(_experts(draft)) if "moe_mode" in draft else moe_load(view)  # the fields' experts (44.5)
+    return estimate(view["info"], context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
+                    mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
+                    vram_total_mib=vram_total_mib, reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib,
+                    draft=draft_load(view), moe=moe)  # the draft (42.2), experts in RAM (44.1)  # fmt: skip
+
+
+def _whole(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None, reserve_gib: float | None) -> bool:
+    """Whether all of the model's layers with these fields fit the video memory - a draft model partly in RAM
+    («split» with all the layers) does not change where the model's own go; a card or a file not known - no."""
+    if not view.get("info"):
+        return False
+    try:
+        return _found(draft, view, vram_total_mib, reserve_gib)["verdict"] in ("fits", "split")
+    except ValueError:
+        return False
 
 
 def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
@@ -365,23 +410,32 @@ def launch_judged(draft: dict[str, str], view: dict[str, Any], vram_total_mib: i
     if not info:
         return tr("Оценки памяти нет: {reason}", reason=view.get("file_error") or tr("файл модели не прочитан")), ""
     try:
-        context = number(draft["context"], tr("Контекст"), whole=True) or view.get("context") or 4096
-        layers: str | int = draft["gpu_mode"]
-        if layers == "n":
-            layers = number(draft["gpu_n"], tr("Слои"), whole=True) or 0
-        moe = moe_load(_experts(draft)) if "moe_mode" in draft else moe_load(view)  # the fields' experts (44.5)
+        found = _found(draft, view, vram_total_mib, reserve_gib)
     except ValueError as exc:
         return str(exc), ""
-    if draft["cache_type"] not in ("f16", "bf16", "f32") and not quantized_cache(info):  # 0.1.12
+    if _cache_refused(draft, info):  # 0.1.12
         head = next(n for n in (info.get("value_length"), info.get("key_length")) if n and n % 32)
         return tr("Сжатие KV-кэша {type} этой модели не подходит: её голова внимания — {head} значений, а {type} "
                   "хранит их блоками по 32. llama.cpp её так не запустит — выберите f16.", type=draft["cache_type"],
                   head=head), "error"  # fmt: skip
-    found = estimate(info, context=int(context), cache_type=draft["cache_type"], gpu_layers=layers,
-                     mmproj_bytes=view.get("mmproj_bytes") or 0, mmproj_on_gpu=bool(view.get("mmproj_on_gpu")),
-                     vram_total_mib=vram_total_mib, reserve_gib=RESERVE_GIB if reserve_gib is None else reserve_gib,
-                     draft=draft_load(view), moe=moe)  # the draft (42.2), experts in RAM (44.1)  # fmt: skip
     return found["text"], ESTIMATE_TONES.get(found["verdict"], "")
+
+
+def launch_verdict(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
+                   reserve_gib: float | None = None) -> tuple[str, str]:  # fmt: skip
+    """The line under the presets (0.1.15): whether the model with these fields fits the graphics card, in plain
+    words, and its tone ('ok', 'warn', 'error'); ('', '') - not known, or the estimate below says what is wrong."""
+    info = view.get("info")
+    if not view.get("editable") or not info or _cache_refused(draft, info):
+        return "", ""
+    try:
+        found = _found(draft, view, vram_total_mib, reserve_gib)
+    except ValueError:
+        return "", ""
+    if found["verdict"] == "fits" and found.get("experts_gb"):
+        return tr(EXPERTS_FIT), "ok"
+    text, tone = VERDICTS.get(found["verdict"], ("", ""))
+    return (tr(text), tone) if text else ("", "")
 
 
 def launch_estimate(draft: dict[str, str], view: dict[str, Any], vram_total_mib: int | None,
@@ -628,16 +682,26 @@ class ModelSetup(QObject):
 
     @Property(str, notify=changed)
     def launchPreset(self) -> str:
-        info = self._launch.get("info") or {}
-        return preset_of(self._launch_draft, info.get("context_trained"), info)
+        return preset_of(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)
 
     @Slot(str)
     def applyLaunchPreset(self, preset: str) -> None:
         if self._launch_draft and preset in LAUNCH_PRESETS:
-            info = self._launch.get("info") or {}
-            self._launch_draft = preset_draft(preset, self._launch_draft, info.get("context_trained"), info)
+            self._launch_draft = preset_draft(preset, self._launch_draft, self._launch, self._vram_mib,
+                                              self._reserve_gib)  # fmt: skip
             self._launch_status, self._launch_failed = "", False
             self.changed.emit()
+
+    @Property(str, notify=changed)
+    def launchVerdict(self) -> str:
+        """The line under the presets: whether the model fits the graphics card (0.1.15)."""
+        return launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[0] if \
+            self._launch else ""  # fmt: skip
+
+    @Property(str, notify=changed)
+    def launchVerdictTone(self) -> str:
+        return launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1] if \
+            self._launch else ""  # fmt: skip
 
     @Property(bool, notify=changed)
     def launchDirty(self) -> bool:

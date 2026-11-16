@@ -59,21 +59,62 @@ def test_a_chat_template_that_refuses_in_plain_words():
 def test_faster_or_better_for_a_local_model():
     draft = {"context": "32768", "gpu_mode": "auto", "gpu_n": "", "flash_attn": "on", "cache_type": "q4_0",
              "parallel": "1", "ttl_min": "0"}  # fmt: skip
-    fast = model_setup.preset_draft("fast", draft, 131072)
+    small = {"layers": 32, "kv_layers": 8, "kv_heads": 4, "key_length": 128, "value_length": 128,
+             "size_bytes": 4 * GIB}  # fmt: skip
+    view = {"editable": True, "context": 32768, "info": {**small, "context_trained": 131072}}
+    fast = model_setup.preset_draft("fast", draft, view, 16303)
     assert (fast["context"], fast["cache_type"], fast["gpu_mode"]) == ("8192", "q8_0", "all")
-    assert model_setup.preset_of(fast, 131072) == "fast" and model_setup.preset_of(draft, 131072) == ""
-    quality = model_setup.preset_draft("quality", draft, 40960)  # never past what the model was trained for
-    assert (quality["context"], quality["cache_type"]) == ("40960", "f16")
-    assert model_setup.preset_of(quality, 40960) == "quality" and fast["parallel"] == "1"  # the rest as it was
+    assert model_setup.preset_of(fast, view, 16303) == "fast" and model_setup.preset_of(draft, view, 16303) == ""
+    trained = {**view, "info": {**small, "context_trained": 40960}}
+    quality = model_setup.preset_draft("quality", draft, trained, 16303)  # never past what the model was trained for
+    assert (quality["context"], quality["cache_type"], quality["gpu_mode"]) == ("40960", "f16", "all")
+    assert model_setup.preset_of(quality, trained, 16303) == "quality" and fast["parallel"] == "1"  # the rest as was
+    # 0.1.15: all of the model on the card only when it fits so - else as much as fits; a card or a file not known
+    # - as much as fits too
+    laptop = {**view, "info": {**small, "size_bytes": 12 * GIB}}
+    balanced = model_setup.preset_draft("balanced", draft, laptop, 7168)  # 6 GB of it for models
+    assert balanced["gpu_mode"] == "auto" and model_setup.preset_of(balanced, laptop, 7168) == "balanced"
+    assert model_setup.preset_of({**balanced, "gpu_mode": "all"}, laptop, 7168) == ""
+    assert model_setup.preset_draft("balanced", draft, laptop, 16303)["gpu_mode"] == "all"
+    assert model_setup.preset_draft("balanced", draft, laptop, 16303, 10.0)["gpu_mode"] == "auto"  # the user's reserve
+    assert model_setup.preset_draft("fast", draft, view, None)["gpu_mode"] == "auto"
+    assert model_setup.preset_draft("fast", draft, {"editable": True}, 16303)["gpu_mode"] == "auto"
     # 0.1.12: a model whose attention head a quantized cache's blocks of 32 do not divide (Kimi-Linear's V: 72)
     kimi = {"key_length": 576, "value_length": 72, "context_trained": 131072}
-    assert model_setup.preset_draft("fast", draft, 131072, kimi)["cache_type"] == "f16"
-    assert model_setup.preset_of(model_setup.preset_draft("fast", draft, 131072, kimi), 131072, kimi) == "fast"
     view = {"editable": True, "context": 8192, "info": {**kimi, "architecture": "kimi-linear", "layers": 27,
             "kv_layers": 7, "kv_heads": 1, "size_bytes": 10 * 1024**3}}  # fmt: skip
+    assert model_setup.preset_draft("fast", draft, view, 16303)["cache_type"] == "f16"
+    assert model_setup.preset_of(model_setup.preset_draft("fast", draft, view, 16303), view, 16303) == "fast"
     said, tone = model_setup.launch_judged({**fast, "gpu_mode": "auto"}, view, 16303)
     assert tone == "error" and "q8_0" in said and "72" in said and "f16" in said
     assert model_setup.launch_judged({**fast, "gpu_mode": "auto", "cache_type": "f16"}, view, 16303)[1] != "error"
+    assert model_setup.launch_verdict({**fast, "gpu_mode": "auto"}, view, 16303) == ("", "")  # the estimate says
+
+
+def test_whether_a_local_model_fits_the_card_in_plain_words():
+    """0.1.15: the line under the presets - the whole model on the card, part of it in RAM, or not at all; a
+    Mixture-of-Experts model with its experts in RAM fits as it is fastest; nothing when the card is not known."""
+    draft = {"context": "8192", "gpu_mode": "all", "gpu_n": "", "flash_attn": "on", "cache_type": "q8_0",
+             "parallel": "1", "ttl_min": "0"}  # fmt: skip
+    info = {"layers": 32, "kv_layers": 8, "kv_heads": 4, "key_length": 128, "value_length": 128,
+            "size_bytes": 12 * GIB}  # fmt: skip
+    view = {"editable": True, "context": 8192, "info": info}
+    assert model_setup.launch_verdict(draft, view, 16303) == ("Поместится в видеокарту целиком — быстро.", "ok")
+    assert model_setup.launch_verdict({**draft, "gpu_mode": "auto"}, view, 7168) == (
+        "Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее.", "warn")  # fmt: skip
+    assert model_setup.launch_verdict({**draft, "gpu_mode": "n", "gpu_n": "10"}, view, 16303)[1] == "warn"
+    assert model_setup.launch_verdict(draft, view, 7168) == (
+        "Не поместится: с этими настройками модель больше видеокарты. Выберите „сколько поместится“ или модель "
+        "меньше.", "error")  # fmt: skip
+    assert model_setup.launch_verdict(draft, view, None) == ("", "")
+    assert model_setup.launch_verdict(draft, {**view, "info": None}, 16303) == ("", "")
+    assert model_setup.launch_verdict({**draft, "context": "много"}, view, 16303) == ("", "")
+    assert model_setup.launch_verdict(draft, {**view, "editable": False}, 16303) == ("", "")
+    experts = {**info, "size_bytes": 18 * GIB, "expert_bytes": [GIB // 2] * 32}  # 16 GB of experts
+    moe = {**draft, "moe_mode": "ram", "moe_n": "", "moe_cache": ""}
+    assert model_setup.launch_verdict(moe, {**view, "info": experts}, 7168) == (
+        "Поместится: часть модели в обычной памяти — так она быстрее всего.", "ok")  # fmt: skip
+    assert model_setup.launch_verdict({**moe, "moe_mode": "card"}, {**view, "info": experts}, 7168)[1] == "error"
 
 
 def test_faster_or_better_among_the_variants():
