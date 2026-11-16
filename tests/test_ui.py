@@ -9759,3 +9759,82 @@ def test_a_long_list_of_models_does_not_hold_the_window(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_installing_a_model_that_does_not_fit_offers_a_smaller_one(app):
+    """0.1.16 step 11а: «Установить» of a variant that does not lie on the graphics card whole started at once - many
+    times slower than one that does. Now it asks first and offers the repository's recommended variant that fits
+    («Поставить Q4_K_M»), or «Всё равно Q8_0», or nothing; one that fits - at once, as before. A model found on the
+    drives that does not fit whole: «Добавить» asks too - «Найти меньшую» opens the search for models that fit,
+    «Всё равно добавить» adds it."""
+    installer = app.install_view
+    client = app.client
+    variants = [
+        {"quant": "Q8_0", "size": 8_030_000_000, "bits": 8.5, "quality": "same", "verdict": "split",
+         "words": "часть в ОЗУ — медленнее", "recommended": False, "files": [{}]},
+        {"quant": "Q4_K_M", "size": 4_920_000_000, "bits": 4.9, "quality": "near", "verdict": "gpu",
+         "words": "помещается в видеопамять — быстро", "recommended": True, "files": [{}]},
+    ]  # fmt: skip
+    client.install_repo = lambda repo: {"repo": repo, "params": 8_000_000_000, "gated": False, "variants": variants}
+    installer.load()
+    wait_until(lambda: not app.bg.busy)
+
+    def installs():
+        return [c[1]["quant"] for c in client.install_calls if c[0] == "install"]
+
+    installer.openRepo("someone/Big-GGUF")
+    wait_until(lambda: not app.bg.busy and installer.repo)
+    installer.install("Q8_0")
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == [], "the variant that does not fit whole went at once"
+    assert app.question["title"] == "Модель не поместится в видеокарту целиком"
+    assert "Q4_K_M" in app.question["text"] and app.question["confirm"] == "Поставить Q4_K_M"
+    assert app.question["other"] == "Всё равно Q8_0"
+    app.answer(True)
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == ["Q4_K_M"]
+    installer.install("Q8_0")
+    app.answerOther()
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == ["Q4_K_M", "Q8_0"]
+    installer.install("Q8_0")
+    app.answer(False)
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == ["Q4_K_M", "Q8_0"]
+    installer.install("Q4_K_M")  # it fits: at once
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == ["Q4_K_M", "Q8_0", "Q4_K_M"] and not app.question
+
+    path = "D:/models/big.gguf"  # found on the drives, part of it would go to RAM
+    client.found = {"job": {"status": "done"}, "at": "2026-11-16T13:00:00Z", "models": [
+        {"name": "big", "path": path, "size": 20_000_000_000, "quant": "Q8_0", "projector": "", "source": "",
+         "verdict": "split", "words": "часть в ОЗУ — медленнее", "in_config": ""}]}  # fmt: skip
+    installer.closeRepo()
+    installer.setTab("local")
+    wait_until(lambda: not app.bg.busy and installer.localModels)
+    installer.addLocal(path, "", "big")
+    wait_until(lambda: not app.bg.busy)
+    assert not [c for c in client.install_calls if c[0] == "local"]
+    assert app.question["confirm"] == "Найти меньшую" and app.question["other"] == "Всё равно добавить"
+    app.answer(True)
+    wait_until(lambda: not app.bg.busy)
+    assert installer.tab == "search" and installer.searchSize == "fits"
+    assert [c[1]["size"] for c in client.install_calls if c[0] == "search"][-1] == "fits"
+    assert not [c for c in client.install_calls if c[0] == "local"]
+    installer.setTab("local")
+    installer.addLocal(path, "", "big")
+    app.answerOther()
+    wait_until(lambda: not app.bg.busy)
+    assert [c for c in client.install_calls if c[0] == "local"] == [("local", path, "", "big")]
+
+    best = {"quant": "Q4_K_M", "size": 20_000_000_000, "verdict": "split", "words": "часть в ОЗУ"}
+    big = {"id": "big", "repo": "someone/Big-GGUF", "name": "Big", "purposes": ["chat"], "recommended": best}
+    client.install_catalog = lambda: {"models": [big]}  # the catalog's own best does not fit whole: a smaller model
+    installer._load_catalog()
+    wait_until(lambda: not app.bg.busy and installer.catalog)
+    installer.installRecommended("someone/Big-GGUF")
+    assert installs() == ["Q4_K_M", "Q8_0", "Q4_K_M"]
+    assert app.question["confirm"] == "Найти меньшую" and app.question["other"] == "Всё равно поставить"
+    app.answerOther()
+    wait_until(lambda: not app.bg.busy)
+    assert installs() == ["Q4_K_M", "Q8_0", "Q4_K_M", "Q4_K_M"]

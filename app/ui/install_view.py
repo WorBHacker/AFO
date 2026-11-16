@@ -199,15 +199,38 @@ def billions(params: float) -> str:
     return decimal(f"{params / 1e9:.1f}")
 
 
+def fits_count(system: dict[str, Any]) -> str:
+    """The most parameters, in billions, of a model that fits here whole: «22», «7,5»; '' - the hub has not said."""
+    fits = (system.get("fits_params") or 0) / 1e9
+    return decimal(f"{fits:.0f}" if fits >= 10 else f"{fits:.1f}") if fits else ""
+
+
 def size_rows(system: dict[str, Any]) -> list[dict[str, Any]]:
     """The search's sizes; «fits» says where and how much: «Поместится в видеопамять (до 22 млрд)»."""
     where = tr("Поместится в видеопамять") if (system.get("space") or {}).get("vram_total_gib") else \
         tr("Поместится в ОЗУ")  # fmt: skip
-    fits = (system.get("fits_params") or 0) / 1e9
-    if fits:
-        most = decimal(f"{fits:.0f}" if fits >= 10 else f"{fits:.1f}")
+    if most := fits_count(system):
         where = tr("{where} (до {count} млрд)", where=where, count=most)
     return [{"id": sid, "name": where if sid == "fits" else tr(name)} for sid, name in SEARCH_SIZES]
+
+
+# a model with these verdicts is as fast here as it gets (0.1.16 step 11а): whole on the card; a Mixture-of-Experts one
+# with its experts in RAM (the user's choice at 0.1.15); no graphics card at all - every model runs in RAM
+FITS = ("gpu", "split_moe", "cpu", "")
+
+
+def smaller_advice(chosen: dict[str, Any], variants: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Before installing `chosen` (a variant, a model found on the drives), what to offer instead (0.1.16 step 11а):
+    None - it fits; {kind: "variant", better} - the repository's recommended variant, whole on the card;
+    {kind: "search"} - part would go to RAM and no variant fits whole; {kind: "none"} - not even RAM holds it."""
+    if chosen.get("verdict", "") in FITS:
+        return None
+    if chosen["verdict"] == "no":
+        return {"kind": "none"}
+    better = next((v for v in variants if v.get("recommended") and v is not chosen), None)
+    if better and better.get("verdict") == "gpu":
+        return {"kind": "variant", "better": better}
+    return {"kind": "search"}
 
 
 def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -986,8 +1009,16 @@ class InstallView(QObject):
     @Slot(str, str, str)
     def addLocal(self, path: str, projector: str, name: str) -> None:
         """«Добавить»: the model where it lies; `name` - the list's, its id in the config comes from it (34.2: an
-        Ollama model's file is named by its sha256)."""
+        Ollama model's file is named by its sha256). One that does not fit whole asks first (0.1.16 step 11а)."""
+        found = next((m for m in self._local.get("models") or [] if m["path"] == path), None)
+        advice = smaller_advice(found, []) if found else None
+        if advice:
+            self._advise(advice, found.get("name") or name, found["size"], tr("Всё равно добавить"),
+                         lambda: self._add(path, projector, name))  # fmt: skip
+        else:
+            self._add(path, projector, name)
 
+    def _add(self, path: str, projector: str, name: str) -> None:
         def done(result: dict[str, Any]) -> None:
             job = result.get("job") or {}
             self._upsert(job)
@@ -1000,8 +1031,37 @@ class InstallView(QObject):
 
     @Slot(str)
     def addFile(self, url: str) -> None:
-        """A model file chosen in the dialog (any GGUF on this computer): no name - the hub takes the file's."""
-        self.addLocal(QUrl(url).toLocalFile() if url.startswith("file:") else url, "", "")
+        """A model file chosen in the dialog (any GGUF on this computer): no name - the hub takes the file's. Added as
+        it is: whether it fits, its row says once added (0.1.16 step 11б)."""
+        self._add(QUrl(url).toLocalFile() if url.startswith("file:") else url, "", "")
+
+    def _advise(self, advice: dict[str, Any], name: str, size: int, anyway: str, go: Callable[[], None]) -> None:
+        """The question before a model that does not fit whole (0.1.16 step 11а): «Найти меньшую» opens the search for
+        models that fit here, `anyway` goes on with `go`; «Отмена» - nothing."""
+        if advice["kind"] == "none":
+            text = tr("Не поместится — выберите модель меньше. {name} ({size}) больше памяти этого компьютера и не "
+                      "запустится. Найти модели, которые поместятся?", name=name, size=gb(size))  # fmt: skip
+        elif most := fits_count(self._system):
+            text = tr("{name} ({size}) поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. "
+                      "Целиком в видеокарту этого компьютера помещаются модели примерно до {count} млрд параметров. "
+                      "Найти такие?", name=name, size=gb(size), count=most)  # fmt: skip
+        else:
+            text = tr("{name} ({size}) поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. "
+                      "Найти модели, которые поместятся целиком?", name=name, size=gb(size))  # fmt: skip
+
+        def decide(choice: bool | None) -> None:
+            if choice is None:
+                go()
+            elif choice:
+                self._find_smaller()
+
+        self.app._ask(tr("Модель не поместится в видеокарту целиком"), text, tr("Найти меньшую"), decide, other=anyway)
+
+    def _find_smaller(self) -> None:
+        """«Найти меньшую»: the search on Hugging Face, size «поместится»."""
+        self.closeRepo()
+        self._tab, self._size = "search", "fits"
+        self._search()
 
     @Slot(str)
     def setPurpose(self, purpose: str) -> None:
@@ -1199,9 +1259,19 @@ class InstallView(QObject):
             self.startInstall(repo, "", key="recommended:" + repo)
             return
         model = next((m for m in self._catalog if m["repo"] == repo), None)
-        if model and model.get("recommended"):
-            spec = {"repo": repo, "quant": model["recommended"]["quant"]}
+        if not model or not model.get("recommended"):
+            return
+        best = model["recommended"]
+        spec = {"repo": repo, "quant": best["quant"]}
+
+        def go() -> None:
             self._start(spec, pictures=False, key="recommended:" + repo)
+
+        # its own best does not fit whole: a smaller one is another model (0.1.16 step 11а)
+        if advice := smaller_advice(best, []):
+            self._advise(advice, model["name"], best["size"], tr("Всё равно поставить"), go)
+        else:
+            go()
 
     @Slot(str)
     def install(self, key: str) -> None:
@@ -1212,10 +1282,39 @@ class InstallView(QObject):
                 self._repo["family"], key)  # fmt: skip
             self._start({"id": family, "repo": self._repo["repo"], "quant": quant}, pictures=True, key="variant:" + key)
         elif self._repo:
-            spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": key}
-            if self._repo.get("projector"):
-                spec["projector"] = self._projector
-            self._start(spec, pictures=False, key="variant:" + key)
+            variants = self._repo.get("variants") or []
+            chosen = next((v for v in variants if variant_key(v) == key), None)
+            advice = smaller_advice(chosen, variants) if chosen else None
+            if advice is None:
+                self._install_variant(key)
+            elif advice["kind"] == "variant":
+                self._offer_variant(chosen, advice["better"])
+            else:
+                self._advise(advice, self._repo["repo"].rsplit("/", 1)[-1], chosen["size"], tr("Всё равно поставить"),
+                             lambda: self._install_variant(key))  # fmt: skip
+
+    def _install_variant(self, key: str) -> None:
+        spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": key}
+        if self._repo.get("projector"):
+            spec["projector"] = self._projector
+        self._start(spec, pictures=False, key="variant:" + key)
+
+    def _offer_variant(self, chosen: dict[str, Any], better: dict[str, Any]) -> None:
+        """A variant that does not fit whole, and the repository's recommended one does (0.1.16 step 11а): which?"""
+        text = tr("{quant} ({size}) поместится не весь: часть ляжет в обычную память — в несколько раз медленнее. "
+                  "Вариант {better} ({better_size}) поместится в видеокарту целиком — быстро. Поставить его?",
+                  quant=chosen["quant"], size=gb(chosen["size"]), better=better["quant"],
+                  better_size=gb(better["size"]))  # fmt: skip
+
+        def decide(choice: bool | None) -> None:
+            if choice is None:
+                self._install_variant(variant_key(chosen))
+            elif choice:
+                self._install_variant(variant_key(better))
+
+        self.app._ask(tr("Модель не поместится в видеокарту целиком"), text,
+                      tr("Поставить {better}", better=better["quant"]), decide,
+                      other=tr("Всё равно {quant}", quant=chosen["quant"]))  # fmt: skip
 
     @Slot(str, str)
     def act(self, job_id: str, action: str) -> None:
