@@ -99,6 +99,31 @@ def test_the_program_takes_only_the_players_files_of_pyside6_addons(tmp_path):
     build.FFMPEG_LICENSE.read_bytes().decode("ascii")  # plain text, as the other licences
 
 
+def test_qts_licence_lies_beside_each_qt_library(tmp_path):
+    """48.12, before the release: the READMEs say the libraries' licences lie beside them, and Qt's wheels carry only
+    a commercial note - the program has the LGPL 3's text (AFO takes Qt under it) in the licences of PySide6-Essentials,
+    -Addons and shiboken6, naming the version the tests run with and where its source is; each RECORD names it."""
+    import PySide6
+    import shiboken6
+
+    real = Path(PySide6.__file__).resolve().parent.parent
+    for library in build.QT_LIBRARIES:
+        info = next(real.glob(f"{library}-*.dist-info"))
+        (tmp_path / info.name / "licenses").mkdir(parents=True)
+        (tmp_path / info.name / "RECORD").write_bytes((info / "RECORD").read_bytes())
+    build.qt_licences(tmp_path)
+    for library in build.QT_LIBRARIES:
+        info = next(tmp_path.glob(f"{library}-*.dist-info"))
+        text = (info / "licenses" / "qt-license.txt").read_text(encoding="ascii")
+        assert "GNU LESSER GENERAL PUBLIC LICENSE" in text and "Version 3, 29 June 2007" in text
+        assert f"Qt 6.12.0 and Qt for Python {PySide6.__version__}" in text and shiboken6.__version__ in text
+        assert "download.qt.io" in text and "AFO's own LICENSE" in text  # the GPL 3 the LGPL 3 builds on
+        assert f"{info.name}/licenses/qt-license.txt,," in (info / "RECORD").read_text(encoding="utf-8").splitlines()
+    assert "LGPL-3.0-only" in (next(real.glob("pyside6_essentials-*.dist-info")) / "METADATA").read_text("utf-8")
+    with pytest.raises(build.BuildError, match="pyside6_essentials is not installed"):
+        build.qt_licences(tmp_path / "nothing")
+
+
 def test_a_pyside6_addons_without_the_players_files_stops_the_build(tmp_path):
     """A new Addons with FFmpeg's libraries renamed (avcodec-64.dll): not a program without its player - the build
     says which file and where to change it."""

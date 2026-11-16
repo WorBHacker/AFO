@@ -49,6 +49,10 @@ PLAYER = ("PySide6/Qt6Multimedia.dll", "PySide6/Qt6MultimediaQuick.dll", "PySide
           "PySide6/plugins/multimedia/ffmpegmediaplugin.dll", "PySide6/avcodec-63.dll", "PySide6/avformat-63.dll",
           "PySide6/avutil-61.dll", "PySide6/swresample-7.dll", "PySide6/swscale-10.dll")  # fmt: skip
 FFMPEG_LICENSE = Path(__file__).with_name("ffmpeg-license.txt")  # FFmpeg's (LGPL 2.1+): beside Addons' own licence
+# Qt's (LGPL 3) beside each Qt library's own (48.12, before the release): their wheels carry only a commercial note,
+# and the READMEs say the licences' texts lie beside the libraries
+QT_LICENSE = Path(__file__).with_name("qt-license.txt")
+QT_LIBRARIES = ("pyside6_essentials", ADDONS, "shiboken6")
 
 
 class BuildError(Exception):
@@ -102,6 +106,22 @@ def player_only(site: Path) -> None:
     shutil.copy2(FFMPEG_LICENSE, licence)
     kept.append(f"{licence.relative_to(site).as_posix()},,")
     (info / "RECORD").write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
+
+
+def qt_licences(site: Path) -> None:
+    """The text of the LGPL 3, under which AFO takes Qt, PySide6 and shiboken6, with which files they are and where
+    their source is - in each one's licences beside its commercial note, its RECORD naming it."""
+    for library in QT_LIBRARIES:
+        info = next(site.glob(f"{library}-*.dist-info"), None)
+        if info is None:
+            raise BuildError(f"{library} is not installed: the window needs it")
+        licence = info / "licenses" / QT_LICENSE.name
+        licence.parent.mkdir(exist_ok=True)
+        shutil.copy2(QT_LICENSE, licence)
+        record = info / "RECORD"
+        lines = record.read_text(encoding="utf-8").splitlines()
+        lines.append(f"{licence.relative_to(site).as_posix()},,")
+        record.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def _sha256(path: Path) -> str:
@@ -167,6 +187,7 @@ def folder(out: Path = BUILD) -> Path:
           *requirements()])  # fmt: skip
     shutil.rmtree(site / "bin", ignore_errors=True)  # the libraries' console commands: AFO runs none of them
     player_only(site)
+    qt_licences(site)
     print("AFO's code", flush=True)
     for part in CODE:
         shutil.copytree(ROOT / part, program / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
