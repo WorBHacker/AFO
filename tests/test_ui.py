@@ -7255,7 +7255,7 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         assert frame.save(str(clip), "WEBP")  # one frame stands for the engine's animated WebP
         finished = {**filmed, "status": "done", "seconds": 21.7, "file": f"2026-11/{filmed['id']}.webp"}
         app.on_event({"type": "visual.changed", "payload": {"job": finished}})
-        assert view.done and view.videoSource == QUrl.fromLocalFile(str(clip)).toString()
+        assert view.done and view.videoFile == QUrl.fromLocalFile(str(clip)).toString()
         assert view.pictureSource == "" and view.statusText == "готово за 22 с"
         view.saveAs(str(tmp_path / "лиса.webp"))
         assert (tmp_path / "лиса.webp").read_bytes() == clip.read_bytes()
@@ -7289,37 +7289,79 @@ def test_drawing_a_picture_in_the_window(qapp, tmp_path):
         quick.close()
 
 
-def animated_gif(colours: list[tuple[int, int, int]], side: int = 8, delay_cs: int = 100) -> bytes:
-    """A GIF of one solid frame a colour (48.7г: the player's stand-in for the engine's animated WebP - Qt reads both,
-    writes neither): LZW of two-bit codes, a clear code before each pixel - the table never grows."""
-
-    def frame(index: int) -> bytes:
-        bits = 0
-        count = 0
-        out = bytearray()
-        for code in [*[c for _ in range(side * side) for c in (4, index)], 5]:  # clear, the pixel ... the end
-            bits |= code << count
-            count += 3
-            while count >= 8:
-                out.append(bits & 0xFF)
-                bits >>= 8
-                count -= 8
-        if count:
-            out.append(bits & 0xFF)
-        blocks = b"".join(bytes([len(out[i : i + 255])]) + bytes(out[i : i + 255]) for i in range(0, len(out), 255))
-        control = b"\x21\xf9\x04\x00" + struct.pack("<H", delay_cs) + b"\x00\x00"
-        return control + b"\x2c" + struct.pack("<HHHH", 0, 0, side, side) + b"\x00" + b"\x02" + blocks + b"\x00"
-
-    table = b"".join(bytes(c) for c in colours) + bytes(3 * (4 - len(colours)))
-    loop = b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00"
-    return (b"GIF89a" + struct.pack("<HH", side, side) + b"\x91\x00\x00" + table + loop
-            + b"".join(frame(i) for i in range(len(colours))) + b"\x3b")  # fmt: skip
+COLOURS = [(255, 0, 0), (0, 200, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255), (128, 128, 128),
+           (255, 128, 0), (0, 128, 255), (128, 0, 255), (64, 192, 64), (192, 64, 64)]  # fmt: skip
 
 
-def test_the_studios_video_player(qapp):
-    """48.7г: a video plays on the canvas with its own controls - pause, a frame to go to, its time at its frames a
-    second - without sound (stage 49)."""
+def mjpeg_mp4(colours: list[tuple[int, int, int]], side: int = 32, fps: int = 8) -> bytes:
+    """An MP4 of one solid frame a colour (48.12: the player's file). The hub's is H.264 that ffmpeg makes, and the
+    tests run no ffmpeg; this is the same container - ISO MP4, each frame's time and place in its sample table - with
+    JPEG frames Qt writes, and Qt's FFmpeg reads and seeks it as it does the hub's (the stand's ffmpeg reads it too:
+    12 frames, 1.5 s)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor
+
+    def box(kind: bytes, *parts: bytes) -> bytes:
+        body = b"".join(parts)
+        return struct.pack(">I", 8 + len(body)) + kind + body
+
+    def full(kind: bytes, flags: int, *parts: bytes) -> bytes:
+        return box(kind, struct.pack(">I", flags), *parts)
+
+    def jpeg(colour: tuple[int, int, int]) -> bytes:
+        image = QImage(side, side, QImage.Format.Format_RGB32)
+        image.fill(QColor(*colour))
+        array = QByteArray()
+        buffer = QBuffer(array)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "JPG", 95)
+        return bytes(array.data())
+
+    frames = [jpeg(c) for c in colours]
+    scale, duration = fps * 1000, len(frames) * 1000  # a frame lasts 1000 units of `scale` a second
+    matrix = struct.pack(">9I", 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000)
+    ftyp = box(b"ftyp", b"isom", struct.pack(">I", 512), b"isomiso2mp41")
+    offsets = [len(ftyp) + 8 + sum(len(f) for f in frames[:i]) for i in range(len(frames))]
+    entry = box(b"jpeg", bytes(6), struct.pack(">H", 1), bytes(16), struct.pack(">HH", side, side),
+                struct.pack(">II", 0x480000, 0x480000), bytes(4), struct.pack(">H", 1), bytes(32),
+                struct.pack(">hh", 24, -1))  # fmt: skip
+    stbl = box(b"stbl", full(b"stsd", 0, struct.pack(">I", 1), entry),
+               full(b"stts", 0, struct.pack(">III", 1, len(frames), 1000)),
+               full(b"stsc", 0, struct.pack(">IIII", 1, 1, 1, 1)),
+               full(b"stsz", 0, struct.pack(">II", 0, len(frames)), *(struct.pack(">I", len(f)) for f in frames)),
+               full(b"stco", 0, struct.pack(">I", len(frames)), *(struct.pack(">I", o) for o in offsets)))  # fmt: skip
+    minf = box(b"minf", full(b"vmhd", 1, bytes(8)), box(b"dinf", full(b"dref", 0, struct.pack(">I", 1),
+                                                                      full(b"url ", 1))), stbl)  # fmt: skip
+    mdia = box(b"mdia", full(b"mdhd", 0, struct.pack(">IIIIHH", 0, 0, scale, duration, 0x55C4, 0)),
+               full(b"hdlr", 0, bytes(4), b"vide", bytes(12), b"VideoHandler\x00"), minf)  # fmt: skip
+    tkhd = full(b"tkhd", 3, struct.pack(">IIIII", 0, 0, 1, 0, duration), bytes(16), matrix,
+                struct.pack(">II", side << 16, side << 16))  # fmt: skip
+    mvhd = full(b"mvhd", 0, struct.pack(">IIIIIH", 0, 0, scale, duration, 0x10000, 0x100), bytes(10), matrix,
+                bytes(24), struct.pack(">I", 2))  # fmt: skip
+    return ftyp + box(b"mdat", *frames) + box(b"moov", mvhd, box(b"trak", tkhd, mdia))
+
+
+def shown_colour(player) -> int | None:
+    """Which of COLOURS a VideoPlayer shows now - the frame its VideoOutput was given, as Qt decoded it."""
+    frame = item_named(player, "videoOutput").property("videoSink").videoFrame()
+    if not frame.isValid():
+        return None
+    image = frame.toImage()
+    pixel = image.pixelColor(image.width() // 2, image.height() // 2)
+    rgb = (pixel.red(), pixel.green(), pixel.blue())
+    return min(range(len(COLOURS)), key=lambda i: sum(abs(a - b) for a, b in zip(COLOURS[i], rgb, strict=True)))
+
+
+def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
+    """48.12 (48.7г's player, now Qt Multimedia's): the Studio plays the video's MP4 - the hub makes it from the WebP
+    the first time the video is shown (Qt's FFmpeg reads the WebP but goes to no frame of it); until then the WebP
+    plays as it is read, no frame kept (AnimatedImage kept them all: 960×960×73 - 257 MiB), and the player says why
+    it does not seek. Then pause, any frame to go to - the one shown is the one filmed there - its time, round again
+    after the last; the Studio hidden, the clip let go. A real file, real QML, no screen."""
+    import threading
+
     from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+    from PySide6.QtMultimedia import QMediaPlayer
 
     from app.ui.main import QuickApp
 
@@ -7329,46 +7371,60 @@ def test_the_studios_video_player(qapp):
         client = FakeClient()
         client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
                                  "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        clip = app.paths.media / "2026-11" / "v9.webp"
+        made, release = [], threading.Event()
+
+        def mp4(job_id):  # the hub, making it (on the window's pool thread)
+            made.append(job_id)
+            release.wait(5)
+            clip.with_suffix(".mp4").write_bytes(mjpeg_mp4(COLOURS))
+            return clip.with_suffix(".mp4").read_bytes()
+
+        client.visual_mp4 = mp4
         app.attach(client, start_events=False)
         wait_until(lambda: not app.bg.busy)
         view = app.visual_view
         view.open("лиса бежит")
         app.openUi("draw")
         wait_until(lambda: not app.bg.busy and view.hasVideo)
-        clip = app.paths.media / "2026-11" / "v9.gif"
         clip.parent.mkdir(parents=True, exist_ok=True)
-        clip.write_bytes(animated_gif([(255, 0, 0), (0, 255, 0), (0, 0, 255)]))
-        done = {
-            "id": "v9",
-            "kind": "video",
-            "prompt": "лиса бежит",
-            "model_id": "wan",
-            "status": "done",
-            "seconds": 9.0,
-            "width": 8,
-            "height": 8,
-            "frames": 3,
-            "fps": 1,
-            "seed": 1,
-            "error": "",
-            "file": "2026-11/v9.gif",
-        }
+        still = QImage(32, 32, QImage.Format.Format_RGB32)
+        still.fill(Qt.GlobalColor.darkCyan)
+        assert still.save(str(clip), "WEBP")  # stands for the engine's animated WebP
+        done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
+                "seconds": 9.0, "width": 32, "height": 32, "frames": 12, "fps": 8, "seed": 1, "error": "",
+                "file": "2026-11/v9.webp"}  # fmt: skip
         app.on_event({"type": "visual.changed", "payload": {"job": done}})
         view.pick("v9")
-        wait_until(lambda: view.videoSource != "")
         studio = quick.window.findChild(QObject, "studioView")
         quick.window.grabWindow()
         video, player = item_named(studio, "visualVideo"), item_named(studio, "visualPlayer")
-        wait_until(lambda: video.property("frameCount") == 3)
-        assert player.property("visible") and item_named(studio, "visualSeek") is not None
-        QMetaObject.invokeMethod(player, "toggle")  # ‖
-        assert video.property("paused")
-        QMetaObject.invokeMethod(player, "seek", Q_ARG("QVariant", 2))
-        wait_until(lambda: video.property("currentFrame") == 2)  # the movie goes there in its own turn
+        wait_until(lambda: made == ["v9"])  # shown: the hub is asked for its MP4
+        frames = item_named(video, "videoStill")
+        assert view.videoFile == QUrl.fromLocalFile(str(clip)).toString() and view.videoMp4 == ""
+        assert frames.property("source").toString() == view.videoFile and frames.property("cache") is False
+        assert not item_named(player, "visualSeek").property("enabled")
+        assert item_named(player, "visualTime").property("text") == view.videoNote != ""
+        release.set()
+        wait_until(lambda: view.videoMp4 != "" and video.property("seekable"))
+        assert video.property("duration") == 1500 and view.videoNote == ""
+        assert frames.property("source").toString() == ""  # the WebP let go
+        media = video.findChild(QMediaPlayer)
+        assert media.source() == QUrl.fromLocalFile(str(clip.with_suffix(".mp4")))
+        QMetaObject.invokeMethod(video, "toggle")  # ‖
+        assert video.property("held")
+        for k in (5, 2, 9, 0, 11):  # a frame's middle: the frame filmed there is shown
+            QMetaObject.invokeMethod(video, "seek", Q_ARG("QVariant", int((k + 0.5) * 125)))
+            wait_until(lambda k=k: shown_colour(video) == k)
         quick.window.grabWindow()
-        assert item_named(studio, "visualTime").property("text") == "0:02 / 0:03"  # at 1 frame a second
-        QMetaObject.invokeMethod(player, "toggle")  # ▶
-        assert not video.property("paused")
+        assert item_named(player, "visualTime").property("text") == "0:01 / 0:01"
+        assert item_named(player, "visualSeek").property("value") == video.property("position") > 1375
+        QMetaObject.invokeMethod(video, "toggle")  # ▶ from the last frame: round again
+        wait_until(lambda: video.property("position") < 700 and media.playbackState() == QMediaPlayer.PlayingState)
+        app.setMode("chats")  # the Studio hidden: the clip let go
+        wait_until(lambda: media.source().isEmpty())
+        app.setMode("studio")
+        wait_until(lambda: not media.source().isEmpty() and video.property("playing"))
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

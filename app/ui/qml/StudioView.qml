@@ -56,12 +56,12 @@ Item {
 
     FileDialog {
         id: saveDialog
-        title: Visual.videoSource !== "" ? qsTr("Сохранить видео") : qsTr("Сохранить картинку")
+        title: Visual.videoFile !== "" ? qsTr("Сохранить видео") : qsTr("Сохранить картинку")
         fileMode: FileDialog.SaveFile
         // a video: MP4 (made by ffmpeg in the hub, 29.8в) or the engine's WebP as it is
-        nameFilters: Visual.videoSource !== "" ? [qsTr("Видео MP4 (*.mp4)"), qsTr("Видео WebP (*.webp)")]
+        nameFilters: Visual.videoFile !== "" ? [qsTr("Видео MP4 (*.mp4)"), qsTr("Видео WebP (*.webp)")]
                                               : [qsTr("Картинка PNG (*.png)")]
-        defaultSuffix: Visual.videoSource === "" ? "png"
+        defaultSuffix: Visual.videoFile === "" ? "png"
                                                  : (selectedNameFilter.extensions.length > 0
                                                     ? selectedNameFilter.extensions[0] : "mp4")
         onAccepted: Visual.saveAs(selectedFile.toString())
@@ -335,18 +335,14 @@ Item {
             radius: 8
             color: Theme.p.card
             border.color: Theme.p.hairline
-            AnimatedImage {  // a video (29.8б): from the hub's file
+            VideoPlayer {  // a video (29.8б, 48.12): its MP4, the hub's WebP until that is made
                 id: video
                 objectName: "visualVideo"
                 anchors.fill: parent
                 anchors.margins: 8
-                visible: Visual.videoSource !== ""
-                source: Visual.videoSource
-                fillMode: Image.PreserveAspectFit
-                playing: visible
-                paused: player.paused
-                // 48.7г: frames kept to go back and forth (Qt's WebP and GIF read only forward) - a short one only
-                cache: Visual.videoSeekable
+                visible: Visual.videoFile !== ""
+                source: visible ? Visual.videoMp4 : ""  // the Studio hidden: the clip let go
+                fallback: Visual.videoFile
             }
             Image {
                 objectName: "visualPicture"
@@ -361,7 +357,7 @@ Item {
             }
             Text {
                 anchors.centerIn: parent
-                visible: Visual.pictureSource === "" && Visual.videoSource === ""
+                visible: Visual.pictureSource === "" && Visual.videoFile === ""
                 text: Visual.busy ? (Visual.shownVideo ? qsTr("Снимаю видео — это минута или больше…")
                                                                : qsTr("Загружаю модель…"))
                                   : (Visual.mode === "video" ? qsTr("Здесь появится видео") : qsTr("Здесь появится картинка"))
@@ -370,51 +366,18 @@ Item {
                 font.pixelSize: 13
             }
         }
-        // 48.7г: the video's own controls - pause, a frame to go to, its time at its frames a second (no sound yet)
-        Row {
+        // 48.7г, 48.12: the video's own controls - pause, the time to go to, its time (no sound yet)
+        VideoControls {
             id: player
             objectName: "visualPlayer"
-            property bool paused: false
+            prefix: "visual"
+            target: video
+            note: Visual.videoNote
             x: 20
+            width: parent.width - 40
             anchors.top: canvas.bottom
             anchors.topMargin: 8
-            height: 28
-            spacing: 10
-            visible: Visual.videoSource !== ""
-            function toggle() { paused = !paused }
-            function seek(frame) { paused = true; video.currentFrame = Math.max(0, Math.min(frame, video.frameCount - 1)) }
-            function clock(frames) {
-                const seconds = Math.round(frames / Math.max(1, Visual.videoFps))
-                return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0")
-            }
-            onVisibleChanged: paused = false
-            IconButton {
-                objectName: "visualPlayPause"
-                anchors.verticalCenter: parent.verticalCenter
-                iconName: player.paused ? "play" : "stop"
-                tip: player.paused ? qsTr("Дальше") : qsTr("Пауза")
-                onClicked: player.toggle()
-            }
-            Slider {
-                objectName: "visualSeek"
-                anchors.verticalCenter: parent.verticalCenter
-                width: Math.max(80, stage.width - 40 - 40 - time.width - 20)
-                from: 0
-                to: Math.max(1, video.frameCount - 1)
-                stepSize: 1
-                value: video.currentFrame
-                enabled: Visual.videoSeekable  // a long one's frames are not kept: it plays and pauses only
-                onMoved: player.seek(value)
-            }
-            Text {
-                id: time
-                objectName: "visualTime"
-                anchors.verticalCenter: parent.verticalCenter
-                text: player.clock(video.currentFrame) + " / " + player.clock(video.frameCount)
-                color: Theme.p.text_soft
-                font.family: Theme.uiFont
-                font.pixelSize: 12
-            }
+            visible: Visual.videoFile !== ""
         }
         Flow {  // a narrow centre: the buttons go on a second row
             id: actions
@@ -432,7 +395,7 @@ Item {
             }
             PlainButton {
                 objectName: "visualFromThis"
-                visible: Visual.videoSource === ""
+                visible: Visual.videoFile === ""
                 iconName: "image"
                 text: qsTr("По этой картинке")
                 onClicked: Visual.fromThis()

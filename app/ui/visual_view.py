@@ -12,6 +12,9 @@ the chosen one, no more pixels than came out.
 
 The hub draws (hub/visual.py); this asks and shows. Pictures reach QML through an image provider
 (image://pictures/...): the preview's JPEG from the progress events, a result's PNG fetched once and kept.
+
+A video (48.12) plays in Qt Multimedia's player (VideoPlayer.qml) from its MP4, which the hub makes from the WebP
+the first time it is shown - the player goes to any frame of it and keeps none; the WebP plays until then.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QBuffer, QByteArray, QIODevice, QObject, QSize, QUrl, Signal, Slot
+from PySide6.QtCore import Property, QBuffer, QByteArray, QIODevice, QObject, QSize, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QImage
 from PySide6.QtQuick import QQuickImageProvider
 
@@ -40,7 +43,6 @@ STATUS = {"queued": N_("в очереди"), "running": N_("рисую"), "done"
           "cancelled": N_("остановлено")}  # fmt: skip
 RECENT = 30  # the Studio's gallery (48.7в) - and its queue: the jobs going on are among the latest
 GALLERY = [("all", N_("Всё")), ("image", N_("Картинки")), ("video", N_("Видео"))]  # 48.7в
-SEEKABLE_BYTES = 200 * 1024**2  # a video's frames kept to seek in (48.7г): 2 s of 1280×704 - not 4 s of it
 MODES = [("picture", N_("Картинка")), ("video", N_("Видео"))]  # 29.8б
 # a video by words, by a picture (its first frame), by two frames (48.7б) - as its model films (the hub's `modes`):
 # the switch's short word (the Studio's column is narrow), the model menu's whole one
@@ -149,6 +151,8 @@ class VisualView(QObject):
         self._gallery = "all"  # the gallery: all, pictures or videos (48.7в)
         self._held = False  # the hub's queue waits for the person after «Выгрузить» (48.9д): its words change
         app.statusChanged.connect(self._held_changed)
+        self._making: set[str] = set()  # the videos whose MP4 the hub is making for the player (48.12)
+        self._unplayable: dict[str, str] = {}  # those it could not make: why
 
     # ================= for QML =================
 
@@ -254,10 +258,59 @@ class VisualView(QObject):
         return self._length
 
     @Property(str, notify=changed)
-    def videoSource(self) -> str:
-        """The video shown (29.8б): the hub's file - AnimatedImage plays a file, not a provider's picture."""
+    def videoFile(self) -> str:
+        """The video shown (29.8б): the hub's WebP - «Сохранить как», the gallery's first frame, and what plays until
+        its MP4 is made (48.12)."""
         path = self._video_file(self._job)
         return QUrl.fromLocalFile(str(path)).toString() if path is not None else ""
+
+    @Property(str, notify=changed)
+    def videoMp4(self) -> str:
+        """What the player plays (48.12): the video's MP4 - Qt's FFmpeg goes to any frame of it, not of the WebP -
+        made by the hub the first time it is shown, beside the WebP; "" until then."""
+        path = self._video_file(self._job)
+        if path is None:
+            return ""
+        job_id = self._job["id"]
+        return self._mp4(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id))
+
+    @Property(str, notify=changed)
+    def videoNote(self) -> str:
+        """Why the video shown does not seek yet: its MP4 being made, or not made."""
+        return self._note(self._job.get("id", "")) if self._video_file(self._job) is not None else ""
+
+    def _mp4(self, key: str, mp4: Path, make: Callable[[], Any]) -> str:
+        """A video's MP4 as a file's URL, if the hub has made it; else the hub is asked (once) - after the binding
+        that asked has been worked out - and "" for now."""
+        if mp4.is_file():
+            return QUrl.fromLocalFile(str(mp4)).toString()
+        if key not in self._making and key not in self._unplayable and self.app.client is not None:
+            self._making.add(key)
+
+            def made(_data: bytes) -> None:
+                self._making.discard(key)
+                if not mp4.is_file():  # a hub with another data folder: nothing here to play
+                    self._unplayable[key] = tr("MP4 нет в папке данных")
+                self.changed.emit()
+
+            def failed(error: Exception) -> None:
+                self._making.discard(key)
+                self._unplayable[key] = str(error)
+                self.changed.emit()
+
+            def ask() -> None:
+                self.app._call(make, made, failed)
+                self.changed.emit()  # its note: being made
+
+            QTimer.singleShot(0, ask)
+        return ""
+
+    def _note(self, key: str) -> str:
+        if key in self._unplayable:
+            return tr("без перемотки: {error}", error=self._unplayable[key])
+        if key in self._making:
+            return tr("готовлю перемотку… В первый раз AFO скачает ffmpeg (~86 МБ)")
+        return ""
 
     @Slot(str, result=str)
     def blobUrl(self, blob: str) -> str:
@@ -367,19 +420,6 @@ class VisualView(QObject):
                 out.append({"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
                             "chosen": j["id"] == self._job.get("id"), "video": False})  # fmt: skip
         return out
-
-    @Property(bool, notify=changed)
-    def videoSeekable(self) -> bool:
-        """Whether the shown video's frames are kept to go back and forth in (48.7г): Qt reads WebP only forward - kept,
-        they are all in memory, so a short or small one only."""
-        job = self._job
-        frames = int(job.get("frames") or 0) * int(job.get("width") or 0) * int(job.get("height") or 0) * 4
-        return 0 < frames <= SEEKABLE_BYTES
-
-    @Property(int, notify=changed)
-    def videoFps(self) -> int:
-        """The shown video's frames a second (48.7г: the player's time) - its family's, as the hub filmed it."""
-        return int(self._job.get("fps") or 24)
 
     @Property(bool, notify=changed)
     def shownVideo(self) -> bool:
@@ -497,6 +537,7 @@ class VisualView(QObject):
     def load(self) -> None:
         if self.app.client is None:
             return
+        self._unplayable.clear()  # the Studio opened again: an MP4 not made is asked for again (ffmpeg not fetched)
 
         def models(data: dict[str, Any]) -> None:
             self._models, self._default, self._loaded = data.get("models", []), data.get("default", ""), True
