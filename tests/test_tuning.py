@@ -1184,3 +1184,115 @@ def test_each_draft_made_for_the_model_is_measured(hub, setup, spec_server):  # 
     again = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=files[:1]).tune("big"))["spec"]
     assert [m.get("draft") for m in again["measured"]][2:] == ["dflash-big.gguf", "mtp-big.gguf"]
     assert (again["spec_type"], again["draft"]) == ("draft-mtp", "mtp-big.gguf")
+
+
+def real_bench(found, program):
+    """A real program in llama-bench's place, asked as llama-bench is."""
+    found._run = lambda command, progress: found._bench([sys.executable, str(program), *command[1:]], progress)
+    return found
+
+
+def test_llama_bench_failing_does_not_cancel_the_drafts_measuring(hub, setup, spec_server, tmp_path):  # noqa: F811
+    """0.1.15, step 3б: llama-bench gave no measurements or fell - the tuning ended there, and guessing ahead with the
+    draft model «Ускорить» had downloaded was not measured (the draft was deleted after it). Now llama-bench's failure
+    is its own - the window says it -, and the draft is measured all the same, with the config's settings; llama-bench
+    missing beside llama-server too. A real program in llama-bench's place."""
+    draft, bench = setup.parent / "draft.gguf", tmp_path / "bench.py"
+    before = setup.read_text(encoding="utf-8")
+    fell = "import sys\nprint('main: error: failed to load model', file=sys.stderr)\nsys.exit(1)\n"
+    for program, error in (("print('llama-bench: no test was run')\n", "не дал замеров"),
+                           (fell, "failed to load model"), (None, "нет llama-bench")):  # fmt: skip
+        setup.write_text(before, encoding="utf-8")
+        (spec_server / "launches.txt").unlink(missing_ok=True)
+        if program is None:
+            (spec_server / tuning.BENCH).unlink()
+        else:
+            bench.write_text(program, encoding="utf-8")
+        result = asyncio.run(real_bench(tuner(hub, measured={}, draft=draft), bench).tune("big"))
+        assert result["status"] == "failed" and error in result["error"], result
+        assert "spec" in result, f"{error}: the tuning ended at llama-bench - the draft was not measured"
+        assert launched(spec_server) == ["none", "ngram-mod", "draft-simple"]
+        assert (result["spec"]["status"], result["spec"]["kind"]) == ("better", "draft")
+        now, then = lc.model_view(setup.read_text(encoding="utf-8"), "big"), lc.model_view(before, "big")
+        assert now["spec"]["draft"] == draft.as_posix()  # the draft written
+        assert [now[k] for k in ("flash_attn", "cache_type", "ubatch")] == [
+            then[k] for k in ("flash_attn", "cache_type", "ubatch")]  # fmt: skip
+        assert hub.app.state.db.call(tuning.load_results)["big"]["spec"]["kind"] == "draft"
+
+
+def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, spec_server, monkeypatch):  # noqa: F811
+    """0.1.15, step 3б (the user's word): the draft model «Ускорить» downloaded is deleted in one case only - its
+    measuring went to its end and it gave no gain. Its file stays, waiting, when llama-bench failed or was stopped
+    (its settings did not load too), when the draft's own measuring failed or was stopped, when a chat or a game
+    stopped the tuning; «Ускорить» again takes it from the disk, downloading nothing. On the old code a failure
+    anywhere deleted it unmeasured. The hub's own installer keeps the drafts (42.5)."""
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    installer = hub.app.state.installer
+    draft = setup.parent / "draft.gguf"
+    entry = {"repo": "test/Draft-GGUF", "file": "draft.gguf", "sha256": "", "size": draft.stat().st_size,
+             "name": "Draft", "revision": "main"}  # fmt: skip
+    installer._drafts[str(draft)] = {**{k: entry[k] for k in ("repo", "file", "sha256", "size")}, "waiting": ["big"]}
+
+    async def download(*_):
+        raise AssertionError("«Ускорить» downloaded the draft anew")
+
+    monkeypatch.setattr(installer, "_download_draft", download)
+    before = setup.read_text(encoding="utf-8")
+
+    def tuned(**kw):  # the drafts as the hub has them: found by its installer, told to it after the tuning
+        found = tuner(hub, **kw)
+        found._drafts = lambda model_id, file: asyncio.to_thread(hub.portal.call, installer.draft_paths, model_id, file)
+        found.on_tuned = lambda model_id, result: asyncio.to_thread(hub.portal.call, installer.tuned, model_id, result)
+        return found
+
+    def stays(why):
+        assert draft.exists(), f"{why}: the draft deleted"
+        assert hub.portal.call(installer.draft_paths, "big", draft) == [draft], f"{why}: it waits no more"
+        hub.portal.call(installer._fetch_one_draft, "big", entry)  # «Ускорить» again: the one on the disk
+        assert hub.portal.call(installer.draft_paths, "big", draft) == [draft]
+        setup.write_text(before, encoding="utf-8")
+
+    async def during_the_draft(found, act):  # while llama-server measures the draft - the third of three
+        tuning_ = asyncio.create_task(found.tune("big"))
+        await until(lambda: found.job.get("step") == "spec" and found.job.get("done") == 2, "the draft measured", 30)
+        act()
+        return await tuning_
+
+    faster = {"q8_0": [(512, 900, 40), (2048, 1500, 52)]}  # llama-bench: faster than the config's own - written
+    failed = asyncio.run(tuned(measured=faster, check_ok=False).tune("big"))
+    assert failed["status"] == "failed" and "spec" not in failed  # its settings did not load: it ends there
+    stays("llama-bench's settings did not load")
+
+    found = tuned(measured=faster)
+
+    def stopped(command, progress):  # «Остановить» while llama-bench measures
+        found.cancel()
+        return []
+
+    found._run = stopped
+    assert asyncio.run(found.tune("big"))["status"] == "stopped"
+    stays("llama-bench stopped")
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0}, crash=["draft-simple"])
+    crashed = asyncio.run(tuned(measured={}).tune("big"))  # llama-bench gave nothing, the draft's llama-server fell
+    assert crashed["status"] == "failed" and crashed["spec"]["kind"] == "ngram"
+    assert "not supported" in crashed["spec"]["measured"][2]["error"]
+    stays("the draft's measuring failed")
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0, "draft-simple": 41.0}, load_s=1.0)  # no gain, if measured
+    found = tuned(measured={"q8_0": [(512, 900, 40)]})
+    assert asyncio.run(during_the_draft(found, found.cancel))["status"] == "same"  # llama-bench's, kept (3а)
+    stays("the draft's measuring stopped")
+    found = tuned(measured={"q8_0": [(512, 900, 40)]})
+    assert asyncio.run(during_the_draft(found, lambda: setattr(found._card, "asked", {"chat": 1})))["status"] == (
+        "halted")  # fmt: skip
+    stays("a chat stopped the tuning")
+    found = tuned(measured={"q8_0": [(512, 900, 40)]})
+    assert asyncio.run(during_the_draft(found, lambda: setattr(found._card, "game", lambda: True)))["status"] == (
+        "halted")  # fmt: skip
+    stays("a game came while the draft was measured")
+
+    speeds(spec_server, {"none": 40.0, "ngram-mod": 44.0, "draft-simple": 41.0})
+    gone = asyncio.run(tuned(measured={}).tune("big"))  # llama-bench gave nothing; the draft measured, no gain
+    assert gone["spec"]["kind"] == "ngram" and gone["spec"]["measured"][2]["tg"] == 41.0
+    assert not draft.exists() and hub.portal.call(installer.draft_paths, "big", draft) == []

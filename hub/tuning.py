@@ -6,7 +6,9 @@ faster than its own settings by more than CLOSE - less is the measurement's nois
 config has it (all on the graphics card, a number of layers, or llama.cpp's own --fit), but for a Mixture-of-Experts
 model that does not fit whole: where its experts go is measured by llama-server (44.2), then guessing ahead (42.4).
 The winner goes into the config - a copy of the old one beside it - and the model is loaded with its whole context to
-check it still fits; if not, the old config comes back.
+check it still fits; if not, the old config comes back. llama-bench missing, failing or giving nothing is its own
+failure (0.1.15 3б): the experts and guessing ahead are measured all the same, by llama-server, with the config's
+settings; a draft model waiting for the measuring goes only once measured to its end without a gain.
 
 Automatic tuning (after a model is installed or added, after llama.cpp is updated) is background work: it waits until
 the card has been still for QUIET_S (48.9б2, hub/gpu_card.py) - no local request (a chat on a local model, the
@@ -447,7 +449,8 @@ class Tuner:
                  drafts: Callable[[str, Path], Awaitable[list[Path]]] | None = None):  # fmt: skip
         self._db = db
         self._drafts = drafts  # the draft models' files for a model (42.5: found and downloaded; 44.8: each one)
-        self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None  # a result kept (42.5: drafts)
+        # each draft waiting for the model measured to its end (0.1.15 3б): one that gave nothing goes (42.5)
+        self.on_tuned: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         self._bus = bus
         self._card = card  # held while it measures (48.9б1); still for QUIET_S - background work goes (48.9б2)
         self._url = url.rstrip("/")
@@ -463,6 +466,7 @@ class Tuner:
         self._halt = threading.Event()  # measuring is to stop: a senior needs the card (48.9б1), or «Остановить»
         self._stopped = False  # by the person's «Остановить» (0.1.15 3а): not a failure, not measured again
         self._stops = 0  # each «Остановить»: a wait for the card begun before it ends there (0.1.15 3а)
+        self._drafts_measured = False  # this tuning measured each draft waiting for the model to its end (0.1.15 3б)
         self._played = Played(card)  # a game on the card while it measures: nothing kept (48.9б4), anew each tuning
 
     async def start(self) -> None:
@@ -589,10 +593,13 @@ class Tuner:
         game on the card meanwhile (48.9б4: its numbers were the game's too), looked at when it is to write and at the
         end; the model waits its turn again as background work. Stopped by the person's «Остановить» (0.1.15 3а):
         {"status": "stopped"}, nothing kept - not a failure, not measured again; once settings were written, what they
-        gave is kept (`_tune`)."""
+        gave is kept (`_tune`). The drafts waiting for the model hear of it (`on_tuned`: one that gave nothing goes)
+        only once each was measured to its end (0.1.15 3б, the user's word): a failure or a stop of llama-bench or of
+        the draft's measuring, a senior, a game - the draft stays on the disk, waiting; «Ускорить» takes it again."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
         self._halt.clear()
         self._stopped = False
+        self._drafts_measured = False
         self._played = Played(self._card)
         watch = asyncio.create_task(self._watch())
         await self._publish()
@@ -622,7 +629,8 @@ class Tuner:
         await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
         self.job = {"status": "idle"}
         await self._publish()
-        if self.on_tuned is not None and not self._stopped:  # stopped (0.1.15 3а): a draft not measured yet waits on
+        # stopped (0.1.15 3а) or a draft not measured to its end (3б): the draft waits on
+        if self.on_tuned is not None and self._drafts_measured and not self._stopped:
             try:  # the drafts that gave nothing go (42.5): its failure is not the tuning's
                 await self.on_tuned(model_id, result)
             except Exception:
@@ -631,9 +639,11 @@ class Tuner:
 
     async def _tune(self, model_id: str) -> dict[str, Any]:
         """llama-bench's settings, then with them where the experts go (44.2: `moe`, only a Mixture-of-Experts model),
-        then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays. Stopped by
-        the person's «Остановить» after llama-bench's settings were written (0.1.15 3а): what was written is kept -
-        the window says what the config has -, no step after it."""
+        then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays -
+        llama-bench's too (0.1.15 3б: missing, fallen or giving nothing - the rest is measured with the config's
+        settings). Stopped by the person's «Остановить» after llama-bench's settings were written (0.1.15 3а): what was
+        written is kept - the window says what the config has -, no step after it; after llama-bench failed - nothing
+        is kept: nothing was written."""
         result = await self._tune_bench(model_id)
         for key, step in (("moe", self._tune_moe), ("spec", self._tune_spec)):
             try:
@@ -642,6 +652,8 @@ class Tuner:
                 found = await step(model_id)
             except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
                 if self._stopped:
+                    if result["status"] == "failed":  # llama-bench's failure is not what a stop keeps (3б)
+                        raise
                     return result
                 if self._halt.is_set() or isinstance(exc, _Halted):  # a senior; a game (48.9б4) - the whole tuning's
                     raise
@@ -714,7 +726,7 @@ class Tuner:
             return {"status": "unsupported"}
         view = llama_config.model_view(text, model_id)
         info = await asyncio.to_thread(model_info, Path(view["file"]))
-        drafts = await self._find_drafts(model_id, view)
+        drafts, waiting = await self._find_drafts(model_id, view)
         variants, short = spec_variants(view, info, self._space(), build, drafts)
         params = await self._db.acall(lambda conn: sampling(conn, model_id))
         self.job.update(status="measuring", step="spec", done=0, total=len(variants))
@@ -753,12 +765,16 @@ class Tuner:
                "measured": [{key: m[key] for key in ("name", "draft", "tg", "accepted", "error") if key in m}
                             for m in measured]}  # fmt: skip
         backup = await self._write(model_id, lambda now: llama_config.edit(now, model_id, pick["changes"], build=build))
+        done = {m["changes"].get("draft_model") for m in measured if "tg" in m}  # to its end
+        self._drafts_measured = waiting <= done  # 0.1.15 3б: else none of them goes
         return {"status": "better", **out, "backup": backup} if backup else {"status": "same", **out}
 
-    async def _find_drafts(self, model_id: str, view: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _find_drafts(self, model_id: str, view: dict[str, Any]) -> tuple[list[dict[str, Any]], set[str]]:
         """The draft models to measure: those found for this model (42.5: paired, downloaded; 44.8: each made for
-        it) and the one its command has; each with its file's header (the memory estimate, its kind)."""
+        it) and the one its command has; each with its file's header (the memory estimate, its kind). And the files of
+        those found - waiting for this measuring (0.1.15 3б: one whose header is not read, too)."""
         paths = list(await self._drafts(model_id, Path(view["file"]))) if self._drafts is not None else []
+        waiting = {str(path) for path in paths}
         own = Path(view["spec"]["draft"]) if view["spec"]["draft"] else None
         if own is not None and own.is_file() and own not in paths:
             paths.append(own)
@@ -768,7 +784,7 @@ class Tuner:
                 out.append({"path": path, "info": await asyncio.to_thread(model_info, path)})
             except (OSError, GGUFError) as exc:
                 log.info("the draft %s for %s: %s", path, model_id, exc)
-        return out
+        return out, waiting
 
     async def _write(self, model_id: str, edit: Callable[[str], str | None]) -> str | None:
         """The config changed under the writers' lock - `edit` of the file as it is now, not as it was before the
@@ -808,6 +824,9 @@ class Tuner:
         return backup.name
 
     async def _tune_bench(self, model_id: str) -> dict[str, Any]:
+        """llama-bench's settings: measured, the fastest written and checked. llama-bench missing, fallen or giving
+        nothing (0.1.15 3б) - {status: failed, error}, nothing written: the experts and guessing ahead are measured
+        all the same; nothing to measure for the model (not llama.cpp's, no file, an unreadable header) - TuneError."""
         path = llama_config.config_path()
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         view = llama_config.model_view(text, model_id)
@@ -817,28 +836,12 @@ class Tuner:
         file = Path(view["file"])
         if not file.is_file():
             raise TuneError(tr("нет файла модели: {path}", path=file))
-        bench = bench_path(text)
         info = await asyncio.to_thread(model_info, file)
-        threads = psutil.cpu_count(logical=False) or os.cpu_count() or 4
-        depth = DEPTH if (info.get("context_trained") or 0) >= 2 * DEPTH else 0
-        kinds = caches(view, info, info.get("size_bytes") or file.stat().st_size, self._space())
-        self.job.update(total=sum(len(flash(k)) for k in kinds) * len(UBATCHES) * 2)  # each: a prompt and an answer
-        await self._unload()
-        loop = asyncio.get_running_loop()
-
-        def progress() -> None:  # in the measuring thread
-            self.job["done"] = self.job.get("done", 0) + 1
-            asyncio.run_coroutine_threadsafe(self._publish(False), loop)
-
-        measured: list[dict[str, Any]] = []
-        for kind in kinds:
-            lines = await asyncio.to_thread(self._run, command(bench, view, kind, threads=threads, depth=depth),
-                                            progress)  # fmt: skip
-            if self._halt.is_set():
-                raise _Halted
-            measured += results(lines)
-        if not measured:
-            raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
+        try:
+            measured = await self._bench_all(text, view, info, file)
+        except TuneError as exc:
+            log.info("llama-bench for %s: %s; the experts and guessing ahead are measured all the same", model_id, exc)
+            return {"status": "failed", "error": str(exc)}
         log.info("measured %s: %s", model_id, measured)
         judged: dict[str, Any] = {}
 
@@ -857,6 +860,38 @@ class Tuner:
         changes = changes_for(choice)
         log.info("tuned %s: %s -> %s tok/s with %s", model_id, (before or {}).get("tg"), choice["tg"], changes)
         return {"status": "better", "before": before, "after": choice, "settings": changes, "backup": backup}
+
+    async def _bench_all(self, text: str, view: dict[str, Any], info: dict[str, Any],
+                         file: Path) -> list[dict[str, Any]]:  # fmt: skip
+        """llama-bench run for each KV cache type (`caches`), what it measured. TuneError - it is missing beside
+        llama-server, fell or gave nothing (0.1.15 3б); let go for a senior or «Остановить» - _Halted, not a failure."""
+        bench = bench_path(text)
+        threads = psutil.cpu_count(logical=False) or os.cpu_count() or 4
+        depth = DEPTH if (info.get("context_trained") or 0) >= 2 * DEPTH else 0
+        kinds = caches(view, info, info.get("size_bytes") or file.stat().st_size, self._space())
+        self.job.update(total=sum(len(flash(k)) for k in kinds) * len(UBATCHES) * 2)  # each: a prompt and an answer
+        await self._unload()
+        loop = asyncio.get_running_loop()
+
+        def progress() -> None:  # in the measuring thread
+            self.job["done"] = self.job.get("done", 0) + 1
+            asyncio.run_coroutine_threadsafe(self._publish(False), loop)
+
+        measured: list[dict[str, Any]] = []
+        for kind in kinds:
+            try:
+                lines = await asyncio.to_thread(self._run, command(bench, view, kind, threads=threads, depth=depth),
+                                                progress)  # fmt: skip
+            except TuneError:
+                if self._halt.is_set():  # killed with nothing measured: let go, not fallen (48.9б1, 0.1.15 3а)
+                    raise _Halted from None
+                raise
+            if self._halt.is_set():
+                raise _Halted
+            measured += results(lines)
+        if not measured:
+            raise TuneError(tr("llama-bench не дал замеров — подробности в журнале хаба"))
+        return measured
 
     async def _unload(self) -> None:
         """The graphics card free for measuring: llama-swap lets its models go - not once tuning is stopped
