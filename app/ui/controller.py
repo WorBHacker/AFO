@@ -767,6 +767,7 @@ class Controller(QObject):
             self.events.stop()
             self.events = None
         self.client = client
+        client.long_wait = self.bg.waiting  # a long request lets its place among the window's threads go (0.1.16 9б)
         if start_events:
             self.events = EventThread(client.events_url, client.token, parent=self)
             self.events.event.connect(self.on_event)

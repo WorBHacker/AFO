@@ -6,9 +6,10 @@ process and keeps running when the window closes (D2).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import httpx
@@ -20,6 +21,8 @@ from hub.locate import START_TIMEOUT_S, HubUnavailable, hub_address, probe, runn
 __all__ = ["HubClient", "HubError", "connect", "hub_address", "probe", "wanted_port"]
 
 log = logging.getLogger("app.hub")
+
+LONG_S = 30.0  # a request given more than the usual 30 s is a long wait (0.1.16 step 9б)
 
 
 class HubError(Exception):
@@ -43,7 +46,10 @@ class HubClient:
         self._headers = {"Authorization": f"Bearer {token}"}
         self.token = token
         # tests pass Starlette's TestClient here; it is an httpx.Client too
-        self._http = http or httpx.Client(base_url=self.base_url, timeout=httpx.Timeout(30.0, connect=3.0))
+        self._http = http or httpx.Client(base_url=self.base_url, timeout=httpx.Timeout(LONG_S, connect=3.0))
+        # around a long request (0.1.16 step 9б): the window gives its thread's place to the others meanwhile
+        # (`Background.waiting`); the client knows nothing of Qt
+        self.long_wait: Callable[[], contextlib.AbstractContextManager] = contextlib.nullcontext
 
     @property
     def events_url(self) -> str:
@@ -64,8 +70,9 @@ class HubClient:
         """`timeout`: seconds for a request known to take long (a local model loading from disk)."""
         extra = {"timeout": httpx.Timeout(timeout, connect=3.0)} if timeout else {}
         try:
-            response = self._http.request(method, path, json=body, params=params,
-                                          headers={**self._headers, **(headers or {})}, **extra)  # fmt: skip
+            with self._waiting(timeout):
+                response = self._http.request(method, path, json=body, params=params,
+                                              headers={**self._headers, **(headers or {})}, **extra)  # fmt: skip
         except httpx.HTTPError as exc:
             raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
         if response.status_code >= 400:
@@ -82,12 +89,17 @@ class HubClient:
         """A response's bytes as they are (a picture)."""
         extra = {"timeout": httpx.Timeout(timeout, connect=3.0)} if timeout else {}
         try:
-            response = self._http.request(method, path, headers=self._headers, **extra)
+            with self._waiting(timeout):
+                response = self._http.request(method, path, headers=self._headers, **extra)
         except httpx.HTTPError as exc:
             raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
         if response.status_code >= 400:
             raise HubError(f"HTTP {response.status_code}")
         return response.content
+
+    def _waiting(self, timeout: float | None) -> contextlib.AbstractContextManager:
+        """`long_wait` for a request given longer than the usual 30 s; nothing for the others."""
+        return self.long_wait() if timeout and timeout > LONG_S else contextlib.nullcontext()
 
     # --- models and the machine ---
 

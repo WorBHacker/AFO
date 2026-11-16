@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
@@ -11,6 +13,8 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from .hub_client import HubError
 
 log = logging.getLogger("app.tasks")
+
+_here = threading.local()  # `owner`: the Background whose job runs on this thread now (0.1.16 step 9б)
 
 
 class _Call(QObject):
@@ -49,6 +53,7 @@ class _Job(QRunnable):
         self._call = call
 
     def run(self) -> None:
+        _here.owner = self._call._owner
         try:
             result = self._fn()
         except Exception as exc:
@@ -56,6 +61,8 @@ class _Job(QRunnable):
                 log.exception("background call failed")
             self._call.failed.emit(exc)
             return
+        finally:
+            _here.owner = None
         self._call.finished.emit(result)
 
 
@@ -78,6 +85,23 @@ class Background(QObject):
 
     def _release(self, call: _Call) -> None:
         self._pending.discard(call)
+
+    @contextlib.contextmanager
+    def waiting(self) -> Iterator[None]:
+        """A long wait for the hub inside one of this pool's jobs (0.1.16 step 9б): its place among the threads goes
+        to the others meanwhile and is taken back after - four launch checks of minutes held every other button of
+        the window. Qt's own way: `releaseThread` / `reserveThread`. From any other thread (the window's, the
+        events'), or inside such a wait already: nothing."""
+        if getattr(_here, "owner", None) is not self:
+            yield
+            return
+        _here.owner = None
+        self._pool.releaseThread()
+        try:
+            yield
+        finally:
+            self._pool.reserveThread()
+            _here.owner = self
 
     @property
     def busy(self) -> bool:
