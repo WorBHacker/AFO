@@ -9443,6 +9443,24 @@ class SlowClient(FakeClient):
     def speed_up(self, *args):
         return self._slow("speed_up", *args)
 
+    def install_local(self, *args):  # the install sheet (0.1.16 step 9а)
+        return self._slow("install_local", *args)
+
+    def install_trial(self, *args):
+        return self._slow("install_trial", *args)
+
+    def install_act(self, *args):
+        return self._slow("install_act", *args)
+
+    def install_scan(self, *args):
+        return self._slow("install_scan", *args)
+
+    def install_reserve(self, *args):
+        return self._slow("install_reserve", *args)
+
+    def install(self, *args):
+        return self._slow("install", *args)
+
 
 def test_the_models_sheet_answers_at_once_while_the_hub_is_slow(qapp):
     """0.1.15 step 8б: a button of the models sheet that asks the hub stayed as it was until the answer came - seconds
@@ -9531,6 +9549,131 @@ def test_the_models_sheet_answers_at_once_while_the_hub_is_slow(qapp):
         assert loading.property("text") == "Читаю настройки модели…"
         run(4.0)
         assert not loading.property("visible") and named("launchSection").property("visible")
+        assert ticks["gap"] < 0.25, ticks
+        assert quick.warnings == []
+    finally:
+        timer.stop()
+        quick.close()
+
+
+def test_the_install_sheet_answers_at_once_while_the_hub_is_slow(qapp):
+    """0.1.16 step 9а: the buttons of «Установка моделей» that ask the hub - «Добавить», «Пробный запуск», a row's
+    «Пауза», «Установить» - stayed as they were until the answer came, seconds with a slow hub, and each click more
+    sent its request again. Now one goes off at once with a word of what it does, «Установить» says
+    «Устанавливается…» on itself; a second click sends nothing. The memory reserve («Настройки → Модели») says
+    «Сохраняю запас памяти…»; a second number typed while the first is on its way is not lost - it goes after it, the
+    same one again goes nowhere. The window stays alive meanwhile."""
+    from PySide6.QtCore import QMetaObject, QObject, QTimer
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    ticks = {"last": time.monotonic(), "gap": 0.0}
+
+    def tick():
+        now = time.monotonic()
+        ticks["gap"], ticks["last"] = max(ticks["gap"], now - ticks["last"]), now
+
+    timer = QTimer(interval=1)
+    timer.timeout.connect(tick)
+
+    def run(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.002)
+
+    def at_once(condition):  # «сразу»: within 0.3 s
+        end = time.monotonic() + 0.3
+        while not condition() and time.monotonic() < end:
+            QApplication.processEvents()
+        return condition()
+
+    def named(name):
+        return quick.window.findChild(QObject, name) or item_named(quick.window.contentItem(), name)
+
+    def clicks(button, times):
+        ticks["last"], ticks["gap"] = time.monotonic(), 0.0
+        for _ in range(times):
+            QMetaObject.invokeMethod(button, "clicked")
+
+    try:
+        app = quick.controller
+        client = SlowClient()
+        path = "D:\\models\\small.gguf"
+        client.found = {"job": {"status": "done"}, "at": "2026-11-16T13:00:00Z", "models": [
+            {"name": "small", "path": path, "size": 2_000_000_000, "quant": "Q4_K_M", "projector": "", "source": "",
+             "verdict": "gpu", "words": "помещается в видеопамять — быстро", "in_config": ""}]}  # fmt: skip
+        added = {"id": "a1", "name": "A", "model_id": "a", "repo": "", "folder": "D:\\m", "own_files": 0, "error": "",
+                 "files": [], "trial": {}, "status": "added", "created_at": "2026-11-16T13:00:00.000Z"}  # fmt: skip
+        going = {"id": "d1", "name": "B", "model_id": "b", "repo": "r/b", "folder": "D:\\m", "own_files": 1,
+                 "error": "", "files": [], "trial": {}, "status": "downloading", "done_bytes": 1, "total_bytes": 4,
+                 "percent": 25.0, "created_at": "2026-11-16T12:00:00.000Z"}  # fmt: skip
+        client.install_jobs_list = [added, going]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = named("installSheet")
+        app.openUi("install-models")
+        view.setTab("local")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.localModels and view.catalog)
+        run(0.2)
+        timer.start()
+        client.delay = 3.0
+
+        add = named("addLocal_small")  # A: «Добавить» three times
+        clicks(add, 3)
+        assert at_once(lambda: not add.property("enabled")), "the button stays on, the window says nothing"
+        assert named("installPending").property("text") == "Добавляю модель…"
+        run(4.0)
+        assert [c for c in client.install_calls if c[0] == "local"] == [("local", path, "", "small")]
+        assert named("installPending").property("text") == "" and add.property("enabled")
+        assert ticks["gap"] < 0.25, ticks
+
+        trial = named("tryAdded")  # B: «Пробный запуск» twice
+        clicks(trial, 2)
+        assert at_once(lambda: not trial.property("enabled"))
+        assert named("installPending").property("text") == "Пробный запуск: спрашиваю хаб…"
+        run(4.0)
+        assert [c for c in client.install_calls if c[0] == "trial"] == [("trial",)]
+        assert ticks["gap"] < 0.25, ticks
+
+        view.setTab("jobs")  # C: a row's «Пауза» twice
+        run(0.3)
+        pause = named("installAct_pause_d1")
+        clicks(pause, 2)
+        assert at_once(lambda: not pause.property("enabled"))
+        assert named("jobsPending").property("text") == "Выполняю…"
+        run(4.0)
+        assert [c for c in client.install_calls if c == ("pause", "d1")] == [("pause", "d1")]
+        assert named("jobsPending").property("text") == ""
+        assert ticks["gap"] < 0.25, ticks
+
+        view.setTab("catalog")  # D: «Установить» on a card twice - the word on the button itself
+        run(0.3)
+        install = named("installRecommended_gemma-4-e4b")
+        clicks(install, 2)
+        assert at_once(lambda: not install.property("enabled"))
+        assert install.property("text") == "Устанавливается…"
+        run(4.0)
+        assert [c[1]["repo"] for c in client.install_calls if c[0] == "install"] == ["ggml-org/gemma-4-E4B-it-GGUF"]
+        assert ticks["gap"] < 0.25, ticks
+
+        QMetaObject.invokeMethod(sheet, "close")  # E: the memory reserve in «Настройки → Модели»
+        settings = named("settingsModels")
+        client.delay = 0.0
+        QMetaObject.invokeMethod(settings, "open")
+        wait_until(lambda: not app.bg.busy and view.reserve and settings.property("opened"))
+        client.delay = 3.0
+        ticks["last"], ticks["gap"] = time.monotonic(), 0.0
+        view.setReserve("2", "3")
+        view.setReserve("2", "3")  # the same again: nowhere
+        view.setReserve("2", "5")  # a second number while the first is on its way: after it
+        assert at_once(lambda: named("reservePending").property("visible"))
+        assert named("reservePending").property("text") == "Сохраняю запас памяти…"
+        run(7.0)
+        assert [e for e in client.log if e[0] == "reserve"] == [("reserve", 2.0, 3.0), ("reserve", 2.0, 5.0)]
+        assert view.reserve["ram"] == "5" and not named("reservePending").property("visible")
         assert ticks["gap"] < 0.25, ticks
         assert quick.warnings == []
     finally:

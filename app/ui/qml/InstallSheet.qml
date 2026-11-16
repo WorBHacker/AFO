@@ -20,6 +20,10 @@ Sheet {
         property string name
         property bool primary: false
         property bool can: true
+        // the key Installer marks it by while the hub has not answered (0.1.16 step 9а): «Устанавливается…» on it
+        property string startKey
+        readonly property bool starting: Installer.pending[jb.startKey] !== undefined
+        readonly property bool acting: !!jb.job.id && Installer.pending["job:" + jb.job.id] !== undefined
         signal install()
         spacing: 6
         PlainButton {
@@ -27,8 +31,8 @@ Sheet {
             visible: !jb.job.id
             kind: jb.primary ? "primary" : "plain"
             iconName: "download"
-            text: qsTr("Установить")
-            enabled: !Installer.busy && jb.can
+            text: jb.starting ? qsTr("Устанавливается…") : qsTr("Установить")
+            enabled: !Installer.busy && !jb.starting && jb.can
             onClicked: jb.install()
         }
         PlainButton {
@@ -37,11 +41,13 @@ Sheet {
             kind: jb.job.primary === "resume" ? "primary" : "plain"
             iconName: jb.job.primary === "pause" ? "pause" : "play"
             text: jb.job.primaryLabel || ""
+            enabled: !jb.acting
             onClicked: Installer.act(jb.job.id, jb.job.primary)
         }
         IconButton {
             objectName: jb.name + "_" + (jb.job.dismiss || "")
             visible: !!jb.job.dismiss
+            enabled: !jb.acting
             implicitWidth: 32
             implicitHeight: 32
             iconName: "close"
@@ -260,6 +266,7 @@ Sheet {
                             name: "installRecommended_" + card.modelData.id
                             job: card.modelData.job
                             primary: true
+                            startKey: "recommended:" + card.modelData.repo
                             visible: card.modelData.canInstall || !!card.modelData.job.id
                             onInstall: Installer.installRecommended(card.modelData.repo)
                         }
@@ -468,11 +475,13 @@ Sheet {
                 visible: !Installer.scanning
                 iconName: "search"
                 text: qsTr("Искать на всех дисках")
+                enabled: Installer.pending.scan === undefined
                 onClicked: Installer.scanLocal()
             }
             PlainButton {
                 visible: Installer.scanning
                 text: qsTr("Остановить поиск")
+                enabled: Installer.pending.stopScan === undefined
                 onClicked: Installer.stopScan()
             }
             PlainButton {
@@ -488,15 +497,19 @@ Sheet {
                 kind: "primary"
                 iconName: "play"
                 text: qsTr("Пробный запуск (%1)").arg(Installer.untried)
+                enabled: Installer.pending.tryAll === undefined
                 onClicked: Installer.tryAll()
             }
             PlainButton {
                 objectName: "stopTrials"
                 visible: Installer.trialText !== ""
                 text: qsTr("Остановить")
+                enabled: Installer.pending.stopTrials === undefined
                 onClicked: Installer.stopTrials()
             }
         }
+        // what was asked of the hub and is not answered yet (0.1.16 step 9а)
+        Note { objectName: "installPending"; visible: text !== ""; text: Installer.pendingText; color: Theme.p.accent }
         Note { visible: Installer.trialText !== ""; text: Installer.trialText; color: Theme.p.accent }
         FileDialog {
             id: modelFile
@@ -586,6 +599,7 @@ Sheet {
                         objectName: "addLocal_" + local.modelData.name
                         anchors.right: parent.right
                         visible: local.modelData.inConfig === ""
+                        enabled: Installer.pending["add:" + local.modelData.path] === undefined
                         text: qsTr("Добавить")
                         onClicked: Installer.addLocal(local.modelData.path, local.modelData.projector,
                                                       local.modelData.name)
@@ -762,6 +776,7 @@ Sheet {
                     job: variant.modelData.job
                     primary: variant.modelData.recommended
                     can: variant.modelData.tone !== "error"
+                    startKey: "variant:" + variant.modelData.key
                     onInstall: Installer.install(variant.modelData.key)  // 48.2б: a family's with the family
                 }
                 JobBar {
@@ -780,6 +795,7 @@ Sheet {
         visible: Installer.repoName === "" && Installer.tab === "jobs"
         width: parent.width
         spacing: 8
+        Note { objectName: "jobsPending"; visible: text !== ""; text: Installer.pendingText; color: Theme.p.accent }
         Note {
             visible: Installer.jobs.length === 0
             text: qsTr("Установок пока нет. Выберите модель в «Подборке».")
@@ -845,6 +861,7 @@ Sheet {
                                 objectName: "installAct_" + modelData.id + "_" + job.modelData.id
                                 kind: modelData.kind
                                 text: modelData.label
+                                enabled: Installer.pending["job:" + job.modelData.id] === undefined
                                 onClicked: Installer.act(job.modelData.id, modelData.id)
                             }
                         }

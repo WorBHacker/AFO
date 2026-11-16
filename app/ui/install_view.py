@@ -466,6 +466,7 @@ def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 class InstallView(QObject):
     changed = Signal()
+    pendingChanged = Signal()  # an action asked of the hub (0.1.16 step 9а): its button and its word, not the sheet
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -503,6 +504,8 @@ class InstallView(QObject):
         self._heard: dict[str, dict[str, Any] | None] = {}
         self._busy = False
         self._local: dict[str, Any] = {}  # the models found on the drives (15.1)
+        self._pending: dict[str, str] = {}  # an action asked of the hub, not answered yet -> its word (0.1.16 step 9а)
+        self._reserve_next: tuple[float, float] | None = None  # a reserve typed while one was on its way: after it
 
     # ================= for QML =================
 
@@ -776,8 +779,8 @@ class InstallView(QObject):
                            else tr("Непроверенных моделей нет"))  # fmt: skip
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.install_trial(), done,
-                              lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
+        self._doing("tryAll", tr("Пробный запуск: спрашиваю хаб…"), lambda: self.app.client.install_trial(), done,
+                    lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def stopTrials(self) -> None:
@@ -786,12 +789,40 @@ class InstallView(QObject):
                 self._upsert(job)
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.install_trial_stop(), done,
-                              lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
+        self._doing("stopTrials", tr("Останавливаю пробные запуски…"), lambda: self.app.client.install_trial_stop(),
+                    done, lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
 
     @Property(bool, notify=changed)
     def busy(self) -> bool:
         return self._busy
+
+    # --- what the sheet has asked of the hub (0.1.16 step 9а, as the models sheet's 0.1.15 step 8б) ---
+
+    def _doing(self, action: str, words: str, fn, done, failed) -> None:
+        """`fn` asked of the hub as `action`: its button goes off and its word shows at once - with a slow hub, or the
+        window's four threads busy, nothing was seen for seconds; a second click while it is on its way sends nothing.
+        The answer or the failure lets it go."""
+        if action in self._pending:
+            return
+        self._pending[action] = words
+        self.pendingChanged.emit()
+
+        def end() -> None:
+            if self._pending.pop(action, None) is not None:
+                self.pendingChanged.emit()
+
+        self.app.call_or_fail(fn, lambda result: (end(), done(result)), lambda error: (end(), failed(error)))
+
+    @Property("QVariantMap", notify=pendingChanged)
+    def pending(self) -> dict:
+        """The actions on their way -> their words: QML turns their buttons off."""
+        return dict(self._pending)
+
+    @Property(str, notify=pendingChanged)
+    def pendingText(self) -> str:
+        """The line on the sheet: the word of the last of its actions on its way (the reserve has its own, in the
+        settings)."""
+        return next((words for action, words in reversed(self._pending.items()) if action != "reserve"), "")
 
     # ================= loading =================
 
@@ -823,9 +854,23 @@ class InstallView(QObject):
         except ValueError:
             self.app.show_error(tr("Запас памяти — число гигабайт, например 1 или 2,5"))
             return
+        self._save_reserve(wanted)
+
+    def _save_reserve(self, wanted: tuple[float, float]) -> None:
+        """One save at a time (0.1.16 step 9а): a number typed while one is on its way - the second of the two fields
+        with a slow hub - is kept and sent after its answer, the last one typed winning; the same one again goes
+        nowhere, as a reserve the hub already has."""
+        if "reserve" in self._pending:
+            self._reserve_next = wanted
+            return
         found = self._system.get("reserve") or {}
         if found and wanted == (found["vram_gib"], found["ram_gib"]):
             return
+
+        def after() -> None:
+            following, self._reserve_next = self._reserve_next, None
+            if following is not None:
+                self._save_reserve(following)
 
         def saved(data: dict[str, Any]) -> None:
             self._system = data
@@ -833,9 +878,14 @@ class InstallView(QObject):
             self.app.flash(tr("Запас памяти сохранён"))
             if self._catalog and not self._catalog_loading:
                 self._load_catalog()  # its recommendations were judged with the old reserve
+            after()
 
-        self.app.call_or_fail(lambda: self.app.client.install_reserve(*wanted), saved,
-                              lambda e: self.app.show_error(tr("Не сохранено: {error}", error=e)))  # fmt: skip
+        def failed(error: Exception) -> None:
+            self.app.show_error(tr("Не сохранено: {error}", error=error))
+            after()
+
+        self._doing("reserve", tr("Сохраняю запас памяти…"), lambda: self.app.client.install_reserve(*wanted), saved,
+                    failed)  # fmt: skip
 
     @Slot()
     def resetReserve(self) -> None:
@@ -924,12 +974,14 @@ class InstallView(QObject):
 
     @Slot()
     def scanLocal(self) -> None:
-        self.app.call_or_fail(lambda: self.app.client.install_scan(), self._set_local,
-                              lambda e: self.app.show_error(tr("Не начать поиск: {error}", error=e)))  # fmt: skip
+        self._doing("scan", tr("Начинаю поиск моделей на дисках…"), lambda: self.app.client.install_scan(),
+                    self._set_local,
+                    lambda e: self.app.show_error(tr("Не начать поиск: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def stopScan(self) -> None:
-        self.app.call_or_fail(lambda: self.app.client.install_scan_cancel(), self._set_local, lambda _e: None)
+        self._doing("stopScan", tr("Останавливаю поиск…"), lambda: self.app.client.install_scan_cancel(),
+                    self._set_local, lambda _e: None)  # fmt: skip
 
     @Slot(str, str, str)
     def addLocal(self, path: str, projector: str, name: str) -> None:
@@ -943,8 +995,8 @@ class InstallView(QObject):
                               name=job.get("name", "")))  # fmt: skip
             self.loadLocal()
 
-        self.app.call_or_fail(lambda: self.app.client.install_local(path, projector, name), done,
-                              lambda e: self.app.show_error(tr("Не добавить: {error}", error=e)))  # fmt: skip
+        self._doing("add:" + path, tr("Добавляю модель…"), lambda: self.app.client.install_local(path, projector, name),
+                    done, lambda e: self.app.show_error(tr("Не добавить: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def addFile(self, url: str) -> None:
@@ -1106,7 +1158,9 @@ class InstallView(QObject):
 
     # ================= installing =================
 
-    def _start(self, spec: dict[str, Any], *, pictures: bool = False) -> None:
+    def _start(self, spec: dict[str, Any], *, pictures: bool, key: str) -> None:
+        """`key` - the button it was asked from (0.1.16 step 9а): it says «Устанавливается…» until the hub answers, a
+        second click on it starts nothing; another model (the wizard's next purpose) is not held back by it."""
         if self._folder:
             spec["folder"] = self._folder
         elif self._drive:
@@ -1129,23 +1183,25 @@ class InstallView(QObject):
             self.app.show_error(tr("Не начать установку: {error}", error=error))
             self.changed.emit()
 
-        self.app.call_or_fail(start, done, failed)
+        self._doing(key, tr("Начинаю установку…"), start, done, failed)
 
-    def startInstall(self, repo: str, quant: str) -> None:
+    def startInstall(self, repo: str, quant: str, key: str = "") -> None:
         """An install the wizard asks for (10.2): the drive this sheet would choose; a picture model's by its row."""
+        key = key or f"install:{repo}:{quant}"
         if repo.startswith(PICTURES):
-            self._start({"id": repo.removeprefix(PICTURES)}, pictures=True)
+            self._start({"id": repo.removeprefix(PICTURES)}, pictures=True, key=key)
         else:
-            self._start({"repo": repo, "quant": quant})
+            self._start({"repo": repo, "quant": quant}, pictures=False, key=key)
 
     @Slot(str)
     def installRecommended(self, repo: str) -> None:
         if repo.startswith(PICTURES):
-            self.startInstall(repo, "")
+            self.startInstall(repo, "", key="recommended:" + repo)
             return
         model = next((m for m in self._catalog if m["repo"] == repo), None)
         if model and model.get("recommended"):
-            self._start({"repo": repo, "quant": model["recommended"]["quant"]})
+            spec = {"repo": repo, "quant": model["recommended"]["quant"]}
+            self._start(spec, pictures=False, key="recommended:" + repo)
 
     @Slot(str)
     def install(self, key: str) -> None:
@@ -1154,12 +1210,12 @@ class InstallView(QObject):
             chosen = next((v for v in self._repo.get("variants") or [] if variant_key(v) == key), None)
             family, quant = (chosen.get("family") or self._repo["family"], chosen["quant"]) if chosen else (
                 self._repo["family"], key)  # fmt: skip
-            self._start({"id": family, "repo": self._repo["repo"], "quant": quant}, pictures=True)
+            self._start({"id": family, "repo": self._repo["repo"], "quant": quant}, pictures=True, key="variant:" + key)
         elif self._repo:
             spec: dict[str, Any] = {"repo": self._repo["repo"], "quant": key}
             if self._repo.get("projector"):
                 spec["projector"] = self._projector
-            self._start(spec)
+            self._start(spec, pictures=False, key="variant:" + key)
 
     @Slot(str, str)
     def act(self, job_id: str, action: str) -> None:
@@ -1211,7 +1267,8 @@ class InstallView(QObject):
                 self._catalog = []
                 self._load_catalog()  # «установлена» there too
 
-        self.app.call_or_fail(call, done, lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))
+        self._doing("job:" + job["id"], tr("Выполняю…"), call, done,
+                    lambda e: self.app.show_error(tr("Не вышло: {error}", error=e)))  # fmt: skip
 
     def _upsert(self, job: dict[str, Any]) -> None:
         if not job.get("id"):

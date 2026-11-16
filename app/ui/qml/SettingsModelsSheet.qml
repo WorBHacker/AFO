@@ -61,6 +61,16 @@ Sheet {
             onClicked: Installer.resetReserve()
         }
     }
+    // the reserve on its way to the hub (0.1.16 step 9а): the fields stay open - a second number goes after it
+    Text {
+        objectName: "reservePending"
+        width: parent.width
+        visible: text !== ""
+        text: Installer.pending.reserve || ""
+        color: Theme.p.accent
+        font.family: Theme.uiFont
+        font.pixelSize: 12
+    }
     Text {
         width: parent.width
         visible: !!Installer.reserve.defaults
