@@ -9159,3 +9159,70 @@ def test_a_preset_puts_all_of_a_model_on_the_card_only_when_it_fits(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_writing_a_model_larger_than_the_card_asks_first(qapp):
+    """0.1.15 step 2: «Записать в config.yaml» with settings the graphics card cannot hold (the line under the presets
+    says «Не поместится») asks first, in the window drawn; nothing is written without «Записать всё равно» - «Отмена»
+    says «Не записано.»; a model that fits is written at once, as before."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    def drawn():
+        for _ in range(10):
+            QApplication.processEvents()
+
+    def written():
+        return [c for c in client.model_calls if c[0] == "launch"]
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.llama_reserve = 10.0  # 6 GB of the card's 16 for models, as a laptop's; «big» weighs 12 GB
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        big = [*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                         "provider": "llama-swap", "prices": {}}]  # fmt: skip
+        app._set_models(big)
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        dialog = quick.window.findChild(QObject, "confirmDialog")
+        setup = app.model_setup
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("editable") and sheet.property("opened"))
+        setup.setLaunch("context", "16384")  # all the layers on the card, as in config.yaml: 12 GB on 6
+        assert setup.launchDirty and setup.launchVerdictTone == "error"
+        setup.saveLaunch()
+        drawn()
+        assert app.question == {"title": "Модель не поместится в видеокарту",
+                                "text": "С этими настройками модель больше видеокарты: она будет работать в разы "
+                                        "медленнее или не запустится. Надёжнее выбрать „сколько поместится“ или модель "
+                                        "меньше. Записать всё равно?",
+                                "confirm": "Записать всё равно", "other": ""}  # fmt: skip
+        assert dialog.property("visible") and written() == []
+        app.answer(False)  # «Отмена»
+        wait_until(lambda: not dialog.property("visible"))
+        assert setup.launchStatus == "Не записано." and not setup.launchFailed
+        assert written() == [] and setup.launchDirty
+        setup.saveLaunch()
+        drawn()
+        assert dialog.property("visible") and written() == []
+        app.answer(True)  # «Записать всё равно»
+        wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+        assert written() == [("launch", "big", {"context": 16384})]
+        assert "llama-swap перечитал" in setup.launchStatus
+
+        client.llama_reserve = 1.0  # the user's card: 15 GB for models - it fits, written at once
+        app._set_models(big)
+        setup.open("llama-swap/big")
+        wait_until(lambda: not app.bg.busy and setup.modelId == "llama-swap/big" and setup.launch.get("editable"))
+        setup.setLaunch("ttl_min", "15")
+        assert setup.launchVerdictTone == "ok"
+        setup.saveLaunch()
+        wait_until(lambda: not app.bg.busy and not setup.launchBusy)
+        assert app.question == {} and written()[-1] == ("launch", "big", {"ttl": 900})
+        assert quick.warnings == []
+    finally:
+        quick.close()

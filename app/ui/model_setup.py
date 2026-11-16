@@ -786,6 +786,24 @@ class ModelSetup(QObject):
         if not changes:
             return
         model_id, ref = self._model, self._launch["id"]
+        if launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1] != "error":
+            self._write_launch(model_id, ref, changes)
+            return
+
+        def decide(yes: bool | None) -> None:  # the fields as they were when asked are written
+            if yes:
+                self._write_launch(model_id, ref, changes)
+            else:
+                self._launch_status, self._launch_failed = tr("Не записано."), False
+                self.changed.emit()
+
+        # the line under the presets says «Не поместится» (0.1.15 step 2): written only on the person's «да»
+        self.app._ask(tr("Модель не поместится в видеокарту"),
+                      tr("С этими настройками модель больше видеокарты: она будет работать в разы медленнее или не "
+                         "запустится. Надёжнее выбрать „сколько поместится“ или модель меньше. Записать всё равно?"),
+                      tr("Записать всё равно"), decide)  # fmt: skip
+
+    def _write_launch(self, model_id: str, ref: str, changes: dict[str, Any]) -> None:
         self._launch_busy, self._launch_failed = True, False
         self._launch_status = tr("Записываю в config.yaml и жду, что llama-swap его перечитает…")
         self.changed.emit()
