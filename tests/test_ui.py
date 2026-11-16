@@ -9679,3 +9679,83 @@ def test_the_install_sheet_answers_at_once_while_the_hub_is_slow(qapp):
     finally:
         timer.stop()
         quick.close()
+
+
+def test_a_long_list_of_models_does_not_hold_the_window(qapp):
+    """0.1.16 step 10 (the user's word: count on 300+ models): the model picker built a row for every model even
+    closed, again each time the list came - 327 models held the window 317 ms after every settings write, every
+    change of what is in video memory. Now a closed menu builds no row; an open one only those in sight (and a few
+    around); scrolled to the end the last model is chosen as before; opened again, the chosen one is in sight. A short
+    menu is as tall as its rows, nothing to scroll."""
+    from PySide6.QtCore import QMetaObject, QObject, QPointF
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def walk(item):
+        for child in item.childItems():
+            yield child
+            yield from walk(child)
+
+    def rows_of(view):
+        return [i for i in walk(view) if i.metaObject().className().startswith("QQuickLoader")]
+
+    def pump(times=20):
+        for _ in range(times):
+            QApplication.processEvents()
+            time.sleep(0.005)
+
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        local = [{"id": f"llama-swap/m{i:02}", "model_ref": f"m{i:02}", "name": f"Local {i:02}", "locality": "local",
+                  "prices": {}} for i in range(25)]  # fmt: skip
+        cloud = [{"id": f"anthropic/c{i:03}", "model_ref": f"c{i:03}", "name": f"Cloud {i:03}", "locality": "cloud",
+                  "prices": {"input": 1.0, "output": 2.0}} for i in range(300)]  # fmt: skip
+        app._set_models([*MODELS, *local, *cloud])
+        pump()
+        menu = quick.window.findChild(QObject, "modelMenu")
+        view = menu.property("contentItem")
+        assert view.objectName() == "menuList"
+        assert rows_of(view) == [], f"the closed menu holds {len(rows_of(view))} rows"
+        started = time.perf_counter()
+        app.modelChanged.emit()  # the list came again
+        QApplication.processEvents()
+        assert time.perf_counter() - started < 0.1
+
+        QMetaObject.invokeMethod(menu, "open")
+        wait_until(lambda: menu.property("opened"))
+        pump()
+        assert 0 < len(rows_of(view)) <= 60, len(rows_of(view))
+        last = [i["id"] for i in app.pickerItems if i.get("id") and not i.get("section")][-1]
+        QMetaObject.invokeMethod(view, "positionViewAtEnd")
+        pump()
+        row = item_named(view, "menuItem_" + last)
+        assert row is not None and len(rows_of(view)) <= 60
+        QMetaObject.invokeMethod(row, "clicked")
+        wait_until(lambda: app.modelId == last and not menu.property("visible"))
+
+        QMetaObject.invokeMethod(menu, "open")  # again: the chosen one in sight
+        wait_until(lambda: menu.property("opened"))
+        pump()
+        row = item_named(view, "menuItem_" + last)
+        assert row is not None
+        top = row.mapToItem(view, QPointF(0, 0)).y()
+        assert top >= 0 and top + row.height() <= view.height() + 1, (top, row.height(), view.height())
+        menu.close()
+        wait_until(lambda: not menu.property("visible"))
+
+        app._set_models(MODELS)  # a short menu: as tall as its rows
+        pump()
+        QMetaObject.invokeMethod(menu, "open")
+        wait_until(lambda: menu.property("opened"))
+        pump()
+        built = rows_of(view)
+        assert len(built) == len(app.pickerItems) + 3
+        assert abs(sum(r.height() for r in built) - view.height()) <= 1 and not view.property("interactive")
+        menu.close()
+        assert quick.warnings == []
+    finally:
+        quick.close()

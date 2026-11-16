@@ -57,30 +57,39 @@ Popup {
         SoftShadow {}
     }
 
-    // no taller than the window: a long list (many models) scrolls inside the menu instead of going past an edge
-    contentItem: Flickable {
+    // no taller than the window: a long list (many models) scrolls inside the menu instead of going past an edge.
+    // 0.1.16 step 10: a closed menu builds no rows, an open one only those in sight and a few around - 327 models
+    // held the window 317 ms each time their list came, the menu built a row for each even closed
+    contentItem: ListView {
+        id: rows
         objectName: "menuList"
-        implicitHeight: Math.min(rows.height, (menu.parent ? menu.parent.height : 800) - 16 - menu.topPadding
-                                              - menu.bottomPadding)
-        contentHeight: rows.height
+        model: menu.visible ? menu.items : []
+        implicitHeight: Math.min(contentHeight, (menu.parent ? menu.parent.height : 800) - 16 - menu.topPadding
+                                                - menu.bottomPadding)
         interactive: contentHeight > height
         clip: interactive
         boundsBehavior: Flickable.StopAtBounds
+        cacheBuffer: 200
         ScrollBar.vertical: ThinScrollBar {}
-        Column {
-            id: rows
-            width: parent.width
-            Repeater {
-                model: menu.items
-                delegate: Loader {
-                    required property var modelData
-                    width: menu.availableWidth
-                    sourceComponent: modelData.section ? sectionRow : itemRow
-                    onLoaded: item.info = modelData
-                }
+        delegate: Loader {
+            required property var modelData
+            width: menu.availableWidth
+            sourceComponent: modelData.section ? sectionRow : itemRow
+            onLoaded: item.info = modelData
+        }
+        onCountChanged: if (count > 0) Qt.callLater(menu.showSelected)
+    }
+    // the chosen one in sight when it opens: the middle of the list, when it scrolls
+    function showSelected() {
+        const items = menu.items || []
+        for (let i = 0; i < items.length; ++i) {
+            if (items[i] && items[i].selected) {
+                rows.positionViewAtIndex(i, ListView.Center)
+                return
             }
         }
     }
+    onOpened: showSelected()
 
     Component {
         id: sectionRow
@@ -101,6 +110,7 @@ Popup {
         id: itemRow
         AbstractButton {
             id: entry
+            objectName: "menuItem_" + (info.id || "")
             property var info: ({})
             height: info.note ? (menu.wrapNotes ? body.implicitHeight + 16 : 46) : 36
             hoverEnabled: true

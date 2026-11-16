@@ -188,10 +188,16 @@ Window {
 
     MenuPopup {
         id: modelMenu
+        objectName: "modelMenu"
         menuWidth: 430
-        items: App.pickerItems.concat([{ section: " ", id: "" },
-                                       { id: "+settings", name: qsTr("Настроить модели…"), icon: "sliders" },
-                                       { id: "+install", name: qsTr("Установить локальную модель…"), icon: "download" }])
+        // read once (0.1.16 step 10): `App.pickerItems.concat(…)` read the whole list again from Python for each of
+        // its rows - 327 models, 330 lists built, 0,3 s of the window each time the models came
+        items: {
+            const models = App.pickerItems
+            return models.concat([{ section: " ", id: "" },
+                                  { id: "+settings", name: qsTr("Настроить модели…"), icon: "sliders" },
+                                  { id: "+install", name: qsTr("Установить локальную модель…"), icon: "download" }])
+        }
         onChosen: (id) => id === "+settings" ? modelsSheet.openFor(App.modelId)
                         : id === "+install" ? installSheet.open() : App.chooseModel(id)
         function openAt(item) { anchor = item; open() }
