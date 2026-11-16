@@ -14,6 +14,9 @@ Item {
     readonly property int position: player.position
     readonly property int duration: root.source !== "" ? player.duration : 0
     readonly property bool playing: player.playbackState === MediaPlayer.PlayingState || (still.visible && !root.held)
+    // the frame's size, for a view that takes its shape (a chat's card): the MP4's, or the WebP's while it plays
+    readonly property size frame: root.source !== "" ? Qt.size(output.sourceRect.width, output.sourceRect.height)
+                                                     : Qt.size(still.implicitWidth, still.implicitHeight)
 
     function toggle() { held = !held }
     function seek(ms) {

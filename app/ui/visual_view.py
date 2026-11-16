@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -153,6 +154,7 @@ class VisualView(QObject):
         app.statusChanged.connect(self._held_changed)
         self._making: set[str] = set()  # the videos whose MP4 the hub is making for the player (48.12)
         self._unplayable: dict[str, str] = {}  # those it could not make: why
+        self._chat_videos: set[str] = set()  # the videos chats have shown (48.12): their MP4s wanted
 
     # ================= for QML =================
 
@@ -316,6 +318,25 @@ class VisualView(QObject):
     def blobUrl(self, blob: str) -> str:
         """A video a chat holds (29.8б), as a file: the hub keeps it in data/blobs on this computer."""
         return QUrl.fromLocalFile(str(self.app.paths.blobs / blob)).toString() if blob else ""
+
+    @Slot(str)
+    def showVideo(self, blob: str) -> None:
+        """A chat's video card shown (48.12): its MP4 is wanted - `chatVideos` has it once the hub has made it."""
+        if re.fullmatch(r"[0-9a-f]{64}", blob) and blob not in self._chat_videos:
+            self._chat_videos.add(blob)
+            self.changed.emit()
+
+    @Property("QVariantMap", notify=changed)
+    def chatVideos(self) -> dict:
+        """The videos chats show (48.12), each {mp4: its MP4's URL, "" until the hub has made it from the chat's copy;
+        note: why it does not seek yet}."""
+        out = {}
+        for blob in self._chat_videos:
+            key = f"blob/{blob}"
+            mp4 = self._mp4(key, self.app.paths.blobs / f"{blob}.mp4",
+                            lambda blob=blob: self.app.client.visual_picture_mp4(blob))  # fmt: skip
+            out[blob] = {"mp4": mp4, "note": "" if mp4 else self._note(key)}
+        return out
 
     @Property(bool, notify=changed)
     def hasSource(self) -> bool:

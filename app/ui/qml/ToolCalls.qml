@@ -2,7 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // What an answer looked at with the hub's tools: one line per call ("Читаю hub/chat.py"), its state (running, done,
-// failed) and, on a click, what the tool returned; a picture a call drew (29.6) - under it, always.
+// failed) and, on a click, what the tool returned; a picture a call drew (29.6) or a video it filmed (29.8б, on the
+// Studio's player since 48.12) - under it, always.
 Column {
     id: calls
     property var tools: []
@@ -126,15 +127,31 @@ Column {
                 ToolTip.text: qsTr("Щелчок — нарисовать по этой картинке")
             }
 
-            AnimatedImage {  // a video a call filmed (29.8б): from its file - an image provider does not animate
+            Item {  // a video a call filmed (29.8б, 48.12): the chat's copy on the Studio's player - no frame kept
+                id: clip
                 objectName: "toolVideo"
                 visible: call.video !== ""
                 x: 28
                 width: Math.min(420, parent.width - 28)
-                height: implicitWidth > 0 ? width * implicitHeight / implicitWidth : 120
-                source: call.video !== "" ? Visual.blobUrl(call.video) : ""
-                fillMode: Image.PreserveAspectFit
-                playing: visible
+                height: visible ? clipPlayer.height + 4 + clipControls.height : 0
+                readonly property var made: call.video !== "" ? (Visual.chatVideos[call.video] || ({})) : ({})
+                Component.onCompleted: if (call.video !== "") Visual.showVideo(call.video)
+                VideoPlayer {
+                    id: clipPlayer
+                    objectName: "toolVideoPlayer"
+                    width: parent.width
+                    height: frame.width > 0 ? width * frame.height / frame.width : 120  // its frame's shape
+                    source: visible ? (clip.made.mp4 || "") : ""  // the chat hidden: the clip let go
+                    fallback: call.video !== "" ? Visual.blobUrl(call.video) : ""
+                }
+                VideoControls {
+                    id: clipControls
+                    prefix: "toolVideo"
+                    target: clipPlayer
+                    note: clip.made.note || ""
+                    y: clipPlayer.height + 4
+                    width: parent.width
+                }
             }
 
             Rectangle {

@@ -691,6 +691,10 @@ class FakeClient:
         self.visual_calls.append(("picture", blob))
         return PICTURE
 
+    def visual_picture_mp4(self, blob):
+        self.visual_calls.append(("picture mp4", blob))
+        return b"MP4 of " + blob.encode()
+
     def install_pictures_start(self, spec):
         self.install_calls.append(("pictures", spec))
         job = {"id": "p1", "repo": "leejet/Z-Image-Turbo-GGUF", "quant": "Q4_K", "name": "Z-Image-Turbo",
@@ -7425,6 +7429,81 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         wait_until(lambda: media.source().isEmpty())
         app.setMode("studio")
         wait_until(lambda: not media.source().isEmpty() and video.property("playing"))
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
+    """48.12: a video a chat's model filmed - its card under the call played the chat's copy in an AnimatedImage that
+    kept every frame in full (960×960×73 - 257 MiB a card, shown at 420 points) and had no controls; it is the
+    Studio's player now: the chat's copy plays as it is read until the hub has made its MP4, then the MP4 - pause, any
+    frame, its time; the chat hidden, the clip let go."""
+    import threading
+
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    from PySide6.QtMultimedia import QMediaPlayer
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        blob = "ab" * 32
+        copy = app.paths.blobs / blob
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        still = QImage(32, 32, QImage.Format.Format_RGB32)
+        still.fill(Qt.GlobalColor.darkCyan)
+        assert still.save(str(copy), "WEBP")  # stands for the engine's animated WebP the chat keeps
+        made, release = [], threading.Event()
+
+        def mp4(name):  # the hub, making it from the chat's copy
+            made.append(name)
+            release.wait(5)
+            (app.paths.blobs / f"{name}.mp4").write_bytes(mjpeg_mp4(COLOURS))
+            return b""
+
+        client.visual_picture_mp4 = mp4
+        client.histories["cv"] = {"id": "cv", "title": "Лиса", "busy": False, "projects": [], "messages": [
+            {"id": 31, "role": "user", "model_id": None, "usage": None,
+             "content": [{"type": "text", "text": "сними лису"}]},
+            {"id": 32, "role": "assistant", "model_id": "llama-swap/coder", "usage": None, "content": [
+                {"type": "tool_call", "id": "f1", "name": "generate_video", "input": {"prompt": "a fox"}}]},
+            {"id": 33, "role": "tool", "model_id": None, "usage": None, "content": [
+                {"type": "tool_result", "id": "f1", "name": "generate_video", "output": "Filmed: 32×32, 1.5 s",
+                 "error": False, "blob": blob, "media_type": "image/webp", "size": copy.stat().st_size}]},
+            {"id": 34, "role": "assistant", "model_id": "llama-swap/coder", "usage": None,
+             "content": [{"type": "text", "text": "Готово."}]}]}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app.openChat("cv")
+        wait_until(lambda: len(app.messages.rows) == 3 and made == [blob])  # shown: the hub is asked for its MP4
+        quick.window.grabWindow()
+        card = item_named(quick.window.contentItem(), "toolVideo")
+        player = item_named(card, "toolVideoPlayer")
+        frames = item_named(player, "videoStill")
+        assert frames.property("source").toString() == QUrl.fromLocalFile(str(copy)).toString()
+        assert frames.property("cache") is False  # read as it plays, not kept
+        assert not item_named(card, "toolVideoSeek").property("enabled")
+        assert item_named(card, "toolVideoTime").property("text") == app.visual_view.chatVideos[blob]["note"] != ""
+        release.set()
+        wait_until(lambda: player.property("seekable"))
+        media = player.findChild(QMediaPlayer)
+        assert media.source() == QUrl.fromLocalFile(str(app.paths.blobs / f"{blob}.mp4"))
+        assert player.property("duration") == 1500 and frames.property("source").toString() == ""
+        QMetaObject.invokeMethod(player, "toggle")  # ‖
+        for k in (7, 3):
+            QMetaObject.invokeMethod(player, "seek", Q_ARG("QVariant", int((k + 0.5) * 125)))
+            wait_until(lambda k=k: shown_colour(player) == k)
+        assert item_named(card, "toolVideoTime").property("text") == "0:00 / 0:01"
+        assert card.property("height") > 100  # its frame's shape: a square under the call
+        app.setMode("studio")  # the chat hidden: the clip let go
+        wait_until(lambda: media.source().isEmpty())
+        app.setMode("chats")
+        wait_until(lambda: not media.source().isEmpty())
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
