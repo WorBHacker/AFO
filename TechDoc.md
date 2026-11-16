@@ -2398,6 +2398,19 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     проверенную»), по «Поставить …» — `setup_update("newest")` с той же защитой от второго щелчка (`putNewest`).
     Файлы — `app/ui/setup_view.py`, `app/ui/qml/WizardSheet.qml`, `common/locale/en.json`. Тест —
     `test_the_newest_llama_cpp_build_is_put_only_after_a_warning` (на старом коде кнопки нет).
+  - ✓ 0.1.16, шаг 12д (решение пользователя 2026-11-17): слова «обновите сборку llama.cpp в мастере первого запуска»
+    не говорили, какую кнопку нажать. Теперь ошибка «llama.cpp не читает этот файл модели» (`common/plain_errors.py`)
+    — «Этой модели нужна сборка новее проверенной: нажмите «Поставить самую новую» в «Первом запуске». Если это файл
+    Ollama… — возьмите эту модель в GGUF с Hugging Face.»; подбор и настройки о том, чего сборка не умеет (llama-bench
+    рядом — `tuning.bench_path`, угадывание вперёд — `_tune_spec` и `llama_config._check_spec`, кэш экспертов MoE),
+    говорят по сборке, что стоит (`engines.advice`, путь — `llama_config.server_of`): старше проверенной —
+    «поставьте проверенную сборку b11899: «Обновить движок» в мастере первого запуска», проверенная или новее — «нужна
+    сборка новее: «Поставить самую новую» в мастере первого запуска», номер не прочитать — прежние слова. Окно берёт
+    слова хаба (`advice` в ответе подбора «unsupported»; `model_setup.spec_text`). В карточке ошибки кнопки нет — слова
+    называют кнопку и место. Файлы — `common/plain_errors.py`, `hub/engines.py`, `hub/llama_config.py`,
+    `hub/tuning.py`, `app/ui/model_setup.py`, `common/locale/en.json`. Тест —
+    `test_what_the_build_lacks_points_to_the_build_that_has_it` (настоящие папки сборок; на старом коде везде
+    «обновите сборку…»), `tests/test_plain.py`, `test_guessing_ahead_in_the_models_sheet`.
 - Найдено перед 48.8 (2026-11-15), не чинилось — по слову пользователя: «Выход» в трее не закрывает AFO. Пользователь
   нажал его дважды — окно (`pythonw -m app --tray`, запущено из Проводника в 13:39), хаб (8766) и llama-swap (8080)
   живы, в `data/logs/app.log` после запуска нет «the window closed». Для 48.8 окно и хаб остановлены вручную, как

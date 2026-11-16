@@ -513,7 +513,9 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
     spec = ((state.get("results") or {}).get(model_id) or {}).get("spec") or {}
     current = launch.get("spec") or {}
     kinds = current.get("type") or ""
-    if spec.get("status") == "unsupported":
+    if spec.get("status") == "unsupported":  # 12д: the hub says where a build that can is got, by the one running
+        if spec.get("advice"):
+            return tr("Эта сборка llama.cpp не умеет угадывать вперёд — {advice}.", advice=spec["advice"]), ""
         return tr("Эта сборка llama.cpp не умеет угадывать вперёд — обновите её в мастере первого запуска."), ""
     if spec.get("status") == "failed":
         return tr("Ускорение не подобрано: {error}", error=spec.get("error") or ""), "error"

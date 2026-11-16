@@ -822,7 +822,8 @@ def test_guessing_ahead_that_does_not_start_is_passed_over_or_taken_back(hub, se
     server = spec_server / "llama-server.cmd"  # another build: its --help is read anew
     server.write_text(server.read_text(encoding="utf-8") + "rem a build that knows no guessing\n", encoding="utf-8")
     old = asyncio.run(tuner(hub, measured={"q8_0": [(512, 900, 40)]}, draft=draft).tune("big"))
-    assert old["spec"] == {"status": "unsupported"}
+    assert old["spec"] == {"status": "unsupported",  # 12д: where the build that can is got - its folder has no number
+                           "advice": "обновите сборку llama.cpp в мастере первого запуска"}  # fmt: skip
 
 
 def test_a_draft_llama_cpp_does_not_take_is_not_measured(hub, setup, spec_server):  # noqa: F811
@@ -1190,6 +1191,45 @@ def real_bench(found, program):
     """A real program in llama-bench's place, asked as llama-bench is."""
     found._run = lambda command, progress: found._bench([sys.executable, str(program), *command[1:]], progress)
     return found
+
+
+def test_what_the_build_lacks_points_to_the_build_that_has_it(tmp_path, monkeypatch):
+    """0.1.16, step 12д (the user's word, 2026-11-17): a llama.cpp build without what the tuning or a setting needs
+    (llama-bench beside it, guessing ahead, the experts' cache) is said with the button that helps: older than the
+    checked build - «Обновить движок» to the checked one; the checked one or newer - «Поставить самую новую»; a build
+    whose number is not known - the wizard, as before. Real files: the build's folder says which it is."""
+    from hub import engines
+
+    monkeypatch.setattr(engines, "LLAMA_TAG", "b100")
+    knows = lc.parse_help("-m,    --model FNAME                    model path to load\n")  # no guessing, no MoE cache
+
+    def config(folder):
+        server = tmp_path / "llama.cpp" / folder / "llama-server.exe"
+        server.parent.mkdir(parents=True, exist_ok=True)
+        for file in (server, server.parent / "ggml-cuda.dll"):
+            file.write_bytes(b"MZ")
+        return f"""macros:
+  llama_server: '"{server.as_posix()}"'
+models:
+  "a":
+    cmd: |
+      ${{llama_server}} -m a.gguf
+      --port ${{PORT}}
+"""  # fmt: skip
+
+    newest = "нужна сборка новее: «Поставить самую новую» в мастере первого запуска"
+    for folder, words in (("b90-cuda-13", "поставьте проверенную сборку b100: «Обновить движок» в мастере первого "
+                                          "запуска"), ("b100-cuda-13", newest), ("b120-cuda-13", newest),
+                          ("my-own", "обновите сборку llama.cpp в мастере первого запуска")):  # fmt: skip
+        text = config(folder)
+        with pytest.raises(tuning.TuneError) as bench:
+            tuning.bench_path(text)
+        assert str(bench.value).endswith(" — " + words), (folder, str(bench.value))  # the old code: «обновите…»
+        for change in ({"spec_type": "ngram-mod"}, {"moe_cache_mib": 512}):
+            with pytest.raises(lc.ConfigError) as setting:
+                lc.edit(text, "a", change, build=knows)
+            assert str(setting.value).endswith(" — " + words), (folder, change, str(setting.value))
+        assert engines.advice(lc.server_of(text)) == words
 
 
 def test_llama_bench_failing_does_not_cancel_the_drafts_measuring(hub, setup, spec_server, tmp_path):  # noqa: F811

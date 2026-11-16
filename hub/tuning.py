@@ -42,7 +42,7 @@ from common.i18n import N_, tr
 from common.llama_memory import COMPUTE_GIB, estimate, kv_bytes, moe_load, quantized_cache
 from common.paths import data_paths
 
-from . import llama_config, model_settings
+from . import engines, llama_config, model_settings
 from .db import utc_now
 from .gpu_card import TUNE, GpuCard, Played, Quiet
 
@@ -122,8 +122,8 @@ def server_path(text: str) -> Path:
 def bench_path(text: str) -> Path:
     bench = server_path(text).with_name(BENCH)
     if not bench.is_file():
-        raise TuneError(tr("рядом с llama-server нет llama-bench ({path}) — обновите сборку llama.cpp в мастере "
-                           "первого запуска", path=bench))  # fmt: skip
+        raise TuneError(tr("рядом с llama-server нет llama-bench ({path}) — {advice}", path=bench,
+                           advice=engines.advice(server_path(text))))  # fmt: skip
     return bench
 
 
@@ -731,8 +731,8 @@ class Tuner:
         after, accepted, measured, short (what a draft lacks), draft (the picked one's file name)}."""
         text = await asyncio.to_thread(llama_config.config_path().read_text, encoding="utf-8")
         build = await asyncio.to_thread(llama_config.server_flags, server_path(text))
-        if build is None or llama_config.spelled("spec_type", build)[1] is None:
-            return {"status": "unsupported"}
+        if build is None or llama_config.spelled("spec_type", build)[1] is None:  # 12д: and where a build that can is
+            return {"status": "unsupported", "advice": await asyncio.to_thread(engines.advice, server_path(text))}
         view = llama_config.model_view(text, model_id)
         info = await asyncio.to_thread(model_info, Path(view["file"]))
         drafts, waiting = await self._find_drafts(model_id, view)

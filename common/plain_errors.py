@@ -66,10 +66,9 @@ RULES: list[tuple[re.Pattern[str], str, str]] = [
             r"error loading model hyperparameters"
         ),
         N_("llama.cpp не читает этот файл модели"),
-        N_(
-            "Файл записан так, как эта сборка llama.cpp не понимает: часто это файл Ollama (у Ollama свой формат "
-            "некоторых моделей) или модель новее сборки. Возьмите эту модель в GGUF с Hugging Face или обновите "
-            "движок в «Первом запуске»."
+        N_(  # 0.1.16 step 12д (the user's word): the newest build helps, its button named
+            "Этой модели нужна сборка новее проверенной: нажмите «Поставить самую новую» в «Первом запуске». Если это "
+            "файл Ollama (у Ollama свой формат некоторых моделей) — возьмите эту модель в GGUF с Hugging Face."
         ),
     ),
     (  # 0.1.13: the model's chat template refused the request (Qwen3.8's - a reasoning depth it does not take)

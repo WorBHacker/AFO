@@ -245,6 +245,20 @@ def build_state(current: str, checked: str) -> str:
     return "older" if newer(checked, current) else "newer"
 
 
+def advice(server: Path | None) -> str:
+    """Where a build with what this llama.cpp lacks is got (12д), by its number against the checked one: older - the
+    checked one («Обновить движок»); the checked one or newer - the newest («Поставить самую новую»); a build whose
+    number is not known - the wizard. Blocking: a look at the build's folder."""
+    running = running_build(server) if server else None
+    state = build_state((running or {}).get("tag", ""), LLAMA_TAG)
+    if state == "older":
+        return tr("поставьте проверенную сборку {checked}: «Обновить движок» в мастере первого запуска",
+                  checked=LLAMA_TAG)  # fmt: skip
+    if state in ("checked", "newer"):
+        return tr("нужна сборка новее: «Поставить самую новую» в мастере первого запуска")
+    return tr("обновите сборку llama.cpp в мастере первого запуска")
+
+
 def server_in(folder: Path) -> Path:
     """llama-server.exe in an unpacked build (at its top or one folder down)."""
     found = next(iter(sorted(folder.rglob("llama-server.exe"), key=lambda p: len(p.parts))), None)

@@ -9045,6 +9045,10 @@ def test_guessing_ahead_in_the_models_sheet(app):
                                     "модели не хватило 0,4 ГБ видеопамяти; с контекстом 16 тыс. она поместится — его "
                                     "можно уменьшить выше.", "")  # fmt: skip
     assert said({"status": "unsupported"}, plain)[0].startswith("Эта сборка llama.cpp не умеет угадывать вперёд")
+    newest = "нужна сборка новее: «Поставить самую новую» в мастере первого запуска"  # 12д: the hub's
+    assert said({"status": "unsupported", "advice": newest}, plain) == (
+        "Эта сборка llama.cpp не умеет угадывать вперёд — нужна сборка новее: «Поставить самую новую» в мастере "
+        "первого запуска.", "")  # fmt: skip
     assert said({"status": "failed", "error": "не встала"}, plain) == ("Ускорение не подобрано: не встала", "error")
     assert said(draft, plain)[0].startswith("Угадывание вперёд не настроено")  # taken off by hand since: as it is
     coming = {"model_id": "big", "name": "Qwen3 0.6B", "done": 300 * 1024**2, "total": 767 * 1024**2}

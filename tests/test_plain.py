@@ -38,6 +38,9 @@ def test_why_a_local_model_did_not_start_in_plain_words():
                   "qwen35.rope.dimension_sections has wrong array length; expected 4, got 3"):  # fmt: skip
         found = plain_errors.explain(said + words)
         assert found[0] == "llama.cpp не читает этот файл модели" and "Ollama" in found[1]
+        # 0.1.16 step 12д (the user's word): the newest build is what helps - and its button is named
+        assert found[1].startswith("Этой модели нужна сборка новее проверенной: нажмите «Поставить самую новую» в "
+                                   "«Первом запуске».")  # fmt: skip
     memory = plain_errors.explain(said + "ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory")
     assert memory[0] == "Не хватает памяти"
     no_words = plain_errors.explain("llama-swap: HTTP 502: upstream command exited prematurely")

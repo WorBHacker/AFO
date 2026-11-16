@@ -32,6 +32,8 @@ from common.gguf import read_header
 from common.i18n import N_, tr
 from common.paths import PROJECT_ROOT, engines_home
 
+from . import engines
+
 CONFIG_ENV = "LOCALCHAT_LLAMA_SWAP_CONFIG"
 CONFIG_SETTING = "llama_swap.config"  # the file chosen in the window (the settings table)
 DEFAULT_CONFIG = PROJECT_ROOT.parent / "llama-swap" / "config.yaml"
@@ -505,13 +507,18 @@ def _layers(value: str | None) -> str | int:
     return "all" if int(value) >= 99 else int(value)
 
 
-def _check_spec(key: str, value: Any, build: dict[str, Any] | None) -> None:
+def _advice_unknown() -> str:
+    return engines.advice(None)  # the build not known: the wizard
+
+
+def _check_spec(key: str, value: Any, build: dict[str, Any] | None, advice: Callable[[], str]) -> None:
     """A setting of guessing ahead (42.1), checked against the build that will run it; taking it off needs none
-    (each of its flags goes under any name it has: 42.5, a draft's file gone)."""
+    (each of its flags goes under any name it has: 42.5, a draft's file gone). `advice` - where a build that can is
+    got (12д)."""
     if key == "spec_type" and value == "none":
         return
     if build is None or spelled("spec_type", build)[1] is None:
-        raise ConfigError(tr("эта сборка llama.cpp не умеет угадывать вперёд — обновите её в мастере первого запуска"))
+        raise ConfigError(tr("эта сборка llama.cpp не умеет угадывать вперёд — {advice}", advice=advice()))
     if key == "spec_type":
         kinds = value.split(",") if isinstance(value, str) else []
         if value != "none" and (not kinds or any(k == "none" or k not in build["spec_types"] for k in kinds)):
@@ -528,10 +535,11 @@ def _check_spec(key: str, value: Any, build: dict[str, Any] | None) -> None:
         raise ConfigError(tr("сжатие KV-кэша черновой модели: одно из {types}", types=", ".join(CACHE_TYPES)))
 
 
-def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str, Any] | None = None
-                  ) -> dict[str, Any]:  # fmt: skip
+def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str, Any] | None = None,
+                  advice: Callable[[], str] = _advice_unknown) -> dict[str, Any]:  # fmt: skip
     """The settings asked for, checked; a Strata model takes only its ttl. Guessing ahead is checked against
-    `build` - the server_flags of the llama-server in the config."""
+    `build` - the server_flags of the llama-server in the config; `advice` - where a build that has what this one
+    lacks is got (12д: engines.advice)."""
     allowed = {"ttl"} if not view["editable"] else {"ttl", "context", "gpu_layers", "flash_attn", "cache_type",
                                                     "parallel", *COUNTS, *MOE, *SPEC_CHANGES}  # fmt: skip
     out: dict[str, Any] = {}
@@ -543,7 +551,7 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str
                 raise ConfigError(tr("«{key}» у этой модели не меняется (её профиль пишет Strata)", key=key))
             raise ConfigError(tr("«{key}» у этой модели не меняется", key=key))
         if key in SPEC_CHANGES:
-            _check_spec(key, value, build)
+            _check_spec(key, value, build, advice)
         elif key in ("ttl", "context", "parallel"):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ConfigError(tr("{key}: нужно целое число", key=key))
@@ -565,8 +573,8 @@ def check_changes(changes: dict[str, Any], view: dict[str, Any], build: dict[str
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MOE_CACHE_MAX_MIB:
                 raise ConfigError(tr("кэш экспертов MoE: от 0 до {high} МБ", high=MOE_CACHE_MAX_MIB))
             if value and (build is None or spelled("moe_cache_mib", build)[1] is None):
-                raise ConfigError(tr("эта сборка llama.cpp не знает кэша экспертов MoE (--moe-cache-mib) — обновите "
-                                     "её в мастере первого запуска"))  # fmt: skip
+                raise ConfigError(tr("эта сборка llama.cpp не знает кэша экспертов MoE (--moe-cache-mib) — {advice}",
+                                     advice=advice()))  # fmt: skip
         elif key == "flash_attn" and value not in ("on", "off", "auto"):
             raise ConfigError(tr("flash attention: on, off или auto"))
         elif key == "cache_type" and value not in CACHE_TYPES:
@@ -669,7 +677,7 @@ def edit(text: str, model_id: str, changes: dict[str, Any], *, build: dict[str, 
     """The config with this model's settings changed; every other line as it was. `build` - what the llama-server
     in the config takes (server_flags): guessing ahead is written only with it, under its names."""
     view = model_view(text, model_id)
-    changes = check_changes(changes, view, build)
+    changes = check_changes(changes, view, build, lambda: engines.advice(server_of(text)))
     lines = text.splitlines()
     start, end = model_blocks(text)[model_id]
     if "ttl" in changes:
@@ -943,6 +951,18 @@ def server_command(text: str) -> str:
             program = next(t for t in _TOKEN.findall(view["command"]) if "llama-server" in t)
             return program if program.startswith(("'", '"')) else f'"{program}"' if " " in program else program
     raise ConfigError(tr("в config.yaml нет llama-server: сначала нужна сборка llama.cpp (мастер первого запуска)"))
+
+
+def server_of(text: str) -> Path | None:
+    """llama-server's program the config runs (its macro's value, or a model's own); None when it names none."""
+    try:
+        command = server_command(text)
+    except ConfigError:
+        return None
+    if command.startswith("${"):
+        command = macros(text).get(command.strip("${}"), "")
+    command = command.strip("'\" ")
+    return Path(command) if command else None
 
 
 def quoted(value: str) -> str:
