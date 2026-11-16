@@ -35,10 +35,10 @@ VIDEO_DECODING_ENV = "QT_FFMPEG_DECODING_HW_DEVICE_TYPES"  # Qt Multimedia's FFm
 def use_software_rendering() -> None:
     """Must run before the first Qt Quick window exists. A video is decoded by the CPU too (48.12): Qt's FFmpeg would
     take the card (d3d11va) - VRAM and its decoder are the models' and the games' - and the window +178 MiB instead of
-    +74 with the 960×960 clip playing. "none" names no device (an empty value Windows drops); one the person set
-    stays."""
+    +74 with the 960×960 clip playing. "," is a list of no devices: an empty value Windows drops, and "none" Qt warns of
+    in the log at each start («Unknown hw device type»). One the person set stays."""
     QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.Software)
-    os.environ.setdefault(VIDEO_DECODING_ENV, "none")
+    os.environ.setdefault(VIDEO_DECODING_ENV, ",")
 
 
 def native_frame_touches(window: QWindow) -> None:

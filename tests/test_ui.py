@@ -7511,16 +7511,47 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         quick.close()
 
 
-def test_the_window_decodes_a_video_on_the_cpu(monkeypatch):
+PLAYS = """
+import os, sys
+from PySide6.QtCore import QElapsedTimer, QUrl, qInstallMessageHandler
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+from app.ui.main import use_software_rendering
+use_software_rendering()
+said = []
+qInstallMessageHandler(lambda kind, context, text: said.append(text))
+app = QGuiApplication([])
+engine = QQmlEngine()
+component = QQmlComponent(engine)
+component.setData(("import QtQuick\\nimport QtMultimedia\\nItem { MediaPlayer { source: '%s'; videoOutput: o; "
+                   "Component.onCompleted: play() }\\n VideoOutput { id: o } }" % sys.argv[1]).encode(), QUrl())
+root = component.create()
+timer = QElapsedTimer()
+timer.start()
+while timer.elapsed() < 3000 and not any("HW decoder" in s for s in said):
+    app.processEvents()
+print(repr(os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"]), said)
+"""
+
+
+def test_the_window_decodes_a_video_on_the_cpu(monkeypatch, tmp_path):
     """48.12: Qt's FFmpeg decodes on the graphics card (d3d11va) unless told otherwise - the card's VRAM and decoder
     are the models' and the games' (D3: the window draws on the CPU), and the window took +178 MiB with the 960×960
-    clip playing, +74 decoded by the CPU. The window names no device ("none": an empty value Windows drops); one
-    the person set stays."""
+    clip playing, +74 decoded by the CPU. The window gives it a list of no devices, ",": an empty value Windows drops,
+    and "none" Qt warned of in the stand window's log at its start («Unknown hw device type»). A player in a process
+    of its own, started as the window starts, finds no device and says nothing else of it; one the person set stays."""
+    import subprocess
+    import sys
+
     from app.ui import main
 
-    monkeypatch.delenv(main.VIDEO_DECODING_ENV, raising=False)
-    main.use_software_rendering()
-    assert os.environ[main.VIDEO_DECODING_ENV] == "none"
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(mjpeg_mp4(COLOURS[:3]))
+    env = {k: v for k, v in os.environ.items() if k != main.VIDEO_DECODING_ENV}
+    done = subprocess.run([sys.executable, "-c", PLAYS, QUrl.fromLocalFile(str(clip)).toString()], env=env,
+                          capture_output=True, text=True, encoding="utf-8", timeout=60, check=True)  # fmt: skip
+    said = done.stdout.strip().splitlines()[-1]
+    assert said.startswith("',' [") and "No HW decoder found" in said and "Unknown hw device" not in said, said
     monkeypatch.setenv(main.VIDEO_DECODING_ENV, "d3d11va")
     main.use_software_rendering()
     assert os.environ[main.VIDEO_DECODING_ENV] == "d3d11va"
