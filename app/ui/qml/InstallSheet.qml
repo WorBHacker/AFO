@@ -851,6 +851,8 @@ Sheet {
                     }
                     Note { visible: job.modelData.progress !== ""; text: job.modelData.progress; color: Theme.p.faint }
                     Note { visible: job.modelData.trial !== ""; text: job.modelData.trial; color: Theme.p.ok }
+                    // did not lie on the graphics card whole (0.1.16 step 11б), however it came
+                    Note { objectName: "jobAdvice"; visible: text !== ""; text: job.modelData.advice; color: Theme.p.warn }
                     Note { visible: job.modelData.error !== ""; text: job.modelData.error; color: Theme.p.error }
                     Row {
                         spacing: 8

@@ -9838,3 +9838,49 @@ def test_installing_a_model_that_does_not_fit_offers_a_smaller_one(app):
     app.answerOther()
     wait_until(lambda: not app.bg.busy)
     assert installs() == ["Q4_K_M", "Q8_0", "Q4_K_M", "Q4_K_M"]
+
+
+def test_an_installed_model_that_did_not_fit_says_so(qapp):
+    """0.1.16 step 11б: a model installed or added that did not lie on the graphics card whole - by any way: «Добавить
+    файл…», the drives, «всё равно» - said nothing of it in its row: it answered many times slower and nobody said
+    why. Now its row says it did not fit whole and where the smaller ones are; one whole on the card, or a
+    Mixture-of-Experts one with its experts in RAM (the user's choice at 0.1.15), says nothing of the kind."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        base = {"repo": "", "folder": "D:/m", "own_files": 0, "error": "", "files": [], "status": "done",
+                "trial": {"seconds": 3.0}, "created_at": "2026-11-16T13:00:00.000Z"}  # fmt: skip
+        client.install_jobs_list = [
+            {**base, "id": "s1", "name": "Split", "model_id": "split", "plan": {"where": "split", "info": {}}},
+            {**base, "id": "g1", "name": "Whole", "model_id": "whole", "plan": {"where": "gpu", "info": {}}},
+            {**base, "id": "m1", "name": "MoE", "model_id": "moe", "plan": {"where": "split", "info": {"experts": 8}}},
+        ]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = quick.window.findChild(QObject, "installSheet")
+        app.openUi("install-models")
+        view.setTab("jobs")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.jobs)
+        for _ in range(10):
+            QApplication.processEvents()
+        words = "Поместилась не вся: часть в обычной памяти — в несколько раз медленнее."
+        said = [i.property("text") for i in _items(quick.window.contentItem())
+                if i.objectName() == "jobAdvice" and i.isVisible()]  # fmt: skip
+        assert len(said) == 1 and said[0].startswith(words), said
+        rows = {r["id"]: r["advice"] for r in install_view.job_rows(client.install_jobs_list)}
+        assert rows["s1"].startswith(words) and rows["g1"] == "" and rows["m1"] == ""
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def _items(item):
+    for child in item.childItems():
+        yield child
+        yield from _items(child)

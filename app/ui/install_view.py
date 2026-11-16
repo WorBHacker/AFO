@@ -36,6 +36,9 @@ STATUS = {"queued": N_("в очереди"), "downloading": N_("загружае
           "failed": N_("не вышло"), "cancelled": N_("отменена"), "removed": N_("удалена")}  # fmt: skip
 LOST = N_("нет в config.yaml")  # 34.4: «установлена», but its block is gone from llama-swap's config
 LOST_WHY = N_("Модель убрана из config.yaml llama-swap: в чате её нет. «Вернуть в llama-swap» запишет её снова.")
+# a model in the config that did not lie on the graphics card whole (0.1.16 step 11б)
+SPLIT_ADVICE = N_("Поместилась не вся: часть в обычной памяти — в несколько раз медленнее. Меньшие модели: «Поиск» → "
+                  "размер «поместится».")  # fmt: skip
 LOST_ACTIONS = [("resume", N_("Вернуть в llama-swap"), "primary"), ("remove", N_("Удалить"), "danger")]
 ACTIONS = {
     "queued": [("pause", N_("Пауза"), "plain"), ("cancel", N_("Отменить"), "danger")],
@@ -477,13 +480,26 @@ def job_actions(job: dict[str, Any], file: str) -> list[dict[str, str]]:
     return [{"id": a, "label": tr(label), "kind": kind} for a, label, kind in actions]
 
 
+def advice_of(job: dict[str, Any]) -> str:
+    """What an install's row says of a model that did not lie on the graphics card whole (0.1.16 step 11б) - however
+    it came: «Добавить файл…», the drives, «всё равно»; the plan its launch settings were written by says where. A
+    Mixture-of-Experts model with its experts in RAM is as fast as it gets (the user's choice at 0.1.15): nothing."""
+    plan = job.get("plan") or {}
+    if plan.get("where") != "split" or (plan.get("info") or {}).get("experts"):
+        return ""
+    if job.get("lost") or job["status"] in ("failed", "cancelled", "removed"):
+        return ""
+    return tr(SPLIT_ADVICE)
+
+
 def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"id": j["id"], "name": j["name"], "modelId": j["model_id"], "repo": j["repo"], "status": j["status"],
              "ownFiles": bool(j.get("own_files", 1)),
              "statusWords": tr(LOST) if j.get("lost") else status_words(j["status"]),
              "percent": j.get("percent") or 0.0, "progress": progress_text(j),
              "error": tr(LOST_WHY) if j.get("lost") else with_hint(j.get("error") or ""), "trial": trial_text(j),
-             "live": j["status"] in LIVE, "file": (file := job_file(j)), "actions": job_actions(j, file)}
+             "live": j["status"] in LIVE, "file": (file := job_file(j)), "actions": job_actions(j, file),
+             "advice": advice_of(j)}
             for j in jobs if j["status"] != "removed"]  # fmt: skip
 
 
@@ -1394,14 +1410,17 @@ class InstallView(QObject):
             if self._jobs_loading and job.get("id"):
                 self._heard[job["id"]] = {**(self._heard.get(job["id"]) or {}), **job}
             if job.get("status") == "done" and before != "done":
-                self.app.flash(tr("Модель «{name}» установлена: {trial}", name=job.get("name"),
-                                  trial=trial_text(job) or tr("готова")))  # fmt: skip
+                said = tr("Модель «{name}» установлена: {trial}", name=job.get("name"),
+                          trial=trial_text(job) or tr("готова"))  # fmt: skip
+                self.app.flash(" ".join(s for s in (said, advice_of(job)) if s))
                 self.app.load_models()
                 self._catalog = []
                 self._load_catalog()
             elif job.get("status") == "failed" and before != "failed":
                 self.app.flash(tr("«{name}»: {error}", name=job.get("name"), error=job.get("error")), error=True)
             elif job.get("status") == "added" and before not in ("added", "trialwait"):  # in the config now (34.5)
+                if advice := advice_of(job):
+                    self.app.flash(tr("«{name}» добавлена. {advice}", name=job.get("name"), advice=advice))
                 self.app.load_models()
                 self.loadLocal()  # its row says «в llama-swap: …»
             self.changed.emit()
