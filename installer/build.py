@@ -39,15 +39,17 @@ EMBED_SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15
 EXTRAS = ("hub", "app")  # the program's libraries; `dev` (ruff, pytest, pip-audit) stays out
 CODE = ("hub", "app", "common")
 FILES = ("LICENSE",)  # beside the code in the program's folder
-# The video player (48.12): of PySide6-Addons (100 MiB) only what QML's MediaPlayer and VideoOutput load - Qt
-# Multimedia, its QML module, the FFmpeg backend and FFmpeg's libraries (by the DLLs' import tables); not the Windows
-# Media Foundation backend (Windows' codecs: no WebM on many computers), not the Python module (the window's code
-# plays nothing itself)
+# The video player (48.12): of PySide6-Addons (100 MiB) only what QML's MediaPlayer loads - Qt Multimedia, its QML
+# module, the FFmpeg backend and FFmpeg's libraries (by the DLLs' import tables) - and Qt Multimedia's Python module:
+# the window draws the frames itself (48.12.7, app/ui/video_surface.py - VideoOutput draws with the card's shaders,
+# and the window's software scene graph drew nothing of it); not the Windows Media Foundation backend (Windows'
+# codecs: no WebM on many computers)
 ADDONS = "pyside6_addons"
-PLAYER = ("PySide6/Qt6Multimedia.dll", "PySide6/Qt6MultimediaQuick.dll", "PySide6/qml/QtMultimedia/qmldir",
-          "PySide6/qml/QtMultimedia/quickmultimediaplugin.dll", "PySide6/qml/QtMultimedia/Video.qml",
-          "PySide6/plugins/multimedia/ffmpegmediaplugin.dll", "PySide6/avcodec-63.dll", "PySide6/avformat-63.dll",
-          "PySide6/avutil-61.dll", "PySide6/swresample-7.dll", "PySide6/swscale-10.dll")  # fmt: skip
+PLAYER = ("PySide6/Qt6Multimedia.dll", "PySide6/QtMultimedia.pyd", "PySide6/Qt6MultimediaQuick.dll",
+          "PySide6/qml/QtMultimedia/qmldir", "PySide6/qml/QtMultimedia/quickmultimediaplugin.dll",
+          "PySide6/qml/QtMultimedia/Video.qml", "PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
+          "PySide6/avcodec-63.dll", "PySide6/avformat-63.dll", "PySide6/avutil-61.dll", "PySide6/swresample-7.dll",
+          "PySide6/swscale-10.dll")  # fmt: skip
 FFMPEG_LICENSE = Path(__file__).with_name("ffmpeg-license.txt")  # FFmpeg's (LGPL 2.1+): beside Addons' own licence
 # Qt's (LGPL 3) beside each Qt library's own (48.12, before the release): their wheels carry only a commercial note,
 # and the READMEs say the licences' texts lie beside the libraries
@@ -232,37 +234,52 @@ def isolated(scratch: Path) -> dict[str, str]:
     return env
 
 
-# The player in the folder (48.12): QML's MediaPlayer shows a picture's frame through FFmpeg - what Qt loads as it
-# goes (the backend, FFmpeg's libraries) is there, not only what the import tables name
+# The player in the folder (48.12): QML's MediaPlayer plays a picture through FFmpeg and the window's VideoSurface
+# draws its frame, the window drawn as AFO's is (by the CPU) - what Qt loads as it goes (the backend, FFmpeg's
+# libraries) is there, not only what the import tables name; the frame is looked at in the window's picture
+# (48.12.7: the frame reached the player, and the window showed its background)
 PLAYER_CHECK = """
 import sys
+from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QElapsedTimer, QUrl
-from PySide6.QtGui import QGuiApplication, QImage
-from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtGui import QColor, QGuiApplication, QImage
+from PySide6.QtQuick import QQuickView
+from app.ui import video_surface
+from app.ui.main import use_software_rendering
+use_software_rendering()
 app = QGuiApplication([])
+video_surface.register()
 picture = QImage(16, 16, QImage.Format.Format_RGB32)
-picture.fill(0x3366AA)
-picture.save("check.webp", "WEBP")
-engine = QQmlEngine()
-component = QQmlComponent(engine)
-component.setData(b'''
+picture.fill(QColor(0x33, 0x66, 0xAA))
+for y in range(16):
+    for x in range(8, 16):
+        picture.setPixelColor(x, y, QColor(0xEE, 0x99, 0x22))
+picture.save("check.webp", "WEBP", 100)
+Path("check.qml").write_text('''
 import QtQuick
 import QtMultimedia
-Item {
-    property bool shown: false
-    MediaPlayer { source: "check.webp"; videoOutput: out; Component.onCompleted: play() }
-    VideoOutput { id: out; width: 16; height: 16 }
-    Connections { target: out.videoSink; function onVideoFrameChanged(frame) { shown = true } }
-}''', QUrl.fromLocalFile("check.qml"))
-root = component.create()
-if root is None:
-    sys.exit("the player is not built: " + component.errorString())
+import AFO.Video
+Rectangle {
+    width: 64; height: 64; color: "white"
+    MediaPlayer { source: "check.webp"; videoOutput: out.videoSink; Component.onCompleted: play() }
+    VideoSurface { id: out; anchors.fill: parent }
+}''', encoding="ascii")
+view = QQuickView()
+view.setSource(QUrl.fromLocalFile("check.qml"))
+if view.status() != QQuickView.Status.Ready:
+    sys.exit("the player is not built: " + "; ".join(e.toString() for e in view.errors()))
+view.show()
+def near(colour, r, g, b):
+    return abs(colour.red() - r) + abs(colour.green() - g) + abs(colour.blue() - b) < 60
+def drawn():
+    shot = view.grabWindow()
+    return near(shot.pixelColor(16, 32), 0x33, 0x66, 0xAA) and near(shot.pixelColor(48, 32), 0xEE, 0x99, 0x22)
 timer = QElapsedTimer()
 timer.start()
-while not root.property("shown") and timer.elapsed() < 15000:
+while not drawn() and timer.elapsed() < 15000:
     QCoreApplication.processEvents()
-if not root.property("shown"):
-    sys.exit("the player showed no frame")
+if not drawn():
+    sys.exit("the player drew no frame")
 print("  player: ok")
 """
 

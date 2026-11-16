@@ -19,7 +19,7 @@ from shiboken6 import Shiboken
 from app.hub_client import HubError
 from common.paths import DataPaths
 
-from . import snap
+from . import snap, video_surface
 from .computer_view import install_stop_key
 from .controller import Controller
 from .icons import IconProvider
@@ -99,6 +99,7 @@ class QuickApp:
         self.settings = QSettings(str(paths.root / "app.ini"), QSettings.Format.IniFormat)
         self.theme = Theme(str(self.settings.value("ui/theme", "system")))
         self.controller = Controller(paths, self.settings, self.theme)
+        video_surface.register()  # a video's picture, drawn by the CPU (48.12.7)
         self.engine = QQmlApplicationEngine()
         self.warnings: list[str] = []
         self.engine.warnings.connect(self._warned)

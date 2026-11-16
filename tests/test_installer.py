@@ -99,6 +99,24 @@ def test_the_program_takes_only_the_players_files_of_pyside6_addons(tmp_path):
     build.FFMPEG_LICENSE.read_bytes().decode("ascii")  # plain text, as the other licences
 
 
+def test_each_qt_module_the_programs_code_imports_is_in_the_program():
+    """48.12.7: the window draws a video's frames itself (app/ui/video_surface.py - VideoOutput draws with the card's
+    shaders, and the window's software scene graph drew nothing of it), and that takes Qt Multimedia's Python module,
+    which only Addons has - the player's files of 48.12.1 left it out («the window's code plays nothing itself»). Each
+    PySide6 module the hub's and the window's code imports is Essentials' or one the program keeps of Addons."""
+    import PySide6
+
+    real = Path(PySide6.__file__).resolve().parent.parent
+    essentials = next(real.glob("pyside6_essentials-*.dist-info"))
+    has = {line.split(",", 1)[0] for line in (essentials / "RECORD").read_text(encoding="utf-8").splitlines()}
+    has |= set(build.PLAYER)
+    code = [p for part in build.CODE for p in (build.ROOT / part).rglob("*.py")]
+    pattern = re.compile(r"^\s*(?:from|import) PySide6\.(Qt\w+)", re.M)
+    imported = {m for p in code for m in pattern.findall(p.read_text("utf-8"))}
+    assert {"QtCore", "QtQuick", "QtMultimedia"} <= imported
+    assert sorted(m for m in imported if f"PySide6/{m}.pyd" not in has) == []
+
+
 def test_qts_licence_lies_beside_each_qt_library(tmp_path):
     """48.12, before the release: the READMEs say the libraries' licences lie beside them, and Qt's wheels carry only
     a commercial note - the program has the LGPL 3's text (AFO takes Qt under it) in the licences of PySide6-Essentials,

@@ -5,10 +5,12 @@ import asyncio
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import httpx
 import pytest
@@ -136,3 +138,89 @@ def test_a_webp_into_mp4(tmp_path, monkeypatch):
     with pytest.raises(EngineError, match="Invalid data"):
         ffmpeg.to_mp4(tmp_path / "ffmpeg.exe", tmp_path / "fail.webp", tmp_path / "fail.mp4")
     assert not (tmp_path / "fail.mp4").exists()
+
+
+BLUE, ORANGE, GREEN = (20, 40, 120), (230, 140, 30), (40, 200, 60)
+
+
+def animated_webp(frames: list[tuple[object, int, int, bool]], width: int, height: int) -> bytes:
+    """An animated WebP as the engine's are (libwebp's: sd-server): frames smaller than the canvas, with see-through
+    parts (ALPH), laid over the one before - each (QImage, x, y, laid over), a tenth of a second; their pictures are
+    what Qt's WebP writes (lossy: VP8 and ALPH)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return kind + len(body).to_bytes(4, "little") + body + b"\0" * (len(body) & 1)
+
+    def picture(image) -> bytes:  # its chunks but VP8X
+        array = QByteArray()
+        buffer = QBuffer(array)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        assert image.save(buffer, "WEBP", 90)
+        data, at, out = bytes(array.data()), 12, b""
+        while at < len(data):
+            size = int.from_bytes(data[at + 4 : at + 8], "little")
+            if data[at : at + 4] != b"VP8X":
+                out += data[at : at + 8 + size + (size & 1)]
+            at += 8 + size + (size & 1)
+        return out
+
+    def u24(value: int) -> bytes:
+        return value.to_bytes(3, "little")
+
+    body = b"WEBP" + chunk(b"VP8X", bytes([0x12, 0, 0, 0]) + u24(width - 1) + u24(height - 1))  # alpha, animation
+    body += chunk(b"ANIM", bytes(4) + bytes(2))  # its background, round for ever
+    for image, x, y, over in frames:
+        flags = 0 if over else 0x02  # «do not blend» for the first; none is disposed of
+        body += chunk(b"ANMF", u24(x // 2) + u24(y // 2) + u24(image.width() - 1) + u24(image.height() - 1)
+                      + u24(100) + bytes([flags]) + picture(image))  # fmt: skip
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_videos_mp4_has_each_frame_as_the_webp_lays_it(tmp_path):
+    """48.12.7 (the live check: the player showed the clip's first scene, then white): the MP4 the hub makes from the
+    engine's WebP - by a real ffmpeg, the hub's own arguments - has each frame as the WebP lays it: a frame smaller
+    than the canvas, see-through around, over the one before. The clip's middle frame is not of one colour and is not
+    the first: the first frame's halves are still there and every square laid since."""
+    from PySide6.QtGui import QColor, QImage
+
+    first = QImage(64, 64, QImage.Format.Format_RGB32)
+    first.fill(QColor(*BLUE))
+    for x in range(32, 64):
+        for y in range(64):
+            first.setPixelColor(x, y, QColor(*ORANGE))
+    frames = [(first, 0, 0, False)]
+    for k in range(1, 9):  # a square moving right, each over what was
+        tile = QImage(16, 16, QImage.Format.Format_ARGB32)
+        tile.fill(QColor(0, 0, 0, 0))
+        for x in range(4, 12):
+            for y in range(4, 12):
+                tile.setPixelColor(x, y, QColor(*GREEN))
+        frames.append((tile, 2 + 5 * k, 24, True))  # within the canvas: the last at 42-58
+    source, target = tmp_path / "v.webp", tmp_path / "v.mp4"
+    source.write_bytes(animated_webp(frames, 64, 64))
+    program = Path(shutil.which("ffmpeg"))
+    ffmpeg.to_mp4(program, source, target)
+
+    def frame(n: int) -> QImage:
+        png = tmp_path / f"{n}.png"
+        subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-i", str(target), "-vf",
+                        f"select=eq(n\\,{n})", "-fps_mode", "passthrough", "-frames:v", "1", str(png)],
+                       check=True, timeout=60)  # fmt: skip
+        return QImage(str(png))
+
+    def near(image, x: int, y: int, colour: tuple[int, int, int]) -> bool:
+        pixel = image.pixelColor(x, y)
+        return sum(abs(a - b) for a, b in zip((pixel.red(), pixel.green(), pixel.blue()), colour, strict=True)) < 60
+
+    start, middle = frame(0), frame(4)
+    assert (middle.width(), middle.height()) == (64, 64)
+    assert near(start, 16, 4, BLUE) and near(start, 48, 60, ORANGE) and near(start, 16, 32, BLUE)
+    # the first frame's halves around the squares, not the background a frame alone would have
+    assert near(middle, 4, 4, BLUE) and near(middle, 60, 60, ORANGE) and near(middle, 40, 8, ORANGE)
+    # the squares of frames 1 to 4 (each 8 wide at 11, 16, 21, 26): all of them, not only the last
+    assert all(near(middle, x, 32, GREEN) for x in (13, 18, 23, 32)) and not near(middle, 44, 32, GREEN)
+    assert not near(start, 16, 32, GREEN)  # not the first
+    last = frame(8)
+    assert near(last, 50, 32, GREEN) and near(last, 13, 32, GREEN)  # the square at 46, the first one kept

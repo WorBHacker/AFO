@@ -8,6 +8,7 @@ import json
 import os
 import struct
 import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 
@@ -7297,11 +7298,14 @@ COLOURS = [(255, 0, 0), (0, 200, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), 
            (255, 128, 0), (0, 128, 255), (128, 0, 255), (64, 192, 64), (192, 64, 64)]  # fmt: skip
 
 
+BAND = (16, 16, 16)  # each frame's left quarter: no frame is of one colour
+
+
 def mjpeg_mp4(colours: list[tuple[int, int, int]], side: int = 32, fps: int = 8) -> bytes:
-    """An MP4 of one solid frame a colour (48.12: the player's file). The hub's is H.264 that ffmpeg makes, and the
-    tests run no ffmpeg; this is the same container - ISO MP4, each frame's time and place in its sample table - with
-    JPEG frames Qt writes, and Qt's FFmpeg reads and seeks it as it does the hub's (the stand's ffmpeg reads it too:
-    12 frames, 1.5 s)."""
+    """An MP4 of a frame a colour, a dark band at its left (48.12: the player's file). The hub's is H.264 that ffmpeg
+    makes, and the tests run no ffmpeg; this is the same container - ISO MP4, each frame's time and place in its sample
+    table - with JPEG frames Qt writes, and Qt's FFmpeg reads and seeks it as it does the hub's (the stand's ffmpeg
+    reads it too: 12 frames, 1.5 s)."""
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
     from PySide6.QtGui import QColor
 
@@ -7315,6 +7319,9 @@ def mjpeg_mp4(colours: list[tuple[int, int, int]], side: int = 32, fps: int = 8)
     def jpeg(colour: tuple[int, int, int]) -> bytes:
         image = QImage(side, side, QImage.Format.Format_RGB32)
         image.fill(QColor(*colour))
+        for x in range(side // 4):
+            for y in range(side):
+                image.setPixelColor(x, y, QColor(*BAND))
         array = QByteArray()
         buffer = QBuffer(array)
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
@@ -7345,23 +7352,78 @@ def mjpeg_mp4(colours: list[tuple[int, int, int]], side: int = 32, fps: int = 8)
     return ftyp + box(b"mdat", *frames) + box(b"moov", mvhd, box(b"trak", tkhd, mdia))
 
 
+def drawn(player) -> QImage:
+    """What the window shows of a VideoPlayer's frame now - the picture drawn there, grabbed (48.12.7: the frames its
+    VideoOutput was given were right, and the window, drawn by the CPU, showed its background)."""
+    from PySide6.QtCore import QRectF
+
+    frame = player.property("frame")
+    box = player.mapRectToScene(QRectF(0, 0, player.width(), player.height()))
+    if frame.isEmpty():  # no frame yet: the whole of it
+        return player.window().grabWindow().copy(box.toAlignedRect())
+    scale = min(box.width() / frame.width(), box.height() / frame.height())
+    width, height = frame.width() * scale, frame.height() * scale
+    fitted = QRectF(box.x() + (box.width() - width) / 2, box.y() + (box.height() - height) / 2, width, height)
+    return player.window().grabWindow().copy(fitted.toAlignedRect().adjusted(1, 1, -1, -1))
+
+
+def colours_in(image: QImage) -> list[tuple[int, int, int]]:
+    """The colours that cover a picture: each one at least a tenth of it (a 24×24 grid, colours to 1/8)."""
+    grid = [image.pixelColor(image.width() * (2 * i + 1) // 48, image.height() * (2 * j + 1) // 48)
+            for i in range(24) for j in range(24)]  # fmt: skip
+    counted = Counter((c.red() // 32, c.green() // 32, c.blue() // 32) for c in grid)
+    return [colour for colour, n in counted.items() if n >= len(grid) / 10]
+
+
+def apart(one: QImage, other: QImage) -> float:
+    """How far two pictures are: the mean difference of a channel over a 16×16 grid, 0-255."""
+    points = [(i, j) for i in range(16) for j in range(16)]
+    total = 0
+    for i, j in points:
+        a = one.pixelColor(one.width() * (2 * i + 1) // 32, one.height() * (2 * j + 1) // 32)
+        b = other.pixelColor(other.width() * (2 * i + 1) // 32, other.height() * (2 * j + 1) // 32)
+        total += abs(a.red() - b.red()) + abs(a.green() - b.green()) + abs(a.blue() - b.blue())
+    return total / (3 * len(points))
+
+
 def shown_colour(player) -> int | None:
-    """Which of COLOURS a VideoPlayer shows now - the frame its VideoOutput was given, as Qt decoded it."""
-    frame = item_named(player, "videoOutput").property("videoSink").videoFrame()
-    if not frame.isValid():
-        return None
-    image = frame.toImage()
+    """Which of COLOURS a VideoPlayer shows now - its frame's middle, as the window draws it; None - none of them."""
+    image = drawn(player)
     pixel = image.pixelColor(image.width() // 2, image.height() // 2)
     rgb = (pixel.red(), pixel.green(), pixel.blue())
-    return min(range(len(COLOURS)), key=lambda i: sum(abs(a - b) for a, b in zip(COLOURS[i], rgb, strict=True)))
+    near = min(range(len(COLOURS)), key=lambda i: sum(abs(a - b) for a, b in zip(COLOURS[i], rgb, strict=True)))
+    return near if sum(abs(a - b) for a, b in zip(COLOURS[near], rgb, strict=True)) < 60 else None
+
+
+def a_middle_frame_is_drawn(player) -> None:
+    """The frame in the clip's middle is drawn: not of one colour and not the first (48.12.7: the live check saw the
+    clip's first scene, then the background, the time going on)."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+
+    def at(ms: int, colour: int) -> QImage:  # the picture once that frame is drawn, or when 5 s are up
+        QMetaObject.invokeMethod(player, "seek", Q_ARG("QVariant", ms))
+        wait_until(lambda: abs(player.property("position") - ms) < 125)
+        deadline = time.monotonic() + 5
+        while shown_colour(player) != colour and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        return drawn(player)
+
+    first = at(62, 0)  # the first frame's middle
+    middle = at(6 * 125 + 62, 6)  # the middle one's
+    assert len(colours_in(middle)) >= 2, colours_in(middle)  # the frame and its band
+    assert apart(middle, first) > 40, apart(middle, first)
+    assert shown_colour(player) == 6
 
 
 def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
     """48.12 (48.7г's player, now Qt Multimedia's): the Studio plays the video's MP4 - the hub makes it from the WebP
     the first time the video is shown (Qt's FFmpeg reads the WebP but goes to no frame of it); until then the WebP
     plays as it is read, no frame kept (AnimatedImage kept them all: 960×960×73 - 257 MiB), and the player says why
-    it does not seek. Then pause, any frame to go to - the one shown is the one filmed there - its time, round again
-    after the last; the Studio hidden, the clip let go. A real file, real QML, no screen."""
+    it does not seek. Then pause, any frame to go to - the one drawn is the one filmed there - its time, round again
+    after the last; the Studio hidden, the clip let go. A real file, real QML, no screen; what the player shows is
+    looked at in the window's picture, drawn as the window draws (48.12.7: its sink had each frame right, and the
+    window showed its background)."""
     import threading
 
     from PySide6.QtCore import Q_ARG, QMetaObject, QObject
@@ -7417,6 +7479,7 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         assert media.source() == QUrl.fromLocalFile(str(clip.with_suffix(".mp4")))
         QMetaObject.invokeMethod(video, "toggle")  # ‖
         assert video.property("held")
+        a_middle_frame_is_drawn(video)
         for k in (5, 2, 9, 0, 11):  # a frame's middle: the frame filmed there is shown
             QMetaObject.invokeMethod(video, "seek", Q_ARG("QVariant", int((k + 0.5) * 125)))
             wait_until(lambda k=k: shown_colour(video) == k)
@@ -7440,7 +7503,7 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
     """48.12: a video a chat's model filmed - its card under the call played the chat's copy in an AnimatedImage that
     kept every frame in full (960×960×73 - 257 MiB a card, shown at 420 points) and had no controls; it is the
     Studio's player now: the chat's copy plays as it is read until the hub has made its MP4, then the MP4 - pause, any
-    frame, its time; the chat hidden, the clip let go."""
+    frame, its time; the chat hidden, the clip let go. The frame is looked at in the window's picture (48.12.7)."""
     import threading
 
     from PySide6.QtCore import Q_ARG, QMetaObject
@@ -7495,6 +7558,7 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         assert media.source() == QUrl.fromLocalFile(str(app.paths.blobs / f"{blob}.mp4"))
         assert player.property("duration") == 1500 and frames.property("source").toString() == ""
         QMetaObject.invokeMethod(player, "toggle")  # ‖
+        a_middle_frame_is_drawn(player)
         for k in (7, 3):
             QMetaObject.invokeMethod(player, "seek", Q_ARG("QVariant", int((k + 0.5) * 125)))
             wait_until(lambda k=k: shown_colour(player) == k)
