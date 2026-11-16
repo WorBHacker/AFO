@@ -99,6 +99,20 @@ Sheet {
         text: Setup.checkedText
         onClicked: Setup.updateEngine()
     }
+    Note {
+        objectName: "wizardNewest"
+        visible: !Setup.needed && Setup.newestAvailable && Setup.jobStatus !== "downloading"
+        text: Setup.newestText
+        color: Theme.p.muted
+        font.pixelSize: 12
+    }
+    PlainButton {
+        objectName: "wizardNewestEngine"
+        visible: !Setup.needed && Setup.newestAvailable && Setup.jobStatus !== "downloading"
+        iconName: "download"
+        text: qsTr("Поставить самую новую")
+        onClicked: Setup.putNewest()
+    }
     Row {
         spacing: 8
         PlainButton {

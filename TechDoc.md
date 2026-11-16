@@ -2391,6 +2391,13 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     GitHub уже нет — поставлена …, AFO на ней не проверялась.» (`job_text`, поле задания `unchecked`). Файлы —
     `app/ui/setup_view.py`, `app/ui/qml/WizardSheet.qml`, `common/locale/en.json`. Тест —
     `test_the_wizard_says_which_llama_cpp_build_runs` (на старом коде у b12318 — «самая новая сборка»).
+  - ✓ 0.1.16, шаг 12г: самую новую сборку человек поставить не мог. Теперь, когда на GitHub есть новее той, что
+    стоит, в мастере строка «Новейшим моделям иногда нужна новая сборка llama.cpp. Самая новая сейчас — …» и кнопка
+    «Поставить самую новую» (`wizardNewest`, `wizardNewestEngine`, `newestAvailable`); щелчок — сначала вопрос
+    «Поставить самую новую сборку llama.cpp?» (AFO на ней не проверялась, прежняя остаётся рядом, назад — «Поставить
+    проверенную»), по «Поставить …» — `setup_update("newest")` с той же защитой от второго щелчка (`putNewest`).
+    Файлы — `app/ui/setup_view.py`, `app/ui/qml/WizardSheet.qml`, `common/locale/en.json`. Тест —
+    `test_the_newest_llama_cpp_build_is_put_only_after_a_warning` (на старом коде кнопки нет).
 - Найдено перед 48.8 (2026-11-15), не чинилось — по слову пользователя: «Выход» в трее не закрывает AFO. Пользователь
   нажал его дважды — окно (`pythonw -m app --tray`, запущено из Проводника в 13:39), хаб (8766) и llama-swap (8080)
   живы, в `data/logs/app.log` после запуска нет «the window closed». Для 48.8 окно и хаб остановлены вручную, как

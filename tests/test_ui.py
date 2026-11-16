@@ -6921,6 +6921,63 @@ def test_the_wizard_says_which_llama_cpp_build_runs(qapp):
         quick.close()
 
 
+def test_the_newest_llama_cpp_build_is_put_only_after_a_warning(qapp):
+    """0.1.16, step 12г (the user's word, 2026-11-16): the newest llama.cpp build is put only by the person - the
+    newest models sometimes need it; after a question that says AFO was not checked on it and the checked one stays
+    beside it."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.build_info = {**client.build_info, "current": "b11899", "latest": "b12400", "state": "checked",
+                             "newer": False, "newest_newer": True}  # fmt: skip
+        app.attach(client, start_events=False)
+        view = app.setup_view
+        sheet = quick.window.findChild(QObject, "wizardSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and sheet.property("opened") and view.updateText)
+
+        def named(name):
+            return quick.window.findChild(QObject, name)
+
+        put = named("wizardNewestEngine")
+        assert put is not None and put.property("visible")  # the old code: no such button - the newest can't be put
+        assert put.property("text") == "Поставить самую новую"
+        assert named("wizardNewest").property("text") == ("Новейшим моделям иногда нужна новая сборка llama.cpp. Самая "
+                                                          "новая сейчас — b12400.")  # fmt: skip
+        QMetaObject.invokeMethod(put, "clicked")
+        wait_until(lambda: bool(app.question))
+        assert app.question["title"] == "Поставить самую новую сборку llama.cpp?"
+        assert app.question["confirm"] == "Поставить b12400" and "не проверялась" in app.question["text"]
+        assert app.question["text"] == (
+            "Сборка b12400 новее проверенной b11899: AFO на ней не проверялась, что-то может работать иначе. Она "
+            "нужна, если новая модель не запускается на проверенной. Прежняя сборка останется рядом, вернуться можно "
+            "кнопкой «Поставить проверенную». Поставить b12400?")  # fmt: skip
+        app.answer(False)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert not any(c[0] == "update" for c in client.install_calls)  # «Отмена»: nothing
+        QMetaObject.invokeMethod(put, "clicked")
+        wait_until(lambda: bool(app.question))
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and ("update", "newest") in client.install_calls)
+        assert [c for c in client.install_calls if c[0] == "update"] == [("update", "newest")]
+
+        client.build_info = {**client.build_info, "newest_newer": False}  # nothing newer: no line, no button
+        view.load()
+        wait_until(lambda: not app.bg.busy and not view.newestAvailable)
+        for _ in range(5):
+            QApplication.processEvents()
+        assert not named("wizardNewestEngine").property("visible") and not named("wizardNewest").property("visible")
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_checking_the_system_and_collecting_the_logs(qapp):
     """10.6: «Проверить систему» runs when its sheet opens; «Собрать журналы» makes the report."""
     from PySide6.QtCore import QObject

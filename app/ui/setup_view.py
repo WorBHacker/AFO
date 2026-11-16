@@ -272,10 +272,33 @@ class SetupView(QObject):
     def checkedText(self) -> str:
         return tr("Поставить проверенную {checked}", checked=self._update.get("checked", ""))
 
+    @Property(bool, notify=changed)
+    def newestAvailable(self) -> bool:
+        """«Поставить самую новую» (12г): GitHub has a build newer than the running one."""
+        return bool(self._update.get("newest_newer")) and not self._updating
+
+    @Property(str, notify=changed)
+    def newestText(self) -> str:
+        if not self._update.get("newest_newer"):
+            return ""
+        return tr("Новейшим моделям иногда нужна новая сборка llama.cpp. Самая новая сейчас — {latest}.",
+                  latest=self._update.get("latest", ""))  # fmt: skip
+
     @Slot()
     def updateEngine(self) -> None:
         """«Обновить движок» and «Поставить проверенную»: the checked build."""
         self._put("checked")
+
+    @Slot()
+    def putNewest(self) -> None:
+        """«Поставить самую новую» (12г, the user's word): only after a question - AFO was not checked on it."""
+        latest, checked = self._update.get("latest", ""), self._update.get("checked", "")
+        text = tr("Сборка {latest} новее проверенной {checked}: AFO на ней не проверялась, что-то может работать "
+                  "иначе. Она нужна, если новая модель не запускается на проверенной. Прежняя сборка останется рядом, "
+                  "вернуться можно кнопкой «Поставить проверенную». Поставить {latest}?", latest=latest,
+                  checked=checked)  # fmt: skip
+        self.app._ask(tr("Поставить самую новую сборку llama.cpp?"), text, tr("Поставить {latest}", latest=latest),
+                      lambda yes: self._put("newest") if yes else None)  # fmt: skip
 
     def _put(self, target: str) -> None:
         """Another llama.cpp build (12в): «Скачиваю сборку…» at once, the buttons off; a second click while the hub
