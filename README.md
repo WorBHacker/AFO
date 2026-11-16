@@ -200,7 +200,9 @@ License версии 3 или (по вашему выбору) любой бол
 изменённую AFO, отдаёт вместе с ней и исходный код под той же лицензией.
 
 Библиотеки, которые установщик ставит вместе с AFO, — под своими лицензиями, совместимыми с GPL 3: Qt (PySide6) и
-pyte — LGPL 3, остальные — MIT, BSD, Apache 2.0, MPL 2.0 и PSF; их тексты лежат рядом с ними в папке программы
+pyte — LGPL 3, FFmpeg в плеере видео (сборка Qt, из PySide6-Addons) — LGPL 2.1 или новее, её текст и где взять
+исходники — в `python\Lib\site-packages\pyside6_addons-*.dist-info\licenses\ffmpeg-license.txt`; остальные — MIT,
+BSD, Apache 2.0, MPL 2.0 и PSF; их тексты лежат рядом с ними в папке программы
 (`python\Lib\site-packages\*.dist-info`), у встроенного Python — `python\LICENSE.txt`. Движки, которые мастер первого
 запуска скачивает отдельно (llama.cpp, llama-swap, ripgrep), и модели — отдельные программы и данные со своими
 лицензиями.

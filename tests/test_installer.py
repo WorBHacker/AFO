@@ -23,7 +23,8 @@ def name(requirement: str) -> str:
 def test_the_programs_libraries_at_their_tested_versions():
     """The hub's and the window's libraries, each pinned by requirements.lock; the dev tools stay out."""
     names = {name(r) for r in build.requirements()}
-    assert {"pyside6-essentials", "fastapi", "uvicorn", "tree-sitter", "pywinpty", "pyte", "markdown-it-py"} <= names
+    assert {"pyside6-essentials", "pyside6-addons", "fastapi", "uvicorn", "tree-sitter", "pywinpty", "pyte",
+            "markdown-it-py"} <= names  # fmt: skip
     assert not names & {"ruff", "pytest", "pip-audit", "httpx2"}
     pinned = build.pins()
     assert all("==" in p and not p.startswith(("#", "-")) for p in pinned)
@@ -53,6 +54,64 @@ def test_a_download_is_kept_only_with_its_sha256(tmp_path):
     with pytest.raises(build.BuildError, match="sha256"):
         build.fetch("https://example.org/f/other.zip", "0" * 64, tmp_path, opener=opener)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["python-embed.zip"]  # nothing of the wrong file is left
+
+
+def test_the_program_takes_only_the_players_files_of_pyside6_addons(tmp_path):
+    """48.12: the window plays a video with Qt Multimedia, which comes only in PySide6-Addons (100 MiB, 1200 files) -
+    the program keeps the player's files of it (QML's module, the FFmpeg backend, FFmpeg's libraries), the rest goes,
+    with the folders left empty, but not what Essentials' RECORD names too (PySide6/__init__.py finds Qt's DLLs: the
+    first build without it failed «DLL load failed while importing QtCore»); FFmpeg's licence (LGPL 2.1+) lies beside
+    Addons' own, naming its libraries. The files are the Addons and Essentials the tests run with, as their RECORDs
+    name them."""
+    import PySide6
+
+    real = Path(PySide6.__file__).resolve().parent.parent
+    info = next(real.glob(f"{build.ADDONS}-*.dist-info"))
+    assert info.name == f"{build.ADDONS}-{PySide6.__version__}.dist-info"  # the one requirements.lock pins
+    essentials = next(real.glob("pyside6_essentials-*.dist-info"))
+    record = (info / "RECORD").read_text(encoding="utf-8")
+    names = [line.split(",", 1)[0] for line in record.splitlines() if line]
+    assert set(build.PLAYER) <= set(names) and all((real / name).is_file() for name in build.PLAYER)
+    site = tmp_path / "site-packages"
+    for name in names:  # Addons as pip put it, each file empty but the RECORD
+        (site / name).parent.mkdir(parents=True, exist_ok=True)
+        (site / name).write_bytes(b"")
+    (site / info.name / "RECORD").write_bytes(record.encode("utf-8"))
+    (site / essentials.name).mkdir()
+    (site / essentials.name / "RECORD").write_bytes((essentials / "RECORD").read_bytes())
+    shared = sorted({line.split(",", 1)[0] for line in (essentials / "RECORD").read_text(encoding="utf-8").splitlines()}
+                    & set(names))  # fmt: skip
+    assert "PySide6/__init__.py" in shared
+    (site / "PySide6" / "Qt6Quick.dll").write_bytes(b"")  # Essentials' - not Addons' to take away
+    build.player_only(site)
+    left = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
+    licence = f"{info.name}/licenses/ffmpeg-license.txt"
+    assert [n for n in left if not n.startswith((f"{info.name}/", f"{essentials.name}/"))] == sorted(
+        [*build.PLAYER, *shared, "PySide6/Qt6Quick.dll"])  # fmt: skip
+    assert licence in left and not (site / "PySide6" / "qml" / "QtQuick3D").exists()  # no empty folders
+    kept = [line.split(",", 1)[0] for line in (site / info.name / "RECORD").read_text(encoding="utf-8").splitlines()]
+    assert sorted(n for n in kept if not n.startswith(f"{info.name}/")) == sorted([*build.PLAYER, *shared])
+    text = (site / licence).read_text(encoding="utf-8")
+    ffmpeg = sorted(Path(n).name for n in build.PLAYER if Path(n).name.startswith(("av", "sw")))
+    assert re.findall(r"\b(?:av|sw)\w+-\d+\.dll", text.split("\n\n")[1]) == ffmpeg  # by these names
+    assert "GNU LESSER GENERAL PUBLIC LICENSE" in text and "Version 2.1" in text
+    assert "LGPL version 2.1 or later" in (real / "PySide6" / "avutil-61.dll").read_bytes().decode("latin-1")
+    build.FFMPEG_LICENSE.read_bytes().decode("ascii")  # plain text, as the other licences
+
+
+def test_a_pyside6_addons_without_the_players_files_stops_the_build(tmp_path):
+    """A new Addons with FFmpeg's libraries renamed (avcodec-64.dll): not a program without its player - the build
+    says which file and where to change it."""
+    info = tmp_path / f"{build.ADDONS}-9.9.9.dist-info"
+    info.mkdir()
+    (info / "RECORD").write_text("", encoding="utf-8")
+    for name in build.PLAYER[:-1]:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_bytes(b"")
+    with pytest.raises(build.BuildError, match=re.escape("swscale-10.dll: PLAYER in installer/build.py")):
+        build.player_only(tmp_path)
+    with pytest.raises(build.BuildError, match="not installed"):
+        build.player_only(tmp_path / "PySide6")
 
 
 def test_a_folder_too_deep_for_the_programs_files_is_refused_in_words(tmp_path):

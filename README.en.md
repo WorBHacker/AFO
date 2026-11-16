@@ -152,7 +152,9 @@ your option) any later version — see [LICENSE](LICENSE). Whoever shares AFO or
 under the same license.
 
 The libraries the installer brings along keep their own licenses, all compatible with GPL 3: Qt (PySide6) and pyte —
-LGPL 3; the rest — MIT, BSD, Apache 2.0, MPL 2.0 and PSF; their texts lie next to them in the program's folder. The
+LGPL 3, FFmpeg in the video player (Qt's build, from PySide6-Addons) — LGPL 2.1 or later, its text and where its
+source is in `python\Lib\site-packages\pyside6_addons-*.dist-info\licenses\ffmpeg-license.txt`; the rest — MIT, BSD,
+Apache 2.0, MPL 2.0 and PSF; their texts lie next to them in the program's folder. The
 window's fonts, Inter and JetBrains Mono (SIL OFL 1.1), are in `app/ui/fonts`, the Lucide icons (ISC) in
 `app/ui/icons`. The engines the setup wizard downloads separately (llama.cpp, llama-swap, ripgrep) and the models
 are separate programs and data with their own licenses.

@@ -39,6 +39,16 @@ EMBED_SHA256 = "d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15
 EXTRAS = ("hub", "app")  # the program's libraries; `dev` (ruff, pytest, pip-audit) stays out
 CODE = ("hub", "app", "common")
 FILES = ("LICENSE",)  # beside the code in the program's folder
+# The video player (48.12): of PySide6-Addons (100 MiB) only what QML's MediaPlayer and VideoOutput load - Qt
+# Multimedia, its QML module, the FFmpeg backend and FFmpeg's libraries (by the DLLs' import tables); not the Windows
+# Media Foundation backend (Windows' codecs: no WebM on many computers), not the Python module (the window's code
+# plays nothing itself)
+ADDONS = "pyside6_addons"
+PLAYER = ("PySide6/Qt6Multimedia.dll", "PySide6/Qt6MultimediaQuick.dll", "PySide6/qml/QtMultimedia/qmldir",
+          "PySide6/qml/QtMultimedia/quickmultimediaplugin.dll", "PySide6/qml/QtMultimedia/Video.qml",
+          "PySide6/plugins/multimedia/ffmpegmediaplugin.dll", "PySide6/avcodec-63.dll", "PySide6/avformat-63.dll",
+          "PySide6/avutil-61.dll", "PySide6/swresample-7.dll", "PySide6/swscale-10.dll")  # fmt: skip
+FFMPEG_LICENSE = Path(__file__).with_name("ffmpeg-license.txt")  # FFmpeg's (LGPL 2.1+): beside Addons' own licence
 
 
 class BuildError(Exception):
@@ -61,6 +71,37 @@ def pth(stdlib: str) -> str:
     """The embedded Python's path file: its standard library, its folder, the libraries, and AFO's code one level up -
     whatever the current folder is (the login value runs `pythonw -m hub` from anywhere)."""
     return f"{stdlib}\n.\nLib\\site-packages\n..\nimport site\n"
+
+
+def player_only(site: Path) -> None:
+    """PySide6-Addons as pip put it, cut down to the player's files (`PLAYER`): every other file its RECORD names is
+    deleted, with the folders left empty - but not one another library's RECORD names too (Essentials' PySide6/
+    __init__.py, which finds Qt's DLLs, is in both); the RECORD names what is left, and FFmpeg's licence lies beside
+    Addons'. A file of the player missing (a new Addons, FFmpeg's DLLs renamed) stops the build."""
+    info = next(site.glob(f"{ADDONS}-*.dist-info"), None)
+    if info is None:
+        raise BuildError("PySide6-Addons is not installed: the video player needs it")
+    missing = [name for name in PLAYER if not (site / name).is_file()]
+    if missing:
+        raise BuildError(f"PySide6-Addons has no {', '.join(missing)}: PLAYER in installer/build.py is out of date")
+    others = {line.split(",", 1)[0] for record in site.glob("*.dist-info/RECORD") if record.parent != info
+              for line in record.read_text(encoding="utf-8").splitlines()}  # fmt: skip
+    kept, folders = [], set()
+    for line in (info / "RECORD").read_text(encoding="utf-8").splitlines():
+        name = line.split(",", 1)[0]
+        if not name or name in PLAYER or name in others or name.startswith(f"{info.name}/"):
+            kept.append(line)
+            continue
+        (site / name).unlink(missing_ok=True)
+        folders.update((site / name).parents)
+    for folder in sorted((f for f in folders if f.is_relative_to(site) and f != site), key=lambda f: -len(f.parts)):
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+    licence = info / "licenses" / FFMPEG_LICENSE.name
+    licence.parent.mkdir(exist_ok=True)
+    shutil.copy2(FFMPEG_LICENSE, licence)
+    kept.append(f"{licence.relative_to(site).as_posix()},,")
+    (info / "RECORD").write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
 
 
 def _sha256(path: Path) -> str:
@@ -125,6 +166,7 @@ def folder(out: Path = BUILD) -> Path:
           "--disable-pip-version-check", "--no-warn-script-location", "--constraint", str(constraints),
           *requirements()])  # fmt: skip
     shutil.rmtree(site / "bin", ignore_errors=True)  # the libraries' console commands: AFO runs none of them
+    player_only(site)
     print("AFO's code", flush=True)
     for part in CODE:
         shutil.copytree(ROOT / part, program / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -169,14 +211,51 @@ def isolated(scratch: Path) -> dict[str, str]:
     return env
 
 
+# The player in the folder (48.12): QML's MediaPlayer shows a picture's frame through FFmpeg - what Qt loads as it
+# goes (the backend, FFmpeg's libraries) is there, not only what the import tables name
+PLAYER_CHECK = """
+import sys
+from PySide6.QtCore import QCoreApplication, QElapsedTimer, QUrl
+from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+app = QGuiApplication([])
+picture = QImage(16, 16, QImage.Format.Format_RGB32)
+picture.fill(0x3366AA)
+picture.save("check.webp", "WEBP")
+engine = QQmlEngine()
+component = QQmlComponent(engine)
+component.setData(b'''
+import QtQuick
+import QtMultimedia
+Item {
+    property bool shown: false
+    MediaPlayer { source: "check.webp"; videoOutput: out; Component.onCompleted: play() }
+    VideoOutput { id: out; width: 16; height: 16 }
+    Connections { target: out.videoSink; function onVideoFrameChanged(frame) { shown = true } }
+}''', QUrl.fromLocalFile("check.qml"))
+root = component.create()
+if root is None:
+    sys.exit("the player is not built: " + component.errorString())
+timer = QElapsedTimer()
+timer.start()
+while not root.property("shown") and timer.elapsed() < 15000:
+    QCoreApplication.processEvents()
+if not root.property("shown"):
+    sys.exit("the player showed no frame")
+print("  player: ok")
+"""
+
+
 def check(program: Path) -> None:
-    """The folder works on its own: its Python finds the code and the libraries, and the window is built."""
+    """The folder works on its own: its Python finds the code and the libraries, the window is built, and the video
+    player shows a frame."""
     python = program / "python" / "python.exe"
     with tempfile.TemporaryDirectory(prefix="afo-check-") as scratch:
         env = isolated(Path(scratch))
         _run([str(python), "-c", "import hub.server, hub.mcp_server, app.ui.main, winpty, tree_sitter_python, "
               "PySide6.QtQuick; print('  imports: ok')"], env=env, cwd=scratch)  # fmt: skip
         _run([str(python), "-m", "app", "--smoke"], env=env, cwd=scratch)
+        _run([str(python), "-c", PLAYER_CHECK], env=env, cwd=scratch)
 
 
 def room(program: Path) -> int:
