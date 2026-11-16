@@ -162,8 +162,9 @@ class HubClient:
     def setup_update_info(self) -> dict:
         return self._call("GET", "/v1/setup/update", timeout=30)
 
-    def setup_update(self) -> dict:
-        return self._call("POST", "/v1/setup/update", timeout=30)
+    def setup_update(self, target: str = "checked") -> dict:
+        """Another llama.cpp beside the running one (12б): "checked" - the build AFO was checked on, "newest"."""
+        return self._call("POST", "/v1/setup/update", {"target": target}, timeout=30)
 
     def setup_cancel(self) -> dict:
         return self._call("POST", "/v1/setup/engine/cancel")

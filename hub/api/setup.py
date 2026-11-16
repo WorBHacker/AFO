@@ -9,9 +9,9 @@ has come: what local models need looked at, AFO's own engine fetched when it lac
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from common.i18n import tr
@@ -58,9 +58,13 @@ async def engine(request: Request, body: Engine, client: Annotated[Client, Depen
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+class Update(BaseModel):
+    target: Literal["checked", "newest"] = "checked"  # 12б: the build AFO was checked on, or the newest
+
+
 @router.get("/update")
 async def update_info(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
-    """The llama.cpp build running and whether GitHub has a newer one of its kind (10.4)."""
+    """The llama.cpp build running against the one AFO was checked on, and the newest of its kind (10.4, 12а)."""
     try:
         return await request.app.state.setup.update_info()
     except engines.EngineError as exc:
@@ -68,15 +72,23 @@ async def update_info(request: Request, client: Annotated[Client, Depends(requir
 
 
 @router.post("/update")
-async def update(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
+async def update(request: Request, client: Annotated[Client, Depends(require_app)],
+                 body: Annotated[Update | None, Body()] = None) -> dict:  # fmt: skip
+    """Another llama.cpp beside the running one (12б): the checked build («Поставить проверенную», «Обновить»), or
+    the newest by the person's word; 409 when there is nothing to change."""
     setup = request.app.state.setup
+    target = (body or Update()).target
     try:
         found = await setup.update_info()
     except engines.EngineError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not found["build"]:
         raise HTTPException(status_code=409, detail=tr("не найден llama-server, который можно обновить"))
-    return {"job": setup.start(found["build"], update=True)}
+    if target == "checked" and found["state"] == "checked":
+        raise HTTPException(status_code=409, detail=tr("проверенная сборка уже стоит"))
+    if target == "newest" and found["latest"] and not found["newest_newer"]:  # GitHub silent: the job will say why
+        raise HTTPException(status_code=409, detail=tr("новее сборки нет"))
+    return {"job": setup.start(found["build"], update=True, newest=target == "newest")}
 
 
 @router.post("/engine/cancel")

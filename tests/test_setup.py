@@ -392,6 +392,29 @@ models:
 VULKAN = {tag: f"llama-{tag}-bin-win-vulkan-x64.zip" for tag in ("b100", "b120")}
 
 
+def run_build(monkeypatch, tmp_path, tag):
+    """llama-swap's config running the person's own llama.cpp `tag` (Vulkan): its path."""
+    folder = tmp_path / "own" / tag
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("llama-server.exe", "ggml-vulkan.dll"):
+        (folder / name).write_bytes(b"MZ")
+    config = tmp_path / "own" / "config.yaml"
+    config.write_text(f"""macros:
+  llama_server: '"{(folder / "llama-server.exe").as_posix()}"'
+models:
+  "a":
+    cmd: |
+      ${{llama_server}} -m a.gguf
+      --port ${{PORT}}
+""", encoding="utf-8")  # fmt: skip
+    monkeypatch.setenv(lc.CONFIG_ENV, str(config))
+    return config
+
+
+def macro(config):
+    return lc.macros(config.read_text(encoding="utf-8"))["llama_server"]
+
+
 def test_the_engine_is_the_build_afo_was_checked_on(hub, github, monkeypatch, tmp_path):  # noqa: F811
     """0.1.16, step 12а (the user's word, 2026-11-16): a computer without the engine gets the llama.cpp build AFO was
     checked on, not the newest - llama.cpp publishes several a day and AFO never ran on them. One with an older build
@@ -419,25 +442,9 @@ def test_the_engine_is_the_build_afo_was_checked_on(hub, github, monkeypatch, tm
     assert (job["status"], job["tag"], job["unchecked"]) == ("done", "b100", False)
 
     def running(tag):
-        folder = tmp_path / "own" / tag
-        folder.mkdir(parents=True, exist_ok=True)
-        for name in ("llama-server.exe", "ggml-vulkan.dll"):
-            (folder / name).write_bytes(b"MZ")
-        config = tmp_path / "own" / "config.yaml"
-        config.write_text(f"""macros:
-  llama_server: '"{(folder / "llama-server.exe").as_posix()}"'
-models:
-  "a":
-    cmd: |
-      ${{llama_server}} -m a.gguf
-      --port ${{PORT}}
-""", encoding="utf-8")  # fmt: skip
-        monkeypatch.setenv(lc.CONFIG_ENV, str(config))
+        config = run_build(monkeypatch, tmp_path, tag)
         found = hub.get("/v1/setup/update").json()
         return config, {k: found[k] for k in ("current", "checked", "state", "newer", "latest", "newest_newer")}
-
-    def macro(config):
-        return lc.macros(config.read_text(encoding="utf-8"))["llama_server"]
 
     _config, found = running("b100")
     assert found == {"current": "b100", "checked": "b100", "state": "checked", "newer": False, "latest": "b120",
@@ -463,3 +470,31 @@ models:
         hub.post("/v1/setup/engine", json={})
         job = until_ended(setup_)
         assert (job["status"], job["tag"], job["unchecked"], job["checked"]) == ("done", "b120", True, "b100"), gone
+
+
+def test_the_window_asks_which_build_to_put(hub, github, monkeypatch, tmp_path):  # noqa: F811
+    """0.1.16, step 12б: the window asks the hub for the checked build («Поставить проверенную» on a computer with a
+    newer one) or the newest («Поставить самую новую»: a new model may need it); nothing to change - said, nothing is
+    downloaded. A request without a body is the checked one, as the window before 12в asks."""
+    monkeypatch.setattr(engines, "LLAMA_TAG", "b100", raising=False)
+    FakeGitHub.builds = {"b120": [VULKAN["b120"]], "b100": [VULKAN["b100"]]}
+    monkeypatch.setattr(lc, "RELOAD_S", 0.5)  # no llama-swap here: the write is kept, not checked
+    monkeypatch.setattr(lc, "server_flags", lambda server: lc.parse_help(HELP))
+    setup_ = hub.app.state.setup
+    builds = tmp_path / "localchat-home" / "engines" / "llama.cpp"
+    config = run_build(monkeypatch, tmp_path, "b100")  # the checked one runs
+
+    hub.post("/v1/setup/update", json={"target": "newest"})
+    assert until_ended(setup_)["status"] == "done"
+    newest = f'"{(builds / "b120-vulkan" / "llama-server.exe").as_posix()}"'
+    assert macro(config) == newest  # the old code: the body unread - the checked b100 put again
+    again = hub.post("/v1/setup/update", json={"target": "newest"})
+    assert again.status_code == 409 and "новее сборки нет" in again.json()["detail"] and macro(config) == newest
+
+    hub.post("/v1/setup/update", json={"target": "checked"})  # back: «Поставить проверенную»
+    assert until_ended(setup_)["status"] == "done"
+    assert macro(config) == f'"{(builds / "b100-vulkan" / "llama-server.exe").as_posix()}"'
+    for body in ({"target": "checked"}, None):
+        again = hub.post("/v1/setup/update", json=body)
+        assert again.status_code == 409 and "проверенная сборка уже стоит" in again.json()["detail"], body
+    assert hub.post("/v1/setup/update", json={"target": "metal"}).status_code == 422
