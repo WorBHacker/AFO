@@ -2,8 +2,10 @@
 releases, for a computer that has neither yet.
 
 - llama.cpp publishes a build per commit, tagged `b<number>` and marked as a pre-release (`/releases/latest` is not
-  one of them): the newest `b…` release with the Windows archive for this computer is taken - CUDA 13 or 12 for
-  NVIDIA (with the CUDA runtime archive beside it), Vulkan for AMD and Intel, the processor's otherwise.
+  one of them): the build AFO was checked on (`LLAMA_TAG`, 0.1.16 step 12а) is taken with the Windows archive for
+  this computer - CUDA 13 or 12 for NVIDIA (with the CUDA runtime archive beside it), Vulkan for AMD and Intel, the
+  processor's otherwise; gone from GitHub or without that archive - the newest `b…` release that has it. The newest
+  one only when the person asks for it.
 - llama-swap: its latest release's Windows archive.
 - Each archive is checked against the sha256 GitHub publishes for it (`digest`), unpacked into a folder of its own
   (`<engines>/llama.cpp/b<number>-<build>`, `<engines>/llama-swap`), and llama-swap gets a config of its own that
@@ -40,6 +42,9 @@ def github_api() -> str:
 
 LLAMA_CPP = "ggml-org/llama.cpp"
 LLAMA_SWAP = "mostlygeek/llama-swap"
+# the llama.cpp build AFO was checked on live (0.1.16, 12а): raised at each release, after the live check on the new
+# one (TechDoc, «Выпуски»); several builds a day come out, and nobody ran AFO on them
+LLAMA_TAG = "b11899"
 ASSET = re.compile(r"^llama-(b\d+)-bin-win-(cuda-(\d+)\.(\d+)|vulkan|cpu)-x64\.zip$")
 SD_CPP = "leejet/stable-diffusion.cpp"
 SD_TAG = "master-1053-5a1ba5d"  # checked on 2026-11-07 (29.1, docs/visual.md §2a); a newer one after the same trials
@@ -154,11 +159,19 @@ def sd_server_in(folder: Path) -> Path:
     return found
 
 
-async def llama_cpp_release(http: httpx.AsyncClient, build: str) -> dict[str, Any]:
+async def llama_cpp_release(http: httpx.AsyncClient, build: str, *, newest: bool = False) -> dict[str, Any]:
+    """The llama.cpp build to put: {tag, build, assets, checked}. The one AFO was checked on (`LLAMA_TAG`); it gone
+    from GitHub or without this build's archive - the newest that has it, `checked` false. `newest` - the newest of
+    the latest releases (the person asked for it)."""
+    if not newest:
+        release = await github(http, LLAMA_CPP, f"releases/tags/{LLAMA_TAG}", missing_ok=True)
+        found = pick_llama_cpp([release], build) if release else None
+        if found is not None:
+            return {**found, "checked": True}
     found = pick_llama_cpp(await github(http, LLAMA_CPP), build)
     if found is None:
         raise EngineError(tr("в последних выпусках llama.cpp нет сборки {build} для Windows", build=build))
-    return found
+    return {**found, "checked": found["tag"] == LLAMA_TAG}
 
 
 async def llama_swap_release(http: httpx.AsyncClient) -> dict[str, Any]:
@@ -220,6 +233,16 @@ def running_build(server: Path) -> dict[str, str] | None:
 def newer(latest: str, current: str) -> bool:
     numbers = [int(t[1:]) if re.fullmatch(r"b\d+", t or "") else -1 for t in (latest, current)]
     return numbers[0] > numbers[1] >= 0
+
+
+def build_state(current: str, checked: str) -> str:
+    """The running build against the one AFO was checked on (12а): checked | older | newer | unknown (its tag is not
+    read - a folder without `b<number>`)."""
+    if not re.fullmatch(r"b\d+", current or ""):
+        return "unknown"
+    if current == checked:
+        return "checked"
+    return "older" if newer(checked, current) else "newer"
 
 
 def server_in(folder: Path) -> Path:

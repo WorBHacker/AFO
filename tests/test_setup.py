@@ -3,6 +3,7 @@ stand-in GitHub (the build the card wants, archives checked and unpacked), llama
 choice of it, the hub starting it; the first model for each purpose; a word on a small page file."""
 
 import contextlib
+import functools
 import hashlib
 import io
 import json
@@ -38,13 +39,19 @@ FILES = {
     "llama-b200-bin-win-cuda-13.4-x64.zip": archive("llama-server.exe", "ggml-cuda.dll"),
     "cudart-llama-bin-win-cuda-13.4-x64.zip": archive("cudart64_13.dll"),
     "llama-swap_300_windows_amd64.zip": archive("llama-swap.exe", "LICENSE.md"),
+    "llama-b100-bin-win-vulkan-x64.zip": archive("llama-server.exe", "ggml-vulkan.dll"),
+    "llama-b100-bin-win-cuda-13.4-x64.zip": archive("llama-server.exe", "ggml-cuda.dll"),
+    "llama-b120-bin-win-vulkan-x64.zip": archive("llama-server.exe", "ggml-vulkan.dll"),
 }
+B200 = ["llama-b200-bin-win-vulkan-x64.zip", "llama-b200-bin-win-cuda-13.4-x64.zip",
+        "cudart-llama-bin-win-cuda-13.4-x64.zip"]  # fmt: skip
 
 
 class FakeGitHub(BaseHTTPRequestHandler):
     port = 0
     asked: ClassVar[list] = []  # the paths asked for (39.1: GitHub allows 60 an hour)
     limited = False  # 403 to every question: the hour's limit is spent
+    builds: ClassVar[dict] = {}  # llama.cpp's releases, the newest first: tag -> its archives
 
     def log_message(self, *args):
         pass
@@ -67,9 +74,17 @@ class FakeGitHub(BaseHTTPRequestHandler):
             self.send_response(403)
             self.send_header("content-length", "0")
             self.end_headers()
+        elif self.path.startswith("/repos/ggml-org/llama.cpp/releases/tags/"):
+            tag = self.path.rsplit("/", 1)[1]
+            if tag not in self.builds:
+                self.send_response(404)
+                self.send_header("content-length", "0")
+                self.end_headers()
+            else:
+                self._send({"tag_name": tag, "assets": self._assets(*self.builds[tag])})
         elif self.path.startswith("/repos/ggml-org/llama.cpp/releases"):
-            builds = [n for n in FILES if "llama-swap" not in n]
-            self._send([{"tag_name": "v0.7.0", "assets": []}, {"tag_name": "b200", "assets": self._assets(*builds)}])
+            found = [{"tag_name": t, "assets": self._assets(*names)} for t, names in self.builds.items()]
+            self._send([{"tag_name": "v0.7.0", "assets": []}, *found])
         elif self.path == "/repos/mostlygeek/llama-swap/releases/latest":
             self._send({"tag_name": "v300", "assets": self._assets("llama-swap_300_windows_amd64.zip")})
         elif self.path.startswith("/download/"):
@@ -83,6 +98,8 @@ class FakeGitHub(BaseHTTPRequestHandler):
 def github(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
     FakeGitHub.port, FakeGitHub.asked, FakeGitHub.limited = server.server_port, [], False
+    FakeGitHub.builds = {"b200": B200}
+    monkeypatch.setattr(engines, "LLAMA_TAG", "b200", raising=False)  # 12а: the checked build is on GitHub
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{server.server_port}")
     yield server
@@ -352,8 +369,8 @@ models:
     asked = []  # the new build's --help (42.1): its stand-in here is no program - what b11899 says
     monkeypatch.setattr(lc, "server_flags", lambda server: asked.append(server) or lc.parse_help(HELP))
     found = hub.get("/v1/setup/update").json()
-    assert found == {"current": "b100", "build": "vulkan", "latest": "b200", "newer": True, "server": str(old /
-                     "llama-server.exe")}  # fmt: skip
+    assert found == {"current": "b100", "build": "vulkan", "checked": "b200", "latest": "b200", "state": "older",
+                     "newer": True, "newest_newer": True, "server": str(old / "llama-server.exe")}  # fmt: skip
     job = hub.post("/v1/setup/update").json()["job"]
     assert job["status"] == "downloading" and job["update"]
     deadline = time.monotonic() + 20
@@ -370,3 +387,79 @@ models:
     assert (old / "llama-server.exe").exists()  # the old build stays (a model may still run on it)
     assert list(tmp_path.glob("config.yaml.bak-*"))  # a copy of the config first
     assert hub.get("/v1/setup/update").json()["newer"] is False
+
+
+VULKAN = {tag: f"llama-{tag}-bin-win-vulkan-x64.zip" for tag in ("b100", "b120")}
+
+
+def test_the_engine_is_the_build_afo_was_checked_on(hub, github, monkeypatch, tmp_path):  # noqa: F811
+    """0.1.16, step 12а (the user's word, 2026-11-16): a computer without the engine gets the llama.cpp build AFO was
+    checked on, not the newest - llama.cpp publishes several a day and AFO never ran on them. One with an older build
+    is offered the checked one; one with a newer keeps it - AFO replaces nothing by itself; the newest only when asked
+    for. The checked one gone from GitHub, or there without this card's archive - the newest, and the job says so."""
+    monkeypatch.setattr(engines, "LLAMA_TAG", "b100", raising=False)
+    FakeGitHub.builds = {"b120": [VULKAN["b120"]], "b100": [VULKAN["b100"]]}
+    monkeypatch.setattr(hardware, "adapters", lambda: [{"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0,
+                                                        "driver": "32.0"}])  # fmt: skip
+    monkeypatch.setattr(hardware, "nvidia_driver", lambda: None)
+
+    async def fake_start(url, script, wanted, log_file, **kwargs):
+        return "started"
+
+    monkeypatch.setattr(autostart, "ensure_llama_swap", fake_start)
+    monkeypatch.setattr(lc, "RELOAD_S", 0.5)  # no llama-swap here: the write is kept, not checked
+    monkeypatch.setattr(lc, "server_flags", lambda server: lc.parse_help(HELP))
+    setup_ = hub.app.state.setup
+    builds = tmp_path / "localchat-home" / "engines" / "llama.cpp"
+
+    hub.post("/v1/setup/engine", json={})  # a computer without the engine
+    job = until_ended(setup_)
+    assert (builds / "b100-vulkan" / "llama-server.exe").exists(), job  # the old code: b120, the newest
+    assert not (builds / "b120-vulkan").exists()
+    assert (job["status"], job["tag"], job["unchecked"]) == ("done", "b100", False)
+
+    def running(tag):
+        folder = tmp_path / "own" / tag
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in ("llama-server.exe", "ggml-vulkan.dll"):
+            (folder / name).write_bytes(b"MZ")
+        config = tmp_path / "own" / "config.yaml"
+        config.write_text(f"""macros:
+  llama_server: '"{(folder / "llama-server.exe").as_posix()}"'
+models:
+  "a":
+    cmd: |
+      ${{llama_server}} -m a.gguf
+      --port ${{PORT}}
+""", encoding="utf-8")  # fmt: skip
+        monkeypatch.setenv(lc.CONFIG_ENV, str(config))
+        found = hub.get("/v1/setup/update").json()
+        return config, {k: found[k] for k in ("current", "checked", "state", "newer", "latest", "newest_newer")}
+
+    def macro(config):
+        return lc.macros(config.read_text(encoding="utf-8"))["llama_server"]
+
+    _config, found = running("b100")
+    assert found == {"current": "b100", "checked": "b100", "state": "checked", "newer": False, "latest": "b120",
+                     "newest_newer": True}  # fmt: skip
+    config, found = running("b90")  # older than the checked: «Обновить» puts the checked one, not the newest
+    assert (found["state"], found["newer"]) == ("older", True)
+    hub.post("/v1/setup/update")
+    job = until_ended(setup_)
+    assert job["status"] == "done" and macro(config) == f'"{(builds / "b100-vulkan" / "llama-server.exe").as_posix()}"'
+    _config, found = running("b120")  # newer than the checked («не проверялась»): it stays
+    assert (found["state"], found["newer"], found["newest_newer"]) == ("newer", False, False)
+
+    config, _found = running("b100")  # the newest - only when asked for
+    hub.portal.call(functools.partial(setup_.start, "vulkan", update=True, newest=True))
+    job = until_ended(setup_)
+    assert (job["status"], job["tag"], job["unchecked"]) == ("done", "b120", False)
+    assert macro(config) == f'"{(builds / "b120-vulkan" / "llama-server.exe").as_posix()}"'
+
+    for gone in ({"b120": [VULKAN["b120"]]},  # the checked one is no longer on GitHub
+                 {"b120": [VULKAN["b120"]], "b100": ["llama-b100-bin-win-cuda-13.4-x64.zip",
+                                                     "cudart-llama-bin-win-cuda-13.4-x64.zip"]}):  # fmt: skip
+        FakeGitHub.builds = gone  # (or there without this card's archive): the newest, and the job says so
+        hub.post("/v1/setup/engine", json={})
+        job = until_ended(setup_)
+        assert (job["status"], job["tag"], job["unchecked"], job["checked"]) == ("done", "b120", True, "b100"), gone

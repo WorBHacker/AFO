@@ -125,8 +125,9 @@ class Setup:
         nvidia = await asyncio.to_thread(hardware.nvidia_driver)
         return hardware.build_for(cards, nvidia)["build"]
 
-    def start(self, build: str, *, update: bool = False, auto: bool = False) -> dict[str, Any]:
-        """The engine's download (or a newer llama.cpp's); the one going on when there is one. `auto` - the scanner
+    def start(self, build: str, *, update: bool = False, auto: bool = False, newest: bool = False) -> dict[str, Any]:
+        """The engine's download (or another llama.cpp's); the one going on when there is one. The build AFO was
+        checked on (12а), `newest` - the newest one, by the person's word (an update only). `auto` - the scanner
         started it, not the person (39.1): the window shows it in the status line, not in the wizard."""
         if build not in BUILDS:
             raise ValueError(tr("сборка — одна из {builds}", builds=", ".join(BUILDS)))
@@ -134,11 +135,19 @@ class Setup:
             return dict(self.job)
         self._cancel = threading.Event()
         self.job = {"status": "downloading", "build": build, "done": 0, "total": 0, "error": "", "step": "",
-                    "update": update, "auto": auto}  # fmt: skip
-        self._task = asyncio.create_task(self._update(build) if update else self._run(build))
+                    "update": update, "auto": auto, "checked": engines.LLAMA_TAG, "unchecked": False}  # fmt: skip
+        self._task = asyncio.create_task(self._update(build, newest) if update else self._run(build))
         return dict(self.job)
 
-    # --- a newer llama.cpp (10.4): beside the old build, the config's macro pointed at it ---
+    def _took(self, cpp: dict[str, Any], newest: bool = False) -> None:
+        """The build that came: `unchecked` - the checked one was wanted and GitHub has it no more (or not for this
+        card): the newest is put, AFO was not checked on it (12а; the window's words - 12в)."""
+        self.job.update(tag=cpp["tag"], unchecked=not newest and not cpp["checked"])
+        if self.job["unchecked"]:
+            log.warning("llama.cpp %s is not on GitHub for %s: %s is put", engines.LLAMA_TAG, cpp["build"], cpp["tag"])
+
+    # --- another llama.cpp (10.4; 12а: the checked one, the newest by the person's word): beside the old build, the
+    # config's macro pointed at it ---
 
     def _server(self) -> Path | None:
         config = llama_config.config_path()
@@ -152,17 +161,28 @@ class Setup:
         return Path(command.strip("'\"")) if command else None
 
     async def update_info(self) -> dict[str, Any]:
-        """The build running now and the newest of its kind on GitHub."""
+        """The build running now against the one AFO was checked on (12а: by its number, GitHub is not asked) and
+        the newest of its kind on GitHub (`latest`; '' when GitHub does not answer - the rest holds all the same).
+        `state`: checked | older | newer (AFO was not checked on it) | unknown; `newer` - an update to the checked
+        one is there (the field the window had before 12в); `newest_newer` - the newest is newer than the running."""
         server = await asyncio.to_thread(self._server)
         running = await asyncio.to_thread(engines.running_build, server) if server else None
+        checked = engines.LLAMA_TAG
         if running is None:
-            return {"current": "", "build": "", "latest": "", "newer": False, "server": str(server or "")}
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-            latest = (await engines.llama_cpp_release(http, running["build"]))["tag"]
-        return {"current": running["tag"], "build": running["build"], "latest": latest,
-                "newer": engines.newer(latest, running["tag"]), "server": str(server)}  # fmt: skip
+            return {"current": "", "build": "", "checked": checked, "latest": "", "state": "unknown", "newer": False,
+                    "newest_newer": False, "server": str(server or "")}  # fmt: skip
+        state = engines.build_state(running["tag"], checked)
+        latest = ""
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                latest = (await engines.llama_cpp_release(http, running["build"], newest=True))["tag"]
+        except engines.EngineError as exc:  # its hour's limit, no network: the newest is not known now
+            log.info("the newest llama.cpp is not known: %s", exc)
+        return {"current": running["tag"], "build": running["build"], "checked": checked, "latest": latest,
+                "state": state, "newer": state == "older", "newest_newer": engines.newer(latest, running["tag"]),
+                "server": str(server)}  # fmt: skip
 
-    async def _update(self, build: str) -> None:
+    async def _update(self, build: str, newest: bool = False) -> None:
         loop = asyncio.get_running_loop()
 
         def report(done: int, total: int) -> None:
@@ -175,10 +195,11 @@ class Setup:
         try:
             await self._publish()
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-                cpp = await engines.llama_cpp_release(http, build)
+                cpp = await engines.llama_cpp_release(http, build, newest=newest)
+            self._took(cpp, newest)
             folder = engines_home() / "llama.cpp" / f"{cpp['tag']}-{build}"
             await _room(engines_home(), cpp["assets"])
-            self.job.update(total=sum(a["size"] for a in cpp["assets"]), tag=cpp["tag"],
+            self.job.update(total=sum(a["size"] for a in cpp["assets"]),
                             step=f"llama.cpp {cpp['tag']} ({tr(BUILDS[build])})")  # fmt: skip
             await self._publish()
             await asyncio.to_thread(self._fetch, cpp["assets"], engines_home() / "downloads", folder, 0, report)
@@ -243,11 +264,12 @@ class Setup:
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
                 cpp = await engines.llama_cpp_release(http, build)
                 swap = await engines.llama_swap_release(http)
+            self._took(cpp)
             cpp_folder = home / "llama.cpp" / f"{cpp['tag']}-{build}"
             swap_folder = home / "llama-swap"
             assets = [*cpp["assets"], *swap["assets"]]
             await _room(home, assets)
-            self.job.update(total=sum(a["size"] for a in assets), tag=cpp["tag"], swap=swap["tag"],
+            self.job.update(total=sum(a["size"] for a in assets), swap=swap["tag"],
                             step=tr("llama.cpp {tag} ({build}) и llama-swap {swap}", tag=cpp["tag"],
                                     build=tr(BUILDS[build]), swap=swap["tag"]))  # fmt: skip
             await self._publish()
