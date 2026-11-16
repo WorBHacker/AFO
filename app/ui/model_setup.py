@@ -493,6 +493,8 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
     """The models view's line about guessing ahead (42.6) and its tone: the draft model on its way (the hub's
     `drafting`), what the tuning found - while the model's command is as it left it - or what the command has."""
     if drafting.get("model_id") == model_id:
+        if drafting.get("looking"):  # 0.1.15 step 6: from the first second of «Ускорить»
+            return tr("Ищу черновую модель для ускорения на Hugging Face…"), ""
         if drafting.get("error"):
             return tr("Черновая модель не скачалась: {error}", error=drafting["error"]), "error"
         if drafting.get("total"):
@@ -1018,8 +1020,9 @@ class ModelSetup(QObject):
 
     @Property(bool, notify=changed)
     def speedBusy(self) -> bool:
-        """Its draft model on its way."""
-        return self._drafting.get("model_id") == self._tune_id() and bool(self._drafting.get("total"))
+        """Its draft model looked for (0.1.15 step 6: a second click starts nothing) or on its way."""
+        mine = self._drafting.get("model_id") == self._tune_id()
+        return mine and bool(self._drafting.get("looking") or self._drafting.get("total"))
 
     def _set_drafting(self, drafting: dict[str, Any] | None) -> None:
         self._drafting = drafting or {}

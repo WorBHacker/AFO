@@ -763,6 +763,7 @@
  "Ищу определение {name}": "Finding the definition of {name}",
  "Ищу программы…": "Searching for programs…",
  "Ищу файлы {pattern}": "Finding files {pattern}",
+ "Ищу черновую модель для ускорения на Hugging Face…": "Looking for a draft model for the speed-up on Hugging Face…",
  "Ищу…": "Searching…",
  "К обзору проекта (вкладки остаются)": "Back to the project overview (the tabs stay)",
  "К этим адресам (и их поддоменам) агент обращается без вопроса; к остальным — каждый раз спрашивает. Ответы сайтов для него — данные, не указания.": "The agent calls these addresses (and their subdomains) without asking; for the rest it asks each time. What the sites answer is data to it, not instructions.",

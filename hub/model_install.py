@@ -498,9 +498,15 @@ class Installer:
         self.on_done: Callable[[str], Any] | None = None  # a model installed or added: its tuning (15.2)
         # its draft model on the disk (42.5): then its tuning, model id and whether it waits for a quiet computer
         self.on_speed_up: Callable[[str, bool], Any] | None = None
-        self.drafting: dict[str, Any] = {}  # a draft on its way: {model_id, name, done, total} | {model_id, error}
+        # a draft on its way: {model_id, looking} (0.1.15 step 6: from the first second) | {model_id, name, done,
+        # total} | {model_id, error}
+        self.drafting: dict[str, Any] = {}
         self._drafts: dict[str, dict[str, Any]] = {}  # DRAFTS_SETTING
         self._speeding: set[asyncio.Task] = set()
+        # 0.1.15 step 6: one «Ускорить» a model at a time (model -> its tuning waits for a quiet computer), one draft's
+        # download at a time in the whole hub - a second click downloaded it again into the same file
+        self._speedups: dict[str, bool] = {}
+        self._draft_lock = asyncio.Lock()
         self._draft_cancel = threading.Event()
         self.on_renamed: Callable[[str, str], Awaitable[None]] | None = None  # a model under a new id (36.1)
         self._naming: asyncio.Task | None = None
@@ -811,17 +817,29 @@ class Installer:
     def speed_up(self, model_id: str, automatic: bool = False) -> dict[str, Any]:
         """«Ускорить» (42.5), and by itself after an install: the draft model paired with this one onto the disk (once:
         it serves its whole family), then the model's tuning measures guessing ahead with it - at once, or when the
-        computer is quiet (`automatic`). In the background; what goes on - `drafting`."""
-        self._keep(self._speed_up(model_id, automatic))
+        computer is quiet (`automatic`). In the background; what goes on - `drafting`. Once a model's goes on, another
+        call starts nothing (0.1.15 step 6) - the person's over an automatic one makes its tuning go at once."""
+        if model_id in self._speedups:
+            self._speedups[model_id] = self._speedups[model_id] and automatic
+            return {"model_id": model_id, "drafting": self.drafting}
+        self._speedups[model_id] = automatic
+        self.drafting = {"model_id": model_id, "looking": True}
+        self._keep(self._speed_up(model_id))
         return {"model_id": model_id, "drafting": self.drafting}
 
-    async def _speed_up(self, model_id: str, automatic: bool) -> None:
+    async def _speed_up(self, model_id: str) -> None:
         try:
+            await self._bus.publish("install.draft", {"drafting": self.drafting})
             await self._fetch_draft(model_id)
         except (InstallError, hf.HubError, hf.Cancelled, llama_config.ConfigError, OSError, GGUFError) as exc:
             log.info("no draft model for %s: %s", model_id, exc)
             self.drafting = {"model_id": model_id, "error": str(exc) or tr("загрузка остановлена")}
             await self._bus.publish("install.draft", {"drafting": self.drafting})
+        finally:
+            automatic = self._speedups.pop(model_id, False)
+            if self.drafting == {"model_id": model_id, "looking": True}:  # nothing to download: nothing on its way
+                self.drafting = {}
+                await self._bus.publish("install.draft", {"drafting": self.drafting})
         if self.on_speed_up is not None:
             self.on_speed_up(model_id, automatic)
 
@@ -842,34 +860,36 @@ class Installer:
 
     async def _fetch_one_draft(self, model_id: str, entry: dict[str, Any]) -> None:
         same = (entry["repo"], entry["file"])
-        dest = next((Path(file) for file, d in self._drafts.items()
-                     if (d["repo"], d["file"]) == same and Path(file).is_file()), None)  # fmt: skip
-        if dest is None:
-            while self.busy():
-                await asyncio.sleep(ENGINE_WAIT_S)
-            drive = pick_drive(await asyncio.to_thread(self.drives), entry["size"] / GIB)
-            if drive is None:
-                raise InstallError(tr("нет места для черновой модели: нужно {size:.1f} ГБ",
-                                      size=entry["size"] / GIB + DISK_MARGIN_GIB), 507)  # fmt: skip
-            dest = models_root(drive) / "drafts" / PurePosixPath(entry["file"]).name
-            await self._download_draft(model_id, entry, dest)
-        record = self._drafts.get(str(dest)) or {key: entry[key] for key in ("repo", "file", "sha256", "size")}
-        record["waiting"] = sorted({*record.get("waiting", []), model_id})
-        self._drafts[str(dest)] = record
-        await self._save_drafts()
+        async with self._draft_lock:  # one at a time (0.1.15 step 6): the one before may have brought this one
+            dest = next((Path(file) for file, d in self._drafts.items()
+                         if (d["repo"], d["file"]) == same and Path(file).is_file()), None)  # fmt: skip
+            if dest is None:
+                while self.busy():
+                    await asyncio.sleep(ENGINE_WAIT_S)
+                drive = pick_drive(await asyncio.to_thread(self.drives), entry["size"] / GIB)
+                if drive is None:
+                    raise InstallError(tr("нет места для черновой модели: нужно {size:.1f} ГБ",
+                                          size=entry["size"] / GIB + DISK_MARGIN_GIB), 507)  # fmt: skip
+                dest = models_root(drive) / "drafts" / PurePosixPath(entry["file"]).name
+                await self._download_draft(model_id, entry, dest)
+            record = self._drafts.get(str(dest)) or {key: entry[key] for key in ("repo", "file", "sha256", "size")}
+            record["waiting"] = sorted({*record.get("waiting", []), model_id})
+            self._drafts[str(dest)] = record
+            await self._save_drafts()
 
     async def _download_draft(self, model_id: str, entry: dict[str, Any], dest: Path) -> None:
         await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(_check_room, dest.parent, entry["size"])
-        self.drafting = {"model_id": model_id, "name": entry["name"], "done": 0, "total": entry["size"]}
+        coming = {"model_id": model_id, "name": entry["name"], "done": 0, "total": entry["size"]}
+        self.drafting = coming
         await self._bus.publish("install.draft", {"drafting": self.drafting})
         loop, shown = asyncio.get_running_loop(), [0.0]
 
-        def report(done: int) -> None:  # in the download's thread
-            self.drafting["done"] = done
+        def report(done: int) -> None:  # in the download's thread; its own - `drafting` may be another's by now
+            coming["done"] = done
             if time.monotonic() - shown[0] >= PROGRESS_S:
                 shown[0] = time.monotonic()
-                said = self._bus.publish("install.draft", {"drafting": dict(self.drafting)}, persist=False)
+                said = self._bus.publish("install.draft", {"drafting": dict(coming)}, persist=False)
                 asyncio.run_coroutine_threadsafe(said, loop)
 
         self._draft_cancel.clear()

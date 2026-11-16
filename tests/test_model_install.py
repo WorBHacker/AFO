@@ -2184,3 +2184,41 @@ def test_a_draft_model_comes_by_itself_and_goes_when_it_gives_nothing(hub, tmp_p
     assert sped_up("tinyone") == ("tinyone", False) and not draft.exists()
     assert not FakeHub.spans and not FakeHub.ranges  # nothing asked of Hugging Face
     assert hub.post("/v1/install/speedup/nope").status_code == 404
+
+
+def test_a_second_speed_up_starts_no_second_download(hub, tmp_path, monkeypatch):
+    """0.1.15 step 6: each «Ускорить» started its own work - a second and a third click while the draft was on its
+    way downloaded it again into the same file, and asked for the tuning three times; the hub said nothing until the
+    download began. Now one «Ускорить» a model at a time, one draft's download at a time in the whole hub, and from the
+    first second the hub says it is looking for the draft."""
+    from app.ui import model_setup as ms
+
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["drafts"] = [{"id": "small", "repo": "test/Small-GGUF", "file": "Small-Q8_0.gguf", "name": "Small",
+                          "architectures": ["tiny"]}]  # fmt: skip
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    model = tmp_path / "own" / "Tiny-Q4_K_M.gguf"
+    model.parent.mkdir()
+    model.write_bytes(tiny_gguf(400_000, tokens=WORDS))
+    text = hub.config.read_text(encoding="utf-8")
+    block = lc.model_block("tinyone", name="Tinyone", description="", server=lc.server_command(text), model=str(model),
+                           context=8192, gpu_layers="all")  # fmt: skip
+    hub.config.write_text(lc.add_model(text, "tinyone", block), encoding="utf-8")
+    installer = hub.app.state.installer
+    asked = []
+    monkeypatch.setattr(installer, "on_speed_up", lambda model_id, automatic: asked.append((model_id, automatic)))
+    FakeHub.slow = 0.2  # the first download still on its way when the second and the third click come
+    answers = [hub.post("/v1/install/speedup/tinyone") for _ in range(3)]
+    assert [a.status_code for a in answers] == [200, 200, 200]
+    deadline = time.monotonic() + 20
+    while installer._speeding:
+        assert time.monotonic() < deadline, installer.drafting
+        time.sleep(0.05)
+    assert asked == [("tinyone", False)], asked  # the old: the tuning asked three times - three downloads
+    draft = mi.models_root(installer.drives()[0]) / "drafts" / "Small-Q8_0.gguf"
+    assert draft.read_bytes() == DRAFTS["test/Small-GGUF"]["Small-Q8_0.gguf"]
+    assert sorted(p.name for p in draft.parent.iterdir()) == [draft.name]  # no .part, no .parts
+    assert installer.drafting == {}
+    assert answers[0].json()["drafting"] == {"model_id": "tinyone", "looking": True}
+    assert ms.spec_text({}, "tinyone", {}, {"model_id": "tinyone", "looking": True})[0] == (
+        "Ищу черновую модель для ускорения на Hugging Face…")  # fmt: skip
