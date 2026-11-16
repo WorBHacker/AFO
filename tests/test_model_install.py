@@ -569,6 +569,23 @@ def test_pieces_go_on_after_a_break_and_after_a_restart(fake_hub, pieces, tmp_pa
     assert asked == set(range(5)) - set(done)  # only the pieces that were not there
 
 
+def test_a_broken_piece_goes_on_from_where_it_broke(fake_hub, pieces, tmp_path, monkeypatch):
+    """0.1.15 step 5: a piece whose connection broke was asked again from its start - the bytes it had were
+    downloaded twice (up to 64 MB a piece in life), and the number in the window went back by them. Now it goes on
+    from where it broke, and the number never goes down."""
+    monkeypatch.setattr(hf, "CHUNK", 8_192)  # with 1 MiB httpx holds a 64 KB piece whole: a break would leave nothing
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"
+    data = FILES[name]
+    FakeHub.break_after[name] = 30_000  # one piece's connection breaks once it sent 32 768 bytes
+    FakeHub.slow = 0.02
+    seen, dest = [], tmp_path / "broken.gguf"
+    hf.download(hf.file_url("test/Tiny-GGUF", name), dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                token=None, report=seen.append, cancel=threading.Event())  # fmt: skip
+    assert any(start % (64 * 1024) for _, start, _ in FakeHub.spans), FakeHub.spans  # the old: each from its start
+    assert seen == sorted(seen), "the number in the window went back"
+    assert seen[-1] == len(data) and dest.read_bytes() == data and len(FakeHub.spans) == 6
+
+
 def test_pieces_stopped_before_the_first_one_is_whole_go_on_from_the_start(fake_hub, pieces, tmp_path):
     """32.1: a stop before any piece was whole (a pause in the first seconds, the hub going down) left the part as
     long as the file and no list of pieces - and the next try took it for a part that came over one connection: its

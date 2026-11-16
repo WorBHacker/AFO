@@ -461,12 +461,22 @@ def tokenizer(repo: str, path: str, token: str | None = None, revision: str = "m
 @dataclass
 class Progress:
     """A download's state kept between tries: the bytes on disk and their sha256 so far; for a file that comes in
-    pieces - the pieces on disk and how far from the start the sha256 has gone."""
+    pieces - the pieces on disk, how far from the start the sha256 has gone, and each piece begun: its bytes on disk
+    (0.1.15 step 5: a broken piece goes on from there); `top` - the most the window was shown."""
 
     done: int = 0
     hasher: Any = field(default_factory=hashlib.sha256)
     pieces: set[int] = field(default_factory=set)
     hashed: int = 0
+    partial: dict[int, int] = field(default_factory=dict)
+    top: int = 0
+
+
+def _shown(progress: Progress, report: Callable[[int], None], done: int) -> None:
+    """The number for the window never goes down (0.1.15 step 5): the bytes on disk are not counted again; only a
+    file thrown away (`_forget_pieces`, a wrong sha256) starts it anew."""
+    progress.top = max(progress.top, done)
+    report(progress.top)
 
 
 def _hash_part(part: Path, progress: Progress, report: Callable[[int], None], cancel: threading.Event) -> None:
@@ -477,7 +487,7 @@ def _hash_part(part: Path, progress: Progress, report: Callable[[int], None], ca
                 raise Cancelled()
             progress.hasher.update(chunk)
             progress.done += len(chunk)
-            report(progress.done)
+            _shown(progress, report, progress.done)
 
 
 def download(url: str, dest: Path, *, size: int, sha256: str | None, token: str | None,
@@ -507,6 +517,7 @@ def _forget_pieces(dest: Path, progress: Progress) -> None:
         with contextlib.suppress(OSError):
             left.unlink()
     progress.hasher, progress.done, progress.pieces, progress.hashed = hashlib.sha256(), 0, set(), 0
+    progress.partial, progress.top = {}, 0
 
 
 def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str | None,
@@ -529,10 +540,11 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
         marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
         with open(part, "ab") as f:
             f.truncate(size)
+        progress.partial.clear()  # a part made anew: no piece's bytes are on it
     lock, wake, stop = threading.Lock(), threading.Condition(), threading.Event()
     waiting = [i for i in range(count) if i not in progress.pieces]
     failed: list[BaseException] = []
-    coming: dict[int, int] = {}  # a piece on its way -> its bytes so far
+    coming = progress.partial  # a piece begun -> its bytes on disk; kept between tries (0.1.15 step 5)
 
     def worker() -> None:
         with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0), transport=transport) as http:
@@ -567,7 +579,7 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
                     ready = progress.pieces.copy()
                     on_way = sum(coming.values())
                     progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in ready)
-                report(progress.done + on_way)
+                _shown(progress, report, progress.done + on_way)
                 upto = 0  # the bytes from the start that are on disk
                 while upto < count and upto in ready:
                     upto += 1
@@ -625,19 +637,24 @@ def _pieces_on_disk(part: Path, marks: Path, size: int, count: int) -> set[int]:
 def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, token: str | None,
            cancel: threading.Event, stop: threading.Event, coming: dict[int, int],
            lock: threading.Lock) -> None:  # fmt: skip
-    """One piece at its place in the part, asked again when the connection breaks (SEGMENT_TRIES)."""
+    """One piece at its place in the part, asked again when the connection breaks (SEGMENT_TRIES) - from where it
+    broke (0.1.15 step 5: `coming` keeps its bytes on disk, for the next try of the download too)."""
     first, last = _span(index, size)
     need = last + 1 - first
     for attempt in range(SEGMENT_TRIES):
-        got = 0
+        with lock:
+            got = coming.get(index, 0)
+        if got >= need:  # all of it written by a try before, not yet counted done
+            return
         try:
-            with http.stream("GET", url, headers={**headers(token), "Range": f"bytes={first}-{last}"}) as response:
+            ranged = {**headers(token), "Range": f"bytes={first + got}-{last}"}
+            with http.stream("GET", url, headers=ranged) as response:
                 if response.status_code == 200:
                     raise _NoRanges()
                 if response.status_code != 206:
                     raise _refused(response, part.name.removesuffix(".part"))
                 with open(part, "r+b") as f:
-                    f.seek(first)
+                    f.seek(first + got)
                     for chunk in response.iter_bytes(CHUNK):
                         if cancel.is_set() or stop.is_set():
                             raise Cancelled()
@@ -651,8 +668,6 @@ def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, toke
                 return
         except httpx.HTTPError:
             pass
-        with lock:
-            coming.pop(index, None)
         if attempt + 1 < SEGMENT_TRIES:
             time.sleep(RETRY_S)
     raise HubError(tr("{file}: связь оборвалась — загрузка продолжится", file=part.name.removesuffix(".part")))
@@ -692,7 +707,7 @@ def _stream(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
                         f.write(chunk)
                         progress.hasher.update(chunk)
                         progress.done += len(chunk)
-                        report(progress.done)
+                        _shown(progress, report, progress.done)
         except httpx.HTTPError as exc:
             raise HubError(tr("{file}: связь оборвалась ({error}) — загрузка продолжится", file=dest.name,
                               error=exc.__class__.__name__)) from exc  # fmt: skip
@@ -702,7 +717,7 @@ def _stream(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
     if sha256 and progress.hasher.hexdigest() != sha256.lower():
         with contextlib.suppress(OSError):
             part.unlink()
-        progress.hasher, progress.done = hashlib.sha256(), 0
+        progress.hasher, progress.done, progress.top = hashlib.sha256(), 0, 0  # thrown away: the number anew too
         raise HubError(tr("{file}: файл пришёл повреждённым (sha256 не совпал) — скачается заново", file=dest.name),
                        409)  # fmt: skip
     os.replace(part, dest)
