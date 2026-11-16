@@ -403,6 +403,16 @@ class FakeClient:
             "builds": {},
             "job": {"status": "idle"},
         }
+        self.build_info = {  # the llama.cpp build running against the checked one (12а): older here
+            "current": "b11800",
+            "build": "cuda-13",
+            "checked": "b11899",
+            "latest": "b11946",
+            "state": "older",
+            "newer": True,
+            "newest_newer": True,
+            "server": "x",
+        }
         self.quiet = {"enabled": True, "from": "23:00", "to": "08:00"}
         self.memory_calls = []
         self.access = {
@@ -718,10 +728,10 @@ class FakeClient:
         return {"job": dict(self.setup["job"])}
 
     def setup_update_info(self):
-        return {"current": "b11899", "build": "cuda-13", "latest": "b11946", "newer": True, "server": "x"}
+        return dict(self.build_info)
 
-    def setup_update(self):
-        self.install_calls.append(("update",))
+    def setup_update(self, target="checked"):
+        self.install_calls.append(("update", target))
         return {"job": {"status": "downloading", "update": True, "done": 0, "total": 0}}
 
     def setup_cancel(self):
@@ -6751,9 +6761,9 @@ def test_the_first_run_wizard(qapp):
         wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
         assert client.install_calls[-1][1]["repo"] == "ggml-org/gemma-4-E4B-it-GGUF"
         wait_until(lambda: not app.bg.busy and view.updateAvailable)
-        assert view.updateText.startswith("llama.cpp b11899 — есть новее: b11946")
+        assert view.updateText.startswith("llama.cpp b11800 — есть проверенная новее: b11899")
         view.updateEngine()
-        wait_until(lambda: not app.bg.busy and client.install_calls[-1] == ("update",))
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1] == ("update", "checked"))
         view.dismiss()
         assert app.settings.value(DISMISSED, False, bool)
         for _ in range(10):
@@ -6843,6 +6853,71 @@ def test_the_wizard_waits_while_a_list_is_open(qapp):
             QApplication.processEvents()
         assert quick.warnings == []
     finally:
+        quick.close()
+
+
+def test_the_wizard_says_which_llama_cpp_build_runs(qapp):
+    """0.1.16, step 12в: the wizard says whether the llama.cpp build running is the one AFO was checked on, older
+    («Обновить движок») or newer - AFO was not checked on it and replaces nothing by itself, «Поставить проверенную»
+    puts the checked one back; a click answers at once, a second one sends nothing. The checked build gone from
+    GitHub - the job says what was put instead."""
+    import threading
+
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    gate = threading.Event()
+
+    class SlowHub(FakeClient):
+        def setup_update(self, target="checked"):
+            gate.wait(5)
+            return super().setup_update(target)
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = SlowHub()
+        client.build_info = {**client.build_info, "current": "b12318", "latest": "b12444", "state": "newer",
+                             "newer": False, "newest_newer": True}  # fmt: skip
+        app.attach(client, start_events=False)
+        view = app.setup_view
+        sheet = quick.window.findChild(QObject, "wizardSheet")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and sheet.property("opened") and view.updateText)
+
+        def named(name):
+            return quick.window.findChild(QObject, name)
+
+        words = named("wizardUpdate").property("text")
+        assert "не проверялась" in words, words  # the old code: «llama.cpp b12318 — самая новая сборка»
+        assert words == ("llama.cpp b12318 — новее проверенной b11899: AFO на ней не проверялась. Сама AFO её не "
+                         "заменит.")  # fmt: skip
+        back = named("wizardCheckedEngine")
+        assert back.property("visible") and back.property("text") == "Поставить проверенную b11899"
+        assert not named("wizardUpdateEngine").property("visible")
+        for _ in range(3):
+            QMetaObject.invokeMethod(back, "clicked")
+        QApplication.processEvents()
+        assert not back.property("visible") and view.jobText == "Скачиваю сборку…"  # at once, the hub still silent
+        gate.set()
+        wait_until(lambda: not app.bg.busy and ("update", "checked") in client.install_calls)
+        for _ in range(10):
+            QApplication.processEvents()
+        assert client.install_calls.count(("update", "checked")) == 1  # the second and third clicks sent nothing
+
+        client.build_info = {**client.build_info, "current": "b11899", "state": "checked", "newest_newer": True}
+        done = {"status": "done", "update": True, "tag": "b12444", "checked": "b11899", "unchecked": True}
+        app.on_event({"type": "setup.changed", "payload": {"job": done}})
+        assert view.jobText == ("Движок обновлён. Проверенной сборки b11899 на GitHub уже нет — поставлена b12444, "
+                                "AFO на ней не проверялась.")  # fmt: skip
+        wait_until(lambda: not app.bg.busy and "проверенная сборка" in view.updateText)
+        assert view.updateText == "llama.cpp b11899 — проверенная сборка: AFO проверена на ней."
+        assert not named("wizardCheckedEngine").property("visible") and not named("wizardUpdateEngine").property(
+            "visible")  # fmt: skip
+        assert quick.warnings == []
+    finally:
+        gate.set()
         quick.close()
 
 

@@ -92,6 +92,13 @@ Sheet {
         text: qsTr("Обновить движок")
         onClicked: Setup.updateEngine()
     }
+    PlainButton {
+        objectName: "wizardCheckedEngine"
+        visible: !Setup.needed && Setup.updateBack && Setup.jobStatus !== "downloading"
+        iconName: "refresh"
+        text: Setup.checkedText
+        onClicked: Setup.updateEngine()
+    }
     Row {
         spacing: 8
         PlainButton {

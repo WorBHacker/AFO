@@ -53,7 +53,11 @@ def job_text(job: dict[str, Any]) -> str:
     if status == "starting":
         return tr("Запускаю llama-swap…")
     if status == "done":
-        return tr("Движок обновлён") if job.get("update") else tr("Движок установлен и запущен")
+        text = tr("Движок обновлён") if job.get("update") else tr("Движок установлен и запущен")
+        if job.get("unchecked"):  # 12а: the checked build is no longer on GitHub (or not for this card)
+            text += ". " + tr("Проверенной сборки {checked} на GitHub уже нет — поставлена {tag}, AFO на ней не "
+                              "проверялась.", checked=job.get("checked", ""), tag=job.get("tag", ""))  # fmt: skip
+        return text
     if status == "failed":
         return tr("Не вышло: {error}", error=job.get("error"))
     if status == "cancelled":
@@ -98,7 +102,8 @@ class SetupView(QObject):
         self._models_loading = False
         self._build = ""
         self._asked = False
-        self._update: dict[str, Any] = {}  # the llama.cpp build running and the newest of its kind (10.4)
+        self._update: dict[str, Any] = {}  # the llama.cpp build running against the checked one (10.4, 12а)
+        self._updating = False  # another build asked for, the hub has not answered yet (12в)
 
     # ================= for QML =================
 
@@ -183,6 +188,8 @@ class SetupView(QObject):
 
     @Property(str, notify=changed)
     def jobText(self) -> str:
+        if self._updating:
+            return tr("Скачиваю сборку…")
         return job_text(self._state.get("job") or {})
 
     @Property(float, notify=changed)
@@ -235,27 +242,60 @@ class SetupView(QObject):
 
     @Property(str, notify=changed)
     def updateText(self) -> str:
+        """The llama.cpp build running against the one AFO was checked on (12в)."""
         found = self._update
-        if not found.get("current"):
+        current, checked, state = found.get("current"), found.get("checked", ""), found.get("state")
+        if not current:
             return ""
-        if found.get("newer"):
-            return tr("llama.cpp {current} — есть новее: {latest}. Обновление встанет рядом со старой сборкой, "
-                      "конфиг llama-swap получит путь к новой (копия прежнего — рядом).", current=found["current"],
-                      latest=found["latest"])  # fmt: skip
-        return tr("llama.cpp {current} — самая новая сборка", current=found["current"])
+        if state == "checked":
+            return tr("llama.cpp {current} — проверенная сборка: AFO проверена на ней.", current=current)
+        if state == "older":
+            return tr("llama.cpp {current} — есть проверенная новее: {checked}. Обновление встанет рядом со старой "
+                      "сборкой, конфиг llama-swap получит путь к новой (копия прежнего — рядом).", current=current,
+                      checked=checked)  # fmt: skip
+        if state == "newer":
+            return tr("llama.cpp {current} — новее проверенной {checked}: AFO на ней не проверялась. Сама AFO её не "
+                      "заменит.", current=current, checked=checked)  # fmt: skip
+        return ""
 
     @Property(bool, notify=changed)
     def updateAvailable(self) -> bool:
-        return bool(self._update.get("newer"))
+        """«Обновить движок»: the build running is older than the checked one."""
+        return self._update.get("state") == "older" and not self._updating
+
+    @Property(bool, notify=changed)
+    def updateBack(self) -> bool:
+        """«Поставить проверенную» (12в): the build running is newer than the checked one - by the person's word."""
+        return self._update.get("state") == "newer" and not self._updating
+
+    @Property(str, notify=changed)
+    def checkedText(self) -> str:
+        return tr("Поставить проверенную {checked}", checked=self._update.get("checked", ""))
 
     @Slot()
     def updateEngine(self) -> None:
+        """«Обновить движок» and «Поставить проверенную»: the checked build."""
+        self._put("checked")
+
+    def _put(self, target: str) -> None:
+        """Another llama.cpp build (12в): «Скачиваю сборку…» at once, the buttons off; a second click while the hub
+        has not answered sends nothing."""
+        if self._updating:
+            return
+        self._updating = True
+        self.changed.emit()
+
         def done(result: dict[str, Any]) -> None:
+            self._updating = False
             self._state = {**self._state, "job": result.get("job") or {}}
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.setup_update(), done,
-                              lambda e: self.app.show_error(tr("Движок не обновить: {error}", error=e)))  # fmt: skip
+        def failed(error: Exception) -> None:
+            self._updating = False
+            self.changed.emit()
+            self.app.show_error(tr("Движок не обновить: {error}", error=error))
+
+        self.app.call_or_fail(lambda: self.app.client.setup_update(target), done, failed)
 
     def _load_models(self) -> None:
         self._models_loading = True
