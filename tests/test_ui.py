@@ -7511,6 +7511,21 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         quick.close()
 
 
+def test_the_window_decodes_a_video_on_the_cpu(monkeypatch):
+    """48.12: Qt's FFmpeg decodes on the graphics card (d3d11va) unless told otherwise - the card's VRAM and decoder
+    are the models' and the games' (D3: the window draws on the CPU), and the window took +178 MiB with the 960×960
+    clip playing, +74 decoded by the CPU. The window names no device ("none": an empty value Windows drops); one
+    the person set stays."""
+    from app.ui import main
+
+    monkeypatch.delenv(main.VIDEO_DECODING_ENV, raising=False)
+    main.use_software_rendering()
+    assert os.environ[main.VIDEO_DECODING_ENV] == "none"
+    monkeypatch.setenv(main.VIDEO_DECODING_ENV, "d3d11va")
+    main.use_software_rendering()
+    assert os.environ[main.VIDEO_DECODING_ENV] == "d3d11va"
+
+
 def test_the_studios_queue_and_gallery(qapp):
     """48.7в: while one picture is drawn another goes into the hub's queue («В очередь») without taking the canvas; the
     queue shows each job with how far it is and ✕ to cancel it; the gallery - pictures and videos, all of them or only
