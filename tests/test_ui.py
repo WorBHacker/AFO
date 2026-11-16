@@ -9365,3 +9365,52 @@ def test_speeding_up_a_model_that_does_not_fit_asks_first(app):
     setup.speedUp()
     wait_until(lambda: not app.bg.busy and len(asked()) == 2)
     assert app.question == {}
+
+
+def test_a_button_shows_it_is_pressed(qapp):
+    """0.1.15 step 8а: a button pressed looked as one under the mouse - a click was not seen on the button itself
+    (and the hub's answer came seconds later). Now its ground changes while it is held, in the window drawn; let go
+    away from it, it is not a click."""
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+
+    def drawn():
+        for _ in range(10):
+            QApplication.processEvents()
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        app.model_setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and app.model_setup.launch.get("editable") and sheet.property("opened"))
+        button = quick.window.findChild(QObject, "speedUp")
+        QMetaObject.invokeMethod(sheet, "reveal", Q_ARG("QVariant", button))
+        drawn()
+        assert button.property("enabled") and button.property("visible")
+        middle = button.mapToScene(QPointF(button.width() / 2, button.height() / 2))
+        at = QPoint(round(middle.x()), round(middle.y()))
+        QTest.mouseMove(quick.window, at)
+        drawn()
+        hovered = button.property("background").property("color")
+        QTest.mousePress(quick.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+        drawn()
+        assert button.property("down")
+        assert button.property("background").property("color") != hovered, "pressed looks as under the mouse"
+        away = button.mapToScene(QPointF(button.width() / 2, -40))
+        QTest.mouseMove(quick.window, QPoint(round(away.x()), round(away.y())))
+        QTest.mouseRelease(quick.window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                           QPoint(round(away.x()), round(away.y())))  # fmt: skip
+        drawn()
+        assert not button.property("down") and ("speedup", "big") not in client.tune_calls
+        assert quick.warnings == []
+    finally:
+        quick.close()

@@ -15,10 +15,12 @@ AbstractButton {
     ToolTip.visible: hovered && label.truncated
     ToolTip.text: text
     opacity: enabled ? 1 : 0.5
+    // held down - its own ground, before the one under the mouse (0.1.15 step 8а: a click is seen on the button)
     background: Rectangle {
         radius: 6
-        color: button.kind === "primary" ? (button.hovered ? Theme.p.accent_hover : Theme.p.accent_fill)
-               : (button.hovered ? Theme.p.item_hover : "transparent")
+        color: button.kind === "primary"
+               ? (button.down ? Qt.darker(Theme.p.accent_hover, 1.15) : button.hovered ? Theme.p.accent_hover : Theme.p.accent_fill)
+               : (button.down ? Theme.p.item_selected : button.hovered ? Theme.p.item_hover : "transparent")
         border.color: button.kind === "primary" ? "transparent"
                       : button.kind === "danger" ? Theme.p.error_line : Theme.p.hairline_strong
     }
