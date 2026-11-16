@@ -5179,6 +5179,8 @@ def test_tuning_by_measurement_in_the_models_sheet(app):
     wait_until(lambda: ("auto", False) in app.client.tune_calls and not setup.tuneAuto)
     setup.tuneAll()
     wait_until(lambda: ("all",) in app.client.tune_calls)
+    setup.tuneCancel()  # 0.1.15 step 3а: «Остановить» is not a failure - the window says it stopped
+    wait_until(lambda: ("cancel",) in app.client.tune_calls and app._flash == "Замер остановлен.")
 
 
 def test_a_local_models_launch_in_the_window(app):

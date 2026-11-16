@@ -460,7 +460,9 @@ class Tuner:
         self._queue: list[tuple[str, bool, bool]] = []
         self._task: asyncio.Task | None = None
         self._process: subprocess.Popen | None = None
-        self._halt = threading.Event()  # measuring is to stop: a senior needs the card (48.9б1)
+        self._halt = threading.Event()  # measuring is to stop: a senior needs the card (48.9б1), or «Остановить»
+        self._stopped = False  # by the person's «Остановить» (0.1.15 3а): not a failure, not measured again
+        self._stops = 0  # each «Остановить»: a wait for the card begun before it ends there (0.1.15 3а)
         self._played = Played(card)  # a game on the card while it measures: nothing kept (48.9б4), anew each tuning
 
     async def start(self) -> None:
@@ -511,8 +513,15 @@ class Tuner:
             await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
 
     def cancel(self) -> dict[str, Any]:
+        """«Остановить» (0.1.15 3а): the queue emptied and what measures let go, as for a senior (`_stop`) - but it is
+        not a failure and the model is not measured again: what was kept before stays, or what the settings already
+        written gave; a wait for the card ends without taking it."""
         self._queue.clear()
-        self._kill()
+        self._stops += 1
+        self._stopped = True
+        self._stop()
+        if self.job.get("status") == "waiting":
+            self.job = {"status": "idle"}
         return self.state_job()
 
     def state_job(self) -> dict[str, Any]:
@@ -524,7 +533,10 @@ class Tuner:
             if automatic and not await self._db.acall(auto):
                 self._queue.pop(0)
                 continue
-            await self._wait(background, model_id)
+            if not await self._wait(background, model_id):  # «Остановить» while it waited (0.1.15 3а)
+                self.job = {"status": "idle"}
+                await self._publish()
+                continue
             self._queue.pop(0)
             try:
                 if (await self.tune(model_id, automatic=automatic)).get("status") == "halted":
@@ -532,16 +544,19 @@ class Tuner:
             finally:
                 self._card.give(TUNE)  # taken in `_wait`
 
-    async def _wait(self, background: bool, model_id: str) -> None:
+    async def _wait(self, background: bool, model_id: str) -> bool:
         """Until the card is still (48.9б2: no local request - a cloud chat is not on the card -, nobody holding it,
         its load low, no game on it; a download is not on it) - by the person's «Подобрать» at once, background work
         (automatic, stopped by a senior) once it has been still for QUIET_S, counted from now; then the card is
-        tuning's (48.9б1: TUNE, from local requests too), taken in the same step; a senior stops it (`_stop`)."""
-        quiet = Quiet(self._card)
+        tuning's (48.9б1: TUNE, from local requests too), taken in the same step; a senior stops it (`_stop`). False -
+        «Остановить» came meanwhile (0.1.15 3а): the card is not taken."""
+        quiet, stops = Quiet(self._card), self._stops
         while True:
+            if self._stops != stops:
+                return False
             ready = quiet.look() if background else self._card.still()
             if ready and self._card.try_take(TUNE, chats=True, stop=self._stop, model=model_id):
-                return
+                return True
             # what it waits for, for the window (48.9д): the person's card, the quiet, the card free now
             why = "given" if self._card.given else "quiet" if background else "busy"
             if self.job.get("status") != "waiting" or self.job.get("why") != why:
@@ -572,9 +587,12 @@ class Tuner:
         """Measures, chooses, writes and checks; the result is kept (the window shows it beside the model). Measuring a
         local request or an install stops is not a result: {"status": "halted"}, nothing kept - nor measuring with a
         game on the card meanwhile (48.9б4: its numbers were the game's too), looked at when it is to write and at the
-        end; the model waits its turn again as background work."""
+        end; the model waits its turn again as background work. Stopped by the person's «Остановить» (0.1.15 3а):
+        {"status": "stopped"}, nothing kept - not a failure, not measured again; once settings were written, what they
+        gave is kept (`_tune`)."""
         self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
         self._halt.clear()
+        self._stopped = False
         self._played = Played(self._card)
         watch = asyncio.create_task(self._watch())
         await self._publish()
@@ -583,6 +601,11 @@ class Tuner:
             if self._played.look():  # a game came meanwhile (48.9б4): stopped work, not a result
                 raise _Halted
         except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+            if self._stopped:  # «Остановить»: what was kept before stays (0.1.15 3а)
+                log.info("tuning %s stopped by the person", model_id)
+                self.job = {"status": "idle"}
+                await self._publish()
+                return {"status": "stopped"}
             if self._halt.is_set() or self._played.look():  # stopped for a local request or an install (llama-bench
                 # killed), or measured beside a game (48.9б4): not a result
                 why = "a local request or an install began" if self._halt.is_set() else "a game was on the card"
@@ -599,7 +622,7 @@ class Tuner:
         await self._db.acall(lambda conn: _put(conn, RESULTS_KEY, self.results))
         self.job = {"status": "idle"}
         await self._publish()
-        if self.on_tuned is not None:
+        if self.on_tuned is not None and not self._stopped:  # stopped (0.1.15 3а): a draft not measured yet waits on
             try:  # the drafts that gave nothing go (42.5): its failure is not the tuning's
                 await self.on_tuned(model_id, result)
             except Exception:
@@ -608,15 +631,19 @@ class Tuner:
 
     async def _tune(self, model_id: str) -> dict[str, Any]:
         """llama-bench's settings, then with them where the experts go (44.2: `moe`, only a Mixture-of-Experts model),
-        then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays."""
+        then guessing ahead (42.4: `spec`): each step's failure is its own, what the steps before gave stays. Stopped by
+        the person's «Остановить» after llama-bench's settings were written (0.1.15 3а): what was written is kept -
+        the window says what the config has -, no step after it."""
         result = await self._tune_bench(model_id)
         for key, step in (("moe", self._tune_moe), ("spec", self._tune_spec)):
-            if self._halt.is_set():  # stopped during the check before: no step unloads a senior's model (48.9б1)
-                raise _Halted
             try:
+                if self._halt.is_set():  # stopped during the check before: no step unloads a senior's model (48.9б1)
+                    raise _Halted
                 found = await step(model_id)
-            except (TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
-                if self._halt.is_set():
+            except (_Halted, TuneError, llama_config.ConfigError, GGUFError, OSError) as exc:
+                if self._stopped:
+                    return result
+                if self._halt.is_set() or isinstance(exc, _Halted):  # a senior; a game (48.9б4) - the whole tuning's
                     raise
                 log.info("%s for %s: %s", key, model_id, exc)
                 found = {"status": "failed", "error": str(exc)}

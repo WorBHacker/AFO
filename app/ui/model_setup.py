@@ -1055,7 +1055,11 @@ class ModelSetup(QObject):
 
     @Slot()
     def tuneCancel(self) -> None:
-        self._ask_tune(lambda: self.app.client.tune_cancel())
+        """«Остановить» (0.1.15 3а): not a failure - what was found before stays; the window says it stopped."""
+        if self.app.client is not None:
+            self.app.call_or_fail(lambda: self.app.client.tune_cancel(),
+                                  lambda state: (self._set_tune(state), self.app.flash(tr("Замер остановлен."))),
+                                  lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
 
     @Slot(bool)
     def setTuneAuto(self, on: bool) -> None:

@@ -377,6 +377,104 @@ def test_what_tuning_measured_beside_a_game_is_not_kept(hub, setup, monkeypatch)
     assert not any(stopped), "the measuring was stopped beside the game"
 
 
+async def until(condition, what_for, seconds=10.0):
+    started = time.monotonic()
+    while not condition():
+        assert time.monotonic() - started < seconds, what_for
+        await asyncio.sleep(0.02)
+
+
+def test_stop_is_not_a_failure(hub, setup, tmp_path, monkeypatch):  # noqa: F811
+    """0.1.15, step 3а: «Остановить» let go only the llama-bench running then - the tuning went on (the next run, the
+    experts, guessing ahead), and the half of a measurement it had was kept as a failure: «Не подобрано: llama-bench не
+    дал замеров» in red. Now it ends the tuning: nothing written, nothing kept - what was kept before stays -, the model
+    is not measured again by itself. A real program in llama-bench's place: one line, then it measures on.
+    And while the tuning only waits for the card (a chat on it): it waited on, took the card once it was still and
+    fell on the queue «Остановить» emptied - the card stayed the tuning's, local chats waited for it."""
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    bench = tmp_path / "bench.py"
+    bench.write_text(f"import time\nprint({line(True, 'q8_0', 512, 16, pp=900)!r}, flush=True)\ntime.sleep(60)\n",
+                     encoding="utf-8")  # fmt: skip
+    before = setup.read_text(encoding="utf-8")
+    runs = []
+    found = tuner(hub, measured={}, space={"vram_gib": 0.1, "ram_gib": 64.0})  # q8_0 only: one run of llama-bench
+
+    def run(command, progress):
+        runs.append(command)
+        return found._bench([sys.executable, str(bench), *command[1:]], progress)
+
+    found._run = run
+    earlier = {"status": "same", "at": "2026-11-15T20:00:00Z", "after": {"tg": 51.0}}
+    found.results["big"] = earlier
+
+    async def measuring():
+        found.request("big")
+        await until(lambda: found.job.get("done"), "the first line")
+        found.cancel()
+        await until(lambda: found._task.done(), "the tuning ends")
+        await asyncio.sleep(0.3)
+
+    asyncio.run(measuring())
+    assert found.results["big"] == earlier, found.results["big"]
+    assert "big" not in hub.app.state.db.call(tuning.load_results), "the stop kept as a result"
+    assert setup.read_text(encoding="utf-8") == before and len(runs) == 1 and not found._queue
+    assert found._process.poll() is not None and found._card.holder == "" and found.job["status"] == "idle"
+
+    found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
+    found._card.asked = {"chat": 1}  # a chat on a local model: the card is not still
+
+    async def waiting():
+        found.request("big")
+        await until(lambda: found.job.get("status") == "waiting", "it waits for the card")
+        said = found.cancel()
+        found._card.asked = {}  # the chat ends: the card is still
+        await asyncio.sleep(0.4)
+        return said
+
+    said = asyncio.run(waiting())
+    assert found._card.holder == "" and found._card.free.is_set(), "the card stays the tuning's: local chats wait"
+    assert said["status"] == "idle" and found.job["status"] == "idle" and "big" not in found.results
+
+    found = tuner(hub, measured={"q8_0": [(2048, 1500, 52)]})
+    found._card.asked = {"chat": 1}
+
+    async def again():  # «Подобрать» at once after «Остановить»: not lost in the wait that was stopped
+        found.request("big")
+        await until(lambda: found.job.get("status") == "waiting", "it waits for the card")
+        found.cancel()
+        found.request("big")
+        found._card.asked = {}
+        await until(lambda: "big" in found.results, "measured once the card is still")
+
+    asyncio.run(again())
+    assert found.results["big"]["status"] == "better" and found._card.holder == ""
+
+
+def test_stopped_after_its_settings_were_written_keeps_what_they_gave(hub, setup):  # noqa: F811
+    """0.1.15, step 3а (the user's choice): «Остановить» once the measuring has written its settings into the config -
+    while they are checked, or while the experts or guessing ahead are measured after it - keeps what they gave: the
+    line says what the config has. Nothing is measured after it, and a draft model waiting to be measured is not
+    deleted (`on_tuned`)."""
+    found = tuner(hub, measured={"q8_0": [(512, 900, 40), (2048, 1500, 52)]})
+    check = found._check
+
+    async def stopped_meanwhile(model_id):  # «Остановить» while the new settings are checked
+        found.cancel()
+        return await check(model_id)
+
+    told = []
+
+    async def tuned(model_id, result):
+        told.append(model_id)
+
+    found._check, found.on_tuned = stopped_meanwhile, tuned
+    result = asyncio.run(found.tune("big"))
+    assert result["status"] == "better" and "moe" not in result and "spec" not in result, result
+    assert lc.model_view(setup.read_text(encoding="utf-8"), "big")["ubatch"] == 2048
+    assert hub.app.state.db.call(tuning.load_results)["big"]["status"] == "better"
+    assert not told, "a draft waiting to be measured would be deleted"
+
+
 def test_the_window_asks_and_reads(hub, setup, monkeypatch):  # noqa: F811
     state = hub.get("/v1/tune").json()
     assert state["auto"] is True and state["job"]["status"] == "idle" and state["results"] == {}
