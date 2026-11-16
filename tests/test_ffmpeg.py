@@ -134,6 +134,7 @@ def test_a_webp_into_mp4(tmp_path, monkeypatch):
     args = ran[0]
     assert args[0] == str(tmp_path / "ffmpeg.exe") and args[args.index("-i") + 1] == str(source)
     assert args[args.index("-c:v") + 1] == "libx264" and args[args.index("-pix_fmt") + 1] == "yuv420p"
+    assert args[args.index("-g") + 1] == "1"  # each frame a key frame (48.12.8): the player goes to it alone
     assert "+faststart" in args and args[args.index("-f") + 1] == "mp4"
     with pytest.raises(EngineError, match="Invalid data"):
         ffmpeg.to_mp4(tmp_path / "ffmpeg.exe", tmp_path / "fail.webp", tmp_path / "fail.mp4")
@@ -182,7 +183,8 @@ def test_a_videos_mp4_has_each_frame_as_the_webp_lays_it(tmp_path):
     """48.12.7 (the live check: the player showed the clip's first scene, then white): the MP4 the hub makes from the
     engine's WebP - by a real ffmpeg, the hub's own arguments - has each frame as the WebP lays it: a frame smaller
     than the canvas, see-through around, over the one before. The clip's middle frame is not of one colour and is not
-    the first: the first frame's halves are still there and every square laid since."""
+    the first: the first frame's halves are still there and every square laid since. Each frame a key frame
+    (48.12.8)."""
     from PySide6.QtGui import QColor, QImage
 
     first = QImage(64, 64, QImage.Format.Format_RGB32)
@@ -224,3 +226,9 @@ def test_a_videos_mp4_has_each_frame_as_the_webp_lays_it(tmp_path):
     assert not near(start, 16, 32, GREEN)  # not the first
     last = frame(8)
     assert near(last, 50, 32, GREEN) and near(last, 13, 32, GREEN)  # the square at 46, the first one kept
+    # (48.12.8) each frame a key frame: the window's player goes to a frame by decoding it alone
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", "-i", str(target),
+                    "-fps_mode", "passthrough", str(keys / "%d.png")], check=True, timeout=60)  # fmt: skip
+    assert len(list(keys.iterdir())) == len(frames) == 9

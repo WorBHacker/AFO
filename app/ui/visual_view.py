@@ -261,31 +261,36 @@ class VisualView(QObject):
 
     @Property(str, notify=changed)
     def videoFile(self) -> str:
-        """The video shown (29.8б): the hub's WebP - «Сохранить как», the gallery's first frame, and what plays until
-        its MP4 is made (48.12)."""
+        """The video shown (29.8б): the hub's WebP - «Сохранить как», the gallery's first frame, the player's still
+        until its MP4 is made (48.12.8), and what it plays if none can be."""
         path = self._video_file(self._job)
         return QUrl.fromLocalFile(str(path)).toString() if path is not None else ""
 
     @Property(str, notify=changed)
     def videoMp4(self) -> str:
         """What the player plays (48.12): the video's MP4 - Qt's FFmpeg goes to any frame of it, not of the WebP -
-        made by the hub the first time it is shown, beside the WebP; "" until then."""
+        made by the hub right after it is filmed (48.12.8), an older one's the first time it is shown, beside the
+        WebP; "" until then; the WebP itself if none can be made."""
         path = self._video_file(self._job)
         if path is None:
             return ""
         job_id = self._job["id"]
-        return self._mp4(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id))
+        return self._mp4(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id),
+                         QUrl.fromLocalFile(str(path)).toString())  # fmt: skip
 
     @Property(str, notify=changed)
     def videoNote(self) -> str:
         """Why the video shown does not seek yet: its MP4 being made, or not made."""
         return self._note(self._job.get("id", "")) if self._video_file(self._job) is not None else ""
 
-    def _mp4(self, key: str, mp4: Path, make: Callable[[], Any]) -> str:
+    def _mp4(self, key: str, mp4: Path, make: Callable[[], Any], webp: str) -> str:
         """A video's MP4 as a file's URL, if the hub has made it; else the hub is asked (once) - after the binding
-        that asked has been worked out - and "" for now."""
+        that asked has been worked out - and "" for now: the player shows the first frame, still (48.12.8). None
+        made: the WebP's URL - it plays, as Qt reads it, without seeking."""
         if mp4.is_file():
             return QUrl.fromLocalFile(str(mp4)).toString()
+        if key in self._unplayable:
+            return webp
         if key not in self._making and key not in self._unplayable and self.app.client is not None:
             self._making.add(key)
 
@@ -328,14 +333,15 @@ class VisualView(QObject):
 
     @Property("QVariantMap", notify=changed)
     def chatVideos(self) -> dict:
-        """The videos chats show (48.12), each {mp4: its MP4's URL, "" until the hub has made it from the chat's copy;
+        """The videos chats show (48.12), each {mp4: its MP4's URL - the hub makes it as the video is filmed
+        (48.12.8), an older one's from the chat's copy when shown -, "" until then, the copy's if none can be made;
         note: why it does not seek yet}."""
         out = {}
         for blob in self._chat_videos:
-            key = f"blob/{blob}"
+            key, webp = f"blob/{blob}", self.blobUrl(blob)
             mp4 = self._mp4(key, self.app.paths.blobs / f"{blob}.mp4",
-                            lambda blob=blob: self.app.client.visual_picture_mp4(blob))  # fmt: skip
-            out[blob] = {"mp4": mp4, "note": "" if mp4 else self._note(key)}
+                            lambda blob=blob: self.app.client.visual_picture_mp4(blob), webp)  # fmt: skip
+            out[blob] = {"mp4": mp4, "note": self._note(key) if mp4 in ("", webp) else ""}
         return out
 
     @Property(bool, notify=changed)

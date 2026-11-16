@@ -88,10 +88,12 @@ def install(found: dict[str, Any], into: Path, cancel: threading.Event) -> Path:
 
 def to_mp4(program: Path, source: Path, target: Path) -> None:
     """A video into MP4 (blocking): H.264 in yuv420p - any player and messenger - the index at the front, no sound;
-    written beside under another name, then put in place."""
+    written beside under another name, then put in place. Each frame a key frame (48.12.8): the window's player goes
+    to a frame by decoding it alone, not the clip's frames from the first (x264's one key frame in 250) - three
+    times the size, a 3 s clip at 960×960 2.3 MB."""
     part = target.with_name(target.name + ".part")
     args = [str(program), "-hide_banner", "-loglevel", "error", "-y", "-i", str(source), "-c:v", "libx264",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", "-f", "mp4", str(part)]  # fmt: skip
+            "-pix_fmt", "yuv420p", "-g", "1", "-movflags", "+faststart", "-an", "-f", "mp4", str(part)]  # fmt: skip
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         done = subprocess.run(args, capture_output=True, timeout=CONVERT_TIMEOUT_S, creationflags=flags, check=False)

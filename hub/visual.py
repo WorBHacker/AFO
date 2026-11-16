@@ -46,9 +46,11 @@ import asyncio
 import base64
 import contextlib
 import functools
+import hashlib
 import json
 import logging
 import random
+import shutil
 import struct
 import threading
 import time
@@ -925,6 +927,7 @@ class Visual:
         if path is None:
             return f"the video did not come out: {done['error'] or done['status']}", True, None
         data = await asyncio.to_thread(path.read_bytes)
+        await self._chat_mp4(path, data)
         length = round(done["frames"] / done["fps"], 1)
         return (f"Filmed and shown to the user in the chat: {done['width']}×{done['height']}, {length:g} s "
                 f"({done['frames']} frames at {done['fps']}/s), seed {done['seed']}, {done['seconds']} s to make. You "
@@ -965,8 +968,9 @@ class Visual:
                 "whether it is what they wanted."), False, data  # fmt: skip
 
     async def mp4(self, found: dict[str, Any]) -> Path:
-        """A video's MP4 (29.8в): made once with ffmpeg - fetched the first time - and kept beside its WebP. The
-        window plays it too (48.12): Qt's FFmpeg reads the WebP but cannot go to a frame of it."""
+        """A video's MP4 (29.8в): made once with ffmpeg - fetched the first time - and kept beside its WebP; since
+        48.12.8 right after the video is filmed, here only an older one's. The window plays it too (48.12): Qt's
+        FFmpeg reads the WebP but cannot go to a frame of it."""
         if found.get("kind") != "video":
             raise VisualError(tr("это не видео — MP4 бывает только у видео"), 409)
         source = self.file(found)
@@ -984,6 +988,36 @@ class Visual:
         if kind != "image/webp":
             raise VisualError(tr("это не видео — MP4 бывает только у видео"), 409)
         return await self._mp4_of(source, blobs / f"{name}.mp4")
+
+    async def _mp4_now(self, source: Path) -> Path | None:
+        """The MP4 of a video just filmed (48.12.8), with an ffmpeg already here: the first one is fetched (~86 MB)
+        when a video is first shown - the window asks -, not before a chat's answer goes on."""
+        if await asyncio.to_thread(ffmpeg.find, self.tools) is None:
+            return None
+        try:
+            return await self._mp4_of(source, source.with_suffix(".mp4"))
+        except VisualError as exc:
+            log.warning("video %s: no MP4 made: %s", source.stem, exc)
+            return None
+
+    async def _chat_mp4(self, path: Path, data: bytes) -> None:
+        """A chat's video's MP4 before its card is shown (48.12.8): the job's - the worker makes it once the video is
+        done - copied beside the chat's copy, named as `attachments.keep` names that (its sha256). None made: the card
+        asks for one, as an older video's does."""
+        if self.blobs is None or (made := await self._mp4_now(path)) is None:
+            return
+        target = self.blobs / f"{hashlib.sha256(data).hexdigest()}.mp4"
+
+        def copy() -> None:
+            part = target.with_name(target.name + ".part")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(made, part)
+            part.replace(target)
+
+        try:
+            await asyncio.to_thread(copy)
+        except OSError as exc:
+            log.warning("a chat's video: its MP4 not copied: %s", exc)
 
     async def _mp4_of(self, source: Path, target: Path) -> Path:
         async with self._ffmpeg:
@@ -1260,6 +1294,9 @@ class Visual:
         name = f"{datetime.now(UTC):%Y-%m}/{job_id}.webp"
         await asyncio.to_thread(_save, self.media / name, data)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
+        # its MP4 at once (48.12.8), not when it is first shown: the window played the WebP until then, then the MP4
+        # from its start - the clip began twice. The window, asking meanwhile, waits for this one (`_ffmpeg`)
+        await self._mp4_now(self.media / name)
 
     async def _said(self, job_id: str, step: int, steps: int, seconds: float) -> None:
         """A video's step to the window - or, with none (`steps` 0), the time it has taken (48's review)."""

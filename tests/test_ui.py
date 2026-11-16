@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import struct
 import time
 from collections import Counter
@@ -7386,10 +7387,11 @@ def apart(one: QImage, other: QImage) -> float:
     return total / (3 * len(points))
 
 
-def shown_colour(player) -> int | None:
-    """Which of COLOURS a VideoPlayer shows now - its frame's middle, as the window draws it; None - none of them."""
+def shown_colour(player, down: float = 0.5) -> int | None:
+    """Which of COLOURS a VideoPlayer shows now - its frame's middle (`down` its height), as the window draws it;
+    None - none of them."""
     image = drawn(player)
-    pixel = image.pixelColor(image.width() // 2, image.height() // 2)
+    pixel = image.pixelColor(image.width() // 2, int(image.height() * down))
     rgb = (pixel.red(), pixel.green(), pixel.blue())
     near = min(range(len(COLOURS)), key=lambda i: sum(abs(a - b) for a, b in zip(COLOURS[i], rgb, strict=True)))
     return near if sum(abs(a - b) for a, b in zip(COLOURS[near], rgb, strict=True)) < 60 else None
@@ -7416,12 +7418,53 @@ def a_middle_frame_is_drawn(player) -> None:
     assert shown_colour(player) == 6
 
 
+def animated_clip(colours: list[tuple[int, int, int]], side: int = 32) -> bytes:
+    """An animated WebP of a frame a colour, a tenth of a second each - as the engine's video is, which the player
+    shows until its MP4 is there."""
+    from PySide6.QtGui import QColor
+
+    from tests.test_ffmpeg import animated_webp
+
+    frames = []
+    for colour in colours:
+        image = QImage(side, side, QImage.Format.Format_ARGB32)
+        image.fill(QColor(*colour))
+        frames.append((image, 0, 0, False))
+    return animated_webp(frames, side, side)
+
+
+def stands_still(player) -> None:
+    """Until its MP4 is there a video's first frame stands still, drawn, and it does not play (48.12.8: the live
+    check - the WebP played meanwhile, then the MP4 from its start: the clip began twice)."""
+    seen = set()
+    deadline = time.monotonic() + 0.8  # the WebP would be at its 8th frame
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        seen.add(shown_colour(player, 0.85))  # below what may lie over a card's top: a notice and its shadow
+        time.sleep(0.02)
+    assert seen == {0}, seen
+    assert not player.property("playing") and item_named(player, "videoStill").property("currentFrame") == 0
+
+
+def begins_once(player) -> None:
+    """Its MP4 there, the clip plays from its start on: its time goes only forward (48.12.8)."""
+    times = []
+    deadline = time.monotonic() + 0.6
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        times.append(player.property("position"))
+        time.sleep(0.02)
+    assert player.property("playing") and times[0] < 600 and times == sorted(times) and times[-1] > times[0], times
+
+
 def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
     """48.12 (48.7г's player, now Qt Multimedia's): the Studio plays the video's MP4 - the hub makes it from the WebP
-    the first time the video is shown (Qt's FFmpeg reads the WebP but goes to no frame of it); until then the WebP
-    plays as it is read, no frame kept (AnimatedImage kept them all: 960×960×73 - 257 MiB), and the player says why
-    it does not seek. Then pause, any frame to go to - the one drawn is the one filmed there - its time, round again
-    after the last; the Studio hidden, the clip let go. A real file, real QML, no screen; what the player shows is
+    as it is filmed (48.12.8), an older one's the first time it is shown (Qt's FFmpeg reads the WebP but goes to no
+    frame of it); until then the WebP's first frame stands still and the player says why it does not go - the WebP
+    played meanwhile, then the MP4 from its start: the clip began twice (the live check) -, then the MP4 plays from
+    its start on, no frame kept (AnimatedImage kept them all: 960×960×73 - 257 MiB). Then pause, any frame to go to
+    - the one drawn is the one filmed there - its time, round again after the last; the Studio hidden, the clip let
+    go. A real file, real QML, no screen; what the player shows is
     looked at in the window's picture, drawn as the window draws (48.12.7: its sink had each frame right, and the
     window showed its background)."""
     import threading
@@ -7454,9 +7497,7 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         app.openUi("draw")
         wait_until(lambda: not app.bg.busy and view.hasVideo)
         clip.parent.mkdir(parents=True, exist_ok=True)
-        still = QImage(32, 32, QImage.Format.Format_RGB32)
-        still.fill(Qt.GlobalColor.darkCyan)
-        assert still.save(str(clip), "WEBP")  # stands for the engine's animated WebP
+        clip.write_bytes(animated_clip(COLOURS))  # the engine's animated WebP: a frame a colour
         done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
                 "seconds": 9.0, "width": 32, "height": 32, "frames": 12, "fps": 8, "seed": 1, "error": "",
                 "file": "2026-11/v9.webp"}  # fmt: skip
@@ -7471,8 +7512,10 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
         assert frames.property("source").toString() == view.videoFile and frames.property("cache") is False
         assert not item_named(player, "visualSeek").property("enabled")
         assert item_named(player, "visualTime").property("text") == view.videoNote != ""
+        stands_still(video)
         release.set()
         wait_until(lambda: view.videoMp4 != "" and video.property("seekable"))
+        begins_once(video)
         assert video.property("duration") == 1500 and view.videoNote == ""
         assert frames.property("source").toString() == ""  # the WebP let go
         media = video.findChild(QMediaPlayer)
@@ -7502,8 +7545,9 @@ def test_the_studios_player_goes_to_any_frame_and_keeps_none(qapp):
 def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
     """48.12: a video a chat's model filmed - its card under the call played the chat's copy in an AnimatedImage that
     kept every frame in full (960×960×73 - 257 MiB a card, shown at 420 points) and had no controls; it is the
-    Studio's player now: the chat's copy plays as it is read until the hub has made its MP4, then the MP4 - pause, any
-    frame, its time; the chat hidden, the clip let go. The frame is looked at in the window's picture (48.12.7)."""
+    Studio's player now: the chat's copy's first frame stands still until the hub has made its MP4 - as the video is
+    filmed (48.12.8), an older one's when shown -, then the MP4 plays from its start, once - pause, any frame, its
+    time; the chat hidden, the clip let go. The frame is looked at in the window's picture (48.12.7)."""
     import threading
 
     from PySide6.QtCore import Q_ARG, QMetaObject
@@ -7518,9 +7562,7 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         blob = "ab" * 32
         copy = app.paths.blobs / blob
         copy.parent.mkdir(parents=True, exist_ok=True)
-        still = QImage(32, 32, QImage.Format.Format_RGB32)
-        still.fill(Qt.GlobalColor.darkCyan)
-        assert still.save(str(copy), "WEBP")  # stands for the engine's animated WebP the chat keeps
+        copy.write_bytes(animated_clip(COLOURS))  # the engine's animated WebP the chat keeps
         made, release = [], threading.Event()
 
         def mp4(name):  # the hub, making it from the chat's copy
@@ -7549,11 +7591,13 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         player = item_named(card, "toolVideoPlayer")
         frames = item_named(player, "videoStill")
         assert frames.property("source").toString() == QUrl.fromLocalFile(str(copy)).toString()
-        assert frames.property("cache") is False  # read as it plays, not kept
+        assert frames.property("cache") is False  # read as it goes, not kept
         assert not item_named(card, "toolVideoSeek").property("enabled")
         assert item_named(card, "toolVideoTime").property("text") == app.visual_view.chatVideos[blob]["note"] != ""
+        stands_still(player)
         release.set()
         wait_until(lambda: player.property("seekable"))
+        begins_once(player)
         media = player.findChild(QMediaPlayer)
         assert media.source() == QUrl.fromLocalFile(str(app.paths.blobs / f"{blob}.mp4"))
         assert player.property("duration") == 1500 and frames.property("source").toString() == ""
@@ -7568,6 +7612,145 @@ def test_a_chats_video_card_plays_on_the_same_player_and_keeps_no_frames(qapp):
         wait_until(lambda: media.source().isEmpty())
         app.setMode("chats")
         wait_until(lambda: not media.source().isEmpty())
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_the_slider_dragged_to_the_middle_shows_the_frames_on_its_way(qapp, tmp_path):
+    """48.12.8 (the live check: seeking jerked), measured on the stand's 960×960 clip as the window plays it: a seek
+    alone took 15-20 ms (11 with each frame a key frame), but the slider asks for a time at each move of the mouse -
+    each 4 ms at this computer's 240 Hz screens - and each one asked of the player dropped the one it was going to:
+    dragged across the clip it drew 2 frames in 1.9 s, up to 1.5 s behind the slider. A clip as the hub makes it (a
+    real ffmpeg, the hub's arguments), the Studio's player, the slider dragged by the mouse from the start to the
+    middle, a move each 4 ms: the frames on the way are drawn - a third of them at least - none more than 0.4 s
+    behind the slider, the middle one 0.3 s after the mouse stops at most (with the fix: each frame, 0.15 s at most)."""
+    import subprocess
+    from pathlib import Path
+
+    from PySide6.QtCore import QMetaObject, QObject, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    source, made = tmp_path / "source.avi", tmp_path / "made.mp4"
+    subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=960x960:rate=24:duration=3", "-c:v", "mjpeg", "-q:v", "5", str(source)],
+                   check=True, timeout=120)  # fmt: skip
+    ffmpeg.to_mp4(program, source, made)
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        clip = app.paths.media / "2026-11" / "v9.webp"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(animated_clip(COLOURS[:2]))
+        shutil.copyfile(made, clip.with_suffix(".mp4"))  # the hub made it as it was filmed
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("лиса бежит")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasVideo)
+        done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
+                "seconds": 9.0, "width": 960, "height": 960, "frames": 72, "fps": 24, "seed": 1, "error": "",
+                "file": "2026-11/v9.webp"}  # fmt: skip
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
+        view.pick("v9")
+        window = quick.window
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        video, player = item_named(studio, "visualVideo"), item_named(studio, "visualPlayer")
+        wait_until(lambda: video.property("seekable"), 10)
+        seen = []  # (when, the time of the frame the player gave, ms)
+        item_named(video, "videoOutput").property("videoSink").videoFrameChanged.connect(
+            lambda frame: seen.append((time.monotonic(), frame.startTime() / 1000))
+        )
+        QMetaObject.invokeMethod(video, "toggle")  # ‖
+        wait_until(lambda: not video.property("playing"))
+        slider = item_named(player, "visualSeek")
+
+        def at(fraction: float) -> QPoint:
+            point = slider.mapToScene(QPointF(10 + (slider.width() - 20) * fraction, slider.height() / 2))
+            return QPoint(round(point.x()), round(point.y()))
+
+        left = Qt.MouseButton.LeftButton
+        QTest.mousePress(window, left, Qt.KeyboardModifier.NoModifier, at(0))
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+        seen.clear()
+        behind = []
+        for i in range(1, 251):  # a second, a move each 4 ms
+            QTest.mouseMove(window, at(0.5 * i / 250))
+            deadline = time.monotonic() + 0.004
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+            if seen:
+                behind.append(slider.property("value") - seen[-1][1])
+        stopped = time.monotonic()
+        wanted = slider.property("value")
+        while time.monotonic() - stopped < 1 and not (seen and abs(seen[-1][1] - wanted) <= 42):
+            QApplication.processEvents()
+        QTest.mouseRelease(window, left, Qt.KeyboardModifier.NoModifier, at(0.5))
+        shown = {round(ms) for _when, ms in seen}
+        assert len(shown) >= 12, (len(shown), sorted(shown))  # of the 36 on the way
+        assert behind and max(behind) <= 400, max(behind)
+        assert abs(seen[-1][1] - wanted) <= 42 and seen[-1][0] - stopped <= 0.3, (wanted, seen[-1], stopped)
+        assert 1400 <= wanted <= 1600
+    finally:
+        quick.close()
+
+
+def test_a_video_whose_mp4_cannot_be_made_plays_its_webp(qapp):
+    """48.12.8: the WebP stands still only until its MP4 is there - none made (no ffmpeg fetched: no network), the
+    player plays the WebP as it is read, once, without seeking, and says why."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832,
+                                 "steps": 4, "cfg": 1.0, "modes": ["text"]}]  # fmt: skip
+        clip = app.paths.media / "2026-11" / "v9.webp"
+
+        def mp4(job_id):
+            raise HubError("ffmpeg не скачался: нет сети")
+
+        client.visual_mp4 = mp4
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("лиса бежит")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.hasVideo)
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        clip.write_bytes(animated_clip(COLOURS))
+        done = {"id": "v9", "kind": "video", "prompt": "лиса бежит", "model_id": "wan", "status": "done",
+                "seconds": 9.0, "width": 32, "height": 32, "frames": 12, "fps": 8, "seed": 1, "error": "",
+                "file": "2026-11/v9.webp"}  # fmt: skip
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
+        view.pick("v9")
+        studio = quick.window.findChild(QObject, "studioView")
+        quick.window.grabWindow()
+        video, player = item_named(studio, "visualVideo"), item_named(studio, "visualPlayer")
+        wait_until(lambda: "без перемотки" in view.videoNote and "нет сети" in view.videoNote)
+        assert view.videoMp4 == view.videoFile  # the WebP itself
+        frames = item_named(video, "videoStill")
+        wait_until(lambda: frames.property("currentFrame") >= 3)  # it plays
+        assert video.property("playing") and not video.property("seekable")
+        assert item_named(player, "visualTime").property("text") == view.videoNote
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

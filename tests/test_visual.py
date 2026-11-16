@@ -1054,6 +1054,41 @@ def test_a_chats_video_has_its_mp4_as_a_studios_does(hub, monkeypatch, tmp_path)
     assert len(made) == 1
 
 
+def test_a_videos_mp4_is_made_as_it_is_filmed_and_a_chats_card_has_it_at_once(hub, monkeypatch, tmp_path):
+    """48.12.8 (the live check: the clip began twice - the window played the WebP until the hub had made the MP4 it
+    asked for when the video was first shown, then the MP4 from its start): with an ffmpeg here a video's MP4 is made
+    as it is filmed, none asking; a chat's video has its own beside the chat's copy before the model hears it was
+    filmed - the job's, copied, not made again."""
+    from hub import ffmpeg
+
+    made = []
+    tools = tmp_path / "tools"
+    (tools / "ffmpeg").mkdir(parents=True)
+    (tools / "ffmpeg" / "ffmpeg.exe").write_bytes(b"MZ")
+    hub.app.state.visual.tools = tools
+
+    def to_mp4(program, source, target):
+        made.append(source)
+        target.write_bytes(b"MP4 of " + source.read_bytes()[:4])
+
+    monkeypatch.setattr(ffmpeg, "to_mp4", to_mp4)
+    _install(hub, "clip", CLIP_PLAN)
+    video = _wait(hub, hub.post("/v1/visual/videos", json={"prompt": "a fox"}).json()["job"]["id"], "done")
+    mp4 = (hub.app.state.visual.media / video["file"]).with_suffix(".mp4")
+    deadline = time.monotonic() + 5
+    while not mp4.is_file() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert mp4.is_file() and mp4.read_bytes() == b"MP4 of RIFF" and made == [mp4.with_suffix(".webp")]
+
+    provider = OncePerTurn([[{"id": "v1", "name": "generate_video", "input": {"prompt": "a fox running"}}]])
+    hub.app.state.gateway.register(provider)
+    hub.portal.call(hub.app.state.gateway.sync_catalog)
+    result = _drawn(_finished(hub, _chat(hub)))
+    assert not result["error"], result["output"]
+    copy = hub.app.state.chat.blobs / f"{result['blob']}.mp4"
+    assert copy.is_file() and copy.read_bytes() == b"MP4 of RIFF" and len(made) == 2  # the job's, copied
+
+
 def test_a_chat_model_films_a_video_and_the_chat_keeps_it(hub):
     """29.8б: generate_video - offered to a chat begun once a video model is here; drawn as any video, waited for,
     the WebP kept with the chat; the model hears its size and length in words."""
