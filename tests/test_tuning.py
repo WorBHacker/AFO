@@ -1296,3 +1296,49 @@ def test_a_draft_goes_only_once_measured_to_its_end_without_a_gain(hub, setup, s
     gone = asyncio.run(tuned(measured={}).tune("big"))  # llama-bench gave nothing; the draft measured, no gain
     assert gone["spec"]["kind"] == "ngram" and gone["spec"]["measured"][2]["tg"] == 41.0
     assert not draft.exists() and hub.portal.call(installer.draft_paths, "big", draft) == []
+
+
+def test_the_measuring_says_how_much_there_is_before_its_first_line(hub, setup, spec_server, tmp_path,  # noqa: F811
+                                                                     monkeypatch):  # fmt: skip
+    """0.1.15, step 4: the window said «Меряю: 0 из ?» for minutes - llama-bench loads the model before its first
+    line, and the hub told the window how many measurements there are only with that line. Now it says it before
+    llama-bench starts, with the step and when this measuring began - each measuring its own (the user's choice: the
+    time of the measuring going on, not of the whole tuning); while llama-bench is silent the window hears it again
+    every TICK_S, so its «идёт N мин» goes on. A real program in llama-bench's place: silent a while, then its lines."""
+    from app.ui import model_setup as ms
+
+    monkeypatch.setattr(tuning, "TICK_S", 0.1, raising=False)  # the old hub has no such tick
+    monkeypatch.setattr(tuning, "WAIT_S", 0.05)
+    lines = [line(True, "q8_0", ub, 16, **kw) for ub in tuning.UBATCHES for kw in ({"pp": 900 + ub}, {"tg": 40.0})]
+    bench = tmp_path / "bench.py"
+    bench.write_text(f"import time\ntime.sleep(0.8)\nfor text in {lines!r}:\n    print(text, flush=True)\n",
+                     encoding="utf-8")  # fmt: skip
+    found = tuner(hub, measured={}, space={"vram_gib": 0.1, "ram_gib": 64.0})  # q8_0 only: one run, 6 lines
+    said, marks = found._bus.said, {}
+
+    def run(command, progress):
+        marks["started"] = len(said)  # llama-bench starts: not a line of it yet
+
+        def counted():
+            marks.setdefault("first", len(said))
+            progress()
+
+        return found._bench([sys.executable, str(bench), *command[1:]], counted)
+
+    found._run = run
+    began = time.time()
+    result = asyncio.run(found.tune("big"))
+    jobs = [payload["job"] for kind, payload in said if kind == "tune.changed"]
+    told = jobs[: marks["started"]]
+    assert any(job.get("total") == 6 and job.get("done") == 0 for job in told), told  # the old hub: 0 till a line
+    bench_job = next(job for job in told if job.get("total") == 6)
+    assert bench_job["step"] == "bench" and began <= bench_job["since"] <= time.time()
+    silent = jobs[marks["started"] : marks["first"]]
+    assert len(silent) >= 2, "the window not told again while llama-bench was silent"
+    assert all(job["done"] == 0 and job["since"] == bench_job["since"] for job in silent), silent
+    guessing = [job for job in jobs if job.get("step") == "spec" and job.get("status") == "measuring"]
+    assert guessing and guessing[0]["since"] > bench_job["since"], "guessing ahead counted from llama-bench's start"
+    assert {job["since"] for job in guessing} == {guessing[0]["since"]}
+    for job in jobs:
+        assert "?" not in ms.tune_text({"job": job, "results": {}}, "big"), job
+    assert result["status"] in ("better", "same") and "spec" in result

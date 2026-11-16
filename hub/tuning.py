@@ -59,6 +59,7 @@ UNQUANTIZED = ("f16", "bf16", "f32")  # KV cache types that work with flash atte
 FIT_MARGIN_MIB = 1024  # what llama.cpp's fitting leaves free on the graphics card
 CLOSE = 0.03
 WAIT_S = 2.0  # as often as the status monitor samples the graphics card
+TICK_S = 15.0  # the window hears how far a measuring got this often (0.1.15 step 4): its «идёт N мин» goes on
 BENCH_TIMEOUT_S = 1800.0
 CHECK_TIMEOUT_S = 300.0
 WATCH_S = 3.0  # llama-swap --watch-config looks at the file every 2 s: a write with the same context is not seen
@@ -578,9 +579,15 @@ class Tuner:
     async def _watch(self) -> None:
         """While it measures: a local request stops it as a senior does (48.9б1) - one that is not llama-swap's (a
         local chat model of another program's) does not pass the card's gate; the gate's are stopped there at once. A
-        game on the card is only noted (48.9б4): the measuring goes on to its end, what it finds is not kept."""
+        game on the card is only noted (48.9б4): the measuring goes on to its end, what it finds is not kept. And every
+        TICK_S the window hears how far it got (0.1.15 step 4): llama-bench loading the model is silent for minutes."""
+        told = time.monotonic()
         while not self._card.asked:
             self._played.look()
+            if time.monotonic() - told >= TICK_S:
+                told = time.monotonic()
+                if self.job.get("status") == "measuring":
+                    await self._publish(False)
             await asyncio.sleep(WAIT_S)
         self._stop()
 
@@ -596,7 +603,9 @@ class Tuner:
         gave is kept (`_tune`). The drafts waiting for the model hear of it (`on_tuned`: one that gave nothing goes)
         only once each was measured to its end (0.1.15 3б, the user's word): a failure or a stop of llama-bench or of
         the draft's measuring, a senior, a game - the draft stays on the disk, waiting; «Ускорить» takes it again."""
-        self.job = {"status": "measuring", "model_id": model_id, "done": 0, "total": 0}
+        # each measuring with its step and its own start (0.1.15 step 4: the window says how long this one has gone)
+        self.job = {"status": "measuring", "model_id": model_id, "step": "bench", "done": 0, "total": 0,
+                    "since": time.time()}  # fmt: skip
         self._halt.clear()
         self._stopped = False
         self._drafts_measured = False
@@ -684,7 +693,7 @@ class Tuner:
             return None
         params = await self._db.acall(lambda conn: sampling(conn, model_id))
         reading = not view.get("context") or view["context"] >= READ_MIN_CONTEXT
-        self.job.update(status="measuring", step="moe", done=0, total=len(variants))
+        self.job.update(status="measuring", step="moe", done=0, total=len(variants), since=time.time())
         await self._publish()
         await self._unload()  # the check of llama-bench's settings loaded the model in llama-swap
         measured: list[dict[str, Any]] = []
@@ -729,7 +738,7 @@ class Tuner:
         drafts, waiting = await self._find_drafts(model_id, view)
         variants, short = spec_variants(view, info, self._space(), build, drafts)
         params = await self._db.acall(lambda conn: sampling(conn, model_id))
-        self.job.update(status="measuring", step="spec", done=0, total=len(variants))
+        self.job.update(status="measuring", step="spec", done=0, total=len(variants), since=time.time())
         await self._publish()
         await self._unload()  # the check of llama-bench's settings loaded the model in llama-swap
         measured: list[dict[str, Any]] = []
@@ -870,6 +879,7 @@ class Tuner:
         depth = DEPTH if (info.get("context_trained") or 0) >= 2 * DEPTH else 0
         kinds = caches(view, info, info.get("size_bytes") or file.stat().st_size, self._space())
         self.job.update(total=sum(len(flash(k)) for k in kinds) * len(UBATCHES) * 2)  # each: a prompt and an answer
+        await self._publish(False)  # before llama-bench loads the model - minutes to its first line (0.1.15 step 4)
         await self._unload()
         loop = asyncio.get_running_loop()
 

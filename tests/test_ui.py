@@ -5148,8 +5148,7 @@ def test_tuning_by_measurement_in_the_models_sheet(app):
     state = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}
     assert "замерит на этом компьютере" in ms.tune_text(state, "big")
     measuring = {"status": "measuring", "model_id": "big", "done": 3, "total": 12}
-    assert ms.tune_text({**state, "job": measuring}, "big") == ("Меряю: 3 из 12… На это время модели выгружены из "
-                                                                "видеопамяти.")  # fmt: skip
+    assert ms.tune_text({**state, "job": measuring}, "big") == "Замер настроек: 3 из 12…" + UNLOADED
     assert ms.tune_text({**state, "job": {"status": "waiting", "model_id": "big"}}, "big").startswith("Жду")
     assert ms.tune_text({**state, "job": {"status": "idle", "queue": ["big"]}}, "big") == "В очереди на замер."
     better = {"status": "better", "at": "2026-11-04T20:00:00Z", "before": {"tg": 40.2, "pp": 900.0},
@@ -5170,7 +5169,7 @@ def test_tuning_by_measurement_in_the_models_sheet(app):
     setup.tune()
     wait_until(lambda: ("tune", "big") in app.client.tune_calls and setup.tuneBusy)
     send(app, "tune.changed", {"job": {**measuring, "done": 5, "queue": []}})
-    assert setup.tuneText.startswith("Меряю: 5 из 12")
+    assert setup.tuneText.startswith("Замер настроек: 5 из 12")
     app.client.tune_status = {"job": {"status": "idle", "queue": []}, "results": {"big": better}, "auto": True}
     send(app, "tune.changed", {"job": {"status": "idle", "queue": []}})
     wait_until(lambda: setup.tuneTone == "ok")
@@ -8922,7 +8921,7 @@ def test_guessing_ahead_in_the_models_sheet(app):
         "Черновая модель не скачалась: нет связи", "error")  # fmt: skip
     assert said({}, plain, {**coming, "model_id": "other"})[0].startswith("Угадывание вперёд не настроено")
     measuring = {"status": "measuring", "model_id": "big", "step": "spec", "done": 1, "total": 3}
-    assert ms.tune_text({**state, "job": measuring}, "big").startswith("Меряю угадывание вперёд: 1 из 3…")
+    assert ms.tune_text({**state, "job": measuring}, "big").startswith("Замер ускорения (угадывание вперёд): 1 из 3…")
 
     app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
                                "provider": "llama-swap", "prices": {}}])  # fmt: skip
@@ -9001,7 +9000,8 @@ def test_where_the_experts_are_in_the_models_sheet(app):
     assert said(found, placed) == ("Эксперты MoE: все в ОЗУ, их кэш 7,8 ГБ на видеокарте.", "")  # changed since
     assert said({"status": "failed", "error": "не встала"}) == ("Эксперты MoE не подобраны: не встала", "error")
     measuring = {"status": "measuring", "model_id": "big", "step": "moe", "done": 1, "total": 4}
-    assert ms.tune_text({**state, "job": measuring}, "big").startswith("Меряю, где держать экспертов MoE: 1 из 4…")
+    assert ms.tune_text({**state, "job": measuring}, "big").startswith(
+        "Замер, какую часть модели держать в обычной памяти: 1 из 4…")  # fmt: skip
 
     def spec(launch_spec, result=None):
         results = {"big": {"status": "same", "spec": result}} if result else {}
@@ -9225,6 +9225,93 @@ def test_writing_a_model_larger_than_the_card_asks_first(qapp):
         setup.saveLaunch()
         wait_until(lambda: not app.bg.busy and not setup.launchBusy)
         assert app.question == {} and written()[-1] == ("launch", "big", {"ttl": 900})
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+UNLOADED = "\nМодели на это время выгружены из видеопамяти, после замера вернутся сами."
+
+
+def test_the_measuring_line_says_what_is_measured_and_how_long():
+    """0.1.15 step 4: the line said «Меряю: 0 из ?» for minutes while llama-bench loaded the model. Now from the first
+    second it says what is measured, how many measurements there are and how long this measuring has gone (the time of
+    the measuring going on, the user's choice); while nothing is measured yet - the model loads first. Under it, by
+    the user's word: the models are unloaded meanwhile and come back by themselves."""
+    from app.ui import model_setup as ms
+
+    now = time.time()
+    job = {"status": "measuring", "model_id": "big", "step": "bench", "done": 0, "total": 6, "since": now - 185}
+    for shown, said in (
+        ({**job, "total": 0}, "Готовлю замер…"),
+        (job, "Замер настроек: 0 из 6, идёт 3 мин. Сначала модель загружается в память — первый результат бывает "
+              "через несколько минут…"),
+        ({**job, "step": "spec", "done": 1, "total": 3, "since": now - 335},
+         "Замер ускорения (угадывание вперёд): 1 из 3, идёт 5 мин…"),
+        ({**job, "step": "moe", "done": 2, "total": 4, "since": now - 20},
+         "Замер, какую часть модели держать в обычной памяти: 2 из 4, идёт меньше минуты…"),
+        ({**job, "step": "moe", "total": 4}, "Замер, какую часть модели держать в обычной памяти: 0 из 4, идёт 3 мин. "
+                                              "Сначала модель загружается в память — первый результат бывает через "
+                                              "несколько минут…"),
+        ({**job, "done": 2, "since": None}, "Замер настроек: 2 из 6…"),  # no time known: no «идёт»
+    ):  # fmt: skip
+        assert ms.tune_text({"job": shown, "results": {}}, "big") == said + UNLOADED
+    assert ms.elapsed_words(now - 59.0, now) == "меньше минуты" and ms.elapsed_words(now - 3600, now) == "60 мин"
+    assert ms.elapsed_words(None) == "" and ms.elapsed_words(now + 30, now) == "меньше минуты"  # the clock set back
+
+
+def test_a_number_being_typed_stays_while_the_tuning_measures(qapp):
+    """0.1.15 step 4: each measurement the tuning reported redrew the whole models sheet - a number being typed in a
+    launch field (not finished yet) was taken back to the saved one. Now the hub tells the window every TICK_S, so
+    the line's «идёт N мин» goes on - only the line is redrawn, in the window drawn."""
+    from PySide6.QtCore import QEvent, QMetaObject, QObject
+    from PySide6.QtGui import QKeyEvent
+
+    from app.ui.main import QuickApp
+
+    def key(item, code, text="", modifiers=Qt.KeyboardModifier.NoModifier):
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QApplication.sendEvent(item, QKeyEvent(kind, code, modifiers, text))
+
+    def drawn():
+        for _ in range(10):
+            QApplication.processEvents()
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = quick.window.findChild(QObject, "modelsSheet")
+        setup = app.model_setup
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("editable") and sheet.property("opened"))
+        setup.tune()  # «Подобрать»: the hub measures
+        wait_until(lambda: not app.bg.busy and setup.tuneBusy)
+        drawn()
+        field = quick.window.findChild(QObject, "launch_context")
+        line = quick.window.findChild(QObject, "tuneText")
+        QMetaObject.invokeMethod(field, "forceActiveFocus")
+        key(field, Qt.Key.Key_A, modifiers=Qt.KeyboardModifier.ControlModifier)
+        for digit in "65536":  # typed, not finished: the field's own until Enter or it loses focus
+            key(field, getattr(Qt.Key, f"Key_{digit}"), digit)
+        assert field.property("text") == "65536" and setup.launchDraft["context"] == "32768"
+        since = time.time() - 185
+        job = {"status": "measuring", "model_id": "big", "step": "bench", "total": 6, "since": since, "queue": []}
+        send(app, "tune.changed", {"job": {**job, "done": 1}})  # the next measurement
+        drawn()
+        assert field.property("text") == "65536", "the number being typed taken back by the measuring"
+        assert line.property("text") == "Замер настроек: 1 из 6, идёт 3 мин…" + UNLOADED
+        send(app, "tune.changed", {"job": {**job, "done": 1, "since": since - 60}})  # the hub's tick: time goes on
+        drawn()
+        assert line.property("text") == "Замер настроек: 1 из 6, идёт 4 мин…" + UNLOADED
+        assert field.property("text") == "65536"
+        key(field, Qt.Key.Key_Return, "\r")  # finished: into the draft
+        assert setup.launchDraft["context"] == "65536"
         assert quick.warnings == []
     finally:
         quick.close()

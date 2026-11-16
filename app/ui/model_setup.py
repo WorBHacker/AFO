@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -541,19 +542,42 @@ def spec_text(state: dict[str, Any], model_id: str, launch: dict[str, Any], draf
               "замерит, что быстрее."), ""  # fmt: skip
 
 
+# the tuning's measurings (hub/tuning.py): llama-bench's settings, where a MoE model's experts go (44.2), guessing ahead
+TUNE_STEPS = {"bench": N_("Замер настроек: {done} из {total}"),
+              "moe": N_("Замер, какую часть модели держать в обычной памяти: {done} из {total}"),
+              "spec": N_("Замер ускорения (угадывание вперёд): {done} из {total}")}  # fmt: skip
+
+
+def elapsed_words(since: float | None, now: float | None = None) -> str:
+    """How long a measuring has gone (0.1.15 step 4), from its start by the hub's clock - the hub and the window are on
+    one computer: «меньше минуты», «N мин»; no start known - ''."""
+    if not since:
+        return ""
+    seconds = (time.time() if now is None else now) - since
+    return tr("меньше минуты") if seconds < 60 else tr("{minutes} мин", minutes=int(seconds // 60))
+
+
+def measuring_words(job: dict[str, Any]) -> str:
+    """What is measured, how many measurements and how long this measuring has gone (0.1.15 step 4: not «0 из ?»);
+    nothing measured yet - the model loads first, minutes to the first result."""
+    if not job.get("total"):
+        return tr("Готовлю замер…")
+    line = tr(TUNE_STEPS.get(job.get("step") or "", TUNE_STEPS["bench"]), done=job.get("done") or 0,
+              total=job["total"])  # fmt: skip
+    if going := elapsed_words(job.get("since")):
+        line += tr(", идёт {time}", time=going)
+    if job.get("done"):
+        return line + "…"
+    return line + ". " + tr("Сначала модель загружается в память — первый результат бывает через несколько минут…")
+
+
 def tune_text(state: dict[str, Any], model_id: str) -> str:
     """The models view's line about the tuning of this model: going on, waiting, or what it found."""
     job = state.get("job") or {}
     mine = job.get("model_id") == model_id
-    if mine and job.get("status") == "measuring" and job.get("step") == "spec":
-        return tr("Меряю угадывание вперёд: {done} из {total}… На это время модели выгружены из видеопамяти.",
-                  done=job.get("done", 0), total=job.get("total") or "?")  # fmt: skip
-    if mine and job.get("status") == "measuring" and job.get("step") == "moe":  # 44.2
-        return tr("Меряю, где держать экспертов MoE: {done} из {total}… На это время модели выгружены из "
-                  "видеопамяти.", done=job.get("done", 0), total=job.get("total") or "?")  # fmt: skip
-    if mine and job.get("status") == "measuring":
-        return tr("Меряю: {done} из {total}… На это время модели выгружены из видеопамяти.", done=job.get("done", 0),
-                  total=job.get("total") or "?")  # fmt: skip
+    if mine and job.get("status") == "measuring":  # under it, the user's word: the models come back by themselves
+        return measuring_words(job) + "\n" + tr("Модели на это время выгружены из видеопамяти, после замера вернутся "
+                                                "сами.")  # fmt: skip
     if mine and job.get("status") == "checking":
         return tr("Проверяю, встаёт ли модель с новыми настройками и всем контекстом…")
     if mine and job.get("status") == "waiting" and job.get("why") == "given":  # 48.9д
@@ -584,10 +608,14 @@ def tune_text(state: dict[str, Any], model_id: str) -> str:
 class ModelSetup(QObject):
     changed = Signal()  # the open model, its draft, its versions, the check
     choicesChanged = Signal()
+    # the tuning's line alone (0.1.15 step 4): how far a measuring got, every TICK_S - `changed` redraws the sheet, and
+    # a number being typed in a launch field went back to the saved one
+    tuneChanged = Signal()
 
     def __init__(self, app: Controller):
         super().__init__(app)
         self.app = app
+        self.changed.connect(self.tuneChanged)
         self._model = GENERAL
         self._info: dict[str, Any] = {}
         self._draft: dict[str, Any] = dict(BLANK)
@@ -947,7 +975,7 @@ class ModelSetup(QObject):
     def _tune_id(self) -> str:
         return self._launch.get("id") or ""
 
-    @Property(str, notify=changed)
+    @Property(str, notify=tuneChanged)
     def tuneText(self) -> str:
         return tune_text(self._tune, self._tune_id())
 
@@ -1255,8 +1283,10 @@ class ModelSetup(QObject):
         if kind == "tune.changed":
             job = payload.get("job") or {}
             if job.get("status") == "measuring" and self._tune:  # how far the measuring got: no call for it
+                was = (self._tune.get("job") or {}).get("status")
                 self._tune = {**self._tune, "job": job}
-                self.changed.emit()
+                # measuring on: the line alone (0.1.15 step 4) - the sheet redrawn takes back a number being typed
+                (self.tuneChanged if was == "measuring" else self.changed).emit()
             else:
                 self._load_tune()
             return
