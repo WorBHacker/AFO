@@ -369,6 +369,8 @@ VERDICTS = {"fits": (N_("Поместится в видеокарту целик
                         "или модель меньше."), "error")}  # fmt: skip
 # a Mixture-of-Experts model whose experts the fields keep in RAM, the rest on the card - the fastest for it (44)
 EXPERTS_FIT = N_("Поместится: часть модели в обычной памяти — так она быстрее всего.")
+# the actions of the tuning part of the sheet: their word goes under its rows (0.1.15 step 8б)
+TUNE_ACTIONS = ("speedUp", "speedOff", "tune", "tuneAll", "tuneCancel", "tuneAuto")
 # «Ускорить» for a model not whole on the card asks first (0.1.15 step 7), by the line's tone
 SPEED_UP_ASKS = {"warn": N_("Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. Черновой "
                             "модели для ускорения тоже нужно место в видеокарте, поэтому быстрее, скорее всего, не "
@@ -621,6 +623,7 @@ class ModelSetup(QObject):
     # the tuning's line alone (0.1.15 step 4): how far a measuring got, every TICK_S - `changed` redraws the sheet, and
     # a number being typed in a launch field went back to the saved one
     tuneChanged = Signal()
+    pendingChanged = Signal()  # an action asked of the hub (0.1.15 step 8б): its button and its word alone, as above
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -639,6 +642,7 @@ class ModelSetup(QObject):
         self._tune: dict[str, Any] = {}  # launch settings by measurement (15.2): the job, each model's result, auto
         self._drafting: dict[str, Any] = {}  # a draft model on its way (42.5): the hub's `drafting`
         self._told: set[str] = set()  # the results already said in the status line
+        self._pending: dict[str, str] = {}  # an action asked of the hub, not answered yet -> its word (0.1.15 step 8б)
         self._launch_draft: dict[str, str] = {}
         self._vram_mib: int | None = None
         self._reserve_gib: float | None = None  # the video memory a model may not count on, the hub's (38.3)
@@ -955,8 +959,8 @@ class ModelSetup(QObject):
             self.app.flash(tr("Настройки {count} {models} записаны в {file}", count=count, models=whose,
                               file=path.name))  # fmt: skip
 
-        self.app.call_or_fail(lambda: self.app.client.export_model_settings(), write,
-                              lambda e: self.app.show_error(tr("Не выгружено: {error}", error=e)))  # fmt: skip
+        self._asked("exportTo", tr("Выгружаю настройки…"), lambda: self.app.client.export_model_settings(), write,
+                    lambda e: self.app.show_error(tr("Не выгружено: {error}", error=e)))  # fmt: skip
 
     @Slot(str)
     def importFrom(self, url: str) -> None:
@@ -977,8 +981,35 @@ class ModelSetup(QObject):
             self.app.load_models()
             self.open(self._model)
 
-        self.app.call_or_fail(lambda: self.app.client.import_model_settings(data), done,
-                              lambda e: self.app.show_error(tr("Не загружено: {error}", error=e)))  # fmt: skip
+        self._asked("importFrom", tr("Загружаю настройки…"), lambda: self.app.client.import_model_settings(data), done,
+                    lambda e: self.app.show_error(tr("Не загружено: {error}", error=e)))  # fmt: skip
+
+    # --- what the sheet has asked of the hub (0.1.15 step 8б) ---
+
+    def _asked(self, action: str, words: str, fn, done, failed) -> None:
+        """`fn` asked of the hub as `action`: its button goes off and its word shows at once - with a slow hub, or the
+        window's four threads busy, nothing was seen for seconds; a second click while it is on its way sends nothing
+        (three «Ускорить» - three downloads). The answer or the failure lets it go."""
+        if action in self._pending:
+            return
+        self._pending[action] = words
+        self.pendingChanged.emit()
+
+        def end() -> None:
+            if self._pending.pop(action, None) is not None:
+                self.pendingChanged.emit()
+
+        self.app.call_or_fail(fn, lambda result: (end(), done(result)), lambda error: (end(), failed(error)))
+
+    @Property("QVariantMap", notify=pendingChanged)
+    def pending(self) -> dict:
+        """The actions on their way -> their words: QML turns their buttons off."""
+        return dict(self._pending)
+
+    @Property(str, notify=pendingChanged)
+    def pendingText(self) -> str:
+        """The line under the tuning part's rows: the word of the last of its actions on its way."""
+        return next((words for action, words in reversed(self._pending.items()) if action in TUNE_ACTIONS), "")
 
     # --- launch settings by measurement (15.2) ---
 
@@ -1051,10 +1082,10 @@ class ModelSetup(QObject):
         if not model_id or self.app.client is None:
             return
 
-        def go() -> None:
-            self.app.call_or_fail(lambda: self.app.client.speed_up(model_id),
-                                  lambda answer: self._set_drafting(answer.get("drafting")),
-                                  lambda e: self.app.show_error(tr("Ускорить: {error}", error=e)))  # fmt: skip
+        def go() -> None:  # after the «да», if it asked (0.1.15 step 8б)
+            self._asked("speedUp", tr("Ускорить: спрашиваю хаб…"), lambda: self.app.client.speed_up(model_id),
+                        lambda answer: self._set_drafting(answer.get("drafting")),
+                        lambda e: self.app.show_error(tr("Ускорить: {error}", error=e)))  # fmt: skip
 
         tone = launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1] if \
             self._launch else ""  # fmt: skip
@@ -1069,9 +1100,10 @@ class ModelSetup(QObject):
         """«Снять ускорение»: guessing ahead off the model's command (its draft's file stays while another uses it)."""
         model_id, hub_id = self._tune_id(), self._model
         if model_id and self.app.client is not None:
-            self.app.call_or_fail(lambda: self.app.client.change_llama_model(model_id, {"spec_type": "none"}),
-                                  lambda _answer: self._load_launch(hub_id),
-                                  lambda e: self.app.show_error(tr("Снять ускорение: {error}", error=e)))  # fmt: skip
+            self._asked("speedOff", tr("Снимаю ускорение…"),
+                        lambda: self.app.client.change_llama_model(model_id, {"spec_type": "none"}),
+                        lambda _answer: self._load_launch(hub_id),
+                        lambda e: self.app.show_error(tr("Снять ускорение: {error}", error=e)))  # fmt: skip
 
     def _set_tune(self, state: dict[str, Any]) -> None:
         first = not self._tune
@@ -1091,32 +1123,32 @@ class ModelSetup(QObject):
         if self.app.client is not None:
             self.app._call(lambda: self.app.client.tune_state(), self._set_tune, lambda _e: None)
 
-    def _ask_tune(self, call) -> None:
+    def _ask_tune(self, action: str, words: str, call) -> None:
         if self.app.client is not None:
-            self.app.call_or_fail(call, self._set_tune,
-                                  lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
+            self._asked(action, words, call, self._set_tune,
+                        lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def tune(self) -> None:
         model_id = self._tune_id()
         if model_id:
-            self._ask_tune(lambda: self.app.client.tune(model_id))
+            self._ask_tune("tune", tr("Подбор: спрашиваю хаб…"), lambda: self.app.client.tune(model_id))
 
     @Slot()
     def tuneAll(self) -> None:
-        self._ask_tune(lambda: self.app.client.tune_all())
+        self._ask_tune("tuneAll", tr("Подбор для всех моделей: спрашиваю хаб…"), lambda: self.app.client.tune_all())
 
     @Slot()
     def tuneCancel(self) -> None:
         """«Остановить» (0.1.15 3а): not a failure - what was found before stays; the window says it stopped."""
         if self.app.client is not None:
-            self.app.call_or_fail(lambda: self.app.client.tune_cancel(),
-                                  lambda state: (self._set_tune(state), self.app.flash(tr("Замер остановлен."))),
-                                  lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
+            self._asked("tuneCancel", tr("Останавливаю замер…"), lambda: self.app.client.tune_cancel(),
+                        lambda state: (self._set_tune(state), self.app.flash(tr("Замер остановлен."))),
+                        lambda e: self.app.show_error(tr("Подбор по замерам: {error}", error=e)))  # fmt: skip
 
     @Slot(bool)
     def setTuneAuto(self, on: bool) -> None:
-        self._ask_tune(lambda: self.app.client.set_tune_auto(on))
+        self._ask_tune("tuneAuto", tr("Сохраняю…"), lambda: self.app.client.set_tune_auto(on))
 
     @Property(list, constant=True)
     def presets(self) -> list:
@@ -1262,7 +1294,8 @@ class ModelSetup(QObject):
             self._error = str(error)
             self.changed.emit()
 
-        self.app.call_or_fail(lambda: self.app.client.save_model_settings(hub_id, settings), done, failed)
+        self._asked("save", tr("Сохраняю…"), lambda: self.app.client.save_model_settings(hub_id, settings), done,
+                    failed)  # fmt: skip
 
     @Slot(int)
     def revert(self, number: int) -> None:
@@ -1275,8 +1308,8 @@ class ModelSetup(QObject):
                               new=info.get("version")))  # fmt: skip
             self.app.load_models()
 
-        self.app.call_or_fail(lambda: self.app.client.revert_model_settings(hub_id, number), done,
-                              lambda e: self.app.show_error(tr("Не возвращена: {error}", error=e)))  # fmt: skip
+        self._asked("revert", tr("Возвращаю версию…"), lambda: self.app.client.revert_model_settings(hub_id, number),
+                    done, lambda e: self.app.show_error(tr("Не возвращена: {error}", error=e)))  # fmt: skip
 
     @Slot()
     def check(self) -> None:

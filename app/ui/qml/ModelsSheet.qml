@@ -138,6 +138,8 @@ Sheet {
             font.pixelSize: 12
         }
     }
+    // a slow hub: the sheet says it reads the model, not an empty silence (0.1.15 step 8б)
+    Note { objectName: "modelLoading"; visible: ModelSetup.loading; text: qsTr("Читаю настройки модели…") }
     MenuPopup {
         id: menu
         menuWidth: 460
@@ -200,16 +202,23 @@ Sheet {
         spacing: 8
         PlainButton {
             objectName: "exportModelSettings"
+            enabled: !ModelSetup.pending.exportTo
             iconName: "external"
             text: qsTr("Сохранить настройки всех моделей в файл…")
             onClicked: exportDialog.open()
         }
         PlainButton {
             objectName: "importModelSettings"
+            enabled: !ModelSetup.pending.importFrom
             iconName: "folder"
             text: qsTr("Загрузить из файла…")
             onClicked: importDialog.open()
         }
+    }
+    Note {
+        objectName: "pendingFileText"
+        visible: ModelSetup.general && text !== ""
+        text: ModelSetup.pending.exportTo || ModelSetup.pending.importFrom || ""
     }
     FileDialog {
         id: exportDialog
@@ -587,18 +596,21 @@ Sheet {
                     spacing: 8
                     PlainButton {
                         objectName: "tuneModel"
-                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty && !ModelSetup.pending.tune
                         iconName: "activity"
                         text: qsTr("Подобрать по замерам")
                         onClicked: ModelSetup.tune()
                     }
                     PlainButton {
-                        enabled: !ModelSetup.tuneBusy
+                        objectName: "tuneAll"
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.pending.tuneAll
                         text: qsTr("Для всех моделей")
                         onClicked: ModelSetup.tuneAll()
                     }
                     PlainButton {
+                        objectName: "tuneCancel"
                         visible: ModelSetup.tuneBusy
+                        enabled: !ModelSetup.pending.tuneCancel
                         text: qsTr("Остановить")
                         onClicked: ModelSetup.tuneCancel()
                     }
@@ -614,6 +626,7 @@ Sheet {
                     }
                     Segmented {
                         objectName: "tuneAuto"
+                        enabled: !ModelSetup.pending.tuneAuto
                         options: [{ id: "on", name: qsTr("вкл") }, { id: "off", name: qsTr("выкл") }]
                         value: ModelSetup.tuneAuto ? "on" : "off"
                         onPicked: (id) => ModelSetup.setTuneAuto(id === "on")
@@ -636,6 +649,7 @@ Sheet {
                     PlainButton {
                         objectName: "speedUp"
                         enabled: !ModelSetup.tuneBusy && !ModelSetup.speedBusy && !ModelSetup.launchDirty
+                                 && !ModelSetup.pending.speedUp
                         iconName: "bolt"
                         text: qsTr("Ускорить")
                         onClicked: ModelSetup.speedUp()
@@ -643,10 +657,21 @@ Sheet {
                     PlainButton {
                         objectName: "speedOff"
                         visible: ModelSetup.specOn
-                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty
+                        enabled: !ModelSetup.tuneBusy && !ModelSetup.launchDirty && !ModelSetup.pending.speedOff
                         text: qsTr("Снять ускорение")
                         onClicked: ModelSetup.speedOff()
                     }
+                }
+                // what the tuning's buttons asked of the hub, at once (0.1.15 step 8б)
+                Text {
+                    objectName: "pendingText"
+                    visible: text !== ""
+                    width: parent.width
+                    wrapMode: Text.Wrap
+                    text: ModelSetup.pendingText
+                    color: Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
                 }
             }
             Text {
@@ -707,7 +732,7 @@ Sheet {
             objectName: "saveModelSettings"
             kind: "primary"
             iconName: "check"
-            enabled: ModelSetup.dirty && !ModelSetup.loading
+            enabled: ModelSetup.dirty && !ModelSetup.loading && !ModelSetup.pending.save
             text: qsTr("Сохранить")
             onClicked: ModelSetup.save()
         }
@@ -724,6 +749,11 @@ Sheet {
             text: ModelSetup.dirty ? qsTr("Проверить (сохранённые)") : qsTr("Проверить")
             onClicked: ModelSetup.check()
         }
+    }
+    Note {
+        objectName: "pendingSaveText"
+        visible: text !== ""
+        text: ModelSetup.pending.save || ModelSetup.pending.revert || ""
     }
     Text {
         objectName: "modelCheck"
@@ -763,6 +793,7 @@ Sheet {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     implicitHeight: 26
+                    enabled: !ModelSetup.pending.revert
                     text: qsTr("Вернуть")
                     onClicked: ModelSetup.revert(modelData.version)
                 }

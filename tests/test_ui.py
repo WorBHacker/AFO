@@ -9414,3 +9414,125 @@ def test_a_button_shows_it_is_pressed(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+class SlowClient(FakeClient):
+    """A hub that answers the models sheet `delay` seconds late (0.1.15 step 8б: the user's 3 s)."""
+
+    delay = 0.0
+
+    def _slow(self, name, *args):
+        time.sleep(self.delay)
+        return getattr(FakeClient, name)(self, *args)
+
+    def model_settings(self, *args):
+        return self._slow("model_settings", *args)
+
+    def llama_models(self, *args):
+        return self._slow("llama_models", *args)
+
+    def tune_state(self, *args):
+        return self._slow("tune_state", *args)
+
+    def speedup_state(self, *args):
+        return self._slow("speedup_state", *args)
+
+    def tune(self, *args):
+        return self._slow("tune", *args)
+
+    def speed_up(self, *args):
+        return self._slow("speed_up", *args)
+
+
+def test_the_models_sheet_answers_at_once_while_the_hub_is_slow(qapp):
+    """0.1.15 step 8б: a button of the models sheet that asks the hub stayed as it was until the answer came - seconds
+    with a slow hub -, and each click more sent its request again («Ускорить» three times - three downloads, step 6).
+    Now it goes off at once with a word of what it does; a second click sends nothing; a click while the window's four
+    threads are all busy says so too, its request waiting its turn; opening a model says the window reads it. The
+    window stays alive meanwhile, in the window drawn."""
+    from PySide6.QtCore import QMetaObject, QObject, QTimer
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    ticks = {"last": time.monotonic(), "gap": 0.0}
+
+    def tick():
+        now = time.monotonic()
+        ticks["gap"], ticks["last"] = max(ticks["gap"], now - ticks["last"]), now
+
+    timer = QTimer(interval=1)
+    timer.timeout.connect(tick)
+
+    def run(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.002)
+
+    def at_once(condition):  # «сразу»: within 0.3 s
+        end = time.monotonic() + 0.3
+        while not condition() and time.monotonic() < end:
+            QApplication.processEvents()
+        return condition()
+
+    def named(name):
+        return quick.window.findChild(QObject, name)
+
+    try:
+        app = quick.controller
+        client = SlowClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                                   "provider": "llama-swap", "prices": {}}])  # fmt: skip
+        sheet = named("modelsSheet")
+        setup = app.model_setup
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        wait_until(lambda: not app.bg.busy and setup.launch.get("editable") and sheet.property("opened"))
+        run(0.2)
+
+        client.delay = 3.0  # A: the second click
+        speed = named("speedUp")
+        timer.start()
+        ticks["last"], ticks["gap"] = time.monotonic(), 0.0
+        for _ in range(3):
+            QMetaObject.invokeMethod(speed, "clicked")
+        assert at_once(lambda: not speed.property("enabled")), "the button stays on, the window says nothing"
+        assert named("pendingText").property("text") == "Ускорить: спрашиваю хаб…"
+        run(4.0)
+        assert [c for c in client.tune_calls if c == ("speedup", "big")] == [("speedup", "big")]
+        assert ticks["gap"] < 0.25, ticks
+        assert named("pendingText").property("text") == "" and speed.property("enabled")
+
+        client.delay = 0.0  # B: a long request and another button
+        run(0.2)
+        for _ in range(4):  # the window's four threads all busy
+            app._call(lambda: time.sleep(3))
+        ticks["last"], ticks["gap"] = time.monotonic(), 0.0
+        tune = named("tuneModel")
+        QMetaObject.invokeMethod(tune, "clicked")
+        assert at_once(lambda: not tune.property("enabled"))
+        assert named("pendingText").property("text") == "Подбор: спрашиваю хаб…"
+        assert ("tune", "big") not in client.tune_calls  # waits its turn - and the window said so
+        run(4.0)
+        assert [c for c in client.tune_calls if c == ("tune", "big")] == [("tune", "big")]
+        assert named("pendingText").property("text") == "" and named("tuneText").property("text").startswith("Замер")
+        assert ticks["gap"] < 0.25, ticks
+
+        client.delay = 3.0  # C: opening a model
+        QMetaObject.invokeMethod(sheet, "close")
+        run(0.3)
+        setup.open("llama-swap/big")
+        QMetaObject.invokeMethod(sheet, "open")
+        loading = named("modelLoading")
+        assert at_once(lambda: loading.property("visible"))
+        assert loading.property("text") == "Читаю настройки модели…"
+        run(4.0)
+        assert not loading.property("visible") and named("launchSection").property("visible")
+        assert ticks["gap"] < 0.25, ticks
+        assert quick.warnings == []
+    finally:
+        timer.stop()
+        quick.close()
