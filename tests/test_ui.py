@@ -9315,3 +9315,53 @@ def test_a_number_being_typed_stays_while_the_tuning_measures(qapp):
         assert quick.warnings == []
     finally:
         quick.close()
+
+
+def test_speeding_up_a_model_that_does_not_fit_asks_first(app):
+    """0.1.15 step 7: «Ускорить» for a model not whole on the graphics card downloaded a draft at once - hundreds of
+    megabytes for a speed-up that most likely is none: the draft needs room on the card too. Now it asks first, in the
+    words of the line under the presets; nothing goes to the hub without «Ускорить всё равно»."""
+    big = [*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big", "locality": "local",
+                     "provider": "llama-swap", "prices": {}}]  # fmt: skip
+    setup = app.model_setup
+
+    def opened():
+        app._set_models(big)
+        setup.open("llama-swap/big")
+        wait_until(lambda: not app.bg.busy and setup.modelId == "llama-swap/big" and setup.launch.get("editable"))
+
+    def asked():
+        return [c for c in app.client.tune_calls if c == ("speedup", "big")]
+
+    app.client.llama_reserve = 15.5  # one GB of the card's 16 for models: all of «big» (12 GB) on it - over
+    opened()
+    setup.speedUp()
+    wait_until(lambda: not app.bg.busy)
+    assert asked() == [], "the draft asked for at once"
+    assert app.question == {"title": "Модель не помещается в видеокарту целиком",
+                            "text": "Не поместится: с этими настройками модель больше видеокарты. Сначала выберите "
+                                    "„сколько поместится“ или модель меньше — черновой модели для ускорения тоже "
+                                    "нужно место в видеокарте. Всё равно ускорить?",
+                            "confirm": "Ускорить всё равно", "other": ""}  # fmt: skip
+    app.answer(False)
+    wait_until(lambda: not app.bg.busy)
+    assert asked() == [] and app.question == {}
+    setup.speedUp()
+    app.answer(True)
+    wait_until(lambda: not app.bg.busy and asked())
+    assert asked() == [("speedup", "big")]
+
+    app.client.llama_reserve, app.client.llama_big = 10.0, {"gpu_layers": "auto"}  # 6 GB: part of it in RAM
+    opened()
+    setup.speedUp()
+    assert app.question["text"] == ("Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. "
+                                    "Черновой модели для ускорения тоже нужно место в видеокарте, поэтому быстрее, "
+                                    "скорее всего, не станет, а скачать придётся несколько сотен мегабайт. Надёжнее "
+                                    "взять модель меньше. Всё равно ускорить?")  # fmt: skip
+    app.answer(False)
+
+    app.client.llama_reserve, app.client.llama_big = 1.0, {}  # the user's card: 15 GB - it fits, at once
+    opened()
+    setup.speedUp()
+    wait_until(lambda: not app.bg.busy and len(asked()) == 2)
+    assert app.question == {}

@@ -369,6 +369,14 @@ VERDICTS = {"fits": (N_("Поместится в видеокарту целик
                         "или модель меньше."), "error")}  # fmt: skip
 # a Mixture-of-Experts model whose experts the fields keep in RAM, the rest on the card - the fastest for it (44)
 EXPERTS_FIT = N_("Поместится: часть модели в обычной памяти — так она быстрее всего.")
+# «Ускорить» for a model not whole on the card asks first (0.1.15 step 7), by the line's tone
+SPEED_UP_ASKS = {"warn": N_("Поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. Черновой "
+                            "модели для ускорения тоже нужно место в видеокарте, поэтому быстрее, скорее всего, не "
+                            "станет, а скачать придётся несколько сотен мегабайт. Надёжнее взять модель меньше. Всё "
+                            "равно ускорить?"),
+                 "error": N_("Не поместится: с этими настройками модель больше видеокарты. Сначала выберите „сколько "
+                             "поместится“ или модель меньше — черновой модели для ускорения тоже нужно место в "
+                             "видеокарте. Всё равно ускорить?")}  # fmt: skip
 
 
 def _cache_refused(draft: dict[str, str], info: dict[str, Any]) -> bool:
@@ -1035,12 +1043,26 @@ class ModelSetup(QObject):
 
     @Slot()
     def speedUp(self) -> None:
-        """«Ускорить»: the hub downloads the draft model paired with this one, if any, then measures at once."""
+        """«Ускорить»: the hub downloads the draft model paired with this one, if any, then measures at once. A model
+        not whole on the graphics card by the line under the presets (the fields are the config's: the button is off
+        with changes not written) asks first (0.1.15 step 7): the draft needs room there too - hundreds of megabytes
+        for a speed-up that most likely is none; nothing goes to the hub without «Ускорить всё равно»."""
         model_id = self._tune_id()
-        if model_id and self.app.client is not None:
+        if not model_id or self.app.client is None:
+            return
+
+        def go() -> None:
             self.app.call_or_fail(lambda: self.app.client.speed_up(model_id),
                                   lambda answer: self._set_drafting(answer.get("drafting")),
                                   lambda e: self.app.show_error(tr("Ускорить: {error}", error=e)))  # fmt: skip
+
+        tone = launch_verdict(self._launch_draft, self._launch, self._vram_mib, self._reserve_gib)[1] if \
+            self._launch else ""  # fmt: skip
+        if tone not in ("warn", "error"):
+            go()
+            return
+        self.app._ask(tr("Модель не помещается в видеокарту целиком"), tr(SPEED_UP_ASKS[tone]),
+                      tr("Ускорить всё равно"), lambda yes: go() if yes else None)  # fmt: skip
 
     @Slot()
     def speedOff(self) -> None:
