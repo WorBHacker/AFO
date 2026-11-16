@@ -1022,6 +1022,38 @@ def test_a_videos_mp4_made_once_with_ffmpeg_fetched_once(hub, monkeypatch, tmp_p
     assert refused.status_code == 409 and "не видео" in refused.json()["detail"]
 
 
+def test_a_chats_video_has_its_mp4_as_a_studios_does(hub, monkeypatch, tmp_path):
+    """48.12: the window plays a video's MP4 - Qt's FFmpeg reads the WebP but goes to no frame of it - and a chat's
+    card shows the chat's copy (data/blobs), not a job: its MP4 is made the same way, once, beside it; a chat's
+    picture (PNG) has none, nor a name that is no file there."""
+    from hub import attachments, ffmpeg
+
+    made = []
+    tools = tmp_path / "tools"
+    (tools / "ffmpeg").mkdir(parents=True)
+    (tools / "ffmpeg" / "ffmpeg.exe").write_bytes(b"MZ")
+    hub.app.state.visual.tools = tools
+
+    def to_mp4(program, source, target):
+        made.append((program, source))
+        target.write_bytes(b"MP4 of " + source.read_bytes()[:4])
+
+    monkeypatch.setattr(ffmpeg, "to_mp4", to_mp4)
+    blobs = hub.app.state.chat.blobs
+    video = attachments.keep(blobs, WEBP)
+    mp4 = hub.get(f"/v1/visual/pictures/{video}/mp4")
+    assert mp4.status_code == 200, mp4.text
+    assert mp4.headers["content-type"] == "video/mp4" and mp4.content == b"MP4 of RIFF"
+    assert made == [(tools / "ffmpeg" / "ffmpeg.exe", blobs / video)] and (blobs / f"{video}.mp4").is_file()
+    assert hub.get(f"/v1/visual/pictures/{video}/mp4").content == mp4.content and len(made) == 1  # kept
+    picture = attachments.keep(blobs, PICTURE)
+    refused = hub.get(f"/v1/visual/pictures/{picture}/mp4")
+    assert refused.status_code == 409 and "не видео" in refused.json()["detail"]
+    assert hub.get(f"/v1/visual/pictures/{'0' * 64}/mp4").status_code == 404
+    assert hub.get("/v1/visual/pictures/..%5Csecrets/mp4").status_code == 404
+    assert len(made) == 1
+
+
 def test_a_chat_model_films_a_video_and_the_chat_keeps_it(hub):
     """29.8б: generate_video - offered to a chat begun once a video model is here; drawn as any video, waited for,
     the WebP kept with the chat; the model hears its size and length in words."""

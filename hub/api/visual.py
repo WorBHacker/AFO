@@ -3,8 +3,9 @@
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
 POST /videos - a video (29.8а, Wan2.2; a job like a picture's); GET /jobs/<id>/file - the picture itself (PNG; a
-video - WebP); GET /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg); GET /pictures/<sha256> - a picture a chat holds
-(data/blobs, 29.6: a model drew it). Events: visual.changed (a job), visual.progress (step and preview).
+video - WebP); GET /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg; 48.12: the window plays it); GET
+/pictures/<sha256> - a picture a chat holds (data/blobs, 29.6: a model drew it), /pictures/<sha256>/mp4 - a chat's
+video as MP4 (48.12). Events: visual.changed (a job), visual.progress (step and preview).
 """
 
 from __future__ import annotations
@@ -146,3 +147,15 @@ async def picture(request: Request, name: str, client: Annotated[Client, Depends
     if kind is None:
         raise HTTPException(status_code=404, detail=tr("нет такой картинки"))
     return FileResponse(path, media_type=kind)
+
+
+@router.get("/pictures/{name}/mp4")
+async def picture_mp4(request: Request, name: str, client: Annotated[Client, Depends(require_app)]) -> FileResponse:
+    """The MP4 of a video a chat holds (48.12): its card in the window plays it - made once, ffmpeg as for a job's."""
+    if not re.fullmatch(r"[0-9a-f]{64}", name):
+        raise HTTPException(status_code=404, detail=tr("нет такой картинки"))
+    try:
+        path = await _visual(request).blob_mp4(request.app.state.chat.blobs, name)
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+    return FileResponse(path, media_type="video/mp4")

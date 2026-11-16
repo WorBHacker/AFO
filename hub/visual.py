@@ -965,13 +965,27 @@ class Visual:
                 "whether it is what they wanted."), False, data  # fmt: skip
 
     async def mp4(self, found: dict[str, Any]) -> Path:
-        """A video's MP4 (29.8в): made once with ffmpeg - fetched the first time - and kept beside its WebP."""
+        """A video's MP4 (29.8в): made once with ffmpeg - fetched the first time - and kept beside its WebP. The
+        window plays it too (48.12): Qt's FFmpeg reads the WebP but cannot go to a frame of it."""
         if found.get("kind") != "video":
             raise VisualError(tr("это не видео — MP4 бывает только у видео"), 409)
         source = self.file(found)
         if source is None:
             raise VisualError(tr("видео ещё нет"), 404)
-        target = source.with_suffix(".mp4")
+        return await self._mp4_of(source, source.with_suffix(".mp4"))
+
+    async def blob_mp4(self, blobs: Path, name: str) -> Path:
+        """The MP4 of a video a chat holds (48.12: its card plays it as the Studio does): made once, kept beside the
+        chat's copy (data/blobs/<sha256>.mp4 - no message names it: it goes with the old files and is made again)."""
+        source = blobs / name
+        kind = await asyncio.to_thread(picture_type, source)
+        if kind is None:
+            raise VisualError(tr("нет такой картинки"), 404)
+        if kind != "image/webp":
+            raise VisualError(tr("это не видео — MP4 бывает только у видео"), 409)
+        return await self._mp4_of(source, blobs / f"{name}.mp4")
+
+    async def _mp4_of(self, source: Path, target: Path) -> Path:
         async with self._ffmpeg:
             if target.is_file():
                 return target

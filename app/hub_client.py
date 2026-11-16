@@ -206,6 +206,10 @@ class HubClient:
         """A picture a chat holds (29.6), by its sha256."""
         return self._raw("GET", f"/v1/visual/pictures/{blob}")
 
+    def visual_picture_mp4(self, blob: str) -> bytes:
+        """A video a chat holds, as MP4 (48.12: its card plays it) - made by the hub's ffmpeg, as a job's is."""
+        return self._raw("GET", f"/v1/visual/pictures/{blob}/mp4", timeout=900)
+
     def install_search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
                        plain: bool = False, build: str = "", language: str = "", license: str = "",
                        author: str = "") -> dict:  # fmt: skip
