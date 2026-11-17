@@ -209,9 +209,9 @@ Sheet {
                 font.weight: Font.DemiBold
             }
             SectionTitle { text: qsTr("Для чего") }
-            Segmented { id: scopes; width: parent.width; options: App.budgetScopes }
+            Segmented { id: scopes; width: parent.width; options: App.budgetScopes; onPicked: (id) => scopes.value = id }
             SectionTitle { text: qsTr("Период") }
-            Segmented { id: periods; width: parent.width; options: App.budgetPeriods }
+            Segmented { id: periods; width: parent.width; options: App.budgetPeriods; onPicked: (id) => periods.value = id }
             Row {
                 width: parent.width
                 spacing: 12
@@ -229,7 +229,7 @@ Sheet {
                 }
             }
             SectionTitle { text: qsTr("После лимита"); visible: hard.text !== "" }
-            Segmented { id: actions; width: parent.width; options: App.budgetActions; visible: hard.text !== "" }
+            Segmented { id: actions; width: parent.width; options: App.budgetActions; visible: hard.text !== ""; onPicked: (id) => actions.value = id }
             Text {
                 visible: form.error !== ""
                 width: parent.width

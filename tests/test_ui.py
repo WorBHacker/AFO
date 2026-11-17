@@ -2795,22 +2795,35 @@ def click(window, item):
     """A person's click: the mouse pressed and let go in the middle of the item, in the window. Offscreen, the window
     lays its items out only when it is drawn - drawn first, or the click lands where the item was; a sheet scrolled
     to the item when it is below the fold."""
-    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtCore import QObject, QPoint, QPointF
     from PySide6.QtTest import QTest
 
+    for tip in window.findChildren(QObject):  # a hint the mouse brought up takes the next press to close itself
+        if tip.inherits("QQuickToolTip") and tip.property("visible"):
+            tip.setProperty("visible", False)
     window.grabWindow()
-    flick = item.parentItem()
-    while flick is not None and flick.property("contentY") is None:
-        flick = flick.parentItem()
-    if flick is not None:
-        top = item.mapToItem(flick.property("contentItem"), QPointF(0, 0)).y()
-        if not flick.property("contentY") <= top <= flick.property("contentY") + flick.height() - item.height():
-            flick.setProperty("contentY", max(0.0, top - flick.height() / 3))
+    flicks, parent = [], item.parentItem()
+    while parent is not None:
+        if parent.inherits("QQuickFlickable"):
+            flicks.append(parent)
+        parent = parent.parentItem()
+    for flick in flicks:  # the innermost first: each scrolled so the item stands in its upper third
+        top, view = item.mapToItem(flick, QPointF(0, 0)).y(), flick.height()
+        if top < 0 or top + item.height() > view:
+            room = max(flick.property("contentHeight") - view, 0.0)
+            flick.setProperty("contentY", min(max(flick.property("contentY") + top - view / 3, 0.0), room))
             window.grabWindow()
     middle = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
     assert 0 <= middle.x() < window.width() and 0 <= middle.y() < window.height(), "not on screen"
-    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                     QPoint(int(middle.x()), int(middle.y())))  # fmt: skip
+    for flick in flicks:
+        inside = item.mapToItem(flick, QPointF(item.width() / 2, item.height() / 2))
+        assert 0 <= inside.y() <= flick.height(), (
+            f"scrolled out of sight: {item.property('text')!r} at {inside.y():.0f} of {flick.height():.0f}, "
+            f"contentY {flick.property('contentY'):.0f} of {flick.property('contentHeight'):.0f}"
+        )
+    point = QPoint(int(middle.x()), int(middle.y()))
+    QTest.mouseMove(window, point)
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point, 1)
     for _ in range(5):
         QApplication.processEvents()
 
@@ -10056,3 +10069,305 @@ def _items(item):
     for child in item.childItems():
         yield child
         yield from _items(child)
+
+
+def options_of(switch):
+    """A Segmented's option buttons: {id: the button}."""
+    out = {}
+
+    def walk(item):
+        for child in item.childItems():
+            data = child.property("modelData")
+            if child.property("chosen") is not None and isinstance(data, dict) and "id" in data:
+                out[data["id"]] = child
+            walk(child)
+
+    walk(switch)
+    return out
+
+
+def lit(switch):
+    """The options a Segmented shows chosen."""
+    return [key for key, option in options_of(switch).items() if option.property("chosen")]
+
+
+def test_a_switch_shows_the_programs_own_change_after_a_click(qapp):
+    """The fix after 0.1.15 (the user's complaint): a click on «Поиск на Hugging Face», then the window itself took
+    the sheet to «Подборка» - and «Поиск» stayed lit over it. Segmented wrote its own `value` at a click, which cut
+    its owner's binding (`value: Installer.tab`): the program's later change no longer showed. Now a click only says
+    `picked`; the highlight follows the owner, by the mouse and by the program alike."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        app.attach(FakeClient(), start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, window = app.install_view, quick.window
+        app.openUi("install-models")
+        sheet = window.findChild(QObject, "installSheet")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        body = sheet.property("contentItem")
+        tabs = item_named(body, "installTabs")
+        click(window, item_saying(body, "Поиск на Hugging Face"))
+        wait_until(lambda: view.tab == "search")
+        view.showJobs()  # the status bar's click: the window takes the sheet to «Установки» itself
+        wait_until(lambda: lit(tabs) == ["jobs"])
+        assert tabs.property("value") == "jobs"
+
+        click(window, item_saying(body, "Подборка"))
+        wait_until(lambda: lit(tabs) == ["catalog"])
+        click(window, item_saying(body, "Код"))
+        wait_until(lambda: view.purpose == "code")
+        view.setPurpose("image")  # the Studio's «Поставить модель картинок»
+        purposes = item_saying(body, "Рисовать").parentItem().parentItem()
+        wait_until(lambda: lit(purposes) == ["image"])
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def declared_switches():
+    """How many switches (Segmented, FilterRow) each QML file declares - not the one inside an inline component that
+    is itself the switch (FilterRow's own Segmented)."""
+    import re
+    from pathlib import Path
+
+    out = {}
+    for qml in sorted((Path(__file__).parent.parent / "app" / "ui" / "qml").glob("*.qml")):
+        depth, inside = 0, None
+        for line in qml.read_text(encoding="utf-8").splitlines():
+            if inside is None and re.match(r"\s*component\s+\w+\s*:", line):
+                inside = depth
+            elif re.search(r"\b(Segmented|FilterRow)\s*\{", line) and inside is None:
+                out[qml.name] = out.get(qml.name, 0) + 1
+            depth += line.count("{") - line.count("}")
+            if inside is not None and depth <= inside:
+                inside = None
+    return out
+
+
+def switch_name(switch):
+    """A switch's file, name and options: one declaration in the QML, whichever of its copies is on screen."""
+    from PySide6.QtQml import QQmlEngine
+
+    label = switch.objectName() or switch.parentItem().objectName()
+    if not label:  # unnamed: by the words just before it - «Инструменты», «Картинки (зрение)» have the same options
+        for sibling in switch.parentItem().childItems():
+            if sibling == switch:
+                break
+            if isinstance(sibling.property("text"), str) and sibling.property("text"):
+                label = sibling.property("text")
+    url = QQmlEngine.contextForObject(switch).baseUrl().fileName()
+    options = switch.property("options")
+    options = options.toVariant() if hasattr(options, "toVariant") else options
+    return url, label, tuple(o.get("id") for o in options or [])
+
+
+def switches_in(root):
+    found = []
+
+    def walk(item):
+        for child in item.childItems():
+            if not child.isVisible():
+                continue
+            if child.metaObject().className().startswith("Segmented_QML"):
+                found.append(child)
+            walk(child)
+
+    walk(root)
+    return found
+
+
+def exercise(window, root, name, seen, broken, expect):
+    """Each option of a switch clicked with the mouse: it lights, and its owner's choice (`value`) is it - or what
+    `expect` says that switch does instead; while it is chosen, the switches it brings up are tried too; the one
+    chosen before - last. The switch is looked for anew each time: a list's row may be made again by its change."""
+    seen.add(name)
+
+    def found():
+        return next((s for s in switches_in(root) if switch_name(s) == name), None)
+
+    switch = found()
+    first = switch.property("value")
+    keys = list(options_of(switch))
+    for key in [k for k in keys if k != first] + ([first] if first in keys else []):
+        switch = found()
+        option = options_of(switch).get(key) if switch is not None else None
+        if option is None:
+            continue
+        try:
+            click(window, option)
+        except AssertionError as exc:
+            broken.append((name, key, "cannot be clicked", str(exc).splitlines()[0]))
+            return
+        if name[1] in expect:
+            if not expect[name[1]](key):
+                broken.append((name, key, "not as expected"))
+            continue
+        try:
+            wait_until(lambda k=key: (s := found()) is not None and s.property("value") == k and lit(s) == [k],
+                       timeout=3)  # fmt: skip
+        except AssertionError:
+            now = found()
+            broken.append((name, key, now and now.property("value"), now and lit(now)))
+            return
+        sweep(window, root, seen, broken, expect)
+
+
+def sweep(window, root, seen, broken, expect=None):
+    """Every switch on screen below `root` not tried yet - and those its clicks bring up."""
+    while True:
+        # the lower ones first: a list's rows before the filter above it, which may hide them
+        fresh = [n for n in dict.fromkeys(switch_name(s) for s in reversed(switches_in(root))) if n not in seen]
+        if not fresh:
+            return
+        for name in fresh:
+            if name not in seen:
+                exercise(window, root, name, seen, broken, expect or {})
+
+
+UNSHOWN_SWITCHES = {  # declared, but the window never shows them: nothing to click
+    ("SchedulePanel.qml", "scheduleWhen"),  # its one SchedulePanel (AgentView) has `chooser: false`: a chip instead
+}
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch):
+    """The fix after 0.1.15, the user's word: one Segmented serves every switch of the window - the fix of one must
+    not break the others. Each switch the window shows is clicked with the mouse, option by option, those its
+    options bring up too: the clicked option lights, and its owner's choice is it (a form that keeps the choice
+    itself - budgets, a project's cloud - sets it; the others' owners change what `value` is bound to). Every switch
+    the QML declares is reached, but those the window never shows (UNSHOWN_SWITCHES)."""
+    from PySide6.QtCore import QMetaObject, QObject, QUrl
+
+    from app.ui.main import QuickApp
+    from common import i18n
+    from hub.model_settings import PRESETS as HUBS
+
+    monkeypatch.setitem(PRESETS, "balanced", HUBS["balanced"])  # the hub has all three; the stand-in had two
+    # another language: the window opens again in it - a new AFO started (10.5); here only noted, or every run of the
+    # test leaves an AFO of its own running, out of sight, its hub on 8765 (2026-11-17)
+    restarted = []
+    monkeypatch.setattr(QuickApp, "restart", lambda _self: restarted.append(True))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [
+            {"model_id": "wan", "name": "Wan2.2 TI2V 5B Turbo", "tier": "video", "size": 832, "steps": 4, "cfg": 1.0,
+             "modes": ["text", "picture"]},
+            {"model_id": "i2v", "name": "Wan2.2 I2V A14B", "tier": "video", "size": 832, "steps": 20, "cfg": 3.5,
+             "modes": ["picture", "frames"], "clip": {"fps": 16}}]  # fmt: skip
+        client.visual_jobs_list = [{"id": "j1", "kind": "picture", "prompt": "лиса", "model_id": "flux2-klein-4b",
+                                    "status": "done", "width": 64, "height": 64, "seed": 7, "error": "",
+                                    "seconds": 2.0, "file": "j1.png"}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the screens
+        client.llama_big = {"info": {**LLAMA[1]["info"], "experts": 128, "experts_used": 8}}  # where its experts are
+        info = client._model_info
+        client._model_info = lambda model_id: {**info(model_id), "accepts": [*info(model_id)["accepts"],
+                                                                             "refusal_vector"]}  # fmt: skip
+        versions = [{"id": n, "created_at": f"2026-11-0{n}T10:00:00.000Z", "path": "src/app.py", "hash": sha(text),
+                     "size": len(text), "deleted": False, "change_id": None, "tool": None, "chat": None}
+                    for n, text in ((2, FILES["src/app.py"]), (1, "old\n"))]  # fmt: skip
+        client.history = lambda project_id, path="": [dict(v) for v in versions] if path else []
+        client.version = lambda version_id, against="previous": {"diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        window.resize(1280, 900)
+        expect = {"language": lambda key: key == i18n.language() or wait_until(lambda: restarted) is None}
+        seen, broken = set(), []
+
+        def go(root):
+            wait_until(lambda: not app.bg.busy)
+            sweep(window, root, seen, broken, expect)
+
+        app.openChat("c1")
+        go(window.contentItem())
+        app.setMode("projects")
+        app.projects.openProject("p1")
+        wait_until(lambda: not app.bg.busy)
+        app.projects.openFile("src/app.py", False)
+        wait_until(lambda: app.projects.file.get("path") == "src/app.py")
+        go(window.contentItem())
+        app.history_view.show("p1", "src/app.py")  # «История файла»: the project screen's own sheet
+        history = next(o for o in window.findChildren(QObject) if o.metaObject().className().startswith("HistorySheet"))
+        QMetaObject.invokeMethod(history, "open")
+        wait_until(lambda: history.property("opened") and app.history_view.rows)
+        go(history.property("contentItem"))
+        QMetaObject.invokeMethod(history, "close")
+        wait_until(lambda: not history.property("visible"))
+        app.setMode("agent")
+        app.autonomy_view.newTask()
+        go(window.contentItem())
+        click(window, item_named(window.contentItem(), "agentLimits"))  # «100 шагов · 60 мин · $1»: its panel
+        limits = window.findChild(QObject, "agentLimitsPanel")
+        wait_until(lambda: limits.property("opened"))
+        go(limits.property("contentItem"))
+        QMetaObject.invokeMethod(limits, "close")
+        for when in ("time", "event"):  # the panel under the agent's input, by «когда» - a chip of the input
+            app.schedules_view.setField("when", when)
+            go(window.contentItem())
+        app.schedules_view.setField("when", "now")
+        app.setMode("studio")
+        wait_until(lambda: app.visual_view.hasModels and app.visual_view.hasVideo)
+        (tmp_path / "first.png").write_bytes(PICTURE)
+        app.visual_view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "first.png")).toString())
+        go(window.contentItem())
+        app.setMode("chats")
+
+        drawers = [o for o in window.findChildren(QObject) if o.inherits("QQuickDrawer")]
+        for sheet in drawers:
+            kind = sheet.metaObject().className().split("_QML")[0]
+            if kind == "ModelsSheet":  # llama.cpp's, of experts: its launch can be changed
+                app._set_models([*MODELS, {"id": "llama-swap/big", "model_ref": "big", "name": "Big",
+                                           "locality": "local", "provider": "llama-swap", "prices": {}}])  # fmt: skip
+                app.model_setup.open("llama-swap/big")
+            elif kind == "WizardSheet":
+                client.setup = {**client.setup_state(), "needed": True, "engine": {"config_found": False},
+                                "job": {"status": "idle"}, "build": {"build": "cpu", "card": "", "why": ""},
+                                "builds": {"cuda-13": "NVIDIA, CUDA 13", "cpu": "только процессор"}}  # fmt: skip
+                app.setup_view.load()
+            QMetaObject.invokeMethod(sheet, "open")
+            wait_until(lambda s=sheet: s.property("opened") and not app.bg.busy)
+            body = sheet.property("contentItem")
+            if kind == "BudgetsSheet":
+                QMetaObject.invokeMethod(sheet, "startNew")
+                hard = [i for i in texts_and_fields(body) if i.property("placeholderText") == "нет"][-1]
+                hard.setProperty("text", "5")  # «После лимита» shows with a limit
+            go(body)
+            if kind == "InstallSheet":
+                app.install_view.setTab("search")
+                click(window, item_named(body, "installMoreFilters"))  # «▸ Ещё фильтры»: a link
+                go(body)
+                app.install_view.openRepo("test/Tiny-GGUF")
+                wait_until(lambda: app.install_view.variants)
+                go(body)
+                app.install_view.closeRepo()
+            QMetaObject.invokeMethod(sheet, "close")
+            wait_until(lambda s=sheet: not s.property("visible"))
+
+        assert broken == []
+        declared = declared_switches()
+        reached = {}
+        for file, _, _ in seen:
+            reached[file] = reached.get(file, 0) + 1
+        for file, _ in UNSHOWN_SWITCHES:
+            reached[file] = reached.get(file, 0) + 1
+        assert reached == declared
+        assert sum(declared.values()) >= 57
+    finally:
+        quick.close()
+
+
+def texts_and_fields(root):
+    """Every item below `root` that has a `placeholderText` - the fields."""
+    out = []
+    for child in root.childItems():
+        if child.property("placeholderText") is not None:
+            out.append(child)
+        out += texts_and_fields(child)
+    return out

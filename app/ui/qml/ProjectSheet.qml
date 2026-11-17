@@ -49,6 +49,7 @@ Sheet {
         objectName: "projectCloud"
         width: parent.width
         options: [{ id: "local", name: qsTr("Только локальные") }, { id: "cloud", name: qsTr("Локальные и облачные") }]
+        onPicked: (id) => cloud.value = id  // the form keeps its choice itself
     }
     Text {
         width: parent.width
