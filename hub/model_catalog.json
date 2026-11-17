@@ -155,6 +155,7 @@
   "pictures": [
     {
       "id": "sdxs-512",
+      "checked": true,
       "name": "SDXS 512",
       "purposes": [
         "image"
@@ -180,12 +181,13 @@
         "1"
       ],
       "about": {
-        "ru": "Самая лёгкая: картинка 512 × 512 за секунды даже без видеокарты. Простые сцены, без надписей.",
-        "en": "The lightest: a 512 × 512 picture in seconds even without a graphics card. Simple scenes, no lettering."
+        "ru": "Самая лёгкая: картинка 512 × 512, идёт и без видеокарты. Простые сцены, без надписей.",
+        "en": "The lightest: a 512 × 512 picture, runs without a graphics card too. Simple scenes, no lettering."
       }
     },
     {
       "id": "flux2-klein-4b",
+      "checked": true,
       "name": "FLUX.2 [klein] 4B",
       "purposes": [
         "image"
@@ -221,12 +223,13 @@
         "4"
       ],
       "about": {
-        "ru": "Основная: 1024 × 1024 за несколько секунд на видеокарте от 3 ГБ, хорошо понимает запрос. На процессоре — минуты.",
-        "en": "The main one: 1024 × 1024 in a few seconds on a graphics card with 3 GB or more, follows the request well. Minutes on the processor."
+        "ru": "Основная: 1024 × 1024 за 4 шага, хорошо понимает запрос.",
+        "en": "The main one: 1024 × 1024 in 4 steps, follows the request well."
       }
     },
     {
       "id": "z-image-turbo",
+      "checked": true,
       "name": "Z-Image-Turbo",
       "purposes": [
         "image"
@@ -262,12 +265,13 @@
         "8"
       ],
       "about": {
-        "ru": "Качественнее: фотографии и надписи лучше, вдвое медленнее основной. Для видеокарты от 6 ГБ.",
-        "en": "Higher quality: better photos and lettering, twice as slow as the main one. For a graphics card with 6 GB or more."
+        "ru": "Качественнее: фотографии и надписи лучше, 8 шагов.",
+        "en": "Higher quality: better photos and lettering, 8 steps."
       }
     },
     {
       "id": "wan2.2-ti2v-5b-turbo",
+      "checked": true,
       "modes": ["text", "picture"],
       "name": "Wan2.2 TI2V 5B Turbo",
       "kind": "video",
@@ -309,8 +313,8 @@
         "5"
       ],
       "about": {
-        "ru": "Видео по описанию: 832 × 480, 2 секунды — около 13 с на видеокарте NVIDIA от 12 ГБ, около минуты на 6–8 ГБ. Turbo за 4 шага.",
-        "en": "Video from a description: 832 × 480, 2 seconds — about 13 s on an NVIDIA card with 12 GB, about a minute on 6–8 GB. Turbo, 4 steps."
+        "ru": "Видео по описанию: 832 × 480, 2 секунды. Turbo за 4 шага.",
+        "en": "Video from a description: 832 × 480, 2 seconds. Turbo, 4 steps."
       }
     },
     {
@@ -359,6 +363,7 @@
     },
     {
       "id": "qwen-image-2.1-turbo",
+      "checked": true,
       "name": "Qwen-Image 2.1 Turbo",
       "purposes": [
         "image"
@@ -399,12 +404,13 @@
         "8"
       ],
       "about": {
-        "ru": "Qwen-Image 2.1 за 8 шагов — в несколько раз быстрее обычной. Лицензия Qwen — только для исследований.",
-        "en": "Qwen-Image 2.1 in 8 steps - several times faster than the plain one. Qwen's licence: research only."
+        "ru": "Qwen-Image 2.1 за 8 шагов вместо 20. Лицензия Qwen — только для исследований.",
+        "en": "Qwen-Image 2.1 in 8 steps instead of 20. Qwen's licence: research only."
       }
     },
     {
       "id": "flux3-image-klein",
+      "checked": true,
       "name": "FLUX.3 Image klein",
       "purposes": [
         "image"
@@ -487,12 +493,13 @@
         "20"
       ],
       "about": {
-        "ru": "Базовая FLUX.3 klein — для дообучения: 20 шагов, медленнее обычной.",
-        "en": "The base FLUX.3 klein - for finetuning: 20 steps, slower than the plain one."
+        "ru": "Базовая FLUX.3 klein — для дообучения: 20 шагов вместо 16.",
+        "en": "The base FLUX.3 klein - for finetuning: 20 steps instead of 16."
       }
     },
     {
       "id": "qwen-image",
+      "checked": true,
       "name": "Qwen-Image",
       "purposes": [
         "image"
@@ -534,8 +541,8 @@
         "20"
       ],
       "about": {
-        "ru": "Qwen-Image и Qwen-Image-2512 (20 млрд весов): кодировщик — Qwen2.5-VL-7B, 20 шагов. Нужна большая видеокарта или много ОЗУ.",
-        "en": "Qwen-Image and Qwen-Image-2512 (20 billion weights): Qwen2.5-VL-7B as the encoder, 20 steps. Wants a big graphics card or a lot of RAM."
+        "ru": "Qwen-Image и Qwen-Image-2512 (20 млрд весов): кодировщик — Qwen2.5-VL-7B, 20 шагов.",
+        "en": "Qwen-Image and Qwen-Image-2512 (20 billion weights): Qwen2.5-VL-7B as the encoder, 20 steps."
       }
     },
     {
@@ -674,8 +681,8 @@
         "20"
       ],
       "about": {
-        "ru": "Z-Image без Turbo: 20 шагов с guidance — медленнее Turbo.",
-        "en": "Z-Image without Turbo: 20 steps with guidance - slower than Turbo."
+        "ru": "Z-Image без Turbo: 20 шагов с guidance вместо 8.",
+        "en": "Z-Image without Turbo: 20 steps with guidance instead of 8."
       }
     },
     {
@@ -881,8 +888,8 @@
         "20"
       ],
       "about": {
-        "ru": "Маленькая Wan2.1 — по описанию, 480p, 16 кадров в секунду; идёт и на небольшой видеокарте.",
-        "en": "The small Wan2.1 - from a description, 480p, 16 frames a second; runs on a small graphics card too."
+        "ru": "Маленькая Wan2.1 (1,3 млрд весов) — по описанию, 480p, 16 кадров в секунду.",
+        "en": "The small Wan2.1 (1.3 billion weights) - from a description, 480p, 16 frames a second."
       }
     },
     {
@@ -1226,6 +1233,7 @@
     },
     {
       "id": "wan2.2-ti2v-5b",
+      "checked": true,
       "name": "Wan2.2 TI2V 5B",
       "kind": "video",
       "purposes": [
@@ -1271,8 +1279,8 @@
         "20"
       ],
       "about": {
-        "ru": "Обычная Wan2.2 TI2V 5B — по описанию или по картинке, 20 шагов: медленнее Turbo, точнее.",
-        "en": "The plain Wan2.2 TI2V 5B - from a description or a picture, 20 steps: slower than Turbo, closer."
+        "ru": "Обычная Wan2.2 TI2V 5B — по описанию или по картинке, 20 шагов вместо 4 у Turbo, точнее.",
+        "en": "The plain Wan2.2 TI2V 5B - from a description or a picture, 20 steps instead of Turbo's 4, closer."
       }
     },
     {
@@ -1369,6 +1377,7 @@
     },
     {
       "id": "wan2.2-i2v-a14b",
+      "checked": true,
       "name": "Wan2.2 I2V A14B",
       "kind": "video",
       "purposes": [
@@ -1557,6 +1566,7 @@
     },
     {
       "id": "ltx-2.3-distilled",
+      "checked": true,
       "name": "LTX-2.3 distilled",
       "kind": "video",
       "purposes": [
@@ -1641,8 +1651,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "Быстрая LTX-2.3 — 8 шагов вместо 20. Пока без звука.",
-        "en": "The fast LTX-2.3 - 8 steps instead of 20. No sound yet."
+        "ru": "LTX-2.3 distilled — 8 шагов вместо 20. Пока без звука.",
+        "en": "LTX-2.3 distilled - 8 steps instead of 20. No sound yet."
       },
       "names": {
         "has": [
@@ -1821,8 +1831,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "Быстрая LTX-2.5 — 8 шагов вместо 20. Пока без звука.",
-        "en": "The fast LTX-2.5 - 8 steps instead of 20. No sound yet."
+        "ru": "LTX-2.5 distilled — 8 шагов вместо 20. Пока без звука.",
+        "en": "LTX-2.5 distilled - 8 steps instead of 20. No sound yet."
       },
       "names": {
         "has": [
@@ -2102,8 +2112,8 @@
         "--vae-tiling"
       ],
       "about": {
-        "ru": "MiniMax-H3 — по описанию, по картинке, между двумя кадрами; кодировщик — Qwen3-VL-32B (18 ГБ). На 16 ГБ — медленно. Пока без звука.",
-        "en": "MiniMax-H3 - from a description, a picture, between two frames; Qwen3-VL-32B as the encoder (18 GB). On 16 GB - slowly. No sound yet."
+        "ru": "MiniMax-H3 — по описанию, по картинке, между двумя кадрами; кодировщик — Qwen3-VL-32B (18 ГБ). Пока без звука.",
+        "en": "MiniMax-H3 - from a description, a picture, between two frames; Qwen3-VL-32B as the encoder (18 GB). No sound yet."
       },
       "names": {
         "has": [

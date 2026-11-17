@@ -126,8 +126,12 @@ def about(words: dict[str, str]) -> str:
 def system_text(system: dict[str, Any]) -> str:
     space = system.get("space") or {}
     if space.get("vram_total_gib"):
-        parts = [tr("{gpu}: для новой модели ≈ {size} видеопамяти", gpu=space.get("gpu") or tr("Видеокарта"),
-                    size=gb(space["vram_gib"], of_bytes=False))]  # fmt: skip
+        # what a model may count on (38.1), said as that (the fix after 0.1.15: «для новой модели ≈ 14,9 ГБ» read as
+        # what is free)
+        total = gb(space["vram_total_gib"], of_bytes=False)
+        parts = [tr("{gpu}: модели можно занять ≈ {size} видеопамяти из {total} — остальное оставлено рабочему столу и "
+                    "другим программам", gpu=space.get("gpu") or tr("Видеокарта"),
+                    size=gb(space["vram_gib"], of_bytes=False), total=total)]  # fmt: skip
     else:
         parts = [tr("Видеокарта NVIDIA не найдена — модели будут работать в ОЗУ, медленно")]
     # the computer's own RAM less Windows' share (38.1), not what is free right now
@@ -256,14 +260,30 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def picture_place_text(fit: dict[str, Any]) -> str:
+    """Where a picture or video model would be here, with its encoder and VAE (the fix after 0.1.15, the user's word:
+    «≈ 35,7 ГБ с кодировщиком и VAE — помещается в видеопамять» on a 16 GB card - only the model goes there): «на
+    видеокарте ≈ 12,3 ГБ, в памяти компьютера ≈ 23,4 ГБ — быстро», what the memory lacks - «не хватит памяти
+    компьютера: нужно ≈ 40,1 ГБ, есть ≈ 30,0 ГБ»; a family nobody ran here - «(по расчёту, не проверялась)»."""
+    if fit["verdict"] == "no":
+        text = tr("{words}: нужно ≈ {need}, есть ≈ {have}", words=fit["words"], need=gb(fit.get("ram", 0)),
+                  have=gb(fit.get("room", 0)))  # fmt: skip
+    else:
+        where = [tr("на видеокарте ≈ {size}", size=gb(fit["card"]))] if fit.get("card") else []
+        if fit.get("ram"):
+            where.append(tr("в памяти компьютера ≈ {size}", size=gb(fit["ram"])))
+        text = tr("{where} — {words}", where=", ".join(where), words=fit["words"])
+    return text if fit.get("checked") else tr("{text} (по расчёту, не проверялась)", text=text)
+
+
 def picture_fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
-    """A found model of a family AFO knows (47.7б): what it would take here with the family's encoder and VAE - «AFO
-    ставит её сам: ≈ 6,6 ГБ с кодировщиком и VAE — помещается в видеопамять — быстро» - or, unknown, that AFO
-    installs it."""
+    """A found model of a family AFO knows (47.7б): what it would take here with the family's encoder and VAE, and
+    what of it comes from the internet - «AFO ставит её сам: на видеокарте ≈ 4,1 ГБ, в памяти компьютера ≈ 2,5 ГБ —
+    быстро · скачается ≈ 6,6 ГБ» (picture_place_text) - or, unknown, that AFO installs it."""
     if not fit:
         return {"fit": tr(PICTURE_FAMILY), "fitTone": "ok"}
-    return {"fit": tr("AFO ставит её сам: ≈ {size} с кодировщиком и VAE — {words}", size=gb(fit["gb"], of_bytes=False),
-                      words=fit["words"]), "fitTone": TONES.get(fit.get("verdict", ""), "")}  # fmt: skip
+    return {"fit": tr("AFO ставит её сам: {place} · скачается ≈ {size}", place=picture_place_text(fit),
+                      size=gb(fit.get("download", 0))), "fitTone": TONES.get(fit.get("verdict", ""), "")}  # fmt: skip
 
 
 def fit_of(fit: dict[str, Any] | None) -> dict[str, str]:
@@ -287,6 +307,8 @@ def variant_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     several = len(details.get("families") or []) > 1
     for v in details.get("variants") or []:
         words, tone = verdict_of(v)
+        if "card" in v:  # a picture or video model's (the fix after 0.1.15): where it goes, what it downloads
+            words = tr("{place} · скачается ≈ {size}", place=picture_place_text(v), size=gb(v.get("coming", 0)))
         bits = tr("≈ {bits} бита на вес — сколько осталось от каждого веса (в оригинале 16)",
                   bits=decimal(f"{v['bits']:.1f}")) if v.get("bits") else ""  # fmt: skip
         quality = tr(QUALITY[v["quality"]]) if v.get("quality") in QUALITY else ""

@@ -1746,7 +1746,7 @@ def test_a_found_video_model_judged_by_its_sizes(hub, monkeypatch):
     assert [v["verdict"] for v in hub.get("/v1/install/pictures/repo/someone/Pair-More-GGUF").json()["variants"]] == [
         "cpu", "no"]  # with the encoder and VAE: Q4_0 120 K, Q8_0 170 K - more than the RAM  # fmt: skip
     refused = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q8_0"})
-    assert refused.status_code == 409 and "не поместится" in refused.json()["detail"]
+    assert refused.status_code == 409 and "не хватит памяти компьютера" in refused.json()["detail"]
 
 
 def test_a_found_picture_model_is_known_by_its_family(hub):
@@ -1811,13 +1811,17 @@ def test_a_found_picture_model_says_what_it_needs_here(hub, monkeypatch):
         monkeypatch.setattr(mi, name, 0.0, raising=False)
     SEARCH.extend(extra)
     try:
-        for vram, verdict in ((200_000, "gpu"), (50_000, "split")):
+        # where it goes (the fix after 0.1.15): all on the card; the model in the computer's memory, the card computing
+        for vram, verdict, card in ((200_000, "gpu", 151_250), (50_000, "split", 0)):
             monkeypatch.setattr(installer, "space", lambda v=vram: {"vram_gib": v / mi.GIB, "ram_gib": 1.0})
             row = hub.get("/v1/install/search", params={"q": "draw-more"}).json()["models"][0]
             assert (row["family"], row["drawn"]) == ("draw", True)
             fit = row["fit"] or {}
             assert (fit.get("quant"), fit.get("verdict"), fit.get("parts")) == ("Q4_K_M", verdict, 90_000), row
-            assert fit["words"] == mi.tr(mi.VERDICTS[verdict]) and fit["gb"] == round((61_250 + 90_000) / 1e9, 1)
+            assert fit["words"] == mi.tr(mi.PICTURE_VERDICTS[verdict])
+            assert fit["gb"] == round((61_250 + 90_000) / 1e9, 1)
+            assert (fit["card"], fit["ram"], fit["download"]) == (card, 151_250 - card, 151_250)
+            assert not fit["checked"]  # the test's family was run nowhere
     finally:
         del SEARCH[-len(extra) :]
 

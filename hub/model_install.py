@@ -124,6 +124,14 @@ VERDICTS = {
     "cpu": N_("без видеокарты — в ОЗУ, медленно"),
     "no": N_("не поместится: не хватает памяти"),
 }
+# a picture or video model's verdict (the fix after 0.1.15): beside it the window says how much goes on the card and
+# how much into the computer's memory - picture_place
+PICTURE_VERDICTS = {
+    "gpu": N_("быстро"),
+    "split": N_("медленнее: модель не помещается в видеопамять, видеокарта считает её по частям"),
+    "cpu": N_("медленно: без видеокарты"),
+    "no": N_("не хватит памяти компьютера"),
+}
 
 
 class InstallError(Exception):
@@ -155,7 +163,8 @@ def picture_sets() -> list[dict[str, Any]]:
     """The curated picture models (model_catalog.json `pictures`, D55): {id, name, purposes, tier, license, original,
     bases - the models whose quantizations and finetunes its flags and other parts fit (47.2), card - false: a family
     found by search only, not a card among «Рисовать» (47.8), size, files: [{role (sd-server's flag), repo, path}],
-    flags, about}."""
+    flags, about - what it is, not how fast it is here (the verdict beside it says that), checked - run on a real
+    card (29, 47.9, 48.8): its verdict is not «по расчёту» (the fix after 0.1.15)}."""
     return json.loads(CATALOG.read_text(encoding="utf-8")).get("pictures") or []
 
 
@@ -186,12 +195,30 @@ def picture_fit(model: int, parts: int, space: dict[str, Any]) -> str:
     return "split" if card else "cpu"
 
 
-def variant_fit(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> str:
-    """picture_fit of a variant (48.4): one file - the model; a pair's halves - sd.cpp's auto-fit plans the low half
+def picture_place(model: int, parts: int, space: dict[str, Any]) -> dict[str, Any]:
+    """Where a picture model and its parts would be here (the fix after 0.1.15: the words said the whole set fits
+    the video memory, and only the model goes on the card): picture_fit's verdict, and bytes - `card`, the model when
+    it fits there (gpu) and its encoders and VAE beside it when the card's rest holds them; `ram`, the rest in the
+    computer's memory (split, cpu: all; no: all it would want)."""
+    verdict = picture_fit(model, parts, space)
+    card = 0
+    if verdict == "gpu":
+        rest = (space["vram_gib"] - SD_MARGIN_GIB - PICTURE_COMPUTE_GIB - PICTURE_STAGING_GIB) * GIB - model
+        card = model + (parts if parts <= rest else 0)
+    return {"verdict": verdict, "card": card, "ram": model + parts - card}
+
+
+def variant_place(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> dict[str, Any]:
+    """picture_place of a variant (48.4): one file - the model; a pair's halves - sd.cpp's auto-fit plans the low half
     alone (`model.diffusion_model.`), the high one (`model.high_noise_diffusion_model.`) is the same module's: one on
     the card while it computes - the larger half, the other waiting in RAM with the parts."""
     largest = max(f["size"] for f in files)
-    return picture_fit(largest, parts + sum(f["size"] for f in files) - largest, space)
+    return picture_place(largest, parts + sum(f["size"] for f in files) - largest, space)
+
+
+def variant_fit(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> str:
+    """variant_place's verdict alone."""
+    return variant_place(files, parts, space)["verdict"]
 
 
 def picture_families(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -1129,27 +1156,34 @@ class Installer:
     async def _picture_fits(self, out: list[dict[str, Any]], listed: list[dict[str, Any]],
                             space: dict[str, Any]) -> None:  # fmt: skip
         """Beside each found model of a known family (47.7а): what it would take here - the model as it is usually taken
-        (FIT_QUANT, by its parameter count) with the family's encoders and VAE (`parts`, bytes), judged as sd.cpp places
-        them (picture_fit); a family whose parts Hugging Face did not list - none."""
+        (FIT_QUANT, by its parameter count) with the family's encoders and VAE (`parts`, bytes), placed as sd.cpp places
+        them (picture_place: on the card, in the computer's memory), what of it the disk lacks (`download`: the parts
+        already there for another model are not downloaded again, 47.3), and whether the family was run here for real
+        (`checked`, the catalog's); a family whose parts Hugging Face did not list - none."""
         sets = {e["id"]: e for e in listed}
         wanted = list(dict.fromkeys(o["family"] for o in out if o["family"] and o.get("params")))
+        named = await self._db.acall(_named) if wanted else []
 
-        async def parts(entry: dict[str, Any]) -> int | None:
+        async def parts(entry: dict[str, Any]) -> tuple[int, int] | None:
             try:
-                return sum(f["size"] for f in await self.picture_files(
-                    {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}))  # fmt: skip
+                files = await self.picture_files(
+                    {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]})  # fmt: skip
             except hf.HubError, InstallError:
                 return None
+            await asyncio.to_thread(_share, files, named, models_home() / "pictures" / SHARED)
+            return sum(f["size"] for f in files), sum(f["size"] for f in files if not f["done"])
 
         sizes = dict(zip(wanted, await asyncio.gather(*(parts(sets[f]) for f in wanted)), strict=True))
         for o in out:
-            rest = sizes.get(o["family"])
-            if rest is None or not o.get("params"):
+            found = sizes.get(o["family"])
+            if found is None or not o.get("params"):
                 continue
-            model = int(o["params"] * FIT_BITS / 8)
-            verdict = picture_fit(model, rest, space)
-            o["fit"] = {"gb": round((model + rest) / 1e9, 1), "quant": FIT_QUANT, "verdict": verdict,
-                        "words": tr(VERDICTS[verdict]), "parts": rest}  # fmt: skip
+            (rest, coming), model = found, int(o["params"] * FIT_BITS / 8)
+            place = picture_place(model, rest, space)
+            o["fit"] = {"gb": round((model + rest) / 1e9, 1), "quant": FIT_QUANT, **place,
+                        "words": tr(PICTURE_VERDICTS[place["verdict"]]), "parts": rest, "download": model + coming,
+                        "room": int(space["ram_gib"] * GIB),
+                        "checked": bool(sets[o["family"]].get("checked"))}  # fmt: skip
         if wanted:
             await self._keep_answers()
 
@@ -1230,11 +1264,12 @@ class Installer:
             with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
             for v in variants:  # a pair's halves - each the parameters Hugging Face counted in one
                 bits = round(v["size"] / len(v["files"]) * 8 / params, 1) if params else None
-                verdict = variant_fit(v["files"], with_parts, space)
+                place = variant_place(v["files"], with_parts, space)  # on the card, in RAM (the fix after 0.1.15)
                 shown.append({"family": entry["id"], "name": entry["name"], "quant": v["quant"], "size": v["size"],
-                              "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits),
-                              "verdict": verdict, "words": tr(VERDICTS[verdict]), "with_parts": v["size"] + with_parts,
+                              "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits), **place,
+                              "words": tr(PICTURE_VERDICTS[place["verdict"]]), "with_parts": v["size"] + with_parts,
                               "coming": v["size"] + coming, "modes": entry.get("modes") or ["text"],
+                              "room": int(space["ram_gib"] * GIB), "checked": bool(entry.get("checked")),
                               "files": [{k: f[k] for k in ("path", "role", "size")} for f in v["files"]]})  # fmt: skip
         if not shown:
             raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
@@ -1396,8 +1431,8 @@ class Installer:
             verdict = variant_fit(own, sum(f["size"] for f in files if f not in own), await asyncio.to_thread(
                 self.space))  # fmt: skip
             if verdict == "no":
-                raise InstallError(tr("{name} на этом компьютере {words}", name=f"{repo_name(repo)} {quant}",
-                                      words=tr(VERDICTS["no"])))  # fmt: skip
+                raise InstallError(tr("{name}: {words}", name=f"{repo_name(repo)} {quant}",
+                                      words=tr(PICTURE_VERDICTS["no"])))  # fmt: skip
         engine = await self._engine_files(machine["build"])
         root = self._root(spec, await asyncio.to_thread(self.drives))
         folder = root / "pictures" / (repo.replace("/", os.sep) if own else entry["id"])

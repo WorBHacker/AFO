@@ -1576,3 +1576,90 @@ def test_a_found_model_clicked_in_the_search_shows_its_variants_to_install(insta
         card = next(m for m in installs.get("/v1/install/pictures").json()["models"] if m["id"] == "draw")
         assert card["installed"] == [draw["model_id"]]
         assert quick.warnings == []
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client
+def test_a_found_picture_model_says_what_goes_on_the_card_and_what_into_memory(installs, qapp, monkeypatch):  # noqa: F811
+    """The user's complaint (2026-11-17, AFO 0.1.15): MiniMax-H3 on a 16 GB card - «≈ 35,7 ГБ с кодировщиком и VAE —
+    помещается в видеопамять — быстро», though only the model goes on the card, the encoder and VAE into the
+    computer's memory. Now a found model says how much goes on the card, how much into the computer's memory and how
+    much comes from the internet; one the memory cannot hold - «не хватит памяти компьютера»; a family nobody ran
+    here - «по расчёту, не проверялась»; the line over the sheet says what the video memory it names is. The catalog's
+    descriptions say what a model is, not how fast it is: the verdict beside it does not argue with them."""
+    import re
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.install_view import gb
+    from tests import test_model_install as tmi
+
+    real = json.loads(Path(mi.__file__).with_name("model_catalog.json").read_text(encoding="utf-8"))["pictures"]
+    speed = re.compile(r"быстр|медлен|за секунд|за несколько|\d+ с\b|минут", re.IGNORECASE)
+    assert [e["id"] for e in real if speed.search(e["about"]["ru"]) or speed.search(e["about"].get("en", ""))] == []
+    assert {e["id"] for e in real if e.get("checked")} == {
+        "sdxs-512", "flux2-klein-4b", "z-image-turbo", "wan2.2-ti2v-5b-turbo", "qwen-image-2.1-turbo",
+        "flux3-image-klein", "qwen-image", "wan2.2-ti2v-5b", "wan2.2-i2v-a14b", "ltx-2.3-distilled"}  # fmt: skip
+
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [{**DRAW, "checked": True}, FILM, DISTILLED]}),
+                          encoding="utf-8")  # fmt: skip
+    installer = installs.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM, FOUND_DRAW])
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+        monkeypatch.setattr(mi, name, 0.0)
+    card = {"gpu": "RTX", "vram_total_gib": 15.9, "vram_gib": 14.9, "ram_total_gib": 64.0, "ram_gib": 60.0,
+            "loaded": [], "busy": ""}  # fmt: skip
+    space = {"now": card}
+    monkeypatch.setattr(installer, "space", lambda: space["now"])
+    with window_on(installs, qapp) as quick:
+        window, view = quick.window, quick.controller.install_view
+        quick.controller.openUi("install-models")
+        sheet = window.findChild(QObject, "installSheet")
+        wait_until(lambda: sheet.property("opened") and not quick.controller.bg.busy)
+        body = sheet.property("contentItem")
+        line = item_named(body, "installSystem").property("text")
+        assert line.startswith("RTX: модели можно занять ≈ 14,9 ГБ видеопамяти из 15,9 ГБ — остальное оставлено "
+                               "рабочему столу и другим программам · ")  # fmt: skip
+
+        # the model (≈ 42 875 bytes, 70 000 parameters as about Q4_K_M) on the card, its encoder and VAE (90 000)
+        # beyond the card's rest - in the computer's memory
+        space["now"] = {**card, "vram_gib": 50_000 / mi.GIB, "ram_gib": 1_000_000 / mi.GIB}
+        click(window, item_saying(body, "Поиск на Hugging Face"))
+        click(window, item_saying(body, "Видео"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_FILM["id"] for r in view.found), timeout=10)
+        fit = next(m for m in view._found if m["repo"] == FOUND_FILM["id"])["fit"]
+        model = int(70_000 * mi.FIT_BITS / 8)
+        assert (fit["verdict"], fit["card"], fit["ram"], fit["download"]) == ("gpu", model, 90_000, model + 90_000)
+        said = (f"AFO ставит её сам: на видеокарте ≈ {gb(model)}, в памяти компьютера ≈ {gb(90_000)} — быстро "
+                f"(по расчёту, не проверялась) · скачается ≈ {gb(model + 90_000)}")  # fmt: skip
+        assert next(r for r in view.found if r["repo"] == FOUND_FILM["id"])["fit"] == said
+        assert item_saying(body, said) is not None  # in the window, under the found model
+
+        click(window, item_saying(body, FOUND_FILM["id"]))
+        wait_until(lambda: view.repoName == FOUND_FILM["id"] and view.variants, timeout=10)
+        words = {v["quant"]: v["words"] for v in view.variants}
+        assert words["Film distilled · Q4_0"] == (
+            f"на видеокарте ≈ {gb(41_000)}, в памяти компьютера ≈ {gb(90_000)} — быстро (по расчёту, не проверялась) "
+            f"· скачается ≈ {gb(41_000 + 90_000)}")  # fmt: skip
+        assert item_saying(body, words["Film distilled · Q4_0"]) is not None
+        click(window, item_saying(body, "Назад"))
+        wait_until(lambda: view.repoName == "")
+
+        # a checked family whose model does not fit the card: all of it in the computer's memory, no «по расчёту»
+        click(window, item_saying(body, "Рисовать"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_DRAW["id"] for r in view.found), timeout=10)
+        drawn = int(120_000 * mi.FIT_BITS / 8)
+        assert next(r for r in view.found if r["repo"] == FOUND_DRAW["id"])["fit"] == (
+            f"AFO ставит её сам: в памяти компьютера ≈ {gb(drawn + 90_000)} — медленнее: модель не помещается в "
+            f"видеопамять, видеокарта считает её по частям · скачается ≈ {gb(drawn + 90_000)}")  # fmt: skip
+
+        # the computer's memory does not hold the encoder and VAE beside the model
+        space["now"] = {**card, "vram_gib": 50_000 / mi.GIB, "ram_gib": 1_000 / mi.GIB}
+        click(window, item_saying(body, "Видео"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_FILM["id"] for r in view.found), timeout=10)
+        row = next(r for r in view.found if r["repo"] == FOUND_FILM["id"])
+        assert row["fit"].startswith("AFO ставит её сам: не хватит памяти компьютера: нужно ≈ ")
+        assert row["fitTone"] == "error"
+        assert quick.warnings == []

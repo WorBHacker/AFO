@@ -6415,8 +6415,9 @@ def test_a_found_picture_model_installed_from_the_search(qapp):
         repo = "unsloth/Z-Image-Turbo-GGUF"
         found = [{"repo": repo, "downloads": 9, "likes": 1, "params": 6_150_000_000, "license": "apache-2.0",
                   "license_kind": "free", "picture": "", "family": "z-image-turbo", "drawn": True,
-                  "fit": {"gb": 6.6, "quant": "Q4_K_M", "verdict": "gpu", "words": "помещается в видеопамять — быстро",
-                          "parts": 2_830_000_000}},
+                  "fit": {"gb": 6.6, "quant": "Q4_K_M", "verdict": "gpu", "words": "быстро", "card": 6_600_000_000,
+                          "ram": 0, "download": 6_270_000_000, "room": 42_000_000_000, "checked": True,
+                          "parts": 2_830_000_000}},  # the VAE is here already: not downloaded
                  {"repo": "someone/Z-Image-Turbo-Other-GGUF", "downloads": 1, "likes": 0, "params": 0,
                   "license": "", "license_kind": "", "picture": "", "family": "z-image-turbo", "drawn": True,
                   "fit": None}]  # fmt: skip
@@ -6442,7 +6443,7 @@ def test_a_found_picture_model_installed_from_the_search(qapp):
         wait_until(lambda: not app.bg.busy and view.found)
         rows_ = {r["repo"]: r for r in view.found}
         assert (rows_[repo]["fit"], rows_[repo]["fitTone"]) == (
-            "AFO ставит её сам: ≈ 6,6 ГБ с кодировщиком и VAE — помещается в видеопамять — быстро", "ok")  # fmt: skip
+            "AFO ставит её сам: на видеокарте ≈ 6,6 ГБ — быстро · скачается ≈ 6,3 ГБ", "ok")  # fmt: skip
         assert rows_["someone/Z-Image-Turbo-Other-GGUF"]["fit"] == "AFO ставит её сам — щелчок покажет её варианты"
         view.openFound(repo)
         wait_until(lambda: not app.bg.busy and view.variants)
@@ -6579,7 +6580,9 @@ def test_installing_a_local_model_from_the_window(qapp):
         sheet = quick.window.findChild(QObject, "installSheet")
         app.openUi("install-models")
         wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.catalog)
-        assert view.systemText.startswith("RTX 5080: для новой модели ≈ 14,2 ГБ видеопамяти · ОЗУ для модели ≈ 42,0 ГБ")
+        assert view.systemText.startswith(
+            "RTX 5080: модели можно занять ≈ 14,2 ГБ видеопамяти из 15,9 ГБ — остальное оставлено рабочему столу и "
+            "другим программам · ОЗУ для модели ≈ 42,0 ГБ")  # fmt: skip
         busy = {"space": {"gpu": "RTX", "vram_total_gib": 6.0, "vram_gib": 5.0, "ram_gib": 13.0, "busy": "сейчас…"}}
         assert install_view.system_text(busy).endswith(" · сейчас…")  # other programs hold the memory (38.2)
         rows = view.catalog
@@ -8914,7 +8917,7 @@ def test_the_install_sheet_says_what_it_remembers_until_the_hub_answers(app):
     view.load()
     assert view.systemText == "NVIDIA GeForce RTX 5080: 15,9 ГБ видеопамяти · ОЗУ 63,4 ГБ — хаб запускается…"
     app.attach(client, start_events=False)
-    wait_until(lambda: not app.bg.busy and view.systemText.startswith("RTX 5080: для новой модели"))
+    wait_until(lambda: not app.bg.busy and view.systemText.startswith("RTX 5080: модели можно занять"))
     view._system = {}
     file.write_text(json.dumps({"gpu": "", "vram_total_gib": 0, "ram_total_gib": 31.9}), encoding="utf-8")
     app.client = None
