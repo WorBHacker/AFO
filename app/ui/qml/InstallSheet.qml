@@ -12,6 +12,29 @@ Sheet {
     iconName: "download"
     width: Math.min(820, (parent ? parent.width : 960) * 0.94)
 
+    // the Studio led to a card (the fix after 0.1.15): the sheet scrolls to it once, when it is open and the card is
+    // made - its cards are made anew at each change of the list, so a little later, once they are laid out
+    property bool revealShown: false
+    function revealFramed() {
+        if (!sheet.revealShown || !sheet.opened)
+            return
+        for (let i = 0; i < cards.count; i++) {
+            const card = cards.itemAt(i)
+            if (card && card.framed) {
+                sheet.revealShown = false
+                sheet.reveal(card)
+                return
+            }
+        }
+    }
+    Timer { id: revealTimer; interval: 60; onTriggered: sheet.revealFramed() }
+    Connections {
+        target: Installer
+        function onShownAsked() { sheet.revealShown = true }
+    }
+    onOpened: if (sheet.revealShown) revealTimer.restart()
+    onClosed: sheet.revealShown = false
+
     // «Установить» - and once pressed, in its place: «Пауза» / «Продолжить» and ✕ to cancel (2026-10-28, the user's
     // word); an installed one says so
     component JobButtons: Row {
@@ -201,17 +224,19 @@ Sheet {
             color: Installer.catalogError !== "" ? Theme.p.error : Theme.p.faint
         }
         Repeater {
+            id: cards
             model: Installer.catalog
+            onItemAdded: if (sheet.revealShown && sheet.opened) revealTimer.restart()
             delegate: Rectangle {
                 id: card
                 required property var modelData
+                // the card the Studio led to (the fix after 0.1.15): the checked video model's
+                readonly property bool framed: Installer.purpose === "image" && card.modelData.id === Installer.shownSet
                 width: parent ? parent.width : 600
                 height: cardColumn.height + 24
                 radius: 8
                 color: Theme.p.card
-                // the picture set a found model led to (41.2)
-                border.color: Installer.purpose === "image" && card.modelData.id === Installer.shownSet
-                              ? Theme.p.accent : Theme.p.hairline
+                border.color: card.framed ? Theme.p.accent : Theme.p.hairline
                 Column {
                     id: cardColumn
                     x: 14

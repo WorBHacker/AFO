@@ -8116,6 +8116,79 @@ def test_the_studio_with_only_video_models_films(qapp):
         quick.close()
 
 
+def test_the_empty_studio_offers_a_model_for_pictures_and_one_for_video(qapp):
+    """The fix after 0.1.15, the user's complaint: the Studio films too, and its empty page spoke of pictures alone
+    («Модели для картинок ещё нет», one button). Now «Поставить модель картинок» opens «Подборка», «Рисовать»;
+    «Поставить модель для видео» - the same, the checked video model's card framed and scrolled into sight; «Другие
+    модели для видео» - «Поиск», «Видео», «Поместится в видеопамять». Each takes the sheet to its own tab, whatever
+    tab the sheet was left on. Clicked with the mouse."""
+    from PySide6.QtCore import QMetaObject, QObject, QPointF
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_models = lambda: {"models": [], "default": "", "videos": []}
+        listed = client.install_pictures()
+        flux = {**listed["models"][1], "id": "flux2-klein-4b", "name": "FLUX.2 klein 4B", "tier": "main"}
+        wan = {**listed["models"][1], "id": "wan2.2-ti2v-5b-turbo", "name": "Wan2.2 TI2V 5B Turbo", "kind": "video",
+               "tier": "video", "about": {"ru": "Видео по словам и по картинке"}}  # fmt: skip
+        client.install_pictures = lambda: {**listed, "models": [*listed["models"], flux, wan]}
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the screen
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        window.resize(1100, 480)  # the video model's card, the last, is below the fold
+        app.setMode("studio")
+        view, studio = app.install_view, window.findChild(QObject, "studioView")
+        wait_until(lambda: not app.bg.busy and app.visual_view.loaded)
+        sheet = window.findChild(QObject, "installSheet")
+        body = sheet.property("contentItem")
+        tabs, flick = item_named(body, "installTabs"), item_named(body, "sheetFlick")
+
+        def opened_by(name):
+            if sheet.property("visible"):
+                QMetaObject.invokeMethod(sheet, "close")
+                wait_until(lambda: not sheet.property("visible"))
+            click(window, item_named(studio, name))
+            wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+
+        view.setTab("jobs")  # the sheet was left on «Установки»
+        opened_by("visualInstall")
+        wait_until(lambda: lit(tabs) == ["catalog"])
+        assert (view.tab, view.purpose, view.shownSet) == ("catalog", "image", "")
+        assert lit(item_saying(body, "Рисовать").parentItem().parentItem()) == ["image"]
+
+        view.setTab("search")
+        opened_by("visualInstallVideo")
+        wait_until(lambda: lit(tabs) == ["catalog"] and view.shownSet == "wan2.2-ti2v-5b-turbo")
+        card = item_saying(body, "Wan2.2 TI2V 5B Turbo")
+        while card.property("framed") is None:
+            card = card.parentItem()
+
+        def in_sight():
+            window.grabWindow()
+            top = card.mapToItem(flick, QPointF(0, 0)).y()
+            return top >= 0 and top + card.height() <= flick.height()
+
+        wait_until(in_sight)
+        assert card.property("framed") and flick.property("contentY") > 0  # scrolled to it
+
+        view.setTab("catalog")
+        opened_by("visualMoreVideo")
+        wait_until(lambda: lit(tabs) == ["search"])
+        task, size = item_named(body, "installSearchTask"), item_named(body, "installSearchSize")
+        wait_until(lambda: lit(task) == ["video"] and lit(size) == ["fits"])
+        asked = client.install_calls[-1]
+        assert asked[0] == "search" and (asked[1]["task"], asked[1]["size"]) == ("video", "fits")
+        assert view.shownSet == ""
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_studio_chooses_its_model_and_films_by_two_frames(qapp, tmp_path):
     """48.7б: in the Studio the model is chosen - «Авто» as «Быстрее ↔ Качественнее» says, or one of those installed;
     a video by words, by a picture or by two frames as its model films (the hub's `modes`): the first frame as «По

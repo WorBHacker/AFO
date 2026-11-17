@@ -67,19 +67,40 @@ Item {
         onAccepted: Visual.saveAs(selectedFile.toString())
     }
 
-    // no picture model yet: where to get one
+    // no model yet: where to get one - for pictures, for video (the fix after 0.1.15: the Studio films too); each
+    // button takes the install sheet to its own place, whatever it was left on
     Column {
         visible: Visual.loaded && !Visual.hasModels
         anchors.centerIn: parent
         width: Math.min(460, parent.width - 48)
         spacing: 12
-        Note { text: qsTr("Модели для картинок ещё нет. AFO подберёт её под этот компьютер и поставит вместе с движком — одной кнопкой.") }
-        PlainButton {
-            objectName: "visualInstall"
-            kind: "primary"
-            iconName: "download"
-            text: qsTr("Поставить модель картинок")
-            onClicked: { Installer.setPurpose("image"); App.openUi("install-models") }
+        Note { text: qsTr("Моделей для картинок и видео ещё нет. AFO подберёт модель под этот компьютер и поставит вместе с движком — одной кнопкой.") }
+        Flow {
+            width: parent.width
+            spacing: 8
+            PlainButton {
+                objectName: "visualInstall"
+                kind: "primary"
+                iconName: "download"
+                text: qsTr("Поставить модель картинок")
+                onClicked: Installer.offer("image")  // «Подборка», «Рисовать»
+            }
+            PlainButton {
+                objectName: "visualInstallVideo"
+                iconName: "download"
+                text: qsTr("Поставить модель для видео")
+                onClicked: Installer.offer("video")  // «Подборка», the checked video model's card
+            }
+        }
+        Text {
+            objectName: "visualMoreVideo"
+            text: "<a href=\"x\">" + qsTr("Другие модели для видео") + "</a>"
+            textFormat: Text.StyledText
+            linkColor: Theme.p.link
+            font.family: Theme.uiFont
+            font.pixelSize: 13
+            onLinkActivated: Installer.offer("moreVideo")  // «Поиск», «Видео», «Поместится в видеопамять»
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
         }
     }
 

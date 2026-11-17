@@ -500,6 +500,7 @@ def job_rows(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 class InstallView(QObject):
     changed = Signal()
     pendingChanged = Signal()  # an action asked of the hub (0.1.16 step 9а): its button and its word, not the sheet
+    shownAsked = Signal()  # the Studio led to a card (the fix after 0.1.15): the sheet scrolls to it once
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -518,7 +519,7 @@ class InstallView(QObject):
         self._query = ""
         self._task, self._size, self._sort, self._plain = "", "", "downloads", False  # the search's filters (32.6)
         self._more = {"build": "", "language": "", "license": "", "author": ""}  # «Ещё фильтры» (41.2)
-        self._shown_set = ""  # a picture set a found model led to (41.2): its card among «Рисовать»
+        self._shown = ""  # a kind of model the Studio asked for (the fix after 0.1.15): «video» - its card framed
         self._asked: tuple | None = None  # the last search sent: an older answer is not shown over it
         self._found: list[dict[str, Any]] = []
         self._searching = False
@@ -685,7 +686,8 @@ class InstallView(QObject):
 
     @Property(str, notify=changed)
     def shownSet(self) -> str:
-        return self._shown_set
+        """The card the Studio led to (the fix after 0.1.15): for video - the checked video model among «Рисовать»."""
+        return next((m["id"] for m in self._pictures if self._shown and m.get("kind") == self._shown), "")
 
     @Property(str, notify=changed)
     def searchError(self) -> str:
@@ -1072,6 +1074,22 @@ class InstallView(QObject):
         self.closeRepo()
         self._tab, self._size = "search", "fits"
         self._search()
+
+    @Slot(str)
+    def offer(self, kind: str) -> None:
+        """The Studio without models (the fix after 0.1.15): «image» - «Подборка», «Рисовать»; «video» - the same, the
+        checked video model's card framed and scrolled to; «moreVideo» - «Поиск», «Видео», «Поместится в
+        видеопамять». Each sets the tab itself: the sheet keeps the one it was left on."""
+        self.closeRepo()
+        if kind == "moreVideo":
+            self._tab, self._task, self._size, self._shown = "search", "video", "fits", ""
+            self._search()
+        else:
+            self._tab, self._shown = "catalog", ("video" if kind == "video" else "")
+            if self._shown:
+                self.shownAsked.emit()  # before the cards are made again: the sheet knows to scroll to its card
+            self.setPurpose("image")
+        self.app.openUi("install-models")
 
     @Slot(str)
     def setPurpose(self, purpose: str) -> None:
