@@ -96,7 +96,6 @@
  "AFO обновлена до {version}": "AFO is updated to {version}",
  "AFO пока не умеет ставить {repo} сам: семейства этой модели нет в его списке": "AFO cannot install {repo} by itself yet: this model's family is not on its list",
  "AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face": "AFO cannot install it by itself yet - a click opens its page on Hugging Face",
- "AFO ставит её сам — «Установить» в «Рисовать»": "AFO installs it by itself - «Install» under «Draw»",
  "AFO ставит её сам — щелчок покажет её варианты": "AFO installs it by itself - a click shows its variants",
  "AFO ставит её сам: ≈ {size} с кодировщиком и VAE — {words}": "AFO installs it by itself: ≈ {size} with the encoder and VAE - {words}",
  "AFO — при входе в Windows, в трей · llama-swap на месте": "AFO - at Windows sign-in, in the tray · llama-swap in place",

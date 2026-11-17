@@ -2781,6 +2781,40 @@ def item_named(root, name):
     return None
 
 
+def item_saying(root, text):
+    """The visible item below `root` whose text is this - a Text, a button: a switch's option says it in its label."""
+    for child in root.childItems():
+        if child.isVisible() and child.property("text") == text:
+            return child
+        if child.isVisible() and (found := item_saying(child, text)) is not None:
+            return found
+    return None
+
+
+def click(window, item):
+    """A person's click: the mouse pressed and let go in the middle of the item, in the window. Offscreen, the window
+    lays its items out only when it is drawn - drawn first, or the click lands where the item was; a sheet scrolled
+    to the item when it is below the fold."""
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    window.grabWindow()
+    flick = item.parentItem()
+    while flick is not None and flick.property("contentY") is None:
+        flick = flick.parentItem()
+    if flick is not None:
+        top = item.mapToItem(flick.property("contentItem"), QPointF(0, 0)).y()
+        if not flick.property("contentY") <= top <= flick.property("contentY") + flick.height() - item.height():
+            flick.setProperty("contentY", max(0.0, top - flick.height() / 3))
+            window.grabWindow()
+    middle = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    assert 0 <= middle.x() < window.width() and 0 <= middle.y() < window.height(), "not on screen"
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     QPoint(int(middle.x()), int(middle.y())))  # fmt: skip
+    for _ in range(5):
+        QApplication.processEvents()
+
+
 def test_the_palette_sheets_and_rename_dialog_open_without_warnings(qapp):
     from PySide6.QtCore import QMetaObject, QObject
     from PySide6.QtQuick import QQuickItem
@@ -6270,8 +6304,8 @@ def test_the_search_s_filters_licences_and_pictures_in_the_window(qapp, monkeypa
     репозитории тоже»): the search's other filters under «Ещё фильтры» - how the model is built, its language, its
     licence (any / free / for work - the person decides how strict), who put the files there - and the newest first;
     each found model says what its licence lets one do, and so does the open repository. A model that draws or films:
-    one of AFO's picture sets - its card among «Рисовать», with «Установить»; another - its page on Hugging Face, for
-    AFO cannot put it together itself."""
+    of a family AFO knows - its variants in the search, a picture set's own repository too (the fix after 0.1.15: not
+    its card among «Рисовать»); another - its page on Hugging Face, for AFO cannot put it together itself."""
     from PySide6.QtCore import QObject
 
     from app.ui import controller as ui_controller
@@ -6291,7 +6325,8 @@ def test_the_search_s_filters_licences_and_pictures_in_the_window(qapp, monkeypa
             {"repo": "bartowski/Llama-8B-GGUF", "downloads": 5, "likes": 1, "params": 8_000_000_000,
              "license": "llama3.1", "license_kind": "terms", "picture": "", "drawn": False, "fit": None},
             {"repo": "leejet/FLUX.2-klein-4B-GGUF", "downloads": 3, "likes": 0, "params": 0, "license": "apache-2.0",
-             "license_kind": "free", "picture": "flux2-klein-4b", "drawn": True, "fit": None},
+             "license_kind": "free", "picture": "flux2-klein-4b", "family": "flux2-klein-4b", "drawn": True,
+             "fit": None},  # as the hub says it: a set's own repository, of its family
             {"repo": "someone/Other-Image-GGUF", "downloads": 1, "likes": 0, "params": 0, "license": "",
              "license_kind": "", "picture": "", "drawn": True, "fit": None, "page": page},
         ]  # fmt: skip
@@ -6330,18 +6365,19 @@ def test_the_search_s_filters_licences_and_pictures_in_the_window(qapp, monkeypa
         assert "лицензия apache-2.0 — свободная" in rows_["unsloth/Coder-30B-A3B-GGUF"]["note"]
         assert "лицензия llama3.1 — свои условия" in rows_["bartowski/Llama-8B-GGUF"]["note"]
         flux, other = rows_["leejet/FLUX.2-klein-4B-GGUF"], rows_["someone/Other-Image-GGUF"]
-        assert (flux["fit"], flux["fitTone"]) == ("AFO ставит её сам — «Установить» в «Рисовать»", "ok")
+        assert (flux["fit"], flux["fitTone"]) == ("AFO ставит её сам — щелчок покажет её варианты", "ok")
         assert other["fit"] == "AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face"
         for _ in range(10):
             QApplication.processEvents()
         assert quick.window.findChild(QObject, "installMoreFilters").property("visible")
         view.openFound("someone/Other-Image-GGUF")
         assert opened == [page] and view.repoName == ""  # its page, not a repository AFO would misread
+        client.install_picture_repo = lambda asked: {"repo": asked, "family": "flux2-klein-4b", "variants": []}
         view.openFound("leejet/FLUX.2-klein-4B-GGUF")
-        wait_until(lambda: not app.bg.busy)
-        assert (view.tab, view.purpose, view.shownSet) == ("catalog", "image", "flux2-klein-4b")
+        wait_until(lambda: not app.bg.busy and view.repoName)
+        assert (view.tab, view.repoName) == ("search", "leejet/FLUX.2-klein-4B-GGUF")  # its variants, in the search
+        view.closeRepo()
         # the open repository says what its licence lets one do
-        view.setTab("search")
         view.openFound("ggml-org/gemma-4-E4B-it-GGUF")
         wait_until(lambda: not app.bg.busy and view.variants)
         assert view.repo["licence"] == (

@@ -40,10 +40,11 @@ from tests.test_changes import edit, wait
 from tests.test_gateway import Stalled, stalled  # noqa: F401 - the stalled fixture
 from tests.test_goals import DEAD_END, DONE, WRITE, Cloudy, Gated, chat_with_project, set_goal, settled
 from tests.test_llama_config import FakeLlamaSwap
-from tests.test_model_install import CLIP, DRAW, MACHINE, FakeHub, fake_hub, tiny_gguf, wait_for  # noqa: F401 - the fake_hub fixture
+from tests.test_model_install import CLIP, DISTILLED, DRAW, FILM, MACHINE, FakeHub, fake_hub, tiny_gguf, wait_for  # noqa: F401 - the fake_hub fixture
 from tests.test_model_install import hub as installs  # noqa: F401 - the installer's hub, as a fixture of this name
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
+from tests.test_ui import click, item_named, item_saying, qapp, wait_until  # noqa: F401 - the qapp fixture
 
 A_TXT = "if (Test-Path a.txt) { exit 0 } else { exit 1 }"
 
@@ -1471,3 +1472,107 @@ def test_a_found_picture_model_installs_with_its_familys_parts_and_draws(install
 
     installs.delete(f"/v1/install/models/{found['model_id']}")
     assert not model.exists() and Path(shared["llm"]).exists()  # the set and the other variant name them
+
+
+FOUND_FILM = {
+    "id": "someone/Film-Two-GGUF",
+    "downloads": 9,
+    "likes": 1,
+    "trendingScore": 1,
+    "createdAt": "2026-09-05T00:00:00.000Z",
+    "lastModified": "2026-10-05T00:00:00.000Z",
+    "tags": ["gguf", "text-to-video", "license:apache-2.0", "base_model:quantized:test/Film"],
+    "gguf": {"total": 70_000},
+}  # unsloth's LTX-2.5: dev and distilled, the families' own repository
+FOUND_DRAW = {
+    "id": "test/Draw-GGUF",
+    "downloads": 8,
+    "likes": 1,
+    "trendingScore": 1,
+    "createdAt": "2026-09-04T00:00:00.000Z",
+    "lastModified": "2026-10-04T00:00:00.000Z",
+    "tags": ["gguf", "text-to-image", "license:apache-2.0"],
+    "gguf": {"total": 120_000},
+}  # a card's own
+
+
+@contextmanager
+def window_on(server, qapp):  # noqa: F811
+    """The window on this hub: its client the real one, each call through the hub's own routes."""
+    from app.hub_client import HubClient
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        token = server.headers["Authorization"].removeprefix("Bearer ")
+        quick.controller.attach(HubClient("http://127.0.0.1:8765", token, http=server), start_events=False)
+        wait_until(lambda: not quick.controller.bg.busy, timeout=20)
+        yield quick
+    finally:
+        quick.close()
+
+
+def install_of(server, family):
+    """The install as this picture set's or family's, if there is one."""
+    return next((j for j in server.get("/v1/install/jobs").json()["jobs"] if j["plan"].get("set") == family), None)
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client
+def test_a_found_model_clicked_in_the_search_shows_its_variants_to_install(installs, qapp, monkeypatch):  # noqa: F811
+    """The user's complaint (2026-11-17, AFO 0.1.15): a video model could not be installed through the window - a
+    click on unsloth/LTX-2.5-GGUF in «Поиск на Hugging Face» led to «Подборка», «Рисовать», where it is not: 0.1.13's
+    jump to a picture set's card (`picture`) stood before 47.7б's path, and the hub names the set of every repository
+    holding a family's main file - 26 families without a card since 0.1.14. The window's tests had stood in an answer
+    of the hub's own making. Here the hub is the real one: a click on a found model, of a family without a card and of
+    a set with one, shows its variants in the search, and «Установить» there installs the one chosen."""
+    from PySide6.QtCore import QObject
+
+    from tests import test_model_install as tmi
+
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, FILM, DISTILLED]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM, FOUND_DRAW])
+    memory = {**tmi.SPACE["memory"], "commit_limit_gib": 80.0, "commit_used_gib": 20.0}  # as the hub's own look says
+    installs.app.state.status.latest = {**tmi.SPACE, "memory": memory}
+    with window_on(installs, qapp) as quick:
+        window, view = quick.window, quick.controller.install_view
+        quick.controller.openUi("install-models")
+        sheet = window.findChild(QObject, "installSheet")
+        wait_until(lambda: sheet.property("opened"))
+        body = sheet.property("contentItem")
+        click(window, item_saying(body, "Поиск на Hugging Face"))
+        click(window, item_saying(body, "Видео"))
+        wait_until(lambda: not view.searching and view.found, timeout=10)
+        click(window, item_saying(body, FOUND_FILM["id"]))
+        wait_until(lambda: view.repoName == FOUND_FILM["id"] and view.variants, timeout=10)
+        assert view.tab == "search"  # still the search: its variants open in it
+        row = next(r for r in view.found if r["repo"] == FOUND_FILM["id"])
+        assert "«Рисовать»" not in row["fit"]  # nowhere else to go
+        assert [v["quant"] for v in view.variants] == ["Film dev · Q4_0", "Film dev · UD-Q4_0",
+                                                       "Film distilled · Q4_0"]  # fmt: skip
+        button = item_named(body, "installVariant_film-distilled/Q4_0")
+        assert button is not None and button.isVisible() and button.property("text") == "Установить"
+        click(window, button)
+        wait_until(lambda: install_of(installs, "film-distilled"), timeout=10)
+        film = install_of(installs, "film-distilled")
+        assert (film["repo"], film["quant"], film["plan"].get("found")) == (FOUND_FILM["id"], "Q4_0", FOUND_FILM["id"])
+        assert wait_for(installs, film["id"], "done", "failed")["status"] == "done"
+
+        # a set with a card among «Рисовать» - its own repository's variants too, the card's variant the card's install
+        click(window, item_saying(body, "Назад"))
+        wait_until(lambda: view.repoName == "")
+        click(window, item_saying(body, "Рисовать"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_DRAW["id"] for r in view.found), timeout=10)
+        click(window, item_saying(body, FOUND_DRAW["id"]))
+        wait_until(lambda: view.repoName == FOUND_DRAW["id"] and view.variants, timeout=10)
+        click(window, item_named(body, "installVariant_draw/Q4_0"))
+        wait_until(lambda: install_of(installs, "draw"), timeout=10)
+        draw = install_of(installs, "draw")
+        assert wait_for(installs, draw["id"], "done", "failed")["status"] == "done"
+        assert "found" not in draw["plan"]  # the card's own model: the card says it is installed
+        card = next(m for m in installs.get("/v1/install/pictures").json()["models"] if m["id"] == "draw")
+        assert card["installed"] == [draw["model_id"]]
+        assert quick.warnings == []

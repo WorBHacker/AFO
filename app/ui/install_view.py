@@ -78,7 +78,6 @@ LICENCE_WORDS = {"free": N_("свободная: можно и для работ
                  "": N_("условия не разобрать — прочитайте их на странице модели")}  # fmt: skip
 LICENCE_TONES = {"free": "ok", "terms": "warn", "closed": "error"}
 # a found model that draws or films (41.2): one of AFO's picture sets, or one AFO cannot put together itself
-PICTURE_OWN = N_("AFO ставит её сам — «Установить» в «Рисовать»")
 PICTURE_OTHER = N_("AFO пока не умеет ставить её сам — щелчок откроет страницу на Hugging Face")
 PICTURE_FAMILY = N_("AFO ставит её сам — щелчок покажет её варианты")  # one of a family AFO knows (47.7б)
 
@@ -251,13 +250,8 @@ def search_rows(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         badges = ([tr("снятые ограничения")] if m.get("unrestricted") else []) + (
             [tr("лицензия на сайте")] if m.get("gated") else [])  # fmt: skip
         fit = fit_of(m.get("fit"))
-        if m.get("drawn"):  # it draws or films: AFO's own picture set, one of a family AFO knows (47.7б), or its page
-            if m.get("picture"):
-                fit = {"fit": tr(PICTURE_OWN), "fitTone": "ok"}
-            elif m.get("family"):
-                fit = picture_fit_of(m.get("fit"))
-            else:
-                fit = {"fit": tr(PICTURE_OTHER), "fitTone": ""}
+        if m.get("drawn"):  # it draws or films: one of a family AFO knows - its variants (47.7б), or its page
+            fit = picture_fit_of(m.get("fit")) if m.get("family") else {"fit": tr(PICTURE_OTHER), "fitTone": ""}
         out.append({"repo": m["repo"], "note": " · ".join(note), "badges": badges, **fit})
     return out
 
@@ -1153,16 +1147,13 @@ class InstallView(QObject):
 
     @Slot(str)
     def openFound(self, repo: str) -> None:
-        """A found model clicked: its repository - or, a model that draws or films (41.2), AFO's picture set among
-        «Рисовать», one of a family AFO knows - its variants with the family's parts (47.7б), or its page on Hugging
+        """A found model clicked: its repository - or, a model that draws or films (41.2), one of a family AFO knows -
+        its variants with the family's parts, «Установить» on each, right in the search (47.7б; the fix after 0.1.15:
+        a set's own repository too, not its card among «Рисовать» - 26 families have none), or its page on Hugging
         Face: AFO would misread its files as a chat model's."""
         row = next((m for m in self._found if m["repo"] == repo), None)
         if row is None or not row.get("drawn"):
             self.openRepo(repo)
-        elif row.get("picture"):
-            self._shown_set = row["picture"]
-            self.setTab("catalog")
-            self.setPurpose("image")
         elif row.get("family"):
             self._open_repo(repo, lambda: self.app.client.install_picture_repo(repo))
         elif row.get("page"):

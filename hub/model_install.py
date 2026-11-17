@@ -1374,6 +1374,9 @@ class Installer:
         if entry is None:
             raise InstallError(tr("в списке нет модели {model}", model=spec["id"]), 404)
         found_repo, main = spec.get("repo") or "", next(f for f in entry["files"] if f["role"] in PICTURE_MAIN)
+        if found_repo and entry.get("card", True) and (found_repo, spec.get("quant")) == (
+                main["repo"], hf.quant_of(main["path"])):  # fmt: skip
+            found_repo = ""  # a card's own model, chosen in the search (the fix after 0.1.15): the card's install
         repo, quant = (found_repo, spec.get("quant") or "") if found_repo else (main["repo"], hf.quant_of(main["path"]))
         rows = await self._db.acall(jobs)
         same = next((r for r in rows if r["plan"].get("set") == entry["id"] and (r["repo"], r["quant"]) == (repo, quant)
