@@ -191,6 +191,17 @@ def _tensors(f: BinaryIO, count: int) -> list[tuple[str, int, int | None]]:
     return out
 
 
+def largest_tensor(source: Path | BinaryIO) -> int:
+    """The bytes of a file's largest tensor, from its header alone - a file, or a download's first bytes (the fix after
+    0.1.15): what sd.cpp's auto-fit stages on the card beside a model while an encoder's weights wait in RAM. 0 - no
+    tensor of a type TYPE_SIZES knows."""
+    if isinstance(source, Path):
+        with open(source, "rb") as f:
+            return largest_tensor(f)
+    count = _keys(source, "the file", ("general.architecture",), False)["gguf.tensors"]
+    return max((size or 0 for _, _, size in _tensors(source, count)), default=0)
+
+
 def _weights(files: list[Path]) -> tuple[list[int], int, set[int]]:
     """What the experts weigh in each layer (44.1), the whole model - its headers and tensors (44.2: a real file's
     size to its alignment; a header without its weights weighs what the model would) - and the blocks it has tensors

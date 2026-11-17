@@ -82,8 +82,9 @@ SHARED = "_shared"  # under `pictures`: a family's encoders and VAE, one copy fo
 # parts, they compute in turn - and for the encoder's largest tensor, staged beside it (~0.5 GiB for Qwen's). 47.9,
 # measured: Qwen-Image-2512 Q4_K_M (12.4 GiB) on a 16 GB card did not fit - all in RAM, 37 s a 1024² picture
 PICTURE_COMPUTE_GIB = 2.0
-PICTURE_STAGING_GIB = 0.5
+PICTURE_STAGING_GIB = 0.5  # when the encoder's own largest tensor is not read (the fix after 0.1.15: it is, mostly)
 SD_MARGIN_GIB = 0.5
+TIGHT_GIB = 0.5  # less than this left on the card beside a picture model: «впритык» (the fix after 0.1.15)
 CONTEXTS = (32768, 16384, 8192, 4096)  # a new model's context: the largest that fits the video memory
 FIT_CONTEXT = 8192  # what a variant is judged with before the download
 MIN_BITS = 3.5  # below this a quantization loses too much to be recommended
@@ -128,6 +129,7 @@ VERDICTS = {
 # how much into the computer's memory - picture_place
 PICTURE_VERDICTS = {
     "gpu": N_("быстро"),
+    "tight": N_("впритык: если другие программы займут чуть больше видеопамяти — медленнее"),
     "split": N_("медленнее: модель не помещается в видеопамять, видеокарта считает её по частям"),
     "cpu": N_("медленно: без видеокарты"),
     "no": N_("не хватит памяти компьютера"),
@@ -180,45 +182,57 @@ def picture_verdict(entry: dict[str, Any], machine: dict[str, Any]) -> str:
     return "fast" if machine.get("pictures") == "main" else "slow"
 
 
-def picture_fit(model: int, parts: int, space: dict[str, Any]) -> str:
+def _card_left(model: int, space: dict[str, Any], staging: int | None) -> tuple[bool, float]:
+    """Whether there is a graphics card, and what of it, GiB, sd.cpp's auto-fit would have left beside a model of
+    `model` bytes with its room for computing and the encoder's staged tensor (`staging`, bytes; None -
+    PICTURE_STAGING_GIB). The card as auto-fit sees it at its start (the fix after 0.1.15): less what the desktop and
+    other programs hold now (`picture_gib`, room()), not the reserve alone."""
+    vram = space.get("picture_gib", space["vram_gib"])
+    card = bool(space["vram_gib"] or space.get("vram_total_gib"))
+    stage = PICTURE_STAGING_GIB if staging is None else staging / GIB
+    return card, max(vram - SD_MARGIN_GIB, 0.0) - model / GIB - PICTURE_COMPUTE_GIB - stage
+
+
+def picture_fit(model: int, parts: int, space: dict[str, Any], staging: int | None = None) -> str:
     """How a picture model of `model` bytes with its encoders and VAE (`parts`) runs here (47.4, 47.9), as sd.cpp's
     auto-fit places them: gpu - the model with its room for computing on the card (the parts on the card's rest or in
-    RAM: they run once a picture); split - the model in RAM, on the card in pieces: slower - and the parts with it, an
-    encoder on the card would want room for the model's pieces too; cpu - no graphics card, all in RAM; no - not even
-    the RAM holds them all. Whatever the picture's size: the places are chosen before it is asked."""
-    card = max(space["vram_gib"] - SD_MARGIN_GIB, 0.0) if space["vram_gib"] else 0.0
-    left = card - model / GIB - PICTURE_COMPUTE_GIB - PICTURE_STAGING_GIB
+    RAM: they run once a picture); tight - the same with less than TIGHT_GIB to spare (the fix after 0.1.15: a little
+    more held by another program and it is split); split - the model in RAM, on the card in pieces: slower - and the
+    parts with it, an encoder on the card would want room for the model's pieces too; cpu - no graphics card, all in
+    RAM; no - not even the RAM holds them all. Whatever the picture's size: the places are chosen before it is asked.
+    `staging` - the encoder's largest tensor (Installer._staging)."""
+    card, left = _card_left(model, space, staging)
     if card and left >= 0 and parts / GIB <= left + space["ram_gib"]:
-        return "gpu"
+        return "tight" if left < TIGHT_GIB else "gpu"
     if (model + parts) / GIB > space["ram_gib"]:
         return "no"
     return "split" if card else "cpu"
 
 
-def picture_place(model: int, parts: int, space: dict[str, Any]) -> dict[str, Any]:
+def picture_place(model: int, parts: int, space: dict[str, Any], staging: int | None = None) -> dict[str, Any]:
     """Where a picture model and its parts would be here (the fix after 0.1.15: the words said the whole set fits
     the video memory, and only the model goes on the card): picture_fit's verdict, and bytes - `card`, the model when
-    it fits there (gpu) and its encoders and VAE beside it when the card's rest holds them; `ram`, the rest in the
-    computer's memory (split, cpu: all; no: all it would want)."""
-    verdict = picture_fit(model, parts, space)
+    it fits there (gpu, tight) and its encoders and VAE beside it when the card's rest holds them; `ram`, the rest in
+    the computer's memory (split, cpu: all; no: all it would want)."""
+    verdict = picture_fit(model, parts, space, staging)
     card = 0
-    if verdict == "gpu":
-        rest = (space["vram_gib"] - SD_MARGIN_GIB - PICTURE_COMPUTE_GIB - PICTURE_STAGING_GIB) * GIB - model
-        card = model + (parts if parts <= rest else 0)
+    if verdict in ("gpu", "tight"):
+        card = model + (parts if parts <= _card_left(model, space, staging)[1] * GIB else 0)
     return {"verdict": verdict, "card": card, "ram": model + parts - card}
 
 
-def variant_place(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> dict[str, Any]:
+def variant_place(files: list[dict[str, Any]], parts: int, space: dict[str, Any],
+                  staging: int | None = None) -> dict[str, Any]:  # fmt: skip
     """picture_place of a variant (48.4): one file - the model; a pair's halves - sd.cpp's auto-fit plans the low half
     alone (`model.diffusion_model.`), the high one (`model.high_noise_diffusion_model.`) is the same module's: one on
     the card while it computes - the larger half, the other waiting in RAM with the parts."""
     largest = max(f["size"] for f in files)
-    return picture_place(largest, parts + sum(f["size"] for f in files) - largest, space)
+    return picture_place(largest, parts + sum(f["size"] for f in files) - largest, space, staging)
 
 
-def variant_fit(files: list[dict[str, Any]], parts: int, space: dict[str, Any]) -> str:
+def variant_fit(files: list[dict[str, Any]], parts: int, space: dict[str, Any], staging: int | None = None) -> str:
     """variant_place's verdict alone."""
-    return variant_place(files, parts, space)["verdict"]
+    return variant_place(files, parts, space, staging)["verdict"]
 
 
 def picture_families(repo: str, bases: list[str], listed: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
@@ -293,11 +307,15 @@ def reserve_save(conn, vram_gib: Any, ram_gib: Any) -> dict[str, float]:
     return value
 
 
-def room(status: dict[str, Any] | None, reserve: dict[str, float] | None = None) -> dict[str, Any]:
+def room(status: dict[str, Any] | None, reserve: dict[str, float] | None = None,
+         others: float | None = None) -> dict[str, Any]:  # fmt: skip
     """The memory a new local model can have, by the computer itself (38.1): its video memory less the desktop's
     share, its RAM less Windows' own - the user's reserves (38.3) or the defaults. Not what is taken right now:
     another program holding memory (Ollama, a game) is a reason to close it, not to judge that a model does not
-    fit."""
+    fit. But a picture or video model's (`picture_gib`, the fix after 0.1.15): sd.cpp's auto-fit places it by what
+    the card has free when it starts - the video memory less what the desktop and other programs hold (`others`,
+    GiB: Installer._others), not less than the reserve; 48.8: the desktop held 1,3 GB, the reserve said 1, and LTX
+    judged «быстро» went all into RAM."""
     reserve = reserve or DEFAULT_RESERVE
     gpu = (status or {}).get("gpu") or {}
     memory = (status or {}).get("memory") or {}
@@ -309,9 +327,10 @@ def room(status: dict[str, Any] | None, reserve: dict[str, float] | None = None)
     # other programs hold the video memory past the desktop's share, by more than BUSY_SLACK_GIB (38.2): words, not
     # a verdict; while llama-swap holds a model its share is not told from theirs - the window says that one unloads
     busy = short_now({"vram_gb": vram - BUSY_SLACK_GIB}, status) if vram > BUSY_SLACK_GIB and not loaded else ""
+    picture = total - max(reserve["vram_gib"], others or 0.0) if total else 0.0
     return {"gpu": gpu.get("name") or "", "vram_total_gib": round(total, 1), "vram_gib": round(max(vram, 0.0), 1),
             "ram_total_gib": round(ram_total, 1), "ram_gib": round(max(ram, 0.0), 1), "loaded": loaded,
-            "busy": busy}  # fmt: skip
+            "busy": busy, "picture_gib": round(max(picture, 0.0), 1)}  # fmt: skip
 
 
 def _kv_gib(info: dict[str, Any] | None, context: int, cache: str = "q8_0") -> float:
@@ -562,6 +581,10 @@ class Installer:
         self._clients: dict[str, Any] = {}  # job -> who started it (the trial is recorded as theirs)
         self._repos: dict[str, tuple[float, dict[str, Any]]] = {}
         self._headers: dict[tuple[str, str], dict[str, Any] | None] = {}
+        # the fix after 0.1.15: an encoder file's largest tensor (None - not read), and what the desktop and other
+        # programs held of the video memory when llama-swap last held no model
+        self._largest: dict[str, int | None] = {}
+        self._others_gib: float | None = None
         self._answers_file = answers  # what Hugging Face said, between runs (hf_answers.json, 35.3, D58)
         self._answers_new = False  # something to write
         self._answers_lock = asyncio.Lock()
@@ -1023,7 +1046,36 @@ class Installer:
         return found
 
     def space(self) -> dict[str, Any]:
-        return room(self._status() or self._kept_machine(), self.reserve)
+        status = self._status() or self._kept_machine()
+        return room(status, self.reserve, self._others(status))
+
+    def _others(self, status: dict[str, Any] | None) -> float | None:
+        """What the desktop and other programs hold of the video memory (the fix after 0.1.15), GiB: measured while
+        llama-swap holds no model - its own would be counted with theirs, and it lets them go for a picture model -
+        and kept for when it does; None - not measured yet."""
+        used = ((status or {}).get("gpu") or {}).get("vram_used_mib")
+        if used is not None and not ((status or {}).get("local") or {}).get("running"):
+            self._others_gib = used / 1024
+        return self._others_gib
+
+    async def _staging(self, parts: list[dict[str, Any]]) -> int | None:
+        """The largest tensor of a picture model's encoders, bytes (the fix after 0.1.15): sd.cpp stages it on the card
+        beside the model - read from each file's header on Hugging Face once for the hub's life; None - none read
+        (picture_fit takes PICTURE_STAGING_GIB)."""
+        found = []
+        for f in parts:
+            if f["role"] in (*PICTURE_MAIN, "vae"):
+                continue
+            key = f"{f['repo']}/{f['path']}@{f.get('revision') or 'main'}"
+            if key not in self._largest:
+                try:
+                    self._largest[key] = await asyncio.to_thread(hf.largest_tensor, f["repo"], f["path"], self.token(),
+                                                                 f.get("revision") or "main") or None  # fmt: skip
+                except hf.HubError, ValueError, KeyError, TypeError, IndexError:
+                    self._largest[key] = None  # not a header AFO reads: the usual half a gigabyte
+            if self._largest[key]:
+                found.append(self._largest[key])
+        return max(found) if found else None
 
     def _kept_machine(self) -> dict[str, Any] | None:
         """computer.json as a sample (35.2): a hub just started, before its first look at the machine - judged as
@@ -1164,22 +1216,23 @@ class Installer:
         wanted = list(dict.fromkeys(o["family"] for o in out if o["family"] and o.get("params")))
         named = await self._db.acall(_named) if wanted else []
 
-        async def parts(entry: dict[str, Any]) -> tuple[int, int] | None:
+        async def parts(entry: dict[str, Any]) -> tuple[int, int, int | None] | None:
             try:
                 files = await self.picture_files(
                     {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]})  # fmt: skip
             except hf.HubError, InstallError:
                 return None
             await asyncio.to_thread(_share, files, named, models_home() / "pictures" / SHARED)
-            return sum(f["size"] for f in files), sum(f["size"] for f in files if not f["done"])
+            return (sum(f["size"] for f in files), sum(f["size"] for f in files if not f["done"]),
+                    await self._staging(files))  # fmt: skip
 
         sizes = dict(zip(wanted, await asyncio.gather(*(parts(sets[f]) for f in wanted)), strict=True))
         for o in out:
             found = sizes.get(o["family"])
             if found is None or not o.get("params"):
                 continue
-            (rest, coming), model = found, int(o["params"] * FIT_BITS / 8)
-            place = picture_place(model, rest, space)
+            (rest, coming, staging), model = found, int(o["params"] * FIT_BITS / 8)
+            place = picture_place(model, rest, space, staging)
             o["fit"] = {"gb": round((model + rest) / 1e9, 1), "quant": FIT_QUANT, **place,
                         "words": tr(PICTURE_VERDICTS[place["verdict"]]), "parts": rest, "download": model + coming,
                         "room": int(space["ram_gib"] * GIB),
@@ -1262,9 +1315,10 @@ class Installer:
             parts = parts_of[entry["id"]] = [f for f in listed if f["role"] not in PICTURE_MAIN]
             await asyncio.to_thread(_share, parts, named, models_home() / "pictures" / SHARED)
             with_parts, coming = sum(p["size"] for p in parts), sum(p["size"] for p in parts if not p["done"])
+            staging = await self._staging(parts)  # the encoder's largest tensor, from its header (the fix after 0.1.15)
             for v in variants:  # a pair's halves - each the parameters Hugging Face counted in one
                 bits = round(v["size"] / len(v["files"]) * 8 / params, 1) if params else None
-                place = variant_place(v["files"], with_parts, space)  # on the card, in RAM (the fix after 0.1.15)
+                place = variant_place(v["files"], with_parts, space, staging)  # on the card, in RAM
                 shown.append({"family": entry["id"], "name": entry["name"], "quant": v["quant"], "size": v["size"],
                               "gb": round(v["size"] / 1e9, 1), "bits": bits, "quality": quality_of(bits), **place,
                               "words": tr(PICTURE_VERDICTS[place["verdict"]]), "with_parts": v["size"] + with_parts,

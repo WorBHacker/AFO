@@ -28,6 +28,7 @@ import httpx
 
 from common import __version__
 from common.gguf import GGUFError, header_info, read_header, tokenizer_info
+from common.gguf import largest_tensor as largest_in_gguf
 from common.i18n import tr
 
 BASE_ENV = "LOCALCHAT_HF_URL"  # tests point it at a stand-in
@@ -450,6 +451,31 @@ def header(repo: str, path: str, token: str | None = None, revision: str = "main
     """The model's layers, attention heads and trained context from the first bytes of its (first) file - before
     any download, for the memory estimate (blocking: in a thread)."""
     return header_info(_first_bytes(repo, path, token, revision, lambda f: read_header(f, until_tokenizer=True)))
+
+
+def _safetensors_largest(f: BinaryIO) -> int:
+    """The bytes of a safetensors file's largest tensor, from its header: 8 bytes of its length, then JSON - each
+    tensor's `data_offsets`."""
+    first = f.read(8)
+    if len(first) != 8:
+        raise GGUFError("the file ends inside its header")
+    length = int.from_bytes(first, "little")
+    if length > HEADER_LIMIT:
+        raise GGUFError("the header is longer than AFO reads over the network")
+    text = f.read(length)
+    if len(text) != length:
+        raise GGUFError("the file ends inside its header")
+    table = json.loads(text)
+    return max((int(t["data_offsets"][1]) - int(t["data_offsets"][0]) for name, t in table.items()
+                if name != "__metadata__"), default=0)  # fmt: skip
+
+
+def largest_tensor(repo: str, path: str, token: str | None = None, revision: str = "main") -> int:
+    """A picture model's encoder's largest tensor, bytes (the fix after 0.1.15), from the first bytes of its file - a
+    GGUF or a safetensors one - before any download: sd.cpp stages it on the card beside the model (blocking: in a
+    thread)."""
+    read = largest_in_gguf if path.lower().endswith(".gguf") else _safetensors_largest
+    return _first_bytes(repo, path, token, revision, read)
 
 
 def tokenizer(repo: str, path: str, token: str | None = None, revision: str = "main") -> dict[str, Any]:

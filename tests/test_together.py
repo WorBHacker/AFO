@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import struct
 import threading
 import time
 from contextlib import closing, contextmanager
@@ -1607,7 +1608,7 @@ def test_a_found_picture_model_says_what_goes_on_the_card_and_what_into_memory(i
     installer = installs.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
     monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM, FOUND_DRAW])
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0)
     card = {"gpu": "RTX", "vram_total_gib": 15.9, "vram_gib": 14.9, "ram_total_gib": 64.0, "ram_gib": 60.0,
             "loaded": [], "busy": ""}  # fmt: skip
@@ -1663,3 +1664,83 @@ def test_a_found_picture_model_says_what_goes_on_the_card_and_what_into_memory(i
         assert row["fit"].startswith("AFO ставит её сам: не хватит памяти компьютера: нужно ≈ ")
         assert row["fitTone"] == "error"
         assert quick.warnings == []
+
+
+def gguf_header(tensors):
+    """A GGUF file's header alone: an architecture, a few tokens and the table of `tensors` - (name, dims, ggml type) -
+    with no weights after it: what Hugging Face's first bytes of an encoder show."""
+
+    def string(text):
+        data = text.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    out = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), 2)
+    out += string("general.architecture") + struct.pack("<I", 8) + string("gemma3")
+    out += string("tokenizer.ggml.tokens") + struct.pack("<IIQ", 9, 8, 3) + b"".join(map(string, "abc"))
+    for name, dims, kind in tensors:
+        out += string(name) + struct.pack(f"<I{len(dims)}Q", len(dims), *dims) + struct.pack("<IQ", kind, 0)
+    return out
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client
+def test_a_found_video_model_at_the_cards_edge_is_not_called_fast(installs, qapp, monkeypatch):  # noqa: F811
+    """The user's complaint and 48.8's numbers: LTX-2.3 distilled Q4_0 on the RTX 5080 was «помещается — быстро», and
+    sd.cpp's auto-fit put all of it in RAM - the hub took the card less 1 GB while the desktop held 1,3, and half a
+    gigabyte for the encoder's largest tensor while gemma's is ≈ 0,8. Now a picture or video model is judged by what
+    the card has free when sd.cpp starts: the desktop and other programs as they are (measured while llama-swap holds
+    no model, kept while it does), not less than the reserve; the encoder's largest tensor is read from its file's
+    header on Hugging Face; less than 0,5 GB to spare is «впритык». A chat model's room stays the computer's (38.1)."""
+    from PySide6.QtCore import QObject
+
+    from tests import test_model_install as tmi
+
+    mib = 1 << 20
+    model, encoder, vae = 12_127 * mib, 9_286 * mib, 1_384 * mib  # 48.8's auto-fit plan, MiB
+    embedding = 262_144 * 3_840 * 210 // 256  # gemma-3-12b's token_embd in Q6_K: ≈ 0,8 GB
+    header = gguf_header([("token_embd.weight", (3_840, 262_144), 14), ("blk.0.attn_q.weight", (3_840, 4_096), 12)])
+    monkeypatch.setitem(tmi.PICTURES["test/Words-GGUF"], "words-Q4_K_M.gguf", header)
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DISTILLED]}), encoding="utf-8")
+    installer = installs.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM])
+    listed, real = installer._listed, {"distilled/film-distilled-Q4_0.gguf": model, "words-Q4_K_M.gguf": encoder,
+                                       "split_files/vae/vae.safetensors": vae}  # fmt: skip
+
+    async def sized(repo):  # the stand's files are kilobytes: Hugging Face's sizes of the real ones
+        found = await listed(repo)
+        return {**found, "files": {p: {**f, "size": real.get(p, f["size"])} for p, f in found["files"].items()}}
+
+    monkeypatch.setattr(installer, "_listed", sized)
+    memory = {**tmi.SPACE["memory"], "commit_limit_gib": 80.0, "commit_used_gib": 20.0}
+    card = {"name": "RTX 5080", "vram_total_mib": 16_303, "vram_used_mib": 1_331}  # the desktop: 1,3 GB
+    installs.app.state.status.latest = {"gpu": card, "memory": memory, "local": {"reachable": True, "running": []}}
+    with window_on(installs, qapp) as quick:
+        window, view = quick.window, quick.controller.install_view
+        quick.controller.openUi("install-models")
+        sheet = window.findChild(QObject, "installSheet")
+        wait_until(lambda: sheet.property("opened") and not quick.controller.bg.busy)
+        body = sheet.property("contentItem")
+        click(window, item_saying(body, "Поиск на Hugging Face"))
+        click(window, item_saying(body, "Видео"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_FILM["id"] for r in view.found), timeout=10)
+        click(window, item_saying(body, FOUND_FILM["id"]))
+        wait_until(lambda: view.repoName == FOUND_FILM["id"] and view.variants, timeout=10)
+        (variant,) = view.variants
+        assert variant["words"].startswith("в памяти компьютера ≈ ") and "медленнее" in variant["words"]
+        assert "быстро" not in variant["words"] and variant["tone"] == "warn"
+        assert item_saying(body, variant["words"]) is not None  # in the window
+        assert embedding in installer._largest.values()  # read from the encoder's header
+        assert quick.warnings == []
+
+        space = installs.get("/v1/install/system").json()["space"]
+        assert (space["vram_gib"], space["picture_gib"]) == (14.9, 14.6)  # a chat model's room: the reserve's (38.1)
+        # the desktop as it was: kept while llama-swap holds a model of its own (it would count with the others)
+        held = {"reachable": True, "running": [{"model": "llama-swap/a"}]}
+        installs.app.state.status.latest = {"gpu": {**card, "vram_used_mib": 14_000}, "memory": memory, "local": held}
+        assert installs.get("/v1/install/system").json()["space"]["picture_gib"] == 14.6
+    space = {"vram_gib": 14.9, "picture_gib": 14.6, "vram_total_gib": 15.9, "ram_gib": 61.0}
+    assert mi.picture_fit(model, encoder + vae, space, staging=embedding) == "split"
+    assert mi.picture_fit(11_500 * mib, encoder + vae, space, staging=embedding) == "tight"  # 0,1 GB to spare
+    assert mi.picture_fit(11_000 * mib, encoder + vae, space, staging=embedding) == "gpu"

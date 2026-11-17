@@ -28,7 +28,7 @@ PURPOSES = [("", N_("Все")), ("chat", N_("Разговоры")), ("code", N_(
             ("image", N_("Рисовать"))]  # fmt: skip
 PICTURES = "pictures:"  # a picture model's row (29.3): no repository of its own - a set of files from several
 RETRY_MS, RETRIES = 2000, 15  # the hub still starting: what it knows of this computer is asked again (35.1)
-TONES = {"gpu": "ok", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
+TONES = {"gpu": "ok", "tight": "warn", "split": "warn", "split_moe": "warn", "cpu": "warn", "no": "error"}
 TONES_PICTURES = {"fast": "ok", "slow": "warn", "no": "error"}  # no: a video model where videos are the cloud's
 STATUS = {"queued": N_("в очереди"), "downloading": N_("загружается"), "paused": N_("на паузе"),
           "trialwait": N_("ждёт пробного запуска"), "configuring": N_("записываю в llama-swap"),
@@ -221,8 +221,9 @@ def size_rows(system: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # a model with these verdicts is as fast here as it gets (0.1.16 step 11а): whole on the card; a Mixture-of-Experts one
-# with its experts in RAM (the user's choice at 0.1.15); no graphics card at all - every model runs in RAM
-FITS = ("gpu", "split_moe", "cpu", "")
+# with its experts in RAM (the user's choice at 0.1.15); no graphics card at all - every model runs in RAM; a picture
+# model on the card with little to spare (the fix after 0.1.15: its words say so)
+FITS = ("gpu", "split_moe", "cpu", "tight", "")
 
 
 def smaller_advice(chosen: dict[str, Any], variants: list[dict[str, Any]]) -> dict[str, Any] | None:

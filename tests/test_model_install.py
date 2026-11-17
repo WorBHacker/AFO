@@ -977,7 +977,7 @@ def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub,
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
     with monkeypatch.context() as small:  # the stand's files are kilobytes: so are the memory and the room
-        for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):
+        for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):
             small.setattr(mi, name, 0.0, raising=False)
         small.setattr(installer, "space", lambda: {"vram_gib": 70_000 / mi.GIB, "ram_gib": 200_000 / mi.GIB})
         found = hub.get("/v1/install/pictures/repo/someone/Draw-More-GGUF")
@@ -1007,7 +1007,8 @@ def test_a_found_picture_models_variants_judged_with_the_parts_it_runs_with(hub,
     # Qwen-Image 2.1 Turbo Q4_K_M all on the card, 6 s
     space, laptop = {"vram_gib": 14.9, "ram_gib": 60.0}, {"vram_gib": 6.0, "ram_gib": 13.0}
     assert mi.picture_fit(13_299_089_408, 4_930_000_000, space) == "split"  # 2512 Q4_K_M: 12 683 MiB, measured
-    assert mi.picture_fit(12_348_000_000, 4_930_000_000, space) == "gpu"  # its Q4_K_S
+    assert mi.picture_fit(12_348_000_000, 4_930_000_000, space) == "tight"  # its Q4_K_S: 0,4 GiB to spare
+    assert mi.picture_fit(11_500_000_000, 4_930_000_000, space) == "gpu"  # 1,2 GiB
     assert mi.picture_fit(4_199_546_880, 5_710_000_000, space) == "gpu"  # Qwen-Image 2.1 Turbo Q4_K_M, measured
     assert mi.picture_fit(4_199_546_880, 5_710_000_000, laptop) == "split"
     assert mi.picture_fit(2_470_000_000, 5_710_000_000, laptop) == "gpu"  # its Q2_K
@@ -1609,7 +1610,7 @@ def test_a_found_video_model_among_the_others_of_its_repository(hub, monkeypatch
     mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR, FILM, DISTILLED]}), encoding="utf-8")
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0)
     monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
 
@@ -1666,7 +1667,7 @@ def test_two_halves_of_one_name_in_two_folders_are_two_files(hub, monkeypatch):
     mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0)
     monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
 
@@ -1698,7 +1699,7 @@ def test_a_video_whose_half_was_deleted_by_hand_fails_in_words(hub, monkeypatch)
     mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: MACHINE)
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0)
     monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 1.0, "ram_gib": 2.0})
     job = hub.post("/v1/install/pictures", json={"id": "pair", "repo": "someone/Pair-More-GGUF", "quant": "Q4_0"})
@@ -1732,7 +1733,7 @@ def test_a_found_video_model_judged_by_its_sizes(hub, monkeypatch):
     mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DRAW, PAIR]}), encoding="utf-8")
     installer = hub.app.state.installer
     monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "video": "cloud"})  # TI2V-5B's thresholds say no
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0)
     monkeypatch.setattr(installer, "space", lambda: {"vram_gib": 70_000 / mi.GIB, "ram_gib": 300_000 / mi.GIB})
 
@@ -1807,7 +1808,7 @@ def test_a_found_picture_model_says_what_it_needs_here(hub, monkeypatch):
               "lastModified": made, "tags": ["gguf", "text-to-image", *BASES["someone/Draw-More-GGUF"]],
               "gguf": {"total": 100_000}}]  # fmt: skip
     installer = hub.app.state.installer
-    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB"):  # the stand's files are kilobytes
+    for name in ("PICTURE_COMPUTE_GIB", "PICTURE_STAGING_GIB", "SD_MARGIN_GIB", "TIGHT_GIB"):  # the stand: kilobytes
         monkeypatch.setattr(mi, name, 0.0, raising=False)
     SEARCH.extend(extra)
     try:
