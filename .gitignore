@@ -22,3 +22,6 @@ tools/
 # the VS Code extension's package (built with vsce)
 vscode/*.vsix
 vscode/node_modules/
+
+# video scenes a video tool left in the project folder (2026-11-17): not part of the repository
+/scenes/
