@@ -255,6 +255,7 @@
  "{name} ({size}) поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. Найти модели, которые поместятся целиком?": "{name} ({size}) does not fit whole: part goes to ordinary memory — several times slower. Look for models that fit whole?",
  "{name} ({size}) поместится не вся: часть ляжет в обычную память — в несколько раз медленнее. Целиком в видеокарту этого компьютера помещаются модели примерно до {count} млрд параметров. Найти такие?": "{name} ({size}) does not fit whole: part goes to ordinary memory — several times slower. Models of up to about {count} billion parameters fit on this computer's graphics card whole. Look for those?",
  "{name} (на диске)": "{name} (on disk)",
+ "{name} (память общая с ОЗУ)": "{name} (memory shared with RAM)",
  "{name} (у вас)": "{name} (yours)",
  "{name} · ${input}/${output} за 1M": "{name} · ${input}/${output} per 1M",
  "{name} · {how} · {seconds} с": "{name} · {how} · {seconds} s",

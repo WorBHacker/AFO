@@ -34,9 +34,46 @@ def test_dxgi_sees_the_cards_the_registry_knows():
     known = hardware.adapters()
     for card in known:
         assert any(c["vendor"] == card["vendor"] for c in cards), (card, cards)
-    # the biggest card's memory agrees; an integrated card's does not - the registry gives it a reserve it lacks
-    if known and known[0]["vram_gib"] >= 4:
-        assert abs(max(c["dedicated_gib"] for c in cards) - known[0]["vram_gib"]) <= 0.5
+    # whatever this computer's registry says of an integrated card's memory (the fix after 0.1.15: the Intel's 37 GB),
+    # it has none of its own; the numbers themselves are this computer's - test_integrated_graphics_has_no_video_...
+    assert all(c["vram_gib"] == 0.0 for c in known if c.get("integrated"))
+
+
+def test_integrated_graphics_has_no_video_memory_of_its_own():
+    """The fix after 0.1.15, the user's main computer: after a restart Windows' registry gives its integrated Intel(R)
+    Graphics 37 GB of «its own» memory - the shared memory of 64 GB of RAM - where DXGI says 0.1. It came first in
+    the first-run wizard and in «Проверить систему» («Intel(R) Graphics — 37 ГБ»), and had NVIDIA's driver not
+    answered, llama.cpp's build would have been Vulkan on it. DXGI's word decides: integrated, no video memory of its
+    own; the card AFO runs on is shown first. The numbers are that computer's - the test does not read this one."""
+    from app.ui.setup_view import card_rows
+
+    registry = [
+        {"name": "Intel(R) Graphics", "vendor": "intel", "vram_gib": 37.0, "driver": "32.0.101.9033"},
+        {"name": "NVIDIA GeForce RTX 5080", "vendor": "nvidia", "vram_gib": 15.9, "driver": "32.0.16.2114"},
+    ]
+    dxgi = [{"name": "NVIDIA GeForce RTX 5080", "vendor": "nvidia", "dedicated_gib": 15.6, "shared_gib": 47.4},
+            {"name": "Intel(R) Graphics", "vendor": "intel", "dedicated_gib": 0.1, "shared_gib": 47.4}]  # fmt: skip
+    cards = hardware.with_dxgi(registry, dxgi)
+    assert [(c["name"], c["vram_gib"], c.get("integrated", False)) for c in cards] == [
+        ("NVIDIA GeForce RTX 5080", 15.9, False), ("Intel(R) Graphics", 0.0, True)]  # fmt: skip
+    assert card_rows(cards) == ["NVIDIA GeForce RTX 5080 — 15,9 ГБ видеопамяти",
+                                "Intel(R) Graphics — память общая с ОЗУ"]  # fmt: skip
+    nvidia = {"version": "596.14", "cuda": 13030, "compute": [12, 0]}
+    assert hardware.build_for(cards, nvidia)["card"] == "NVIDIA GeForce RTX 5080"
+    unanswered = hardware.build_for(cards, None)  # NVIDIA's driver did not answer: Vulkan - on the NVIDIA card
+    assert (unanswered["build"], unanswered["card"]) == ("vulkan", "NVIDIA GeForce RTX 5080")
+    alone = hardware.with_dxgi(registry[:1], dxgi[1:])  # a computer with the integrated graphics alone
+    assert hardware.build_for(alone, None)["build"] == "cpu"
+    assert hardware.with_dxgi(registry, [])[0]["vram_gib"] == 37.0  # DXGI did not answer: the registry's word
+    other = {"name": "Intel(R) UHD Graphics 770", "vendor": "intel", "vram_gib": 2.0, "driver": ""}  # named otherwise
+    assert hardware.with_dxgi([other], dxgi[1:])[0].get("integrated")  # the only Intel card DXGI sees
+
+    # the card AFO runs on first, though another has more memory
+    radeon = {"name": "Radeon RX 7900 XTX", "vendor": "amd", "vram_gib": 24.0, "driver": ""}
+    both = hardware.with_dxgi([registry[1], radeon], [])
+    assert [c["name"] for c in both] == ["Radeon RX 7900 XTX", "NVIDIA GeForce RTX 5080"]
+    shown = hardware.running_first(both, hardware.build_for(both, nvidia)["card"])
+    assert [c["name"] for c in shown] == ["NVIDIA GeForce RTX 5080", "Radeon RX 7900 XTX"]
 
 
 @windows

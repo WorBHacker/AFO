@@ -99,6 +99,7 @@ class Setup:
         cards = await asyncio.to_thread(hardware.adapters)
         nvidia = await asyncio.to_thread(hardware.nvidia_driver)
         build = hardware.build_for(cards, nvidia)
+        cards = hardware.running_first(cards, build["card"])  # the card AFO runs on first (the fix after 0.1.15)
         memory = await asyncio.to_thread(memory_sample)
         pictures = await asyncio.to_thread(hardware.pictures_here, (memory or {}).get("ram_total_gib") or 0)
         engine = await asyncio.to_thread(self._engine)

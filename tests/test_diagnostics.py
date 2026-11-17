@@ -94,6 +94,16 @@ models:
     assert lines["files"]["ok"] is False and "F:/models/a.gguf" in lines["files"]["text"].replace("\\", "/")
     assert lines["net-hf"]["ok"] is False and lines["net-github"]["ok"] is False
 
+    # the fix after 0.1.15: the card AFO runs on is named first, though another has more memory; the integrated
+    # Intel, whose «37 GB» the registry gives after a restart, has no memory of its own
+    radeon = {"name": "Radeon RX 7900 XTX", "vendor": "amd", "vram_gib": 24.0}
+    registry = [{"name": "Intel(R) Graphics", "vendor": "intel", "vram_gib": 37.0}, radeon,
+                {"name": "RTX 4060", "vendor": "nvidia", "vram_gib": 8.0}]  # fmt: skip
+    seen = [{"name": "Intel(R) Graphics", "vendor": "intel", "dedicated_gib": 0.1, "shared_gib": 7.9}]
+    monkeypatch.setattr(hardware, "adapters", lambda: hardware.with_dxgi(registry, seen))
+    gpu = {line["id"]: line for line in asyncio.run(diagnostics.check(state))}["gpu"]["text"]
+    assert gpu.startswith("RTX 4060 (8 ГБ), Radeon RX 7900 XTX (24 ГБ), Intel(R) Graphics (память общая с ОЗУ);")
+
     paths = state.settings.paths
     (paths.logs / "hub.log").write_text("ERROR key sk-ant-api03-" + "x" * 40 + " refused\n", encoding="utf-8")
     report = diagnostics.report(paths, list(lines.values()))

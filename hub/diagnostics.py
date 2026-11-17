@@ -179,8 +179,11 @@ async def check(state: Any) -> list[dict[str, Any]]:
     nvidia = hardware.nvidia_driver()
     wanted = hardware.build_for(cards, nvidia)
     build = _build_of(program)
-    names = ", ".join(tr("{name} ({gib} ГБ)", name=c["name"], gib=_n(c["vram_gib"])) for c in cards) or \
-        tr("видеокарта не найдена")  # fmt: skip
+    # the card AFO runs on first; integrated graphics has no memory of its own (the fix after 0.1.15)
+    names = ", ".join(tr("{name} (память общая с ОЗУ)", name=c["name"]) if c.get("integrated") else
+                      tr("{name} ({gib} ГБ)", name=c["name"], gib=_n(c["vram_gib"]))
+                      for c in hardware.running_first(cards, wanted["card"]))  # fmt: skip
+    names = names or tr("видеокарта не найдена")
     driver = tr("; драйвер NVIDIA {version}, CUDA {cuda}", version=nvidia["version"],
                 cuda=f"{nvidia['cuda'] // 1000}.{nvidia['cuda'] % 1000 // 10}") if nvidia else ""  # fmt: skip
     mismatch = build == "cpu" and wanted["build"] != "cpu"

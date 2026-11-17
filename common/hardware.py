@@ -44,7 +44,35 @@ def _values(key) -> dict[str, Any]:
 
 
 def adapters() -> list[dict[str, Any]]:
-    """The physical graphics cards: name, vendor (nvidia | amd | intel | other), video memory in GiB, driver."""
+    """The physical graphics cards: name, vendor (nvidia | amd | intel | other), video memory in GiB, driver - an
+    integrated one's own memory as DXGI says it (with_dxgi), the biggest card first."""
+    return with_dxgi(_registry_cards(), dxgi_adapters())
+
+
+def with_dxgi(cards: list[dict[str, Any]], seen: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The registry's cards with DXGI's word on each one's own memory (the fix after 0.1.15): after a restart Windows'
+    registry gives the integrated Intel(R) Graphics of a 64 GB computer 37 GB of «its own» memory - the shared
+    memory - where DXGI says 0.1. A card DXGI sees with less than INTEGRATED_GIB of its own is integrated
+    (`integrated`, no video memory of its own: it works in the RAM, a model runs no faster there than on the
+    processor); a card DXGI does not list keeps the registry's number. The biggest card first."""
+    out = []
+    for card in cards:
+        same = [d for d in seen if d["vendor"] == card["vendor"]]
+        found = next((d for d in same if d["name"] == card["name"]), same[0] if len(same) == 1 else None)
+        if found is not None and found["dedicated_gib"] < INTEGRATED_GIB:
+            card = {**card, "vram_gib": 0.0, "integrated": True}
+        out.append(card)
+    return sorted(out, key=lambda a: -a["vram_gib"])
+
+
+def running_first(cards: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    """The cards with the one AFO runs on (build_for's `card`) first, the others as they were (the fix after 0.1.15:
+    the wizard and «Проверить систему» showed the integrated graphics first)."""
+    return sorted(cards, key=lambda c: c["name"] != name) if name else list(cards)
+
+
+def _registry_cards() -> list[dict[str, Any]]:
+    """The physical graphics cards as the registry's display adapters' keys say them."""
     if sys.platform != "win32":
         return []
     import winreg
@@ -72,7 +100,7 @@ def adapters() -> list[dict[str, Any]]:
             out.append({"name": str(values.get("DriverDesc") or "?"), "vendor": VENDORS.get(vendor.group(1).lower(),
                         "other"), "vram_gib": round(int(memory or 0) / GIB, 1),
                         "driver": str(values.get("DriverVersion") or "")})  # fmt: skip
-    return sorted(out, key=lambda a: -a["vram_gib"])
+    return out
 
 
 def nvidia_driver() -> dict[str, Any] | None:

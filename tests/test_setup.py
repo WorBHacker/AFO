@@ -121,6 +121,24 @@ def test_the_page_file_and_the_first_models():
     assert {p: m["id"] if m else None for p, m in found.items()} == {"chat": "big", "code": "big", "vision": "eyes2"}
 
 
+def test_the_wizard_shows_the_card_afo_runs_on_first(hub, monkeypatch):  # noqa: F811
+    """The fix after 0.1.15, the user's main computer: the wizard showed «Intel(R) Graphics — 37 ГБ» first - the
+    registry gives the integrated graphics the shared memory as its own after a restart. Now the card AFO runs on
+    comes first, though another has more memory, and the integrated one has no video memory of its own."""
+    registry = [
+        {"name": "Intel(R) Graphics", "vendor": "intel", "vram_gib": 37.0, "driver": "32.0.101.9033"},
+        {"name": "Radeon RX 7900 XTX", "vendor": "amd", "vram_gib": 24.0, "driver": "32.0"},
+        {"name": "NVIDIA GeForce RTX 5080", "vendor": "nvidia", "vram_gib": 15.9, "driver": "32.0.16.2114"},
+    ]
+    seen = [{"name": "Intel(R) Graphics", "vendor": "intel", "dedicated_gib": 0.1, "shared_gib": 47.4}]  # fmt: skip
+    monkeypatch.setattr(hardware, "adapters", lambda: hardware.with_dxgi(registry, seen))
+    monkeypatch.setattr(hardware, "nvidia_driver", lambda: {"version": "596.14", "cuda": 13030, "compute": [12, 0]})
+    state = hub.get("/v1/setup").json()
+    assert (state["build"]["build"], state["build"]["card"]) == ("cuda-13", "NVIDIA GeForce RTX 5080")
+    assert [(c["name"], c["vram_gib"]) for c in state["cards"]] == [
+        ("NVIDIA GeForce RTX 5080", 15.9), ("Radeon RX 7900 XTX", 24.0), ("Intel(R) Graphics", 0.0)]  # fmt: skip
+
+
 def test_the_engine_for_a_computer_that_has_none(hub, github, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr(hardware, "adapters", lambda: [{"name": "Radeon RX 9070", "vendor": "amd", "vram_gib": 16.0,
                                                         "driver": "32.0"}])  # fmt: skip
