@@ -1226,9 +1226,19 @@ class Controller(QObject):
     @Slot(str)
     def setChatMode(self, mode: str) -> None:
         """The chat's rights (D17): read_only, ask, sandbox, trusted - for the model's next writes; a chat not made
-        yet takes them with its first message."""
+        yet takes them with its first message. Turning «Доверенный» on says once, in words, what the model may do
+        then (the user's word 2026-11-17), and waits for «Включить»."""
         if mode not in ("read_only", "ask", "sandbox", "trusted"):
             return
+        if mode == "trusted" and self._context_settings.get("mode") != "trusted":
+            self._ask(tr("Включить «Доверенный»?"),
+                      tr("Модель сможет менять файлы и запускать команды в проекте без вопросов. Команды могут "
+                         "затронуть и остальной компьютер."),
+                      tr("Включить"), lambda yes: self._set_chat_mode(mode) if yes else None)  # fmt: skip
+            return
+        self._set_chat_mode(mode)
+
+    def _set_chat_mode(self, mode: str) -> None:
         if self.current:
             self._save_context(mode=mode)
         else:

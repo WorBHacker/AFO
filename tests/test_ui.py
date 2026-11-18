@@ -4805,6 +4805,8 @@ def test_the_chats_rights_mode(app):
     opened(app)
     assert app.contextSettings["mode"] == "ask"
     app.setChatMode("trusted")
+    assert app.question["confirm"] == "Включить"  # said in words first (0.1.17)
+    app.answer(True)
     wait_until(lambda: not app.bg.busy)
     assert client_log_has(app, ("context", "c1", {"mode": "trusted"}))
     assert app.contextSettings["mode"] == "trusted"
@@ -8372,7 +8374,8 @@ def test_the_models_question_in_a_chat_and_the_chats_rights_chip(qapp):
         assert [i["id"] for i in items[1:]] == ["read_only", "ask", "sandbox", "trusted"] and all(
             i["note"] for i in items[1:]) and items[2]["selected"]  # fmt: skip
         assert quick.window.findChild(QObject, "chatModeChip").property("text") == "Спрашивать"
-        app.setChatMode("trusted")  # an open chat: saved at once
+        app.setChatMode("trusted")  # an open chat: saved at once - after «Включить» (0.1.17)
+        app.answer(True)
         wait_until(lambda: not app.bg.busy and ("context", "c1", {"mode": "trusted"}) in client.log)
         assert app.chatModeName == "Доверенный"
         app.newChat()
@@ -10486,5 +10489,51 @@ def test_the_card_names_what_always_covers_and_says_the_chat_read_others_text(qa
         assert item_named(card, "approveProject").property("text") == "Разрешить все команды в «LocalChat»"
         assert not item_named(card, "approvalReadOthers").property("visible")  # this request says nothing of it
         assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_turning_trusted_on_says_once_what_the_model_may_do(qapp):
+    """0.1.17, the user's word of 2026-11-17: «при включении режима один раз словами: „Модель сможет менять файлы и
+    запускать команды в проекте без вопросов. Команды могут затронуть и остальной компьютер“». «Отмена» leaves the
+    chat's rights as they were; «Включить» saves the mode; switching to another mode asks nothing."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def settle() -> None:
+        for _ in range(10):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        opened(app)
+        dialog = quick.window.findChild(QObject, "confirmDialog")
+        saved = lambda: [e for e in client.log if e[0] == "context"]  # noqa: E731
+        app.setChatMode("trusted")  # what the chip's menu and the sheet's switch call
+        settle()
+        assert dialog.property("visible") and saved() == [] and app.contextSettings["mode"] == "ask"
+        assert app.question == {"title": "Включить «Доверенный»?",
+                                "text": "Модель сможет менять файлы и запускать команды в проекте без вопросов. "
+                                        "Команды могут затронуть и остальной компьютер.",
+                                "confirm": "Включить", "other": ""}  # fmt: skip
+        click(quick.window, item_saying(dialog.property("contentItem"), "Отмена").parentItem())
+        wait_until(lambda: not dialog.property("visible"))
+        assert saved() == [] and app.chatModeName == "Спрашивать"
+        app.setChatMode("trusted")
+        settle()
+        click(quick.window, item_saying(dialog.property("contentItem"), "Включить").parentItem())
+        wait_until(lambda: not app.bg.busy and saved() == [("context", "c1", {"mode": "trusted"})])
+        assert app.chatModeName == "Доверенный" and not dialog.property("visible")
+        app.setChatMode("trusted")  # on already: nothing to say
+        app.setChatMode("ask")  # back: nothing to say either
+        wait_until(lambda: not app.bg.busy and app.chatModeName == "Спрашивать")
+        assert app.question == {} and quick.warnings == []
     finally:
         quick.close()
