@@ -444,9 +444,7 @@ class FilmView(QObject):
     @Slot(str)
     def setKind(self, kind: str) -> None:
         self._kind = kind if kind in {k for k, _n in KINDS} else "manual"
-        if self._kind == "director":
-            self.load()
-        self.changed.emit()
+        self.changed.emit()  # «Режиссёр» shown: its view asks for the films (`load`)
 
     @Slot(str)
     def setIdea(self, idea: str) -> None:
