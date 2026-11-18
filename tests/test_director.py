@@ -399,7 +399,10 @@ def test_the_look_at_a_scene_is_asked_and_its_answer_read():
     scene = {"mode": "continue", "words": "Лампа загорается", "prompt": "the lamp lights up, warm glow", "cfg": None}
     system, prompt, form = director.look_question(scene, photo=True, cfg=None)
     assert all(f'"{why}"' in system for why in director.REASONS) and "product's photo" in system
-    assert "3 frames" in system and "cfg" not in system and "cfg" not in form and form in system
+    assert "6 frames" in system and "cfg" not in system and "cfg" not in form and form in system
+    assert '"geometry"' in system and "changes its number" in system and "frame by frame" in system
+    assert form.index('"seen"') < form.index('"ok"')  # what it saw is said before the verdict
+    assert "3 frames" in director.look_question(scene, photo=True, cfg=None, frames=3)[0]  # a clip of three
     assert "Лампа загорается" in prompt and "the lamp lights up, warm glow" in prompt
     assert "last frame of the scene before" in prompt and "product's photo" in prompt
     bare = director.look_question({**scene, "mode": "text"}, photo=False, cfg=None)
@@ -420,7 +423,10 @@ def test_the_look_at_a_scene_is_asked_and_its_answer_read():
                   "prompt": "The lamp's glow swells from dim to bright"}  # fmt: skip
     worded = read('{"ok": false, "why": "blurry"}')  # no words of its own, a fault not in the list
     assert (worded["why"], worded["prompt"]) == ("scene", "") and "описании" in worded["reason"]
-    assert "движения" in read('{"ok": false, "why": "motion"}')["reason"]
+    assert "движение" in read('{"ok": false, "why": "motion"}')["reason"]
+    bent = read('{"seen": "Three marks become four, then two.", "ok": false, "why": "geometry"}')
+    assert (bent["why"], bent["ok"]) == ("geometry", False) and "число" in bent["reason"] and "seen" not in bent
+    assert read('{"seen": "The three marks turn evenly.", "ok": true}')["ok"] is True
     for wrong in ("It looks good to me.", "{}", '{"ok": "yes"}', '{"verdict": true}', "{not json}"):
         assert read(wrong) is None, wrong
     within = director.look_reader(room)
@@ -430,6 +436,7 @@ def test_the_look_at_a_scene_is_asked_and_its_answer_read():
 
     storyboard = director.question("Ролик о лампе", 15, "wide", ["text", "picture", "frames"], True)[0]
     assert "Begin with the motion" in storyboard and '"static"' in storyboard
+    assert "One action a scene, exactly" in storyboard and "keep their number, shape and place" in storyboard
 
     three = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
     assert visual.frames_in(three) == 3 and visual.moving(three)

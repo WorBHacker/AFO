@@ -1097,14 +1097,16 @@ class Visual:
             raise VisualError(str(exc), 502) from exc
 
     async def look(self, found: dict[str, Any], count: int, side: int) -> list[bytes]:
-        """A video looked at (51.2): `count` of its frames - the first, those between, the last - as small JPEGs,
-        the longer side `side` points at most: what a model is shown of a film's scene."""
+        """A video looked at (51.2): `count` of its frames - the first, those between evenly, the last - as JPEGs,
+        the longer side `side` points at most: what a model is shown of a film's scene. A clip of fewer frames gives
+        all it has; one frame alone is no video to look at."""
         source = self.file(found)
         if source is None:
             raise VisualError(tr("видео ещё нет"), 404)
         total = frames_in(await asyncio.to_thread(source.read_bytes))
-        if total < count:
+        if total < 2:
             raise VisualError(tr("в видео меньше кадров, чем нужно для проверки"), 422)
+        count = min(count, total)
         numbers = [round(k * (total - 1) / (count - 1)) for k in range(count)]
 
         def take(program: Path) -> list[bytes]:

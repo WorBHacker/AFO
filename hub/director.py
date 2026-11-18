@@ -56,7 +56,11 @@ Rules:
 - Each scene is {low:g} to {high:g} seconds long; together they are the length asked for.
 - "prompt": English, one paragraph. Begin with the motion: who or what moves and how, concretely, in the present \
 tense. Then the camera (slow push in, orbit, pull back, tracking beside the subject...), the light, the style - \
-briefly. One action a scene. Describe the product as the photo shows it; invent no text, logos or labels on it.
+briefly. Describe the product as the photo shows it; invent no text, logos or labels on it.
+- One action a scene, exactly. When the idea has two things happening (a blink and a turn, a pour and a lift), \
+give each a scene of its own: a video model asked for two in one take does neither well.
+- Name the parts that must keep their number, shape and place ("the three marks, evenly spaced around the \
+centre") and say that they keep them - a video model left to itself adds, drops and bends them.
 - A scene that begins with a picture ("picture", "continue", "frames"): the video model sees that frame already - \
 do not spend the prompt retelling what it shows, say what happens next. A crisp picture described by its looks \
 alone stays a still picture.
@@ -230,32 +234,44 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int)
     return read
 
 
-LOOK_FRAMES = 3  # of a scene shown to the look: its first, its middle, its last
-LOOK_SIDE = 512  # their longer side, points: enough to tell a product by, a few hundred tokens each
+LOOK_FRAMES = 6  # of a scene shown to the look, evenly from its first to its last: what changes between them
+LOOK_SIDE = 768  # their longer side, points: a scene's own size or near it - small parts are told one from another
 LOOK_TIMEOUT_S = 120.0  # one answer of the look's
 RETAKES = 2  # times the look has one scene filmed anew
 LOOK_USD = 0.5  # what the looks of one shooting may cost
 CFG_ROOM = 2.0  # how far from the video model's own guidance the look may go
 # why a take does not stay, and what the scene's card says when the model gave no words of its own
-REASONS = {"product": N_("товар не тот, что на фото"), "motion": N_("в сцене нет движения"),
-           "artifacts": N_("в кадре искажения"), "colours": N_("цвет ушёл от исходного"),
-           "scene": N_("снято не то, что в описании")}  # fmt: skip
+REASONS = {"product": N_("товар не тот, что на фото"), "motion": N_("движение не то, что в описании"),
+           "geometry": N_("детали меняют число, форму или место"), "artifacts": N_("в кадре искажения"),
+           "colours": N_("цвет ушёл от исходного"), "scene": N_("снято не то, что в описании")}  # fmt: skip
 LOOK_SYSTEM = """You are the director of a short product video. A video model has just filmed one scene from your \
 prompt; you check the take. You get the scene - what happens in it, how it begins, the prompt it was filmed from - \
-and pictures: {frames} frames of the take in order (the first, the middle, the last){photo}.
+and pictures: {frames} frames of the take in order, evenly spread from its first to its last{photo}.
 
-Say whether the take stays in the film. Reject it only for a plain fault:
+Look at the frames one after another, as a viewer sees them. First find the parts of the subject that must stay \
+what they are - name them and count them in the first frame. Then go frame by frame: are they all there, as many, \
+of the same shape, in their places relative to each other? Does what moves go the way the scene asks? Does what \
+the scene does not move stay as it began?
+
+Reject the take for a fault a viewer sees at once:
 - "product": {product}; text or a logo made up on it.
-- "motion": nothing happens - the frames are one picture, though the scene is of something moving.
-- "artifacts": broken shapes - melted or doubled things, extra limbs or fingers, a garbled face; a frame that is \
+- "motion": nothing happens - the frames are one picture, though the scene is of something moving; or what moves \
+is not what the scene asks for, or it goes the other way.
+- "geometry": the subject does not keep its build - a part appears, vanishes, doubles or changes its number; parts \
+drift from their places, lose their even spacing or their shape; the subject's outline or proportions change where \
+the scene asks for no such change.
+- "artifacts": broken shapes - melted or smeared things, extra limbs or fingers, a garbled face; a frame that is \
 blank or noise.
 - "colours": the colours or the light drift from where the take began - it greys, darkens or burns out.
-- "scene": the take shows something other than the scene asked for.
-Small flaws stay: a take filmed anew costs minutes. In doubt, accept.
+- "scene": the take shows something other than the scene asked for - an action the prompt does not have, or one \
+it has is missing.
+Grain, a slight flicker, a soft frame stay: a take filmed anew costs minutes. But a fault is not accepted because \
+the rest of the take is good.
 
 When you reject, write the prompt anew so that the fault does not come back: English, one paragraph, the same \
-scene. Begin with the motion - who or what moves and how; do not retell what the first frame shows; do not write \
-"static" or "still" in a scene whose subject moves.{cfg}
+scene. Begin with the motion - who or what moves and how. One action only: if the prompt asked for two, keep the \
+one the scene is about. Name the parts that must keep their number, shape and place, and say that they keep them. \
+Do not retell what the first frame shows; do not write "static" or "still" in a scene whose subject moves.{cfg}
 
 Answer with the JSON object only: {form}"""  # i18n: keep
 LOOK_PHOTO = ", then the product's photo - the last picture"
@@ -263,8 +279,10 @@ LOOK_PRODUCT = {True: "the product is not the one in the photo - another shape o
                 False: "the product turns into another thing during the take - another shape or colour"}  # fmt: skip
 LOOK_CFG = (' You may also set "cfg", the video model\'s guidance, {low:g} to {high:g} (it was {now:g}): higher '
             "keeps closer to the prompt, lower moves more freely.")  # fmt: skip
-LOOK_FORM = ('{{"ok": true}} - or {{"ok": false, "why": {whys}, "reason": "<one short sentence, in the language of '
-             'what happens in the scene>", "prompt": "<the prompt written anew>"{cfg}}}')  # fmt: skip
+LOOK_FORM = ('{{"seen": "<what changes from frame to frame: the parts, their number and places - two sentences at '
+             'most>", "ok": true}} - or {{"seen": "...", "ok": false, "why": {whys}, "reason": "<one short sentence, '
+             'in the language of what happens in the scene>", "prompt": "<the prompt written anew>"{cfg}}}'
+             )  # fmt: skip
 BEGINS = {"picture": "with the product's photo as its first frame",
           "continue": "with the last frame of the scene before - one unbroken shot",
           "frames": "with the last frame of the scene before, and ends on the product's photo",
@@ -297,7 +315,8 @@ def look_question(scene: dict[str, Any], *, photo: bool, cfg: tuple[float, float
 def look_reader(cfg: tuple[float, float, float] | None) -> Callable[[str], dict[str, Any] | None]:
     """What reads the look's answer (51.2): {ok, why, reason, prompt, cfg} - `prompt` '' and `cfg` None: as they
     were; a guidance outside `cfg`'s room is brought into it, one for a model that takes none is dropped. None - not
-    a verdict, asked again: no JSON, no `ok` that is true or false."""
+    a verdict, asked again: no JSON, no `ok` that is true or false. What the model saw (`seen`: it is asked to say it
+    before the verdict, so that it looks) is not kept."""
 
     def read(answer: str) -> dict[str, Any] | None:
         start, end = answer.find("{"), answer.rfind("}")
@@ -731,7 +750,7 @@ class Director:
             frames = await self._studio.look(job, LOOK_FRAMES, LOOK_SIDE)
             photo = await self._photo(found)
             images = [{"media_type": "image/jpeg", "data": base64.b64encode(f).decode("ascii")} for f in frames]
-            system, prompt, form = look_question(scene, photo=bool(photo), cfg=room)
+            system, prompt, form = look_question(scene, photo=bool(photo), cfg=room, frames=len(frames))
             if local:  # its answer comes from the card: the film lets it go for the question
                 self._studio.unkeep()
             try:
