@@ -2,11 +2,19 @@
 starting point as a git tree that leaves the user's index, branches and log alone; the syntax of changed files in a
 process of its own; the agent's «goal met» checked - sent back while the judge disagrees, then kept as «not met»."""
 
+import asyncio
+import base64
 import json
 import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
 
 from hub import judge, syntax
 from hub.gateway.base import Model
+from hub.gateway.openai_compat import OpenAICompatProvider
 from tests.test_autonomous import PLAN, Scripted, ended, start, step, use
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
 
@@ -146,3 +154,96 @@ def test_a_file_with_cyrillic_in_its_name_is_seen_as_it_is(repo):
     (repo / "отчёт за год.md").write_text("# Итог\n", encoding="utf-8")
     after = judge.snapshot(repo)
     assert {"path": "отчёт за год.md", "status": "added"} in judge.tree_changes(repo, before, after)
+
+
+class SeeingCloud:
+    """A cloud model's server (the OpenAI chat API) that sees pictures: keeps what it was sent; `answers` - its
+    answers in turn; with none left it sends nothing and holds the connection, as a model that hung does."""
+
+    def __init__(self, answers):
+        self.asked, self.answers = [], list(answers)
+        cloud = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"  # the end of a stream is the closed connection
+
+            def log_message(self, *_args) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                data = json.dumps({"data": [{"id": "eye", "name": "Eye", "meta": {"vision": True}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self) -> None:
+                cloud.asked.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.flush()
+                if not cloud.answers:
+                    try:  # not a word: only the hub closing the connection ends this
+                        while self.connection.recv(1024):
+                            pass
+                    except OSError:
+                        pass
+                    return
+                said = {"choices": [{"delta": {"content": cloud.answers.pop(0)}}]}
+                used = {"choices": [], "usage": {"prompt_tokens": 900, "completion_tokens": 20}}
+                self.wfile.write(f"data: {json.dumps(said)}\n\ndata: {json.dumps(used)}\n\ndata: [DONE]\n\n".encode())
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def test_a_question_outside_a_chat_takes_pictures_a_time_limit_and_a_stop(hub):  # noqa: F811
+    """50.2: the director's question is the judge's one question (Judge.complete) with the product's photo - the
+    cloud server gets it as a picture, the use is recorded with the question's purpose; a model that hangs is left
+    after the time given, and «Стоп» ends the wait at once - before, the question was text only, waited for ever and
+    could not be stopped."""
+    photo = {"media_type": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\n-product").decode()}
+    cloud = SeeingCloud(['{"scenes": 4}'])
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        ask = hub.app.state.judge.complete
+
+        def read(answer):
+            return json.loads(answer) if answer.startswith("{") else None
+
+        found = hub.portal.call(lambda: ask("studio-cloud/eye", "You direct.", "A film about this lamp.", read,
+                                            conversation_id=None, meta={"purpose": "director"}, form="{}",
+                                            images=[photo], timeout_s=30))  # fmt: skip
+        assert found["scenes"] == 4 and found["tokens"] == 920
+        user = cloud.asked[0]["messages"][1]["content"]
+        assert user[0] == {"type": "text", "text": "A film about this lamp."}
+        assert user[1]["image_url"]["url"] == f"data:image/png;base64,{photo['data']}"
+        metas = hub.app.state.db.call(lambda c: [json.loads(r[0]) for r in c.execute(
+            "SELECT meta FROM usage WHERE model_id = 'studio-cloud/eye'")])  # fmt: skip
+        assert metas == [{"purpose": "director"}]
+
+        began = time.monotonic()  # the server has no answer left: it hangs
+        with pytest.raises(judge.JudgeError, match="did not answer in 1 s"):
+            hub.portal.call(lambda: ask("studio-cloud/eye", "You direct.", "Again.", read, conversation_id=None,
+                                        meta={"purpose": "director"}, form="{}", timeout_s=1))  # fmt: skip
+        assert time.monotonic() - began < 10
+
+        async def stopped():
+            stop = asyncio.Event()
+            asyncio.get_running_loop().call_later(0.5, stop.set)
+            return await ask("studio-cloud/eye", "You direct.", "Once more.", read, conversation_id=None,
+                             meta={"purpose": "director"}, form="{}", timeout_s=60, cancel=stop)  # fmt: skip
+
+        began = time.monotonic()
+        with pytest.raises(judge.JudgeError, match="stopped"):
+            hub.portal.call(stopped)
+        assert time.monotonic() - began < 10
+    finally:
+        cloud.close()

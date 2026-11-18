@@ -19,12 +19,14 @@ The autonomous agent's report «goal met» is checked the same way (D44): its pl
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import shutil
 import sqlite3
 import subprocess
 import tempfile
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -424,6 +426,33 @@ def check_model(conn: sqlite3.Connection, model_id: str, projects: list[Project]
     return model
 
 
+async def _until(stream: AsyncIterator[Any], cancel: asyncio.Event) -> AsyncIterator[Any]:
+    """A provider's stream that ends as soon as `cancel` is set - while the model is silent too: an adapter looks
+    at the flag only between the pieces it gets."""
+    stopped = asyncio.ensure_future(cancel.wait())
+    try:
+        async with contextlib.aclosing(stream) as events:
+            step, coming = events.__aiter__(), None
+            try:
+                while True:
+                    coming = asyncio.ensure_future(step.__anext__())
+                    await asyncio.wait({coming, stopped}, return_when=asyncio.FIRST_COMPLETED)
+                    if not coming.done():
+                        return
+                    try:
+                        event = coming.result()
+                    except StopAsyncIteration:
+                        return
+                    yield event
+            finally:  # the piece still awaited is let go before the stream is closed: a running one cannot be
+                if coming is not None and not coming.done():
+                    coming.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration, Exception):
+                        await coming
+    finally:
+        stopped.cancel()
+
+
 class Judge:
     """Gathers the evidence and asks the judge's model; the goals (hub/goals.py) and the agent's reports use it."""
 
@@ -446,18 +475,28 @@ class Judge:
                                    meta={"purpose": "judge", **meta}, form=FORM)  # fmt: skip
 
     async def complete(self, model_id: str, system: str, prompt: str, read: Any, *, conversation_id: str | None,
-                       meta: dict[str, Any], form: str) -> dict[str, Any]:  # fmt: skip
-        """One question to a model, outside any conversation's turns (the judge, the goal's draft): its answer
-        read by `read` (None: not in the form asked - asked once more, with `form`); its use recorded under `meta`
-        (D12). {**what read gave, model_id, tokens, cost_usd}; JudgeError when there is no such answer."""
+                       meta: dict[str, Any], form: str, images: list[dict[str, str]] | None = None,
+                       timeout_s: float | None = None,
+                       cancel: asyncio.Event | None = None) -> dict[str, Any]:  # fmt: skip
+        """One question to a model, outside any conversation's turns (the judge, the goal's draft, the director):
+        its answer read by `read` (None: not in the form asked - asked once more, with `form`); its use recorded
+        under `meta` (D12). {**what read gave, model_id, tokens, cost_usd}; JudgeError when there is no such answer.
+        (50.2) `images` - pictures sent with the question ([{media_type, data}], as a chat's), for a model that sees;
+        `timeout_s` - how long one answer is waited for; `cancel` - set, the wait ends at once."""
         model = await self._db.acall(lambda conn: store.get_model(conn, model_id))
         if model is None or not model["enabled"]:
             raise JudgeError(f"the model {model_id!r} is not available now")
+        if images and (model.get("capabilities") or {}).get("vision") is False:
+            raise JudgeError(f"the model «{model['name']}» does not see pictures")
+        cancel = cancel or asyncio.Event()
         provider, model_ref = self._gateway.resolve(model_id)
         own = (await self._db.acall(lambda conn: model_settings.current(conn, model_id)))[1]
         params = model_settings.clean_params(own.get("params") or {}, self._gateway.accepts(model_id))
         extra = {"params": params} if params else {}
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt, **({"images": images} if images else {})},
+        ]
         if model["prices"]:  # a used-up budget, or less left than the question may cost (stage 20.2)
             estimate = budgets.upper_cost(model, fit.estimate(messages), params)
             over = await self._db.acall(lambda conn: budgets.too_dear(conn, model_id, estimate))
@@ -469,13 +508,22 @@ class Judge:
         for _attempt in range(TRIES):
             text, end = [], None
             try:
-                async for event in provider.stream_chat(model_ref, messages, EFFORT, asyncio.Event(), **extra):
-                    if event.kind == "content":
-                        text.append(event.text)
-                    elif event.kind == "end":
-                        end = event
+                # the stream is closed here, not when the collector gets to it: a model left after its time, or
+                # stopped, lets its connection go at once
+                async with (asyncio.timeout(timeout_s),
+                            contextlib.aclosing(_until(provider.stream_chat(model_ref, messages, EFFORT, cancel,
+                                                                            **extra), cancel)) as events):  # fmt: skip
+                    async for event in events:
+                        if event.kind == "content":
+                            text.append(event.text)
+                        elif event.kind == "end":
+                            end = event
             except GatewayError as exc:
                 raise JudgeError(str(exc)) from exc
+            except TimeoutError:
+                raise JudgeError(f"the model «{model['name']}» did not answer in {timeout_s:g} s") from None
+            if cancel.is_set():
+                raise JudgeError("stopped")
             usage = (end.usage if end else None) or {}
             spent = cost_usd(usage, model["prices"])
             tokens += max(int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0), 0)
