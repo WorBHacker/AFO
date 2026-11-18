@@ -693,6 +693,19 @@ Sheet {
             text: qsTr("Модель закрыта: примите её лицензию на странице модели на huggingface.co и добавьте токен в «Подключениях».")
             color: Theme.p.warn
         }
+        Note {  // a part closed to this token (the fix after 0.1.16): said before «Установить», which would refuse
+            objectName: "installRepoClosed"
+            visible: !!Installer.repo.closed
+            text: Installer.repo.closed || ""
+            color: Theme.p.warn
+        }
+        PlainButton {
+            objectName: "installRepoClosedPage"
+            visible: !!Installer.repo.closedPage
+            iconName: "external"
+            text: qsTr("Открыть страницу на Hugging Face")
+            onClicked: App.openLink(Installer.repo.closedPage)
+        }
         Segmented {
             objectName: "installProjector"
             visible: !!Installer.repo.projector

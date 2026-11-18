@@ -755,9 +755,12 @@ class InstallView(QObject):
         licence = tr("Лицензия не указана — прочитайте условия на странице модели")
         if r.get("license"):
             licence = tr("Лицензия {license}: {words}", license=r["license"], words=tr(LICENCE_WORDS.get(kind, "")))
+        closed = r.get("closed") or []  # a part Hugging Face keeps closed to this token (the fix after 0.1.16)
         return {"repo": r.get("repo", ""), "page": r.get("page", ""), "notes": " · ".join(notes),
                 "licence": licence, "licenceTone": LICENCE_TONES.get(kind, "") if r.get("license") else "",
-                "unrestricted": bool(r.get("unrestricted")), "gated": bool(r.get("gated")),
+                "closed": r["closed_words"] + "." if closed and r.get("closed_words") else "",
+                "closedPage": f"https://huggingface.co/{closed[0]}" if closed else "",
+                "unrestricted": bool(r.get("unrestricted")), "gated": bool(r.get("gated")) and not closed,
                 "projector": bool(lens),
                 "projectorText": tr("Понимать картинки (+{size})", size=gb(lens["size"])) if lens else ""}  # fmt: skip
 

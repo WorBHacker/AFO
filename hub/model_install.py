@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -105,6 +106,7 @@ RESERVE_BOUNDS = {"vram_gib": (0.0, 8.0), "ram_gib": (0.0, 32.0)}
 SPLIT_TTL_S = 900  # a model partly in RAM unloads after 15 minutes without requests
 RETRIES_S = (5, 15, 30, 60, 120)  # the waits between tries when the connection breaks
 REPO_TTL_S = 3600.0  # an answer of Hugging Face older than this is shown and asked again in the background (35.3)
+CLOSED_TTL_S = 60.0  # «closed to this token» believed this long - the person may accept the terms meanwhile
 PROGRESS_S = 1.0  # a download's progress goes to the window this often
 CARD_WAIT_S = 1.0  # how often a trial waiting for the graphics card looks again (34.4)
 GAME_WORDS = N_("ждёт: на видеокарте игра")  # a trial waiting for the quiet while a game is on the card (48.9б5)
@@ -472,6 +474,18 @@ def repo_name(repo: str) -> str:
     return name
 
 
+def closed_words(repos: list[str], token: bool) -> str:
+    """What to do about the repositories Hugging Face keeps closed (the fix after 0.1.16): where the terms are
+    accepted, and - with no token yet - where it goes."""
+    pages = ", ".join(f"huggingface.co/{r}" for r in repos)
+    if token:
+        return tr("Hugging Face не даёт скачать {pages}: ваш ключ туда не пускает — примите условия на этой странице, "
+                  "войдя тем же аккаунтом, что и ключ", pages=pages)  # fmt: skip
+    return tr("Hugging Face не даёт скачать {pages} без согласия с условиями: войдите на huggingface.co, примите "
+              "условия на этой странице и вставьте свой ключ Hugging Face (тип Read) в «Настройки → Подключения»",
+              pages=pages)  # fmt: skip
+
+
 def id_base(repo: str, quant: str) -> str:
     return f"{repo_name(repo)}-{quant}"
 
@@ -585,6 +599,8 @@ class Installer:
         # programs held of the video memory when llama-swap last held no model
         self._largest: dict[str, int | None] = {}
         self._others_gib: float | None = None
+        # the fix after 0.1.16: (a gated repository, the token's mark) -> (when, whether Hugging Face gives its files)
+        self._readable: dict[tuple[str, str], tuple[float, bool]] = {}
         self._answers_file = answers  # what Hugging Face said, between runs (hf_answers.json, 35.3, D58)
         self._answers_new = False  # something to write
         self._answers_lock = asyncio.Lock()
@@ -1270,6 +1286,30 @@ class Installer:
                         "size": listed["size"], "sha256": listed["sha256"], "role": f["role"]})  # fmt: skip
         return out
 
+    async def _closed(self, files: list[dict[str, Any]], *, fresh: bool = False) -> list[str]:
+        """The repositories of these files Hugging Face keeps closed to this token - or to no token (the fix after
+        0.1.16: LTX-2.5's encoder lies in a gated repository; the install stopped on it after the engine and the
+        model). Only a gated one is asked (its info says so), by its first file's first byte. A «closed» is kept
+        CLOSED_TTL_S, an «open» - REPO_TTL_S, each for its token; `fresh` - an install about to start: asked again."""
+        token = self.token()
+        mark = hashlib.sha256((token or "").encode()).hexdigest()[:16]  # not the token itself, kept in memory
+        out = []
+        for repo in dict.fromkeys(f["repo"] for f in files if f.get("repo")):
+            if not (await self._listed(repo)).get("gated"):
+                continue
+            kept = self._readable.get((repo, mark))
+            if kept and (kept[1] or not fresh) and time.monotonic() - kept[0] < (REPO_TTL_S if kept[1] else
+                                                                                 CLOSED_TTL_S):  # fmt: skip
+                readable = kept[1]
+            else:
+                first = next(f for f in files if f.get("repo") == repo)
+                async with httpx.AsyncClient(timeout=30.0) as http:
+                    readable = await hf.readable(http, repo, first["path"], token, first.get("revision") or "main")
+                self._readable[(repo, mark)] = (time.monotonic(), readable)
+            if not readable:
+                out.append(repo)
+        return out
+
     async def picture_catalog(self) -> list[dict[str, Any]]:
         """The curated picture models, each with its size and how it runs here."""
         machine = await asyncio.to_thread(self.machine)
@@ -1327,6 +1367,9 @@ class Installer:
                               "files": [{k: f[k] for k in ("path", "role", "size")} for f in v["files"]]})  # fmt: skip
         if not shown:
             raise InstallError(tr("в {repo} нет файлов модели GGUF", repo=repo), 404)
+        # a part in a repository closed to this token (the fix after 0.1.16) - said before «Установить»
+        mine = {"repo": repo, "path": shown[0]["files"][0]["path"], "revision": found["revision"]}
+        closed = await self._closed([mine, *(p for parts in parts_of.values() for p in parts)])
         fast = [v for v in shown if v["verdict"] == "gpu" and (
             v["bits"] <= MAX_BITS if v["bits"] is not None else v["quant"] not in hf.SIXTEEN_BITS)]  # fmt: skip
         best = max(fast, key=lambda v: v["size"]) if fast else min(
@@ -1346,6 +1389,7 @@ class Installer:
                 "size": entry["size"], "license": licence, "license_kind": hf.license_kind(licence),
                 "gated": found["gated"], "page": found["page"], "variants": shown,
                 "recommended": best["quant"] if best else "", "engine": engine,
+                "closed": closed, "closed_words": closed_words(closed, bool(self.token())) if closed else "",
                 "parts": [{"role": p["role"], "repo": p["repo"], "path": p["path"], "size": p["size"],
                            "have": p["done"]} for p in parts_of[entry["id"]]]}  # fmt: skip
 
@@ -1390,6 +1434,10 @@ class Installer:
         variant = next((v for v in found["variants"] if v["quant"] == quant), None)
         if variant is None:
             raise InstallError(tr("у {repo} нет варианта {quant}", repo=repo, quant=quant), 404)
+        mine = {"repo": repo, "path": variant["files"][0]["path"], "revision": found["revision"]}
+        if found.get("gated") and await self._closed([mine], fresh=True):  # said now, not after the download
+            raise InstallError(tr("{name}: {words}", name=f"{repo_name(repo)} {quant}",
+                                  words=closed_words([repo], bool(self.token()))), 403)  # fmt: skip
         rows = await self._db.acall(jobs)
         same = next((r for r in rows if r["repo"] == repo and r["quant"] == quant
                      and r["status"] not in ("cancelled", "removed")), None)  # fmt: skip
@@ -1481,6 +1529,9 @@ class Installer:
         parts = {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}
         own, licence = (await self._found_main(entry, repo, quant)) if found_repo else ([], entry["license"])
         files = [*own, *await self.picture_files(parts if own else entry)]
+        if closed := await self._closed(files, fresh=True):  # nothing starts that would stop on it (after 0.1.16)
+            raise InstallError(tr("{name}: {words}", name=f"{repo_name(repo)} {quant}" if own else entry["name"],
+                                  words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip
         if video and own:  # a found one (48.4): by its sizes, as sd.cpp places them
             verdict = variant_fit(own, sum(f["size"] for f in files if f not in own), await asyncio.to_thread(
                 self.space))  # fmt: skip

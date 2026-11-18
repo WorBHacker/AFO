@@ -1744,3 +1744,68 @@ def test_a_found_video_model_at_the_cards_edge_is_not_called_fast(installs, qapp
     assert mi.picture_fit(model, encoder + vae, space, staging=embedding) == "split"
     assert mi.picture_fit(11_500 * mib, encoder + vae, space, staging=embedding) == "tight"  # 0,1 GB to spare
     assert mi.picture_fit(11_000 * mib, encoder + vae, space, staging=embedding) == "gpu"
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client
+def test_a_part_closed_on_hugging_face_is_said_before_anything_downloads(installs, qapp, monkeypatch):  # noqa: F811
+    """The user's complaint (2026-11-18, AFO 0.1.16): LTX-2.5 Q3_K_M from the search - «1,0 МБ/с · ещё ≈ 359 мин».
+    Beside the slow GitHub, its encoder (Gemma 4 12B, 8,4 GB) lies in a gated repository (elix3r's): without a token
+    and its terms accepted Hugging Face answers 401, and the install would have stopped on it after the engine and the
+    11 GB model - the hub looked at the found repository's gating only. Now the variants say which part is closed,
+    where to accept its terms and where the token goes; «Установить» starts nothing until the token may read it."""
+    from PySide6.QtCore import QObject
+
+    from tests import test_model_install as tmi
+
+    closed = "someone/Closed-Words-GGUF"
+    encoder = {"role": "llm", "repo": closed, "path": "closed-words-Q4_K_M.gguf"}  # LTX-2.5's Gemma 4 12B, as it lies
+    family = {**DISTILLED, "files": [DISTILLED["files"][0], encoder, DISTILLED["files"][2]]}
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [family]}), encoding="utf-8")
+    installer = installs.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM])
+    token = {"now": None}  # «Подключения»: no Hugging Face token, as on the user's computer
+    monkeypatch.setattr(installer, "token", lambda: token["now"])
+    memory = {**tmi.SPACE["memory"], "commit_limit_gib": 80.0, "commit_used_gib": 20.0}
+    installs.app.state.status.latest = {**tmi.SPACE, "memory": memory}
+    with window_on(installs, qapp) as quick:
+        window, view, controller = quick.window, quick.controller.install_view, quick.controller
+        controller.openUi("install-models")
+        sheet = window.findChild(QObject, "installSheet")
+        wait_until(lambda: sheet.property("opened") and not controller.bg.busy)
+        body = sheet.property("contentItem")
+        click(window, item_saying(body, "Поиск на Hugging Face"))
+        click(window, item_saying(body, "Видео"))
+        wait_until(lambda: not view.searching and any(r["repo"] == FOUND_FILM["id"] for r in view.found), timeout=10)
+        click(window, item_saying(body, FOUND_FILM["id"]))
+        wait_until(lambda: view.repoName == FOUND_FILM["id"] and view.variants, timeout=10)
+
+        # the variants say it before a click: which part, where to accept its terms, where the token goes
+        note = item_named(body, "installRepoClosed")
+        assert note is not None and note.isVisible(), "nothing says a part of the model is closed"
+        said = note.property("text")
+        assert f"huggingface.co/{closed}" in said and "«Настройки → Подключения»" in said, said
+        assert item_named(body, "installRepoClosedPage").isVisible()  # its page, a click away
+
+        # «Установить»: nothing starts - no job, no engine archive from GitHub, no file of the model
+        click(window, item_named(body, "installVariant_film-distilled/Q4_0"))
+        wait_until(lambda: controller.flashError and closed in controller.flashText, timeout=10)
+        assert "«Настройки → Подключения»" in controller.flashText
+        assert install_of(installs, "film-distilled") is None and FakeHub.github_auth == []
+        assert not (installs.tmp / "localchat-model" / "pictures" / "someone").exists()
+
+        # the token of an account that accepted the terms: the note goes, the install goes to the end
+        token["now"] = "hf_good"
+        click(window, item_saying(body, "Назад"))
+        wait_until(lambda: view.repoName == "")
+        click(window, item_saying(body, FOUND_FILM["id"]))
+        wait_until(lambda: view.repoName == FOUND_FILM["id"] and view.variants and not view.repoLoading, timeout=10)
+        assert not item_named(body, "installRepoClosed").isVisible()
+        click(window, item_named(body, "installVariant_film-distilled/Q4_0"))
+        wait_until(lambda: install_of(installs, "film-distilled"), timeout=10)
+        film = install_of(installs, "film-distilled")
+        assert wait_for(installs, film["id"], "done", "failed")["status"] == "done"
+        assert quick.warnings == []

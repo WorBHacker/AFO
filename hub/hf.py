@@ -401,6 +401,18 @@ def file_url(repo: str, path: str, revision: str = "main") -> str:
     return f"{base_url()}/{repo}/resolve/{revision}/{quote(path)}"
 
 
+async def readable(http: httpx.AsyncClient, repo: str, path: str, token: str | None, revision: str = "main") -> bool:
+    """Whether Hugging Face gives this file to this token - or to no token (the fix after 0.1.16): a gated
+    repository's only once its terms are accepted on the site by the account the token is of. Its first byte is asked,
+    the redirect to the CDN not followed; no answer (no internet, a timeout) - True: the download itself will say."""
+    try:
+        async with http.stream("GET", file_url(repo, path, revision), headers={**headers(token), "Range": "bytes=0-0"},
+                               follow_redirects=False) as response:  # fmt: skip
+            return response.status_code not in (401, 403)
+    except httpx.HTTPError:
+        return True
+
+
 class _Stream:
     """A response body as a file read forward only (the GGUF reader skips arrays by seeking ahead)."""
 

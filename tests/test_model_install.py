@@ -123,7 +123,10 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
                                       "encoder-Q4_K_M.gguf": b"E" * 30_000},
             # stage 48's review, finding 1: a pair whose halves have one name, each in its folder, of one size
             "someone/Same-Name-GGUF": {"HighNoise/same-Q4_0.gguf": b"h" * 30_000,
-                                       "LowNoise/same-Q4_0.gguf": b"l" * 30_000}}  # fmt: skip
+                                       "LowNoise/same-Q4_0.gguf": b"l" * 30_000},
+            # the fix after 0.1.16: an encoder in a gated repository (LTX-2.5's, elix3r's): its files - with a token
+            "someone/Closed-Words-GGUF": {"closed-words-Q4_K_M.gguf": b"c" * 30_000}}  # fmt: skip
+CLOSED = {"someone/Closed-Words-GGUF"}  # gated: «auto» in its info, 401 for a file without the token that may read it
 BASES = {"someone/Draw-More-GGUF": ["base_model:test/Draw", "base_model:quantized:test/Draw"],  # its tags (47.2)
          "someone/Pair-More-GGUF": ["base_model:quantized:test/Pair"],
          "someone/Same-Name-GGUF": ["base_model:quantized:test/Pair"],
@@ -226,13 +229,17 @@ class FakeHub(BaseHTTPRequestHandler):
             files = REPOS[picture]
             if path == f"/api/models/{picture}":
                 licence = [] if picture in BASES else ["license:apache-2.0"]  # leejet's FLUX.3 klein says none (47.9)
-                self._json({"id": picture, "sha": "def456", "tags": [*licence, *BASES.get(picture, [])]})
+                self._json({"id": picture, "sha": "def456", "tags": [*licence, *BASES.get(picture, [])],
+                            **({"gated": "auto"} if picture in CLOSED else {})})  # fmt: skip
             elif path == f"/api/models/{picture}/tree/main":
                 self._json([{"type": "file", "path": name, "size": len(data),
                              "lfs": {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}}
                             for name, data in files.items()])  # fmt: skip
             else:  # /<repo>/resolve/<commit>/<path>
                 FakeHub.picture_auth.append(self.headers.get("Authorization"))
+                if picture in CLOSED and self.headers.get("Authorization") != "Bearer hf_good":
+                    self._json({"error": f"Access to model {picture} is restricted"}, 401)  # as Hugging Face says it
+                    return
                 self._send_file(path.split("/resolve/", 1)[1].split("/", 1)[1], files)
         elif path == f"/repos/{engines.SD_CPP}/releases/tags/{engines.SD_TAG}":
             assets = [{"name": name, "browser_download_url": f"http://127.0.0.1:{self.port}/gh/{name}",
