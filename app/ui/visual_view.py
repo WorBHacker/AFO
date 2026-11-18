@@ -118,6 +118,15 @@ class PictureProvider(QQuickImageProvider):
         return image
 
 
+LOUD = ".webm"  # a clip with sound (52.5): the engine's WebM - no picture to QML; its poster lies beside it
+
+
+def still_of(clip: Path) -> Path:
+    """What the window shows of a clip as a picture - in its lists, in the player until the MP4 plays: a silent
+    clip's WebP itself, a clip with sound's poster, which the hub makes with its MP4 (52.3)."""
+    return clip.with_suffix(".jpg") if clip.suffix == LOUD else clip
+
+
 class VisualView(QObject):
     changed = Signal()
 
@@ -143,6 +152,9 @@ class VisualView(QObject):
         self._mode = "picture"  # or video (29.8б)
         self._videos: list[dict[str, Any]] = []
         self._length = "2"
+        self._sound = True  # «Со звуком» (52.5): a model that films it films with it unless switched off
+        self._sound_words = ""  # «Звук»: what is heard
+        self._volume, self._muted = 1.0, False  # the players' (52.5): one for the Studio, «Режиссёр» and a chat
         self._model = ""  # the model chosen in the Studio (48.7б): "" - «Авто», as «Быстрее ↔ Качественнее» says
         self._video_mode = "text"  # by words, by a picture, by two frames (48.7б)
         self._last: dict[str, str] = {}  # a video's last frame: {last_job | last_blob | last_png: value, shown: url}
@@ -259,12 +271,62 @@ class VisualView(QObject):
     def length(self) -> str:
         return self._length
 
+    @Property(bool, notify=changed)
+    def canSound(self) -> bool:
+        """Whether the video asked for can have sound (52.5): its model films it."""
+        model = self._video_model() if self._mode == "video" else None
+        return bool(model and model.get("sound"))
+
+    @Property(bool, notify=changed)
+    def sound(self) -> bool:
+        return self._sound
+
+    @Slot(bool)
+    def setSound(self, on: bool) -> None:
+        self._sound = bool(on)
+        self.changed.emit()
+
+    @Property(str, notify=changed)
+    def soundWords(self) -> str:
+        return self._sound_words
+
+    @Slot(str)
+    def setSoundWords(self, words: str) -> None:
+        self._sound_words = words
+        self.changed.emit()
+
+    @Property(float, notify=changed)
+    def volume(self) -> float:
+        return self._volume
+
+    @Property(bool, notify=changed)
+    def muted(self) -> bool:
+        return self._muted
+
+    @Slot(float)
+    def setVolume(self, volume: float) -> None:
+        """The players' volume, 0 to 1; moved - the sound is on again."""
+        self._volume, self._muted = max(0.0, min(1.0, float(volume))), False
+        self.changed.emit()
+
+    @Slot(bool)
+    def setMuted(self, muted: bool) -> None:
+        self._muted = bool(muted)
+        self.changed.emit()
+
     @Property(str, notify=changed)
     def videoFile(self) -> str:
         """The video shown (29.8б): the hub's WebP - «Сохранить как», the gallery's first frame, the player's still
-        until its MP4 is made (48.12.8), and what it plays if none can be."""
+        until its MP4 is made (48.12.8), and what it plays if none can be; of a clip with sound (52.5) - its
+        poster."""
         path = self._video_file(self._job)
-        return QUrl.fromLocalFile(str(path)).toString() if path is not None else ""
+        return QUrl.fromLocalFile(str(still_of(path))).toString() if path is not None else ""
+
+    @Property(bool, notify=changed)
+    def videoLoud(self) -> bool:
+        """Whether the video shown has sound (52.5): saved as MP4 only - its own file is the engine's WebM."""
+        path = self._video_file(self._job)
+        return path is not None and path.suffix == LOUD
 
     @Property(str, notify=changed)
     def videoMp4(self) -> str:
@@ -276,7 +338,7 @@ class VisualView(QObject):
             return ""
         job_id = self._job["id"]
         return self.playable(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id),
-                         QUrl.fromLocalFile(str(path)).toString())  # fmt: skip
+                             QUrl.fromLocalFile(str(still_of(path))).toString())  # fmt: skip
 
     @Property(str, notify=changed)
     def videoNote(self) -> str:
@@ -441,8 +503,8 @@ class VisualView(QObject):
             if j["status"] != "done" or self._gallery not in ("all", "video" if j.get("kind") == "video" else "image"):
                 continue
             if (video := self._video_file(j)) is not None:  # its first frame (29.8б)
-                out.append({"id": j["id"], "prompt": j["prompt"], "source": QUrl.fromLocalFile(str(video)).toString(),
-                            "chosen": j["id"] == self._job.get("id"), "video": True})  # fmt: skip
+                out.append({"id": j["id"], "prompt": j["prompt"], "chosen": j["id"] == self._job.get("id"),
+                            "source": QUrl.fromLocalFile(str(still_of(video))).toString(), "video": True})  # fmt: skip
             elif j["id"] in self.provider.pictures:
                 out.append({"id": j["id"], "prompt": j["prompt"], "source": f"image://pictures/job/{j['id']}",
                             "chosen": j["id"] == self._job.get("id"), "video": False})  # fmt: skip
@@ -753,6 +815,10 @@ class VisualView(QObject):
             return
         spec = {"prompt": self._prompt.strip(), "model": model["model_id"], "shape": self._shape,
                 "seconds": float(self._length), "hd": self._quality == "quality", "seed": seed}  # fmt: skip
+        if model.get("sound"):  # (52.5) «Со звуком» and what is heard; a model without is not asked of it
+            spec["sound"] = self._sound
+            if self._sound and self._sound_words.strip():
+                spec["sound_words"] = self._sound_words.strip()
         if self._video_mode != "text":  # the first frame; its shape - the video's, in the hub
             spec |= {k: v for k, v in self._source.items() if k != "shown"}
         if self._video_mode == "frames" and self._last:
@@ -858,7 +924,7 @@ class VisualView(QObject):
     def saveAs(self, url: str) -> None:
         video = self._video_file(self._job)  # a video: its WebP as it is (29.8б), or MP4 from the hub (29.8в)
         target = QUrl(url).toLocalFile() if url.startswith("file:") else url
-        if video is not None and target and not target.lower().endswith(".webp"):
+        if video is not None and target and (video.suffix == LOUD or not target.lower().endswith(".webp")):
             self._save_mp4(self._job["id"], target if target.lower().endswith(".mp4") else target + ".mp4")
             return
         data = video.read_bytes() if video is not None else self.provider.pictures.get(self._job.get("id", ""))

@@ -9,7 +9,8 @@ import AFO.Video
 // as Qt reads it, a frame at a time, and does not seek. Hidden - its own view or any above it - it lets the clip go.
 // VideoControls drives it. The frames are drawn by VideoSurface (app/ui/video_surface.py, 48.12.7): VideoOutput draws
 // with the card's shaders, and the window's software scene graph drew nothing of it - the live check saw the
-// background.
+// background. A clip with sound (52.5) is heard: the volume and «без звука» are the window's own, one for every
+// player (Visual); `loud` - whether the MP4 has sound at all.
 Item {
     id: root
     property string source: ""  // the MP4, a file's URL; "" - not made yet; the WebP's own - none can be made
@@ -19,6 +20,7 @@ Item {
     readonly property bool seekable: root.mp4 && player.seekable && player.duration > 0
     readonly property int position: root.wanted >= 0 ? root.wanted : player.position
     readonly property int duration: root.mp4 ? player.duration : 0
+    readonly property bool loud: root.mp4 && player.hasAudio
     readonly property bool playing: player.playbackState === MediaPlayer.PlayingState || (still.playing && !root.held)
     // the frame's size, for a view that takes its shape (a chat's card): the MP4's, or the WebP's while it stands
     readonly property size frame: root.mp4 ? Qt.size(output.frameSize.width, output.frameSize.height)
@@ -60,6 +62,11 @@ Item {
         objectName: "videoMedia"
         source: root.visible && root.mp4 ? root.source : ""
         videoOutput: output.videoSink
+        audioOutput: AudioOutput {
+            objectName: "videoSpeaker"
+            volume: Visual.volume
+            muted: Visual.muted
+        }
         loops: MediaPlayer.Infinite
         onSourceChanged: {
             root.going = false

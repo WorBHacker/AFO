@@ -21,7 +21,7 @@ from common.i18n import N_, tr
 from common.picture_sizes import clip_of, scene_modes
 
 from ..hub_client import HubError
-from .visual_view import seconds_text
+from .visual_view import seconds_text, still_of
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -326,7 +326,7 @@ class FilmView(QObject):
                             length=length_text(seconds)),
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
                 "failed": status == "failed" or rejected, "filmed": clip is not None,
-                "thumb": QUrl.fromLocalFile(str(clip)).toString() if clip is not None else "",
+                "thumb": QUrl.fromLocalFile(str(still_of(clip))).toString() if clip is not None else "",
                 "shootText": tr("Переснять") if clip is not None else tr("Снять")}  # fmt: skip
 
     def _sync_cards(self) -> None:
@@ -373,14 +373,15 @@ class FilmView(QObject):
         if clip is None:
             return ""
         return self.studio.playable(job_id, clip.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id),
-                                    QUrl.fromLocalFile(str(clip)).toString())  # fmt: skip
+                                    QUrl.fromLocalFile(str(still_of(clip))).toString())  # fmt: skip
 
     @Property(str, notify=changed)
     def playFallback(self) -> str:
-        """The scene's WebP: its first frame stands until the MP4 is there."""
+        """The scene's WebP - of a scene with sound, its poster (52.5): its first frame stands until the MP4 is
+        there."""
         scene = self._shown_scene()
         clip = self._clip(scene) if scene is not None else None
-        return QUrl.fromLocalFile(str(clip)).toString() if clip is not None else ""
+        return QUrl.fromLocalFile(str(still_of(clip))).toString() if clip is not None else ""
 
     @Property(str, notify=changed)
     def playNote(self) -> str:

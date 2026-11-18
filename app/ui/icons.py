@@ -35,6 +35,9 @@ PATHS = {
     "pause": '<rect x="7" y="6" width="3.5" height="12" rx="1" fill="{c}"/>'
     '<rect x="13.5" y="6" width="3.5" height="12" rx="1" fill="{c}"/>',
     "play": '<path d="M8.5 6v12l9.5-6z" fill="{c}"/>',
+    "sound": '<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6"/>'
+    '<path d="M18 6.5a7.8 7.8 0 0 1 0 11"/>',  # a video's (52.5)
+    "sound-off": '<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/>',
     "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     "target": '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>'
     '<circle cx="12" cy="12" r="1.2" fill="{c}"/>',

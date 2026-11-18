@@ -8182,6 +8182,123 @@ def test_the_studio_with_only_video_models_films(qapp):
         quick.close()
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_the_studio_films_with_sound_by_a_switch_and_plays_it_with_a_volume(qapp):
+    """52.5: a video model that films with sound - «Со звуком» in the Studio, on unless switched off, and «Звук»:
+    what is heard, sent with the description; a model without - neither. A clip with sound is the engine's WebM:
+    the window's lists and the player's still show its poster, the player plays its MP4 with the sound - a speaker
+    to switch it off and a volume beside the time; a silent clip has neither. Saved as MP4 only. Real QML, clicked
+    with the mouse; a real WebM with sound, its MP4 and poster made by a real ffmpeg, as the hub makes them."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QObject, QPoint, QPointF
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+    from tests.test_ffmpeg import _clip_with_sound
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "sound": True},
+                                {"model_id": "wan", "name": "Wan", "tier": "video", "size": 832, "steps": 4,
+                                 "cfg": 1.0, "modes": ["text"], "sound": False}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        clip = app.paths.media / "2026-11" / "s1.webm"
+        clip.parent.mkdir(parents=True, exist_ok=True)
+        _clip_with_sound(program, clip, 49)
+        ffmpeg.to_mp4(program, clip, clip.with_suffix(".mp4"))
+        ffmpeg.poster(program, clip, clip.with_suffix(".jpg"))
+        quiet = app.paths.media / "2026-11" / "q1.webp"
+        quiet.write_bytes(animated_clip(COLOURS[:4]))
+        ffmpeg.to_mp4(program, quiet, quiet.with_suffix(".mp4"))
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.visual_view
+        view.open("дождь на улице")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        view.setModel("ltx")
+        sound, words = item_named(studio, "visualSound"), item_named(studio, "visualSoundWords")
+        wait_until(lambda: sound.property("visible") and sound.property("checked") and words.property("visible"))
+        words.setProperty("text", "шум дождя, проезжает машина")
+        click(window, item_named(studio, "visualDraw"))
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        spec = client.visual_calls[-1][1]
+        assert (spec["model"], spec["sound"], spec["sound_words"]) == ("ltx", True, "шум дождя, проезжает машина")
+        app.on_event({"type": "visual.changed", "payload": {"job": {**client.visual_jobs_list[0], "status": "failed",
+                                                                    "error": "x"}}})  # fmt: skip
+        wait_until(lambda: not view.busy)
+
+        click(window, sound)  # off: silent, nothing said of the sound
+        wait_until(lambda: not sound.property("checked") and not words.property("visible"))
+        view.draw()
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 2)
+        spec = client.visual_calls[-1][1]
+        assert spec["sound"] is False and "sound_words" not in spec
+        app.on_event({"type": "visual.changed", "payload": {"job": {**client.visual_jobs_list[0], "status": "failed",
+                                                                    "error": "x"}}})  # fmt: skip
+        view.setModel("wan")  # a model that films no sound: no switch
+        wait_until(lambda: not sound.property("visible") and not words.property("visible"))
+        view.draw()
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 3)
+        assert "sound" not in client.visual_calls[-1][1]
+        app.on_event({"type": "visual.changed", "payload": {"job": {**client.visual_jobs_list[0], "status": "failed",
+                                                                    "error": "x"}}})  # fmt: skip
+        wait_until(lambda: not view.busy)
+
+        base = {"kind": "video", "prompt": "дождь на улице", "model_id": "ltx", "status": "done", "seconds": 64.0,
+                "width": 64, "height": 64, "frames": 49, "fps": 24, "seed": 1, "error": ""}  # fmt: skip
+        for job in ({**base, "id": "q1", "file": "2026-11/q1.webp", "frames": 4},
+                    {**base, "id": "s1", "file": "2026-11/s1.webm", "sound": 1}):  # fmt: skip
+            app.on_event({"type": "visual.changed", "payload": {"job": job}})
+        view.pick("s1")
+        video, player = item_named(studio, "visualVideo"), item_named(studio, "visualPlayer")
+        wait_until(lambda: video.property("seekable") and video.property("loud"), 10)
+        assert view.videoFile.endswith("/s1.jpg") and view.videoMp4.endswith("/s1.mp4") and view.videoLoud
+        thumbs = {r["id"]: r["source"] for r in view.recent}
+        assert thumbs["s1"].endswith("/s1.jpg") and thumbs["q1"].endswith("/q1.webp")
+        speaker = video.findChild(QObject, "videoSpeaker")
+        mute, volume = item_named(player, "visualMute"), item_named(player, "visualVolume")
+        assert mute.property("visible") and volume.property("visible")
+        assert not speaker.property("muted") and abs(speaker.property("volume") - view.volume) < 0.01
+        click(window, mute)
+        wait_until(lambda: speaker.property("muted") and view.muted)
+        window.grabWindow()  # laid out anew: the speaker's click changed the row
+
+        def at(fraction: float) -> QPoint:
+            point = volume.mapToScene(QPointF(volume.width() * fraction, volume.height() / 2))
+            return QPoint(round(point.x()), round(point.y()))
+
+        left = Qt.MouseButton.LeftButton  # dragged from its left end to the middle
+        QTest.mousePress(window, left, Qt.KeyboardModifier.NoModifier, at(0.1))
+        for step in range(1, 9):
+            deadline = time.monotonic() + 0.02
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+            QTest.mouseMove(window, at(0.1 + 0.05 * step))
+        QTest.mouseRelease(window, left, Qt.KeyboardModifier.NoModifier, at(0.5))
+        wait_until(lambda: not speaker.property("muted") and 0.3 < speaker.property("volume") < 0.7)
+        assert abs(view.volume - speaker.property("volume")) < 0.01 and not view.muted
+
+        view.pick("q1")  # a silent one: nothing to switch off
+        wait_until(lambda: video.property("seekable") and not video.property("loud"), 10)
+        wait_until(lambda: not mute.property("visible") and not volume.property("visible"))
+        assert view.videoFile.endswith("/q1.webp") and not view.videoLoud
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
 def test_the_empty_studio_offers_a_model_for_pictures_and_one_for_video(qapp):
     """The fix after 0.1.15, the user's complaint: the Studio films too, and its empty page spoke of pictures alone
     («Модели для картинок ещё нет», one button). Now «Поставить модель картинок» opens «Подборка», «Рисовать»;

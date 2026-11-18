@@ -61,9 +61,10 @@ Item {
         id: saveDialog
         title: Visual.videoFile !== "" ? qsTr("Сохранить видео") : qsTr("Сохранить картинку")
         fileMode: FileDialog.SaveFile
-        // a video: MP4 (made by ffmpeg in the hub, 29.8в) or the engine's WebP as it is
-        nameFilters: Visual.videoFile !== "" ? [qsTr("Видео MP4 (*.mp4)"), qsTr("Видео WebP (*.webp)")]
-                                              : [qsTr("Картинка PNG (*.png)")]
+        // a video: MP4 (made by ffmpeg in the hub, 29.8в) or the engine's WebP as it is; with sound (52.5) - MP4
+        nameFilters: Visual.videoFile === "" ? [qsTr("Картинка PNG (*.png)")]
+                     : Visual.videoLoud ? [qsTr("Видео MP4 (*.mp4)")]
+                                        : [qsTr("Видео MP4 (*.mp4)"), qsTr("Видео WebP (*.webp)")]
         defaultSuffix: Visual.videoFile === "" ? "png"
                                                  : (selectedNameFilter.extensions.length > 0
                                                     ? selectedNameFilter.extensions[0] : "mp4")
@@ -211,6 +212,36 @@ Item {
                     options: Visual.lengths
                     value: Visual.length
                     onPicked: (id) => Visual.setLength(id)
+                }
+                OnOff {  // 52.5: a model that films with sound
+                    id: soundSwitch
+                    objectName: "visualSound"
+                    visible: Visual.canSound
+                    text: qsTr("Со звуком")
+                    onToggled: Visual.setSound(checked)
+                    Binding { target: soundSwitch; property: "checked"; value: Visual.sound }  // a click does not cut it
+                }
+                Rectangle {
+                    width: parent.width
+                    height: 34
+                    radius: 6
+                    visible: Visual.canSound && Visual.sound
+                    color: Theme.p.card
+                    border.color: soundWords.activeFocus ? Theme.p.accent : Theme.p.hairline_strong
+                    TextField {
+                        id: soundWords
+                        objectName: "visualSoundWords"
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        text: Visual.soundWords
+                        placeholderText: qsTr("Звук: что слышно? Например: шум дождя, проезжает машина")
+                        placeholderTextColor: Theme.p.faint
+                        color: Theme.p.text
+                        font.family: Theme.uiFont
+                        font.pixelSize: 13
+                        background: null
+                        onTextChanged: if (text !== Visual.soundWords) Visual.setSoundWords(text)
+                    }
                 }
                 Segmented {
                     objectName: "visualQuality"
@@ -414,7 +445,7 @@ Item {
                 font.pixelSize: 13
             }
         }
-        // 48.7г, 48.12: the video's own controls - pause, the time to go to, its time (no sound yet)
+        // 48.7г, 48.12: the video's own controls - pause, the time to go to, its time; (52.5) its sound
         VideoControls {
             id: player
             objectName: "visualPlayer"
