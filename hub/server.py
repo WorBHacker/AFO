@@ -78,6 +78,7 @@ from .computer import Computer, vision_eyes
 from .connections import ConnectionLock
 from .connections import kept as kept_secrets
 from .db import Database
+from .director import Director
 from .editor import Editor
 from .events import EventBus
 from .gateway.registry import build_default_gateway
@@ -250,6 +251,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   machine=lambda: app.state.installer.machine(),
                                   card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
+        app.state.director = Director(db, bus, app.state.judge, paths.media)  # the Studio's films (stage 50)
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
         app.state.visual.missing = app.state.installer.missing  # a model's file deleted by hand (48's review)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
