@@ -33,7 +33,9 @@ from hub.events import matches
 from hub.gateway import GatewayError
 from hub.gateway.openai_compat import OpenAICompatProvider
 from hub.projects import get_project
+from tests import test_changes as ch
 from tests import test_claude_code as cc
+from tests import test_commands as tc
 from tests.test_agents import delegate, ended, profile, register, run_of
 from tests.test_attachments import b64
 from tests.test_autonomous import PLAN, Scripted, use
@@ -46,6 +48,7 @@ from tests.test_model_install import hub as installs  # noqa: F401 - the install
 from tests.test_tools import ToolProvider, hub  # noqa: F401 - the hub fixture
 from tests.test_tuning import setup, spec_server  # noqa: F401 - the tuning's fixtures
 from tests.test_ui import click, item_named, item_saying, qapp, wait_until  # noqa: F401 - the qapp fixture
+from tests.test_web import fetch_call, site  # noqa: F401 - the site fixture
 
 A_TXT = "if (Test-Path a.txt) { exit 0 } else { exit 1 }"
 
@@ -1867,3 +1870,38 @@ def test_the_time_said_while_the_engine_comes_from_github_is_the_engines(install
     assert hugging_face, said
     for p, s in hugging_face:  # the model's files: the rest of it, at their speed
         assert "программа" not in s and left_text((p["total_bytes"] - p["done_bytes"]) / p["speed"]) in s, s
+
+
+# --- «Доверенный» by rules (0.1.17, the user's complaint of 2026-11-17 and his word of 2026-11-18) ---
+
+
+def cards_of(hub, conv):  # noqa: F811 - the fixture's name
+    """Every request of this chat the queue has kept, answered or not, oldest first."""
+    rows = hub.app.state.db.call(lambda c: c.execute(
+        "SELECT tool, status, decided_by FROM approvals WHERE conversation_id = ? ORDER BY created_at, rowid",
+        (conv,)).fetchall())  # fmt: skip
+    return [dict(r) for r in rows]
+
+
+def answered(hub, conv):  # noqa: F811
+    """The chat's answer has ended - or a card of it waits (then the test says which, instead of hanging)."""
+    waits = lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["conversation_id"] == conv]  # noqa: E731
+    wait(lambda: waits() or not hub.get(f"/v1/conversations/{conv}").json()["busy"])
+    assert [a["tool"] for a in waits()] == []
+    messages = hub.get(f"/v1/conversations/{conv}").json()["messages"]
+    return [b for m in messages if m["role"] == "tool" for b in m["content"]]
+
+
+def test_a_trusted_chat_that_read_the_web_goes_on_without_cards(hub, repo, site):  # noqa: F811
+    """The user's complaint: «Доверенный», a task that reads a site - and a card on every edit after it. His word:
+    it asks nothing inside the project, after reading what others wrote too."""
+    steps = [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}],
+             [tc.run("Write-Output after-the-page")]]  # fmt: skip
+    pid, conv, _provider = ch.setup_chat(hub, repo, steps, mode="trusted")
+    hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})  # the page itself is read unasked then (2026-10-28)
+    ch.say(hub, conv)
+    page, written, ran = answered(hub, conv)
+    assert "# Установка" in page["output"] and hub.portal.call(hub.app.state.chat.read_the_web, conv)
+    assert written["error"] is False and (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('пр")
+    assert ran["error"] is False and "after-the-page" in ran["output"]
+    assert cards_of(hub, conv) == []  # nothing was asked

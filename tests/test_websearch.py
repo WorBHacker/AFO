@@ -130,18 +130,17 @@ def test_a_search_is_asked_and_taints_the_chat(hub, repo, engines):  # noqa: F81
     assert asked["tool"] == "web_search"
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
     finished(hub, conv)
-    # a trusted chat whose projects may go to the cloud searches without a card (2026-10-28) - but then its edit is
-    # asked: it has searched the web (D19)
+    # a trusted chat whose projects may go to the cloud searches without a card (2026-10-28) - and its edit after
+    # the search goes unasked too (2026-11-18), though the chat has searched the web (D19)
     hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})
     provider.steps += steps
     conv = new_chat(hub, pid, "trusted")
     say(hub, conv)
-    write = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
-    assert write["tool"] == "edit_file"
-    hub.post(f"/v1/approvals/{write['id']}", json={"allow": True})
     messages = finished(hub, conv)
     results = [b for m in messages if m["role"] == "tool" for b in m["content"]]
     assert results[0]["error"] is False and "https://docs.python.org/3/library/difflib.html" in results[0]["output"]
+    assert results[1]["error"] is False and hub.get("/v1/approvals").json()["approvals"] == []
+    assert hub.portal.call(hub.app.state.chat.read_the_web, conv)
 
 
 def test_without_an_engine_the_model_hears_how_to_get_one(hub, repo, engines):  # noqa: F811

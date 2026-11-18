@@ -27,8 +27,8 @@ with no project a project tool makes the hub ask the user which of their project
 picked is attached, as the chip does, and the model gets its context before the next step. And it may
 run commands (run_command, hub/commands.py) in a hub terminal: asked unless the project's whitelist or an answer for
 the chat covers that very command - destructive and network commands always. A trusted chat asks nothing but a
-destructive action (the user's word 2026-10-28: commands, the network and sending too) - until it reads the web
-(D19): from then on it asks like any other.
+destructive action (the user's word 2026-10-28: commands, the network and sending too) - after it has read the web
+as well (his word 2026-11-18; any other chat that read the web asks every write and command, D19).
 
 A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in the chat's project instead
 (hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
@@ -1123,10 +1123,10 @@ class ChatService:
                 seen[key] = changes.digest(planned.after)  # it knows its own write
             return done
         approval_id, chosen, comment = None, None, ""
-        tainted = await self.read_the_web(conversation_id)
         unsaved = self.approvals is not None and self.approvals.unsaved.holds(call["name"], args, project.root)
-        if settings["mode"] != "trusted" or tainted or unsaved:  # trust does not count after reading the web (D19),
-            # nor over the user's edits not saved yet in the window's editor (D47)
+        if settings["mode"] != "trusted" or unsaved:  # trust holds after reading the web too (the user's word
+            # 2026-11-18) - not over the user's edits not saved yet in the window's editor (D47)
+            tainted = await self.read_the_web(conversation_id)
             decision = await self._decision(conversation_id, call["name"], args, project, cancel, cover=not tainted)
             if isinstance(decision, str):
                 return decision, True
@@ -1205,8 +1205,8 @@ class ChatService:
             return str(exc), True
         if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
             return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
-        tainted = await self.read_the_web(conversation_id)
-        if settings["mode"] != "trusted" or tainted or not trusted_skips(call["name"], args, project.root):
+        if settings["mode"] != "trusted" or not trusted_skips(call["name"], args, project.root):
+            tainted = await self.read_the_web(conversation_id)
             allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                 cover=not tainted)  # fmt: skip
             if not allowed:
@@ -1281,16 +1281,16 @@ class ChatService:
     async def _mcp_tool(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """An outside MCP server's tool (9.5, D42), as its class says: a read runs; a write is asked (an answer for
         the chat covers it); a command is asked, the same input covered; network, send and destructive are asked
-        every time. A trusted chat asks only a destructive one (until it reads the web, D19); a read-only chat reads
-        only."""
+        every time. A trusted chat asks only a destructive one, after reading the web too (2026-11-18); a read-only
+        chat reads only."""
         args = call["input"] if isinstance(call["input"], dict) else {}
         cls = self.mcp.tool_class(call["name"])
         if cls != "read":
             settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
             if settings["mode"] == "read_only":
                 return READ_ONLY, True
-            tainted = await self.read_the_web(conversation_id)
-            if settings["mode"] != "trusted" or tainted or cls == "destructive":
+            if settings["mode"] != "trusted" or cls == "destructive":
+                tainted = await self.read_the_web(conversation_id)
                 project = ctx.projects[0] if ctx.projects else None
                 allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
                                                     cover=not tainted)  # fmt: skip
@@ -1311,8 +1311,9 @@ class ChatService:
 
     async def read_the_web(self, conversation_id: str) -> bool:
         """Has the model in this chat brought in what someone else wrote - a web page, a search, a letter, an API's
-        answer, another program's screen, an outside MCP tool that reaches out there? Then its writes and commands
-        are asked every time (D19): that text may tell it what to do."""
+        answer, another program's screen, an outside MCP tool that reaches out there? That text may tell it what to
+        do (D19): its writes and commands are asked every time then - but in a trusted chat, which goes on unasked
+        (the user's word 2026-11-18)."""
         if conversation_id in self.outside:
             return True
         names = [*OUTSIDE, *(self.mcp.outside_names() if self.mcp is not None else [])]

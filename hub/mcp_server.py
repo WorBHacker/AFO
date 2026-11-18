@@ -301,7 +301,7 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
                                                                          turn.root)):  # fmt: skip
             return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         reads = tool_name in ("WebFetch", "WebSearch")
-        tainted = False  # it has read the web: its writes and commands are asked every time, trusted or not (D19)
+        tainted = False  # it has read the web: its writes and commands are asked every time (D19) - not if trusted
         if turn is not None:
             tainted = not reads and await app.state.chat.read_the_web(turn.conversation_id)
             if reads:
@@ -310,8 +310,9 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             mode = "ask"  # a local-only project in the chat: its code could leave in the address or query (D46)
         root = turn.root if turn else None
         unsaved = app.state.approvals.unsaved.holds(tool_name, input, root)
-        # a trusted chat: all but destruction, the hub's data, and a file the window's editor holds unsaved (D47)
-        if mode == "trusted" and not tainted and not unsaved and trusted_skips(tool_name, input, root):
+        # a trusted chat: all but destruction, the hub's data, and a file the window's editor holds unsaved (D47) -
+        # after reading the web too (the user's word 2026-11-18)
+        if mode == "trusted" and not unsaved and trusted_skips(tool_name, input, root):
             return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,

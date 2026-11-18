@@ -599,15 +599,16 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не сейчас"})
     assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == f"Не стал: {NO}не сейчас"
 
-    # D19 holds for Claude Code too (the audit, D46): a trusted chat lets it read a page without a card, but the edit
-    # after it is asked - the page may have told it what to do
+    # a trusted chat lets it read a page without a card - and the edit after it too (the user's word 2026-11-18:
+    # «Доверенный» asks nothing inside the project; until then the page made every edit after it asked, D19)
+    (hub.repo / "notes.txt").write_text("свежий файл\n", encoding="utf-8")
     later = chat_with_project(hub)
     hub.http.put(f"/v1/conversations/{later}/context", json={"mode": "trusted"})
     send(hub, later, "fetch the docs, then edit notes.txt")
-    asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
-    assert asked["tool"] == "Edit" and asked["conversation_id"] == later
-    hub.http.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "сначала проверю"})
-    assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == f"Не стал править: {NO}сначала проверю"
+    assert hub.wait_idle(later)["messages"][-1]["content"][0]["text"] == "Готово."
+    assert later in hub.app.state.chat.outside  # it has read the web
+    assert hub.http.get("/v1/approvals").json()["approvals"] == []
+    assert (hub.repo / "notes.txt").read_text(encoding="utf-8") == "правленый файл\n"
 
     # a file the window's editor holds with unsaved edits (D47, step 14.2c): Claude Code's edit of it - its path
     # counts from the project - is asked in a trusted chat too

@@ -2753,6 +2753,13 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 
 - Шаг 1. После чтения сайта «Доверенный» не спрашивает правки и обычные команды. Файлы: `hub/chat.py`,
   `hub/mcp_server.py` (Claude Code), `hub/agents.py` (проверки пакета координатора).
+  ✓ Сделано: «читал чужое» (`read_the_web`) больше не отменяет доверие — в `_write_file`, `_run_command`, `_mcp_tool`
+  (`hub/chat.py`), в `approval_prompt` Claude Code (`hub/mcp_server.py`) и в `_allow_checks` (`hub/agents.py`); у
+  остальных режимов оно по-прежнему выключает ответы «для чата» и «всегда» (до шага 4). Тест —
+  `test_a_trusted_chat_that_read_the_web_goes_on_without_cards` (`tests/test_together.py`: настоящий хаб, страница с
+  сайта этого компьютера, правка и команда в настоящем терминале — ни одной записи в `approvals`); на старом коде —
+  окно `edit_file`. Прежние проверки «после сайта доверенный спрашивает» (`tests/test_web.py`, `test_websearch.py`,
+  `test_claude_code.py`) переписаны на новое правило.
 - Шаг 2. Опасное — отказ с причиной вместо окна; второй отказ подряд в чате — окно; данные AFO — отказ всегда. Отказ
   записывается в `approvals` (кто решил — правила). Файлы: `hub/chat.py`, `hub/approvals.py`, `hub/mcp_server.py`,
   `hub/context.py` (слова модели о её правах).

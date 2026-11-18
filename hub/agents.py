@@ -802,7 +802,7 @@ class AgentRunner:
                             cancel: asyncio.Event) -> str | None:  # fmt: skip
         """The check commands of the batch are the coordinator model's: the user allows them, one card per project
         (a goal's are allowed by setting it - D44); a «Доверенный» coordinator does not ask for those its rights let
-        through (D17), not after reading the web (D19). None - allowed; else why not."""
+        through (D17), after reading the web too (2026-11-18). None - allowed; else why not."""
         by_project: dict[str, list[str]] = {}
         for task in tasks:
             for c in task["criteria"] or []:
@@ -812,10 +812,9 @@ class AgentRunner:
                         by_project[c["project_id"]].append(c["command"])
         if not by_project:
             return None
-        tainted = await self._chat.read_the_web(parent_id)
         for project_id, commands in by_project.items():
             project = await self._db.acall(lambda conn, p=project_id: get_project(conn, p))
-            if mode == "trusted" and not tainted and all(
+            if mode == "trusted" and all(
                     trusted_skips("run_command", {"command": c}, project.root) for c in commands):  # fmt: skip
                 continue
             asked = {

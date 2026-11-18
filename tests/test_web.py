@@ -104,23 +104,23 @@ def test_reading_the_web_is_asked_and_taints_the_chat(hub, repo, site):  # noqa:
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
     finished(hub, trusted)
 
-    # a trusted chat whose projects may go to the cloud reads the page without a card (2026-10-28); but then its
-    # edit is asked: it has read the web (D19)
+    # a trusted chat whose projects may go to the cloud reads the page without a card (2026-10-28) - and its edit
+    # after it too (2026-11-18); any other chat that has read the web is asked about it (D19)
     hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True})
     provider.steps += [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}]]
     trusted = new_chat(hub, pid, "trusted")
     say(hub, trusted)
-    write = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
-    assert write["tool"] == "edit_file"  # the first card: the read went by itself
-    hub.post(f"/v1/approvals/{write['id']}", json={"allow": True})
     messages = finished(hub, trusted)
     results = [b for m in messages if m["role"] == "tool" for b in m["content"]]
     assert "# Установка" in results[0]["output"] and results[1]["error"] is False
+    assert hub.get("/v1/approvals").json()["approvals"] == [] and hub.portal.call(hub.app.state.chat.read_the_web,
+                                                                                  trusted)  # fmt: skip
 
 
 def test_letters_answers_and_screens_taint_the_chat_too(hub, repo):  # noqa: F811
     """D19 after the audit (D46): a letter, an API's answer and another program's screen were written by someone
-    else too - a trusted chat that read one asks its next edit; its own files and its own tools do not count."""
+    else too - a chat that read one has read the web; its own files and its own tools do not count. A trusted chat
+    goes on unasked all the same (the user's word 2026-11-18)."""
     pid, conv, _provider = setup_chat(hub, repo, [[{"id": "w1", "name": "edit_file", "input": edit()}]], "trusted")
     chat, db = hub.app.state.chat, hub.app.state.db
 
@@ -135,11 +135,10 @@ def test_letters_answers_and_screens_taint_the_chat_too(hub, repo):  # noqa: F81
         read(other, name)
         assert hub.portal.call(chat.read_the_web, other), name
     read(conv, "mail_read")
+    assert hub.portal.call(chat.read_the_web, conv)
     say(hub, conv)
-    write = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
-    assert write["tool"] == "edit_file"  # trusted, yet asked: the letter may have told the model what to do
-    hub.post(f"/v1/approvals/{write['id']}", json={"allow": False})
-    finished(hub, conv)
+    assert result_of(finished(hub, conv))["error"] is False  # trusted: done, the letter or not
+    assert hub.get("/v1/approvals").json()["approvals"] == []
 
 
 def test_listed_sites_need_no_question(hub, repo, site, monkeypatch):  # noqa: F811
