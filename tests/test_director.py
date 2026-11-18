@@ -381,3 +381,38 @@ def test_the_window_makes_a_film_through_the_hub_from_the_photo_to_the_joined_fi
         assert ("film.deleted", {"id": film_id}) in [(kind, p) for kind, p in hub.seen]
     finally:
         cloud.close()
+
+
+def test_a_films_look_at_its_scenes_is_a_switch_and_a_scene_keeps_what_the_look_said(hub):  # noqa: F811
+    """51.1: a film's scenes are looked at once filmed - its own switch, on from the start, set through the hub; a
+    scene keeps what the look said of it (the verdict, the reason, how many times it was filmed anew, the guidance
+    asked for) - until the scene is changed by hand: then it is another scene. A hub that restarts mid-look leaves
+    no scene «being looked at»."""
+    from app.hub_client import HubClient
+    from tests.test_visual import _install
+
+    _install(hub, "film", LTX)
+    client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+    made = client.new_film({"idea": "Ролик о лампе", "seconds": 15})["film"]
+    assert made["checks"] is True and made["checking"] == 0
+    assert client.new_film({"idea": "Без проверки", "seconds": 15, "checks": False})["film"]["checks"] is False
+    film_id, db = made["id"], hub.app.state.db
+    assert client.update_film(film_id, {"checks": False})["film"]["checks"] is False
+    assert client.update_film(film_id, {"idea": "Ролик о латунной лампе"})["film"]["checks"] is False  # not named
+    assert client.update_film(film_id, {"checks": True})["film"]["checks"] is True
+
+    db.call(lambda conn: director.set_scenes(conn, film_id, SCENES))
+    db.call(lambda conn: director.update_film(conn, film_id, status="ready"))
+    assert [(s["tries"], s["verdict"], s["reason"], s["cfg"]) for s in client.film(film_id)["film"]["scenes"]] == [
+        (0, "", "", None)] * 3  # fmt: skip
+    db.call(lambda conn: director.update_scene(conn, film_id, 1, tries=2, verdict="reject", cfg=4.5,
+                                               reason="лампа другого цвета"))  # fmt: skip
+    kept = client.update_scene(film_id, 1, {"words": "Лампа на столе, утро"})["film"]["scenes"][0]  # the words alone
+    assert (kept["tries"], kept["verdict"], kept["reason"], kept["cfg"]) == (2, "reject", "лампа другого цвета", 4.5)
+    anew = client.update_scene(film_id, 1, {"prompt": "a brass lamp on a desk, the camera orbits"})["film"]["scenes"][0]
+    assert (anew["tries"], anew["verdict"], anew["reason"], anew["cfg"]) == (0, "", "", None)
+
+    db.call(lambda conn: director.update_film(conn, film_id, status="filming", checking=2))
+    hub.portal.call(hub.app.state.director.start)  # the hub comes up again
+    after = client.film(film_id)["film"]
+    assert (after["status"], after["checking"], after["checks"]) == ("ready", 0, True)

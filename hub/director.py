@@ -71,8 +71,10 @@ FORM = ('{{"scenes": [{{"mode": {modes}, "seconds": <number>, "words": "...", "p
 SHAPES = ("wide", "tall", "square")
 MODES = ("text", "picture", "continue", "frames")  # how a scene begins: film_scenes.mode
 FILM_FIELDS = ("idea", "seconds", "shape", "photo", "director", "model_id", "status", "error", "file", "fade",
-               "tokens", "cost_usd")  # fmt: skip
-SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error")
+               "tokens", "cost_usd", "checks", "checking")  # fmt: skip
+SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error", "cfg", "tries", "verdict",
+                "reason")  # fmt: skip
+UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the look has said nothing of (51.1)
 
 
 def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -82,7 +84,8 @@ def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "SELECT s.*, COALESCE(j.file, '') AS clip, j.seconds AS took FROM film_scenes s "
         "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
     ).fetchall()  # fmt: skip
-    return {**dict(row), "scenes": [{k: s[k] for k in s.keys() if k != "film_id"} for s in scenes]}  # noqa: SIM118
+    listed = [{k: s[k] for k in s.keys() if k != "film_id"} for s in scenes]  # noqa: SIM118
+    return {**dict(row), "checks": bool(row["checks"]), "scenes": listed}
 
 
 def film(conn: sqlite3.Connection, film_id: str) -> dict[str, Any] | None:
@@ -98,12 +101,13 @@ def films(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def new_film(conn: sqlite3.Connection, *, idea: str, seconds: int, shape: str = "wide", photo: str = "",
-             director: str = "", model_id: str = "") -> dict[str, Any]:  # fmt: skip
-    """A film begun: a draft, no scenes yet."""
+             director: str = "", model_id: str = "", checks: bool = True) -> dict[str, Any]:  # fmt: skip
+    """A film begun: a draft, no scenes yet. `checks` (51.1) - its scenes are looked at once filmed."""
     film_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (film_id, idea, seconds, shape, photo, director, model_id),
+        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id, checks) VALUES (?, ?, ?, ?, ?, ?, "
+        "?, ?)",
+        (film_id, idea, seconds, shape, photo, director, model_id, int(checks)),
     )
     return film(conn, film_id)
 
@@ -259,7 +263,7 @@ class Director:
             ]
             for film_id in left:
                 has = conn.execute("SELECT 1 FROM film_scenes WHERE film_id = ?", (film_id,)).fetchone()
-                update_film(conn, film_id, status="ready" if has else "draft",
+                update_film(conn, film_id, status="ready" if has else "draft", checking=0,
                             error=tr("хаб перезапускался — «Продолжить» снимет то, что не снято"))  # fmt: skip
             conn.execute("UPDATE film_scenes SET status = 'new', error = '' WHERE status = 'filming'")
             return len(left)
@@ -324,22 +328,23 @@ class Director:
                     path.unlink()
 
     async def create(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """A film begun (50.8): {idea, seconds, shape, director, model} and the product's photo, if there is one
-        (`_picture`). A draft, no scenes yet."""
+        """A film begun (50.8): {idea, seconds, shape, director, model, checks} and the product's photo, if there is
+        one (`_picture`). A draft, no scenes yet."""
         idea = str(spec.get("idea") or "").strip()
         if not idea:
             raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
         photo = await self._picture(spec)
         made = await self._db.acall(lambda conn: new_film(
             conn, idea=idea, seconds=int(spec.get("seconds") or 15), shape=str(spec.get("shape") or "wide"),
-            director=str(spec.get("director") or ""), model_id=str(spec.get("model") or "")))  # fmt: skip
+            director=str(spec.get("director") or ""), model_id=str(spec.get("model") or ""),
+            checks=spec.get("checks") is not False))  # fmt: skip
         kept = {"photo": await self._keep_photo(made["id"], photo)} if photo is not None else {}
         return await self._changed(made["id"], **kept)
 
     async def change(self, film_id: str, spec: dict[str, Any]) -> dict[str, Any]:
-        """The film's own changed (50.8) - only what `spec` names: idea, seconds, shape, director, model, fade, the
-        photo (as `create` takes one; `photo: ""` - none). Another shape, photo or video model - the scenes filmed
-        are of the film as it was: stale, the joined file forgotten."""
+        """The film's own changed (50.8) - only what `spec` names: idea, seconds, shape, director, model, fade, checks
+        (51.1: whether its scenes are looked at), the photo (as `create` takes one; `photo: ""` - none). Another
+        shape, photo or video model - the scenes filmed are of the film as it was: stale, the joined file forgotten."""
         found = await self._film(film_id)
         fields = {k: spec[k] for k in ("idea", "seconds", "shape", "director", "fade") if spec.get(k) is not None}
         if "idea" in fields:
@@ -348,6 +353,8 @@ class Director:
                 raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
         if spec.get("model") is not None:
             fields["model_id"] = str(spec["model"])
+        if spec.get("checks") is not None:
+            fields["checks"] = int(bool(spec["checks"]))
         photo = await self._picture(spec)
         if photo is not None:
             fields["photo"] = await self._keep_photo(film_id, photo)
@@ -467,8 +474,8 @@ class Director:
     async def edit_scene(self, film_id: str, n: int, spec: dict[str, Any]) -> dict[str, Any]:
         """A scene changed by hand (50.8) - only what `spec` names: words, prompt, mode, seconds, seed (none or below
         0 - a new one each time it is filmed). What the video model is given has changed - a clip filmed is of the
-        scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten. The
-        words alone change nothing else."""
+        scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten, and
+        what the look said of it (51.1) is of another scene. The words alone change nothing else."""
         found = await self._film(film_id)
         scene = next((s for s in found["scenes"] if s["n"] == n), None)
         if scene is None:
@@ -495,6 +502,8 @@ class Director:
         if "seed" in spec:
             fields["seed"] = None if spec["seed"] is None or int(spec["seed"]) < 0 else int(spec["seed"])
         other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed") if k in fields)
+        if other:
+            fields |= UNLOOKED
         if other and scene["status"] != "new":
             fields |= {"status": "stale" if scene["job_id"] and scene["status"] != "failed" else "new", "error": ""}
 

@@ -57,6 +57,7 @@ class New(Photo):
     shape: Shape = "wide"
     director: str = Field(default="", max_length=200)  # '' - the model of the role «Режиссёр»
     model: str = Field(default="", max_length=120)  # '' - the first video model that can film it
+    checks: bool = True  # (51.1) each scene filmed is looked at by the director's model
 
 
 class Change(Photo):
@@ -68,6 +69,7 @@ class Change(Photo):
     director: str | None = Field(default=None, max_length=200)
     model: str | None = Field(default=None, max_length=120)
     fade: float | None = Field(default=None, ge=d.FADE_S[0], le=d.FADE_S[1])
+    checks: bool | None = None
     photo: Literal[""] | None = None
 
 
