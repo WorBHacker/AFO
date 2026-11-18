@@ -303,6 +303,24 @@ def test_a_clips_last_frame_its_chosen_frames_and_scenes_joined(tmp_path):
     middle = _colour(frames[5])  # inside the fade: neither scene's own colour
     assert not _near(middle, blues[5]) and not _near(middle, oranges[2])
 
+    small = tmp_path / "small"  # 51.2, for a model's look at a scene: the same frames, small JPEGs
+    small.mkdir()
+    shown = ffmpeg.frames_at(program, two, small, [16, 0, 8], small=32)
+    assert [f.name for f in shown] == ["1.jpg", "2.jpg", "3.jpg"] and shown[0].read_bytes()[:2] == b"\xff\xd8"
+    sizes, colours = [], []
+    for frame in shown:
+        from PySide6.QtGui import QImage
+
+        image = QImage(str(frame))
+        sizes.append((image.width(), image.height()))
+        pixel = image.pixelColor(16, 16)
+        colours.append((pixel.red(), pixel.green(), pixel.blue()))
+    assert sizes == [(32, 32)] * 3
+    assert _near(colours[0], oranges[0]) and _near(colours[1], oranges[8]) and _near(colours[2], GREEN)
+    (tmp_path / "few").mkdir()
+    with pytest.raises(EngineError, match="меньше кадров"):
+        ffmpeg.frames_at(program, one, tmp_path / "few", [0, 40], small=32)
+
     with pytest.raises(EngineError, match="нечего склеивать"):
         ffmpeg.join(program, [], tmp_path / "none.mp4", fps=24)
     with pytest.raises(EngineError, match="короче перехода"):

@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from common.i18n import tr
+from common.i18n import N_, tr
 from common.picture_sizes import SECONDS, frames_for, scene_modes
 
 from . import ffmpeg, model_settings, visual
@@ -49,9 +49,14 @@ How a scene may begin (its "mode"):
 
 Rules:
 - Each scene is {low:g} to {high:g} seconds long; together they are the length asked for.
-- "prompt": English, one paragraph - the subject, what moves and how, the camera (static, slow push in, orbit, \
-pull back...), the light, the style. One action a scene. Describe the product as the photo shows it; invent no \
-text, logos or labels on it.
+- "prompt": English, one paragraph. Begin with the motion: who or what moves and how, concretely, in the present \
+tense. Then the camera (slow push in, orbit, pull back, tracking beside the subject...), the light, the style - \
+briefly. One action a scene. Describe the product as the photo shows it; invent no text, logos or labels on it.
+- A scene that begins with a picture ("picture", "continue", "frames"): the video model sees that frame already - \
+do not spend the prompt retelling what it shows, say what happens next. A crisp picture described by its looks \
+alone stays a still picture.
+- Something must visibly move in every scene. Do not write "static" or "still" in a scene whose subject moves: \
+the camera follows, tracks or holds on the subject.
 - "words": one short sentence saying what happens in the scene, in the language of the idea - the user reads it.
 - Keep the product the same from scene to scene: the same thing, the same colours, the same place unless the idea \
 moves it.
@@ -216,6 +221,97 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int)
                 return None
             notes.append(tr("сценарий вышел на {got} с вместо {asked} с", got=round(got), asked=seconds))
         return {"scenes": scenes, "notes": notes}
+
+    return read
+
+
+LOOK_FRAMES = 3  # of a scene shown to the look: its first, its middle, its last
+LOOK_SIDE = 512  # their longer side, points: enough to tell a product by, a few hundred tokens each
+LOOK_TIMEOUT_S = 120.0  # one answer of the look's
+RETAKES = 2  # times the look has one scene filmed anew
+LOOK_USD = 0.5  # what the looks of one shooting may cost
+CFG_ROOM = 2.0  # how far from the video model's own guidance the look may go
+# why a take does not stay, and what the scene's card says when the model gave no words of its own
+REASONS = {"product": N_("товар не тот, что на фото"), "motion": N_("в сцене нет движения"),
+           "artifacts": N_("в кадре искажения"), "colours": N_("цвет ушёл от исходного"),
+           "scene": N_("снято не то, что в описании")}  # fmt: skip
+LOOK_SYSTEM = """You are the director of a short product video. A video model has just filmed one scene from your \
+prompt; you check the take. You get the scene - what happens in it, how it begins, the prompt it was filmed from - \
+and pictures: {frames} frames of the take in order (the first, the middle, the last){photo}.
+
+Say whether the take stays in the film. Reject it only for a plain fault:
+- "product": {product}; text or a logo made up on it.
+- "motion": nothing happens - the frames are one picture, though the scene is of something moving.
+- "artifacts": broken shapes - melted or doubled things, extra limbs or fingers, a garbled face; a frame that is \
+blank or noise.
+- "colours": the colours or the light drift from where the take began - it greys, darkens or burns out.
+- "scene": the take shows something other than the scene asked for.
+Small flaws stay: a take filmed anew costs minutes. In doubt, accept.
+
+When you reject, write the prompt anew so that the fault does not come back: English, one paragraph, the same \
+scene. Begin with the motion - who or what moves and how; do not retell what the first frame shows; do not write \
+"static" or "still" in a scene whose subject moves.{cfg}
+
+Answer with the JSON object only: {form}"""  # i18n: keep
+LOOK_PHOTO = ", then the product's photo - the last picture"
+LOOK_PRODUCT = {True: "the product is not the one in the photo - another shape or colour, another thing",
+                False: "the product turns into another thing during the take - another shape or colour"}  # fmt: skip
+LOOK_CFG = (' You may also set "cfg", the video model\'s guidance, {low:g} to {high:g} (it was {now:g}): higher '
+            "keeps closer to the prompt, lower moves more freely.")  # fmt: skip
+LOOK_FORM = ('{{"ok": true}} - or {{"ok": false, "why": {whys}, "reason": "<one short sentence, in the language of '
+             'what happens in the scene>", "prompt": "<the prompt written anew>"{cfg}}}')  # fmt: skip
+BEGINS = {"picture": "with the product's photo as its first frame",
+          "continue": "with the last frame of the scene before - one unbroken shot",
+          "frames": "with the last frame of the scene before, and ends on the product's photo",
+          "text": "by the prompt alone"}  # fmt: skip
+
+
+def cfg_room(model: dict[str, Any], scene: dict[str, Any]) -> tuple[float, float, float] | None:
+    """The guidance the look may ask for: (the lowest, the highest, the scene's now) - or None: a model installed
+    with none (cfg 1, the distilled ones) films worse with any, and twice as long."""
+    own = float(model.get("cfg") or 1.0)
+    if own <= 1.0:
+        return None
+    return max(1.5, own - CFG_ROOM), own + CFG_ROOM, float(scene.get("cfg") or own)
+
+
+def look_question(scene: dict[str, Any], *, photo: bool, cfg: tuple[float, float, float] | None,
+                  frames: int = LOOK_FRAMES) -> tuple[str, str, str]:  # fmt: skip
+    """What the look at a filmed scene asks (51.2): (system, prompt, form). `cfg` - `cfg_room`'s."""
+    form = LOOK_FORM.format(whys=" | ".join(f'"{why}"' for why in REASONS), cfg=', "cfg": <number>' if cfg else "")
+    said = LOOK_CFG.format(low=cfg[0], high=cfg[1], now=cfg[2]) if cfg else ""
+    system = LOOK_SYSTEM.format(frames=frames, photo=LOOK_PHOTO if photo else "", product=LOOK_PRODUCT[photo],
+                                cfg=said, form=form)  # fmt: skip
+    prompt = (f"<scene>\nWhat happens: {scene['words']}\nIt begins {BEGINS[scene['mode']]}.\n"
+              f"The prompt it was filmed from: {scene['prompt']}\n</scene>\n"
+              f"The pictures: the take's {frames} frames in order" + (", then the product's photo" if photo else "")
+              + ". Does the take stay? Answer with the JSON only.")  # fmt: skip
+    return system, prompt, form
+
+
+def look_reader(cfg: tuple[float, float, float] | None) -> Callable[[str], dict[str, Any] | None]:
+    """What reads the look's answer (51.2): {ok, why, reason, prompt, cfg} - `prompt` '' and `cfg` None: as they
+    were; a guidance outside `cfg`'s room is brought into it, one for a model that takes none is dropped. None - not
+    a verdict, asked again: no JSON, no `ok` that is true or false."""
+
+    def read(answer: str) -> dict[str, Any] | None:
+        start, end = answer.find("{"), answer.rfind("}")
+        try:
+            data = json.loads(answer[start : end + 1]) if 0 <= start < end else None
+        except json.JSONDecodeError:
+            data = None
+        if not isinstance(data, dict) or not isinstance(data.get("ok"), bool):
+            return None
+        if data["ok"]:
+            return {"ok": True, "why": "", "reason": "", "prompt": "", "cfg": None}
+        why = data.get("why") if data.get("why") in REASONS else "scene"
+        reason = " ".join(str(data.get("reason") or "").split())[: TEXT_CHARS["words"]] or tr(REASONS[why])
+        prompt = " ".join(str(data.get("prompt") or "").split())[: TEXT_CHARS["prompt"]]
+        asked = None
+        if cfg is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                asked = round(min(cfg[1], max(cfg[0], float(data.get("cfg")))), 2)
+        return {"ok": False, "why": why, "reason": reason, "prompt": prompt, "cfg": asked}
 
     return read
 

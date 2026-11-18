@@ -139,15 +139,22 @@ def last_frame(program: Path, source: Path, target: Path) -> None:
              N_("ffmpeg не взял последний кадр: {said}"))  # fmt: skip
 
 
-def frames_at(program: Path, source: Path, folder: Path, numbers: list[int]) -> list[Path]:
+def frames_at(program: Path, source: Path, folder: Path, numbers: list[int], *, small: int = 0) -> list[Path]:
     """The clip's frames with these numbers (from 0) as PNGs in `folder` - 1.png, 2.png... in the clip's order (50.3,
-    blocking): a look at a scene - its beginning, middle and end."""
+    blocking): a look at a scene - its beginning, middle and end. `small` (51.2) - for a model's look: the longer
+    side `small` points at most, JPEGs (1.jpg...) - a tenth of a PNG's bytes on the way to the model."""
     wanted = sorted(set(numbers))
     picked = "+".join(f"eq(n\\,{n})" for n in wanted)
     words = N_("ffmpeg не взял кадры видео: {said}")
-    _run(program, ["-i", str(source), "-vf", f"select='{picked}'", "-fps_mode", "passthrough",
-                   str(folder / "%d.png")], words)  # fmt: skip
-    found = [folder / f"{k}.png" for k in range(1, len(wanted) + 1)]
+    chain, kind, coded = f"select='{picked}'", "png", []
+    if small:
+        wide = f"if(gt(iw\\,ih)\\,min(iw\\,{small})\\,-2)"
+        high = f"if(gt(iw\\,ih)\\,-2\\,min(ih\\,{small}))"
+        chain += f",scale='{wide}':'{high}'"
+        kind, coded = "jpg", ["-pix_fmt", "yuvj420p", "-q:v", "4"]
+    _run(program, ["-i", str(source), "-vf", chain, "-fps_mode", "passthrough", *coded,
+                   str(folder / f"%d.{kind}")], words)  # fmt: skip
+    found = [folder / f"{k}.{kind}" for k in range(1, len(wanted) + 1)]
     if not all(f.is_file() for f in found):
         raise EngineError(tr(words, said=tr("в видео меньше кадров, чем спрошено")))
     return found

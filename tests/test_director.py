@@ -383,6 +383,56 @@ def test_the_window_makes_a_film_through_the_hub_from_the_photo_to_the_joined_fi
         cloud.close()
 
 
+def test_the_look_at_a_scene_is_asked_and_its_answer_read():
+    """51.2: what the look at a filmed scene asks - the scene (what happens, how it begins, its prompt), the faults a
+    take is rejected for, the product's photo when there is one, the guidance only for a model that takes one - and
+    how its answer is read: «stays», or why not with the prompt written anew; a guidance out of the room is brought
+    into it; what is no verdict is asked again. The storyboard's own rule: a prompt begins with the motion. The
+    frames of the engine's WebP are counted as ffmpeg numbers them."""
+    from hub import visual
+    from tests.test_ffmpeg import GREEN, ORANGE, _solid, animated_webp
+    from tests.test_visual import PICTURE, STILL
+
+    scene = {"mode": "continue", "words": "Лампа загорается", "prompt": "the lamp lights up, warm glow", "cfg": None}
+    system, prompt, form = director.look_question(scene, photo=True, cfg=None)
+    assert all(f'"{why}"' in system for why in director.REASONS) and "product's photo" in system
+    assert "3 frames" in system and "cfg" not in system and "cfg" not in form and form in system
+    assert "Лампа загорается" in prompt and "the lamp lights up, warm glow" in prompt
+    assert "last frame of the scene before" in prompt and "product's photo" in prompt
+    bare = director.look_question({**scene, "mode": "text"}, photo=False, cfg=None)
+    assert "photo" not in bare[0] and "photo" not in bare[1] and "by the prompt alone" in bare[1]
+
+    fast = {"cfg": 1.0}  # a distilled model: no guidance to ask for
+    assert director.cfg_room(fast, scene) is None and director.cfg_room({}, scene) is None
+    room = director.cfg_room({"cfg": 4.0}, {**scene, "cfg": 5.0})
+    assert room == (2.0, 6.0, 5.0) and director.cfg_room({"cfg": 2.5}, scene) == (1.5, 4.5, 2.5)
+    guided = director.look_question(scene, photo=True, cfg=room)
+    assert '"cfg": <number>' in guided[2] and "2 to 6 (it was 5)" in guided[0]
+
+    read = director.look_reader(None)
+    assert read('Fine.\n{"ok": true}') == {"ok": True, "why": "", "reason": "", "prompt": "", "cfg": None}
+    no = read(json.dumps({"ok": False, "why": "motion", "reason": "  Лампа  не загорается ", "cfg": 9,
+                          "prompt": "The lamp's glow  swells from dim to bright"}, ensure_ascii=False))  # fmt: skip
+    assert no == {"ok": False, "why": "motion", "reason": "Лампа не загорается", "cfg": None,
+                  "prompt": "The lamp's glow swells from dim to bright"}  # fmt: skip
+    worded = read('{"ok": false, "why": "blurry"}')  # no words of its own, a fault not in the list
+    assert (worded["why"], worded["prompt"]) == ("scene", "") and "описании" in worded["reason"]
+    assert "движения" in read('{"ok": false, "why": "motion"}')["reason"]
+    for wrong in ("It looks good to me.", "{}", '{"ok": "yes"}', '{"verdict": true}', "{not json}"):
+        assert read(wrong) is None, wrong
+    within = director.look_reader(room)
+    assert within('{"ok": false, "why": "product", "cfg": 9}')["cfg"] == 6.0
+    assert within('{"ok": false, "why": "product", "cfg": 3.14159}')["cfg"] == 3.14
+    assert within('{"ok": false, "why": "product", "cfg": "high"}')["cfg"] is None
+
+    storyboard = director.question("Ролик о лампе", 15, "wide", ["text", "picture", "frames"], True)[0]
+    assert "Begin with the motion" in storyboard and '"static"' in storyboard
+
+    three = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
+    assert visual.frames_in(three) == 3 and visual.moving(three)
+    assert visual.frames_in(STILL) == 0 and visual.frames_in(PICTURE) == 0 and not visual.moving(STILL)
+
+
 def test_a_films_look_at_its_scenes_is_a_switch_and_a_scene_keeps_what_the_look_said(hub):  # noqa: F811
     """51.1: a film's scenes are looked at once filmed - its own switch, on from the start, set through the hub; a
     scene keeps what the look said of it (the verdict, the reason, how many times it was filmed anew, the guidance

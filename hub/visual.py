@@ -52,6 +52,7 @@ import logging
 import random
 import shutil
 import struct
+import tempfile
 import threading
 import time
 import uuid
@@ -360,16 +361,20 @@ STILL_WORDS = N_("вместо видео — одна неподвижная к
 def moving(data: bytes) -> bool:
     """A WebP of frames, more than one (48.8 live): a model that films each frame the same - LTX's white ones, its gemma
     under flash attention - comes back as one still picture, libwebp folding the same frames into one."""
+    return frames_in(data) > 1
+
+
+def frames_in(data: bytes) -> int:
+    """How many frames an animated WebP has - what ffmpeg numbers from 0 (51.2: the engine's file may hold fewer
+    than were asked for, the same ones folded into one); 0 - a still picture, or no WebP."""
     if data[:4] != b"RIFF" or data[8:12] != b"WEBP":
-        return False
+        return 0
     at, frames = 12, 0
     while at + 8 <= len(data):
         size = int.from_bytes(data[at + 4 : at + 8], "little")
         frames += data[at : at + 4] == b"ANMF"
-        if frames > 1:
-            return True
         at += 8 + size + (size & 1)
-    return False
+    return frames
 
 
 def sampling(model: dict[str, Any], found: dict[str, Any]) -> dict[str, Any]:
@@ -1071,21 +1076,43 @@ class Visual:
         """`target`, made by ffmpeg once (`make`, blocking, given the program) and kept: one fetch of ffmpeg - the
         first time, ~86 MB - and one piece of its work at a time."""
         async with self._ffmpeg:
-            if target.is_file():
-                return target
-            program = await asyncio.to_thread(ffmpeg.find, self.tools)
-            if program is None:
-                try:
-                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
-                        build = await ffmpeg.latest(http)
-                    program = await asyncio.to_thread(ffmpeg.install, build, self.tools, threading.Event())
-                except (EngineError, hf.HubError) as exc:
-                    raise VisualError(tr("ffmpeg не скачался: {error}", error=exc), 502) from exc
-            try:
-                await asyncio.to_thread(make, program)
-            except EngineError as exc:
-                raise VisualError(str(exc), 502) from exc
+            if not target.is_file():
+                await self._ffmpeg_does(make)
         return target
+
+    async def _ffmpeg_does(self, make: Callable[[Path], Any]) -> Any:
+        """ffmpeg's piece of work (`make`, blocking, given the program) - the program fetched the first time; the
+        caller holds `_ffmpeg`."""
+        program = await asyncio.to_thread(ffmpeg.find, self.tools)
+        if program is None:
+            try:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                    build = await ffmpeg.latest(http)
+                program = await asyncio.to_thread(ffmpeg.install, build, self.tools, threading.Event())
+            except (EngineError, hf.HubError) as exc:
+                raise VisualError(tr("ffmpeg не скачался: {error}", error=exc), 502) from exc
+        try:
+            return await asyncio.to_thread(make, program)
+        except EngineError as exc:
+            raise VisualError(str(exc), 502) from exc
+
+    async def look(self, found: dict[str, Any], count: int, side: int) -> list[bytes]:
+        """A video looked at (51.2): `count` of its frames - the first, those between, the last - as small JPEGs,
+        the longer side `side` points at most: what a model is shown of a film's scene."""
+        source = self.file(found)
+        if source is None:
+            raise VisualError(tr("видео ещё нет"), 404)
+        total = frames_in(await asyncio.to_thread(source.read_bytes))
+        if total < count:
+            raise VisualError(tr("в видео меньше кадров, чем нужно для проверки"), 422)
+        numbers = [round(k * (total - 1) / (count - 1)) for k in range(count)]
+
+        def take(program: Path) -> list[bytes]:
+            with tempfile.TemporaryDirectory() as folder:
+                return [f.read_bytes() for f in ffmpeg.frames_at(program, source, Path(folder), numbers, small=side)]
+
+        async with self._ffmpeg:
+            return await self._ffmpeg_does(take)
 
     async def end_frame(self, found: dict[str, Any]) -> Path:
         """A video's last frame as a PNG (50.3): the director's next scene goes on from it; taken once, kept beside
