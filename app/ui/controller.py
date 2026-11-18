@@ -41,6 +41,7 @@ from .computer_view import ComputerView
 from .connections import Connections
 from .editor import EditorView
 from .feed import Feed
+from .film_view import FilmView
 from .goal_view import GoalView
 from .gpu_view import GpuView
 from .history_view import HistoryView
@@ -286,6 +287,7 @@ class Controller(QObject):
         self.readers = Readers(self)  # the viewer's text and its colours (24.1)
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
+        self.film_view = FilmView(self)  # «Режиссёр» in the Studio: a film of scenes (50.9)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.setup_view.modelsRequested.connect(lambda: self.uiRequested.emit("setup-first-model"))  # 39.3
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
@@ -1937,6 +1939,8 @@ class Controller(QObject):
             self.install_view.on_event(kind, payload)
         elif kind.startswith("visual."):
             self.visual_view.on_event(kind, payload)
+        elif kind.startswith("film."):
+            self.film_view.on_event(kind, payload)
         elif kind.startswith("gpu."):
             self.gpu_view.on_event(kind, payload)
         elif kind.startswith("setup."):

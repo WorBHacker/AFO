@@ -390,6 +390,8 @@ class FakeClient:
         self.visual_jobs_list = []
         self.visual_rungs = {}  # the rung each model came out on here (29.4б)
         self.visual_videos = []  # the video models (29.8)
+        self.film_calls = []  # «Режиссёр» (50.9)
+        self.films_list = []
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -706,6 +708,54 @@ class FakeClient:
     def visual_picture_mp4(self, blob):
         self.visual_calls.append(("picture mp4", blob))
         return b"MP4 of " + blob.encode()
+
+    def films(self):
+        return {"films": list(self.films_list)}
+
+    def _film(self, film_id, **fields):
+        at = next(i for i, f in enumerate(self.films_list) if f["id"] == film_id)
+        self.films_list[at] = {**self.films_list[at], **fields}
+        return {"film": self.films_list[at]}
+
+    def new_film(self, spec):
+        self.film_calls.append(("new", spec))
+        film_id = f"f{len(self.films_list) + 1}"
+        film = {"id": film_id, "idea": spec["idea"], "seconds": spec["seconds"], "shape": spec.get("shape", "wide"),
+                "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "", "director": "",
+                "model_id": "", "status": "draft", "error": "", "file": "", "fade": 0.0, "tokens": 0,
+                "cost_usd": 0.0, "scenes": []}  # fmt: skip
+        self.films_list.insert(0, film)
+        return {"film": film}
+
+    def update_film(self, film_id, fields):
+        self.film_calls.append(("update", film_id, fields))
+        return self._film(film_id, **{k: v for k, v in fields.items() if k in ("idea", "seconds", "shape", "fade")})
+
+    def delete_film(self, film_id):
+        self.film_calls.append(("delete", film_id))
+        self.films_list = [f for f in self.films_list if f["id"] != film_id]
+        return {"deleted": film_id}
+
+    def write_film(self, film_id):
+        self.film_calls.append(("write", film_id))
+        return self._film(film_id, status="writing", error="")
+
+    def update_scene(self, film_id, n, fields):
+        self.film_calls.append(("scene", film_id, n, fields))
+        return self._film(film_id)
+
+    def shoot_film(self, film_id, scene=None):
+        self.film_calls.append(("shoot", film_id, scene))
+        return self._film(film_id, status="filming", error="")
+
+    def stop_film(self, film_id):
+        self.film_calls.append(("stop", film_id))
+        film = next(f for f in self.films_list if f["id"] == film_id)
+        return self._film(film_id, status="ready" if film["scenes"] else "draft")
+
+    def join_film(self, film_id, fade=None):
+        self.film_calls.append(("join", film_id, fade))
+        return self._film(film_id, status="joining", error="")
 
     def install_pictures_start(self, spec):
         self.install_calls.append(("pictures", spec))
@@ -10354,6 +10404,10 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         client.visual_jobs_list = [{"id": "j1", "kind": "picture", "prompt": "лиса", "model_id": "flux2-klein-4b",
                                     "status": "done", "width": 64, "height": 64, "seed": 7, "error": "",
                                     "seconds": 2.0, "file": "j1.png"}]  # fmt: skip
+        client.films_list = [{"id": "f1", "idea": "Ролик о лампе", "seconds": 15, "shape": "wide", "photo": "",
+                              "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
+                              "tokens": 0, "cost_usd": 0.0,
+                              "scenes": film_scenes("new", "new", "new", "new")}]  # «Режиссёр»: a film  # fmt: skip
         for program in client.program_list:
             program["fresh"] = False  # the question about a new program would cover the screens
         client.llama_big = {"info": {**LLAMA[1]["info"], "experts": 128, "experts_used": 8}}  # where its experts are
@@ -10414,6 +10468,15 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         (tmp_path / "first.png").write_bytes(PICTURE)
         app.visual_view.chooseSource(QUrl.fromLocalFile(str(tmp_path / "first.png")).toString())
         go(window.contentItem())
+        app.film_view.setKind("director")  # «Режиссёр»: a scene's sheet - how it begins, its length
+        wait_until(lambda: not app.bg.busy and app.film_view.scenes)
+        click(window, item_named(window.contentItem(), "filmEdit_2"))
+        scene = window.findChild(QObject, "sceneSheet")
+        wait_until(lambda: scene.property("opened"))
+        go(scene.property("contentItem"))
+        QMetaObject.invokeMethod(scene, "close")
+        wait_until(lambda: not scene.property("visible"))
+        app.film_view.setKind("manual")
         app.setMode("chats")
 
         drawers = [o for o in window.findChildren(QObject) if o.inherits("QQuickDrawer")]
@@ -10619,5 +10682,169 @@ def test_turning_trusted_on_says_once_what_the_model_may_do(qapp):
         app.setChatMode("ask")  # back: nothing to say either
         wait_until(lambda: not app.bg.busy and app.chatModeName == "Спрашивать")
         assert app.question == {} and quick.warnings == []
+    finally:
+        quick.close()
+
+
+FILM_SCENES = [
+    {"n": 1, "mode": "picture", "words": "Лампа на столе", "prompt": "a brass lamp on a desk", "frames": 97},
+    {"n": 2, "mode": "continue", "words": "Лампа загорается", "prompt": "the lamp lights up", "frames": 121},
+    {"n": 3, "mode": "frames", "words": "Камера возвращается", "prompt": "the camera pulls back", "frames": 73},
+    {"n": 4, "mode": "continue", "words": "Финал", "prompt": "the lamp glows, static shot", "frames": 73},
+]
+
+
+def film_scenes(*statuses, **more):
+    """A film's scenes as the hub gives them: each with its status; `more` - a scene's own fields by its number."""
+    blank = {"seed": None, "job_id": None, "error": "", "clip": "", "took": None}
+    return [{**scene, **blank, "status": status, **more.get(f"s{scene['n']}", {})}
+            for scene, status in zip(FILM_SCENES, statuses, strict=True)]  # fmt: skip
+
+
+def test_the_director_in_the_studio_makes_a_film_by_clicks(qapp, tmp_path):
+    """50.9: with a video model the Studio has «Вручную | Режиссёр». «Режиссёр»: the product's photo, the idea, the
+    length, the shape - «Собрать сценарий» begins the film in the hub and asks the director; the scenes come as cards
+    (how each begins, its length, what happens); «Снять всё» films them - the status says the scene, its step and
+    how long is left -, «Стоп» stops; a scene filmed shows its clip in the player; «Собрать ролик» joins them, cut
+    to cut or «Плавно»; «Переснять» films one scene anew; «Изменить» opens the scene's sheet and saves what has
+    changed; «Переписать сценарий» asks first when scenes are filmed. Real QML, mouse clicks, no screen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX-2.5", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text", "picture", "frames"],
+                                 "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        films = app.film_view
+        app.visual_view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and films.available)
+        window = quick.window
+        studio = window.findChild(QObject, "studioView")
+        window.grabWindow()
+        director = item_named(studio, "directorView")
+        assert not director.property("visible") and item_named(studio, "visualDraw").property("visible")
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
+        wait_until(lambda: not app.bg.busy)
+        assert films.kind == "director" and director.property("visible")
+        assert not item_named(studio, "visualDraw").property("visible")  # «Вручную» is hidden
+
+        write = item_named(director, "filmWrite")
+        assert write.property("text") == "Собрать сценарий" and not write.property("enabled")  # no idea yet
+        item_named(director, "filmIdea").setProperty("text", "Ролик о латунной лампе")
+        click(window, item_saying(item_named(director, "filmLength"), "30 с"))
+        click(window, item_saying(item_named(director, "filmShape"), "Высокая"))
+        (tmp_path / "lamp.png").write_bytes(PICTURE)
+        films.choosePhoto(QUrl.fromLocalFile(str(tmp_path / "lamp.png")).toString())  # the file dialog's answer
+        window.grabWindow()
+        assert item_named(director, "filmPhotoShown").property("visible") and write.property("enabled")
+        click(window, write)
+        wait_until(lambda: not app.bg.busy and [c[0] for c in client.film_calls] == ["new", "write"])
+        spec = client.film_calls[0][1]
+        assert (spec["idea"], spec["seconds"], spec["shape"]) == ("Ролик о латунной лампе", 30, "tall")
+        assert QImage.fromData(base64.b64decode(spec["photo_png"]), "PNG").size() == QSize(32, 32)
+        film_id = client.films_list[0]["id"]
+        media = app.paths.media / "2026-11"
+        media.mkdir(parents=True, exist_ok=True)
+        (media / f"film-{film_id}-photo.png").write_bytes(PICTURE)  # the hub keeps the photo there
+        assert films.statusText == "режиссёр пишет сценарий…" and write.property("text") == "Стоп"
+        assert films.hasPhoto and films.photoSource.endswith(f"film-{film_id}-photo.png")
+        click(window, write)  # «Стоп»: the director is let go
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("stop", film_id))
+
+        def hub_says(**fields):
+            client.films_list[0] = {**client.films_list[0], **fields}
+            app.on_event({"type": "film.changed", "payload": {"film": client.films_list[0]}})
+            window.grabWindow()
+
+        hub_says(status="ready", scenes=film_scenes("new", "new", "new", "new"))
+        assert [(c["n"], c["title"], c["statusText"]) for c in films.scenes] == [
+            (1, "1 · по фото · 4 с", "не снята"), (2, "2 · продолжение · 5 с", "не снята"),
+            (3, "3 · к фото · 3 с", "не снята"), (4, "4 · продолжение · 3 с", "не снята")]  # fmt: skip
+        assert item_named(director, "filmCard_3") is not None and write.property("text") == "Переписать сценарий"
+        shoot = item_named(director, "filmShootAll")
+        assert shoot.property("text") == "Снять всё" and not item_named(director, "filmJoin").property("enabled")
+        click(window, shoot)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("shoot", film_id, None))
+
+        hub_says(status="filming", scenes=film_scenes("filming", "new", "new", "new", s1={"job_id": "j1"}))
+        assert films.statusText == "снимаю сцену 1 из 4" and shoot.property("text") == "Стоп"
+        app.on_event({"type": "visual.progress", "payload": {"id": "j1", "step": 2, "steps": 8, "preview": ""}})
+        assert films.statusText == "снимаю сцену 1 из 4: шаг 2 из 8" and films.percent == 6.2
+        for job in ("j1", "j2", "j3", "j4"):
+            (media / f"{job}.webp").write_bytes(animated_clip(COLOURS))
+            (media / f"{job}.mp4").write_bytes(mjpeg_mp4(COLOURS))
+        # scene 1 took 80 s for its 97 frames; scene 2 is half done: 60 of its frames and 146 more are left - 170 s
+        hub_says(scenes=film_scenes("done", "filming", "new", "new", s2={"job_id": "j2"},
+                                    s1={"job_id": "j1", "clip": "2026-11/j1.webp", "took": 80.0}))  # fmt: skip
+        app.on_event({"type": "visual.progress", "payload": {"id": "j2", "step": 4, "steps": 8, "preview": ""}})
+        assert films.statusText == "снимаю сцену 2 из 4: шаг 4 из 8 · ещё ≈ 3 мин"
+        assert films.scenes[0]["statusText"] == "снята за 1 мин" and films.scenes[0]["thumb"].endswith("j1.webp")
+        assert films.shownScene == 1 and films.playSource.endswith("j1.mp4")  # the scene just filmed plays
+        click(window, shoot)  # «Стоп»
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("stop", film_id))
+
+        done = {f"s{n}": {"job_id": f"j{n}", "clip": f"2026-11/j{n}.webp", "took": 60.0} for n in (1, 2, 3, 4)}
+        hub_says(status="ready", scenes=film_scenes("done", "done", "done", "done", **done))
+        assert films.statusText == "все сцены сняты — соберите ролик" and shoot.property("text") == "Продолжить"
+        assert not shoot.property("enabled")  # nothing left to film
+        click(window, item_named(director, "filmShow_3"))  # a card's frame: that scene's clip
+        assert films.shownScene == 3 and films.playSource.endswith("j3.mp4")
+        join = item_named(director, "filmJoin")
+        assert join.property("enabled") and join.property("text") == "Собрать ролик"
+        click(window, item_saying(item_named(director, "filmJoint"), "Плавно"))
+        click(window, join)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("join", film_id, 0.5))
+        assert films.statusText == "склеиваю ролик…"
+        (media / f"film-{film_id}-abc123.mp4").write_bytes(mjpeg_mp4(COLOURS))
+        hub_says(status="ready", file=f"2026-11/film-{film_id}-abc123.mp4", fade=0.5)
+        assert films.joined and films.shownScene == 0 and films.playSource.endswith(f"film-{film_id}-abc123.mp4")
+        assert films.statusText == "ролик готов: 13,5 с" and join.property("text") == "Собрать заново"
+        assert item_named(director, "filmSave").property("visible")
+        films.saveAs(str(tmp_path / "lamp"))  # the save dialog's answer
+        assert (tmp_path / "lamp.mp4").read_bytes() == mjpeg_mp4(COLOURS)
+
+        click(window, item_named(director, "filmShoot_2"))  # «Переснять»
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("shoot", film_id, 2))
+        hub_says(status="ready")
+        click(window, item_named(director, "filmEdit_3"))  # «Изменить»
+        sheet = window.findChild(QObject, "sceneSheet")
+        wait_until(lambda: sheet.property("opened"))
+        words, prompt = window.findChild(QObject, "sceneWords"), window.findChild(QObject, "scenePrompt")
+        assert (words.property("text"), prompt.property("text")) == ("Камера возвращается", "the camera pulls back")
+        assert [m["id"] for m in films.sceneModes(3)] == ["picture", "continue", "frames", "text"]
+        assert [m["id"] for m in films.sceneModes(1)] == ["picture", "text"]  # the first goes on from nothing
+        words.setProperty("text", "Камера отъезжает к лампе")
+        click(window, item_saying(window.findChild(QObject, "sceneLength"), "5 с"))
+        click(window, window.findChild(QObject, "sceneSave"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "scene")
+        assert client.film_calls[-1] == ("scene", film_id, 3, {"words": "Камера отъезжает к лампе", "seconds": 5.0})
+        wait_until(lambda: not sheet.property("opened"))
+
+        click(window, write)  # scenes are filmed: asked first
+        assert app.question["title"] == "Переписать сценарий?"
+        app.answer(False)
+        assert client.film_calls[-1][0] == "scene"
+        click(window, write)
+        app.answer(True)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("write", film_id))
+        assert [c[0] for c in client.film_calls][-2:] == ["scene", "write"]  # nothing of the film's own has changed
+        hub_says(status="ready", error="сценарий не получился: модель не ответила за 180 с")
+        assert films.failed and "не получился" in films.statusText
+
+        click(window, item_saying(item_named(studio, "studioKind"), "Вручную"))
+        assert films.kind == "manual" and item_named(studio, "visualDraw").property("visible")
+        assert not director.property("visible")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
     finally:
         quick.close()

@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
-from common.picture_sizes import SECONDS, frames_for
+from common.picture_sizes import SECONDS, frames_for, scene_modes
 
 from . import ffmpeg, model_settings, visual
 from .db import Database, utc_now
@@ -76,7 +76,12 @@ SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status",
 
 
 def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
-    scenes = conn.execute("SELECT * FROM film_scenes WHERE film_id = ? ORDER BY n", (row["id"],)).fetchall()
+    """A film's row with its scenes in order, each with its clip (`clip`: the job's file, relative to data/media;
+    '' - none yet) and how long that took to film (`took`, seconds): the window's cards and its «ещё ≈»."""
+    scenes = conn.execute(
+        "SELECT s.*, COALESCE(j.file, '') AS clip, j.seconds AS took FROM film_scenes s "
+        "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
+    ).fetchall()  # fmt: skip
     return {**dict(row), "scenes": [{k: s[k] for k in s.keys() if k != "film_id"} for s in scenes]}  # noqa: SIM118
 
 
@@ -151,18 +156,9 @@ def role_model(conn: sqlite3.Connection) -> str | None:
     return roles.get(ROLE) or None
 
 
-def allowed(modes: list[str], photo: bool) -> list[str]:
-    """How this film's scenes may begin: by what its video model films (`modes`: text, picture, frames) and whether
-    there is a photo. To go on from a frame the model must film by a picture."""
-    out = ["picture"] if photo and "picture" in modes else []
-    out += ["continue"] if "picture" in modes else []
-    out += ["frames"] if photo and "frames" in modes else []
-    return out + (["text"] if "text" in modes else [])
-
-
 def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool) -> tuple[str, str, str]:
     """What the director is asked: (system, prompt, form) - the form is said again when the answer is not it."""
-    can = allowed(modes, photo)
+    can = scene_modes(modes, photo)
     form = FORM.format(modes=" | ".join(f'"{m}"' for m in can), seconds=seconds)
     system = SYSTEM.format(modes="\n".join(MODE_WORDS[m] for m in can), low=SCENE_S[0], high=SCENE_S[1], form=form)
     frame = {"wide": "wide (landscape)", "tall": "tall (portrait, for a phone)", "square": "square"}[shape]
@@ -177,7 +173,7 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int)
     the frames the family's VAE takes (`clip`: fps, step), its length within a scene's, a mode this film cannot
     film put right; None - no storyboard, asked again: no JSON, no scenes or too many, a scene with no prompt, and -
     the first time only - a length far from the one asked (the second is taken as it is, and said)."""
-    can, fps, step, tries = allowed(modes, photo), int(clip["fps"]), int(clip["step"]), [0]
+    can, fps, step, tries = scene_modes(modes, photo), int(clip["fps"]), int(clip["step"]), [0]
 
     def mode_of(asked: str, first: bool) -> str:
         if asked in can and not (first and asked in ("continue", "frames")):
@@ -387,7 +383,7 @@ class Director:
             (m for m in models if need in m["modes"]), models[0] if models else None)  # fmt: skip
         if model is None:
             raise DirectorError(tr("модели видео нет — поставьте её: «Установка моделей» → «Рисовать»"), 404)
-        if not allowed(model["modes"], bool(found["photo"])):
+        if not scene_modes(model["modes"], bool(found["photo"])):
             raise DirectorError(tr("{name} снимает только по картинке — добавьте фото товара", name=model["name"]), 422)
         return model
 
@@ -489,7 +485,7 @@ class Director:
             if (mode := spec.get("mode")) is not None:
                 if n == 1 and mode in ("continue", "frames"):
                     raise DirectorError(tr("первой сцене продолжать нечего — выберите другой режим"), 422)
-                if mode not in allowed(model["modes"], bool(found["photo"])):
+                if mode not in scene_modes(model["modes"], bool(found["photo"])):
                     raise DirectorError(tr("так сцена начаться не может: у фильма нет фото товара или модель видео "
                                            "так не снимает"), 422)  # fmt: skip
                 fields["mode"] = mode

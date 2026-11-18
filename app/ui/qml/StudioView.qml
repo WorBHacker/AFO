@@ -6,10 +6,13 @@ import QtQuick.Dialogs
 // sidebar. Left: what to make - the description, picture or video, the shape, how long, «Быстрее ↔ Качественнее», a
 // picture to start from, «Нарисовать»/«Снять видео»; the centre: the picture or the video as it comes, and what to do
 // with it; below: the latest. The chip «Нарисовать» in the chat's input and a chat's picture open it (29.5, 29.6б).
+// With a video model here (50.9): «Вручную | Режиссёр» at the top - by hand, as above, or a film of scenes
+// (DirectorView).
 Item {
     id: studio
     objectName: "studioView"
     readonly property bool narrow: width < 860
+    readonly property bool byHand: Films.kind !== "director"
     // a picture to start from, in use: «По картинке», or a video's first frame unless the video is by words (48.7б)
     readonly property bool fromPicture: Visual.hasSource && (Visual.mode !== "video" || Visual.videoMode !== "text")
     onVisibleChanged: if (visible) Visual.load()
@@ -67,6 +70,28 @@ Item {
         onAccepted: Visual.saveAs(selectedFile.toString())
     }
 
+    Item {  // 50.9: by hand, or the director's film
+        id: kindBar
+        visible: Films.available
+        width: parent.width
+        height: visible ? 46 : 0
+        Segmented {
+            objectName: "studioKind"
+            x: 16
+            anchors.verticalCenter: parent.verticalCenter
+            options: Films.kinds
+            value: Films.kind
+            onPicked: (id) => Films.setKind(id)
+        }
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.p.hairline }
+    }
+    DirectorView {
+        visible: studio.visible && !studio.byHand
+        y: kindBar.height
+        width: parent.width
+        height: parent.height - kindBar.height
+    }
+
     // no model yet: where to get one - for pictures, for video (the fix after 0.1.15: the Studio films too); each
     // button takes the install sheet to its own place, whatever it was left on
     Column {
@@ -107,9 +132,10 @@ Item {
     // left: what to make
     Rectangle {
         id: settings
-        visible: Visual.hasModels
+        visible: Visual.hasModels && studio.byHand
+        y: kindBar.height
         width: studio.narrow ? 280 : 320
-        height: parent.height
+        height: parent.height - kindBar.height
         color: Theme.p.window
         Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.p.hairline }
         Flickable {
@@ -314,10 +340,11 @@ Item {
     // the centre: the picture or the video, and what to do with it; below - the latest
     Item {
         id: stage
-        visible: Visual.hasModels
+        visible: Visual.hasModels && studio.byHand
         x: settings.width
+        y: kindBar.height
         width: parent.width - settings.width
-        height: parent.height
+        height: parent.height - kindBar.height
 
         Text {
             objectName: "visualStatus"
@@ -362,7 +389,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 8
                 visible: Visual.videoFile !== ""
-                source: visible ? Visual.videoMp4 : ""  // the Studio hidden: the clip let go
+                source: visible ? Visual.videoMp4 : ""  // the Studio hidden, or «Режиссёр» shown: the clip let go
                 fallback: Visual.videoFile
             }
             Image {

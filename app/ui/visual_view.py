@@ -275,15 +275,15 @@ class VisualView(QObject):
         if path is None:
             return ""
         job_id = self._job["id"]
-        return self._mp4(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id),
+        return self.playable(job_id, path.with_suffix(".mp4"), lambda: self.app.client.visual_mp4(job_id),
                          QUrl.fromLocalFile(str(path)).toString())  # fmt: skip
 
     @Property(str, notify=changed)
     def videoNote(self) -> str:
         """Why the video shown does not seek yet: its MP4 being made, or not made."""
-        return self._note(self._job.get("id", "")) if self._video_file(self._job) is not None else ""
+        return self.play_note(self._job.get("id", "")) if self._video_file(self._job) is not None else ""
 
-    def _mp4(self, key: str, mp4: Path, make: Callable[[], Any], webp: str) -> str:
+    def playable(self, key: str, mp4: Path, make: Callable[[], Any], webp: str) -> str:
         """A video's MP4 as a file's URL, if the hub has made it; else the hub is asked (once) - after the binding
         that asked has been worked out - and "" for now: the player shows the first frame, still (48.12.8). None
         made: the WebP's URL - it plays, as Qt reads it, without seeking."""
@@ -312,7 +312,7 @@ class VisualView(QObject):
             QTimer.singleShot(0, ask)
         return ""
 
-    def _note(self, key: str) -> str:
+    def play_note(self, key: str) -> str:
         if key in self._unplayable:
             return tr("без перемотки: {error}", error=self._unplayable[key])
         if key in self._making:
@@ -339,9 +339,9 @@ class VisualView(QObject):
         out = {}
         for blob in self._chat_videos:
             key, webp = f"blob/{blob}", self.blobUrl(blob)
-            mp4 = self._mp4(key, self.app.paths.blobs / f"{blob}.mp4",
+            mp4 = self.playable(key, self.app.paths.blobs / f"{blob}.mp4",
                             lambda blob=blob: self.app.client.visual_picture_mp4(blob), webp)  # fmt: skip
-            out[blob] = {"mp4": mp4, "note": self._note(key) if mp4 in ("", webp) else ""}
+            out[blob] = {"mp4": mp4, "note": self.play_note(key) if mp4 in ("", webp) else ""}
         return out
 
     @Property(bool, notify=changed)
@@ -545,6 +545,25 @@ class VisualView(QObject):
         if (width, height) != (first.get("width"), first.get("height")):
             return tr("меньшим размером, {width} × {height}", width=width, height=height)
         return ""
+
+    # ---- for the director's films (50.9): a scene's clip is a video of the Studio's ----
+
+    def video_models(self) -> list[dict[str, Any]]:
+        return self._videos
+
+    def step_of(self, job_id: str) -> tuple[int, int]:
+        """A job's step out of its steps; (0, 0) - none said yet."""
+        return self._progress.get(job_id, (0, 0))
+
+    def clock_of(self, job_id: str) -> float | None:
+        """The time a video has taken so far, its model giving no step."""
+        return self._clock.get(job_id)
+
+    def video_times(self, limit: int = 3) -> list[tuple[float, int]]:
+        """The latest videos filmed here, each (how long it took, its frames): what a frame costs on this computer."""
+        done = [j for j in self._recent if j.get("kind") == "video" and j["status"] == "done"
+                and j.get("seconds") and j.get("frames")]  # fmt: skip
+        return [(float(j["seconds"]), int(j["frames"])) for j in done[:limit]]
 
     def _picture(self, blob: str) -> bytes:
         client = self.app.client
@@ -768,7 +787,7 @@ class VisualView(QObject):
     @Slot(str)
     def chooseSource(self, url: str) -> None:
         """«Выбрать картинку…»: any picture Qt reads, sent as PNG."""
-        data = self._png_of(url)
+        data = self.png_of(url)
         if data is not None:
             self._use("from_png", base64.b64encode(data).decode(), data)
 
@@ -780,7 +799,7 @@ class VisualView(QObject):
     @Slot(str)
     def chooseLast(self, url: str) -> None:
         """A video's last frame (48.7б): any picture Qt reads, sent as PNG."""
-        data = self._png_of(url)
+        data = self.png_of(url)
         if data is not None:
             self.provider.last, self._shown_last = data, self._shown_last + 1
             self._last = {"last_png": base64.b64encode(data).decode(),
@@ -792,7 +811,8 @@ class VisualView(QObject):
         self._last = {}
         self.changed.emit()
 
-    def _png_of(self, url: str) -> bytes | None:
+    def png_of(self, url: str) -> bytes | None:
+        """A picture file - any Qt reads - as a PNG; None, and said, when it does not open."""
         path = QUrl(url).toLocalFile() if url.startswith("file:") else url
         image = QImage(path)
         if image.isNull():

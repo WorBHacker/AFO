@@ -58,6 +58,17 @@ def frames_for(seconds: float, fps: int = FPS, step: int = 4) -> int:
     return max(1, round(seconds * fps / step)) * step + 1
 
 
+def scene_modes(modes: list[str], photo: bool) -> list[str]:
+    """How a film's scenes may begin («Режиссёр», stage 50), the best first: by what its video model films (`modes`:
+    text, picture, frames) and whether the film has the product's photo. picture - from the photo; continue - from
+    the last frame of the scene before (the model must film by a picture); frames - from that frame to the photo;
+    text - by words alone."""
+    out = ["picture"] if photo and "picture" in modes else []
+    out += ["continue"] if "picture" in modes else []
+    out += ["frames"] if photo and "frames" in modes else []
+    return out + (["text"] if "text" in modes else [])
+
+
 def trial_size(clip: dict | None = None) -> tuple[int, int]:
     """A video model's trial size (29.8а): small, each side up to the family's grid (48.3)."""
     grid = (clip or CLIP)["grid"]
