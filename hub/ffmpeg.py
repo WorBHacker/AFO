@@ -14,6 +14,7 @@ itself (29.8а live) - RIFE ×2 was for models of 16.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,13 @@ VERSION = "9.0"
 CONVERT_TIMEOUT_S = 600.0
 JOIN_TIMEOUT_S = 1800.0  # a film of a minute at 1216x704, every frame a key frame
 # H.264 in yuv420p - any player and messenger - the index at the front, no sound; each frame a key frame (48.12.8)
-H264 = ("-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "1", "-movflags", "+faststart", "-an", "-f", "mp4")
+# the sound a clip has (52.2: the engine's PCM) goes into AAC; a clip without - no sound track, as before
+H264 = ("-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "1", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "192k",
+        "-f", "mp4")  # fmt: skip
 PNG = ("-c:v", "png", "-f", "image2")  # one picture, whatever the file is called while it is written
+JPEG = ("-frames:v", "1", "-update", "1", "-c:v", "mjpeg", "-pix_fmt", "yuvj420p", "-q:v", "3", "-f", "image2")
+SOUND = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"  # every scene's sound alike, to be joined
+STILL_SIDE = 64  # the frames compared to tell a clip that does not move
 
 
 def home() -> Path:
@@ -124,11 +130,37 @@ def _written(program: Path, args: list[str], target: Path, failed: str, *,
 
 
 def to_mp4(program: Path, source: Path, target: Path) -> None:
-    """A video into MP4 (blocking): H.264 in yuv420p - any player and messenger - the index at the front, no sound;
-    written beside under another name, then put in place. Each frame a key frame (48.12.8): the window's player goes
-    to a frame by decoding it alone, not the clip's frames from the first (x264's one key frame in 250) - three
-    times the size, a 3 s clip at 960×960 2.3 MB."""
+    """A video into MP4 (blocking): H.264 in yuv420p - any player and messenger - the index at the front, its sound,
+    when it has one (52.2), in AAC; written beside under another name, then put in place. Each frame a key frame
+    (48.12.8): the window's player goes to a frame by decoding it alone, not the clip's frames from the first
+    (x264's one key frame in 250) - three times the size, a 3 s clip at 960×960 2.3 MB."""
     _written(program, ["-i", str(source), *H264], target, N_("ffmpeg не перевёл видео в MP4: {said}"))
+
+
+def heard(program: Path, source: Path) -> bool:
+    """Whether a clip has sound (52.2, blocking): what ffmpeg says of its streams. One it cannot read has none."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        done = subprocess.run([str(program), "-hide_banner", "-i", str(source)], capture_output=True,
+                              timeout=CONVERT_TIMEOUT_S, creationflags=flags, check=False)  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return re.search(r"Stream #\d+:\d+.*: Audio:", (done.stderr or b"").decode("utf-8", "replace")) is not None
+
+
+def poster(program: Path, source: Path, target: Path) -> None:
+    """A clip's first frame as a JPEG (52.2, blocking): what the window shows of a clip it cannot read as a picture -
+    the engine's WebM - in its lists and until its MP4 plays."""
+    _written(program, ["-i", str(source), *JPEG], target, N_("ffmpeg не взял первый кадр: {said}"))
+
+
+def still(program: Path, source: Path, frames: int) -> bool:
+    """Whether a clip of `frames` frames shows one picture all along (52.2, blocking): its first, middle and last
+    frame, small, are the same to a byte - the engine lays each frame by itself, the same picture the same way. A
+    WebP folds such frames into one (`visual.moving`); a WebM keeps each."""
+    with tempfile.TemporaryDirectory() as folder:
+        shown = frames_at(program, source, Path(folder), [0, frames // 2, frames - 1], small=STILL_SIDE)
+        return len({f.read_bytes() for f in shown}) == 1
 
 
 def last_frame(program: Path, source: Path, target: Path) -> None:
@@ -164,26 +196,42 @@ def join(program: Path, clips: list[tuple[Path, float]], target: Path, *, fps: i
     """Scenes into one MP4 (50.3, blocking): `clips` - each with its length in seconds (frames / fps: the engine's
     WebP does not say it). Cut to cut - every frame of each, once; with `fade_s` - a cross-fade of that length at
     each joint, the film shorter by the fades. Each scene's frames are stamped anew, one every 1/fps: a WebP keeps
-    whole milliseconds, 42 for a frame of 24 a second, and a frame would be doubled every three seconds."""
+    whole milliseconds, 42 for a frame of 24 a second, and a frame would be doubled every three seconds. With sound
+    in any of them (52.2) the film has sound: each scene's own, as long as the scene - a shorter one padded, a
+    silent scene's stretch silence - and cross-faded where the picture is."""
     if not clips:
         raise EngineError(tr("нечего склеивать: в фильме нет снятых сцен"))
     if fade_s > 0 and any(seconds <= fade_s * (1 if n in (0, len(clips) - 1) else 2) for n, (_c, seconds)
                           in enumerate(clips)) and len(clips) > 1:  # fmt: skip
         raise EngineError(tr("сцена короче перехода: уберите переход или сделайте сцену длиннее"))
+    sounds = [heard(program, clip) for clip, _seconds in clips]
+    loud = any(sounds)
     args, graph = [], []
-    for n, (clip, _seconds) in enumerate(clips):
+    for n, (clip, seconds) in enumerate(clips):
         args += ["-i", str(clip)]
         graph.append(f"[{n}:v]setpts=N/({fps}*TB),fps={fps},format=yuv420p,setsar=1,settb=AVTB[v{n}]")
+        if loud and sounds[n]:
+            graph.append(f"[{n}:a]{SOUND},apad,atrim=duration={seconds:.4f},asetpts=N/SR/TB[a{n}]")
+        elif loud:
+            graph.append(f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={seconds:.4f},"
+                         f"aformat=sample_fmts=fltp[a{n}]")  # fmt: skip
     if len(clips) == 1:
-        out = "v0"
+        out, sound = "v0", "a0"
     elif fade_s > 0:
-        out, at = "v0", 0.0
+        out, sound, at = "v0", "a0", 0.0
         for n in range(1, len(clips)):
             at += clips[n - 1][1] - fade_s  # where this joint's fade begins, in the film so far
-            graph.append(f"[{out}][v{n}]xfade=transition=fade:duration={fade_s:.4f}:offset={at:.4f}[x{n}]")
+            # a quarter of a frame before it (52.2): a time rounded up past its frame began the fade a frame late
+            begins = max(0.0, at - 0.25 / fps)
+            graph.append(f"[{out}][v{n}]xfade=transition=fade:duration={fade_s:.4f}:offset={begins:.6f}[x{n}]")
             out = f"x{n}"
+            if loud:
+                graph.append(f"[{sound}][a{n}]acrossfade=duration={fade_s:.4f}:curve1=tri:curve2=tri[y{n}]")
+                sound = f"y{n}"
     else:
-        graph.append("".join(f"[v{n}]" for n in range(len(clips))) + f"concat=n={len(clips)}:v=1:a=0[v]")
-        out = "v"
-    _written(program, [*args, "-filter_complex", ";".join(graph), "-map", f"[{out}]", *H264], target,
+        streams = "".join(f"[v{n}]" + (f"[a{n}]" if loud else "") for n in range(len(clips)))
+        graph.append(streams + f"concat=n={len(clips)}:v=1:a={int(loud)}[v]" + ("[a]" if loud else ""))
+        out, sound = "v", "a"
+    heard_too = ["-map", f"[{sound}]"] if loud else []
+    _written(program, [*args, "-filter_complex", ";".join(graph), "-map", f"[{out}]", *heard_too, *H264], target,
              N_("ffmpeg не склеил сцены: {said}"), timeout=JOIN_TIMEOUT_S)  # fmt: skip

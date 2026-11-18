@@ -328,3 +328,85 @@ def test_a_clips_last_frame_its_chosen_frames_and_scenes_joined(tmp_path):
     with pytest.raises(EngineError, match="не взял последний кадр"):
         ffmpeg.last_frame(program, tmp_path / "missing.webp", tmp_path / "missing.png")
     assert not list(tmp_path.glob("*.part")) and not (tmp_path / "missing.png").exists()
+
+
+def _clip_with_sound(program: Path, target: Path, frames: int, *, moves: bool = True) -> None:
+    """A clip as the engine gives one with sound (52.1 live): VP8 at 24 a second and PCM 48 kHz stereo in
+    Matroska named .webm - a tone of 440 Hz, a little shorter than the frames."""
+    picture = "testsrc=size=64x64:rate=24" if moves else "color=c=red:size=64x64:rate=24"
+    subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", picture, "-f",
+                    "lavfi", "-t", f"{(frames - 1) / 24:.4f}", "-i", "sine=frequency=440:sample_rate=48000",
+                    "-frames:v", str(frames), "-ac", "2", "-c:v", "libvpx", "-g", "1", "-c:a", "pcm_s16le", "-f",
+                    "matroska", str(target)], check=True, timeout=60)  # fmt: skip
+
+
+def _said(program: Path, *args: str) -> str:
+    done = subprocess.run([str(program), "-hide_banner", *args], capture_output=True, timeout=60, check=False)
+    return done.stderr.decode("utf-8", "replace")
+
+
+def _loud(program: Path, video: Path, start: float, length: float) -> float:
+    """The mean volume of a piece of a file's sound, dB (silence - about -91)."""
+    import re
+
+    said = _said(program, "-ss", f"{start}", "-t", f"{length}", "-i", str(video), "-vn", "-af", "volumedetect", "-f",
+                 "null", "-")  # fmt: skip
+    return float(re.search(r"mean_volume: (-?[\d.]+) dB", said).group(1))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_clip_with_sound_keeps_it_in_its_mp4_and_in_the_joined_film(tmp_path):
+    """52.2 - a real ffmpeg, the hub's own arguments: the engine's clip with sound (WebM: VP8 and PCM) is told from
+    a silent one; its MP4 has the sound (AAC) and each frame; its poster is the first frame; a clip of one frame
+    repeated is told from one that moves; scenes with sound and without are joined into one film - the silent ones'
+    stretch is silence - cut to cut and with a cross-fade, the sound as long as the picture."""
+    program = Path(shutil.which("ffmpeg"))
+    loud, silent, still = tmp_path / "loud.webm", tmp_path / "silent.webp", tmp_path / "still.webm"
+    _clip_with_sound(program, loud, 25)
+    _clip_with_sound(program, still, 9, moves=False)
+    silent.write_bytes(animated_webp([_solid((20, 40, 100 + 15 * k)) for k in range(9)], 64, 64))
+
+    assert ffmpeg.heard(program, loud) and not ffmpeg.heard(program, silent)
+    assert not ffmpeg.heard(program, tmp_path / "missing.webm")
+    assert ffmpeg.still(program, still, 9) and not ffmpeg.still(program, loud, 25)
+
+    mp4 = tmp_path / "loud.mp4"
+    ffmpeg.to_mp4(program, loud, mp4)
+    said = _said(program, "-i", str(mp4))
+    assert "Video: h264" in said and "Audio: aac" in said and "48000 Hz, stereo" in said, said
+    assert len(_frames_of(program, mp4, tmp_path / "mp4-frames")) == 25
+    assert _loud(program, mp4, 0.2, 0.5) > -30
+    quiet = tmp_path / "silent.mp4"
+    ffmpeg.to_mp4(program, silent, quiet)  # a silent one's MP4: no sound track at all, as before
+    assert "Audio:" not in _said(program, "-i", str(quiet))
+
+    poster = tmp_path / "loud.jpg"
+    ffmpeg.poster(program, loud, poster)
+    assert poster.read_bytes()[:2] == b"\xff\xd8" and not (tmp_path / "loud.jpg.part").exists()
+    from PySide6.QtGui import QImage
+
+    assert (QImage(str(poster)).width(), QImage(str(poster)).height()) == (64, 64)
+
+    film = tmp_path / "film.mp4"  # sound, silence, sound - cut to cut
+    ffmpeg.join(program, [(loud, 25 / 24), (silent, 9 / 24), (loud, 25 / 24)], film, fps=24)
+    said = _said(program, "-i", str(film))
+    assert "Audio: aac" in said, said
+    assert len(_frames_of(program, film, tmp_path / "film-frames")) == 59
+    assert _loud(program, film, 0.2, 0.6) > -30 and _loud(program, film, 1.75, 0.6) > -30
+    assert _loud(program, film, 1.12, 0.22) < -60  # the silent scene's stretch
+    whole = _said(program, "-i", str(film), "-map", "0:a", "-f", "null", "-")
+    import re
+
+    seconds = re.findall(r"time=\d+:\d+:([\d.]+)", whole)[-1]
+    assert abs(float(seconds) - 59 / 24) < 0.06, whole  # the sound as long as the picture
+
+    faded = tmp_path / "faded.mp4"
+    ffmpeg.join(program, [(loud, 25 / 24), (silent, 9 / 24), (loud, 25 / 24)], faded, fps=24, fade_s=0.125)
+    assert len(_frames_of(program, faded, tmp_path / "faded-frames")) == 53  # 59 less two fades of 3
+    assert "Audio: aac" in _said(program, "-i", str(faded))
+    assert _loud(program, faded, 0.2, 0.5) > -30
+
+    mute = tmp_path / "mute.mp4"  # silent scenes alone: a film without a sound track, as before
+    ffmpeg.join(program, [(silent, 9 / 24), (silent, 9 / 24)], mute, fps=24)
+    assert "Audio:" not in _said(program, "-i", str(mute))
+    assert not list(tmp_path.glob("*.part"))
