@@ -153,11 +153,13 @@ def test_the_director_writes_a_films_storyboard_from_the_idea_and_the_photo(hub)
 
 
 def _film_of(hub, scenes, **fields):  # noqa: F811
-    """A film with the product's photo and these scenes, ready to be filmed."""
+    """A film with the product's photo and these scenes, ready to be filmed; its scenes are not looked at (51.1)
+    unless `checks` says so."""
     from tests.test_visual import PICTURE
 
     visual, db = hub.app.state.visual, hub.app.state.db
     (visual.media / "2026-11").mkdir(parents=True, exist_ok=True)
+    fields = {"checks": False, **fields}
     film_id = db.call(lambda conn: director.new_film(conn, idea="Ролик о лампе", seconds=15, **fields))["id"]
     photo = f"2026-11/film-{film_id}-photo.png"
     (visual.media / photo).write_bytes(PICTURE)
@@ -307,7 +309,8 @@ def test_the_window_makes_a_film_through_the_hub_from_the_photo_to_the_joined_fi
         assert hub.post("/v1/films", json={"idea": "Ролик", "seconds": 900}).status_code == 422
         assert hub.get("/v1/films/nope").status_code == 404 and client.films()["films"] == []
 
-        made = client.new_film({"idea": "Ролик о латунной лампе", "seconds": 15, "photo_png": photo})["film"]
+        made = client.new_film({"idea": "Ролик о латунной лампе", "seconds": 15, "photo_png": photo,
+                                "checks": False})["film"]  # fmt: skip
         film_id = made["id"]
         assert (made["status"], made["shape"], made["scenes"]) == ("draft", "wide", [])
         assert made["photo"].endswith(f"film-{film_id}-photo.png") and client.film_photo(film_id) == PICTURE
@@ -431,6 +434,125 @@ def test_the_look_at_a_scene_is_asked_and_its_answer_read():
     three = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
     assert visual.frames_in(three) == 3 and visual.moving(three)
     assert visual.frames_in(STILL) == 0 and visual.frames_in(PICTURE) == 0 and not visual.moving(STILL)
+
+
+PAIR = [{"mode": "picture", "words": "Лампа на столе", "prompt": "a brass lamp on a desk, static shot", "frames": 25},
+        {"mode": "continue", "words": "Лампа загорается", "prompt": "the lamp lights up", "frames": 25}]  # fmt: skip
+NO = {"ok": False, "why": "motion", "reason": "Лампа стоит, ничего не движется",
+      "prompt": "The lamp's glow swells from dim to bright, the camera pushes in"}  # fmt: skip
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_scene_the_look_rejects_is_filmed_anew_by_the_looks_prompt(hub, monkeypatch):  # noqa: F811
+    """51.3: each scene filmed is looked at by the director's model - three frames of the take (a real ffmpeg, small
+    JPEGs) and the product's photo; a take that is not good is filmed anew by the prompt the look wrote, the next
+    scene goes on from the new take; the looks' cost is the film's. A scene is filmed anew twice at most - then the
+    last take stays, and the scene says why it is not good. The switch off - nobody is asked. A look that does not
+    come out stops no film: the scenes stay filmed, the rest are not looked at, and the film says so. «Стоп» ends a
+    look at once. A cloud director is asked while the film keeps the card; for one on this computer the card is
+    let go and kept again."""
+    from hub import ffmpeg
+    from tests.test_ffmpeg import GREEN, ORANGE, _solid, animated_webp
+    from tests.test_visual import PICTURE, FakeDrawSwap, _install
+
+    _install(hub, "film", LTX)
+    FakeDrawSwap.filmed = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    state = hub.app.state
+    held, complete = [], state.judge.complete
+
+    async def watched(*args, **kwargs):
+        held.append(state.card.holder)
+        return await complete(*args, **kwargs)
+
+    monkeypatch.setattr(state.judge, "complete", watched)
+    no = json.dumps(NO, ensure_ascii=False)
+    cloud = SeeingCloud(["Let me look closer.", no, '{"ok": true}', '{"ok": true}'])
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        film_id = _film_of(hub, PAIR, checks=True)
+        hub.portal.call(state.director.shoot, film_id)
+        found = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [(s["status"], s["tries"], s["verdict"], s["reason"]) for s in found["scenes"]] == [
+            ("done", 1, "ok", ""), ("done", 0, "ok", "")]  # fmt: skip
+        assert found["error"] == "" and found["checking"] == 0 and found["tokens"] == 4 * 920
+        assert found["scenes"][0]["prompt"] == NO["prompt"]  # the look's, from now on
+        _first, anew, second = FakeDrawSwap.video
+        assert [v["prompt"] for v in FakeDrawSwap.video] == [PAIR[0]["prompt"], NO["prompt"], PAIR[1]["prompt"]]
+        assert base64.b64decode(anew["init_image"]) == PICTURE and "init_image" in second
+        asked = cloud.asked[0]["messages"]
+        assert '"motion"' in asked[0]["content"] and "Лампа на столе" in asked[1]["content"][0]["text"]
+        shown = [part["image_url"]["url"] for part in asked[1]["content"][1:]]
+        assert [url.split(",")[0] for url in shown] == ["data:image/jpeg;base64"] * 3 + ["data:image/png;base64"]
+        assert base64.b64decode(shown[0].split(",")[1])[:2] == b"\xff\xd8"
+        assert base64.b64decode(shown[3].split(",")[1]) == PICTURE
+        assert "That is not the JSON" in cloud.asked[1]["messages"][-1]["content"]  # no verdict: asked once more
+        assert "Лампа загорается" in cloud.asked[3]["messages"][1]["content"][0]["text"]  # the second scene's look
+        assert held == ["studio"] * 3  # a cloud's answer: the card stays the film's
+        looked = [p["film"]["checking"] for kind, p in hub.seen if kind == "film.changed"]
+        assert 1 in looked and 2 in looked and looked[-1] == 0
+        metas = state.db.call(lambda c: [json.loads(r[0]) for r in c.execute(
+            "SELECT meta FROM usage WHERE model_id = 'studio-cloud/eye'")])  # fmt: skip
+        assert metas[-1] == {"purpose": "director", "film_id": film_id, "scene": 2}
+
+        # never good: filmed anew twice, the last take stays - and says why
+        cloud.answers[:] = [no, no, json.dumps({"ok": False, "why": "product"})]
+        FakeDrawSwap.video.clear()
+        hub.portal.call(lambda: state.director.shoot(film_id, only=1))
+        bad = _until(hub, film_id, lambda f: f["status"] == "ready")
+        one = bad["scenes"][0]
+        assert (one["status"], one["tries"], one["verdict"]) == ("done", 2, "reject") and "товар" in one["reason"]
+        assert len(FakeDrawSwap.video) == 3 and bad["error"] == "" and bad["scenes"][1]["status"] == "stale"
+
+        # the switch off: nobody is asked, what the look said before is forgotten
+        state.db.call(lambda conn: director.update_film(conn, film_id, checks=0))
+        before = len(cloud.asked)
+        hub.portal.call(lambda: state.director.shoot(film_id, only=1))
+        plain = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert len(cloud.asked) == before and [plain["scenes"][0][k] for k in ("tries", "verdict", "reason")] == [
+            0, "", ""]  # fmt: skip
+
+        # a look that does not come out: the film is filmed all the same, the rest is not looked at
+        state.db.call(lambda conn: director.update_film(conn, film_id, checks=1))
+        monkeypatch.setattr(director, "LOOK_TIMEOUT_S", 0.5)
+        hub.portal.call(state.director.shoot, film_id)
+        unseen = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [(s["status"], s["verdict"]) for s in unseen["scenes"]] == [("done", ""), ("done", "")]
+        assert "сцены не проверены" in unseen["error"] and len(cloud.asked) == before + 1
+
+        # «Стоп» while the director looks: at once, the scene stays filmed
+        monkeypatch.setattr(director, "LOOK_TIMEOUT_S", 120.0)
+        hub.portal.call(lambda: state.director.shoot(film_id, only=2))
+        _until(hub, film_id, lambda f: f["checking"] == 2)
+        stopped = hub.portal.call(state.director.stop, film_id)
+        assert (stopped["status"], stopped["error"], stopped["checking"]) == ("ready", "", 0)
+        assert stopped["scenes"][1]["status"] == "done" and state.card.holder == ""
+
+        # a director on this computer answers from the card: the film lets it go for the question, keeps it after
+        near = SeeingCloud(['{"ok": true}', '{"ok": true}'])
+        try:
+            use(hub, OpenAICompatProvider("studio-near", near.url, locality="local", api_key="k"))
+            state.db.call(lambda conn: director.update_film(conn, film_id, director="studio-near/eye"))
+            del held[:]
+            seen, video = [], state.visual.video
+
+            async def filmed(spec, client):
+                seen.append(state.card.holder)
+                return await video(spec, client)
+
+            monkeypatch.setattr(state.visual, "video", filmed)
+            hub.portal.call(lambda: state.director.shoot(film_id, only=1))
+            _until(hub, film_id, lambda f: f["status"] == "ready")
+            hub.portal.call(state.director.shoot, film_id)  # the stale second one
+            local = _until(hub, film_id, lambda f: f["status"] == "ready")
+            assert [(s["status"], s["verdict"]) for s in local["scenes"]] == [("done", "ok"), ("done", "ok")]
+            assert held == ["", ""] and len(near.asked) == 2 and state.card.holder == ""
+        finally:
+            near.close()
+    finally:
+        cloud.close()
 
 
 def test_a_films_look_at_its_scenes_is_a_switch_and_a_scene_keeps_what_the_look_said(hub):  # noqa: F811

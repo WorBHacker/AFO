@@ -649,6 +649,8 @@ class Director:
         fps = int(model["clip"]["fps"])
         spec = {"prompt": scene["prompt"], "model": model["model_id"], "shape": found["shape"], "shape_fixed": True,
                 "seconds": (scene["frames"] - 1) / fps, "seed": scene["seed"]}  # fmt: skip
+        if scene.get("cfg"):  # (51.3) the guidance the look asked for
+            spec["cfg"] = scene["cfg"]
         if scene["mode"] in ("picture", "frames"):
             photo = (await self._photo(found) or [{}])[0].get("data")
             if not photo:
@@ -668,39 +670,122 @@ class Director:
         await self._db.acall(lambda conn: update_scene(conn, film_id, n, **fields))
         await self._changed(film_id)
 
+    async def _the_scene(self, film_id: str, n: int) -> dict[str, Any]:
+        return next(s for s in (await self._db.acall(lambda conn: film(conn, film_id)))["scenes"] if s["n"] == n)
+
+    def _keep_card(self, stop: asyncio.Event) -> None:
+        """The card stays the Studio's between the film's scenes; taken from the film meanwhile - the film stops."""
+        self._studio.keep(stop.set, tr("видеокарта снимает фильм — ответ начнётся после него; «Стоп» в Студии её "
+                                       "освободит"))  # fmt: skip
+
+    async def _take(self, found: dict[str, Any], model: dict[str, Any], n: int,
+                    stop: asyncio.Event) -> tuple[dict[str, Any] | None, str]:  # fmt: skip
+        """One take of scene `n`: (its job done, '') - or (None, why the film stops at this scene; '' - «Стоп»)."""
+        film_id = found["id"]
+        try:
+            job = await self._studio.video(await self._spec(found, model, await self._the_scene(film_id, n)), "film")
+        except (DirectorError, visual.VisualError) as exc:
+            await self._scene(film_id, n, status="failed", error=str(exc))
+            return None, tr("сцена {n} не снята: {error}", n=n, error=exc)
+        await self._db.acall(lambda conn: update_film(conn, film_id, file=""))  # the joined film is of the old
+        await self._scene(film_id, n, status="filming", error="", job_id=job["id"])
+        await self._bus.publish("film.progress", {"id": film_id, "scene": n, "job": job["id"]}, persist=False)
+        done = await self._studio.until_done(job["id"], stop)
+        if done is not None and done["status"] == "done":
+            await self._db.acall(lambda conn: _stale_after(conn, film_id, n))
+            await self._scene(film_id, n, status="done")
+            return done, ""
+        if stop.is_set():
+            await self._scene(film_id, n, status="new", error="")
+            return None, ""
+        said = (done or {}).get("error") or tr("видео не снято")
+        await self._scene(film_id, n, status="failed", error=said)
+        return None, tr("сцена {n} не снята: {error}", n=n, error=said)
+
+    async def _look(self, found: dict[str, Any], model: dict[str, Any], n: int, job: dict[str, Any],
+                    looks: dict[str, Any], stop: asyncio.Event) -> bool:  # fmt: skip
+        """The take of scene `n` looked at by the director's model (51.3): three of its frames and the product's
+        photo. Whether the scene is filmed anew - it is not good, and the scene's and the shooting's retakes are not
+        used up: then its prompt (and guidance) are the look's. `looks` - the shooting's: `left` retakes, `spent`
+        dollars, `off` - why no scene is looked at from now on (a look that does not come out stops none: the scene
+        stays filmed)."""
+        film_id = found["id"]
+        if looks["off"] or stop.is_set():
+            return False
+        chosen = found["director"] or await self._db.acall(role_model)
+        if not chosen:
+            looks["off"] = tr("сцены не проверены: выберите модель для роли «Режиссёр»")
+            return False
+        if looks["spent"] >= LOOK_USD:
+            looks["off"] = tr("проверка сцен остановлена: её расход дошёл до ${usd}", usd=f"{LOOK_USD:g}")
+            return False
+        scene = await self._the_scene(film_id, n)
+        room, local = cfg_room(model, scene), self._judge.local(chosen)
+        await self._changed(film_id, checking=n)
+        try:
+            frames = await self._studio.look(job, LOOK_FRAMES, LOOK_SIDE)
+            photo = await self._photo(found)
+            images = [{"media_type": "image/jpeg", "data": base64.b64encode(f).decode("ascii")} for f in frames]
+            system, prompt, form = look_question(scene, photo=bool(photo), cfg=room)
+            if local:  # its answer comes from the card: the film lets it go for the question
+                self._studio.unkeep()
+            try:
+                said = await self._judge.complete(chosen, system, prompt, look_reader(room), conversation_id=None,
+                                                  meta={"purpose": "director", "film_id": film_id, "scene": n},
+                                                  form=form, images=images + photo, timeout_s=LOOK_TIMEOUT_S,
+                                                  cancel=stop)  # fmt: skip
+            finally:
+                if local:
+                    self._keep_card(stop)
+        except (JudgeError, DirectorError, visual.VisualError) as exc:
+            if not stop.is_set():
+                looks["off"] = tr("сцены не проверены: {error}", error=exc)
+            return False
+        finally:
+            await self._changed(film_id, checking=0)
+        looks["spent"] += said["cost_usd"]
+        await self._db.acall(lambda conn: conn.execute(
+            "UPDATE films SET tokens = tokens + ?, cost_usd = round(cost_usd + ?, 6) WHERE id = ?",
+            (said["tokens"], said["cost_usd"], film_id)))  # fmt: skip
+        if said["ok"]:
+            await self._scene(film_id, n, verdict="ok", reason="")
+            return False
+        fields: dict[str, Any] = {"verdict": "reject", "reason": said["reason"]}
+        again = scene["tries"] < RETAKES and looks["left"] > 0
+        if again:
+            looks["left"] -= 1
+            fields["tries"] = scene["tries"] + 1
+            if said["prompt"]:
+                fields["prompt"] = said["prompt"]
+            if said["cfg"] is not None:
+                fields["cfg"] = said["cfg"]
+            if not said["prompt"] and said["cfg"] is None:  # nothing else to film it by: another seed
+                fields["seed"] = None
+        elif scene["tries"] < RETAKES:
+            looks["off"] = tr("проверка сцен остановлена: пересъёмок за эту съёмку уже {count}", count=looks["all"])
+        await self._scene(film_id, n, **fields)
+        return again
+
     async def _shoot(self, found: dict[str, Any], model: dict[str, Any], numbers: list[int]) -> None:
         film_id, error = found["id"], ""
         stop = self._stops[film_id]
-        # the card stays the Studio's between the scenes; taken from the film meanwhile - the film stops
-        self._studio.keep(stop.set, tr("видеокарта снимает фильм — ответ начнётся после него; «Стоп» в Студии её "
-                                       "освободит"))  # fmt: skip
+        self._keep_card(stop)
+        # (51.3) the looks of this shooting: scenes filmed anew - as many as there are scenes to film, at most (one
+        # scene alone has its own RETAKES)
+        retakes = max(RETAKES, len(numbers))
+        looks = {"left": retakes, "all": retakes, "spent": 0.0, "off": "", "on": bool(found["checks"])}
         try:
             for n in numbers:
                 if stop.is_set():
                     break
-                scene = next(s for s in (await self._db.acall(lambda conn: film(conn, film_id)))["scenes"]
-                             if s["n"] == n)  # fmt: skip
-                try:
-                    job = await self._studio.video(await self._spec(found, model, scene), "film")
-                except (DirectorError, visual.VisualError) as exc:
-                    await self._scene(film_id, n, status="failed", error=str(exc))
-                    error = tr("сцена {n} не снята: {error}", n=n, error=exc)
+                await self._db.acall(lambda conn, n=n: update_scene(conn, film_id, n, tries=0, verdict="", reason=""))
+                while True:
+                    job, error = await self._take(found, model, n, stop)
+                    if job is None or not looks["on"] or not await self._look(found, model, n, job, looks, stop):
+                        break
+                if job is None:  # not filmed, or «Стоп»: the next scene would go on from nothing
                     break
-                await self._db.acall(lambda conn: update_film(conn, film_id, file=""))  # the joined film is of the old
-                await self._scene(film_id, n, status="filming", error="", job_id=job["id"])
-                await self._bus.publish("film.progress", {"id": film_id, "scene": n, "job": job["id"]}, persist=False)
-                done = await self._studio.until_done(job["id"], stop)
-                if done is not None and done["status"] == "done":
-                    await self._db.acall(lambda conn, n=n: _stale_after(conn, film_id, n))
-                    await self._scene(film_id, n, status="done")
-                    continue
-                if stop.is_set():
-                    await self._scene(film_id, n, status="new", error="")
-                    break
-                said = (done or {}).get("error") or tr("видео не снято")
-                await self._scene(film_id, n, status="failed", error=said)
-                error = tr("сцена {n} не снята: {error}", n=n, error=said)
-                break
+            error = error or looks["off"]
         except Exception:
             log.exception("film %s", film_id)
             error = tr("внутренняя ошибка хаба — подробности в журнале")
@@ -711,7 +796,7 @@ class Director:
             await self._db.acall(lambda conn: conn.execute(
                 "UPDATE film_scenes SET status = 'new' WHERE film_id = ? AND status = 'filming'", (film_id,),
             ))  # fmt: skip
-            await self._changed(film_id, status="ready", error=error)
+            await self._changed(film_id, status="ready", error=error, checking=0)
 
     async def join(self, film_id: str, *, fade: float | None = None) -> dict[str, Any]:
         """«Собрать ролик» (50.8): the scenes' clips into one MP4 - cut to cut, or with a cross-fade of `fade` seconds

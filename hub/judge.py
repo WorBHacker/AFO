@@ -474,6 +474,14 @@ class Judge:
         return await self.complete(model_id, SYSTEM, prompt, parse, conversation_id=conversation_id,
                                    meta={"purpose": "judge", **meta}, form=FORM)  # fmt: skip
 
+    def local(self, model_id: str) -> bool:
+        """Whether the model answers on this computer (51.3): on the graphics card - a film that keeps the card
+        between its scenes lets it go for such a model's answer."""
+        try:
+            return self._gateway.resolve(model_id)[0].locality == "local"
+        except GatewayError:
+            return False
+
     async def complete(self, model_id: str, system: str, prompt: str, read: Any, *, conversation_id: str | None,
                        meta: dict[str, Any], form: str, images: list[dict[str, str]] | None = None,
                        timeout_s: float | None = None,
