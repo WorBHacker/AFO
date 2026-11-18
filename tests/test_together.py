@@ -2005,3 +2005,28 @@ def test_an_answer_for_the_chat_or_the_project_holds_after_reading_the_web(hub, 
     assert asked["tainted"] is False
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
     ch.finished(hub, fresh)
+
+
+def test_switching_to_trusted_lets_the_open_card_go(hub, repo):  # noqa: F811
+    """The user's word 2026-11-17: «смена режима действует сразу, в том числе на идущий ответ». The next action took
+    the new mode already; the card open at that moment stayed and the answer stood on it. Now it closes as allowed
+    when «Доверенный» would not have asked it - a card for what cannot be undone stays the person's."""
+    steps = [[{"id": "w1", "name": "edit_file", "input": edit()}], [tc.run("Write-Output next")]]
+    pid, conv, provider = ch.setup_chat(hub, repo, steps)  # «Спрашивать»
+    ch.say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tool"] == "edit_file"
+    assert hub.put(f"/v1/conversations/{conv}/context", json={"mode": "trusted"}).status_code == 200
+    written, ran = answered(hub, conv)
+    assert written["error"] is False and ran["error"] is False and "next" in ran["output"]
+    assert cards_of(hub, conv) == [{"tool": "edit_file", "status": "allowed", "decided_by": "hub"}]
+
+    provider.steps += [[tc.run("git push origin main")]]
+    other = ch.new_chat(hub, pid)
+    ch.say(hub, other)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["destructive"] is True
+    assert hub.put(f"/v1/conversations/{other}/context", json={"mode": "trusted"}).status_code == 200
+    assert [a["id"] for a in hub.get("/v1/approvals").json()["approvals"]] == [asked["id"]]  # still the person's
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    ch.finished(hub, other)

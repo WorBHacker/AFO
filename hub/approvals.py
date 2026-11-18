@@ -620,16 +620,19 @@ class ApprovalQueue:
             )  # fmt: skip
             return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
-        row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root),
-                                                   "unsaved": unsaved,
-                                                   "tainted": await self._tainted(conversation_id)}  # fmt: skip
-        if row["status"] == "allowed":
-            await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
-            return Decision(True, approval_id=approval_id)
+        # waited for before the row is written: an answer may come the moment it is there - a switch of the chat's
+        # mode closes its open requests (settle) - and one set on nobody left the asker waiting for ever (0.1.17)
         future: asyncio.Future[Decision] = asyncio.get_running_loop().create_future()
         self._waiting[approval_id] = future
-        await self._bus.publish("approval.requested", {"approval": row}, project_id=project_id)
         try:
+            row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root),
+                                                       "unsaved": unsaved,
+                                                       "tainted": await self._tainted(conversation_id)}  # fmt: skip
+            if row["status"] == "allowed":
+                await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
+                return Decision(True, approval_id=approval_id)
+            if not future.done():  # answered already: its `approval.decided` has gone out
+                await self._bus.publish("approval.requested", {"approval": row}, project_id=project_id)
             return await future
         except asyncio.CancelledError:  # whoever asked went away (its request was cut): close the row
             with contextlib.suppress(ApprovalError):
@@ -637,6 +640,27 @@ class ApprovalQueue:
             raise
         finally:
             self._waiting.pop(approval_id, None)
+
+    async def open_of(self, conversation_id: str) -> list[dict]:
+        """This chat's requests nobody has answered yet, oldest first: the tool, its input, the project's folder."""
+        rows = await self._db.acall(
+            lambda conn: conn.execute(
+                "SELECT a.id, a.tool, a.input, a.project_id, p.path FROM approvals a LEFT JOIN projects p"
+                " ON p.id = a.project_id WHERE a.conversation_id = ? AND a.status = 'pending' ORDER BY a.created_at",
+                (conversation_id,),
+            ).fetchall()
+        )
+        return [{"id": r["id"], "tool": r["tool"], "input": json.loads(r["input"]), "project_id": r["project_id"],
+                 "root": Path(r["path"]) if r["path"] else None} for r in rows]  # fmt: skip
+
+    async def settle(self, approval_id: str) -> bool:
+        """An open request the chat's new mode would not have asked (0.1.17): allowed by the hub, whoever waits goes
+        on. False - it was answered meanwhile."""
+        try:
+            await self._close(approval_id, "allowed", "auto", "", "hub")
+        except ApprovalError:
+            return False
+        return True
 
     async def refused(self, tool: str, data: dict[str, Any], why: str, *, conversation_id: str | None = None,
                       project_id: str | None = None, client_id: str | None = None) -> dict:  # fmt: skip

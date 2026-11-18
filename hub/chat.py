@@ -86,7 +86,7 @@ from . import (
     web,
     websearch,
 )
-from .approvals import TRUSTED_NOT_YET, Decision, beyond_full, trusted_refuses
+from .approvals import COMMAND_TOOLS, TRUSTED_NOT_YET, WRITE_TOOLS, Decision, beyond_full, destructive, trusted_refuses
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -1306,6 +1306,32 @@ class ChatService:
                 if not allowed:
                     return why, True
         return await self.mcp.call(call["name"], args, cancel)
+
+    async def mode_changed(self, conversation_id: str) -> int:
+        """The chat's rights were switched (the user's word 2026-11-17: «смена режима действует сразу, в том числе
+        на идущий ответ»): the next action reads the new mode by itself; a card open right now is let go when
+        «Доверенный» would not have asked it - a write (not over unsaved edits), an ordinary command, an outside
+        tool that is not destructive, the web when no project is local-only. The rest stays the person's to answer.
+        How many were let go."""
+        if self.approvals is None or not await self._trusted(conversation_id):
+            return 0
+        web_ok, let_go = None, 0
+        for asked in await self.approvals.open_of(conversation_id):
+            tool, data, root = asked["tool"], asked["input"], asked["root"]
+            if tool in WRITE_TOOLS:
+                passes = not destructive(tool, data) and not self.approvals.unsaved.holds(tool, data, root)
+            elif tool in COMMAND_TOOLS:
+                passes = trusted_refuses(tool, data, root) is None
+            elif tool in OUTSIDE[:2] or tool in ("WebFetch", "WebSearch"):
+                web_ok = await self.web_trusted(conversation_id) if web_ok is None else web_ok
+                passes = web_ok
+            elif self.mcp is not None and mcp_client.split_name(tool) is not None:
+                passes = self.mcp.tool_class(tool) in ("write", "command", "network", "send")
+            else:
+                passes = False  # an agent's own tools, the desktop, a letter: asked as they were
+            if passes and await self.approvals.settle(asked["id"]):
+                let_go += 1
+        return let_go
 
     async def trusted_verdict(self, conversation_id: str, tool: str, args: dict, root: Path | None,
                               project_id: str | None, *, wipes: bool | None = None) -> str | None:  # fmt: skip

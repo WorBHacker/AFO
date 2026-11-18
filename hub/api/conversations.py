@@ -143,6 +143,8 @@ async def set_context(
     settings = await request.app.state.db.acall(write)
     if settings is None:
         raise HTTPException(status_code=404, detail="no such conversation")
+    if body.mode is not None:  # the rights hold at once, for a card open right now too (0.1.17)
+        await request.app.state.chat.mode_changed(conversation_id)
     return settings
 
 

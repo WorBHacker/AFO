@@ -372,3 +372,28 @@ def test_what_a_person_cannot_see_is_shown_and_warned_of(tmp_path):
     rows = approval_rows([{"id": "a1", "tool": "Edit", "kind": "write", "input": edit, "preview": shown}], projects={},
                          chats={})  # fmt: skip
     assert rows[0]["hidden"] == shown["hidden"]
+
+
+def test_an_answer_that_comes_before_the_request_waits_is_not_lost(queue):
+    """0.1.17: a switch of the chat's mode closes its open requests by itself - also one written a moment ago, whose
+    asker has not begun to wait. The answer was set on nobody then, and the asker waited for ever."""
+    approvals, _seen, db = queue
+    real = db.acall
+
+    async def acall(fn):
+        result = await real(fn)
+        if acall.first:  # right after the request's row is written: as a mode switch at that very moment
+            acall.first = False
+            open_now = await real(lambda conn: conn.execute("SELECT id FROM approvals WHERE status = 'pending'")
+                                  .fetchone())  # fmt: skip
+            await approvals._close(open_now["id"], "allowed", "auto", "", "hub")
+        return result
+
+    acall.first = True
+    db.acall = acall
+    try:
+        asking = approvals.ask("edit_file", {"path": "a.txt", "old_text": "a", "new_text": "b"}, conversation_id="c1")
+        decision = asyncio.run(asyncio.wait_for(asking, 5))
+    finally:
+        db.acall = real
+    assert decision.allow is True
