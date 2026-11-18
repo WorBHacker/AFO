@@ -174,7 +174,11 @@ def approval_rows(
                          else tr("«{tool}» в этом чате", tool=a.get("tool", "")[5:].partition("__")[2]) if cls
                          else tr(SCOPE_WORDS[a.get("tool", "")]) if a.get("tool", "") in SCOPE_WORDS
                          else tr("все {tool} в чате", tool=a.get("tool")),
-            "projectScope": tr("всегда в «{project}»", project=project) if project and not always else "",
+            # what «Разрешить …» for the project covers, by name (the user's word 2026-11-17): the hub says the rule
+            "projectScope": "" if not project or always
+                            else tr("все правки файлов в «{project}»", project=project) if a.get("rule") == "write"
+                            else tr("все команды в «{project}»", project=project) if a.get("rule") == "command"
+                            else tr("всегда в «{project}»", project=project),
             "conversationId": a.get("conversation_id") or "",
             "time": local_time(a.get("created_at", ""))[-5:],
             "hunks": hunks,

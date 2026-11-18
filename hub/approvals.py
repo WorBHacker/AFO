@@ -137,12 +137,14 @@ FULL_NEVER = ("not done: «Полный» asks nothing, and this {why} - the hub
               "Say so in your report: the user does it, or gives the task in another mode.")  # fmt: skip  # i18n: keep
 
 
+ALL_WRITES, ALL_COMMANDS = "write", "command"  # a project's rule: every edit of its files, every command in it
 RULES_BY = "rules"  # who refused what a trusted chat does not do unasked (2026-11-18): the rules, nobody was asked
 TRUSTED_NEVER = ("not done: «Доверенный» never does this - it reaches the hub's own data (its keys, its database). "
-                 "Nobody is asked about it: do the task without it, or tell the user why you needed it.")  # fmt: skip
+                 "Nobody is asked about it: do the task without it, "
+                 "or tell the user why you needed it.")  # fmt: skip  # i18n: keep
 TRUSTED_NOT_YET = ("not done: «Доверенный» does not do this unasked - it deletes or cannot be undone, or runs what "
                    "its line does not name. Do the task another way. If there is no other way, call it once more: "
-                   "the user will be asked then.")  # fmt: skip
+                   "the user will be asked then.")  # fmt: skip  # i18n: keep
 
 
 class ApprovalError(Exception):
@@ -350,6 +352,15 @@ def grant_key(tool: str, data: dict[str, Any], root: Path | None = None) -> str 
     return tool
 
 
+def rule_key(tool: str, key: str | None) -> str | None:
+    """What an answer "always in this project" covers (the user's word 2026-11-17): on an edit - every edit of the
+    project's files, on a command - every command in it, whatever tool or line; anything else - what the answer for
+    the chat covers (`key`, grant_key's). What is asked every time has no key, and no rule."""
+    if key is None:
+        return None
+    return ALL_WRITES if tool in WRITE_TOOLS else ALL_COMMANDS if tool in COMMAND_TOOLS else key
+
+
 def preview(tool: str, data: dict[str, Any], root: Path | None) -> dict[str, Any]:
     """What the user should see to decide: a command, a diff of the file as it would become, a URL, or the input.
     Characters a person cannot see (bidi, zero-width - «Trojan Source», D46) are shown as ⟦U+202E⟧, with a warning
@@ -518,7 +529,8 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row) | {"input": data, "hunks": json.loads(row["hunks"]) if row["hunks"] else None,
                         "kind": kind(row["tool"]), "destructive": destructive(row["tool"], data),
                         "opaque": opaque(row["tool"], data), "network": network(row["tool"], data),
-                        "class": CLASSED.get(row["tool"], "")}  # fmt: skip
+                        "class": CLASSED.get(row["tool"], ""),
+                        "rule": rule_key(row["tool"], row["grant_key"]) or ""}  # fmt: skip
 
 
 def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:
@@ -587,7 +599,10 @@ class ApprovalQueue:
 
         def write(conn: sqlite3.Connection) -> sqlite3.Row:
             covered = key is not None and (
-                key in SAFE_COMMANDS or _chat_allows(conn, conversation_id, key) or _rule_allows(conn, project_id, key)
+                key in SAFE_COMMANDS
+                or _chat_allows(conn, conversation_id, key)
+                or _rule_allows(conn, project_id, key)  # a rule kept before 0.1.17: that tool, that very command
+                or _rule_allows(conn, project_id, rule_key(tool, key))
             )
             by = FULL_BY if unasked else "hub" if covered else None
             conn.execute(
@@ -713,7 +728,7 @@ class ApprovalQueue:
             if row["scope"] == "project":  # a rule: the same kind of request in this project is allowed from now on
                 conn.execute(
                     "INSERT OR IGNORE INTO permission_rules (project_id, grant_key, created_by) VALUES (?, ?, ?)",
-                    (row["project_id"], row["grant_key"], by),
+                    (row["project_id"], rule_key(row["tool"], row["grant_key"]), by),
                 )
             return row
 

@@ -43,11 +43,11 @@ def test_a_command_is_asked_run_in_a_terminal_and_whitelisted(hub, repo):  # noq
     (terminal,) = [t for t in hub.get("/v1/terminals", params={"project_id": pid}).json()["terminals"]]
     assert terminal["title"].startswith("Модель: Write-Output") and terminal["created_by"] == "model"
 
-    provider.steps.append([run(command)])  # the same command in another chat: the project's whitelist answers
+    provider.steps.append([run(command)])  # a command in another chat: the project's rule answers (all of them)
     other = new_chat(hub, pid)
     say(hub, other)
     assert result_of(finished(hub, other))["error"] is False
-    assert hub.get(f"/v1/projects/{pid}/rules").json()["rules"][0]["grant_key"] == f"run_command:{command}"
+    assert hub.get(f"/v1/projects/{pid}/rules").json()["rules"][0]["grant_key"] == "command"
 
 
 def test_network_and_destructive_commands_are_asked_every_time(hub, repo):  # noqa: F811

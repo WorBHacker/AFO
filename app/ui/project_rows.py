@@ -239,6 +239,8 @@ TOOL_WORDS = {
 }  # save: the user's own (D47); restore: a version the user took back from the file's history (26.2)
 USER_TOOLS = ("save", "restore")
 RULE_TOOLS = {
+    "write": N_("все правки файлов"),  # since 0.1.17 «всегда» on an edit or a command covers them all
+    "command": N_("все команды"),
     "edit_file": N_("править файлы"),
     "write_file": N_("записывать файлы"),
     "Edit": N_("Claude Code: править файлы"),

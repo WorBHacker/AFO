@@ -288,7 +288,7 @@ def test_an_answer_for_the_project_becomes_a_rule(hub, repo):  # noqa: F811
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True, "scope": "project"})
     finished(hub, conv)
     (rule,) = hub.get(f"/v1/projects/{pid}/rules").json()["rules"]
-    assert rule["grant_key"] == "edit_file" and rule["created_by"] == "app"
+    assert rule["grant_key"] == "write" and rule["created_by"] == "app"  # every edit of the project (0.1.17)
 
     provider.steps.append([second])
     other = new_chat(hub, pid)  # another chat in the same project: the rule answers

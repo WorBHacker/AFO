@@ -1936,3 +1936,39 @@ def test_a_trusted_chat_is_refused_what_cannot_be_undone_and_asked_only_when_it_
         assert said["error"] is True and said["output"].startswith("not done: «Доверенный» never does this")
         assert "own data" in said["output"]
     assert [c["decided_by"] for c in cards_of(hub, conv)] == ["rules", "rules", "app", "rules", "rules"]
+
+
+def test_always_in_the_project_covers_every_edit_or_every_command_of_it(hub, repo):  # noqa: F811
+    """The user's word 2026-11-17: «Разрешить всегда в «web»» on an edit takes the questions off all edits of this
+    project, on a command - off all its commands; the button says what it allows. Before, the answer covered one
+    tool (edit_file, not write_file) or that very command, and the next one was asked again."""
+    from app.ui import project_rows
+    from app.ui.approvals import approval_rows
+
+    new_file = {"id": "w2", "name": "write_file", "input": {"project": "proj", "path": "docs/new.md", "content": "x\n"}}
+    pid, conv, provider = ch.setup_chat(hub, repo, [[{"id": "w1", "name": "edit_file", "input": edit()}]])
+    projects = {pid: {"name": "proj", "path": str(repo)}}
+    ch.say(hub, conv)
+    asked = tc.answer_next(hub, scope="project")
+    assert approval_rows([asked], projects=projects, chats={})[0]["projectScope"] == "все правки файлов в «proj»"
+    ch.finished(hub, conv)
+    provider.steps += [[new_file], [tc.run("Write-Output one")]]  # another write tool, another chat: not asked
+    other = ch.new_chat(hub, pid)
+    ch.say(hub, other)
+    asked = tc.answer_next(hub, scope="project")
+    assert asked["tool"] == "run_command" and (repo / "docs" / "new.md").read_text(encoding="utf-8") == "x\n"
+    assert approval_rows([asked], projects=projects, chats={})[0]["projectScope"] == "все команды в «proj»"
+    ch.finished(hub, other)
+    rules = [r["grant_key"] for r in hub.get(f"/v1/projects/{pid}/rules").json()["rules"]]
+    assert rules == ["write", "command"]
+    assert [project_rows.rule_text(r) for r in rules] == ["все правки файлов", "все команды"]
+
+    provider.steps += [[tc.run("Write-Output two")], [tc.run("pip install --dry-run nothing-at-all")]]
+    third = ch.new_chat(hub, pid)  # another command: not asked; one that reaches the network: asked as ever
+    ch.say(hub, third)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["network"] is True and "nothing-at-all" in asked["input"]["command"]
+    assert approval_rows([asked], projects=projects, chats={})[0]["projectScope"] == ""
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    two = ch.result_of(ch.finished(hub, third))
+    assert two["error"] is False and "two" in two["output"]
