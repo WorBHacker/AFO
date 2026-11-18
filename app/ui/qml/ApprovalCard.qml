@@ -128,6 +128,19 @@ FocusScope {
             font.family: Theme.uiFont
             font.pixelSize: 12
         }
+
+        Text {
+            // the chat has read what others wrote (D19): an answer for the chat or the project holds all the same
+            // since 0.1.17, so the person is told before they give one
+            objectName: "approvalReadOthers"
+            width: parent.width
+            visible: card.request.readOthers === true
+            text: qsTr("Этот чат читал чужой текст — сайт, поиск или письмо. В нём могло быть указание для модели: проверьте, что действие нужно для вашей задачи.")
+            wrapMode: Text.Wrap
+            color: Theme.p.warn
+            font.family: Theme.uiFont
+            font.pixelSize: 12
+        }
         Text {
             objectName: "approvalHidden"
             width: parent.width

@@ -28,7 +28,7 @@ picked is attached, as the chip does, and the model gets its context before the 
 run commands (run_command, hub/commands.py) in a hub terminal: asked unless the project's whitelist or an answer for
 the chat covers that very command - destructive and network commands always. A trusted chat asks nothing but a
 destructive action (the user's word 2026-10-28: commands, the network and sending too) - after it has read the web
-as well (his word 2026-11-18; any other chat that read the web asks every write and command, D19).
+as well (his word 2026-11-18); a chat that read the web says so on its cards (D19).
 
 A chat with a Claude Code model (stage 4, D8) runs the user's `claude` CLI in the chat's project instead
 (hub/claude_code.py): same events, same stored messages; Claude Code reads the ecosystem through the hub's MCP and
@@ -1128,8 +1128,7 @@ class ChatService:
         unsaved = self.approvals is not None and self.approvals.unsaved.holds(call["name"], args, project.root)
         if settings["mode"] != "trusted" or unsaved:  # trust holds after reading the web too (the user's word
             # 2026-11-18) - not over the user's edits not saved yet in the window's editor (D47)
-            tainted = await self.read_the_web(conversation_id)
-            decision = await self._decision(conversation_id, call["name"], args, project, cancel, cover=not tainted)
+            decision = await self._decision(conversation_id, call["name"], args, project, cancel)
             if isinstance(decision, str):
                 return decision, True
             approval_id, chosen, comment = decision.approval_id, decision.hunks, decision.comment
@@ -1207,15 +1206,13 @@ class ChatService:
             return str(exc), True
         if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
             return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
+        said = ""  # asked - an answer for the chat or the project holds after reading the web too (2026-11-18)
         if settings["mode"] == "trusted":
             said = await self.trusted_verdict(conversation_id, call["name"], args, project.root, project.id)
-            cover = False
-        else:
-            said, cover = "", not await self.read_the_web(conversation_id)
         if said:
             return said, True
         if said is not None:
-            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=cover)
+            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
             if not allowed:
                 return why, True
         try:
@@ -1297,17 +1294,15 @@ class ChatService:
             if settings["mode"] == "read_only":
                 return READ_ONLY, True
             project = ctx.projects[0] if ctx.projects else None
+            said = ""
             if settings["mode"] == "trusted":
                 root, pid = (project.root, project.id) if project else (None, None)
                 said = await self.trusted_verdict(conversation_id, call["name"], args, root, pid,
                                                   wipes=cls == "destructive")  # fmt: skip
-                cover = False
-            else:
-                said, cover = "", not await self.read_the_web(conversation_id)
             if said:
                 return said, True
             if said is not None:
-                allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=cover)
+                allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel)
                 if not allowed:
                     return why, True
         return await self.mcp.call(call["name"], args, cancel)
@@ -1345,8 +1340,8 @@ class ChatService:
     async def read_the_web(self, conversation_id: str) -> bool:
         """Has the model in this chat brought in what someone else wrote - a web page, a search, a letter, an API's
         answer, another program's screen, an outside MCP tool that reaches out there? That text may tell it what to
-        do (D19): its writes and commands are asked every time then - but in a trusted chat, which goes on unasked
-        (the user's word 2026-11-18)."""
+        do (D19): the cards of this chat say so. What the user answered for the chat or the project holds, and a
+        trusted chat goes on unasked (his word 2026-11-18; before, every write and command was asked then)."""
         if conversation_id in self.outside:
             return True
         names = [*OUTSIDE, *(self.mcp.outside_names() if self.mcp is not None else [])]

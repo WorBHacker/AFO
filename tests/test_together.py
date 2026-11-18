@@ -1972,3 +1972,36 @@ def test_always_in_the_project_covers_every_edit_or_every_command_of_it(hub, rep
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
     two = ch.result_of(ch.finished(hub, third))
     assert two["error"] is False and "two" in two["output"]
+
+
+def test_an_answer_for_the_chat_or_the_project_holds_after_reading_the_web(hub, repo, site):  # noqa: F811
+    """The user's complaint 2026-11-17: after the chat had read a site, «Разрешить: все edit_file в чате» and
+    «Разрешить всегда» did nothing - the answer was read as «this once» and the rule never written, though the card
+    offered both. An answer the person gave holds; the card says the chat has read what others wrote."""
+    from app.ui.approvals import approval_rows
+
+    second = {"id": "w2", "name": "edit_file", "input": edit("README.md", "# Проект", "# Проект web")}
+    steps = [[fetch_call(f"{site}/doc")], [{"id": "w1", "name": "edit_file", "input": edit()}], [second],
+             [tc.run("Write-Output one")], [tc.run("Write-Output two")]]  # fmt: skip
+    pid, conv, _provider = ch.setup_chat(hub, repo, steps)  # «Спрашивать»
+    ch.say(hub, conv)
+    assert tc.answer_next(hub)["tool"] == "web_fetch"
+    asked = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "edit_file"])[0]
+    assert asked["tainted"] is True
+    row = approval_rows([asked], projects={pid: {"name": "proj", "path": str(repo)}}, chats={})[0]
+    assert row["readOthers"] is True
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True, "scope": "chat"})
+    asked = wait(lambda: [a for a in hub.get("/v1/approvals").json()["approvals"] if a["tool"] == "run_command"])[0]
+    assert "one" in asked["input"]["command"] and asked["tainted"] is True  # the second edit was not asked
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": True, "scope": "project"})
+    results = answered(hub, conv)  # the second command was not asked
+    assert [r["error"] for r in results] == [False] * 5 and "two" in results[-1]["output"]
+    assert (repo / "README.md").read_text(encoding="utf-8").startswith("# Проект web")
+    assert [r["grant_key"] for r in hub.get(f"/v1/projects/{pid}/rules").json()["rules"]] == ["command"]
+    fresh = ch.new_chat(hub, pid)  # a chat that read nothing of others': the card does not say it
+    hub.app.state.gateway.resolve("fake/echo")[0].steps += [[second]]
+    ch.say(hub, fresh)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["tainted"] is False
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
+    ch.finished(hub, fresh)

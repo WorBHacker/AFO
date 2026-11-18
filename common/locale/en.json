@@ -2053,6 +2053,7 @@
  "Этот компьютер": "This computer",
  "Этот промпт получает каждая модель хаба — в чатах, у агентов, в прокси OpenAI. После него идут промпт модели, инструкции чата и роль агента.": "Every model of the hub gets this prompt — in chats, for agents, in the OpenAI proxy. After it come the model's prompt, the chat's instructions and the agent's role.",
  "Этот файл открыт в редакторе с несохранёнными правками. Если разрешить, файл на диске изменится, а над вашими правками появится полоса «Файл изменился на диске». Спрашивается каждый раз, в «Доверенном» тоже.": "This file is open in the editor with unsaved edits. If you allow this, the file on disk changes and a “File changed on disk” bar appears over your edits. Asked every time, in Trusted mode too.",
+ "Этот чат читал чужой текст — сайт, поиск или письмо. В нём могло быть указание для модели: проверьте, что действие нужно для вашей задачи.": "This chat has read someone else’s text — a site, a search or a letter. It may have held an instruction for the model: check that the action is needed for your task.",
  "Эту папку читают только локальные модели — нажмите, чтобы и облачные": "Only local models read this folder — click so cloud ones do too",
  "Язык": "Language",
  "Язык и вид": "Language and look",

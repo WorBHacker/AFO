@@ -300,11 +300,8 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
                                                                          turn.root)):  # fmt: skip
             return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         reads = tool_name in ("WebFetch", "WebSearch")
-        tainted = False  # it has read the web: its writes and commands are asked every time (D19) - not if trusted
-        if turn is not None:
-            tainted = not reads and await app.state.chat.read_the_web(turn.conversation_id)
-            if reads:
-                app.state.chat.outside.add(turn.conversation_id)
+        if turn is not None and reads:  # it has read the web (D19): the cards of this chat say so from now on
+            app.state.chat.outside.add(turn.conversation_id)
         if reads and turn is not None and not await app.state.chat.web_trusted(turn.conversation_id):
             mode = "ask"  # a local-only project in the chat: its code could leave in the address or query (D46)
         root = turn.root if turn else None
@@ -326,7 +323,6 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             project_id=turn.project.id if turn and turn.project else None,
             client_id=client.id or None,
             root=root,
-            cover=not tainted,
         )
         if decision.allow and decision.hunks is not None and turn is not None and turn.project is not None:
             # a part (17.3): its own tool would put all of it - the hub writes the part, and Claude Code reads so

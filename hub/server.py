@@ -163,6 +163,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.hub_url = hub_url = f"http://{settings.host}:{settings.port}"  # where it listens (43.9)
         app.state.claude_code = ClaudeCodeRunner(db, bus, paths, lambda: hub_url)
         app.state.chat.claude_code, app.state.chat.approvals = app.state.claude_code, app.state.approvals
+        app.state.approvals.reads = app.state.chat.read_the_web  # a card says the chat read what others wrote (D19)
         app.state.chat.snapshots = paths.snapshots  # the files before and after each write (stage 5, D17)
         app.state.chat.sandboxes = paths.root / "worktrees"  # «Песочница» chats' worktrees (D17, 9.4b)
         app.state.chat.blobs = paths.blobs  # files and pictures sent with messages (2026-10-29)

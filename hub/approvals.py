@@ -24,6 +24,7 @@ import os
 import re
 import sqlite3
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -561,6 +562,11 @@ class ApprovalQueue:
         self._bus = bus
         self._waiting: dict[str, asyncio.Future[Decision]] = {}
         self.unsaved = Unsaved()  # the window's editor's (PUT /v1/editor/dirty)
+        # set by the server: has this chat read what others wrote - a page, a search, a letter (ChatService's, D19)
+        self.reads: Callable[[str], Awaitable[bool]] | None = None
+
+    async def _tainted(self, conversation_id: str | None) -> bool:
+        return bool(conversation_id) and self.reads is not None and await self.reads(conversation_id)
 
     async def start(self) -> int:
         """Requests left open by a hub that stopped: nobody waits for them now."""
@@ -587,8 +593,9 @@ class ApprovalQueue:
         unasked: bool = False,
     ) -> Decision:
         """Queues the request and waits for the user's answer - or answers at once when an earlier answer "for this
-        chat", or a rule of the project, covers it (unless `cover` is off: a chat that read the web, D19; nor over
-        the user's unsaved edits, D47). `unasked`: an autonomous run in «Полный» (D56) - kept as allowed by the level,
+        chat", or a rule of the project, covers it (unless `cover` is off: the coordinator's check commands; nor over
+        the user's unsaved edits, D47). A chat that has read the web is covered too since 0.1.17: its cards say it
+        (`tainted`). `unasked`: an autonomous run in «Полный» (D56) - kept as allowed by the level,
         nobody waits; what it may not do unasked the caller refused before (beyond_full)."""
         unsaved = self.unsaved.holds(tool, data, root)
         key = grant_key(tool, data, root) if cover and not unsaved else None
@@ -614,7 +621,8 @@ class ApprovalQueue:
             return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
 
         row = _row(await self._db.acall(write)) | {"preview": shown, "hub_data": hub_data(tool, data, root),
-                                                   "unsaved": unsaved}  # fmt: skip
+                                                   "unsaved": unsaved,
+                                                   "tainted": await self._tainted(conversation_id)}  # fmt: skip
         if row["status"] == "allowed":
             await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
             return Decision(True, approval_id=approval_id)
@@ -707,7 +715,8 @@ class ApprovalQueue:
             root = Path(found["path"]) if found else None
         return row | {"preview": await asyncio.to_thread(preview, row["tool"], row["input"], root),
                       "hub_data": hub_data(row["tool"], row["input"], root),
-                      "unsaved": self.unsaved.holds(row["tool"], row["input"], root)}  # fmt: skip
+                      "unsaved": self.unsaved.holds(row["tool"], row["input"], root),
+                      "tainted": await self._tainted(row["conversation_id"])}  # fmt: skip
 
     async def _close(self, approval_id: str, status: str, scope: str | None, comment: str, by: str,
                      hunks: list[int] | None = None) -> dict:  # fmt: skip

@@ -33,8 +33,8 @@ HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code 
 SCOPE_WORDS = {"set_plan": N_("все новые планы этой задачи"), "start_step": N_("все шаги этой задачи")}
 PREVIEW_LINES = 400
 QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
-               "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "time", "hunks", "ticked",
-               "hunkCount", "allowText"]  # fmt: skip
+               "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "readOthers", "time",
+               "hunks", "ticked", "hunkCount", "allowText"]  # fmt: skip
 
 
 def short_path(path: str, roots: list[str]) -> str:
@@ -180,6 +180,7 @@ def approval_rows(
                             else tr("все команды в «{project}»", project=project) if a.get("rule") == "command"
                             else tr("всегда в «{project}»", project=project),
             "conversationId": a.get("conversation_id") or "",
+            "readOthers": bool(a.get("tainted")),  # the chat has read a page, a search, a letter: the card says so
             "time": local_time(a.get("created_at", ""))[-5:],
             "hunks": hunks,
             "ticked": ticked,

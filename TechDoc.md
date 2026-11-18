@@ -2787,6 +2787,14 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   спрашивается. На старом коде — «всегда в «proj»» и окно на втором инструменте.
 - Шаг 4. Ответы «для чата» и «всегда» действуют и после чтения сайта; карточка говорит, что чат читал чужой текст.
   Файлы: `hub/chat.py`, `hub/approvals.py`, `app/ui/approvals.py`.
+  ✓ Сделано: `cover=not tainted` убран из `_write_file`, `_run_command`, `_mcp_tool` и `approval_prompt` — ответ «для
+  чата» и правило проекта читаются и в чате, который читал чужое (`cover` остался у проверок пакета координатора и у
+  несохранённых правок). Запрос несёт `tainted` (`ApprovalQueue.reads` — `ChatService.read_the_web`, ставит
+  `hub/server.py`); окно — `readOthers` и строка на карточке «Этот чат читал чужой текст…» (`ApprovalCard.qml`,
+  `approvalReadOthers`). Тесты — `test_an_answer_for_the_chat_or_the_project_holds_after_reading_the_web`
+  (`tests/test_together.py`: после сайта «для чата» на правку и «всегда» на команду — следующие без окна; на старом
+  коде вторая правка спрашивается) и `test_the_card_names_what_always_covers_and_says_the_chat_read_others_text`
+  (`tests/test_ui.py`, настоящее окно: слова кнопки шага 3 и строка).
 - Шаг 5. Смена режима действует сразу: открытое окно этого чата закрывается как разрешённое, если «Доверенный» его не
   спросил бы. Гонка: запрос записан в базу, но ещё не ждёт ответа — ждать начинает до записи. Файлы:
   `hub/api/conversations.py`, `hub/approvals.py`, `hub/chat.py`.

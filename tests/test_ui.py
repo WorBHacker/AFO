@@ -10447,3 +10447,44 @@ def texts_and_fields(root):
             out.append(child)
         out += texts_and_fields(child)
     return out
+
+
+def test_the_card_names_what_always_covers_and_says_the_chat_read_others_text(qapp):
+    """0.1.17, the user's words of 2026-11-17: «Название кнопки должно говорить, что именно разрешается» - an edit's
+    «всегда» is all edits of the project, a command's all its commands; and a chat that has read a site, a search or
+    a letter says so on its cards, since an answer for the chat or the project now holds there too."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def settle() -> None:
+        for _ in range(10):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        edit = {**APPROVAL, "tool": "edit_file", "rule": "write", "tainted": True}
+        command = {**APPROVAL, "id": "ap2", "tool": "run_command", "kind": "command", "rule": "command",
+                   "input": {"command": "pytest -q"}, "preview": {"kind": "command", "text": "pytest -q"}}  # fmt: skip
+        client.pending = [edit, command]
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.approvals.count == 2)
+        opened(app)
+        card = quick.window.findChild(QObject, "chatApprovalCard")
+        wait_until(lambda: item_named(card, "approveProject") is not None)
+        settle()
+        said = item_named(card, "approvalReadOthers")
+        assert item_named(card, "approveProject").property("text") == "Разрешить все правки файлов в «LocalChat»"
+        assert said.property("visible") and said.property("text").startswith("Этот чат читал чужой текст")
+        click(quick.window, item_named(card, "approveProject"))
+        wait_until(lambda: not app.bg.busy and app.approvals.count == 1)
+        settle()
+        assert item_named(card, "approveProject").property("text") == "Разрешить все команды в «LocalChat»"
+        assert not item_named(card, "approvalReadOthers").property("visible")  # this request says nothing of it
+        assert quick.warnings == []
+    finally:
+        quick.close()
