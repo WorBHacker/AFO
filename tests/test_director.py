@@ -3,6 +3,9 @@ cleanup of old pictures leaves a film's files alone while the film is there."""
 
 import base64
 import json
+import shutil
+import time
+from pathlib import Path
 
 import pytest
 
@@ -147,3 +150,127 @@ def test_the_director_writes_a_films_storyboard_from_the_idea_and_the_photo(hub)
         assert kept["status"] == "ready" and len(kept["scenes"]) == 4 and "сценарий не получился" in kept["error"]
     finally:
         cloud.close()
+
+
+def _film_of(hub, scenes, **fields):  # noqa: F811
+    """A film with the product's photo and these scenes, ready to be filmed."""
+    from tests.test_visual import PICTURE
+
+    visual, db = hub.app.state.visual, hub.app.state.db
+    (visual.media / "2026-11").mkdir(parents=True, exist_ok=True)
+    film_id = db.call(lambda conn: director.new_film(conn, idea="Ролик о лампе", seconds=15, **fields))["id"]
+    photo = f"2026-11/film-{film_id}-photo.png"
+    (visual.media / photo).write_bytes(PICTURE)
+
+    def keep(conn):
+        director.set_scenes(conn, film_id, scenes)
+        director.update_film(conn, film_id, photo=photo, status="ready")
+
+    db.call(keep)
+    return film_id
+
+
+def _until(hub, film_id, done, timeout=30.0):  # noqa: F811
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        found = hub.app.state.db.call(lambda conn: director.film(conn, film_id))
+        if done(found):
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"the film did not get there: {found['status']}, {[s['status'] for s in found['scenes']]}")
+
+
+def _colour(b64: str) -> tuple[int, int, int]:
+    from PySide6.QtGui import QImage
+
+    pixel = QImage.fromData(base64.b64decode(b64), "PNG").pixelColor(32, 32)
+    return pixel.red(), pixel.green(), pixel.blue()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_film_is_filmed_scene_after_scene_and_the_card_is_kept_between(hub, monkeypatch):  # noqa: F811
+    """50.7: «Снять всё» - the scenes go one after another: «по фото» begins with the product's photo, «продолжение»
+    with the last frame of the scene before (a real ffmpeg takes it), «к фото» goes from that frame to the photo;
+    every scene has the film's shape, whatever the photo's. The card stays the Studio's between the scenes - a
+    local chat's model would be loaded there and the video model after it, anew for each scene - and a waiting chat
+    is told a film is being shot. A scene filmed anew leaves those that go on from it «stale», the joined film
+    forgotten."""
+    from hub import ffmpeg
+    from tests.test_ffmpeg import GREEN, ORANGE, _near, _solid, animated_webp
+    from tests.test_visual import PICTURE, FakeDrawSwap, _install
+
+    _install(hub, "film", LTX)
+    FakeDrawSwap.filmed = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    film_id = _film_of(hub, [{**s, "frames": f} for s, f in zip(BOARD["scenes"], (97, 121, 73, 73), strict=True)])
+    state = hub.app.state
+    seen, video = [], state.visual.video
+
+    async def watched(spec, client):
+        seen.append((state.card.holder, state.card.free.is_set(), state.card.words()))
+        return await video(spec, client)
+
+    monkeypatch.setattr(state.visual, "video", watched)
+    began = hub.portal.call(state.director.shoot, film_id)
+    assert began["status"] == "filming"
+    with pytest.raises(director.DirectorError, match="фильм занят"):
+        hub.portal.call(state.director.shoot, film_id)
+    found = _until(hub, film_id, lambda f: f["status"] == "ready")
+    assert [(s["n"], s["status"], s["error"]) for s in found["scenes"]] == [(n, "done", "") for n in (1, 2, 3, 4)]
+    assert found["error"] == "" and all(s["job_id"] for s in found["scenes"])
+
+    one, two, three, four = FakeDrawSwap.video
+    assert base64.b64decode(one["init_image"]) == PICTURE and "end_image" not in one
+    assert (one["width"], one["height"], one["video_frames"]) == (768, 512, 97)  # the film's shape, not the photo's
+    assert _near(_colour(two["init_image"]), GREEN) and two["video_frames"] == 121 and "end_image" not in two
+    assert _near(_colour(three["init_image"]), GREEN) and base64.b64decode(three["end_image"]) == PICTURE
+    assert _near(_colour(four["init_image"]), GREEN) and (four["width"], four["height"]) == (768, 512)
+    assert [p["prompt"] for p in FakeDrawSwap.video] == [s["prompt"] for s in BOARD["scenes"]]
+    # between the scenes the card is the Studio's, held from local chats, and a chat is told why
+    assert [(holder, free) for holder, free, _words in seen[1:]] == [("studio", False)] * 3
+    assert all("фильм" in words for _h, _f, words in seen[1:])
+    assert state.card.holder == "" and state.card.free.is_set() and state.card.words() == ""  # given when it ended
+
+    state.db.call(lambda conn: director.update_film(conn, film_id, file="2026-11/film-x.mp4"))
+    hub.portal.call(lambda: state.director.shoot(film_id, only=1))
+    again = _until(hub, film_id, lambda f: f["status"] == "ready")
+    assert [s["status"] for s in again["scenes"]] == ["done", "stale", "stale", "stale"] and again["file"] == ""
+    assert again["scenes"][0]["job_id"] != found["scenes"][0]["job_id"] and len(FakeDrawSwap.video) == 5
+
+
+def test_a_film_stops_at_once_and_a_scene_that_fails_stops_it_with_words(hub, monkeypatch):  # noqa: F811
+    """50.7: «Стоп» while a scene is filmed - its job is stopped as the Studio's ✕ stops one (the model unloaded),
+    the scene is «not filmed» again, the card is given; «Продолжить» films what is left. A scene that fails says why
+    and the film stops there: the next one would go on from nothing. A hub that restarts mid-film leaves it ready to
+    go on from the scenes not filmed."""
+    from tests.test_visual import FakeDrawSwap, _install
+
+    _install(hub, "film", LTX)
+    state = hub.app.state
+    plain = [{"mode": "picture", "words": "Лампа", "prompt": "a lamp", "frames": 25},
+             {"mode": "picture", "words": "Свет", "prompt": "it lights", "frames": 25}]  # fmt: skip
+    film_id = _film_of(hub, plain)
+    FakeDrawSwap.video_polls = 10_000  # the scene does not end by itself
+    hub.portal.call(state.director.shoot, film_id)
+    _until(hub, film_id, lambda f: f["scenes"][0]["status"] == "filming" and FakeDrawSwap.video)
+    stopped = hub.portal.call(state.director.stop, film_id)
+    assert stopped["status"] == "ready" and [s["status"] for s in stopped["scenes"]] == ["new", "new"]
+    assert FakeDrawSwap.unloaded == ["film"] and state.card.holder == "" and stopped["error"] == ""
+
+    FakeDrawSwap.video_polls = 3
+    hub.portal.call(state.director.shoot, film_id)  # «Продолжить»: what is not filmed
+    done = _until(hub, film_id, lambda f: f["status"] == "ready")
+    assert [s["status"] for s in done["scenes"]] == ["done", "done"] and len(FakeDrawSwap.video) == 3
+
+    FakeDrawSwap.fails = {"code": "generation_failed", "message": "CUDA error: out of memory"}
+    hub.portal.call(lambda: state.director.shoot(film_id, only=1))
+    failed = _until(hub, film_id, lambda f: f["status"] == "ready")
+    assert failed["scenes"][0]["status"] == "failed" and failed["scenes"][0]["error"]
+    assert "сцена 1" in failed["error"] and state.card.holder == ""
+
+    state.db.call(lambda conn: (director.update_film(conn, film_id, status="filming"),
+                                director.update_scene(conn, film_id, 2, status="filming")))  # fmt: skip
+    hub.portal.call(state.director.start)  # the hub comes up again
+    after = state.db.call(lambda conn: director.film(conn, film_id))
+    assert after["status"] == "ready" and after["scenes"][1]["status"] == "new" and "перезапуск" in after["error"]

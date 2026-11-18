@@ -651,6 +651,9 @@ class Visual:
         self._held.set()
         self._stops: set[asyncio.Task] = set()  # a job being stopped as by ✕ (48.9г)
         self._closing = False  # the hub stops (48.10г): the worker begins no job
+        # (50.7) a film is being shot: the card stays the Studio's between its scenes - `keep`; how the film is
+        # stopped when the card is taken from it meanwhile («Выгрузить», its model removed)
+        self._kept: Callable[[], None] | None = None
 
     async def start(self) -> int:
         """Pictures and videos a stopped hub left going or waiting are failed: llama-swap let them go with it - each in
@@ -725,7 +728,9 @@ class Visual:
             said = "text" if mode == "text" else "picture" if "picture" not in model["modes"] else "frames"
             raise VisualError(tr(MODE_WORDS[said], name=model["name"]), 422)
         clip = model["clip"]  # the family's own (48.3)
-        shape = shape_of(*png_size(first)) if first is not None else str(spec.get("shape") or "wide")
+        # the first frame's shape - but a film's scenes all have the film's (50.7: `shape_fixed`)
+        own = first is None or bool(spec.get("shape_fixed"))
+        shape = str(spec.get("shape") or "wide") if own else shape_of(*png_size(first))
         width, height = video_size(shape, bool(spec.get("hd")), clip)
         frames = frames_for(float(spec.get("seconds") or 2.0), clip["fps"], clip["step"])
         seed = spec.get("seed")
@@ -839,6 +844,27 @@ class Visual:
             self._task = asyncio.create_task(self._work())
         return await self._db.acall(lambda conn: job(conn, job_id))
 
+    def keep(self, stop: Callable[[], None], words: str) -> None:
+        """A film is being shot (50.7): from now the card stays the Studio's between its scenes - given after one,
+        a waiting chat's model would load, and the video model again for the next scene. `stop` - how the film is
+        stopped when the card is taken from it between two scenes; `words` - what a waiting chat is told."""
+        self._kept = stop
+        self.card.note = words
+
+    def unkeep(self) -> None:
+        """The film's shooting is over (50.7): the card is given - by the worker when its job ends, here when none
+        goes on."""
+        self._kept = None
+        if self._running is None:
+            self.card.give(STUDIO)
+        self.card.note = ""
+
+    def _give(self) -> None:
+        """A job of the Studio's is over: the card goes - unless a film keeps it for its next scene (50.7); the film
+        gives it when its shooting ends (`unkeep`)."""
+        if self._kept is None:
+            self.card.give(STUDIO)
+
     def hold(self) -> None:
         """«Выгрузить» (48.9г): the queue does not take the card back by itself - the person's next job here does,
         or «Продолжить»."""
@@ -857,7 +883,10 @@ class Visual:
 
     def _stop_job(self) -> None:
         """«Выгрузить», or its model removed (48.9г): the job going on stops as by ✕ - a video cancelled in the engine,
-        a picture without a rung lower (it is «отменено», not failed)."""
+        a picture without a rung lower (it is «отменено», not failed). (50.7) A film that keeps the card is stopped
+        too - between two scenes there is no job, and the card would stay the Studio's."""
+        if self._kept is not None:
+            self._kept()
         if self._running is None:
             return
         self._stopping.add(self._running)
@@ -900,8 +929,9 @@ class Visual:
         by words only - one that films only by a picture is not enough (48.10в, the review's finding 10)."""
         return any("text" in m["modes"] for m in await self._db.acall(lambda conn: installed(conn, "video")))
 
-    async def _until_done(self, job_id: str, cancel: asyncio.Event) -> dict[str, Any] | None:
-        """A job waited for by a chat's tool: the answer stopped - the job is stopped."""
+    async def until_done(self, job_id: str, cancel: asyncio.Event) -> dict[str, Any] | None:
+        """A job waited for - by a chat's tool, by a film's shooting (50.7): the answer or the film stopped - the job
+        is stopped."""
         stopping = False
         while (done := await self._db.acall(lambda conn: job(conn, job_id))) is not None and done["status"] in LIVE:
             if cancel.is_set() and not stopping:
@@ -935,7 +965,7 @@ class Visual:
             job_id = (await self.video(spec, "chat"))["id"]
         except VisualError as exc:
             return f"nothing filmed: {exc}", True, None
-        done = await self._until_done(job_id, cancel)
+        done = await self.until_done(job_id, cancel)
         if done is None or done["status"] == "cancelled":
             return "not filmed: the user stopped it", True, None
         path = self.file(done) if done["status"] == "done" else None
@@ -969,7 +999,7 @@ class Visual:
             job_id = (await self.draw(spec, "chat"))["id"]
         except VisualError as exc:
             return f"nothing drawn: {exc}", True, None
-        done = await self._until_done(job_id, cancel)
+        done = await self.until_done(job_id, cancel)
         if done is None or done["status"] == "cancelled":
             return "not drawn: the user stopped it", True, None
         path = self.file(done) if done["status"] == "done" else None
@@ -1100,7 +1130,8 @@ class Visual:
             # the card is the Studio's for the job (stage 48's review, finding 2): an install's trial holding it, the
             # job waits «в очереди»; a video holds it from local chats too - before it says «running» (48's full run).
             # After «Выгрузить» the queue waits for the person (48.9г) - not taken back by a chat's message either
-            while True:
+            # (50.7) a film's next scene: the card kept since the scene before is the Studio's still
+            while self._kept is None or self.card.holder != STUDIO:
                 await self._held.wait()
                 await self.card.take(STUDIO, chats=found.get("kind") == "video", stop=self._stop_job,
                                      model=found["model_id"])  # fmt: skip
@@ -1120,8 +1151,8 @@ class Visual:
                 log.exception("picture %s", job_id)
                 await self._set(job_id, status="failed", error=tr("внутренняя ошибка хаба — подробности в журнале"))
             finally:
-                self.card.give(STUDIO)
                 self._running = None
+                self._give()
                 self._stopping.discard(job_id)
 
     async def _run(self, found: dict[str, Any]) -> None:
@@ -1298,7 +1329,7 @@ class Visual:
         except OSError as exc:  # a frame kept beside the job, not read
             error = tr("кадр задания не прочитан: {error}", error=exc.strerror or exc)
         finally:
-            self.card.give(STUDIO)  # the engine has stopped: the card is free before the video is kept
+            self._give()  # the engine has stopped: the card is free before the video is kept
         seconds = round(time.monotonic() - start, 1)
         if job_id in self._stopping:
             await self._set(job_id, status="cancelled", error="", seconds=seconds)

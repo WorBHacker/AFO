@@ -107,6 +107,7 @@ class GpuCard:
         self._given.set()
         self._stop: Callable[[], None] | None = None  # how the holder is stopped by a senior (48.9б1)
         self.model = ""  # the model the holder works with, when it says (48.9г: a model removed stops it)
+        self.note = ""  # the holder's own words for a chat that waits (50.7: a film, scene after scene); "" - WORDS
         self.given = False  # «Выгрузить» (48.9г): the person's until their next action
         self._back = asyncio.Event()  # not given: those waiting for the person's card look again
         self._back.set()
@@ -167,7 +168,7 @@ class GpuCard:
         """`holder` lets the card go; one that does not hold it changes nothing."""
         if self.holder != holder:
             return
-        self.holder, self._stop, self.model = "", None, ""
+        self.holder, self._stop, self.model, self.note = "", None, "", ""
         self.free.set()
         self._given.set()
 
@@ -219,7 +220,9 @@ class GpuCard:
         (48.9г: their work without them waits)."""
         if self.given and rank(ASKER.get()) > 1:
             return tr(GIVEN_WORDS)
-        return tr(WORDS[self.holder]) if self.holder in WORDS and not self.free.is_set() else ""
+        if self.holder not in WORDS or self.free.is_set():
+            return ""
+        return self.note or tr(WORDS[self.holder])
 
     async def gate(self, cancel: asyncio.Event) -> bool:
         """A local chat model's answer waits here while the card is held from chats (the llama-swap provider asks

@@ -251,7 +251,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   machine=lambda: app.state.installer.machine(),
                                   card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
-        app.state.director = Director(db, bus, app.state.judge, paths.media)  # the Studio's films (stage 50)
+        app.state.director = Director(db, bus, app.state.judge, app.state.visual)  # the Studio's films (50)
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
         app.state.visual.missing = app.state.installer.missing  # a model's file deleted by hand (48's review)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
@@ -300,6 +300,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             log.info("model installs left going by the last hub wait for «Продолжить»")
         if await app.state.visual.start():
             log.info("pictures left going by the last hub failed")
+        if await app.state.director.start():
+            log.info("films left going by the last hub wait for «Продолжить»")
         app.state.scheduler.start(clock=settings.schedule_tick_s > 0)
         servers = asyncio.create_task(app.state.mcp.start())  # in the background: a slow server holds nothing up
         if await app.state.autonomy.expire_all():  # questions the last hub left open: the agents ask again
@@ -346,6 +348,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.scheduler.stop()
             await app.state.installer.stop()
             await app.state.gpu.stop()
+            await app.state.director.close()  # a film being shot: before the Studio's queue is closed
             await app.state.visual.stop()
             await app.state.resources.stop()  # a failed fetch's next try (39.1)
             await app.state.setup.stop()

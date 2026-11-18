@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+import logging
 import sqlite3
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
@@ -25,6 +26,8 @@ from . import model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
+
+log = logging.getLogger(__name__)
 
 ROLE = "director"  # the role of the model that writes storyboards (model_settings.ROLES)
 SCENES = (1, 16)  # a film's scenes, at least and at most
@@ -212,6 +215,17 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int)
     return read
 
 
+def _stale_after(conn: sqlite3.Connection, film_id: str, n: int) -> None:
+    """Scene `n` has been filmed anew: the filmed scenes that go on from it - the chain of «продолжение» and
+    «к фото» right after it - began with a frame that is no more: stale."""
+    for scene in conn.execute("SELECT n, mode, status FROM film_scenes WHERE film_id = ? AND n > ? ORDER BY n",
+                              (film_id, n)).fetchall():  # fmt: skip
+        if scene["mode"] not in ("continue", "frames"):
+            break
+        if scene["status"] == "done":
+            conn.execute("UPDATE film_scenes SET status = 'stale' WHERE film_id = ? AND n = ?", (film_id, scene["n"]))
+
+
 def kept(conn: sqlite3.Connection) -> set[str]:
     """What the cleanup of old pictures leaves in data/media (hub/retention.py): the beginnings of the names of the
     films' own files (film-<id>) and of their scenes' clips with what lies beside them (the job's id)."""
@@ -222,12 +236,37 @@ def kept(conn: sqlite3.Connection) -> set[str]:
 class Director:
     """The films' service: the storyboard asked of the director's model (`write`)."""
 
-    def __init__(self, db: Database, bus: EventBus, judge: Judge, media: Path):
+    def __init__(self, db: Database, bus: EventBus, judge: Judge, studio: visual.Visual):
         self._db = db
         self._bus = bus
         self._judge = judge
-        self.media = media
+        self._studio = studio
+        self.media = studio.media
         self._stops: dict[str, asyncio.Event] = {}  # «Стоп» of a film's question or filming
+        self._shooting: dict[str, asyncio.Task] = {}  # the films being shot, each its task
+
+    async def start(self) -> int:
+        """Films a stopped hub left being written, shot or joined are ready again - the scenes not filmed are
+        «not filmed»: «Продолжить» goes on from them. How many."""
+
+        def mend(conn: sqlite3.Connection) -> int:
+            left = [
+                r[0] for r in conn.execute("SELECT id FROM films WHERE status IN ('writing', 'filming', 'joining')")
+            ]
+            for film_id in left:
+                has = conn.execute("SELECT 1 FROM film_scenes WHERE film_id = ?", (film_id,)).fetchone()
+                update_film(conn, film_id, status="ready" if has else "draft",
+                            error=tr("хаб перезапускался — «Продолжить» снимет то, что не снято"))  # fmt: skip
+            conn.execute("UPDATE film_scenes SET status = 'new', error = '' WHERE status = 'filming'")
+            return len(left)
+
+        return await self._db.acall(mend)
+
+    async def close(self) -> None:
+        """The hub stops: the films being shot are stopped, their scene's job with them."""
+        for film_id in list(self._shooting):
+            with contextlib.suppress(Exception):
+                await self.stop(film_id)
 
     async def _changed(self, film_id: str, **fields: Any) -> dict[str, Any]:
         def write(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -311,3 +350,101 @@ class Director:
 
         await self._db.acall(keep)
         return await self._changed(film_id)
+
+    async def shoot(self, film_id: str, *, only: int | None = None) -> dict[str, Any]:
+        """«Снять всё» and «Продолжить» (50.7): the scenes not filmed - new, failed, stale - go one after another, in
+        order; `only` - «Переснять»: that scene alone. The film as it begins; it goes on in the background."""
+        found = await self._film(film_id)
+        model = await self.video_model(found)
+        scenes = [s for s in found["scenes"] if (s["n"] == only if only else s["status"] != "done")]
+        if not scenes:
+            words = (tr("нет такой сцены") if only else tr("снимать нечего: все сцены сняты") if found["scenes"]
+                     else tr("сначала соберите сценарий"))  # fmt: skip
+            raise DirectorError(words, 422)
+        self._stops[film_id] = asyncio.Event()
+        began = await self._changed(film_id, status="filming", error="")
+        self._shooting[film_id] = asyncio.create_task(self._shoot(found, model, [s["n"] for s in scenes]))
+        return began
+
+    async def stop(self, film_id: str) -> dict[str, Any]:
+        """«Стоп»: the director's question is let go, or the scene being filmed is stopped in the engine and no next
+        one begins; the film as it is once it has stopped."""
+        if (stop := self._stops.get(film_id)) is not None:
+            stop.set()
+        if (task := self._shooting.get(film_id)) is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        found = await self._db.acall(lambda conn: film(conn, film_id))
+        if found is None:
+            raise DirectorError(tr("нет такого фильма"), 404)
+        return found
+
+    async def _spec(self, found: dict[str, Any], model: dict[str, Any], scene: dict[str, Any]) -> dict[str, Any]:
+        """A scene as the Studio's video: its first frame by its mode - the product's photo, the last frame of the
+        scene before (that scene's job: `Visual._source` takes its end) - and, «к фото», the photo as its last."""
+        fps = int(model["clip"]["fps"])
+        spec = {"prompt": scene["prompt"], "model": model["model_id"], "shape": found["shape"], "shape_fixed": True,
+                "seconds": (scene["frames"] - 1) / fps, "seed": scene["seed"]}  # fmt: skip
+        if scene["mode"] in ("picture", "frames"):
+            photo = (await self._photo(found) or [{}])[0].get("data")
+            if not photo:
+                raise DirectorError(tr("у фильма нет фото товара — добавьте его или смените режим сцены"), 422)
+            spec["last_png" if scene["mode"] == "frames" else "from_png"] = photo
+        if scene["mode"] in ("continue", "frames"):
+            before = await self._db.acall(lambda conn: conn.execute(
+                "SELECT job_id, status FROM film_scenes WHERE film_id = ? AND n = ?", (found["id"], scene["n"] - 1),
+            ).fetchone())  # fmt: skip
+            if before is None or before["status"] != "done" or not before["job_id"]:
+                raise DirectorError(tr("сцена {n} продолжает сцену {before}, а та не снята — сначала снимите её",
+                                       n=scene["n"], before=scene["n"] - 1), 422)  # fmt: skip
+            spec["from_job"] = before["job_id"]
+        return spec
+
+    async def _scene(self, film_id: str, n: int, **fields: Any) -> None:
+        await self._db.acall(lambda conn: update_scene(conn, film_id, n, **fields))
+        await self._changed(film_id)
+
+    async def _shoot(self, found: dict[str, Any], model: dict[str, Any], numbers: list[int]) -> None:
+        film_id, error = found["id"], ""
+        stop = self._stops[film_id]
+        # the card stays the Studio's between the scenes; taken from the film meanwhile - the film stops
+        self._studio.keep(stop.set, tr("видеокарта снимает фильм — ответ начнётся после него; «Стоп» в Студии её "
+                                       "освободит"))  # fmt: skip
+        try:
+            for n in numbers:
+                if stop.is_set():
+                    break
+                scene = next(s for s in (await self._db.acall(lambda conn: film(conn, film_id)))["scenes"]
+                             if s["n"] == n)  # fmt: skip
+                try:
+                    job = await self._studio.video(await self._spec(found, model, scene), "film")
+                except (DirectorError, visual.VisualError) as exc:
+                    await self._scene(film_id, n, status="failed", error=str(exc))
+                    error = tr("сцена {n} не снята: {error}", n=n, error=exc)
+                    break
+                await self._db.acall(lambda conn: update_film(conn, film_id, file=""))  # the joined film is of the old
+                await self._scene(film_id, n, status="filming", error="", job_id=job["id"])
+                await self._bus.publish("film.progress", {"id": film_id, "scene": n, "job": job["id"]}, persist=False)
+                done = await self._studio.until_done(job["id"], stop)
+                if done is not None and done["status"] == "done":
+                    await self._db.acall(lambda conn, n=n: _stale_after(conn, film_id, n))
+                    await self._scene(film_id, n, status="done")
+                    continue
+                if stop.is_set():
+                    await self._scene(film_id, n, status="new", error="")
+                    break
+                said = (done or {}).get("error") or tr("видео не снято")
+                await self._scene(film_id, n, status="failed", error=said)
+                error = tr("сцена {n} не снята: {error}", n=n, error=said)
+                break
+        except Exception:
+            log.exception("film %s", film_id)
+            error = tr("внутренняя ошибка хаба — подробности в журнале")
+        finally:
+            self._studio.unkeep()
+            self._stops.pop(film_id, None)
+            self._shooting.pop(film_id, None)
+            await self._db.acall(lambda conn: conn.execute(
+                "UPDATE film_scenes SET status = 'new' WHERE film_id = ? AND status = 'filming'", (film_id,),
+            ))  # fmt: skip
+            await self._changed(film_id, status="ready", error=error)
