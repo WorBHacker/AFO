@@ -393,11 +393,11 @@ def hub(monkeypatch):
     swap.shutdown()
 
 
-def _install(hub, model_id="draw", plan=DRAW_PLAN):
+def _install(hub, model_id="draw", plan=DRAW_PLAN, files=()):
     hub.app.state.db.call(lambda conn: conn.execute(
         "INSERT INTO model_installs (id, repo, quant, files, folder, model_id, name, status, plan) VALUES "
-        "(?, 'test/Draw-GGUF', 'Q4_0', '[]', 'x', ?, 'Draw', 'done', ?)",
-        (model_id, model_id, json.dumps(plan))))  # fmt: skip
+        "(?, 'test/Draw-GGUF', 'Q4_0', ?, 'x', ?, 'Draw', 'done', ?)",
+        (model_id, json.dumps(list(files)), model_id, json.dumps(plan))))  # fmt: skip
 
 
 def _wait(hub, job_id, *statuses, timeout=20.0):
@@ -1339,3 +1339,71 @@ def test_the_hub_stopping_with_a_queue_begins_nothing_and_says_what_was_left(hub
         ("failed", "хаб перезапускался — видео не снято"),
         ("failed", "хаб перезапускался — картинка не нарисована"),
     ]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_video_filmed_with_sound_is_a_webm_with_its_mp4_and_poster(hub, monkeypatch, tmp_path):
+    """52.3: a model with an audio VAE among its files films with sound - the engine is asked for a WebM (a WebP has
+    no sound), what is heard goes after the description; the clip is kept as it came, its MP4 - with the sound - and
+    its poster made at once by a real ffmpeg; its frames are there for a look. The switch off, or a model without the
+    file - a silent WebP, as before. A WebM of one picture repeated fails in words, nothing kept."""
+    from hub import ffmpeg
+    from tests.test_ffmpeg import _clip_with_sound, _said
+
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    loud, still = tmp_path / "loud.webm", tmp_path / "still.webm"
+    _clip_with_sound(program, loud, 49)
+    _clip_with_sound(program, still, 49, moves=False)
+    _install(hub, "clip", CLIP_PLAN)
+    files = [
+        {"role": role, "repo": "test/Talk-GGUF", "path": name, "size": 1, "at": str(tmp_path / name)}
+        for role, name in (("diffusion-model", "talk.gguf"), ("audio-vae", "talk_audio_vae.safetensors"))
+    ]
+    for f in files:
+        Path(f["at"]).write_bytes(b"x")
+    _install(hub, "talk", {**CLIP_PLAN, "set": "talk"}, files)
+    assert {m["model_id"]: m["sound"] for m in hub.get("/v1/visual/models").json()["videos"]} == {
+        "clip": False, "talk": True}  # fmt: skip
+
+    FakeDrawSwap.filmed = loud.read_bytes()
+    job = hub.post("/v1/visual/videos", json={"prompt": "rain on a street ", "model": "talk", "seconds": 2,
+                                              "sound_words": " heavy rain,  a car passing "}).json()["job"]  # fmt: skip
+    assert (job["sound"], job["sound_words"]) == (1, "heavy rain, a car passing")
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    asked = FakeDrawSwap.video[-1]
+    assert asked["output_format"] == "webm"
+    assert asked["prompt"] == "rain on a street Sound: heavy rain, a car passing"
+    assert done["prompt"] == "rain on a street"
+    assert done["file"].endswith(f"{job['id']}.webm")
+    kept = hub.get(f"/v1/visual/jobs/{job['id']}/file")
+    assert kept.headers["content-type"] == "video/webm" and kept.content == loud.read_bytes()
+    clip = data_paths().media / done["file"]
+    assert "Audio: aac" in _said(program, "-i", str(clip.with_suffix(".mp4")))  # made at once, with the sound
+    assert clip.with_suffix(".jpg").read_bytes()[:2] == b"\xff\xd8"
+    played = hub.get(f"/v1/visual/jobs/{job['id']}/mp4")
+    assert played.status_code == 200 and played.headers["content-type"] == "video/mp4"
+    looked = asyncio.run(hub.app.state.visual.look(done, 6, 32))  # a WebM's frames: as many as the job asked for
+    assert len(looked) == 6 and all(frame[:2] == b"\xff\xd8" for frame in looked)
+
+    FakeDrawSwap.filmed = None  # the switch off: silent, a WebP, nothing said of the sound
+    quiet = hub.post("/v1/visual/videos", json={"prompt": "rain", "model": "talk", "seconds": 2, "sound": False,
+                                                "sound_words": "heavy rain"}).json()["job"]  # fmt: skip
+    assert (quiet["sound"], quiet["sound_words"]) == (0, "")
+    assert _wait(hub, quiet["id"], "done", "failed")["file"].endswith(".webp")
+    assert (FakeDrawSwap.video[-1]["output_format"], FakeDrawSwap.video[-1]["prompt"]) == ("webp", "rain")
+    plain = hub.post("/v1/visual/videos", json={"prompt": "rain", "model": "clip", "seconds": 2,
+                                                "sound_words": "heavy rain"}).json()["job"]  # fmt: skip
+    assert (plain["sound"], plain["sound_words"]) == (0, "")  # a model that films no sound
+    assert _wait(hub, plain["id"], "done", "failed")["file"].endswith(".webp")
+    assert FakeDrawSwap.video[-1]["output_format"] == "webp"
+
+    FakeDrawSwap.filmed = still.read_bytes()  # one picture all along
+    stuck = hub.post("/v1/visual/videos", json={"prompt": "rain", "model": "talk", "seconds": 2}).json()["job"]
+    failed = _wait(hub, stuck["id"], "done", "failed")
+    assert failed["status"] == "failed" and "одна неподвижная картинка" in failed["error"] and not failed["file"]
+    assert not list(data_paths().media.rglob(f"{stuck['id']}*"))
+    FakeDrawSwap.filmed = WEBP  # asked for a WebM, a WebP came: no video
+    wrong = hub.post("/v1/visual/videos", json={"prompt": "rain", "model": "talk", "seconds": 2}).json()["job"]
+    assert "ответ без видео" in _wait(hub, wrong["id"], "done", "failed")["error"]

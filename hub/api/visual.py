@@ -70,7 +70,8 @@ async def image(request: Request, body: Image, client: Annotated[Client, Depends
 class Video(BaseModel):
     """A video (29.8а): its shape, how long, «Качественнее» - the family's own larger size; (48.5) by a picture - its
     first frame, as «По картинке» takes one (a job's picture, a chat's, a PNG sent; (50.3) a video's last frame) -
-    and the last frame too; (50.4) its own steps and guidance - none: the ones the model was installed with."""
+    and the last frame too; (50.4) its own steps and guidance - none: the ones the model was installed with; (52.3)
+    with sound - when the model films it - and what is heard."""
 
     prompt: str = Field(min_length=1, max_length=4000)
     negative: str = Field(default="", max_length=2000)
@@ -82,6 +83,8 @@ class Video(BaseModel):
     steps: int | None = Field(default=None, ge=STEPS[0], le=STEPS[1])
     cfg: float | None = Field(default=None, ge=GUIDANCE[0], le=GUIDANCE[1])
     conversation_id: str | None = Field(default=None, max_length=64)
+    sound: bool = True
+    sound_words: str = Field(default="", max_length=v.SOUND_WORDS)
     from_job: str = Field(default="", max_length=64)
     from_blob: str = Field(default="", max_length=64)
     from_png: str = Field(default="", max_length=28_000_000)
@@ -129,7 +132,8 @@ async def file(request: Request, job_id: str, client: Annotated[Client, Depends(
     path = _visual(request).file(await _job(request, job_id))
     if path is None:
         raise HTTPException(status_code=404, detail=tr("картинки ещё нет"))
-    return FileResponse(path, media_type=v.picture_type(path) or "application/octet-stream")  # a video: WebP
+    # a video: WebP - or, with sound (52.3), WebM
+    return FileResponse(path, media_type=v.clip_type(path) or "application/octet-stream")
 
 
 @router.get("/jobs/{job_id}/mp4")

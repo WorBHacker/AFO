@@ -2045,7 +2045,7 @@ def test_the_catalogs_drafts():
 
 # sd-server's own parts (master-1053); (48.6) a video's second half, Wan2.1 I2V's image encoder, LTX-2.3's connectors
 SD_PARTS = {"model", "diffusion-model", "llm", "vae", "t5xxl", "clip_l", "clip_g", "high-noise-diffusion-model",
-            "clip_vision", "embeddings-connectors"}  # fmt: skip
+            "clip_vision", "embeddings-connectors", "audio-vae"}  # fmt: skip
 
 
 def test_the_catalogs_video_families():
@@ -2111,6 +2111,13 @@ def test_the_catalogs_video_families():
     assert variants("hunyuanvideo-1.5-t2v", hunyuan) == [("Q4_K_M", ["diffusion-model"])]
     assert variants("hunyuanvideo-1.5-i2v", hunyuan) == []  # this repository holds no picture-to-video model
     assert by_id["wan2.2-ti2v-5b-turbo"]["modes"] == ["text", "picture"]  # TI2V: from a picture too
+    # 52.3: the families that film with sound - their audio VAE among the files, as their repositories name it
+    assert {e["id"]: [f["path"] for f in e["files"] if f["role"] == "audio-vae"] for e in shipped
+            if any(f["role"] == "audio-vae" for f in e["files"])} == {
+        "ltx-2.3-dev": ["vae/ltx-2.3-22b-dev_audio_vae.safetensors"],
+        "ltx-2.3-distilled": ["vae/ltx-2.3-22b-distilled_audio_vae.safetensors"],
+        "ltx-2.5-dev": ["vae/ltx-2.5-audio-vae-bf16.safetensors"],
+        "ltx-2.5-distilled": ["vae/ltx-2.5-audio-vae-bf16.safetensors"]}  # fmt: skip
 
 
 def test_a_family_with_a_gemma_text_encoder_runs_it_without_flash_attention():

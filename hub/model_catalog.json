@@ -1542,6 +1542,11 @@
           "role": "vae",
           "repo": "unsloth/LTX-2.3-GGUF",
           "path": "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+        },
+        {
+          "role": "audio-vae",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "vae/ltx-2.3-22b-dev_audio_vae.safetensors"
         }
       ],
       "flags": [
@@ -1555,8 +1560,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "LTX-2.3 (22 млрд весов) — по описанию, по картинке, между двумя кадрами; 20 шагов. Пока без звука.",
-        "en": "LTX-2.3 (22 billion weights) - from a description, a picture, between two frames; 20 steps. No sound yet."
+        "ru": "LTX-2.3 (22 млрд весов) — по описанию, по картинке, между двумя кадрами; 20 шагов. Со звуком.",
+        "en": "LTX-2.3 (22 billion weights) - from a description, a picture, between two frames; 20 steps. With sound."
       },
       "names": {
         "has": [
@@ -1638,6 +1643,11 @@
           "role": "vae",
           "repo": "unsloth/LTX-2.3-GGUF",
           "path": "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+        },
+        {
+          "role": "audio-vae",
+          "repo": "unsloth/LTX-2.3-GGUF",
+          "path": "vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
         }
       ],
       "flags": [
@@ -1651,8 +1661,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "LTX-2.3 distilled — 8 шагов вместо 20. Пока без звука.",
-        "en": "LTX-2.3 distilled - 8 steps instead of 20. No sound yet."
+        "ru": "LTX-2.3 distilled — 8 шагов вместо 20. Со звуком.",
+        "en": "LTX-2.3 distilled - 8 steps instead of 20. With sound."
       },
       "names": {
         "has": [
@@ -1728,6 +1738,11 @@
           "role": "vae",
           "repo": "unsloth/LTX-2.5-GGUF",
           "path": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+        },
+        {
+          "role": "audio-vae",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "vae/ltx-2.5-audio-vae-bf16.safetensors"
         }
       ],
       "flags": [
@@ -1741,8 +1756,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "LTX-2.5 — по описанию, по картинке, между двумя кадрами; кодировщик — Gemma 4 12B. Пока без звука.",
-        "en": "LTX-2.5 - from a description, a picture, between two frames; Gemma 4 12B as the encoder. No sound yet."
+        "ru": "LTX-2.5 — по описанию, по картинке, между двумя кадрами; кодировщик — Gemma 4 12B. Со звуком.",
+        "en": "LTX-2.5 - from a description, a picture, between two frames; Gemma 4 12B as the encoder. With sound."
       },
       "names": {
         "has": [
@@ -1818,6 +1833,11 @@
           "role": "vae",
           "repo": "unsloth/LTX-2.5-GGUF",
           "path": "vae/ltx-2.5-video-vae-conv-bf16.safetensors"
+        },
+        {
+          "role": "audio-vae",
+          "repo": "unsloth/LTX-2.5-GGUF",
+          "path": "vae/ltx-2.5-audio-vae-bf16.safetensors"
         }
       ],
       "flags": [
@@ -1831,8 +1851,8 @@
         "auto,te=off"
       ],
       "about": {
-        "ru": "LTX-2.5 distilled — 8 шагов вместо 20. Пока без звука.",
-        "en": "LTX-2.5 distilled - 8 steps instead of 20. No sound yet."
+        "ru": "LTX-2.5 distilled — 8 шагов вместо 20. Со звуком.",
+        "en": "LTX-2.5 distilled - 8 steps instead of 20. With sound."
       },
       "names": {
         "has": [

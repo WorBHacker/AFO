@@ -143,7 +143,7 @@ def heard(program: Path, source: Path) -> bool:
     try:
         done = subprocess.run([str(program), "-hide_banner", "-i", str(source)], capture_output=True,
                               timeout=CONVERT_TIMEOUT_S, creationflags=flags, check=False)  # fmt: skip
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return False
     return re.search(r"Stream #\d+:\d+.*: Audio:", (done.stderr or b"").decode("utf-8", "replace")) is not None
 

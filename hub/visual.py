@@ -358,6 +358,30 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
 STILL_WORDS = N_("вместо видео — одна неподвижная картинка: все кадры вышли одинаковыми, модель снимает неверно")
 
 
+SOUND_ROLE = "audio-vae"  # the file a model films sound with (52.3): LTX's audio VAE, sd-server's flag of that name
+WEBM = b"\x1a\x45\xdf\xa3"  # how the engine's clip with sound begins: Matroska's header
+SOUND_SUFFIX, POSTER_SUFFIX = ".webm", ".jpg"
+SOUND_WORDS = 600  # the longest «what is heard»
+
+
+def engine_prompt(found: dict[str, Any]) -> str:
+    """What the engine is told to film (52.3): the job's description - and, filmed with sound, what is heard, a
+    sentence of its own after it: LTX takes the sound from the description."""
+    words = (found.get("sound_words") or "").strip() if found.get("sound") else ""
+    return f"{found['prompt'].rstrip()} Sound: {words}" if words else found["prompt"]
+
+
+def clip_type(path: Path) -> str | None:
+    """A job's file's type by its first bytes: a picture's, a silent video's (WebP) - or a video's with sound, the
+    engine's WebM (52.3); None - neither (or not there)."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(4)
+    except OSError:
+        return None
+    return "video/webm" if head == WEBM else picture_type(path)
+
+
 def moving(data: bytes) -> bool:
     """A WebP of frames, more than one (48.8 live): a model that films each frame the same - LTX's white ones, its gemma
     under flash attention - comes back as one still picture, libwebp folding the same frames into one."""
@@ -518,9 +542,11 @@ def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
     """The picture models AFO installed (29.3) - or its video models (`kind` video, 29.8): {model_id, name, tier,
     size, steps, cfg, cpu_id - its block on the processor's build, or "", sampler, high_steps - a pair's high half's
     (--high-noise-steps, 0 - sd.cpp splits `steps` at --moe-boundary), flow_shift, clip - a video family's own (48.3;
-    one installed before - TI2V-5B's), modes - how it films (48.5; one installed before - by words)}."""
+    one installed before - TI2V-5B's), modes - how it films (48.5; one installed before - by words), sound - whether
+    it films with sound (52.3): its audio VAE is among its files}."""
     out = []
-    for row in conn.execute("SELECT model_id, name, plan FROM model_installs WHERE status = 'done' ORDER BY name"):
+    for row in conn.execute("SELECT model_id, name, plan, files FROM model_installs WHERE status = 'done' "
+                            "ORDER BY name"):  # fmt: skip
         plan = json.loads(row["plan"] or "{}")
         if plan.get("engine") != "sd" or plan.get("kind", "image") != kind:
             continue
@@ -531,7 +557,8 @@ def installed(conn, kind: str = "image") -> list[dict[str, Any]]:
                     "sampler": _text_flag(flags, "--sampling-method", "default"),
                     "high_steps": int(_flag(flags, "--high-noise-steps", 0)),  # a pair's high half's (48's review)
                     "flow_shift": _flag(flags, "--flow-shift", 0.0), "clip": clip_of(plan.get("clip")),
-                    "modes": [m for m in plan.get("modes") or ["text"] if m in VIDEO_MODES]})  # fmt: skip
+                    "modes": [m for m in plan.get("modes") or ["text"] if m in VIDEO_MODES],
+                    "sound": any(f.get("role") == SOUND_ROLE for f in json.loads(row["files"] or "[]"))})  # fmt: skip
     return out
 
 
@@ -714,7 +741,8 @@ class Visual:
         """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}; (50.4)
         steps, cfg - its own, instead of the ones the model was installed with; (48.5) by a
         picture - from_job, from_blob or from_png: its first frame, the video's shape its - and the last frame too
-        (last_job, last_blob, last_png). A family films as its `modes` say: by words, by a picture, by two frames."""
+        (last_job, last_blob, last_png). A family films as its `modes` say: by words, by a picture, by two frames.
+        (52.3) sound - with sound, when the model films it (none said: with), sound_words - what is heard."""
         prompt = (spec.get("prompt") or "").strip()
         if not prompt:
             raise VisualError(tr("нужно описание видео"), 422)
@@ -740,6 +768,8 @@ class Visual:
         frames = frames_for(float(spec.get("seconds") or 2.0), clip["fps"], clip["step"])
         seed = spec.get("seed")
         seed = random.randrange(2**31) if seed is None or int(seed) < 0 else int(seed)
+        sound = bool(model["sound"]) and spec.get("sound") is not False
+        heard = " ".join(str(spec.get("sound_words") or "").split())[:SOUND_WORDS] if sound else ""
         job_id = uuid.uuid4().hex[:12]
         kept: dict[str, str] = {}
         for key, data in (("source", first), ("last", last)):  # beside the job: its frames
@@ -750,11 +780,11 @@ class Visual:
         def add(conn) -> None:
             conn.execute(
                 "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
-                "conversation_id, frames, fps, source, last_frame, steps, cfg) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, "
-                "'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
+                "conversation_id, frames, fps, source, last_frame, steps, cfg, sound, sound_words) VALUES (?, "
+                "'video', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
                  spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", ""),
-                 spec.get("steps"), spec.get("cfg")),
+                 spec.get("steps"), spec.get("cfg"), int(sound), heard),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -964,8 +994,9 @@ class Visual:
             seconds = min(SECONDS[1], max(1.0, float(args.get("seconds") or 2.0)))
         except TypeError, ValueError:
             seconds = 2.0
+        # silent (52.3): a chat keeps its video as a WebP - a message's picture -, and a WebM is none
         spec = {"prompt": prompt[:4000], "shape": str(args.get("shape") or "wide"), "seconds": seconds,
-                "conversation_id": conversation_id}  # fmt: skip
+                "conversation_id": conversation_id, "sound": False}  # fmt: skip
         try:
             job_id = (await self.video(spec, "chat"))["id"]
         except VisualError as exc:
@@ -1041,8 +1072,9 @@ class Visual:
 
     async def _mp4_now(self, source: Path) -> Path | None:
         """The MP4 of a video just filmed (48.12.8), with an ffmpeg already here: the first one is fetched (~86 MB)
-        when a video is first shown - the window asks -, not before a chat's answer goes on."""
-        if await asyncio.to_thread(ffmpeg.find, self.tools) is None:
+        when a video is first shown - the window asks -, not before a chat's answer goes on. A clip with sound
+        (52.3) has it fetched now: the window shows nothing of a WebM without its MP4 and poster."""
+        if source.suffix != SOUND_SUFFIX and await asyncio.to_thread(ffmpeg.find, self.tools) is None:
             return None
         try:
             return await self._mp4_of(source, source.with_suffix(".mp4"))
@@ -1070,6 +1102,11 @@ class Visual:
             log.warning("a chat's video: its MP4 not copied: %s", exc)
 
     async def _mp4_of(self, source: Path, target: Path) -> Path:
+        """A clip's MP4 - and, of a clip with sound (52.3), its poster beside: the engine's WebM is no picture to
+        the window, its first frame as a JPEG is what the lists show."""
+        if source.suffix == SOUND_SUFFIX:
+            poster = source.with_suffix(POSTER_SUFFIX)
+            await self.with_ffmpeg(poster, lambda program: ffmpeg.poster(program, source, poster))
         return await self.with_ffmpeg(target, lambda program: ffmpeg.to_mp4(program, source, target))
 
     async def with_ffmpeg(self, target: Path, make: Callable[[Path], None]) -> Path:
@@ -1103,7 +1140,9 @@ class Visual:
         source = self.file(found)
         if source is None:
             raise VisualError(tr("видео ещё нет"), 404)
-        total = frames_in(await asyncio.to_thread(source.read_bytes))
+        # a WebM keeps each frame asked for (52.3); a WebP may hold fewer - the same ones folded into one
+        total = int(found.get("frames") or 0) if source.suffix == SOUND_SUFFIX else frames_in(
+            await asyncio.to_thread(source.read_bytes))  # fmt: skip
         if total < 2:
             raise VisualError(tr("в видео меньше кадров, чем нужно для проверки"), 422)
         count = min(count, total)
@@ -1298,9 +1337,10 @@ class Visual:
         params = sampling(model, found)
         # `preview`: sd-server says a job's step only in its preview (48's review; async_jobs.cpp 249) - `proj`, the
         # latents put into colour, no VAE
-        body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
+        loud = bool(found.get("sound"))  # (52.3) with sound the engine's clip is a WebM: a WebP has none
+        body = {"prompt": engine_prompt(found), "negative_prompt": found["negative"], "width": found["width"],
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
-                "output_format": "webp", "sample_params": params, "preview": "proj"}  # fmt: skip
+                "output_format": "webm" if loud else "webp", "sample_params": params, "preview": "proj"}  # fmt: skip
         start, error, result = time.monotonic(), "", None
         steps, clock = _Steps(params["sample_steps"] + max(model["high_steps"], 0)), start
         # the card is the video's, held from local chats, since before the job says «running» (`_work`; stage 48's full
@@ -1369,21 +1409,39 @@ class Visual:
                 data = base64.b64decode(result.get("b64_json") or "")
             except ValueError:
                 data = None
-            if not data or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            if not data or (data[:4] != WEBM if loud else data[:4] != b"RIFF" or data[8:12] != b"WEBP"):
                 data, error = None, tr("ответ без видео")
-            elif not moving(data):  # (48.8 live) LTX's white frames: «готово», and a player of one still picture
+            elif not loud and not moving(data):  # (48.8 live) LTX's white frames: «готово», a player of one picture
+                data, error = None, tr(STILL_WORDS)
+        name = f"{datetime.now(UTC):%Y-%m}/{job_id}{SOUND_SUFFIX if loud else '.webp'}"
+        if data is not None:
+            await asyncio.to_thread(save, self.media / name, data)
+            if loud and await self._still(self.media / name, int(found["frames"])):  # the same, of a WebM
+                await asyncio.to_thread((self.media / name).unlink, True)
                 data, error = None, tr(STILL_WORDS)
         tries = [{"model_id": model_id, "width": found["width"], "height": found["height"], "rung": "asked",
                   "ok": data is not None, "error": error, "seconds": seconds}]  # fmt: skip
         if data is None:
             await self._set(job_id, status="failed", error=error, seconds=seconds, tries=tries)
             return
-        name = f"{datetime.now(UTC):%Y-%m}/{job_id}.webp"
-        await asyncio.to_thread(save, self.media / name, data)
+        if loud:  # (52.3) before «готово»: the window shows nothing of a WebM itself - its poster, its MP4
+            await self._mp4_now(self.media / name)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
         # its MP4 at once (48.12.8), not when it is first shown: the window played the WebP until then, then the MP4
         # from its start - the clip began twice. The window, asking meanwhile, waits for this one (`_ffmpeg`)
-        await self._mp4_now(self.media / name)
+        if not loud:
+            await self._mp4_now(self.media / name)
+
+    async def _still(self, clip: Path, frames: int) -> bool:
+        """Whether a clip with sound shows one picture all along (52.3; a WebP says it by itself, `moving`): three
+        of its frames compared by ffmpeg - fetched the first time. Not to be told - no ffmpeg, a clip it does not
+        read - is not «still»: the clip is kept, the window says what is wrong with it."""
+        try:
+            async with self._ffmpeg:
+                return bool(await self._ffmpeg_does(lambda program: ffmpeg.still(program, clip, frames)))
+        except VisualError as exc:
+            log.warning("video %s: not told whether it moves: %s", clip.stem, exc)
+            return False
 
     async def _said(self, job_id: str, step: int, steps: int, seconds: float) -> None:
         """A video's step to the window - or, with none (`steps` 0), the time it has taken (48's review)."""
