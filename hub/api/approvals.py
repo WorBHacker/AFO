@@ -2,6 +2,7 @@
 
 The app's alone for now: a request shows code and commands, and answering one lets an agent act. Telegram (D21)
 gets its own rights with stage 5. `approval.requested` / `approval.decided` tell clients to look again.
+`/approvals/blocked` is what a trusted chat's rules refused unasked (0.1.17); `/approvals/{id}/pass` lets one through.
 """
 
 from __future__ import annotations
@@ -39,6 +40,23 @@ def _error(exc: ApprovalError) -> HTTPException:
 async def pending(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
     _app_only(client)
     return {"approvals": await request.app.state.approvals.pending()}
+
+
+@router.get("/approvals/blocked")
+async def blocked(request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """«Недавно заблокировано» (0.1.17): what a trusted chat's rules refused without asking, the newest first."""
+    _app_only(client)
+    return {"blocked": await request.app.state.approvals.blocked()}
+
+
+@router.post("/approvals/{approval_id}/pass")
+async def let_through(approval_id: str, request: Request, client: Annotated[Client, Depends(require_client)]) -> dict:
+    """«Разрешить» on a refusal of the rules: the chat's next same request goes through, once."""
+    _app_only(client)
+    try:
+        return await request.app.state.approvals.let_through(approval_id, by=client.name)
+    except ApprovalError as exc:
+        raise _error(exc) from exc
 
 
 @router.get("/approvals/{approval_id}")

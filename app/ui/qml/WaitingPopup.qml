@@ -3,7 +3,8 @@ import QtQuick.Controls.Basic
 
 // Who waits for an answer (D38), under the shield in the title bar: a row per chat or agent run - what it asks, how
 // many more, how long it has waited; a row opens that chat with its card (from the projects mode too). A request
-// with no chat (an outside MCP client) is answered right here, as a card.
+// with no chat (an outside MCP client) is answered right here, as a card. Below - «Недавно заблокировано» (0.1.17):
+// what «Доверенный» did not do without the person; «Разрешить» lets the model's next same try through, once.
 Popup {
     id: popup
     objectName: "approvalsList"
@@ -49,7 +50,7 @@ Popup {
                 font.weight: Font.DemiBold
             }
             Text {
-                visible: Approvals.count === 0
+                visible: Approvals.count === 0 && Approvals.blocked.length === 0
                 width: parent.width
                 padding: 10
                 wrapMode: Text.Wrap
@@ -113,6 +114,81 @@ Popup {
                             font.family: Theme.uiFont
                             font.pixelSize: 12
                         }
+                    }
+                }
+            }
+
+            Text {
+                visible: Approvals.blocked.length > 0
+                height: 34
+                leftPadding: 10
+                bottomPadding: 5
+                verticalAlignment: Text.AlignBottom
+                text: qsTr("Недавно заблокировано")
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            Text {
+                visible: Approvals.blocked.length > 0
+                width: parent.width
+                leftPadding: 10
+                rightPadding: 10
+                bottomPadding: 4
+                wrapMode: Text.Wrap
+                text: qsTr("Это «Доверенный» не стал делать без вас. «Разрешить» — следующая такая же попытка модели пройдёт один раз.")
+                color: Theme.p.faint
+                font.family: Theme.uiFont
+                font.pixelSize: 12
+            }
+            Repeater {
+                model: Approvals.blocked
+                delegate: Item {
+                    id: refusal
+                    required property var modelData
+                    objectName: "blocked_" + modelData.id
+                    width: list.width
+                    height: 54
+                    Icon {
+                        x: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: refusal.modelData.icon
+                        tint: Theme.p.muted
+                    }
+                    Column {
+                        x: 38
+                        width: parent.width - x - allow.width - 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 2
+                        Text {
+                            width: parent.width
+                            text: refusal.modelData.what
+                            elide: Text.ElideRight
+                            color: Theme.p.text
+                            font.family: Theme.monoFont
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            objectName: "blockedState"
+                            width: parent.width
+                            text: [refusal.modelData.chat, refusal.modelData.age, refusal.modelData.stateText].filter(s => s !== "").join(" · ")
+                            elide: Text.ElideRight
+                            color: Theme.p.muted
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                    }
+                    PlainButton {
+                        id: allow
+                        objectName: "allowBlocked"
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: refusal.modelData.state === ""
+                        width: visible ? implicitWidth : 0
+                        text: qsTr("Разрешить")
+                        onClicked: Approvals.allowBlocked(refusal.modelData.id)
                     }
                 }
             }

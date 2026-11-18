@@ -142,7 +142,7 @@
 - `hub/api/__init__.py` — сборка всех маршрутов /v1
 - `hub/api/advice.py` — `/v1/advice`: совет по модели и цена задачи
 - `hub/api/agents.py` — `/v1/agents`, `/v1/runs`: агенты и прогоны
-- `hub/api/approvals.py` — `/v1/approvals`: очередь разрешений
+- `hub/api/approvals.py` — `/v1/approvals`: очередь разрешений, «Недавно заблокировано»
 - `hub/api/autostart.py` — `/v1/autostart`: запуск при входе в Windows
 - `hub/api/budgets.py` — `/v1/budgets`: бюджеты
 - `hub/api/cards.py` — карточка проекта
@@ -240,6 +240,7 @@
 - `hub/db/migrations/051_full_autonomy.sql` — режим агента «Полный»
 - `hub/db/migrations/052_model_installs_trial_states.sql` — состояния пробного запуска
 - `hub/db/migrations/053_visual_last_frame.sql` — последний кадр видео по двум кадрам
+- `hub/db/migrations/054_approval_pass.sql` — «Разрешить» у отказа правил «Доверенного»
 
 ### hub/gateway/ — шлюз моделей
 
@@ -455,7 +456,7 @@
 - `app/ui/qml/TransferSheet.qml` — загрузка настроек
 - `app/ui/qml/UserMessage.qml` — сообщение пользователя
 - `app/ui/qml/StudioView.qml` — экран «Студия»: картинки и видео (48.7; был лист «Нарисовать»)
-- `app/ui/qml/WaitingPopup.qml` — кто ждёт ответа
+- `app/ui/qml/WaitingPopup.qml` — кто ждёт ответа, «Недавно заблокировано»
 - `app/ui/qml/WizardSheet.qml` — мастер первого запуска
 
 ### app/ui/icons/ и app/ui/fonts/ — значки и шрифты
@@ -2819,6 +2820,17 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   и «Включить»); на старом коде окна нет и режим пишется сразу.
 - Шаг 7. «Недавно заблокировано»: отказы правил этого чата в окне, у каждого «Разрешить» — следующая такая же попытка
   модели пройдёт один раз. Файлы: `hub/approvals.py`, `hub/api/approvals.py`, окно разрешений.
+  ✓ Сделано: миграция 054 — `approvals.pass` (`open` — разрешено, ждёт попытки; `used` — прошло).
+  `ApprovalQueue.blocked` — отказы правил за сутки, новые сверху, не больше 20, у каждого `never` (данные AFO);
+  `let_through` ставит `open` (данные AFO и уже разрешённое — 409); `take_pass` — тот же чат, тот же инструмент, то же
+  действие (команда сравнивается без лишних пробелов): пропуск тратится, `approval.decided` без хранения.
+  `ChatService.trusted_verdict` смотрит пропуск до отказа и до вопроса — так он действует и у команд, и у чужих MCP, и
+  у Claude Code. Маршруты (только окно): `GET /v1/approvals/blocked`, `POST /v1/approvals/{id}/pass`. Окно: под щитом
+  раздел «Недавно заблокировано» (`WaitingPopup.qml`) — команда, чат, давность, «Разрешить» или слова состояния;
+  щит виден и без ожидающих, пока есть что разрешить (`Approvals.blockedCount`); новый отказ — строка-подсказка.
+  Тесты — `test_what_the_rules_refused_is_listed_and_can_be_let_through_once` (`tests/test_together.py`, настоящий
+  хаб и терминал: отказ `git push`, «Разрешить», та же команда идёт, следующая — снова отказ) и
+  `test_what_trusted_did_not_do_is_listed_under_the_shield_with_allow` (`tests/test_ui.py`, настоящее окно, щелчок).
 - Конец: весь pytest, перевод (`--sync` и английский), строки карты файлов.
 
 ### План 2026-11-18: «Режиссёр», «Улучшить ролик», «Архитектор + исполнитель»
@@ -2913,7 +2925,7 @@ MusicGen, LivePortrait (части InsightFace), BasicVSR++ и RealBasicVSR (PyT
   `Visual._source` принимает ролик как источник кадра. Тест — настоящий ffmpeg: число кадров и длина файла.
 - 50.4 Сцена до 5 с и свои шаги, cfg и seed на запрос (`sample_params`). Файлы: `hub/api/visual.py`, `hub/visual.py`,
   `common/picture_sizes.py`. Предел — по замеру 50.1.
-- 50.5 База: миграция 054 — `films` (идея, длительность, фото товара, модель-режиссёр, состояние, файл) и
+- 50.5 База: миграция 055 — `films` (идея, длительность, фото товара, модель-режиссёр, состояние, файл) и
   `film_scenes` (номер, режим, текст по-русски, английский промпт, кадры, seed, работа `visual_jobs`, состояние);
   ролики фильма очистка не трогает (`hub/retention.py`).
 - 50.6 Сценарий: роль модели «Режиссёр» (как «Проверка цели»), промпт, разбор `read_storyboard` (кадры 8n+1, режим

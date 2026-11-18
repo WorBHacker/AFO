@@ -970,6 +970,15 @@ class HubClient:
         body = {"allow": allow, "scope": scope, "comment": comment, **({"hunks": hunks} if hunks is not None else {})}
         return self._call("POST", f"/v1/approvals/{approval_id}", body)
 
+    def blocked(self) -> list[dict]:
+        """«Недавно заблокировано» (0.1.17): what a trusted chat's rules refused unasked, the newest first; `pass` -
+        let through ('open'), gone through ('used'); `never` - the hub's own data, nobody lets it."""
+        return self._call("GET", "/v1/approvals/blocked")["blocked"]
+
+    def pass_blocked(self, approval_id: str) -> dict:
+        """«Разрешить» on a refusal of the rules: the chat's next same request goes through, once."""
+        return self._call("POST", f"/v1/approvals/{approval_id}/pass")
+
     def programs(self) -> dict:
         """{programs, scanning, scanned_at, error, offer}: this computer's programs and the agent's permissions."""
         return self._call("GET", "/v1/programs")

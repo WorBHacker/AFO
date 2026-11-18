@@ -98,13 +98,15 @@ Item {
         IconButton {
             id: approvals
             objectName: "approvalsButton"
-            visible: Approvals.count > 0
+            visible: Approvals.count > 0 || Approvals.blockedCount > 0
             iconName: "shield"
             implicitWidth: 38
-            tint: Theme.p.warn
-            tip: qsTr("Ждут подтверждения: %1 — кто ждёт (Ctrl+Shift+A)").arg(Approvals.count)
+            tint: Approvals.count > 0 ? Theme.p.warn : Theme.p.muted
+            tip: Approvals.count > 0 ? qsTr("Ждут подтверждения: %1 — кто ждёт (Ctrl+Shift+A)").arg(Approvals.count)
+                                     : qsTr("Недавно заблокировано: %1 (Ctrl+Shift+A)").arg(Approvals.blockedCount)
             onClicked: bar.approvalsRequested()
             Rectangle {
+                visible: Approvals.count > 0
                 x: parent.width - width - 4
                 y: 5
                 width: Math.max(16, count.implicitWidth + 8)

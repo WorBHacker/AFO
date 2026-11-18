@@ -32,6 +32,7 @@ HUB_CLAUDE_CODE = "hub-claude-code"  # the client the hub gives the Claude Code 
 # an agent's (D40)
 SCOPE_WORDS = {"set_plan": N_("все новые планы этой задачи"), "start_step": N_("все шаги этой задачи")}
 PREVIEW_LINES = 400
+RULES_BY, BLOCKED_SHOWN = "rules", 20  # a refusal of «Доверенный»'s rules (hub/approvals.py), and how many are listed
 QUEUE_ROLES = ["key", "id", "title", "tool", "kind", "icon", "who", "where", "note", "previewKind", "lines",
                "destructive", "alwaysAsk", "chatScope", "projectScope", "conversationId", "readOthers", "time",
                "hunks", "ticked", "hunkCount", "allowText"]  # fmt: skip
@@ -241,6 +242,30 @@ def waiting_rows(
     return out
 
 
+def blocked_rows(blocked: list[dict[str, Any]], *, projects: dict[str, dict[str, Any]], chats: dict[str, str],
+                 now: datetime, speakers: dict[str, str] | None = None) -> list[dict[str, Any]]:  # fmt: skip
+    """«Недавно заблокировано» (0.1.17): what «Доверенный» did not do without the person, the newest first. `state`:
+    '' - «Разрешить» is offered; 'open' - let through, waits for the model's next try; 'used' - done by that word;
+    'never' - the hub's own data, no button."""
+    out = []
+    for a in blocked:
+        (row,) = approval_rows([a], projects=projects, chats={}, speakers=speakers)
+        state = "never" if a.get("never") else a.get("pass") or ""
+        out.append({
+            "id": a["id"],
+            "chat": chats.get(a.get("conversation_id") or "") or tr("Чат без названия"),
+            # a command by its own words: «Выполнить команду» would not tell one refusal from another
+            "what": " ".join(str((a.get("input") or {}).get("command") or "").split()) or row["title"],
+            "icon": row["icon"],
+            "age": age(a.get("created_at", ""), now),
+            "state": state,
+            "stateText": {"never": tr("Данные самой AFO — не разрешается"),
+                          "open": tr("Разрешено на один раз — попросите модель повторить"),
+                          "used": tr("Выполнено по вашему разрешению")}.get(state, ""),
+        })  # fmt: skip
+    return out
+
+
 class Approvals(QObject):
     changed = Signal()
     hereChanged = Signal()  # the open chat's card: another request, or none
@@ -250,6 +275,7 @@ class Approvals(QObject):
         super().__init__(app)
         self.app = app
         self._pending: list[dict[str, Any]] = []
+        self._blocked: list[dict[str, Any]] = []  # what the rules of «Доверенный» refused unasked (0.1.17)
         self._card: dict[str, Any] = {}
         self._card_count = 0
         self._latest = ""  # the chat of the newest request: a click on its notice opens that chat
@@ -326,6 +352,18 @@ class Approvals(QObject):
         return waiting_rows(self._pending, projects=projects, chats=chats, current=self.app.current or "",
                             now=datetime.now(UTC), speakers=self._speakers())  # fmt: skip
 
+    @Property(list, notify=changed)
+    def blocked(self) -> list:
+        projects = {p["id"]: p for p in self.app.projects.items}
+        chats = {c["id"]: c.get("title") or "" for c in self.app.conversations}
+        return blocked_rows(self._blocked, projects=projects, chats=chats, now=datetime.now(UTC),
+                            speakers=self._speakers())  # fmt: skip
+
+    @Property(int, notify=changed)
+    def blockedCount(self) -> int:
+        """Those the person may still let through: the shield shows while there are any."""
+        return sum(1 for a in self._blocked if not a.get("never") and not a.get("pass"))
+
     @Property("QVariantMap", notify=hereChanged)
     def card(self) -> dict:
         return self._card
@@ -342,7 +380,28 @@ class Approvals(QObject):
             self._pending = found
             self.changed.emit()
 
+        def show_blocked(found: list[dict[str, Any]]) -> None:
+            self._blocked = found
+            self.changed.emit()
+
         self.app._call(lambda: self.app.client.approvals(), show, lambda _e: None)
+        self.app._call(lambda: self.app.client.blocked(), show_blocked, lambda _e: None)
+
+    @Slot(str)
+    def allowBlocked(self, approval_id: str) -> None:
+        """«Разрешить» on what the rules refused: the model's next same try goes through, once."""
+
+        def done(row: dict[str, Any]) -> None:
+            self._blocked = [{**a, "pass": row.get("pass") or "open"} if a["id"] == approval_id else a
+                             for a in self._blocked]  # fmt: skip
+            self.changed.emit()
+            self.app.flash(tr("Разрешено на один раз. Попросите модель повторить это действие."), ms=8000)
+
+        def failed(error: Exception) -> None:
+            self.app.show_error(tr("Не разрешено: {error}", error=error))
+            self.load()
+
+        self.app._call(lambda: self.app.client.pass_blocked(approval_id), done, failed)
 
     @Slot(str, bool, str, str)
     def answer(self, approval_id: str, allow: bool, scope: str, comment: str) -> None:
@@ -414,6 +473,17 @@ class Approvals(QObject):
     def on_event(self, kind: str, payload: dict[str, Any]) -> None:
         approval = payload.get("approval") or {}
         if not approval.get("id"):
+            return
+        if approval.get("decided_by") == RULES_BY:  # a refusal of the rules: new, let through, or gone through
+            new = all(a["id"] != approval["id"] for a in self._blocked)
+            self._blocked = (
+                [approval, *(a for a in self._blocked if a["id"] != approval["id"])][:BLOCKED_SHOWN]
+                if new
+                else [approval if a["id"] == approval["id"] else a for a in self._blocked]
+            )
+            if new and not approval.get("never"):
+                self.app.flash(tr("«Доверенный» не стал выполнять действие — значок щита в заголовке"), ms=8000)
+            self.changed.emit()
             return
         self._pending = [a for a in self._pending if a["id"] != approval["id"]]
         if kind != "approval.requested":

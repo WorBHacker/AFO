@@ -2030,3 +2030,27 @@ def test_switching_to_trusted_lets_the_open_card_go(hub, repo):  # noqa: F811
     assert [a["id"] for a in hub.get("/v1/approvals").json()["approvals"]] == [asked["id"]]  # still the person's
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
     ch.finished(hub, other)
+
+
+def test_what_the_rules_refused_is_listed_and_can_be_let_through_once(hub, repo):  # noqa: F811
+    """The user's word 2026-11-18, «Недавно заблокировано»: what a trusted chat's rules refused is listed for the
+    window; «Разрешить» there lets the chat's next same request through, once. What reaches the hub's own data is
+    listed too - and can never be let through."""
+    push = tc.run("git push origin main")
+    _pid, conv, provider = ch.setup_chat(hub, repo, [[push], [tc.run("Get-Content app.token")]], mode="trusted")
+    ch.say(hub, conv)
+    answered(hub, conv)
+    never, blocked = hub.get("/v1/approvals/blocked").json()["blocked"]  # the newest first
+    assert blocked["tool"] == "run_command" and blocked["input"]["command"] == "git push origin main"
+    assert blocked["conversation_id"] == conv and blocked["pass"] is None and blocked["never"] is False
+    assert never["never"] is True and hub.post(f"/v1/approvals/{never['id']}/pass").status_code == 409
+    assert hub.post(f"/v1/approvals/{blocked['id']}/pass").json()["pass"] == "open"
+    assert hub.post(f"/v1/approvals/{blocked['id']}/pass").status_code == 409  # let through already
+
+    provider.steps += [[tc.run("git   push origin main")], [push]]  # the same command, spaced otherwise; then again
+    ch.say(hub, conv)
+    passed, again = answered(hub, conv)[-2:]
+    assert passed["error"] is False and passed["output"].startswith("$ git   push origin main")  # it ran
+    assert again["output"].startswith("not done: «Доверенный» does not do this unasked")  # once means once
+    states = [b["pass"] for b in hub.get("/v1/approvals/blocked").json()["blocked"]]
+    assert states == [None, None, "used"]  # the new refusal, the hub's data, the one let through

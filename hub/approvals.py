@@ -26,6 +26,7 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -139,6 +140,7 @@ FULL_NEVER = ("not done: «Полный» asks nothing, and this {why} - the hub
 
 
 ALL_WRITES, ALL_COMMANDS = "write", "command"  # a project's rule: every edit of its files, every command in it
+BLOCKED_HOURS, BLOCKED_SHOWN = 24, 20  # «Недавно заблокировано»: how far back, how many
 RULES_BY = "rules"  # who refused what a trusted chat does not do unasked (2026-11-18): the rules, nobody was asked
 TRUSTED_NEVER = ("not done: «Доверенный» never does this - it reaches the hub's own data (its keys, its database). "
                  "Nobody is asked about it: do the task without it, "
@@ -534,6 +536,13 @@ def _row(row: sqlite3.Row) -> dict[str, Any]:
                         "rule": rule_key(row["tool"], row["grant_key"]) or ""}  # fmt: skip
 
 
+def _same_request(tool: str, data: dict[str, Any]) -> str:
+    """One spelling for one request: a command by its words (however spaced), anything else by its whole input."""
+    if tool in COMMAND_TOOLS:
+        data = {**data, "command": " ".join(str(data.get("command", "")).split())}
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
 def _chat_allows(conn: sqlite3.Connection, conversation_id: str | None, key: str) -> bool:
     found = (
         conversation_id
@@ -680,6 +689,62 @@ class ApprovalQueue:
         row = _row(await self._db.acall(write))
         await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
         return row
+
+    async def blocked(self, limit: int = BLOCKED_SHOWN) -> list[dict]:
+        """«Недавно заблокировано» (0.1.17): what the rules refused in the last day, the newest first; `pass` - let
+        through by the user ('open'), gone through ('used'); `never` - the hub's own data, which nobody lets."""
+        since = (datetime.now(UTC) - timedelta(hours=BLOCKED_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+        rows = await self._db.acall(
+            lambda conn: conn.execute(
+                f"{SELECT} WHERE a.decided_by = ? AND a.created_at >= ? ORDER BY a.created_at DESC, a.rowid DESC"
+                " LIMIT ?",
+                (RULES_BY, since, limit),
+            ).fetchall()
+        )
+        return [_row(r) | {"never": r["comment"] == TRUSTED_NEVER} for r in rows]
+
+    async def let_through(self, approval_id: str, by: str) -> dict:
+        """«Разрешить» on a refusal of the rules: the chat's next same request goes through, once (take_pass)."""
+        found = next((b for b in await self.blocked(limit=10_000) if b["id"] == approval_id), None)
+        if found is None:
+            raise ApprovalError(f"no such refusal: {approval_id}")
+        if found["never"]:
+            raise ApprovalError("this reaches the hub's own data: it is never let through")
+
+        def write(conn: sqlite3.Connection) -> sqlite3.Row | None:
+            done = conn.execute("UPDATE approvals SET pass = 'open' WHERE id = ? AND pass IS NULL", (approval_id,))
+            return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone() if done.rowcount else None
+
+        row = await self._db.acall(write)
+        if row is None:
+            raise ApprovalError("this was let through already")
+        shown = _row(row) | {"never": False, "let_by": by}
+        await self._bus.publish("approval.decided", {"approval": shown}, project_id=shown["project_id"], persist=False)
+        return shown
+
+    async def take_pass(self, conversation_id: str, tool: str, data: dict[str, Any]) -> bool:
+        """Has the user let this very request of the chat through after the rules refused it? Then it goes, and the
+        pass is spent."""
+        same = _same_request(tool, data)
+
+        def write(conn: sqlite3.Connection) -> sqlite3.Row | None:
+            rows = conn.execute(
+                "SELECT id, input FROM approvals WHERE conversation_id = ? AND tool = ? AND pass = 'open'"
+                " ORDER BY created_at",
+                (conversation_id, tool),
+            ).fetchall()
+            for r in rows:
+                if _same_request(tool, json.loads(r["input"])) == same:
+                    conn.execute("UPDATE approvals SET pass = 'used' WHERE id = ?", (r["id"],))
+                    return conn.execute(f"{SELECT} WHERE a.id = ?", (r["id"],)).fetchone()
+            return None
+
+        row = await self._db.acall(write)
+        if row is None:
+            return False
+        shown = _row(row) | {"never": False}
+        await self._bus.publish("approval.decided", {"approval": shown}, project_id=shown["project_id"], persist=False)
+        return True
 
     async def decide(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "", by: str,
                      hunks: list[int] | None = None) -> dict:  # fmt: skip

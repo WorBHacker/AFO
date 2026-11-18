@@ -86,7 +86,16 @@ from . import (
     web,
     websearch,
 )
-from .approvals import COMMAND_TOOLS, TRUSTED_NOT_YET, WRITE_TOOLS, Decision, beyond_full, destructive, trusted_refuses
+from .approvals import (
+    COMMAND_TOOLS,
+    TRUSTED_NEVER,
+    TRUSTED_NOT_YET,
+    WRITE_TOOLS,
+    Decision,
+    beyond_full,
+    destructive,
+    trusted_refuses,
+)
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -1337,12 +1346,17 @@ class ChatService:
                               project_id: str | None, *, wipes: bool | None = None) -> str | None:  # fmt: skip
         """A trusted chat's command, or an outside tool, by the rules (the user's word 2026-11-18, «как auto» -
         approvals.trusted_refuses): None - done unasked; a text - refused, what the model reads, kept in the queue
-        as the rules' refusal; '' - the second risky one in a row: the user is asked. Where nobody answers - the
+        as the rules' refusal; '' - the second risky one in a row: the user is asked. A refusal the user let
+        through from the window («Недавно заблокировано») goes unasked, once. Where nobody answers - the
         proving ground, an autonomous run in «Полный» - the asking itself says no (_decision)."""
         again = conversation_id in self.refused
         if conversation_id in self.proving or await self._level(conversation_id) == autonomous.FULL:
             again = True
         said = trusted_refuses(tool, args, root, wipes=wipes, again=again)
+        passes = said is not None and said != TRUSTED_NEVER and self.approvals is not None
+        # «Разрешить» in «Недавно заблокировано»: the user let this very request through, once
+        if passes and await self.approvals.take_pass(conversation_id, tool, args):
+            said = None
         if not said:  # done, or asked: either way the row of refusals is over
             self.refused.discard(conversation_id)
             return said

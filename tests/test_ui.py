@@ -1476,6 +1476,16 @@ class FakeClient:
     def approvals(self):
         return [dict(a) for a in self.pending]
 
+    def blocked(self):
+        return [dict(a) for a in getattr(self, "blocked_list", [])]
+
+    def pass_blocked(self, approval_id):
+        if approval_id == "gone":
+            raise HubError("this was let through already")
+        self.passed = [*getattr(self, "passed", []), approval_id]
+        self.blocked_list = [{**a, "pass": "open"} if a["id"] == approval_id else a for a in self.blocked_list]
+        return next(dict(a) for a in self.blocked_list if a["id"] == approval_id)
+
     def programs(self):
         return {"programs": [dict(p) for p in self.program_list], "scanning": False,
                 "scanned_at": "2026-10-27T15:00:00Z", "error": "", "offer": self.program_offer}  # fmt: skip
@@ -10488,6 +10498,72 @@ def test_the_card_names_what_always_covers_and_says_the_chat_read_others_text(qa
         settle()
         assert item_named(card, "approveProject").property("text") == "Разрешить все команды в «LocalChat»"
         assert not item_named(card, "approvalReadOthers").property("visible")  # this request says nothing of it
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_what_trusted_did_not_do_is_listed_under_the_shield_with_allow(qapp):
+    """0.1.17 step 7, as Claude Code's «Recently blocked»: what the rules of «Доверенный» refused unasked is listed
+    under the shield - the shield shows for it with nobody waiting; «Разрешить» lets the model's next same try
+    through once and the row says so; the hub's own data has no button; a new refusal comes into the list by its
+    event, and one gone through says it was done by the person's word."""
+    from PySide6.QtCore import QMetaObject, QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+
+    def settle() -> None:
+        for _ in range(10):
+            quick.window.grabWindow()
+            QApplication.processEvents()
+
+    def refusal(rid: str, command: str, **more) -> dict:
+        return {"id": rid, "created_at": "2026-11-18T01:02:03.000Z", "conversation_id": "c1", "project_id": "p1",
+                "client": None, "tool": "run_command", "kind": "command", "destructive": True, "status": "denied",
+                "decided_by": "rules", "input": {"command": command}, "pass": None, "never": False, **more}  # fmt: skip
+
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.pending = []
+        client.blocked_list = [refusal("r1", "git push origin main"),
+                               refusal("r0", "Get-Content app.token", never=True)]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy and app.approvals.blockedCount == 1)
+        settle()
+        shield = quick.window.findChild(QObject, "approvalsButton")
+        assert shield.property("visible") and app.approvals.count == 0  # nobody waits: the shield is for the refusal
+        listed = quick.window.findChild(QObject, "approvalsList")
+        QMetaObject.invokeMethod(listed, "open")
+        wait_until(lambda: listed.property("opened") and item_named(listed.property("contentItem"), "blocked_r1"))
+        settle()
+        row = item_named(listed.property("contentItem"), "blocked_r1")
+        never = item_named(listed.property("contentItem"), "blocked_r0")
+        assert item_saying(row, "git push origin main") is not None
+        assert item_named(row, "allowBlocked").property("visible")
+        assert not item_named(never, "allowBlocked").property("visible")  # the hub's own data: nobody lets it
+        assert "Данные самой AFO" in item_named(never, "blockedState").property("text")
+
+        click(quick.window, item_named(row, "allowBlocked"))
+        wait_until(lambda: not app.bg.busy and getattr(client, "passed", []) == ["r1"])
+        settle()
+        row = item_named(listed.property("contentItem"), "blocked_r1")
+        assert not item_named(row, "allowBlocked").property("visible")
+        assert "Разрешено на один раз" in item_named(row, "blockedState").property("text")
+        assert app.flashText.startswith("Разрешено на один раз") and app.approvals.blockedCount == 0
+
+        # the model tried again and it went: the row says by whose word; its next risky one is a new row on top
+        gone = {**refusal("r1", "git push origin main"), "pass": "used"}
+        app.on_event({"type": "approval.decided", "payload": {"approval": gone}})
+        app.on_event({"type": "approval.decided", "payload": {"approval": refusal("r2", "git reset --hard")}})
+        settle()
+        rows = [r["id"] for r in app.approvals.blocked]
+        assert rows == ["r2", "r1", "r0"] and app.approvals.blockedCount == 1
+        row = item_named(listed.property("contentItem"), "blocked_r1")
+        assert "Выполнено по вашему разрешению" in item_named(row, "blockedState").property("text")
+        assert app.flashText.startswith("«Доверенный» не стал выполнять действие")
         assert quick.warnings == []
     finally:
         quick.close()
