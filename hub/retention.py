@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -29,7 +30,7 @@ from typing import Any
 
 from common.i18n import tr
 
-from . import checkpoints
+from . import checkpoints, director
 from .db import Database, utc_now
 from .terminals import prune_logs
 
@@ -40,6 +41,7 @@ DEFAULTS = {"days": 90, "max_gb": 2.0}  # D30's term; Q4's size - per kind
 DAYS = (7, 3650)
 MAX_GB = (0.1, 1000.0)
 PRUNE_EVERY_S = 6 * 3600
+OWNER = re.compile(r"film-[0-9a-f]+|[0-9a-f]+")  # the beginning of a name in data/media: whose the file is
 GIB = 1024**3
 
 
@@ -153,11 +155,21 @@ def prune_blobs(db: Database, folder: Path, *, days: int, now: float | None = No
     return removed
 
 
-def prune_copies(folder: Path, pattern: str, *, days: int, max_bytes: int, now: float | None = None) -> int:
+def owner(name: str) -> str:
+    """Whose a file of data/media is, by its name: a film's own (film-<id>-photo.png, film-<id>.mp4) - «film-<id>»;
+    a job's (<job>.webp, <job>.mp4, <job>.end.png, <job>-source.png) - the job's id."""
+    found = OWNER.match(name)
+    return found.group(0) if found else ""
+
+
+def prune_copies(folder: Path, pattern: str, *, days: int, max_bytes: int, now: float | None = None,
+                 keep: set[str] | None = None) -> int:  # fmt: skip
     """Working copies of sent files - Claude Code's (data/attachments/<chat>/<message>/...), the window's pasted
-    pictures (data/pasted): kept `days` and within `max_bytes`; empty folders go too."""
+    pictures (data/pasted): kept `days` and within `max_bytes`; empty folders go too. `keep` - the owners (`owner`)
+    whose files stay whatever their age, and take none of the room: a film's (50.5)."""
     now = time.time() if now is None else now
-    removed = _thin(_files(folder, pattern), now - days * 86400, max_bytes)
+    found = [f for f in _files(folder, pattern) if not keep or owner(f[0].name) not in keep]
+    removed = _thin(found, now - days * 86400, max_bytes)
     if folder.is_dir():
         for path in sorted(folder.rglob("*"), key=lambda p: len(p.parts), reverse=True):
             with contextlib.suppress(OSError):
@@ -194,7 +206,9 @@ def prune_all(db: Database, root: Path, now: float | None = None) -> dict[str, i
         "files": prune_blobs(db, root / "blobs", days=days, now=now),
         "copies": prune_copies(root / "attachments", "*/*/*", days=days, max_bytes=max_bytes, now=now)
         + prune_copies(root / "pasted", "*", days=days, max_bytes=max_bytes, now=now),
-        "pictures": prune_copies(root / "media", "*/*", days=days, max_bytes=max_bytes, now=now),
+        "pictures": prune_copies(
+            root / "media", "*/*", days=days, max_bytes=max_bytes, now=now, keep=db.call(director.kept)
+        ),  # a film's files stay while the film is there (50.5)
     }
 
 

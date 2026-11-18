@@ -71,6 +71,7 @@
 - `hub/context.py` — что модель узнаёт о проектах
 - `hub/delegate.py` — инструменты координатора: раздача задач агентам
 - `hub/diagnostics.py` — «Проверить систему» и журналы для поддержки
+- `hub/director.py` — «Режиссёр»: фильм из сцен
 - `hub/editor.py` — что пользователь делает в VS Code
 - `hub/engines.py` — движки локальных моделей: llama.cpp, llama-swap
 - `hub/events.py` — шина событий: таблица `events` и живые подписчики
@@ -242,6 +243,7 @@
 - `hub/db/migrations/053_visual_last_frame.sql` — последний кадр видео по двум кадрам
 - `hub/db/migrations/054_approval_pass.sql` — «Разрешить» у отказа правил «Доверенного»
 - `hub/db/migrations/055_visual_sampling.sql` — свои шаги и сила подсказки видео
+- `hub/db/migrations/056_films.sql` — фильмы «Режиссёра» и их сцены
 
 ### hub/gateway/ — шлюз моделей
 
@@ -506,6 +508,7 @@
 - `tests/test_context.py` — слои контекста
 - `tests/test_db.py` — база и миграции
 - `tests/test_diagnostics.py` — проверка системы, простые слова
+- `tests/test_director.py` — «Режиссёр»: фильм, сцены, очистка
 - `tests/test_editor.py` — сообщения VS Code
 - `tests/test_engines.py` — движки моделей
 - `tests/test_entry_points.py` — настоящие процессы хаба и окна
@@ -2968,6 +2971,17 @@ MusicGen, LivePortrait (части InsightFace), BasicVSR++ и RealBasicVSR (PyT
 - 50.5 База: миграция 056 — `films` (идея, длительность, фото товара, модель-режиссёр, состояние, файл) и
   `film_scenes` (номер, режим, текст по-русски, английский промпт, кадры, seed, работа `visual_jobs`, состояние);
   ролики фильма очистка не трогает (`hub/retention.py`).
+  ✓ Сделано: миграция 056 — `films` (идея, длина, форма кадра, фото, модель-режиссёр, модель видео, состояние
+  `draft | writing | ready | filming | joining`, ошибка словами, файл, переход `fade`, расход режиссёра) и
+  `film_scenes` (номер с 1, режим `text | picture | continue | frames`, слова по-русски, промпт, кадры, seed, работа
+  `visual_jobs`, состояние `new | filming | done | failed | stale`; «stale» — снята, но сцена, с которой она
+  продолжается, переснята). Хранение — `hub/director.py`: `new_film`, `film`, `films`, `set_scenes` (сценарий
+  заново — прежние сцены заменяются), `update_film`, `update_scene`, `delete_film`, `kept`. Файлы фильма лежат в
+  `data/media`: фото `film-<id>-photo.png`, ролики сцен — файлы их работ, фильм `film-<id>.mp4`. Очистка
+  (`retention.prune_copies(..., keep=)`, `owner` — чей файл по началу имени) не трогает и не считает в размер
+  файлы, чей владелец — фильм или работа его сцены (`director.kept`); сцена заменена или фильм удалён — файлы
+  уходят по общему сроку. Тест — `test_a_film_and_its_scenes_are_kept_and_its_files_outlive_the_cleanup`
+  (`tests/test_director.py`, настоящая база и файлы возрастом 120 дней); на старом коде очистка уносит всё.
 - 50.6 Сценарий: роль модели «Режиссёр» (как «Проверка цели»), промпт, разбор `read_storyboard` (кадры 8n+1, режим
   `picture | continue | frames`, проверка полей), один повтор. Новый `hub/director.py`.
 - 50.7 Съёмка фильма: сцены по очереди; `continue` берёт последний кадр прошлой сцены, `picture` — фото товара,
