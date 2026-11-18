@@ -164,6 +164,8 @@ class FakeHub(BaseHTTPRequestHandler):
     spans: ClassVar[list] = []  # (file, start, end) of each Range request with an end (a piece, 2026-11-05)
     no_ranges = False  # a server that ignores Range: the whole file, 200
     overlong = 0  # bytes a piece's answer goes on past the end asked for (32.1)
+    slow_once: ClassVar[dict] = {}  # a Range's first byte -> seconds a chunk, once: one bad connection (after 0.1.16)
+    break_once: ClassVar[dict] = {}  # a Range's first byte -> bytes sent before that connection breaks, once
     active = peak = 0  # CDN requests being served at once
     searches: ClassVar[list] = []  # the query of each search (32.5)
     picture_auth: ClassVar[list] = []  # the Authorization header of each picture file's request
@@ -274,6 +276,7 @@ class FakeHub(BaseHTTPRequestHandler):
         if self.headers.get("Range") and not self.no_ranges:
             first, _, last = self.headers["Range"].split("=")[1].partition("-")
             start = int(first)
+            slow = self.slow_once.pop(start, slow)
             if last:
                 end = min(int(last) + self.overlong, len(data) - 1)
                 FakeHub.spans.append((name, start, end))
@@ -287,6 +290,8 @@ class FakeHub(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         cut = self.break_after.pop(name, None)
+        if cut is None and self.headers.get("Range") and not self.no_ranges:
+            cut = self.break_once.pop(start, None)
         for i in range(0, len(body), 16384):
             if cut is not None and i >= cut:
                 self.close_connection = True
@@ -309,6 +314,7 @@ class QuietServer(ThreadingHTTPServer):
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
     FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak, FakeHub.overlong = [], False, 0, 0, 0
+    FakeHub.slow_once, FakeHub.break_once = {}, {}
     FakeHub.picture_auth, FakeHub.github_auth, FakeHub.searches, FakeHub.github_slow = [], [], [], None
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
@@ -630,6 +636,43 @@ def test_a_piece_takes_only_its_own_bytes(fake_hub, pieces, tmp_path, monkeypatc
     hf.download(hf.file_url("test/Tiny-GGUF", name), dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(),
                 token=None, report=lambda _n: None, cancel=threading.Event())  # fmt: skip
     assert dest.read_bytes() == data
+
+
+def test_a_slow_piece_is_shared_with_a_free_connection(fake_hub, pieces, tmp_path, monkeypatch):
+    """The user's complaint (2026-11-18, AFO 0.1.16): sd.cpp's archive from GitHub - 363 MB, six pieces; five came,
+    the sixth stood at 56 MB of 64 over one connection (GitHub gives this computer 0,6 MB/s a connection, 8,9 over
+    eight) while the other connections had nothing to do: «1,0 МБ/с». Now a piece left to one slow connection is
+    shared - a free connection takes over the rest of it (all of it but a chunk when the slow one stands still) - and
+    the file on disk, its list of pieces and its sha256 are as before."""
+    monkeypatch.setattr(hf, "CHUNK", 16_384)  # the server's own chunks: the slow connection keeps one
+    monkeypatch.setattr(hf, "STEAL_AFTER_S", 0.3, raising=False)  # 2 s in life
+    monkeypatch.setattr(hf, "STEAL_MIN", 4_096, raising=False)  # 4 MB in life
+    name = "BF16/Tiny-BF16-00001-of-00002.gguf"  # five pieces of 64 KB
+    data = FILES[name]
+    FakeHub.slow_once[65_536] = 1.0  # the second piece's connection: a second a chunk of 16 KB - 4 s for the piece
+    seen, dest = [], tmp_path / "shared.gguf"
+    # the stand's «CDN» by its address: Windows gives each new connection to «localhost» ~2 s (::1 tried first)
+    url = f"http://127.0.0.1:{FakeHub.port}/cdn/{name}"
+    began = time.monotonic()
+    hf.download(url, dest, size=len(data), sha256=hashlib.sha256(data).hexdigest(), token=None, report=seen.append,
+                cancel=threading.Event())  # fmt: skip
+    took = time.monotonic() - began
+    assert dest.read_bytes() == data and sorted(p.name for p in tmp_path.iterdir()) == [dest.name]
+    taken = [start for _, start, _ in FakeHub.spans if 65_536 < start < 131_072]
+    assert taken, f"nobody took over the slow piece: {FakeHub.spans}"
+    assert took < 2.5, f"the file waited for the slow connection: {took:.1f} s"
+    assert seen == sorted(seen) and seen[-1] == len(data)  # the number in the window never goes back
+
+    # the connection that took the rest over breaks: it goes on from where it broke, the file is whole
+    FakeHub.spans.clear()
+    FakeHub.slow_once[65_536] = 1.0
+    FakeHub.break_once[65_536 + 16_384] = 16_384  # the part taken over: the slow one keeps a chunk of it
+    seen, again = [], tmp_path / "broken.gguf"
+    hf.download(url, again, size=len(data), sha256=hashlib.sha256(data).hexdigest(), token=None, report=seen.append,
+                cancel=threading.Event())  # fmt: skip
+    assert again.read_bytes() == data and seen == sorted(seen)
+    taken = sorted(start for _, start, _ in FakeHub.spans if 65_536 < start < 131_072)
+    assert taken == [81_920, 98_304], FakeHub.spans  # taken over, then asked again from where it broke
 
 
 def test_pieces_fall_back_to_one_connection_and_a_wrong_file_is_thrown_away(fake_hub, pieces, tmp_path):

@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -41,6 +42,12 @@ SEGMENT = 64 << 20  # a piece of a big file: what one connection asks for; a bre
 PARALLEL_MIN = 2 * SEGMENT  # smaller files come over one connection
 SEGMENT_TRIES = 3  # a piece whose connection breaks is asked again this many times in all
 RETRY_S = 1.0
+# the fix after 0.1.16: a piece left to one slow connection is shared - judged after STEAL_AFTER_S, the part taken over
+# at least STEAL_MIN (less is not worth a new connection); a free connection looks for one every STEAL_LOOK_S
+STEAL_AFTER_S = 2.0
+STEAL_MIN = 4 << 20
+STEAL_LOOK_S = 0.1
+PIECE_READ_S = 30.0  # a piece's connection silent this long is broken: asked again from where it stopped
 SEARCH_FIELDS = ("gated", "downloads", "likes", "tags", "lastModified", "pipeline_tag", "gguf")
 INFO_FIELDS = (*SEARCH_FIELDS, "cardData", "sha")
 # a search's «для чего» (32.5): Hugging Face's tags - many chat models have no pipeline tag, but all have this one; a
@@ -582,17 +589,31 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
     lock, wake, stop = threading.Lock(), threading.Condition(), threading.Event()
     waiting = [i for i in range(count) if i not in progress.pieces]
     failed: list[BaseException] = []
-    coming = progress.partial  # a piece begun -> its bytes on disk; kept between tries (0.1.15 step 5)
+    coming = progress.partial  # a piece begun -> its bytes on disk from its start; kept between tries (0.1.15 step 5)
+    flying: dict[int, list[_Span]] = {}  # a piece on its way -> the connections' parts of it (the fix after 0.1.16)
+
+    def next_span() -> _Span | None:  # under the lock: a piece waiting, or a part of a slow one
+        if waiting:
+            index = waiting.pop(0)
+            first, last = _span(index, size)
+            flying[index] = [_Span(index, first + coming.get(index, 0), last + 1)]
+            return flying[index][0]
+        return _share(flying, time.monotonic())
 
     def worker() -> None:
-        with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0), transport=transport) as http:
+        with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0, read=PIECE_READ_S),
+                          transport=transport) as http:  # fmt: skip
             while not stop.is_set():
                 with lock:
-                    if not waiting:
-                        return
-                    index = waiting.pop(0)
+                    span = next_span()
+                    over = span is None and not flying
+                if over:
+                    return
+                if span is None:  # the pieces left are on their way and none is slow: look again soon
+                    stop.wait(STEAL_LOOK_S)
+                    continue
                 try:
-                    _piece(http, url, part, index, size, token, cancel, stop, coming, lock)
+                    _piece(http, url, part, span, token, cancel, stop, lock)
                 except BaseException as exc:  # the main thread raises it
                     with lock:
                         failed.append(exc)
@@ -600,10 +621,13 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
                     with wake:
                         wake.notify()
                     return
-                with lock:
-                    progress.pieces.add(index)
-                    coming.pop(index, None)
-                    marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
+                with lock:  # a piece is done when all its parts are
+                    parts = flying.get(span.index) or []
+                    if parts and all(p.left == 0 for p in parts):
+                        del flying[span.index]
+                        progress.pieces.add(span.index)
+                        coming.pop(span.index, None)
+                        marks.write_text(json.dumps(sorted(progress.pieces)), encoding="utf-8")
                 with wake:
                     wake.notify()
 
@@ -615,7 +639,8 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
             while True:
                 with lock:
                     ready = progress.pieces.copy()
-                    on_way = sum(coming.values())
+                    on_way = sum(_on_disk(i, parts, size) for i, parts in flying.items()) + sum(
+                        n for i, n in coming.items() if i not in flying)  # fmt: skip
                     progress.done = sum(_span(i, size)[1] - _span(i, size)[0] + 1 for i in ready)
                 _shown(progress, report, progress.done + on_way)
                 upto = 0  # the bytes from the start that are on disk
@@ -638,6 +663,8 @@ def _pieces(url: str, dest: Path, *, size: int, sha256: str | None, token: str |
         stop.set()
         for t in threads:
             t.join()
+        for index, parts in flying.items():  # a next try goes on from each piece's bytes on disk from its start
+            coming[index] = _contiguous(index, parts, size)
     if failed:
         raise failed[0]
     if cancel.is_set() and progress.hashed < size:
@@ -672,37 +699,101 @@ def _pieces_on_disk(part: Path, marks: Path, size: int, count: int) -> set[int]:
     return set(range(min(part.stat().st_size, size) // SEGMENT))
 
 
-def _piece(http: httpx.Client, url: str, part: Path, index: int, size: int, token: str | None,
-           cancel: threading.Event, stop: threading.Event, coming: dict[int, int],
-           lock: threading.Lock) -> None:  # fmt: skip
-    """One piece at its place in the part, asked again when the connection breaks (SEGMENT_TRIES) - from where it
-    broke (0.1.15 step 5: `coming` keeps its bytes on disk, for the next try of the download too)."""
-    first, last = _span(index, size)
-    need = last + 1 - first
+@dataclass
+class _Span:
+    """What one connection asks for of a piece: from `start` to `end` (one past its last byte). `end` comes down when a
+    free connection takes the rest over (the fix after 0.1.16); `got` - its bytes written, `moved` - when the last
+    came."""
+
+    index: int
+    start: int
+    end: int
+    got: int = 0
+    began: float = field(default_factory=time.monotonic)
+    moved: float = field(default_factory=time.monotonic)
+
+    @property
+    def left(self) -> int:
+        return max(self.end - self.start - self.got, 0)
+
+
+def _share(flying: dict[int, list[_Span]], now: float) -> _Span | None:
+    """A free connection's part of the piece whose connection would need longest - over STEAL_AFTER_S, and the part
+    worth a new connection (STEAL_MIN): the second half of what it has left, or all but a chunk when it stands still
+    (the fix after 0.1.16: sd.cpp's archive waited minutes for one piece over GitHub's 0,6 MB/s while seven connections
+    had nothing to do). The slow one keeps a chunk at least past what it wrote: the chunk it may be writing now never
+    reaches the part taken. Under the lock."""
+    best: tuple[_Span, int] | None = None
+    longest = STEAL_AFTER_S
+    for parts in flying.values():
+        for span in parts:
+            if now - span.began < STEAL_AFTER_S:
+                continue  # too young to judge
+            still = now - span.moved >= STEAL_AFTER_S
+            keep = CHUNK if still else max(CHUNK, span.left // 2)
+            if span.left - keep < STEAL_MIN:
+                continue
+            rate = span.got / (now - span.began)
+            needs = span.left / rate if rate > 0 and not still else math.inf
+            if needs > longest:
+                best, longest = (span, keep), needs
+    if best is None:
+        return None
+    span, keep = best
+    taken = _Span(span.index, span.start + span.got + keep, span.end)
+    span.end = taken.start
+    flying[span.index].append(taken)
+    return taken
+
+
+def _on_disk(index: int, parts: list[_Span], size: int) -> int:
+    """A piece's bytes on disk: what an earlier try left before its first part, and each part's own."""
+    return min(p.start for p in parts) - _span(index, size)[0] + sum(min(p.got, p.end - p.start) for p in parts)
+
+
+def _contiguous(index: int, parts: list[_Span], size: int) -> int:
+    """A piece's bytes on disk from its start without a gap - what a next try goes on from (0.1.15 step 5)."""
+    upto = min(p.start for p in parts)
+    for p in sorted(parts, key=lambda p: p.start):
+        if p.start != upto:
+            break
+        upto += min(p.got, p.end - p.start)
+        if p.got < p.end - p.start:
+            break
+    return upto - _span(index, size)[0]
+
+
+def _piece(http: httpx.Client, url: str, part: Path, span: _Span, token: str | None, cancel: threading.Event,
+           stop: threading.Event, lock: threading.Lock) -> None:  # fmt: skip
+    """One connection's part of a piece at its place in the part, asked again when the connection breaks
+    (SEGMENT_TRIES) - from where it broke (0.1.15 step 5); it stops where its end has come down to (the fix after
+    0.1.16: a free connection took the rest over)."""
     for attempt in range(SEGMENT_TRIES):
         with lock:
-            got = coming.get(index, 0)
-        if got >= need:  # all of it written by a try before, not yet counted done
+            begin, end = span.start + span.got, span.end
+        if begin >= end:  # all of it written by a try before, or taken over
             return
         try:
-            ranged = {**headers(token), "Range": f"bytes={first + got}-{last}"}
+            ranged = {**headers(token), "Range": f"bytes={begin}-{end - 1}"}
             with http.stream("GET", url, headers=ranged) as response:
                 if response.status_code == 200:
                     raise _NoRanges()
                 if response.status_code != 206:
                     raise _refused(response, part.name.removesuffix(".part"))
                 with open(part, "r+b") as f:
-                    f.seek(first + got)
+                    f.seek(begin)
                     for chunk in response.iter_bytes(CHUNK):
                         if cancel.is_set() or stop.is_set():
                             raise Cancelled()
-                        f.write(chunk[: need - got])
-                        got += len(chunk)
+                        with lock:  # still its own: the end may have come down meanwhile
+                            room = span.left
+                        f.write(chunk[:room])
                         with lock:
-                            coming[index] = min(got, need)
-                        if got >= need:  # what a server sends past the end asked for is the next piece's place
+                            span.got += min(len(chunk), room)
+                            span.moved = time.monotonic()
+                        if len(chunk) >= room:  # past its end: the next piece's place, or the part taken over
                             break
-            if got >= need:
+            if span.left == 0:
                 return
         except httpx.HTTPError:
             pass
