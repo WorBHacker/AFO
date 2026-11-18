@@ -5,11 +5,13 @@ import asyncio
 import base64
 import json
 import random
+import shutil
 import struct
 import threading
 import time
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import ClassVar
 
 import httpx
@@ -981,6 +983,38 @@ def test_a_video_by_a_picture_and_by_two_frames(hub):
             _wait(hub, said.json()["job"]["id"], "done", "failed")
             continue
         assert said.status_code == 422 and words in said.json()["detail"], (wrong, said.json())
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_video_goes_on_from_the_last_frame_of_another(hub, monkeypatch):
+    """50.3, for the director's «продолжение»: a video named as another's source (`from_job`) begins with that
+    video's last frame - taken by a real ffmpeg, kept beside the clip and taken once; before, a video as a source
+    was refused: «образец — картинка PNG»."""
+    from PySide6.QtGui import QImage
+
+    from hub import ffmpeg
+    from tests.test_ffmpeg import GREEN, ORANGE, _near, _solid, animated_webp
+
+    _install(hub, "film", {**CLIP_PLAN, "set": "film", "modes": ["text", "picture", "frames"]})
+    FakeDrawSwap.filmed = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    taken = []
+    real = ffmpeg.last_frame
+    monkeypatch.setattr(ffmpeg, "last_frame", lambda *a: (taken.append(a[1]), real(*a))[1])
+    first = _wait(hub, hub.post("/v1/visual/videos", json={"prompt": "a lamp turns"}).json()["job"]["id"], "done")
+
+    job = hub.post("/v1/visual/videos", json={"prompt": "the lamp lights", "from_job": first["id"]})
+    assert job.status_code == 200, job.json()
+    done = _wait(hub, job.json()["job"]["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    began = QImage.fromData(base64.b64decode(FakeDrawSwap.video[-1]["init_image"]), "PNG")
+    pixel = began.pixelColor(32, 32)
+    assert (began.width(), began.height()) == (64, 64) and _near((pixel.red(), pixel.green(), pixel.blue()), GREEN)
+    assert (done["width"], done["height"]) == (640, 640)  # the frame's shape: square
+    again = hub.post("/v1/visual/videos", json={"prompt": "the lamp dims", "from_job": first["id"]})
+    _wait(hub, again.json()["job"]["id"], "done", "failed")
+    assert len(taken) == 1  # the frame is kept beside the clip
 
 
 def test_a_videos_mp4_made_once_with_ffmpeg_fetched_once(hub, monkeypatch, tmp_path):

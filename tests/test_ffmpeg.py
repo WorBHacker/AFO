@@ -232,3 +232,81 @@ def test_a_videos_mp4_has_each_frame_as_the_webp_lays_it(tmp_path):
     subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey", "-i", str(target),
                     "-fps_mode", "passthrough", str(keys / "%d.png")], check=True, timeout=60)  # fmt: skip
     assert len(list(keys.iterdir())) == len(frames) == 9
+
+
+def _solid(colour: tuple[int, int, int]):
+    from PySide6.QtGui import QColor, QImage
+
+    image = QImage(64, 64, QImage.Format.Format_RGB32)
+    image.fill(QColor(*colour))
+    return (image, 0, 0, False)
+
+
+def _colour(path: Path) -> tuple[int, int, int]:
+    from PySide6.QtGui import QImage
+
+    image = QImage(str(path))
+    assert (image.width(), image.height()) == (64, 64), path
+    pixel = image.pixelColor(32, 32)
+    return pixel.red(), pixel.green(), pixel.blue()
+
+
+def _near(colour: tuple[int, int, int], other: tuple[int, int, int]) -> bool:
+    return sum(abs(a - b) for a, b in zip(colour, other, strict=True)) < 60
+
+
+def _frames_of(program: Path, video: Path, into: Path) -> list[Path]:
+    into.mkdir()
+    subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-i", str(video), "-fps_mode", "passthrough",
+                    str(into / "%d.png")], check=True, timeout=60)  # fmt: skip
+    return sorted(into.iterdir(), key=lambda f: int(f.stem))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_clips_last_frame_its_chosen_frames_and_scenes_joined(tmp_path):
+    """50.3, for the director's film - a real ffmpeg, the hub's own arguments: a clip's last frame as a PNG (the next
+    scene goes on from it) - of the engine's WebP and of an MP4; the frames with the numbers asked (for a look at a
+    scene); scenes joined into one MP4 - cut to cut, every frame of each kept once, or with a cross-fade, shorter
+    by the fades; nothing half-made is left when it fails."""
+    program = Path(shutil.which("ffmpeg"))
+    blues = [(20, 40, 100 + 15 * k) for k in range(9)]  # a scene of 9 frames: blue, lighter each frame
+    oranges = [(230, 110 + 5 * k, 30) for k in range(16)]  # a scene of 17: orange, its last frame green
+    one, two = tmp_path / "one.webp", tmp_path / "two.webp"
+    one.write_bytes(animated_webp([_solid(c) for c in blues], 64, 64))
+    two.write_bytes(animated_webp([*(_solid(c) for c in oranges), _solid(GREEN)], 64, 64))
+
+    last = tmp_path / "last.png"
+    ffmpeg.last_frame(program, two, last)
+    assert _near(_colour(last), GREEN) and not (tmp_path / "last.png.part").exists()
+    looks = tmp_path / "looks"
+    looks.mkdir()
+    chosen = ffmpeg.frames_at(program, two, looks, [0, 8, 16])
+    assert [f.name for f in chosen] == ["1.png", "2.png", "3.png"]
+    assert _near(_colour(chosen[0]), oranges[0]) and _near(_colour(chosen[1]), oranges[8])
+    assert _near(_colour(chosen[2]), GREEN)
+
+    film = tmp_path / "film.mp4"
+    ffmpeg.join(program, [(one, 9 / 24), (two, 17 / 24)], film, fps=24)
+    frames = _frames_of(program, film, tmp_path / "cut")
+    assert len(frames) == 26  # each frame of each scene, once
+    assert _near(_colour(frames[0]), blues[0]) and _near(_colour(frames[8]), blues[8])
+    assert _near(_colour(frames[9]), oranges[0]) and _near(_colour(frames[25]), GREEN)
+    end = tmp_path / "end.png"
+    ffmpeg.last_frame(program, film, end)  # an MP4's too
+    assert _near(_colour(end), GREEN)
+
+    faded = tmp_path / "faded.mp4"
+    ffmpeg.join(program, [(one, 9 / 24), (two, 17 / 24)], faded, fps=24, fade_s=0.25)
+    frames = _frames_of(program, faded, tmp_path / "fade")
+    assert len(frames) == 20  # 26 less the fade's 6
+    assert _near(_colour(frames[0]), blues[0]) and _near(_colour(frames[19]), GREEN)
+    middle = _colour(frames[5])  # inside the fade: neither scene's own colour
+    assert not _near(middle, blues[5]) and not _near(middle, oranges[2])
+
+    with pytest.raises(EngineError, match="нечего склеивать"):
+        ffmpeg.join(program, [], tmp_path / "none.mp4", fps=24)
+    with pytest.raises(EngineError, match="короче перехода"):
+        ffmpeg.join(program, [(one, 9 / 24), (two, 17 / 24)], tmp_path / "short.mp4", fps=24, fade_s=0.5)
+    with pytest.raises(EngineError, match="не взял последний кадр"):
+        ffmpeg.last_frame(program, tmp_path / "missing.webp", tmp_path / "missing.png")
+    assert not list(tmp_path.glob("*.part")) and not (tmp_path / "missing.png").exists()

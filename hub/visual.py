@@ -745,10 +745,14 @@ class Visual:
         return await self._db.acall(lambda conn: job(conn, job_id))
 
     async def _source(self, spec: dict[str, Any]) -> bytes | None:
-        """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None."""
+        """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None.
+        (50.3) A job that is a video gives its last frame: the next scene goes on from where that one ended."""
         if spec.get("from_job"):
             found = await self._db.acall(lambda conn: job(conn, str(spec["from_job"])))
-            path = self.file(found) if found is not None else None
+            if found is not None and found.get("kind") == "video" and found.get("status") == "done":
+                path = await self.end_frame(found)
+            else:
+                path = self.file(found) if found is not None else None
         elif spec.get("from_blob"):
             name = str(spec["from_blob"])
             ok = self.blobs is not None and len(name) == 64 and all(c in "0123456789abcdef" for c in name)
@@ -1020,6 +1024,11 @@ class Visual:
             log.warning("a chat's video: its MP4 not copied: %s", exc)
 
     async def _mp4_of(self, source: Path, target: Path) -> Path:
+        return await self.with_ffmpeg(target, lambda program: ffmpeg.to_mp4(program, source, target))
+
+    async def with_ffmpeg(self, target: Path, make: Callable[[Path], None]) -> Path:
+        """`target`, made by ffmpeg once (`make`, blocking, given the program) and kept: one fetch of ffmpeg - the
+        first time, ~86 MB - and one piece of its work at a time."""
         async with self._ffmpeg:
             if target.is_file():
                 return target
@@ -1032,10 +1041,19 @@ class Visual:
                 except (EngineError, hf.HubError) as exc:
                     raise VisualError(tr("ffmpeg не скачался: {error}", error=exc), 502) from exc
             try:
-                await asyncio.to_thread(ffmpeg.to_mp4, program, source, target)
+                await asyncio.to_thread(make, program)
             except EngineError as exc:
                 raise VisualError(str(exc), 502) from exc
         return target
+
+    async def end_frame(self, found: dict[str, Any]) -> Path:
+        """A video's last frame as a PNG (50.3): the director's next scene goes on from it; taken once, kept beside
+        the clip (<clip>.end.png - it goes with the clip when the old files are cleaned)."""
+        source = self.file(found)
+        if source is None:
+            raise VisualError(tr("видео ещё нет"), 404)
+        target = source.with_suffix(".end.png")
+        return await self.with_ffmpeg(target, lambda program: ffmpeg.last_frame(program, source, target))
 
     def file(self, found: dict[str, Any]) -> Path | None:
         path = self.media / found["file"] if found.get("file") else None
