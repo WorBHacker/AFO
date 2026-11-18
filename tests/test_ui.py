@@ -8914,6 +8914,11 @@ def test_a_models_file_shown_in_explorer(app, tmp_path, monkeypatch):
     assert "show" not in [a["id"] for a in rows["j1downloading"]["actions"]]  # still coming: nothing to show yet
     assert rows["j1done"]["file"] == rows["p1done"]["file"] == str(model)  # in its folder; a picture's - not the engine
     assert rows["j1done"]["actions"][0]["label"] == "Показать в проводнике"
+    # 52.4: a video model whose family has sound now, installed without it - «Добавить звук», the hub's word
+    silent = job_rows([{**picture, "sound": "add"}, {**picture, "id": "p2", "sound": "on"}])
+    assert [(a["id"], a["label"]) for a in silent[0]["actions"]] == [
+        ("sound", "Добавить звук"), ("show", "Показать в проводнике"), ("remove", "Удалить")]  # fmt: skip
+    assert [a["id"] for a in silent[1]["actions"]] == ["show", "remove"]
     app.install_view._jobs = [{**base, "status": "done"}]
     app.install_view.act("j1", "show")
     assert started[-1] == ["explorer", "/select,", str(model)]

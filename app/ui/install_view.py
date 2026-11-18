@@ -50,6 +50,7 @@ ACTIONS = {
     "added": [("trial", N_("Пробный запуск"), "primary"), ("remove", N_("Удалить"), "danger")],  # 34.5
 }
 SHOW = ("show", N_("Показать в проводнике"), "plain")  # 34.3: an install whose files are there
+SOUND = ("sound", N_("Добавить звук"), "plain")  # 52.4: a video model installed before its family had sound
 SHOWN = ("done", "added", "failed", "paused", "trialwait")
 LIVE = ("queued", "downloading", "trialwait", "configuring", "trial")
 WHERE = {"gpu": N_("целиком в видеопамяти"), "split": N_("частью в ОЗУ"),
@@ -502,6 +503,8 @@ def job_file(job: dict[str, Any]) -> str:
 def job_actions(job: dict[str, Any], file: str) -> list[dict[str, str]]:
     """Its buttons; «Показать в проводнике» before the one that deletes or cancels, when its files are there."""
     actions = list(LOST_ACTIONS if job.get("lost") else ACTIONS.get(job["status"], []))
+    if job.get("sound") == "add" and not job.get("lost"):
+        actions.insert(0, SOUND)
     if file and job["status"] in SHOWN:
         at = next((i for i, a in enumerate(actions) if a[2] == "danger"), len(actions))
         actions.insert(at, SHOW)

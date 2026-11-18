@@ -220,6 +220,7 @@ async def add_local(request: Request, body: Local, client: Annotated[Client, Dep
 async def jobs(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     installer = _installer(request)
     found = await installer.mark_lost(await request.app.state.db.acall(mi.jobs))  # gone from the config (34.4)
+    installer.mark_sound(found)  # a video model whose sound can be added (52.4)
     for job in found:
         job["speed"] = round(installer.speed.get(job["id"], 0.0))
     return {"jobs": found}
@@ -237,9 +238,11 @@ async def act(request: Request, job_id: str, action: str, client: Annotated[Clie
             return {"job": await installer.cancel(job_id)}
         if action == "trial":  # one model added and not tried (34.5)
             return {"job": (await installer.try_added(client, job_id))[0]}
+        if action == "sound":  # «Добавить звук» (52.4): a video model's audio VAE, fetched and written into its block
+            return {"job": await installer.add_sound(job_id, client)}
     except mi.InstallError as exc:
         raise _refusal(exc) from exc
-    raise HTTPException(status_code=404, detail="pause, resume, cancel or trial")
+    raise HTTPException(status_code=404, detail="pause, resume, cancel, trial or sound")
 
 
 @router.post("/trial")

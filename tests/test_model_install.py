@@ -105,6 +105,7 @@ PICTURES = {"test/Clip-GGUF": {"clip-Q4_K_M.gguf": b"C" * 50_000},  # a video mo
             "test/Draw-GGUF": {"draw-Q4_0.gguf": b"D" * 70_000},
             "test/Words-GGUF": {"words-Q4_K_M.gguf": b"W" * 60_000},
             "test/Vae": {"split_files/vae/vae.safetensors": b"V" * 30_000},
+            "test/Sound-Vae": {"vae/clip_audio_vae.safetensors": b"A" * 20_000},  # a video family's sound (52.4)
             # a found model of Draw's family (47.5), quantized by someone else: its variants, no encoder or VAE
             "someone/Draw-More-GGUF": {"draw-more-Q2_K.gguf": b"d" * 20_000, "draw-more-Q4_0.gguf": b"d" * 40_000,
                                        "draw-more-Q8_0.gguf": b"d" * 80_000,
@@ -913,6 +914,56 @@ def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):
     assert hub.get("/v1/install/pictures").json()["models"][1]["verdict"] == "no"
     refused = hub.post("/v1/install/pictures", json={"id": "clip"})
     assert refused.status_code == 409 and "облак" in refused.json()["detail"]
+
+
+def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, monkeypatch):
+    """52.4: the catalog gives a video family its audio VAE; a model installed before has none - its row says the
+    sound can be added, «Добавить звук» fetches that one file (the others are not fetched again), writes it into the
+    model's block as sd-server's flag, tries the model again - and the Studio films with it with sound. A model whose
+    family films no sound, one that has it, one not installed - refused in words."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, CLIP]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "tiles": False})
+    job = hub.post("/v1/install/pictures", json={"id": "clip"}).json()["job"]
+    assert wait_for(hub, job["id"], "done", "failed")["status"] == "done"
+    draw = hub.post("/v1/install/pictures", json={"id": "draw"}).json()["job"]
+    assert wait_for(hub, draw["id"], "done", "failed")["status"] == "done"
+
+    def row(job_id):
+        return next(j for j in hub.get("/v1/install/jobs").json()["jobs"] if j["id"] == job_id)
+
+    assert row(job["id"])["sound"] == "" and row(draw["id"])["sound"] == ""  # the family films no sound yet
+    refused = hub.post(f"/v1/install/jobs/{job['id']}/sound")
+    assert refused.status_code == 409 and "без звука" in refused.json()["detail"]
+
+    sound = {"role": "audio-vae", "repo": "test/Sound-Vae", "path": "vae/clip_audio_vae.safetensors"}
+    catalog["pictures"] = [DRAW, {**CLIP, "files": [*CLIP["files"], sound]}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    assert row(job["id"])["sound"] == "add" and row(draw["id"])["sound"] == ""
+    assert not hub.get("/v1/visual/models").json()["videos"][0]["sound"]
+    FakeHub.picture_auth.clear()
+    trials = len(FakeLlamaSwap.video)
+    asked = hub.post(f"/v1/install/jobs/{job['id']}/sound").json()["job"]
+    assert asked["status"] == "queued" and [f["role"] for f in asked["files"]][-1] == "audio-vae"
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    assert done["model_id"] == "clip" and row(job["id"])["sound"] == "on"
+    kept = Path(next(f for f in done["files"] if f["role"] == "audio-vae")["at"])
+    assert kept.read_bytes() == PICTURES["test/Sound-Vae"]["vae/clip_audio_vae.safetensors"]
+    assert len(FakeHub.picture_auth) == 1  # the one file fetched, nothing else again
+    view = lc.model_view(hub.config.read_text(encoding="utf-8"), "clip")
+    assert f'--audio-vae "{kept.as_posix()}"' in view["command"] and "--t5xxl" in view["command"]
+    assert list(lc.model_blocks(hub.config.read_text(encoding="utf-8"))).count("clip") == 1
+    assert len(FakeLlamaSwap.video) == trials + 1  # tried again, with the file
+    assert hub.get("/v1/visual/models").json()["videos"][0]["sound"]
+
+    again = hub.post(f"/v1/install/jobs/{job['id']}/sound")
+    assert again.status_code == 409 and "уже" in again.json()["detail"]
+    assert hub.post("/v1/install/jobs/nope/sound").status_code == 404
+    assert hub.post(f"/v1/install/jobs/{draw['id']}/sound").status_code == 409
 
 
 def test_a_picture_set_whose_repository_hugging_face_renamed_installs(hub, monkeypatch):

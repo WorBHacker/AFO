@@ -531,6 +531,25 @@ def _update(conn, job_id: str, **fields: Any) -> None:
     conn.execute(f"UPDATE model_installs SET {names} WHERE id = ?", (*fields.values(), job_id))
 
 
+def sound_of(row: dict[str, Any], sets: list[dict[str, Any]]) -> str:
+    """What an install's row says of sound (52.4): "on" - a video model with its audio VAE among its files; "add" -
+    one installed without, whose family in the catalog has the file now: «Добавить звук»; "" - nothing to say."""
+    plan = row.get("plan") or {}
+    if plan.get("engine") != "sd" or plan.get("kind") != "video":
+        return ""
+    if any(f.get("role") == visual.SOUND_ROLE for f in row.get("files") or []):
+        return "on"
+    family = next((e for e in sets if e["id"] == plan.get("set")), None)
+    can = family is not None and any(f["role"] == visual.SOUND_ROLE for f in family["files"])
+    return "add" if can and row.get("status") == "done" else ""
+
+
+def _pictures_root(folder: Path) -> Path:
+    """The «pictures» folder a picture install lies in (its own folder is one or two below it: a set's, a found
+    repository's): the family's shared files are beside, in `SHARED`."""
+    return next((p for p in (folder, *folder.parents) if p.name == "pictures"), folder.parent)
+
+
 def installed(conn) -> list[dict[str, Any]]:
     """The models in llama-swap's config by AFO - tried, or added and not tried yet (34.5)."""
     return [_row(r) for r in conn.execute("SELECT * FROM model_installs WHERE status IN ('done', 'added') ORDER BY "
@@ -1693,6 +1712,46 @@ class Installer:
                                   "модель, которой нет в config.yaml"))  # fmt: skip
         self._clients[job_id] = client
         await self._set(job_id, status="queued", error="")
+        self._kick()
+        return await self._get(job_id)
+
+    def mark_sound(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each install says what of sound (52.4, `sound_of`): the window offers «Добавить звук» by it."""
+        sets = picture_sets()
+        for row in rows:
+            row["sound"] = sound_of(row, sets)
+        return rows
+
+    async def add_sound(self, job_id: str, client: Any) -> dict[str, Any]:
+        """«Добавить звук» (52.4): a video model installed before its family had an audio VAE in the catalog gets
+        that one file - where another install keeps it, or in the family's shared folder - and goes through the
+        download, the config (its block written again, with the file as sd-server's flag) and the trial once more;
+        its other files are there."""
+        found = await self._get(job_id)
+        sets = picture_sets()
+        state = sound_of(found, sets)
+        if state == "on":
+            raise InstallError(tr("звук у этой модели уже есть"))
+        if state != "add":
+            raise InstallError(tr("эта модель снимает без звука: добавить нечего"))
+        family = next(e for e in sets if e["id"] == found["plan"]["set"])
+        extra = await self.picture_files({**family, "files": [f for f in family["files"]
+                                                              if f["role"] == visual.SOUND_ROLE]})  # fmt: skip
+        if closed := await self._closed(extra, fresh=True):
+            raise InstallError(tr("{name}: {words}", name=found["name"],
+                                  words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip
+        folder = Path(found["folder"])
+        async with self._files:  # as an install's own: chosen and written down under the lock a deletion counts under
+            named = await self._db.acall(_named)
+            await asyncio.to_thread(_share, extra, named, _pictures_root(folder) / SHARED)
+            try:
+                await asyncio.to_thread(_check_room, folder, sum(f["size"] for f in extra if not f["done"]))
+            except OSError as exc:
+                raise InstallError(tr("папка {folder} недоступна: {error}", folder=folder, error=exc.strerror or exc),
+                                   422) from exc  # fmt: skip
+            self._clients[job_id] = client
+            await self._set(job_id, status="queued", error="", files=[*found["files"], *extra],
+                            total_bytes=found["total_bytes"] + sum(f["size"] for f in extra))  # fmt: skip
         self._kick()
         return await self._get(job_id)
 
