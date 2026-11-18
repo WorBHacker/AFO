@@ -985,6 +985,36 @@ def test_a_video_by_a_picture_and_by_two_frames(hub):
         assert said.status_code == 422 and words in said.json()["detail"], (wrong, said.json())
 
 
+def test_a_scene_of_five_seconds_with_its_own_steps_and_guidance(hub):
+    """50.4, for the director's scenes: a video may be 5 seconds long (LTX at 24 a second: 121 frames), and a request
+    may say its own steps and guidance - sent to the engine instead of the ones written at the install, kept with
+    the job; without them the model's own, as before. Before: 4 seconds at most, the install's steps always."""
+    ltx = {**CLIP_PLAN, "set": "film", "size": 768,
+           "flags": ["--cfg-scale", "3", "--sampling-method", "euler", "--steps", "20"],
+           "clip": {"fps": 24, "step": 8, "grid": 32, "sizes": {"wide": [768, 512], "tall": [512, 768],
+                                                                "square": [640, 640]}}}  # fmt: skip
+    _install(hub, "film", ltx)
+    sent = hub.post("/v1/visual/videos", json={"prompt": "a lamp turns", "seconds": 5, "steps": 12, "cfg": 2.5,
+                                               "seed": 7})  # fmt: skip
+    assert sent.status_code == 200, sent.json()
+    job = sent.json()["job"]
+    assert (job["frames"], job["fps"], job["seed"], job["steps"], job["cfg"]) == (121, 24, 7, 12, 2.5)
+    done = _wait(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    asked = FakeDrawSwap.video[-1]
+    assert asked["video_frames"] == 121 and asked["seed"] == 7
+    assert asked["sample_params"]["sample_steps"] == 12 and asked["sample_params"]["guidance"] == {"txt_cfg": 2.5}
+    assert asked["sample_params"]["sample_method"] == "euler"
+
+    own = hub.post("/v1/visual/videos", json={"prompt": "a lamp turns", "seconds": 1}).json()["job"]
+    assert own["steps"] is None and own["cfg"] is None
+    _wait(hub, own["id"], "done", "failed")
+    asked = FakeDrawSwap.video[-1]
+    assert asked["sample_params"]["sample_steps"] == 20 and asked["sample_params"]["guidance"] == {"txt_cfg": 3.0}
+    for wrong in ({"seconds": 5.5}, {"steps": 0}, {"steps": 61}, {"cfg": 0.5}, {"cfg": 16}):
+        assert hub.post("/v1/visual/videos", json={"prompt": "a lamp", **wrong}).status_code == 422, wrong
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
 def test_a_video_goes_on_from_the_last_frame_of_another(hub, monkeypatch):
     """50.3, for the director's «продолжение»: a video named as another's source (`from_job`) begins with that

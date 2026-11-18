@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from common.i18n import tr
+from common.picture_sizes import GUIDANCE, SECONDS, STEPS
 
 from .. import visual as v
 from ..auth import Client
@@ -68,15 +69,18 @@ async def image(request: Request, body: Image, client: Annotated[Client, Depends
 
 class Video(BaseModel):
     """A video (29.8а): its shape, how long, «Качественнее» - the family's own larger size; (48.5) by a picture - its
-    first frame, as «По картинке» takes one (a job's picture, a chat's, a PNG sent) - and the last frame too."""
+    first frame, as «По картинке» takes one (a job's picture, a chat's, a PNG sent; (50.3) a video's last frame) -
+    and the last frame too; (50.4) its own steps and guidance - none: the ones the model was installed with."""
 
     prompt: str = Field(min_length=1, max_length=4000)
     negative: str = Field(default="", max_length=2000)
     model: str = Field(default="", max_length=120)
     shape: Literal["wide", "tall", "square"] = "wide"
-    seconds: float = Field(default=2.0, ge=0.5, le=4.0)
+    seconds: float = Field(default=2.0, ge=SECONDS[0], le=SECONDS[1])
     hd: bool = False
     seed: int | None = None
+    steps: int | None = Field(default=None, ge=STEPS[0], le=STEPS[1])
+    cfg: float | None = Field(default=None, ge=GUIDANCE[0], le=GUIDANCE[1])
     conversation_id: str | None = Field(default=None, max_length=64)
     from_job: str = Field(default="", max_length=64)
     from_blob: str = Field(default="", max_length=64)

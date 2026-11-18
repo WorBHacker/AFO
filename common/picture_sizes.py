@@ -24,7 +24,9 @@ def shaped(width: int, height: int, side: int) -> tuple[int, int]:
 VIDEO = {"wide": (832, 480), "tall": (480, 832), "square": (640, 640)}
 VIDEO_HD = {"wide": (1280, 704), "tall": (704, 1280), "square": (960, 960)}
 FPS = 24
-SECONDS = (0.5, 4.0)
+SECONDS = (0.5, 5.0)  # (50.4) a director's scene is 5 s at most: LTX's 121 frames
+STEPS = (1, 60)  # a video's own steps and guidance, said with a request (50.4)
+GUIDANCE = (1.0, 15.0)
 TRIAL = (480, 272)  # a video model's trial (29.8а): small and short
 # a video family's own clip (48.3): its frames a second, its frames' step (Wan's VAE takes 4k+1, LTX's 8k+1), the grid
 # its sides keep (LTX's 32), its sizes - TI2V-5B's unless its catalog entry (`clip`) says

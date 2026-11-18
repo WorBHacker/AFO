@@ -66,6 +66,7 @@ import httpx
 from common.i18n import N_, tr
 from common.picture_sizes import (
     CPU_PIXELS,
+    SECONDS,
     SHAPES,
     SIDES,
     clip_of,
@@ -371,6 +372,14 @@ def moving(data: bytes) -> bool:
     return False
 
 
+def sampling(model: dict[str, Any], found: dict[str, Any]) -> dict[str, Any]:
+    """A video's `sample_params` for sd-server: the sampler and the flow shift the model was installed with; its
+    steps and guidance - the job's own when the request said them (50.4), else the install's."""
+    return {"sample_method": model["sampler"], "sample_steps": int(found.get("steps") or model["steps"]),
+            "guidance": {"txt_cfg": float(found.get("cfg") or model["cfg"])},
+            **({"flow_shift": model["flow_shift"]} if model["flow_shift"] else {})}  # fmt: skip
+
+
 def _engine_error(state: dict[str, Any]) -> str:
     """sd-server's job's error in words: its message - the job says {code, message} (async_jobs.cpp 236), and the
     object itself went into the words (48's review)."""
@@ -424,7 +433,7 @@ GENERATE_VIDEO = {
         "properties": {
             "prompt": {"type": "string", "description": "What happens, in detail (English works best)"},
             "shape": {"type": "string", "enum": list(SHAPES), "description": "wide (default), tall or square"},
-            "seconds": {"type": "number", "description": "1 to 4; 2 unless said"},
+            "seconds": {"type": "number", "description": "1 to 5; 2 unless said"},
         },
         "required": ["prompt"],
     },
@@ -694,7 +703,8 @@ class Visual:
         return self._task is not None and not self._task.done()
 
     async def video(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
-        """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}; (48.5) by a
+        """A video asked for (29.8а): {prompt, negative, model, shape, seconds, hd, seed, conversation_id}; (50.4)
+        steps, cfg - its own, instead of the ones the model was installed with; (48.5) by a
         picture - from_job, from_blob or from_png: its first frame, the video's shape its - and the last frame too
         (last_job, last_blob, last_png). A family films as its `modes` say: by words, by a picture, by two frames."""
         prompt = (spec.get("prompt") or "").strip()
@@ -730,10 +740,11 @@ class Visual:
         def add(conn) -> None:
             conn.execute(
                 "INSERT INTO visual_jobs (id, kind, prompt, negative, model_id, width, height, seed, status, client, "
-                "conversation_id, frames, fps, source, last_frame) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, 'queued', ?, "
-                "?, ?, ?, ?, ?)",
+                "conversation_id, frames, fps, source, last_frame, steps, cfg) VALUES (?, 'video', ?, ?, ?, ?, ?, ?, "
+                "'queued', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
-                 spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", "")),
+                 spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", ""),
+                 spec.get("steps"), spec.get("cfg")),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -915,7 +926,7 @@ class Visual:
             return (f"no video model is installed here: the user can install one in the window ({INSTALL_HERE}) - "
                     "say so"), True, None  # fmt: skip
         try:
-            seconds = min(4.0, max(1.0, float(args.get("seconds") or 2.0)))
+            seconds = min(SECONDS[1], max(1.0, float(args.get("seconds") or 2.0)))
         except TypeError, ValueError:
             seconds = 2.0
         spec = {"prompt": prompt[:4000], "shape": str(args.get("shape") or "wide"), "seconds": seconds,
@@ -1224,16 +1235,14 @@ class Visual:
                 await self._set(job_id, status="failed", error=tr(words))
                 return
         upstream = f"{self._url}/upstream/{model_id}/sdcpp/v1"
-        params = {"sample_method": model["sampler"], "sample_steps": model["steps"],
-                  "guidance": {"txt_cfg": model["cfg"]},
-                  **({"flow_shift": model["flow_shift"]} if model["flow_shift"] else {})}  # fmt: skip
+        params = sampling(model, found)
         # `preview`: sd-server says a job's step only in its preview (48's review; async_jobs.cpp 249) - `proj`, the
         # latents put into colour, no VAE
         body = {"prompt": found["prompt"], "negative_prompt": found["negative"], "width": found["width"],
                 "height": found["height"], "video_frames": found["frames"], "fps": found["fps"], "seed": found["seed"],
                 "output_format": "webp", "sample_params": params, "preview": "proj"}  # fmt: skip
         start, error, result = time.monotonic(), "", None
-        steps, clock = _Steps(model["steps"] + max(model["high_steps"], 0)), start
+        steps, clock = _Steps(params["sample_steps"] + max(model["high_steps"], 0)), start
         # the card is the video's, held from local chats, since before the job says «running» (`_work`; stage 48's full
         # run: one seeing it running found the card free - the status's write awaits the database)
         try:
