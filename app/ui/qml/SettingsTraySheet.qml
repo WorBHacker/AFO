@@ -16,36 +16,6 @@ Sheet {
         id: tray
         width: parent.width
         spacing: 6
-        component Switch: AbstractButton {
-            id: toggle
-            checkable: true
-            implicitHeight: 30
-            implicitWidth: label.implicitWidth + 40
-            hoverEnabled: true
-            background: Rectangle {
-                radius: 6
-                color: toggle.checked ? Theme.p.item_selected : (toggle.hovered ? Theme.p.item_hover : "transparent")
-                border.color: toggle.checked ? Theme.p.accent : Theme.p.hairline_strong
-            }
-            contentItem: Item {
-                Icon {
-                    x: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    name: toggle.checked ? "check" : "close"
-                    size: 13
-                    tint: toggle.checked ? Theme.p.accent : Theme.p.faint
-                }
-                Text {
-                    id: label
-                    x: 26
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: toggle.text
-                    color: toggle.checked ? Theme.p.text : Theme.p.muted
-                    font.family: Theme.uiFont
-                    font.pixelSize: 13
-                }
-            }
-        }
         component Note: Text {
             width: tray.width
             wrapMode: Text.Wrap
@@ -54,7 +24,7 @@ Sheet {
             font.pixelSize: 12
         }
 
-        Switch {
+        OnOff {
             objectName: "closeToTray"
             text: qsTr("Крестик прячет окно в трей — AFO работает дальше")
             checked: App.closeToTray
@@ -65,7 +35,7 @@ Sheet {
             text: qsTr("Значка в трее сейчас нет — крестик закрывает окно.")
             color: Theme.p.warn
         }
-        Switch {
+        OnOff {
             objectName: "trayLogin"
             text: qsTr("Запускать AFO при входе в Windows — сразу в трей")
             checked: !!App.autostart.login
@@ -83,7 +53,7 @@ Sheet {
                     { id: "quiet", name: qsTr("Тихие часы") },
                     { id: "gpu", name: qsTr("Видеокарта — моделям") }
                 ]
-                delegate: Switch {
+                delegate: OnOff {
                     required property var modelData
                     objectName: "trayItem_" + modelData.id
                     text: modelData.name
@@ -95,7 +65,7 @@ Sheet {
 
         SectionTitle { text: qsTr("Видеокарта — моделям") }
         Note { objectName: "gpuSummary"; text: Gpu.summary; color: Gpu.available ? Theme.p.text_soft : Theme.p.muted }
-        Switch {
+        OnOff {
             objectName: "gpuOn"
             visible: Gpu.available
             text: qsTr("Переводить неигровые программы на встроенную графику")
