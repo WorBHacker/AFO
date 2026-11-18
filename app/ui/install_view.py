@@ -114,6 +114,18 @@ def left_text(seconds: float) -> str:
     return tr("ещё ≈ {seconds} с", seconds=max(1, round(seconds)))
 
 
+def time_left(job: dict[str, Any], speed: float) -> str:
+    """The time an install has left at this speed (the fix after 0.1.16): while the picture engine comes from GitHub -
+    its own, said as its; the model's files come from Hugging Face at a speed of their own - theirs is said when they
+    come (0.1.16 counted 22 GB at GitHub's 1 MB/s: «ещё ≈ 359 мин»)."""
+    engine = job.get("engine_left") or 0
+    if engine:
+        if (job.get("plan") or {}).get("kind") == "video":
+            return tr("программа для видео: {left}", left=left_text(engine / speed))
+        return tr("программа для рисования: {left}", left=left_text(engine / speed))
+    return left_text(((job.get("total_bytes") or 0) - (job.get("done_bytes") or 0)) / speed)
+
+
 def free_text(gib: float) -> str:
     return tr(" · свободно {size}", size=gb(gib, of_bytes=False))
 
@@ -357,7 +369,7 @@ def progress_text(job: dict[str, Any]) -> str:
     speed = job.get("speed") or 0
     if job.get("status") == "downloading" and speed > 0:
         parts.append(speed_text(speed))
-        parts.append(left_text((total - done) / speed))
+        parts.append(time_left(job, speed))
     return " · ".join(parts)
 
 
@@ -401,8 +413,7 @@ def status_line(jobs: list[dict[str, Any]]) -> dict[str, Any]:
         speed = job.get("speed") or 0
         bits = [f"{pct:.0f} %"]
         if speed > 0:
-            left = ((job.get("total_bytes") or 0) - (job.get("done_bytes") or 0)) / speed
-            bits += [speed_text(speed), left_text(left)]
+            bits += [speed_text(speed), time_left(job, speed)]
         text = " · ".join(bits)
     else:
         text = status_words(job["status"])
@@ -1469,6 +1480,7 @@ class InstallView(QObject):
                         done_bytes=done,
                         total_bytes=total,
                         speed=payload.get("speed", 0),
+                        engine_left=payload.get("engine_left", 0),  # the engine from GitHub (after 0.1.16)
                         status="downloading",
                         percent=round(100 * done / max(total, 1), 1),
                     )

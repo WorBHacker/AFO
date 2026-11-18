@@ -1809,3 +1809,61 @@ def test_a_part_closed_on_hugging_face_is_said_before_anything_downloads(install
         film = install_of(installs, "film-distilled")
         assert wait_for(installs, film["id"], "done", "failed")["status"] == "done"
         assert quick.warnings == []
+
+
+@pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client
+def test_the_time_said_while_the_engine_comes_from_github_is_the_engines(installs, qapp, monkeypatch):  # noqa: F811
+    """The user's complaint (2026-11-18, AFO 0.1.16): «0,3 ГБ из 22,1 ГБ · 1,0 МБ/с · ещё ≈ 359 мин» - the video
+    engine (0,94 GB) comes first, from GitHub (0,6 MB/s a connection here), and the window counted all 22,1 GB at its
+    speed; the model's files come from Hugging Face at ≈ 35. Now while the engine comes the hub says how much of it is
+    left and the window says its time - «программа для видео: ещё ≈ …»; the model's time comes with its own files, at
+    their speed. The hub's events as the window's event thread hands them, the window's own code reading them."""
+    import os
+
+    from app.ui.install_view import left_text
+    from tests import test_model_install as tmi
+
+    engine = next(name for name in tmi.ENGINE if "cuda12" in name)
+    archive = tmi._zip({"sd-server.exe": b"MZ server", "ggml-cuda.dll": os.urandom(400_000)})  # 25 chunks of 16 KB
+    monkeypatch.setitem(tmi.ENGINE, engine, archive)
+    model = "distilled/film-distilled-Q4_0.gguf"
+    monkeypatch.setitem(tmi.PICTURES["someone/Film-Two-GGUF"], model, b"F" * 400_000)
+    FakeHub.github_slow, FakeHub.slow = 0.08, 0.01  # GitHub: 25 chunks ≈ 2 s; Hugging Face: 25 ≈ 0,3 s
+    monkeypatch.setattr(mi, "PROGRESS_S", 0.1)
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [DISTILLED]}), encoding="utf-8")
+    monkeypatch.setattr(installs.app.state.installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    memory = {**tmi.SPACE["memory"], "commit_limit_gib": 80.0, "commit_used_gib": 20.0}  # as the hub's own look says
+    installs.app.state.status.latest = {**tmi.SPACE, "memory": memory}
+    events = {**dict(installs.headers), "Host": "127.0.0.1:8765"}
+    with window_on(installs, qapp) as quick:
+        view = quick.controller.install_view
+        with installs.websocket_connect("/v1/events", headers=events) as ws:
+            answer = installs.post("/v1/install/pictures", json={"id": "film-distilled", "repo": FOUND_FILM["id"],
+                                                                 "quant": "Q4_0"})  # fmt: skip
+            assert answer.status_code == 200, answer.text
+            job_id, progress, said = answer.json()["job"]["id"], [], []
+            for _ in range(5000):
+                message = ws.receive_json()
+                kind, payload = message.get("type") or "", message.get("payload") or {}
+                if kind.startswith("install."):
+                    view.on_event(kind, payload)
+                if kind == "install.progress" and payload["id"] == job_id and payload["speed"] > 0:
+                    progress.append(payload)
+                    said.append(view.status["text"])
+                if kind == "install.changed" and payload["job"]["id"] == job_id and payload["job"]["status"] in (
+                        "done", "failed"):  # fmt: skip
+                    assert payload["job"]["status"] == "done", payload["job"]["error"]
+                    break
+    engine_bytes = sum(len(data) for data in tmi.ENGINE.values())
+    github = [(p, s) for p, s in zip(progress, said, strict=True) if p.get("engine_left")]
+    assert github, "the hub does not say how much of the engine is left"
+    for p, s in github:  # the engine's own time, at GitHub's speed
+        assert 0 < p["engine_left"] <= engine_bytes and p["engine_left"] < p["total_bytes"] - p["done_bytes"]
+        assert f"программа для видео: {left_text(p['engine_left'] / p['speed'])}" in s, s
+    hugging_face = [(p, s) for p, s in zip(progress, said, strict=True) if not p.get("engine_left")]
+    assert hugging_face, said
+    for p, s in hugging_face:  # the model's files: the rest of it, at their speed
+        assert "программа" not in s and left_text((p["total_bytes"] - p["done_bytes"]) / p["speed"]) in s, s

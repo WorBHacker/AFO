@@ -609,6 +609,9 @@ class Installer:
         self._shown: dict[str, tuple[float, int]] = {}  # job -> (when, bytes) of the last progress sent
         self._sending: set[asyncio.Task] = set()  # progress on its way (kept: a task nobody holds may vanish)
         self.speed: dict[str, float] = {}  # job -> bytes a second
+        # the fix after 0.1.16: job -> where the picture engine's archives end, while they come from GitHub - its speed
+        # is not Hugging Face's, the time said is theirs
+        self._engine_end: dict[str, int] = {}
 
     async def start(self) -> int:
         """Installs a stopped hub left going wait for «Продолжить» (their parts stay on disk); a model from the drives
@@ -1993,7 +1996,9 @@ class Installer:
 
     async def _progress(self, job_id: str, done: int, total: int) -> None:
         await self._db.acall(lambda conn: _update(conn, job_id, done_bytes=done))
-        shown = {"id": job_id, "done_bytes": done, "total_bytes": total, "speed": round(self.speed.get(job_id, 0.0))}
+        end = self._engine_end.get(job_id)  # the engine from GitHub on its way: how much of it is left (after 0.1.16)
+        shown = {"id": job_id, "done_bytes": done, "total_bytes": total, "speed": round(self.speed.get(job_id, 0.0)),
+                 "engine_left": max(end - done, 0) if end is not None else 0}  # fmt: skip
         await self._bus.publish("install.progress", shown, persist=False)
 
     async def _download(self, found: dict[str, Any], cancel: threading.Event) -> None:
@@ -2003,19 +2008,27 @@ class Installer:
         await asyncio.to_thread(lambda: _check_room(folder, _left(folder, files)))
         await self._set(job_id, status="downloading", error="")
         done = sum(f["size"] for f in files if f["done"])
-        for f in files:
-            dest = _dest(folder, f)
-            whole = await asyncio.to_thread(_whole, dest, f["size"])
-            if f["done"] and whole:
-                continue
-            if whole:  # got its name only once its sha256 matched
+        try:
+            for at, f in enumerate(files):
+                dest = _dest(folder, f)
+                whole = await asyncio.to_thread(_whole, dest, f["size"])
+                if f["done"] and whole:
+                    continue
+                if whole:  # got its name only once its sha256 matched
+                    f["done"] = True
+                else:
+                    await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)  # the engines' downloads
+                    if f["role"] == "engine":  # GitHub's archives, before the model's files: their own time
+                        self._engine_end[job_id] = done + sum(g["size"] for g in files[at:] if g["role"] == "engine"
+                                                              and not g["done"])  # fmt: skip
+                    else:
+                        self._engine_end.pop(job_id, None)
+                    await self._fetch(found, f, dest, done, cancel)
+                done += f["size"]
                 f["done"] = True
-            else:
-                await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)  # the engines' downloads
-                await self._fetch(found, f, dest, done, cancel)
-            done += f["size"]
-            f["done"] = True
-            await self._set(job_id, files=files, done_bytes=done)
+                await self._set(job_id, files=files, done_bytes=done)
+        finally:
+            self._engine_end.pop(job_id, None)
 
     async def _fetch(self, found: dict[str, Any], f: dict[str, Any], dest: Path, base: int,
                      cancel: threading.Event) -> None:  # fmt: skip

@@ -158,6 +158,7 @@ class FakeHub(BaseHTTPRequestHandler):
     break_after: ClassVar[dict] = {}  # file -> bytes sent before the connection breaks (once)
     corrupt: ClassVar[set] = set()  # files served with a wrong byte (their sha256 will not match)
     slow = 0.0  # seconds a chunk
+    github_slow = None  # seconds a chunk of the engine's archives: GitHub slower than Hugging Face (after 0.1.16)
     cdn_auth: ClassVar[list] = []  # the Authorization header each CDN request came with
     ranges: ClassVar[list] = []
     spans: ClassVar[list] = []  # (file, start, end) of each Range request with an end (a piece, 2026-11-05)
@@ -248,7 +249,7 @@ class FakeHub(BaseHTTPRequestHandler):
             self._json({"tag_name": engines.SD_TAG, "assets": assets})
         elif path.startswith("/gh/"):
             FakeHub.github_auth.append(self.headers.get("Authorization"))
-            self._send_file(path.removeprefix("/gh/"), ENGINE)
+            self._send_file(path.removeprefix("/gh/"), ENGINE, slow=self.github_slow)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -262,7 +263,8 @@ class FakeHub(BaseHTTPRequestHandler):
             with FakeHub.lock:
                 FakeHub.active -= 1
 
-    def _send_file(self, name, files=None):
+    def _send_file(self, name, files=None, slow=None):
+        slow = self.slow if slow is None else slow
         if files is None:
             FakeHub.cdn_auth.append(self.headers.get("Authorization"))
         data = (files or FILES)[name]
@@ -290,8 +292,8 @@ class FakeHub(BaseHTTPRequestHandler):
                 self.close_connection = True
                 self.connection.shutdown(socket.SHUT_RDWR)  # the connection breaks in the middle of the file
                 return
-            if self.slow:
-                time.sleep(self.slow)
+            if slow:
+                time.sleep(slow)
             try:
                 self.wfile.write(body[i : i + 16384])
             except OSError:  # the reader had enough (a header read stops early)
@@ -307,7 +309,7 @@ class QuietServer(ThreadingHTTPServer):
 def fake_hub(monkeypatch):
     FakeHub.break_after, FakeHub.corrupt, FakeHub.slow, FakeHub.cdn_auth, FakeHub.ranges = {}, set(), 0.0, [], []
     FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak, FakeHub.overlong = [], False, 0, 0, 0
-    FakeHub.picture_auth, FakeHub.github_auth, FakeHub.searches = [], [], []
+    FakeHub.picture_auth, FakeHub.github_auth, FakeHub.searches, FakeHub.github_slow = [], [], [], None
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()

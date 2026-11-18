@@ -2729,6 +2729,8 @@
  "проверяющая модель не может проверить: {error}": "the judge cannot check: {error}",
  "проверяющая модель не ответила: {error}": "the judge did not answer: {error}",
  "программа": "program",
+ "программа для видео: {left}": "the video program: {left}",
+ "программа для рисования: {left}": "the drawing program: {left}",
  "программы — на видеокарте": "programs - on the graphics card",
  "программы — на встроенной графике": "programs - on the integrated graphics",
  "продолжение цели": "the goal goes on",
