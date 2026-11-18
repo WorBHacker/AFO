@@ -10272,8 +10272,9 @@ def switches_in(root):
 
 def exercise(window, root, name, seen, broken, expect):
     """Each option of a switch clicked with the mouse: it lights, and its owner's choice (`value`) is it - or what
-    `expect` says that switch does instead; while it is chosen, the switches it brings up are tried too; the one
-    chosen before - last. The switch is looked for anew each time: a list's row may be made again by its change."""
+    `expect` says that switch does instead (None from it: it did its part, the usual check goes on); while it is
+    chosen, the switches it brings up are tried too; the one chosen before - last. The switch is looked for anew each
+    time: a list's row may be made again by its change."""
     seen.add(name)
 
     def found():
@@ -10292,8 +10293,8 @@ def exercise(window, root, name, seen, broken, expect):
         except AssertionError as exc:
             broken.append((name, key, "cannot be clicked", str(exc).splitlines()[0]))
             return
-        if name[1] in expect:
-            if not expect[name[1]](key):
+        if name[1] in expect and (as_expected := expect[name[1]](key)) is not None:
+            if not as_expected:
                 broken.append((name, key, "not as expected"))
             continue
         try:
@@ -10367,7 +10368,14 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         app.attach(client, start_events=False)
         wait_until(lambda: not app.bg.busy)
         window.resize(1280, 900)
-        expect = {"language": lambda key: key == i18n.language() or wait_until(lambda: restarted) is None}
+
+        def chat_mode(key):
+            """«Доверенный» is said in words first (0.1.17): «Включить», and the switch follows as the others do."""
+            if key == "trusted" and (app.question or {}).get("confirm") == "Включить":
+                app.answer(True)
+
+        expect = {"language": lambda key: key == i18n.language() or wait_until(lambda: restarted) is None,
+                  "chatMode": chat_mode}  # fmt: skip
         seen, broken = set(), []
 
         def go(root):
