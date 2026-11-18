@@ -7,6 +7,10 @@ the director's model is asked, in the background; PUT /<id>/scenes/<n> - a scene
 ролик», {fade}; GET /<id>/file - the joined MP4; GET /<id>/photo - the product's photo. A scene's clip is a job of
 the Studio's: /v1/visual/jobs/<job>/mp4. Events: film.changed (the film with its scenes), film.progress (a scene
 begun: id, scene, job), film.deleted (id).
+
+(Stage 51) `checks` - the film's switch, at its beginning and in PATCH: each scene filmed is looked at by the
+director's model, one that is not good is filmed anew. The film says the scene looked at now (`checking`), a scene -
+what the look said of it (`verdict`, `reason`, `tries`).
 """
 
 from __future__ import annotations

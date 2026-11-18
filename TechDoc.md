@@ -71,7 +71,7 @@
 - `hub/context.py` — что модель узнаёт о проектах
 - `hub/delegate.py` — инструменты координатора: раздача задач агентам
 - `hub/diagnostics.py` — «Проверить систему» и журналы для поддержки
-- `hub/director.py` — «Режиссёр»: фильм из сцен
+- `hub/director.py` — «Режиссёр»: фильм из сцен, проверка снятых сцен
 - `hub/editor.py` — что пользователь делает в VS Code
 - `hub/engines.py` — движки локальных моделей: llama.cpp, llama-swap
 - `hub/events.py` — шина событий: таблица `events` и живые подписчики
@@ -245,6 +245,7 @@
 - `hub/db/migrations/054_approval_pass.sql` — «Разрешить» у отказа правил «Доверенного»
 - `hub/db/migrations/055_visual_sampling.sql` — свои шаги и сила подсказки видео
 - `hub/db/migrations/056_films.sql` — фильмы «Режиссёра» и их сцены
+- `hub/db/migrations/057_film_checks.sql` — проверка сцен: выключатель фильма и что она сказала о сцене
 
 ### hub/gateway/ — шлюз моделей
 
@@ -423,6 +424,7 @@
 - `app/ui/qml/Meter.qml` — подпись, полоска и значение
 - `app/ui/qml/ModelsSheet.qml` — лист настроек моделей
 - `app/ui/qml/NewProgramPopup.qml` — вопрос о новой программе
+- `app/ui/qml/OnOff.qml` — выключатель листов и панелей: галочка или крестик с названием
 - `app/ui/qml/PlainButton.qml` — текстовая кнопка
 - `app/ui/qml/ProgramsSheet.qml` — лист программ для агента
 - `app/ui/qml/ProjectSheet.qml` — настройки проекта
@@ -3184,6 +3186,13 @@ MusicGen, LivePortrait (части InsightFace), BasicVSR++ и RealBasicVSR (PyT
   `test_the_directors_look_at_the_scenes_is_switched_by_a_click_and_said_in_the_cards` (`tests/test_ui.py`,
   настоящий QML без экрана, щелчки мышью).
 - 51.5 Конец этапа: весь pytest, карта файлов; живая проверка на моделях — по слову пользователя.
+  Сделано без живой проверки (2026-11-19): весь pytest — 1348 тестов, не прошли 2, оба только в рабочей копии
+  `.claude/worktrees/…` (`tests/test_paths.py::test_default_is_project_data_folder` и
+  `tests/test_search.py::test_search[ripgrep]`: в ней нет папки `data` и `tools/ripgrep`), как в конце этапа 50.
+  Карта файлов дополнена (`OnOff.qml`, миграция 057). Осталось вживую, по слову пользователя: настоящая модель
+  видео и настоящая модель-режиссёр — ловит ли проверка неподвижную сцену и ушедший цвет (находки живого
+  прогона этапа 50), не бракует ли годные дубли, сколько стоит один взгляд (оценка «меньше цента» не замерена) и
+  сколько времени добавляет местная модель-режиссёр. Этап не закрыт до этой проверки; на GitHub не отправлен.
 
 ### Этап 52. Звук в ролике
 

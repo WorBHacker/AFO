@@ -6,6 +6,11 @@ A film and its scenes are rows (films, film_scenes); a scene's clip is a job of 
 lie in data/media: the photo (film-<id>-photo.png), the clips (their jobs'), the joined film (film-<id>-<x>.mp4, a
 new name each time it is joined) - the cleanup of old pictures leaves them alone while the film is there (`kept`,
 hub/retention.py).
+
+The look (stage 51): each scene filmed is shown to the director's model - three frames of the take and the product's
+photo; a take with a plain fault (the wrong product, no motion, distortions, drifted colours, not the scene) is
+filmed anew by the prompt the look writes - twice a scene at most, within the shooting's own limits. A look that
+does not come out stops no film.
 """
 
 from __future__ import annotations
