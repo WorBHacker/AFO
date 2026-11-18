@@ -713,8 +713,8 @@ class Visual:
         prompt = (spec.get("prompt") or "").strip()
         if not prompt:
             raise VisualError(tr("нужно описание видео"), 422)
-        first = await self._source(spec)
-        last = await self._source({"from_job": spec.get("last_job"), "from_blob": spec.get("last_blob"),
+        first = await self.source(spec)
+        last = await self.source({"from_job": spec.get("last_job"), "from_blob": spec.get("last_blob"),
                                    "from_png": spec.get("last_png")})  # fmt: skip
         if last is not None and first is None:
             raise VisualError(tr("последний кадр — вместе с первым: сначала выберите первый"), 422)
@@ -740,7 +740,7 @@ class Visual:
         for key, data in (("source", first), ("last", last)):  # beside the job: its frames
             if data is not None:
                 kept[key] = f"{datetime.now(UTC):%Y-%m}/{job_id}-{key}.png"
-                await asyncio.to_thread(_save, self.media / kept[key], data)
+                await asyncio.to_thread(save, self.media / kept[key], data)
 
         def add(conn) -> None:
             conn.execute(
@@ -760,7 +760,7 @@ class Visual:
             self._task = asyncio.create_task(self._work())
         return await self._db.acall(lambda conn: job(conn, job_id))
 
-    async def _source(self, spec: dict[str, Any]) -> bytes | None:
+    async def source(self, spec: dict[str, Any]) -> bytes | None:
         """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None.
         (50.3) A job that is a video gives its last frame: the next scene goes on from where that one ended."""
         if spec.get("from_job"):
@@ -796,7 +796,7 @@ class Visual:
         prompt = (spec.get("prompt") or "").strip()
         if not prompt:
             raise VisualError(tr("нужно описание картинки"), 422)
-        source = await self._source(spec)
+        source = await self.source(spec)
         strength = float(spec.get("strength") or STRENGTH) if source is not None else None
         if strength is not None and not STRENGTHS[0] <= strength <= STRENGTHS[1]:
             raise VisualError(tr("насколько менять образец — от {low} до {high}", low=STRENGTHS[0],
@@ -826,7 +826,7 @@ class Visual:
         kept = ""
         if source is not None:  # beside the job: each rung sends it again
             kept = f"{datetime.now(UTC):%Y-%m}/{job_id}-source.png"
-            await asyncio.to_thread(_save, self.media / kept, source)
+            await asyncio.to_thread(save, self.media / kept, source)
 
         def add(conn) -> None:
             conn.execute(
@@ -1205,7 +1205,7 @@ class Visual:
             found["prompt"], found["negative"], found["seed"], by_id[drawn["model_id"]], drawn["width"],
             drawn["height"], found.get("strength") if source is not None else None))  # fmt: skip
         name = f"{datetime.now(UTC):%Y-%m}/{job_id}.png"
-        await asyncio.to_thread(_save, self.media / name, picture)
+        await asyncio.to_thread(save, self.media / name, picture)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
 
     async def _try(self, job_id: str, found: dict[str, Any], rung: dict[str, Any], model: dict[str, Any],
@@ -1350,7 +1350,7 @@ class Visual:
             await self._set(job_id, status="failed", error=error, seconds=seconds, tries=tries)
             return
         name = f"{datetime.now(UTC):%Y-%m}/{job_id}.webp"
-        await asyncio.to_thread(_save, self.media / name, data)
+        await asyncio.to_thread(save, self.media / name, data)
         await self._set(job_id, status="done", error="", file=name, seconds=seconds, tries=tries)
         # its MP4 at once (48.12.8), not when it is first shown: the window played the WebP until then, then the MP4
         # from its start - the clip began twice. The window, asking meanwhile, waits for this one (`_ffmpeg`)
@@ -1403,7 +1403,8 @@ class _Steps:
         return step
 
 
-def _save(path: Path, data: bytes) -> None:
+def save(path: Path, data: bytes) -> None:
+    """A file of the Studio's written whole: beside under another name, then put in place."""
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
     part.write_bytes(data)

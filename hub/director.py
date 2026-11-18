@@ -3,8 +3,9 @@ writes the storyboard - the scenes, each with its words and its prompt; the Stud
 after another, a scene going on from the last frame of the one before; ffmpeg joins them into one MP4.
 
 A film and its scenes are rows (films, film_scenes); a scene's clip is a job of the Studio (visual_jobs). The files
-lie in data/media: the photo (film-<id>-photo.png), the clips (their jobs'), the joined film (film-<id>.mp4) - the
-cleanup of old pictures leaves them alone while the film is there (`kept`, hub/retention.py).
+lie in data/media: the photo (film-<id>-photo.png), the clips (their jobs'), the joined film (film-<id>-<x>.mp4, a
+new name each time it is joined) - the cleanup of old pictures leaves them alone while the film is there (`kept`,
+hub/retention.py).
 """
 
 from __future__ import annotations
@@ -16,13 +17,15 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from common.i18n import tr
 from common.picture_sizes import SECONDS, frames_for
 
-from . import model_settings, visual
+from . import ffmpeg, model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
@@ -32,6 +35,8 @@ log = logging.getLogger(__name__)
 ROLE = "director"  # the role of the model that writes storyboards (model_settings.ROLES)
 SCENES = (1, 16)  # a film's scenes, at least and at most
 SCENE_S = (1.0, SECONDS[1])  # a scene's length, seconds
+FILM_S = (5, int(SCENES[1] * SCENE_S[1]))  # a film's length, seconds
+FADE_S = (0.0, 1.0)  # a cross-fade at each joint of the joined film
 NEAR = 0.2  # a storyboard this far from the length asked is asked again, once
 WRITE_TIMEOUT_S = 180.0  # one answer of the director's
 TEXT_CHARS = {"prompt": 2000, "words": 400}
@@ -234,7 +239,10 @@ def kept(conn: sqlite3.Connection) -> set[str]:
 
 
 class Director:
-    """The films' service: the storyboard asked of the director's model (`write`)."""
+    """The films' service: a film begun, changed and deleted (`create`, `change`, `remove`), its storyboard asked
+    of the director's model (`write`) and changed by hand (`edit_scene`), its scenes filmed (`shoot`, `stop`) and
+    joined into one MP4 (`join`). What takes long goes on in the background, the film's changes told by
+    `film.changed`."""
 
     def __init__(self, db: Database, bus: EventBus, judge: Judge, studio: visual.Visual):
         self._db = db
@@ -243,7 +251,7 @@ class Director:
         self._studio = studio
         self.media = studio.media
         self._stops: dict[str, asyncio.Event] = {}  # «Стоп» of a film's question or filming
-        self._shooting: dict[str, asyncio.Task] = {}  # the films being shot, each its task
+        self._tasks: dict[str, asyncio.Task] = {}  # the films at work in the background: written, shot, joined
 
     async def start(self) -> int:
         """Films a stopped hub left being written, shot or joined are ready again - the scenes not filmed are
@@ -263,10 +271,15 @@ class Director:
         return await self._db.acall(mend)
 
     async def close(self) -> None:
-        """The hub stops: the films being shot are stopped, their scene's job with them."""
-        for film_id in list(self._shooting):
-            with contextlib.suppress(Exception):
-                await self.stop(film_id)
+        """The hub stops: a film's question is let go, the film being shot is stopped, its scene's job with it; a
+        film being joined is left - ffmpeg ends by itself, and `start` puts the film right."""
+        for film_id, task in list(self._tasks.items()):
+            if (stop := self._stops.get(film_id)) is not None:
+                stop.set()
+            else:
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
     async def _changed(self, film_id: str, **fields: Any) -> dict[str, Any]:
         def write(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -286,6 +299,85 @@ class Director:
         if found["status"] in ("writing", "filming", "joining"):
             raise DirectorError(tr("фильм занят: дождитесь конца или нажмите «Стоп»"))
         return found
+
+    async def _picture(self, spec: dict[str, Any]) -> bytes | None:
+        """The product's photo a request brings - a PNG sent (photo_png, base64), a picture of the Studio's (from_job;
+        a video - its last frame) or a chat's (from_blob) - or None."""
+        try:
+            return await self._studio.source({"from_png": spec.get("photo_png"), "from_job": spec.get("from_job"),
+                                              "from_blob": spec.get("from_blob")})  # fmt: skip
+        except visual.VisualError as exc:
+            raise DirectorError(str(exc), exc.status) from None
+
+    async def _keep_photo(self, film_id: str, data: bytes) -> str:
+        name = f"{datetime.now(UTC):%Y-%m}/film-{film_id}-photo.png"
+        await asyncio.to_thread(visual.save, self.media / name, data)
+        return name
+
+    def own(self, name: str) -> Path | None:
+        """A film's own file - its photo, the joined film - by the name the film keeps; None - it is not there."""
+        path = self.media / name if name else None
+        return path if path is not None and path.is_file() else None
+
+    def _unlink(self, film_id: str, pattern: str, keep: Path | None = None) -> None:
+        """The film's own files of this kind gone, but `keep` (blocking). One a player holds open stays - until the
+        next time, or the cleanup of old pictures."""
+        for path in self.media.glob(f"*/film-{film_id}-{pattern}"):
+            if path != keep:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+
+    async def create(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """A film begun (50.8): {idea, seconds, shape, director, model} and the product's photo, if there is one
+        (`_picture`). A draft, no scenes yet."""
+        idea = str(spec.get("idea") or "").strip()
+        if not idea:
+            raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
+        photo = await self._picture(spec)
+        made = await self._db.acall(lambda conn: new_film(
+            conn, idea=idea, seconds=int(spec.get("seconds") or 15), shape=str(spec.get("shape") or "wide"),
+            director=str(spec.get("director") or ""), model_id=str(spec.get("model") or "")))  # fmt: skip
+        kept = {"photo": await self._keep_photo(made["id"], photo)} if photo is not None else {}
+        return await self._changed(made["id"], **kept)
+
+    async def change(self, film_id: str, spec: dict[str, Any]) -> dict[str, Any]:
+        """The film's own changed (50.8) - only what `spec` names: idea, seconds, shape, director, model, fade, the
+        photo (as `create` takes one; `photo: ""` - none). Another shape, photo or video model - the scenes filmed
+        are of the film as it was: stale, the joined file forgotten."""
+        found = await self._film(film_id)
+        fields = {k: spec[k] for k in ("idea", "seconds", "shape", "director", "fade") if spec.get(k) is not None}
+        if "idea" in fields:
+            fields["idea"] = str(fields["idea"]).strip()
+            if not fields["idea"]:
+                raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
+        if spec.get("model") is not None:
+            fields["model_id"] = str(spec["model"])
+        photo = await self._picture(spec)
+        if photo is not None:
+            fields["photo"] = await self._keep_photo(film_id, photo)
+        elif spec.get("photo") == "":
+            fields["photo"] = ""
+        look = "photo" in fields or any(k in fields and fields[k] != found[k] for k in ("shape", "model_id"))
+
+        def write(conn: sqlite3.Connection) -> None:
+            update_film(conn, film_id, **fields, **({"file": ""} if look else {}))
+            if look:
+                conn.execute("UPDATE film_scenes SET status = 'stale' WHERE film_id = ? AND status = 'done'",
+                             (film_id,))  # fmt: skip
+
+        await self._db.acall(write)
+        if found["photo"] and fields.get("photo", found["photo"]) != found["photo"]:
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread((self.media / found["photo"]).unlink, True)
+        return await self._changed(film_id)
+
+    async def remove(self, film_id: str) -> None:
+        """The film gone, its photo and its joined file with it; its scenes' clips stay videos of the Studio's - the
+        cleanup of old pictures comes to them as to any other."""
+        await self._film(film_id)
+        await self._db.acall(lambda conn: delete_film(conn, film_id))
+        await asyncio.to_thread(self._unlink, film_id, "*")
+        await self._bus.publish("film.deleted", {"id": film_id}, persist=False)
 
     async def video_model(self, found: dict[str, Any]) -> dict[str, Any]:
         """The video model that films this film: the one named, else the first that films as the film needs."""
@@ -310,9 +402,12 @@ class Director:
         data = await asyncio.to_thread(path.read_bytes)
         return [{"media_type": kind, "data": base64.b64encode(data).decode("ascii")}]
 
-    async def write(self, film_id: str, *, timeout_s: float = WRITE_TIMEOUT_S) -> dict[str, Any]:
+    async def write(self, film_id: str, *, timeout_s: float = WRITE_TIMEOUT_S,
+                    background: bool = False) -> dict[str, Any]:  # fmt: skip
         """«Собрать сценарий» (50.6): the director's model - the film's, else the role's - is asked for the scenes
-        with the idea, the length and the photo; they replace the film's scenes. The film as it is then."""
+        with the idea, the length and the photo; they replace the film's scenes. The film as it is then - or, in the
+        `background` (50.8: the window's), as it begins: what could not be asked is refused at once, what the
+        director did not answer is the film's `error`."""
         found = await self._film(film_id)
         model = await self.video_model(found)
         chosen = found["director"] or await self._db.acall(role_model)
@@ -322,33 +417,99 @@ class Director:
         system, prompt, form = question(found["idea"], found["seconds"], found["shape"], model["modes"], bool(images))
         read = reader(clip=model["clip"], modes=model["modes"], photo=bool(images), seconds=found["seconds"])
         stop = self._stops[film_id] = asyncio.Event()
-        await self._changed(film_id, status="writing", error="")
-        back = "ready" if found["scenes"] else "draft"
+        began = await self._changed(film_id, status="writing", error="")
+
+        async def ask() -> dict[str, Any]:
+            try:
+                got = await self._judge.complete(chosen, system, prompt, read, conversation_id=None,
+                                                 meta={"purpose": "director", "film_id": film_id}, form=form,
+                                                 images=images or None, timeout_s=timeout_s, cancel=stop)  # fmt: skip
+            except JudgeError as exc:
+                words = tr("сценарий не получился: {error}", error=exc)
+                await self._changed(film_id, status="ready" if found["scenes"] else "draft",
+                                    error="" if stop.is_set() else words)  # fmt: skip
+                raise DirectorError(words, 502) from None
+            finally:
+                self._stops.pop(film_id, None)
+
+            def keep(conn: sqlite3.Connection) -> None:
+                set_scenes(conn, film_id, got["scenes"])
+                update_film(
+                    conn,
+                    film_id,
+                    status="ready",
+                    error="; ".join(got["notes"]),
+                    director=chosen,
+                    file="",
+                    tokens=found["tokens"] + got["tokens"],
+                    cost_usd=round(found["cost_usd"] + got["cost_usd"], 6),
+                )
+
+            await self._db.acall(keep)
+            return await self._changed(film_id)
+
+        if not background:
+            return await ask()
+        self._tasks[film_id] = asyncio.create_task(self._background(film_id, ask()))
+        return began
+
+    async def _background(self, film_id: str, work: Awaitable[Any]) -> None:
+        """A film's work that goes on after the answer: what it could not do is the film's `error` already."""
         try:
-            got = await self._judge.complete(chosen, system, prompt, read, conversation_id=None,
-                                             meta={"purpose": "director", "film_id": film_id}, form=form,
-                                             images=images or None, timeout_s=timeout_s, cancel=stop)  # fmt: skip
-        except JudgeError as exc:
-            words = tr("сценарий не получился: {error}", error=exc)
-            await self._changed(film_id, status=back, error="" if stop.is_set() else words)
-            raise DirectorError(words, 502) from None
+            await work
+        except DirectorError:
+            pass
+        except Exception:
+            log.exception("film %s", film_id)
+            has = await self._db.acall(lambda conn: conn.execute(
+                "SELECT 1 FROM film_scenes WHERE film_id = ?", (film_id,)).fetchone())  # fmt: skip
+            await self._changed(film_id, status="ready" if has else "draft",
+                                error=tr("внутренняя ошибка хаба — подробности в журнале"))  # fmt: skip
         finally:
-            self._stops.pop(film_id, None)
+            self._tasks.pop(film_id, None)
 
-        def keep(conn: sqlite3.Connection) -> None:
-            set_scenes(conn, film_id, got["scenes"])
-            update_film(
-                conn,
-                film_id,
-                status="ready",
-                error="; ".join(got["notes"]),
-                director=chosen,
-                file="",
-                tokens=found["tokens"] + got["tokens"],
-                cost_usd=round(found["cost_usd"] + got["cost_usd"], 6),
-            )
+    async def edit_scene(self, film_id: str, n: int, spec: dict[str, Any]) -> dict[str, Any]:
+        """A scene changed by hand (50.8) - only what `spec` names: words, prompt, mode, seconds, seed (none or below
+        0 - a new one each time it is filmed). What the video model is given has changed - a clip filmed is of the
+        scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten. The
+        words alone change nothing else."""
+        found = await self._film(film_id)
+        scene = next((s for s in found["scenes"] if s["n"] == n), None)
+        if scene is None:
+            raise DirectorError(tr("нет такой сцены"), 404)
+        fields: dict[str, Any] = {}
+        if spec.get("words") is not None:
+            fields["words"] = " ".join(str(spec["words"]).split())[: TEXT_CHARS["words"]]
+        if spec.get("prompt") is not None:
+            fields["prompt"] = " ".join(str(spec["prompt"]).split())[: TEXT_CHARS["prompt"]]
+            if not fields["prompt"]:
+                raise DirectorError(tr("нужно описание сцены для модели видео"), 422)
+        if spec.get("mode") is not None or spec.get("seconds") is not None:
+            model = await self.video_model(found)
+            if (mode := spec.get("mode")) is not None:
+                if n == 1 and mode in ("continue", "frames"):
+                    raise DirectorError(tr("первой сцене продолжать нечего — выберите другой режим"), 422)
+                if mode not in allowed(model["modes"], bool(found["photo"])):
+                    raise DirectorError(tr("так сцена начаться не может: у фильма нет фото товара или модель видео "
+                                           "так не снимает"), 422)  # fmt: skip
+                fields["mode"] = mode
+            if spec.get("seconds") is not None:
+                length = min(SCENE_S[1], max(SCENE_S[0], float(spec["seconds"])))
+                fields["frames"] = frames_for(length, int(model["clip"]["fps"]), int(model["clip"]["step"]))
+        if "seed" in spec:
+            fields["seed"] = None if spec["seed"] is None or int(spec["seed"]) < 0 else int(spec["seed"])
+        other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed") if k in fields)
+        if other and scene["status"] != "new":
+            fields |= {"status": "stale" if scene["job_id"] and scene["status"] != "failed" else "new", "error": ""}
 
-        await self._db.acall(keep)
+        def write(conn: sqlite3.Connection) -> None:
+            if fields:
+                update_scene(conn, film_id, n, **fields)
+            if other:
+                _stale_after(conn, film_id, n)
+                update_film(conn, film_id, file="")
+
+        await self._db.acall(write)
         return await self._changed(film_id)
 
     async def shoot(self, film_id: str, *, only: int | None = None) -> dict[str, Any]:
@@ -363,25 +524,27 @@ class Director:
             raise DirectorError(words, 422)
         self._stops[film_id] = asyncio.Event()
         began = await self._changed(film_id, status="filming", error="")
-        self._shooting[film_id] = asyncio.create_task(self._shoot(found, model, [s["n"] for s in scenes]))
+        self._tasks[film_id] = asyncio.create_task(self._shoot(found, model, [s["n"] for s in scenes]))
         return began
 
     async def stop(self, film_id: str) -> dict[str, Any]:
         """«Стоп»: the director's question is let go, or the scene being filmed is stopped in the engine and no next
-        one begins; the film as it is once it has stopped."""
-        if (stop := self._stops.get(film_id)) is not None:
-            stop.set()
-        if (task := self._shooting.get(film_id)) is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        one begins; the film as it is once it has stopped. A film being joined is not stopped: ffmpeg is quick."""
         found = await self._db.acall(lambda conn: film(conn, film_id))
         if found is None:
             raise DirectorError(tr("нет такого фильма"), 404)
-        return found
+        if found["status"] == "joining":
+            raise DirectorError(tr("ролик склеивается — это недолго, дождитесь конца"))
+        if (stop := self._stops.get(film_id)) is not None:
+            stop.set()
+        if (task := self._tasks.get(film_id)) is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        return await self._db.acall(lambda conn: film(conn, film_id))
 
     async def _spec(self, found: dict[str, Any], model: dict[str, Any], scene: dict[str, Any]) -> dict[str, Any]:
         """A scene as the Studio's video: its first frame by its mode - the product's photo, the last frame of the
-        scene before (that scene's job: `Visual._source` takes its end) - and, «к фото», the photo as its last."""
+        scene before (that scene's job: `Visual.source` takes its end) - and, «к фото», the photo as its last."""
         fps = int(model["clip"]["fps"])
         spec = {"prompt": scene["prompt"], "model": model["model_id"], "shape": found["shape"], "shape_fixed": True,
                 "seconds": (scene["frames"] - 1) / fps, "seed": scene["seed"]}  # fmt: skip
@@ -443,8 +606,46 @@ class Director:
         finally:
             self._studio.unkeep()
             self._stops.pop(film_id, None)
-            self._shooting.pop(film_id, None)
+            self._tasks.pop(film_id, None)
             await self._db.acall(lambda conn: conn.execute(
                 "UPDATE film_scenes SET status = 'new' WHERE film_id = ? AND status = 'filming'", (film_id,),
             ))  # fmt: skip
             await self._changed(film_id, status="ready", error=error)
+
+    async def join(self, film_id: str, *, fade: float | None = None) -> dict[str, Any]:
+        """«Собрать ролик» (50.8): the scenes' clips into one MP4 - cut to cut, or with a cross-fade of `fade` seconds
+        at each joint (none said: the film's own). Every scene must be filmed, all in one size. The film as it
+        begins: ffmpeg works in the background; the file's name is new each time - the window's player may hold the
+        one before open."""
+        found = await self._film(film_id)
+        if not found["scenes"] or any(s["status"] != "done" for s in found["scenes"]):
+            raise DirectorError(tr("сначала снимите все сцены: склеивается готовый фильм"), 422)
+        fade = float(found["fade"] if fade is None else fade)
+        jobs = await self._db.acall(lambda conn: [visual.job(conn, s["job_id"]) for s in found["scenes"]])
+        clips = []
+        for scene, job in zip(found["scenes"], jobs, strict=True):
+            path = self._studio.file(job) if job is not None else None
+            if path is None:
+                raise DirectorError(tr("клипа сцены {n} уже нет — переснимите её", n=scene["n"]), 404)
+            clips.append((path, job["frames"] / job["fps"]))
+        if len({(job["width"], job["height"], job["fps"]) for job in jobs}) > 1:
+            raise DirectorError(tr("сцены сняты в разном размере — переснимите их одной моделью"), 422)
+        began = await self._changed(film_id, status="joining", error="")
+        self._tasks[film_id] = asyncio.create_task(
+            self._background(film_id, self._join(film_id, clips, int(jobs[0]["fps"]), fade))
+        )
+        return began
+
+    async def _join(self, film_id: str, clips: list[tuple[Path, float]], fps: int, fade: float) -> None:
+        name = f"{datetime.now(UTC):%Y-%m}/film-{film_id}-{uuid.uuid4().hex[:6]}.mp4"
+        target = self.media / name
+        try:
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            await self._studio.with_ffmpeg(
+                target, lambda program: ffmpeg.join(program, clips, target, fps=fps, fade_s=fade)
+            )
+        except visual.VisualError as exc:
+            await self._changed(film_id, status="ready", error=str(exc))
+            raise DirectorError(str(exc), exc.status) from None
+        await asyncio.to_thread(self._unlink, film_id, "*.mp4", target)  # the ones joined before
+        await self._changed(film_id, status="ready", file=name, fade=fade, error="")

@@ -154,6 +154,7 @@
 - `hub/api/deps.py` — общие зависимости запросов: токен, права
 - `hub/api/editor.py` — `/v1/editor`: сообщения расширения VS Code
 - `hub/api/events_ws.py` — WebSocket `/v1/events`
+- `hub/api/films.py` — `/v1/films`: фильмы «Режиссёра»
 - `hub/api/goals.py` — цель чата
 - `hub/api/history.py` — история файлов проекта
 - `hub/api/install.py` — `/v1/install`: установка локальных моделей
@@ -3024,6 +3025,26 @@ MusicGen, LivePortrait (части InsightFace), BasicVSR++ и RealBasicVSR (PyT
   `test_a_film_stops_at_once_and_a_scene_that_fails_stops_it_with_words` («Стоп», «Продолжить», сбой, перезапуск).
 - 50.8 API и события: `hub/api/films.py` (`/v1/films`: сцены, снять всё, переснять, собрать), `film.changed`,
   `film.progress`; `app/hub_client.py`.
+  ✓ Сделано: `hub/api/films.py` — `/v1/films` (только окно): `GET`/`POST` — список и новый фильм (идея, длина
+  5–80 с, форма, фото товара: `photo_png`, `from_job` или `from_blob`); `GET`/`PATCH`/`DELETE /{id}`;
+  `POST /{id}/storyboard` — «Собрать сценарий» (ответ сразу, сцены приходят событием); `PUT /{id}/scenes/{n}` —
+  правка сцены; `POST /{id}/shoot` (`{scene}` — «Переснять»), `/stop`, `/join` (`{fade}` 0–1 с);
+  `GET /{id}/file` — склеенный MP4, `/photo` — фото товара. Клип сцены — работа Студии
+  (`/v1/visual/jobs/<job>/mp4`). События: `film.changed` (фильм со сценами), `film.progress` (началась сцена),
+  `film.deleted`. В `Director`: `create`, `change` (другая форма, фото или модель видео — снятые сцены `stale`),
+  `remove` (фото и склеенный файл удаляются, клипы остаются видео Студии), `edit_scene` (слова, промпт, режим,
+  секунды, seed; изменилось то, что уходит модели, — сцена и цепочка за ней `stale`, склеенный файл забыт),
+  `join` → `_join` (все сцены `done` и одного размера; `ffmpeg.join` через `Visual.with_ffmpeg`; имя файла
+  `film-<id>-<x>.mp4` каждый раз новое — плеер окна может держать прежний; прежние удаляются), `own` (файл
+  фильма по имени). Долгое идёт фоном одной дорогой: `_tasks` (вместо `_shooting`) и `_background` —
+  `write(background=True)`, `shoot`, `join`; `stop` отпускает вопрос режиссёра и съёмку, склейку не
+  останавливает (409). Заодно: `Visual._source` → `source`, `visual._save` → `save` (ими пользуется режиссёр).
+  Клиент окна: `films`, `film`, `new_film`, `update_film`, `delete_film`, `write_film`, `update_scene`,
+  `shoot_film`, `stop_film`, `join_film`, `film_file`, `film_photo`. Тест
+  `test_the_window_makes_a_film_through_the_hub_from_the_photo_to_the_joined_file` (`tests/test_director.py`:
+  настоящий хаб, `HubClient`, облако на этом компьютере, подставной sd-server, настоящий ffmpeg) — от фото до
+  файла из 12 кадров (4 сцены по 3), повторная склейка, правка снятой сцены, «Стоп» зависшего режиссёра,
+  удаление, отказы словами; на старом коде адресов нет.
 - 50.9 Окно: в «Студии» переключатель «Вручную | Режиссёр»; фото товара, идея, 15/30/60 с, «Собрать сценарий»;
   карточки сцен (кадр, русский текст, правка, «Переснять»); «Снять всё»; «Собрать ролик»; время «ещё ≈». Файлы:
   `app/ui/film_view.py`, `app/ui/qml/DirectorView.qml`, `StudioView.qml`. Тест — щелчки мышью.

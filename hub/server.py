@@ -31,6 +31,7 @@ from .api import (
     conversations,
     editor,
     events_ws,
+    films,
     goals,
     gpu,
     history,
@@ -380,6 +381,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(llama.router)
     app.include_router(install.router)
     app.include_router(visual.router)
+    app.include_router(films.router)
     app.include_router(setup.router)
     app.include_router(release.router)
     app.include_router(tuning.router)

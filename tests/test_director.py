@@ -274,3 +274,110 @@ def test_a_film_stops_at_once_and_a_scene_that_fails_stops_it_with_words(hub, mo
     hub.portal.call(state.director.start)  # the hub comes up again
     after = state.db.call(lambda conn: director.film(conn, film_id))
     assert after["status"] == "ready" and after["scenes"][1]["status"] == "new" and "перезапуск" in after["error"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_the_window_makes_a_film_through_the_hub_from_the_photo_to_the_joined_file(hub, monkeypatch, tmp_path):  # noqa: F811
+    """50.8: the window's client against the real hub - a film begun with the idea and the product's photo, its
+    storyboard written in the background (the answer comes at once, the scenes with `film.changed`), a scene changed
+    by hand, «Снять всё», «Собрать ролик» - one MP4 of every scene's frames (a real ffmpeg), given as a file. A scene
+    changed after it was filmed is stale, those that go on from it too, the joined file forgotten; «Стоп» lets a
+    hung director go; a film deleted takes its photo and its joined file with it. What cannot be done is said."""
+    from app.hub_client import HubClient, HubError
+    from hub import ffmpeg
+    from tests.test_ffmpeg import GREEN, ORANGE, _frames_of, _solid, animated_webp
+    from tests.test_visual import PICTURE, FakeDrawSwap, _install
+
+    _install(hub, "film", LTX)
+    FakeDrawSwap.filmed = animated_webp([_solid(ORANGE), _solid((200, 120, 40)), _solid(GREEN)], 64, 64)
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    cloud = SeeingCloud([json.dumps(BOARD, ensure_ascii=False)])
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+        media = hub.app.state.visual.media
+        photo = base64.b64encode(PICTURE).decode()
+
+        with pytest.raises(HubError, match="идея"):
+            client.new_film({"idea": "   ", "seconds": 15})
+        with pytest.raises(HubError, match="PNG"):
+            client.new_film({"idea": "Ролик", "seconds": 15, "photo_png": base64.b64encode(b"not a picture").decode()})
+        assert hub.post("/v1/films", json={"idea": "Ролик", "seconds": 900}).status_code == 422
+        assert hub.get("/v1/films/nope").status_code == 404 and client.films()["films"] == []
+
+        made = client.new_film({"idea": "Ролик о латунной лампе", "seconds": 15, "photo_png": photo})["film"]
+        film_id = made["id"]
+        assert (made["status"], made["shape"], made["scenes"]) == ("draft", "wide", [])
+        assert made["photo"].endswith(f"film-{film_id}-photo.png") and client.film_photo(film_id) == PICTURE
+        assert [f["id"] for f in client.films()["films"]] == [film_id]
+        changed = client.update_film(film_id, {"idea": "Ролик о лампе", "fade": 0.25})["film"]
+        assert (changed["idea"], changed["fade"], changed["seconds"]) == ("Ролик о лампе", 0.25, 15)
+        with pytest.raises(HubError, match="сценарий"):
+            client.shoot_film(film_id)
+
+        assert client.write_film(film_id)["film"]["status"] == "writing"  # at once: the director answers later
+        written = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [(s["mode"], s["frames"]) for s in written["scenes"]] == [
+            ("picture", 97), ("continue", 121), ("frames", 73), ("continue", 73)]  # fmt: skip
+        assert "Ролик о лампе" in cloud.asked[0]["messages"][1]["content"][0]["text"]
+        states = [p["film"]["status"] for kind, p in hub.seen if kind == "film.changed" and p["film"]["id"] == film_id]
+        assert "writing" in states and states[-1] == "ready"
+
+        edited = client.update_scene(film_id, 4, {"words": "Финал: лампа светит", "seconds": 2, "seed": 11,
+                                                  "prompt": "the lamp glows  brighter, static shot"})  # fmt: skip
+        edited = edited["film"]
+        assert [edited["scenes"][3][k] for k in ("words", "prompt", "frames", "seed", "status")] == [
+            "Финал: лампа светит", "the lamp glows brighter, static shot", 49, 11, "new"]  # fmt: skip
+        with pytest.raises(HubError, match="первой сцене"):
+            client.update_scene(film_id, 1, {"mode": "continue"})
+        with pytest.raises(HubError, match="нет такой сцены"):
+            client.update_scene(film_id, 9, {"words": "Нет"})
+        with pytest.raises(HubError, match="описание"):
+            client.update_scene(film_id, 2, {"prompt": "  "})
+        with pytest.raises(HubError, match="снимите все сцены"):
+            client.join_film(film_id)
+
+        assert client.shoot_film(film_id)["film"]["status"] == "filming"
+        with pytest.raises(HubError, match="фильм занят"):
+            client.update_film(film_id, {"idea": "Другая"})
+        filmed = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [s["status"] for s in filmed["scenes"]] == ["done"] * 4 and filmed["error"] == ""
+        assert FakeDrawSwap.video[3]["video_frames"] == 49 and FakeDrawSwap.video[3]["seed"] == 11
+        began = [p["scene"] for kind, p in hub.seen if kind == "film.progress" and p["id"] == film_id]
+        assert began == [1, 2, 3, 4]
+
+        assert hub.post(f"/v1/films/{film_id}/join", json={"fade": 9}).status_code == 422
+        assert client.join_film(film_id, 0)["film"]["status"] == "joining"
+        joined = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert joined["error"] == "" and Path(joined["file"]).name.startswith(f"film-{film_id}-")
+        assert joined["fade"] == 0 and (media / joined["file"]).is_file()
+        (tmp_path / "film.mp4").write_bytes(client.film_file(film_id))
+        assert len(_frames_of(program, tmp_path / "film.mp4", tmp_path / "frames")) == 12  # four scenes, three frames
+
+        first = (media / joined["file"]).name
+        client.join_film(film_id, 0)  # joined anew: another file, the one before gone
+        anew = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert Path(anew["file"]).name != first and [f.name for f in media.glob(f"*/film-{film_id}-*.mp4")] == [
+            Path(anew["file"]).name]  # fmt: skip
+
+        stale = client.update_scene(film_id, 2, {"prompt": "the lamp flickers, then lights up"})["film"]
+        assert [s["status"] for s in stale["scenes"]] == ["done", "stale", "stale", "stale"] and stale["file"] == ""
+        with pytest.raises(HubError):
+            client.film_file(film_id)
+        with pytest.raises(HubError, match="снимите все сцены"):
+            client.join_film(film_id)
+        worded = client.update_scene(film_id, 1, {"words": "Лампа на столе, утро"})["film"]  # the words alone
+        assert worded["scenes"][0]["status"] == "done"
+
+        assert client.write_film(film_id)["film"]["status"] == "writing"  # the cloud has no answer left: it hangs
+        let_go = client.stop_film(film_id)["film"]
+        assert (let_go["status"], let_go["error"], len(let_go["scenes"])) == ("ready", "", 4)
+
+        client.delete_film(film_id)
+        assert client.films()["films"] == [] and hub.get(f"/v1/films/{film_id}").status_code == 404
+        assert list(media.glob(f"*/film-{film_id}-*")) == []
+        assert ("film.deleted", {"id": film_id}) in [(kind, p) for kind, p in hub.seen]
+    finally:
+        cloud.close()

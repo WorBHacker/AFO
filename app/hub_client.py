@@ -223,6 +223,53 @@ class HubClient:
         """A video a chat holds, as MP4 (48.12: its card plays it) - made by the hub's ffmpeg, as a job's is."""
         return self._raw("GET", f"/v1/visual/pictures/{blob}/mp4", timeout=900)
 
+    def films(self) -> dict:
+        """«Режиссёр» (50.8): the films, the newest first, each with its scenes."""
+        return self._call("GET", "/v1/films")
+
+    def film(self, film_id: str) -> dict:
+        return self._call("GET", f"/v1/films/{film_id}")
+
+    def new_film(self, spec: dict) -> dict:
+        """A film begun: {idea, seconds, shape, director, model} and the product's photo - photo_png (base64),
+        from_job or from_blob."""
+        return self._call("POST", "/v1/films", spec)
+
+    def update_film(self, film_id: str, fields: dict) -> dict:
+        """Only what is named changes: idea, seconds, shape, director, model, fade, the photo (`photo: ""` - none)."""
+        return self._call("PATCH", f"/v1/films/{film_id}", fields)
+
+    def delete_film(self, film_id: str) -> dict:
+        return self._call("DELETE", f"/v1/films/{film_id}")
+
+    def write_film(self, film_id: str) -> dict:
+        """«Собрать сценарий»: the film as it begins to be written - the scenes come with film.changed."""
+        return self._call("POST", f"/v1/films/{film_id}/storyboard")
+
+    def update_scene(self, film_id: str, n: int, fields: dict) -> dict:
+        """A scene changed by hand - only what is named: words, prompt, mode, seconds, seed."""
+        return self._call("PUT", f"/v1/films/{film_id}/scenes/{n}", fields)
+
+    def shoot_film(self, film_id: str, scene: int | None = None) -> dict:
+        """«Снять всё» and «Продолжить»; `scene` - «Переснять» that one."""
+        return self._call("POST", f"/v1/films/{film_id}/shoot", {"scene": scene})
+
+    def stop_film(self, film_id: str) -> dict:
+        """«Стоп»: the answer comes once the film has stopped - a scene's engine takes a moment."""
+        return self._call("POST", f"/v1/films/{film_id}/stop", timeout=60)
+
+    def join_film(self, film_id: str, fade: float | None = None) -> dict:
+        """«Собрать ролик»: the film as it begins to be joined - the file comes with film.changed."""
+        return self._call("POST", f"/v1/films/{film_id}/join", {"fade": fade})
+
+    def film_file(self, film_id: str) -> bytes:
+        """The joined film, an MP4."""
+        return self._raw("GET", f"/v1/films/{film_id}/file")
+
+    def film_photo(self, film_id: str) -> bytes:
+        """The product's photo, a PNG."""
+        return self._raw("GET", f"/v1/films/{film_id}/photo")
+
     def install_search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
                        plain: bool = False, build: str = "", language: str = "", license: str = "",
                        author: str = "") -> dict:  # fmt: skip
