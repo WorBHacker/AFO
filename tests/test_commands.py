@@ -68,7 +68,7 @@ def test_network_and_destructive_commands_are_asked_every_time(hub, repo):  # no
 
 def test_a_trusted_chat_runs_commands_without_asking_but_destructive_ones(hub, repo):  # noqa: F811
     """2026-10-28, the user's word: «Доверенный» runs commands - the network ones too - without a card; a destructive
-    one is still asked, every time."""
+    one is refused by the rules, and asked when the model calls for one again right after (2026-11-18)."""
     _pid, conv, provider = setup_chat(hub, repo, [[run("Write-Output trusted")]], mode="trusted")
     say(hub, conv)
     result = result_of(finished(hub, conv))
@@ -79,12 +79,13 @@ def test_a_trusted_chat_runs_commands_without_asking_but_destructive_ones(hub, r
     assert hub.get("/v1/approvals").json()["approvals"] == []
     cards = hub.app.state.db.call(lambda c: c.execute("SELECT COUNT(*) FROM approvals").fetchone()[0])
     assert cards == 0  # neither was asked
-    provider.steps.append([run("git push origin main")])
+    provider.steps += [[run("git push origin main")], [run("git push origin main")]]
     say(hub, conv)
-    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]  # the second one: the first was refused
     assert asked["destructive"] is True and asked["conversation_id"] == conv
     hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False})
-    finished(hub, conv)
+    said = [b["output"] for m in finished(hub, conv) if m["role"] == "tool" for b in m["content"]][-2:]
+    assert said[0].startswith("not done: «Доверенный» does not do this unasked") and "the user said no" in said[1]
 
 
 def test_a_question_on_the_last_line():

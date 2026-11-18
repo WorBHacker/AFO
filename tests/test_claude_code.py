@@ -588,11 +588,16 @@ def test_a_chat_with_no_project_its_rights_and_claude_codes_questions(hub):
     assert cards == 0  # no card for either: the chat's rights answered
 
     # a command (2026-10-28, the user's word): a trusted chat runs it without a card, a read-only one refuses it -
-    # PowerShell too, Claude Code's shell on Windows; a destructive one is asked even in a trusted chat
+    # PowerShell too, Claude Code's shell on Windows; a destructive one is refused by the rules in a trusted chat,
+    # and asked when it calls for one again right after (2026-11-18)
     send(hub, trusted, "run it")
     assert hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"] == "Выполнил: node make_docx.js"
     send(hub, read_only, "run it")
     assert hub.wait_idle(read_only)["messages"][-1]["content"][0]["text"].startswith("Не стал: This chat is read-only")
+    send(hub, trusted, "run push")
+    refused = hub.wait_idle(trusted)["messages"][-1]["content"][0]["text"]
+    assert refused.startswith("Не стал: not done: «Доверенный» does not do this unasked")
+    assert hub.http.get("/v1/approvals").json()["approvals"] == []
     send(hub, trusted, "run push")
     asked = wait(lambda: hub.http.get("/v1/approvals").json()["approvals"])[0]
     assert asked["tool"] == "PowerShell" and asked["destructive"] is True

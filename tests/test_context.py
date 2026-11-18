@@ -76,7 +76,8 @@ def test_a_context_message_holds_what_changed(repo):
         for mode in context.RIGHTS_NOTES
     }  # fmt: skip
     assert "read-only: you cannot change files" in rights["read_only"]
-    assert "sandbox copy" in rights["sandbox"] and "without asking; destructive" in rights["trusted"]
+    assert "sandbox copy" in rights["sandbox"] and "without asking. What deletes" in rights["trusted"]
+    assert "is refused, not asked" in rights["trusted"] and "once you have read" not in rights["trusted"]
 
     local = context.render(first, cloud=False)
     cloud = context.render(first, cloud=True)

@@ -60,9 +60,10 @@ RIGHTS_NOTES = {
     "they allowed it for this chat or the project.",
     "sandbox": "With your write and command tools you change files and run commands in a sandbox copy of each git "
     "project, without asking; the user reviews the diff and applies it.",
-    "trusted": "With your write and command tools you may change files and run commands without asking; destructive "
-    "actions are still asked, and so is everything once you have read what others wrote (the web, letters, other "
-    "programs' screens); with a local-only project in the chat, reading the web is asked too.",
+    "trusted": "With your write and command tools you may change files and run commands without asking. What deletes "
+    "or cannot be undone is refused, not asked: do the task another way, and only if there is none call it once more "
+    "- the user is asked then. A command into the hub's own data is never run. With a local-only project in the "
+    "chat, reading the web is asked.",
 }
 
 

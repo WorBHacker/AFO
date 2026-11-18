@@ -86,7 +86,7 @@ from . import (
     web,
     websearch,
 )
-from .approvals import Decision, beyond_full, trusted_skips
+from .approvals import TRUSTED_NOT_YET, Decision, beyond_full, trusted_refuses
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
 from .events import EventBus
@@ -187,6 +187,8 @@ class ChatService:
         self.compact = None  # a goal's stages done as one line each in the request (11.5; hub/goals.py sets it)
         # chats whose Claude Code went to read the web (D19): known at once, before its results are stored
         self.outside: set[str] = set()
+        # trusted chats whose last risky action the rules refused (2026-11-18): the next one in a row is asked
+        self.refused: set[str] = set()
         # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
         self.sandbox_broken: dict[str, dict[str, str]] = {}
         # what each chat's model read: "<project id>:<path>" -> sha256 (D46; tools.ToolContext.seen)
@@ -1205,10 +1207,15 @@ class ChatService:
             return str(exc), True
         if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
             return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
-        if settings["mode"] != "trusted" or not trusted_skips(call["name"], args, project.root):
-            tainted = await self.read_the_web(conversation_id)
-            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
-                                                cover=not tainted)  # fmt: skip
+        if settings["mode"] == "trusted":
+            said = await self.trusted_verdict(conversation_id, call["name"], args, project.root, project.id)
+            cover = False
+        else:
+            said, cover = "", not await self.read_the_web(conversation_id)
+        if said:
+            return said, True
+        if said is not None:
+            allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=cover)
             if not allowed:
                 return why, True
         try:
@@ -1289,14 +1296,40 @@ class ChatService:
             settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))
             if settings["mode"] == "read_only":
                 return READ_ONLY, True
-            if settings["mode"] != "trusted" or cls == "destructive":
-                tainted = await self.read_the_web(conversation_id)
-                project = ctx.projects[0] if ctx.projects else None
-                allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel,
-                                                    cover=not tainted)  # fmt: skip
+            project = ctx.projects[0] if ctx.projects else None
+            if settings["mode"] == "trusted":
+                root, pid = (project.root, project.id) if project else (None, None)
+                said = await self.trusted_verdict(conversation_id, call["name"], args, root, pid,
+                                                  wipes=cls == "destructive")  # fmt: skip
+                cover = False
+            else:
+                said, cover = "", not await self.read_the_web(conversation_id)
+            if said:
+                return said, True
+            if said is not None:
+                allowed, why = await self._ask_user(conversation_id, call["name"], args, project, cancel, cover=cover)
                 if not allowed:
                     return why, True
         return await self.mcp.call(call["name"], args, cancel)
+
+    async def trusted_verdict(self, conversation_id: str, tool: str, args: dict, root: Path | None,
+                              project_id: str | None, *, wipes: bool | None = None) -> str | None:  # fmt: skip
+        """A trusted chat's command, or an outside tool, by the rules (the user's word 2026-11-18, «как auto» -
+        approvals.trusted_refuses): None - done unasked; a text - refused, what the model reads, kept in the queue
+        as the rules' refusal; '' - the second risky one in a row: the user is asked. Where nobody answers - the
+        proving ground, an autonomous run in «Полный» - the asking itself says no (_decision)."""
+        again = conversation_id in self.refused
+        if conversation_id in self.proving or await self._level(conversation_id) == autonomous.FULL:
+            again = True
+        said = trusted_refuses(tool, args, root, wipes=wipes, again=again)
+        if not said:  # done, or asked: either way the row of refusals is over
+            self.refused.discard(conversation_id)
+            return said
+        if said == TRUSTED_NOT_YET:
+            self.refused.add(conversation_id)
+        if self.approvals is not None:
+            await self.approvals.refused(tool, args, said, conversation_id=conversation_id, project_id=project_id)
+        return said
 
     async def _trusted(self, conversation_id: str) -> bool:
         settings = await self._db.acall(lambda conn: store.context_settings(conn, conversation_id))

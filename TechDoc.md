@@ -2763,6 +2763,16 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
 - Шаг 2. Опасное — отказ с причиной вместо окна; второй отказ подряд в чате — окно; данные AFO — отказ всегда. Отказ
   записывается в `approvals` (кто решил — правила). Файлы: `hub/chat.py`, `hub/approvals.py`, `hub/mcp_server.py`,
   `hub/context.py` (слова модели о её правах).
+  ✓ Сделано: `approvals.trusted_refuses` — None (делается молча), слова отказа или '' (спросить): данные AFO —
+  `TRUSTED_NEVER` всегда; разрушительное (`destructive`, у чужого MCP — класс `destructive`) — `TRUSTED_NOT_YET`, а
+  сразу следом — вопрос. `ChatService.trusted_verdict` помнит чаты с последним отказом (`self.refused`; обычная
+  команда или показанное окно счёт снимают, правка — нет), пишет отказ в очередь (`ApprovalQueue.refused`: `denied`,
+  `decided_by = 'rules'`, слова — в `comment`; событие `approval.decided` без хранения). На полигоне и в «Полном»
+  отказ говорит сам вопрос (`_decision`), как прежде. Им же идут команды (`_run_command`), чужие MCP (`_mcp_tool`) и
+  Claude Code (`approval_prompt`). Слова прав в контексте модели (`RIGHTS_NOTES["trusted"]`) — по новым правилам.
+  Тест — `test_a_trusted_chat_is_refused_what_cannot_be_undone_and_asked_only_when_it_insists`
+  (`tests/test_together.py`): `git push` — отказ и запись правил, обычная команда идёт; два разрушительных подряд —
+  окно на втором; данные AFO дважды подряд — два отказа, окна нет. На старом коде — окно на первом `git push`.
 - Шаг 3. «Всегда в проекте»: для правки — все правки файлов проекта, для команды — все команды проекта (кроме тех, что
   спрашиваются каждый раз); кнопка называет, что разрешается. Прежние правила (точная команда, имя инструмента)
   действуют. Файлы: `hub/approvals.py`, `app/ui/approvals.py`, `app/ui/projects.py`.

@@ -1905,3 +1905,34 @@ def test_a_trusted_chat_that_read_the_web_goes_on_without_cards(hub, repo, site)
     assert written["error"] is False and (repo / "src" / "app.py").read_text(encoding="utf-8").startswith("print('пр")
     assert ran["error"] is False and "after-the-page" in ran["output"]
     assert cards_of(hub, conv) == []  # nothing was asked
+
+
+def test_a_trusted_chat_is_refused_what_cannot_be_undone_and_asked_only_when_it_insists(hub, repo):  # noqa: F811
+    """The user's word 2026-11-18, «как auto»: what deletes or cannot be undone is not asked on every step - the
+    model reads a refusal and looks for another way; refused twice in a row, the person is asked. A command into the
+    hub's own data is refused every time, never asked."""
+    push, reset = tc.run("git push origin main"), tc.run("git reset --hard HEAD~1")
+    _pid, conv, provider = ch.setup_chat(hub, repo, [[push], [tc.run("Write-Output another-way")]], mode="trusted")
+    ch.say(hub, conv)
+    refused, ran = answered(hub, conv)
+    assert refused["error"] is True and refused["output"].startswith("not done: «Доверенный» does not do this unasked")
+    assert "cannot be undone" in refused["output"] and "once more" in refused["output"]
+    assert ran["error"] is False and "another-way" in ran["output"]
+    assert cards_of(hub, conv) == [{"tool": "run_command", "status": "denied", "decided_by": "rules"}]
+
+    provider.steps += [[push], [reset]]  # it found no other way: the second refusal in a row is the person's to say
+    ch.say(hub, conv)
+    asked = wait(lambda: hub.get("/v1/approvals").json()["approvals"])[0]
+    assert asked["destructive"] is True and asked["input"]["command"] == "git reset --hard HEAD~1"
+    hub.post(f"/v1/approvals/{asked['id']}", json={"allow": False, "comment": "не надо"})
+    results = answered(hub, conv)
+    assert results[-2]["output"].startswith("not done: «Доверенный» does not do this unasked")
+    assert results[-1]["output"] == "not done: the user said no - не надо"
+
+    provider.steps += [[tc.run("Get-Content app.token")], [tc.run("type hub-claude-code.token")]]
+    ch.say(hub, conv)
+    first, second = answered(hub, conv)[-2:]  # twice in a row - and still no card
+    for said in (first, second):
+        assert said["error"] is True and said["output"].startswith("not done: «Доверенный» never does this")
+        assert "own data" in said["output"]
+    assert [c["decided_by"] for c in cards_of(hub, conv)] == ["rules", "rules", "app", "rules", "rules"]

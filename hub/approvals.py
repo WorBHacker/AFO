@@ -137,6 +137,14 @@ FULL_NEVER = ("not done: «Полный» asks nothing, and this {why} - the hub
               "Say so in your report: the user does it, or gives the task in another mode.")  # fmt: skip  # i18n: keep
 
 
+RULES_BY = "rules"  # who refused what a trusted chat does not do unasked (2026-11-18): the rules, nobody was asked
+TRUSTED_NEVER = ("not done: «Доверенный» never does this - it reaches the hub's own data (its keys, its database). "
+                 "Nobody is asked about it: do the task without it, or tell the user why you needed it.")  # fmt: skip
+TRUSTED_NOT_YET = ("not done: «Доверенный» does not do this unasked - it deletes or cannot be undone, or runs what "
+                   "its line does not name. Do the task another way. If there is no other way, call it once more: "
+                   "the user will be asked then.")  # fmt: skip
+
+
 class ApprovalError(Exception):
     """The message is fit to show."""
 
@@ -242,6 +250,20 @@ def trusted_skips(tool: str, data: dict[str, Any], root: Path | None = None) -> 
     2026-10-28 - all but a destructive action, which is asked every time and allowed by its button only (D38), and a
     command that reaches into the hub's own data (D46)."""
     return not destructive(tool, data) and not hub_data(tool, data, root)
+
+
+def trusted_refuses(tool: str, data: dict[str, Any], root: Path | None = None, *, wipes: bool | None = None,
+                    again: bool = False) -> str | None:  # fmt: skip
+    """What a trusted chat does instead of asking on every step (the user's word 2026-11-18, «как auto»): what
+    reaches the hub's own data is refused, every time; what deletes or cannot be undone (`wipes` - said by the
+    caller for a tool that is not a command: an outside MCP server's destructive one) is refused once, and asked
+    when the model calls for it `again` right after. The words the model reads; '' - ask the user; None - done
+    unasked."""
+    if hub_data(tool, data, root):
+        return TRUSTED_NEVER
+    if not (destructive(tool, data) if wipes is None else wipes):
+        return None
+    return "" if again else TRUSTED_NOT_YET
 
 
 def beyond_full(tool: str, data: dict[str, Any], root: Path | None = None, *, unsaved: bool = False) -> str | None:
@@ -592,6 +614,25 @@ class ApprovalQueue:
             raise
         finally:
             self._waiting.pop(approval_id, None)
+
+    async def refused(self, tool: str, data: dict[str, Any], why: str, *, conversation_id: str | None = None,
+                      project_id: str | None = None, client_id: str | None = None) -> dict:  # fmt: skip
+        """What a trusted chat's rules refused (trusted_refuses): nobody was asked, and the row stays with the
+        others as the log of it - denied by the rules, `why` as the model read it."""
+        approval_id = uuid.uuid4().hex[:12]
+
+        def write(conn: sqlite3.Connection) -> sqlite3.Row:
+            conn.execute(
+                "INSERT INTO approvals (id, conversation_id, project_id, client_id, tool, input, status, comment,"
+                " decided_at, decided_by) VALUES (?, ?, ?, ?, ?, ?, 'denied', ?, ?, ?)",
+                (approval_id, conversation_id, project_id, client_id, tool, json.dumps(data, ensure_ascii=False), why,
+                 utc_now(), RULES_BY),
+            )  # fmt: skip
+            return conn.execute(f"{SELECT} WHERE a.id = ?", (approval_id,)).fetchone()
+
+        row = _row(await self._db.acall(write))
+        await self._bus.publish("approval.decided", {"approval": row}, project_id=project_id, persist=False)
+        return row
 
     async def decide(self, approval_id: str, *, allow: bool, scope: str = "once", comment: str = "", by: str,
                      hunks: list[int] | None = None) -> dict:  # fmt: skip

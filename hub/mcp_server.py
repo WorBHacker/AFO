@@ -27,7 +27,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from common import __version__
 
 from . import cards, context, links, notes, projects, store
-from .approvals import trusted_skips
 from .auth import Client, bearer_token, find_client
 from .claude_code import CONVERSATION_HEADER, HUB_CLIENT
 from .projects import Project, ProjectError
@@ -310,10 +309,16 @@ def build(app: Any) -> tuple[MCPServer, ASGIApp]:
             mode = "ask"  # a local-only project in the chat: its code could leave in the address or query (D46)
         root = turn.root if turn else None
         unsaved = app.state.approvals.unsaved.holds(tool_name, input, root)
-        # a trusted chat: all but destruction, the hub's data, and a file the window's editor holds unsaved (D47) -
-        # after reading the web too (the user's word 2026-11-18)
-        if mode == "trusted" and not unsaved and trusted_skips(tool_name, input, root):
-            return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
+        # a trusted chat: all but a file the window's editor holds unsaved (D47) goes by the rules, after reading the
+        # web too (the user's word 2026-11-18) - done unasked, refused (destruction once, the hub's data always), or
+        # asked when it calls for destruction again
+        if mode == "trusted" and not unsaved and turn is not None:
+            said = await app.state.chat.trusted_verdict(turn.conversation_id, tool_name, input, root,
+                                                        turn.project.id if turn.project else None)  # fmt: skip
+            if said is None:
+                return json.dumps({"behavior": "allow", "updatedInput": input}, ensure_ascii=False)
+            if said:
+                return json.dumps({"behavior": "deny", "message": said}, ensure_ascii=False)
         decision = await app.state.approvals.ask(
             tool_name,
             input,
