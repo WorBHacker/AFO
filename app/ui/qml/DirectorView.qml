@@ -274,6 +274,18 @@ Item {
                     text: qsTr("Сценарий пишет модель роли «Режиссёр» («Модели» → «Роли»); ей уходят идея и фото товара. Снимает модель видео — сцена за сценой.")
                     color: Theme.p.faint
                 }
+                OnOff {
+                    id: checks
+                    objectName: "filmChecks"
+                    text: qsTr("Проверять сцены")
+                    enabled: !Films.busy
+                    onToggled: Films.setChecks(checked)
+                    Binding { target: checks; property: "checked"; value: Films.checks }  // a click does not cut it
+                }
+                Note {
+                    text: qsTr("Режиссёр смотрит три кадра каждой снятой сцены и фото товара. Брак — товар не тот, нет движения, искажения, ушёл цвет — переснимается с исправленным описанием, не больше двух раз. Облачной модели кадры уходят в облако.")
+                    color: Theme.p.faint
+                }
                 Label { text: qsTr("Стыки сцен"); visible: Films.hasScenes }
                 Segmented {
                     objectName: "filmJoint"

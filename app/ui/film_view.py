@@ -1,6 +1,7 @@
 """«Режиссёр» in the Studio (stage 50.9): a film of scenes. Left - the product's photo, the idea, the length, the shape,
 «Собрать сценарий»; the centre - the scenes' cards (the clip's first frame, what happens, «Изменить», «Переснять»),
-the player - a scene's clip or the joined film -, «Снять всё», «Собрать ролик», and how long is left.
+the player - a scene's clip or the joined film -, «Снять всё», «Собрать ролик», and how long is left. (51.4) «Проверять
+сцены»: the director's model looks at each scene filmed - a card says what it said, and why a scene is filmed anew.
 
 The hub does it all (hub/director.py): this asks and shows. A film's changes come with `film.changed`. A scene's clip
 is a video of the Studio's: its step, its time and its MP4 for the player are the Studio view's
@@ -71,6 +72,7 @@ class FilmView(QObject):
         self._photo: dict[str, str] = {}  # a photo chosen, not sent yet: {png: base64, shown: url}
         self._no_photo = False  # the film's photo taken away, not sent yet
         self._joint = "cut"
+        self._checks = True  # «Проверять сцены» of a film not begun yet; one begun has its own
         self._shown = 0  # the scene in the player; 0 - the joined film
         self._run: set[int] = set()  # the scenes of the shooting going on: «ещё ≈» counts them
         self._asking = False  # a request of this view's is on its way
@@ -200,6 +202,11 @@ class FilmView(QObject):
     def joint(self) -> str:
         return self._joint
 
+    @Property(bool, notify=changed)
+    def checks(self) -> bool:
+        """«Проверять сцены» (51.4): the director's model looks at each scene filmed; one not good is filmed anew."""
+        return bool(self._film.get("checks", self._checks)) if self.hasFilm else self._checks
+
     # ---- the film's words ----
 
     def _model(self) -> dict[str, Any] | None:
@@ -237,10 +244,14 @@ class FilmView(QObject):
         if status == "joining":
             return tr("склеиваю ролик…")
         if status == "filming":
+            if film.get("checking"):
+                return tr("режиссёр смотрит сцену {n} из {all}…", n=film["checking"], all=len(scenes))
             now = next((s for s in scenes if s["status"] == "filming"), None)
             if now is None:
                 return tr("снимаю…")
             text = tr("снимаю сцену {n} из {all}", n=now["n"], all=len(scenes))
+            if now.get("tries"):
+                text = tr("переснимаю сцену {n} из {all}", n=now["n"], all=len(scenes))
             step, steps = self.studio.step_of(now.get("job_id") or "")
             clock = self.studio.clock_of(now.get("job_id") or "")
             if steps:
@@ -257,7 +268,9 @@ class FilmView(QObject):
         if done < len(scenes):
             return tr("снято сцен: {done} из {all}", done=done, all=len(scenes))
         if self._joined() is None:
-            return tr("все сцены сняты — соберите ролик")
+            bad = ", ".join(str(s["n"]) for s in scenes if s.get("verdict") == "reject")
+            return tr("все сцены сняты; проверку не прошли: {scenes} — посмотрите их", scenes=bad) if bad else tr(
+                "все сцены сняты — соберите ролик")  # fmt: skip
         seconds = sum(s["frames"] - 1 for s in scenes) / self._fps() - film.get("fade", 0) * (len(scenes) - 1)
         return tr("ролик готов: {length}", length=length_text(seconds))
 
@@ -287,10 +300,21 @@ class FilmView(QObject):
     def _card(self, scene: dict[str, Any], fps: int) -> dict[str, Any]:
         status, clip = scene["status"], self._clip(scene)
         seconds = (scene["frames"] - 1) / fps
-        if status == "done":
+        verdict, reason, tries = scene.get("verdict", ""), scene.get("reason", ""), scene.get("tries", 0)
+        rejected = status == "done" and verdict == "reject"
+        if self._film.get("checking") == scene["n"]:
+            words = tr("режиссёр смотрит…")
+        elif rejected:  # the take that stays is not good: the look's retakes are used up
+            words = tr("не прошла проверку: {reason}", reason=reason)
+        elif status == "done":
             took = scene.get("took")
             words = tr("снята за {time}", time=seconds_text(took) if took < 60 else left_text(took)) if took else tr(
                 "снята")  # fmt: skip
+            if verdict == "ok":
+                words = tr("{words} · проверена, пересъёмок: {tries}", words=words, tries=tries) if tries else tr(
+                    "{words} · проверена", words=words)  # fmt: skip
+        elif status == "filming" and tries and reason:
+            words = tr("переснимается: {reason}", reason=reason)
         elif status == "failed":
             words = tr("не вышла: {error}", error=scene.get("error") or tr("видео не снято"))
         else:
@@ -301,7 +325,7 @@ class FilmView(QObject):
                 "title": tr("{n} · {mode} · {length}", n=scene["n"], mode=tr(SCENE_MODES[scene["mode"]]),
                             length=length_text(seconds)),
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
-                "failed": status == "failed", "filmed": clip is not None,
+                "failed": status == "failed" or rejected, "filmed": clip is not None,
                 "thumb": QUrl.fromLocalFile(str(clip)).toString() if clip is not None else "",
                 "shootText": tr("Переснять") if clip is not None else tr("Снять")}  # fmt: skip
 
@@ -391,6 +415,7 @@ class FilmView(QObject):
         self._length = str(film.get("seconds", 15))
         self._shape = film.get("shape", "wide")
         self._joint = "fade" if film.get("fade") else "cut"
+        self._checks = bool(film.get("checks", True))
         if not film.get("file"):  # not joined yet: its latest scene filmed plays
             filmed = [s["n"] for s in self._scenes() if s["status"] == "done" and self._clip(s) is not None]
             self._shown = filmed[-1] if filmed else 0
@@ -466,6 +491,20 @@ class FilmView(QObject):
         self._joint = joint if joint in {k for k, _n in JOINTS} else "cut"
         self.changed.emit()
 
+    @Slot(bool)
+    def setChecks(self, on: bool) -> None:
+        """«Проверять сцены»: a film begun is told at once - the next shooting goes by it; one not begun keeps it
+        for «Собрать сценарий»."""
+        if on == self.checks:
+            return
+        self._checks = on
+        if self.hasFilm:
+            film_id = self._film["id"]
+            self._request(lambda: self.app.client.update_film(film_id, {"checks": on}),
+                          N_("Проверку сцен не переключить: {error}"))  # fmt: skip
+        else:
+            self.changed.emit()
+
     @Slot(str)
     def choosePhoto(self, url: str) -> None:
         """«Фото товара…»: any picture Qt reads, sent as PNG with «Собрать сценарий»."""
@@ -503,7 +542,8 @@ class FilmView(QObject):
 
     def _write(self) -> None:
         client, film = self.app.client, self._film
-        fields: dict[str, Any] = {"idea": self._idea.strip(), "seconds": int(self._length), "shape": self._shape}
+        fields: dict[str, Any] = {"idea": self._idea.strip(), "seconds": int(self._length), "shape": self._shape,
+                                  "checks": self.checks}  # fmt: skip
         if self._photo:
             fields["photo_png"] = self._photo["png"]
         elif self._no_photo:

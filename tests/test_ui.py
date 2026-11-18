@@ -723,13 +723,14 @@ class FakeClient:
         film = {"id": film_id, "idea": spec["idea"], "seconds": spec["seconds"], "shape": spec.get("shape", "wide"),
                 "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "", "director": "",
                 "model_id": "", "status": "draft", "error": "", "file": "", "fade": 0.0, "tokens": 0,
-                "cost_usd": 0.0, "scenes": []}  # fmt: skip
+                "cost_usd": 0.0, "checks": spec.get("checks", True), "checking": 0, "scenes": []}  # fmt: skip
         self.films_list.insert(0, film)
         return {"film": film}
 
     def update_film(self, film_id, fields):
         self.film_calls.append(("update", film_id, fields))
-        return self._film(film_id, **{k: v for k, v in fields.items() if k in ("idea", "seconds", "shape", "fade")})
+        return self._film(film_id, **{k: v for k, v in fields.items()
+                                      if k in ("idea", "seconds", "shape", "fade", "checks")})  # fmt: skip
 
     def delete_film(self, film_id):
         self.film_calls.append(("delete", film_id))
@@ -10843,6 +10844,105 @@ def test_the_director_in_the_studio_makes_a_film_by_clicks(qapp, tmp_path):
         click(window, item_saying(item_named(studio, "studioKind"), "Вручную"))
         assert films.kind == "manual" and item_named(studio, "visualDraw").property("visible")
         assert not director.property("visible")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_directors_look_at_the_scenes_is_switched_by_a_click_and_said_in_the_cards(qapp, tmp_path):
+    """51.4: «Проверять сцены» - the film's own switch, told to the hub at the click (a film not begun keeps it for
+    «Собрать сценарий»), not to be touched while the film is at work. While the director's model looks at a scene
+    the status and the scene's card say so; a scene filmed anew says why; a scene that passed says so, with how many
+    times it was filmed anew; one whose last take is not good says why, in the error's colour, and the status names
+    such scenes. Real QML, mouse clicks, no screen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX-2.5", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text", "picture", "frames"],
+                                 "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.films_list = [{"id": "f1", "idea": "Ролик о лампе", "seconds": 15, "shape": "wide", "photo": "",
+                              "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
+                              "tokens": 0, "cost_usd": 0.0, "checks": True, "checking": 0,
+                              "scenes": film_scenes("new", "new", "new", "new")}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        films = app.film_view
+        app.visual_view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and films.available)
+        window = quick.window
+        studio = window.findChild(QObject, "studioView")
+        window.grabWindow()
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
+        wait_until(lambda: not app.bg.busy and films.hasFilm)
+        director = item_named(studio, "directorView")
+        switch = item_named(director, "filmChecks")
+        window.grabWindow()
+        assert films.checks and switch.property("checked") and switch.property("enabled")
+        click(window, switch)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"checks": False}))
+        assert not films.checks and not switch.property("checked")
+        click(window, switch)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"checks": True}))
+        assert films.checks and switch.property("checked")
+
+        def hub_says(**fields):
+            client.films_list[0] = {**client.films_list[0], **fields}
+            app.on_event({"type": "film.changed", "payload": {"film": client.films_list[0]}})
+            window.grabWindow()
+
+        media = app.paths.media / "2026-11"
+        media.mkdir(parents=True, exist_ok=True)
+        for job in ("j1", "j2", "j3", "j4"):
+            (media / f"{job}.webp").write_bytes(animated_clip(COLOURS))
+            (media / f"{job}.mp4").write_bytes(mjpeg_mp4(COLOURS))
+        took = {f"s{n}": {"job_id": f"j{n}", "clip": f"2026-11/j{n}.webp", "took": 80.0} for n in (1, 2, 3, 4)}
+        hub_says(status="filming", checking=1, scenes=film_scenes("done", "new", "new", "new", s1=took["s1"]))
+        assert films.statusText == "режиссёр смотрит сцену 1 из 4…" and not switch.property("enabled")
+        assert films.scenes[0]["statusText"] == "режиссёр смотрит…"
+        again = {"job_id": "j1", "tries": 1, "verdict": "reject", "reason": "Лампа стоит, ничего не движется"}
+        hub_says(checking=0, scenes=film_scenes("filming", "new", "new", "new", s1=again))
+        assert films.statusText == "переснимаю сцену 1 из 4"
+        assert films.scenes[0]["statusText"] == "переснимается: Лампа стоит, ничего не движется"
+        assert not films.scenes[0]["failed"]
+
+        said = {"s1": {**took["s1"], "tries": 1, "verdict": "ok", "reason": ""},
+                "s2": {**took["s2"], "tries": 2, "verdict": "reject", "reason": "товар другого цвета"},
+                "s3": {**took["s3"], "tries": 0, "verdict": "ok", "reason": ""},
+                "s4": {**took["s4"], "tries": 0, "verdict": "", "reason": ""}}  # fmt: skip
+        hub_says(status="ready", scenes=film_scenes("done", "done", "done", "done", **said))
+        assert [(c["statusText"], c["failed"]) for c in films.scenes] == [
+            ("снята за 1 мин · проверена, пересъёмок: 1", False), ("не прошла проверку: товар другого цвета", True),
+            ("снята за 1 мин · проверена", False), ("снята за 1 мин", False)]  # fmt: skip
+        assert films.statusText == "все сцены сняты; проверку не прошли: 2 — посмотрите их"
+        assert item_saying(item_named(director, "filmCard_2"), "не прошла проверку: товар другого цвета") is not None
+        assert switch.property("enabled") and item_named(director, "filmJoin").property("enabled")
+
+        films.pick("")  # a new film: the switch is its own, kept until «Собрать сценарий»
+        window.grabWindow()
+        assert films.checks and switch.property("checked")
+        calls = len(client.film_calls)
+        click(window, switch)
+        wait_until(lambda: not films.checks)
+        assert len(client.film_calls) == calls and not switch.property("checked")  # no film to tell yet
+        item_named(director, "filmIdea").setProperty("text", "Ролик о чайнике")
+        click(window, item_named(director, "filmWrite"))
+        wait_until(lambda: not app.bg.busy and [c[0] for c in client.film_calls[calls:]] == ["new", "write"])
+        assert client.film_calls[calls][1]["checks"] is False and not films.checks
+        hub_says(status="draft")  # the director did not answer: the new film is at rest
+        films.pick("f1")  # the film before: its own again
+        window.grabWindow()
+        assert films.checks and switch.property("checked")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

@@ -236,7 +236,8 @@ class HubClient:
         return self._call("POST", "/v1/films", spec)
 
     def update_film(self, film_id: str, fields: dict) -> dict:
-        """Only what is named changes: idea, seconds, shape, director, model, fade, the photo (`photo: ""` - none)."""
+        """Only what is named changes: idea, seconds, shape, director, model, fade, checks (51.1: the look at each
+        scene filmed), the photo (`photo: ""` - none)."""
         return self._call("PATCH", f"/v1/films/{film_id}", fields)
 
     def delete_film(self, film_id: str) -> dict:
