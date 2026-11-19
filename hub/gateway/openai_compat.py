@@ -211,7 +211,7 @@ class OpenAICompatProvider:
             self._levels = self._with_aliases(await self.efforts())
         body = self.request_body(model_ref, messages, effort, tools, params)
         calls: dict[int, dict[str, str]] = {}  # tool calls being put together, by index
-        said: list[str] = []  # the answer's text as it came: a local model's call written in it (61.6)
+        written: list[str] = []  # the answer's text as it came: a local model's call written in it (61.6)
         thought: list[str] = []  # the reasoning as it came, for a provider that wants it back (DeepSeek)
         details: list[dict[str, Any]] = []  # OpenRouter's reasoning_details, to be sent back unchanged
         started = time.monotonic()
@@ -291,7 +291,7 @@ class OpenAICompatProvider:
                         thought.append(think)
                         yield StreamEvent("reasoning", think)
                     if text:
-                        said.append(text)
+                        written.append(text)
                         yield StreamEvent("content", text)
         except httpx.ReadTimeout as exc:  # the socket went silent: a hung server, a half-open connection
             raise ProviderError(f"{self.name}: nothing came for {self.READ_TIMEOUT_S:g} s") from exc
@@ -302,7 +302,7 @@ class OpenAICompatProvider:
             yield StreamEvent("reasoning", held)
         made = [_call(index, call) for index, call in sorted(calls.items()) if call["name"]]
         if not made and tools and self.locality == "local" and not cancel.is_set():  # its call written as text (61.6)
-            made = text_calls.found("".join(said), {t["name"] for t in tools})
+            made = text_calls.found("".join(written), {t["name"] for t in tools})
             if made:
                 log.info("%s: %d tool call(s) read from the answer's text", model_ref, len(made))
         yield StreamEvent(
