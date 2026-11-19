@@ -58,6 +58,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from common.i18n import N_, tr
+from common.logging_setup import log_task_exception
 
 from . import approvals, checkpoints, commands, guard, judge, sandbox, store
 from .autonomous import NOTE
@@ -232,6 +233,11 @@ def worker(goal: dict[str, Any], hard: str) -> tuple[str, str]:
     if goal.get("strong_model_id") and hard:
         return goal["strong_model_id"], hard
     return goal["model_id"], ""
+
+
+def on_card(model: dict[str, Any] | None) -> bool:
+    """Whether the model works on this computer's card (61.8): a local one, not Claude Code (Anthropic's model)."""
+    return model is not None and model["locality"] == "local" and model["provider"] != CLAUDE_CODE
 
 
 def check_milestones(raw: Any, done: int = 0) -> list[str]:
@@ -770,6 +776,8 @@ class Goals:
         self._locks: dict[str, asyncio.Lock] = {}  # one check at a time per chat
         self._counted: set[str] = set()  # chats whose running turn is the goal's: it counts even if paused meanwhile
         self._began: dict[str, dict[str, str]] = {}  # a goal's turn running: its projects' trees at its start (21.1)
+        self._laned: set[str] = set()  # chats whose goal's turn holds the card's queue (61.8) till the turn ends
+        self._later: set[asyncio.Task] = set()  # goals' turns waiting in that queue
 
     async def start(self) -> list[str]:
         """Goals the last hub left at work go on (D16): each active one gets its next turn."""
@@ -969,6 +977,7 @@ class Goals:
 
     async def turn_ended(self, conversation_id: str, outcome: Outcome) -> None:
         """A turn of the chat ended (hub/chat.py): what the goal used, the check, and the way on."""
+        self._free_lane(conversation_id)  # its turn's place in the card's queue: the next one's (61.8)
         lock = self._locks.setdefault(conversation_id, asyncio.Lock())
         async with lock:
             goal = await self._db.acall(lambda conn: goal_of(conn, conversation_id))
@@ -1308,10 +1317,11 @@ class Goals:
                 judge_id = None
             if judge_id:
                 judge.check_model(conn, judge_id, projects)
-            return judge_id, judge.last_words(conn, conversation_id)
+            local = bool(judge_id) and on_card(store.get_model(conn, judge_id))
+            return judge_id, judge.last_words(conn, conversation_id), local
 
         try:
-            judge_id, words = await self._db.acall(choose)
+            judge_id, words, local = await self._db.acall(choose)
         except judge.JudgeError as exc:
             said = tr("проверяющая модель не может проверить: {error}", error=exc)
             return {**found, "verdict": None, "blocked": said}
@@ -1324,8 +1334,9 @@ class Goals:
         await self._bus.publish("goal.judging", {"conversation_id": conversation_id, "goal_id": goal["id"],
                                                  "model_id": judge_id}, persist=False)  # fmt: skip
         try:
-            said = await self._judge.ask(judge_id, judge.goal_prompt(goal, results, evidence, words),
-                                         conversation_id=conversation_id, meta={"goal_id": goal["id"]})  # fmt: skip
+            async with self._chat.card.unattended(local):  # a local judge after the work before it (61.8)
+                said = await self._judge.ask(judge_id, judge.goal_prompt(goal, results, evidence, words),
+                                             conversation_id=conversation_id, meta={"goal_id": goal["id"]})  # fmt: skip
         except judge.JudgeError as exc:
             return {**found, "verdict": None, "blocked": tr("проверяющая модель не ответила: {error}", error=exc)}
         await self._db.acall(lambda conn: conn.execute(
@@ -1475,17 +1486,58 @@ class Goals:
 
     async def _turn(self, goal: dict[str, Any], note: str, *, hard: str = "") -> None:
         """Starts the goal's next turn - the strong model's when it is a `hard` one and the contract names one
-        (11.7); one that cannot start stops the goal for the human (why - in its detail)."""
+        (11.7); one that cannot start stops the goal for the human (why - in its detail). A turn on a local model
+        takes the card's queue of work without the person (61.8): free - at once; else it waits there apart, and
+        whoever asked goes on."""
         conversation_id = goal["conversation_id"]
         if conversation_id in self._chat.busy:  # the user is chatting: their turn hands over when it ends
             return
+        model_id = worker(goal, hard)[0]
+        if await self._db.acall(lambda conn: on_card(store.get_model(conn, model_id))):
+            lane = self._chat.card.lane
+            if lane.locked():
+                log.info("goal %s waits for the card: other work without the person is on it", goal["id"])
+                waiting = asyncio.create_task(self._turn_later(goal["id"], note, hard))
+                self._later.add(waiting)
+                waiting.add_done_callback(self._later.discard)
+                waiting.add_done_callback(log_task_exception)
+                return
+            await lane.acquire()  # free: taken at once - no await in between
+            self._laned.add(conversation_id)
+        await self._begin_turn(goal, note, hard)
+
+    async def _turn_later(self, goal_id: str, note: str, hard: str) -> None:
+        """A goal's turn whose place in the card's queue has come (61.8): it starts if the goal still works and the
+        user is not chatting there now."""
+        lane = self._chat.card.lane
+        await lane.acquire()
+        try:
+            goal = await self._db.acall(lambda conn: get_goal(conn, goal_id))
+        except BaseException:
+            lane.release()
+            raise
+        if goal is None or goal["status"] != "active" or goal["conversation_id"] in self._chat.busy:
+            lane.release()
+            return
+        self._laned.add(goal["conversation_id"])
+        await self._begin_turn(goal, note, hard)
+
+    def _free_lane(self, conversation_id: str) -> None:
+        if conversation_id in self._laned:
+            self._laned.discard(conversation_id)
+            self._chat.card.lane.release()
+
+    async def _begin_turn(self, goal: dict[str, Any], note: str, hard: str) -> None:
+        """The turn itself (`_turn`): it ends in `turn_ended`, which lets the card's queue go on; one that does not
+        start lets it go here."""
+        conversation_id = goal["conversation_id"]
         model_id, why = worker(goal, hard)
         if why == "plan":
             end = note.rfind("</goal_loop>")
             note = f"{note[:end]}{PLAN_LINE}\n{note[end:]}"
         mark = {"model_id": model_id, "why": why} if goal.get("strong_model_id") else None  # seen in the feed (D11)
-        self._began[conversation_id] = await self._trees(conversation_id)  # what the turn changes: from here (21.1)
         try:
+            self._began[conversation_id] = await self._trees(conversation_id)  # what the turn changes: from here
             self._counted.add(conversation_id)
             # what the chat asks at each tool call of this turn (11.4): the constraints, whether it investigates
             self._chat.guards[conversation_id] = guard.TurnGuard(guard.rules(goal["constraints"]),
@@ -1493,6 +1545,7 @@ class Goals:
             await self._chat.go_on(conversation_id, model_id, note, effort=goal["effort"],
                                    limits=Limits(max_steps=TURN_STEPS), mark=mark)  # fmt: skip
         except GatewayError as exc:
+            self._free_lane(conversation_id)
             self._counted.discard(conversation_id)
             self._chat.guards.pop(conversation_id, None)
             self._began.pop(conversation_id, None)
@@ -1501,3 +1554,6 @@ class Goals:
             current = await self._db.acall(lambda conn: get_goal(conn, goal["id"]))
             if current["status"] == "active":
                 await self._status(current, "blocked", tr("следующий ход не начался: {error}", error=exc))
+        except BaseException:
+            self._free_lane(conversation_id)
+            raise

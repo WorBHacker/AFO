@@ -37,14 +37,19 @@ action of rank 1 (`take_back` - a chat's message, the Studio, their buttons) nob
 person's work without them neither: at the gate it waits, with words. A hub restarted forgets it. Removing a model
 stops the holder working with it (`let_go`), the card not given. «Продолжить» (48.9д, `go_on`) gives it back: what
 waited goes on at once, in the order of seniority - the Studio's queue, the person's work without them, then background
-work, which does not wait QUIET_S then: the card still is enough."""
+work, which does not wait QUIET_S then: the card still is enough.
+
+The person's work without them on local models goes through one queue (61.8, `lane`): an agent's run (a task of a
+batch too), a goal's turn, the judge's question - one at a time, in the order they came; its model stays on the card
+for the whole of it instead of being swapped for another's at each request. The person's own chat is never in it
+(48.9б1): it goes at once."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextvars import ContextVar
 
 from common.i18n import N_, tr
@@ -120,6 +125,20 @@ class GpuCard:
         # (48.9б3: one Windows or 43.6 knows, or drawing now - not a launcher by its folder's name)
         self.load: Callable[[], float | None] = lambda: None
         self.game: Callable[[], bool] = lambda: False
+        # the person's work without them on local models, one at a time (61.8): a run, a goal's turn, the judge
+        self.lane = asyncio.Semaphore(1)
+
+    @contextlib.asynccontextmanager
+    async def unattended(self, local: bool = True) -> AsyncIterator[None]:
+        """Work without the person in this scope - on a local model (`local`), after the one before it in `lane`."""
+        if not local:
+            yield
+            return
+        await self.lane.acquire()
+        try:
+            yield
+        finally:
+            self.lane.release()
 
     def still(self) -> bool:
         """Nothing on the card now (48.9б2): no local request, nobody holds it, its load under BUSY_PCT, no game on

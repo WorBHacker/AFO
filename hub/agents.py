@@ -692,13 +692,18 @@ class AgentRunner:
         self._db = db
         self._bus = bus
         self._chat = chat
-        self._gpu = asyncio.Semaphore(1)
         self._held: set[str] = set()  # runs holding the GPU now
         self._waiting: dict[str, asyncio.Task] = {}  # runs not under way yet: queued for the GPU, or getting ready
         self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
         self._resumed: dict[str, asyncio.Event] = {}  # coordinators whose batch goes on after a restart: their «Стоп»
         self._resuming: set[asyncio.Task] = set()
         self.goals = None  # set by the server: the goals' checks check a batch's tasks too (16.3)
+
+    @property
+    def _gpu(self) -> asyncio.Semaphore:
+        """The card's one queue of work without the person (61.8): a local run waits there behind a goal's turn or
+        the judge as behind another run."""
+        return self._chat.card.lane
 
     async def start(self) -> list[str]:
         """Runs the hub was running (or had queued) when it stopped go on now. A batch whose coordinator still waits

@@ -7,6 +7,7 @@ import asyncio
 import json
 import subprocess
 import threading
+import time
 
 from hub import goals
 from hub.auth import create_client
@@ -14,6 +15,7 @@ from hub.claude_code import ClaudeCodeProvider
 from hub.gateway import ProviderError
 from hub.gateway.base import Model, StreamEvent
 from hub.store import MessageRow
+from tests.test_agents import ByTask, ended, plug, profile, run_of
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
 from tests.test_claude_code import FAKE
@@ -700,3 +702,66 @@ def test_what_a_goal_with_two_models_or_claude_code_refuses(hub, repo):  # noqa:
     assert hub.patch(f"/v1/projects/{pid}", json={"cloud_ok": True}).status_code == 200
     assert hub.put(f"/v1/conversations/{conv}/context", json={"mode": "sandbox"}).status_code == 200
     assert "«Песочница»" in refused({"model_id": "claude-code/default"})
+
+
+# --- the card's one queue of work without the person (stage 61.8) ---
+
+
+class Timed(Scripted):
+    """Scripted that says when each request came."""
+
+    def __init__(self, name, script):
+        super().__init__(name, script)
+        self.at = []
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        self.at.append(time.monotonic())
+        async for event in super().stream_chat(model_ref, messages, effort, cancel, tools):
+            yield event
+
+
+class Ending(ByTask):
+    """ByTask that says when each of its answers ended."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ends = []
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        async for event in super().stream_chat(model_ref, messages, effort, cancel, tools):
+            yield event
+        self.ends.append(time.monotonic())
+
+
+def test_work_without_the_person_takes_the_card_one_at_a_time_and_the_person_goes_first(hub, repo):  # noqa: F811
+    """61.8: an agent's run, a goal's turn and the judge on local models go through one queue - each waits for the
+    one before it; the person's own chat goes at once, beside them."""
+    long = plug(hub, Ending("long", "local", {}, pause=60))
+    short = plug(hub, Ending("short", "local", {}, pause=1.0))
+    talk = use(hub, Scripted("talk", ["Привет."]))
+    referee = use(hub, Timed("judge", [verdict("ACHIEVED")]))
+    worker = use(hub, Gated("agent", [WRITE, "Записал done.txt."]))
+    _pid, conv = chat_with_project(hub, repo, worker)
+    first = profile(hub, name="Долгий", model_id="long/echo")
+    second = profile(hub, name="Короткий", model_id="short/echo")
+    held = hub.post(f"/v1/agents/{first['id']}/runs", json={"task": "Долгая работа"}).json()["id"]
+    wait(lambda: long.active == 1)  # a run without the person is on the card
+    chat = hub.post("/v1/conversations", json={}).json()["id"]
+    sent = hub.post(f"/v1/conversations/{chat}/messages", json={"content": "привет", "model_id": "talk/m"})
+    assert sent.status_code == 202
+    wait(lambda: idle(hub, chat))  # the person's own chat went at once, beside it
+    assert len(talk.prompts) == 1 and long.active == 1
+    set_goal(hub, conv, judge_model_id="judge/m", criteria=[{"command": DONE}, {"rule": "done.txt не пустой"}])
+    time.sleep(1.0)
+    assert worker.prompts == [] and not worker.waiting.is_set()  # the goal's turn waits for the run
+    assert goal(hub, conv)["goal"]["status"] == "active"
+    worker.gate.clear()
+    assert hub.post(f"/v1/runs/{held}/cancel").json() == {"cancelled": True}
+    wait(lambda: worker.waiting.is_set())  # the run let the card go: the goal's turn is on it now
+    queued = hub.post(f"/v1/agents/{second['id']}/runs", json={"task": "Короткая работа"}).json()["id"]
+    time.sleep(0.5)
+    assert run_of(hub, queued)["status"] == "queued"  # behind the goal's turn
+    worker.gate.set()
+    done = settled(hub, conv, "achieved")
+    assert done["checks"][-1]["verdict"] == "ACHIEVED" and ended(hub, queued)["status"] == "done"
+    assert referee.at[0] >= short.ends[0]  # the judge came after the run that had waited before it
