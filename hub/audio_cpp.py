@@ -354,11 +354,12 @@ def music_args(models: Path, backend: str, *, words: str, seconds: float) -> lis
             f"{length:.1f}", "--seed", str(SEED)]  # fmt: skip
 
 
-def effect_args(models: Path, backend: str, *, words: str, seconds: float) -> list[str]:
-    """What is heard, by its description in English - a WAV of 48 kHz, mono, 30 s at most."""
+def effect_args(models: Path, backend: str, *, words: str, seconds: float, take: int = 0) -> list[str]:
+    """What is heard, by its description in English - a WAV of 48 kHz, mono, 30 s at most. `take` (53.13) - which
+    making of it this is: another seed, another sound."""
     length = min(EFFECT_S[1], max(EFFECT_S[0], seconds))
     return ["--task", "gen", *_model(models, "effects", backend), "--text", words, "--request-option",
-            f"duration_sec={length:.1f}", "--request-option", f"seed={SEED}"]  # fmt: skip
+            f"duration_sec={length:.1f}", "--request-option", f"seed={SEED + take}"]  # fmt: skip
 
 
 def listen_args(models: Path, *, audio: Path) -> list[str]:

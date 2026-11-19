@@ -1117,6 +1117,11 @@ class Visual:
                 await self._ffmpeg_does(make)
         return target
 
+    async def ffmpeg_asks[T](self, ask: Callable[[Path], T]) -> T:
+        """What ffmpeg says of a file (`ask`, blocking, given the program) - a measure, nothing made (53.13)."""
+        async with self._ffmpeg:
+            return await self._ffmpeg_does(ask)
+
     async def _ffmpeg_does(self, make: Callable[[Path], Any]) -> Any:
         """ffmpeg's piece of work (`make`, blocking, given the program) - the program fetched the first time; the
         caller holds `_ffmpeg`."""

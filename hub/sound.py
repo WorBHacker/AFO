@@ -288,7 +288,9 @@ class Sound:
         args = lambda b: audio_cpp.music_args(self.models, b, words=words, seconds=seconds)  # noqa: E731
         return await self._make("music", target, cancel, args)
 
-    async def effect(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float) -> Path:
-        """What is heard in a scene, by its description, into `target` (WAV). Inside `working`."""
-        args = lambda b: audio_cpp.effect_args(self.models, b, words=words, seconds=seconds)  # noqa: E731
+    async def effect(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float,
+                     take: int = 0) -> Path:  # fmt: skip
+        """What is heard in a scene, by its description, into `target` (WAV). Inside `working`. `take` (53.13) -
+        which making of it: each is another sound."""
+        args = lambda b: audio_cpp.effect_args(self.models, b, words=words, seconds=seconds, take=take)  # noqa: E731
         return await self._make("effects", target, cancel, args)

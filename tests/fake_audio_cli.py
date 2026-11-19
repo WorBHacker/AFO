@@ -9,12 +9,16 @@ voice that did not hold; $FAKE_AUDIO_LONG - so many go on to the end of their to
 
 The listener (`--task cls`, 53.11) writes no file: it says what is heard in the WAV `--audio` names - by its pitch,
 as the engine does, in a line of JSON: the stand-in's own tones are speech, music and rain (`HEARD`), 440 Hz a dog,
-another one silence."""
+another one silence.
 
-import itertools
+A scene's sound (53.13) is its tone in a broad noise - a rain with its top. $FAKE_AUDIO_WRONG - so many of the
+first makings of a scene's sound come as music, the music's tone; $FAKE_AUDIO_DULL - so many come without the
+noise, the tone alone: a rain as from an old loudspeaker."""
+
 import json
 import math
 import os
+import random
 import struct
 import sys
 import time
@@ -25,14 +29,24 @@ HEARD = {220.0: [("Speech", 0.9), ("Narration, monologue", 0.4)], 440.0: [("Dog"
          660.0: [("Music", 0.8), ("Piano", 0.3)], 1760.0: [("Rain", 0.64), ("Rain on surface", 0.5)]}  # fmt: skip
 
 
-def pitch(path: str) -> float:
-    """The pitch of a WAV's tone: how often its first channel crosses zero."""
+def pitch(path: str) -> float | None:
+    """Which of the stand-in's tones a WAV is - the one that holds most of its first half a second, a noise
+    beside it or not; None - none of them does."""
     with wave.open(path, "rb") as sound:
         rate, channels = sound.getframerate(), sound.getnchannels()
-        raw = sound.readframes(min(sound.getnframes(), 2 * rate))
+        raw = sound.readframes(min(sound.getnframes(), rate // 2))
     samples = struct.unpack(f"<{len(raw) // 2}h", raw)[::channels]
-    crossed = sum((a < 0) != (b < 0) for a, b in itertools.pairwise(samples))
-    return crossed * rate / (2 * max(1, len(samples)))
+    whole = sum(v * v for v in samples) or 1
+
+    def held(tone: float) -> float:  # Goertzel: the share of the sound's energy at this pitch
+        coeff = 2 * math.cos(2 * math.pi * tone / rate)
+        one = two = 0.0
+        for v in samples:
+            one, two = v + coeff * one - two, one
+        return 2 * (one * one + two * two - coeff * one * two) / (len(samples) * whole)
+
+    found = max(HEARD, key=held)
+    return found if held(found) > 0.3 else None
 
 
 def listen(args: list[str]) -> int:
@@ -55,9 +69,7 @@ def listen(args: list[str]) -> int:
     if os.environ.get("FAKE_AUDIO_FAIL") == family:
         print("error: failed to read the audio file")
         return 1
-    now = pitch(audio)
-    near = min(HEARD, key=lambda tone: abs(tone - now))
-    found = HEARD[near] if abs(near - now) < 0.1 * near else [("Silence", 0.3)]
+    found = HEARD.get(pitch(audio), [("Silence", 0.3)])
     scores = [{"index": k, "label": label, "score": score, "logit": 0.0} for k, (label, score) in enumerate(found)]
     print("loading the model")
     print("custom_schema_output=" + json.dumps({"schema": "ced.classification.v1", "data": {"scores": scores}}))
@@ -74,7 +86,7 @@ def main() -> int:
 
     options = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "--request-option")
     family, text, out = value("--family"), value("--text"), value("--out")
-    tone = TONES.get(family, 440.0)
+    tone, noise = TONES.get(family, 440.0), 0
     if family == "qwen3_tts":
         seconds, rate, channels = max(0.3, len(text) / 12.0), 24000, 1
         before = 0
@@ -89,10 +101,17 @@ def main() -> int:
         seconds, rate, channels = float(value("--duration-seconds", "10")), 48000, 2
     else:
         seconds, rate, channels = float(options.get("duration_sec", "10")), 48000, 1
+        before = 0
+        if (log := os.environ.get("FAKE_AUDIO_LOG")) and os.path.isfile(log):
+            with open(log, encoding="utf-8") as f:
+                before = sum(json.loads(line)["family"] == family for line in f)
+        noise = 5000 if before >= int(os.environ.get("FAKE_AUDIO_DULL") or 0) else 0
+        if before < int(os.environ.get("FAKE_AUDIO_WRONG") or 0):
+            tone = TONES["ace_step"]
     if log := os.environ.get("FAKE_AUDIO_LOG"):
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"family": family, "text": text, "model": value("--model"), "seconds": seconds,
-                                "backend": value("--backend"), "seed": value("--seed"),
+                                "backend": value("--backend"), "seed": value("--seed") or options.get("seed", ""),
                                 "voice": os.path.splitext(os.path.basename(value("--voice-ref")))[0],
                                 "alone": options.get("x_vector_only_mode", ""),
                                 "language": value("--language"), "lyrics": value("--lyrics"),
@@ -108,11 +127,13 @@ def main() -> int:
         return 1
     frames = int(seconds * rate)
     step = 2 * math.pi * tone / rate
+    hiss = random.Random(7)
     with wave.open(out, "wb") as sound:
         sound.setnchannels(channels)
         sound.setsampwidth(2)
         sound.setframerate(rate)
-        sound.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(step * n))) * channels for n in range(frames)))
+        sound.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(step * n) + hiss.uniform(-noise, noise)))
+                                   * channels for n in range(frames)))  # fmt: skip
     print("metrics.wall_ms=12.5")
     print(f"metrics.audio_duration_ms={seconds * 1000:.0f}")
     print(f"metrics.sample_rate={rate}")

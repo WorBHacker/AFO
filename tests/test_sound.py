@@ -534,3 +534,130 @@ def test_a_film_gets_its_narrator_music_and_silent_scenes_sounds_when_it_is_join
         assert "one sentence: the genre" in asked and "one sentence: the genre" not in json.dumps(cloud.asked[1])
     finally:
         cloud.close()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_scenes_made_sound_is_heard_and_made_again_until_it_is_right(stand, monkeypatch, tmp_path):
+    """53.13: with the listener installed a scene's made sound is heard before it goes into the film - the listener
+    (a real process) names what sounds, a real ffmpeg measures where its energy lies, the director's model says
+    whether that is what the scene asks for. A sound that is not right is made again by the next seed, three takes
+    at most, the best kept; what was heard is kept with the scene. A sound made before the listener came is heard
+    as the first take; one heard is not heard twice; when the model does not answer the measure alone judges;
+    «Стоп» leaves no takes."""
+    from app.hub_client import HubClient
+    from hub import director, ffmpeg
+    from hub.gateway.openai_compat import OpenAICompatProvider
+    from tests.test_autonomous import use
+    from tests.test_director import _until
+    from tests.test_ffmpeg import _band, _solid, animated_webp
+    from tests.test_judge import SeeingCloud, roles
+    from tests.test_visual import _install
+
+    hub = stand  # noqa: F811
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    model = tmp_path / "film.gguf"
+    model.write_bytes(b"x")
+    _install(hub, "film", SILENT, [{"role": "diffusion-model", "repo": "test/Film-GGUF", "path": model.name,
+                                    "size": 1, "at": str(model)}])  # fmt: skip
+    FakeDrawSwap.filmed = animated_webp([_solid((20, 40, 30 + 3 * k)) for k in range(73)], 64, 64)
+    board = {"scenes": [{"mode": "text", "seconds": 3, "words": "Дождь", "prompt": "rain falls", "sound": "rain"},
+                        {"mode": "text", "seconds": 3, "words": "Крыша", "prompt": "a roof",
+                         "sound": "rain on a roof"}]}  # fmt: skip
+    no = {"fits": False, "heard": "музыка", "why": "просили дождь, а слышна музыка"}
+    yes = {"fits": True, "heard": "шум дождя", "why": ""}
+    cloud = SeeingCloud([json.dumps(a, ensure_ascii=False) for a in (board, no, yes, yes, yes, yes, yes)])
+
+    def effects(since=0):
+        return [(a["text"], a["seed"]) for a in hub.asked()[since:] if a["family"] == "moss_soundeffect"]
+
+    def heard(film, n):
+        return film["scenes"][n - 1]["heard"].get("made")
+
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+        media, card = hub.app.state.visual.media, hub.app.state.card
+        film_id = client.new_film({"idea": "Дождь", "seconds": 6, "checks": False})["film"]["id"]
+
+        def pieces():
+            return {p.name for p in media.glob(f"*/film-{film_id}-fx-*.wav")}
+
+        def joined(before=""):
+            client.join_film(film_id)
+            return _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"] and f["file"] != before)
+
+        def shot():
+            client.shoot_film(film_id)
+            _until(hub, film_id, lambda f: f["status"] == "ready" and all(s["status"] == "done" for s in f["scenes"]))
+
+        install(hub, "effects")
+        client.write_film(film_id)
+        _until(hub, film_id, lambda f: f["status"] == "ready")
+        shot()
+        monkeypatch.setenv("FAKE_AUDIO_WRONG", "1")  # the first scene's sound comes as music
+        first = joined()
+        assert effects() == [("rain", "7"), ("rain on a roof", "7")] and len(cloud.asked) == 1
+        assert [s["heard"] for s in first["scenes"]] == [{}, {}]  # no listener: nothing is heard, as before
+        assert _band(program, media / first["file"], 660, 0.5, 2.0) > -45  # music where the rain was asked for
+
+        # the listener comes: the sounds made before are heard as their first takes - the wrong one is made again
+        install(hub, "listener")
+        before, spent = len(hub.asked()), first["tokens"]
+        second = joined(first["file"])
+        asked = hub.asked()[before:]
+        assert [(a["family"], a.get("seed", "")) for a in asked] == [
+            ("ced", ""), ("ced", ""), ("moss_soundeffect", "8"), ("ced", "")]  # fmt: skip
+        assert heard(second, 1)["heard"] == "шум дождя" and heard(second, 1)["bad"] == ""
+        assert heard(second, 1)["takes"] == 2 and heard(second, 2)["takes"] == 1
+        assert {heard(second, n)["file"] for n in (1, 2)} == pieces() and len(pieces()) == 2
+        assert not list(media.glob("*/*.take*")) and card.holder == ""
+        said = json.dumps(cloud.asked[1]["messages"], ensure_ascii=False)
+        assert "Asked to sound like: rain" in said and "- Music: 0.80" in said and "Дождь" in said
+        assert len(cloud.asked) == 4 and second["tokens"] > spent  # the director's words are counted to the film
+        film = media / second["file"]
+        assert _band(program, film, 1760, 0.5, 2.0) > -45 and _band(program, film, 660, 0.5, 2.0) < -50
+
+        before = len(hub.asked())
+        third = joined(second["file"])  # joined again: what was heard is not heard twice
+        assert len(hub.asked()) == before and len(cloud.asked) == 4 and heard(third, 1) == heard(second, 1)
+
+        # a rain as from an old loudspeaker - no top: three takes, none right, the first stays and says why
+        edited = client.update_scene(film_id, 2, {"sound_words": "heavy rain"})["film"]
+        assert edited["scenes"][1]["heard"] == {} and edited["scenes"][0]["heard"] != {}
+        shot()
+        monkeypatch.setenv("FAKE_AUDIO_DULL", str(len(effects()) + 3))
+        before = len(hub.asked())
+        dull = joined()
+        assert effects(before) == [("heavy rain", "7"), ("heavy rain", "8"), ("heavy rain", "9")]
+        assert heard(dull, 2)["takes"] == 3 and "глухо" in heard(dull, 2)["bad"] and len(cloud.asked) == 7
+        assert heard(dull, 1) == heard(second, 1) and not list(media.glob("*/*.take*"))
+        assert len(pieces()) == 2  # the sound before is not the film's any more
+
+        # the director's model does not answer (the cloud has no more to say): the listener's own words, the
+        # measure alone - and the joining does not wait for it twice
+        monkeypatch.setattr(director, "HEAR_TIMEOUT_S", 0.5)
+        client.update_scene(film_id, 1, {"sound_words": "rain on leaves"})
+        shot()
+        before = len(hub.asked())
+        plain = joined()
+        assert effects(before) == [("rain on leaves", "7")] and len(cloud.asked) == 8
+        assert heard(plain, 1) == {"file": heard(plain, 1)["file"], "heard": "Rain, Rain on surface", "bad": "",
+                                   "takes": 1}  # fmt: skip
+
+        monkeypatch.setenv("FAKE_AUDIO_DULL", "1000")
+        monkeypatch.setenv("FAKE_AUDIO_SLEEP", "2")
+        client.update_scene(film_id, 1, {"sound_words": "rain on glass"})
+        shot()
+        before = len(hub.asked())
+        client.join_film(film_id)
+        deadline = time.monotonic() + 30
+        while len(effects(before)) < 2 and time.monotonic() < deadline:  # its second take is being made
+            time.sleep(0.05)
+        stopped = client.stop_film(film_id)["film"]
+        assert (stopped["status"], stopped["error"], stopped["file"]) == ("ready", "", "")
+        assert card.holder == "" and not list(media.glob("*/*.take*")) and not list(media.glob("*/*.part.wav"))
+        assert len(pieces()) == 3  # a take made is not lost
+    finally:
+        cloud.close()

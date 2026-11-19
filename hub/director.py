@@ -20,6 +20,11 @@ Added sound (stage 53; hub/sound.py): a film may have a narrator (`voice`: the d
 the scenes' sounds made by their descriptions. They are made when the film is joined, each piece kept as a file
 beside the film (film-<id>-say-…, -music-…, -fx-…) and made anew only when its words change, and mixed into the
 joined MP4: the narrator's line at the beginning of its scene, the rest quieter under it (`ffmpeg.dub`).
+
+Heard (53.13; hub/hearing.py): with the listener installed a scene's made sound is heard before it goes into the
+film - what sounds in it, where its energy lies, whether that is what the scene asks for (the director's model's
+word) - and one that is not right is made again, three takes at most, the best kept; what was heard is the
+scene's (`heard`).
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import uuid
@@ -41,7 +47,7 @@ from typing import Any
 from common.i18n import N_, tr
 from common.picture_sizes import SECONDS, frames_for, scene_modes
 
-from . import audio_cpp, ffmpeg, model_settings, visual
+from . import audio_cpp, ffmpeg, hearing, model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
@@ -111,14 +117,27 @@ MUSIC = ("", "made", "file")  # films.music: none, made by its description, the 
 MUSIC_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")
 MUSIC_BYTES = 200 << 20
 SAY_GAP_S = (0.15, 0.25)  # a line begins this long after its scene does, and this long after the line before ends
+FX_TAKES = 3  # (53.13) a scene's made sound that is not right is made again, by the next seed: so many takes at most
+HEAR_USD = 0.2  # what the director's model's words on the sounds of one joining may cost
+HEAR_TIMEOUT_S = 60.0  # one answer of it
 SHAPES = ("wide", "tall", "square")
 MODES = ("text", "picture", "continue", "frames")  # how a scene begins: film_scenes.mode
 FILM_FIELDS = ("idea", "seconds", "shape", "photo", "director", "model_id", "status", "error", "file", "fade",
                "tokens", "cost_usd", "checks", "checking", "sound", "voice", "music", "music_words",
                "music_file")  # fmt: skip
 SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error", "cfg", "tries", "verdict",
-                "reason", "sound_words", "say")  # fmt: skip
+                "reason", "sound_words", "say", "heard")  # fmt: skip
 UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the look has said nothing of (51.1)
+
+
+def heard_of(kept: str | None) -> dict[str, Any]:
+    """What was heard in a scene's sounds (53.13; film_scenes.heard, JSON): {own: {job, heard, bad} - the sound the
+    video model filmed, made: {file, heard, bad, takes} - the one the engine of sound made}; {} - nothing yet."""
+    try:
+        found = json.loads(kept) if kept else {}
+    except json.JSONDecodeError:
+        return {}
+    return found if isinstance(found, dict) else {}
 
 
 def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
@@ -128,7 +147,7 @@ def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "SELECT s.*, COALESCE(j.file, '') AS clip, j.seconds AS took FROM film_scenes s "
         "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
     ).fetchall()  # fmt: skip
-    listed = [{k: s[k] for k in s.keys() if k != "film_id"} for s in scenes]  # noqa: SIM118
+    listed = [{k: s[k] for k in s.keys() if k != "film_id"} | {"heard": heard_of(s["heard"])} for s in scenes]  # noqa: SIM118
     return {**dict(row), "checks": bool(row["checks"]), "sound": bool(row["sound"]), "scenes": listed}
 
 
@@ -733,6 +752,8 @@ class Director:
         spoken = "say" in fields and fields["say"] != scene["say"]
         if other:
             fields |= UNLOOKED
+        if "sound_words" in fields and fields["sound_words"] != scene["sound_words"]:
+            fields["heard"] = ""  # (53.13) what was heard is of the sound asked before
         if other and scene["status"] != "new":
             fields |= {"status": "stale" if scene["job_id"] and scene["status"] != "failed" else "new", "error": ""}
 
@@ -825,7 +846,7 @@ class Director:
             await self._scene(film_id, n, status="failed", error=str(exc))
             return None, tr("сцена {n} не снята: {error}", n=n, error=exc)
         await self._db.acall(lambda conn: update_film(conn, film_id, file=""))  # the joined film is of the old
-        await self._scene(film_id, n, status="filming", error="", job_id=job["id"])
+        await self._scene(film_id, n, status="filming", error="", job_id=job["id"], heard="")
         await self._bus.publish("film.progress", {"id": film_id, "scene": n, "job": job["id"]}, persist=False)
         done = await self._studio.until_done(job["id"], stop)
         if done is not None and done["status"] == "done":
@@ -986,7 +1007,7 @@ class Director:
                 raise DirectorError(tr("«{part}» не установлено: «Звук фильма» → «Скачать»",
                                        part=tr(audio_cpp.PARTS[part]["name"])), 422)  # fmt: skip
         if found["sound"] and await self._sound.ready("effects"):
-            plan["effects"] = [(starts[k], s["sound_words"], lengths[k]) for k, (s, job) in enumerate(
+            plan["effects"] = [(starts[k], s, lengths[k]) for k, (s, job) in enumerate(
                 zip(found["scenes"], jobs, strict=True)) if s["sound_words"] and not job.get("sound")]  # fmt: skip
         return plan if plan["lines"] or plan["effects"] or plan["music"] else None
 
@@ -997,11 +1018,12 @@ class Director:
         made = next(iter(self.media.glob(f"*/{name}")), None)
         return made or self.media / f"{datetime.now(UTC):%Y-%m}" / name
 
-    async def _pieces(self, film_id: str, plan: dict[str, Any], stop: asyncio.Event) -> dict[str, Any]:
+    async def _pieces(self, found: dict[str, Any], plan: dict[str, Any], stop: asyncio.Event) -> dict[str, Any]:
         """The plan's pieces as files (53.3, 53.4): {lines: [(file, at)], effects: [(file, at, seconds)], music,
         note}. The ones not made yet are made now, the card held for all of them in a row. A line begins with its
-        scene, and after the line before has ended; one that runs past the film's end is said (`note`)."""
-        seconds, todo = plan["seconds"], []
+        scene, and after the line before has ended; one that runs past the film's end is said (`note`). A scene's
+        sound is heard once made (53.13, `_takes`): one that is not right is made again."""
+        film_id, seconds, todo = found["id"], plan["seconds"], []
 
         def place(kind: str, make: Callable[[Path], Awaitable[Path]], *key: Any) -> Path:
             path = self._piece(film_id, kind, *key)
@@ -1012,18 +1034,14 @@ class Director:
         # "clip": read by the voice's clip (53.8) - a line read before that, by the model's own voices, is not kept
         said = [(place("say", lambda p, t=text: self._sound.speak(p, stop, text=t, voice=plan["voice"]),
                        "clip", plan["voice"], text), at) for at, text in plan["lines"]]  # fmt: skip
-        heard = [(place("fx", lambda p, w=words, n=length: self._sound.effect(p, stop, words=w, seconds=n),
-                        words, round(length, 2)), at, length) for at, words, length in plan["effects"]]  # fmt: skip
+        sounds = [{"scene": scene, "at": at, "seconds": length, "takes": [],
+                   "path": self._piece(film_id, "fx", scene["sound_words"], round(length, 2))}
+                  for at, scene, length in plan["effects"]]  # fmt: skip
         music = plan["music"]
         if isinstance(music, str):
             music = place("music", lambda p: self._sound.music(p, stop, words=plan["music"], seconds=seconds),
                           plan["music"], round(seconds))  # fmt: skip
-        if todo:
-            async with self._sound.working(stop):
-                for path, make in todo:
-                    if stop.is_set():
-                        raise SoundError(tr("остановлено"))
-                    await make(path)
+        await self._takes(found, sounds, todo, stop)
         lines, free, note = [], 0.0, ""
         for path, at in said:
             begins = max(at + SAY_GAP_S[0], free)
@@ -1032,7 +1050,128 @@ class Director:
         if lines and free - SAY_GAP_S[1] > seconds + 0.05:
             note = tr("диктор не уместился в фильм на {over} с — сократите его текст",
                       over=f"{free - SAY_GAP_S[1] - seconds:.1f}")  # fmt: skip
-        return {"lines": lines, "effects": heard, "music": music, "note": note}
+        return {"lines": lines, "effects": [(fx["path"], fx["at"], fx["seconds"]) for fx in sounds], "music": music,
+                "note": note}  # fmt: skip
+
+    async def _takes(self, found: dict[str, Any], sounds: list[dict[str, Any]],
+                     todo: list[tuple[Path, Callable[[Path], Awaitable[Path]]]],
+                     stop: asyncio.Event) -> None:  # fmt: skip
+        """The pieces to be made (`todo`) and the scenes' sounds (`sounds`: scene, seconds, path) - made, the card
+        held for all of a round in a row. (53.13) With the listener here a scene's sound is heard once made: what
+        sounds in it, where its energy lies, whether that is what the scene asks for (`_verdict`). One that is not
+        right is made again by the next seed - FX_TAKES takes at most - and the best take is the scene's; what was
+        heard is kept with the scene. A sound made before and not heard yet is heard as the first take. The
+        director's model is asked between the rounds, the card given: its answer may come from the card."""
+        film_id = found["id"]
+        listens = bool(sounds) and await self._sound.ready("listener")
+        hears = {"spent": 0.0, "off": ""}
+
+        def take(fx: dict[str, Any], n: int) -> Path:
+            return fx["path"].with_name(f"{fx['path'].stem}.take{n}{fx['path'].suffix}")
+
+        def unheard(fx: dict[str, Any]) -> bool:
+            return listens and fx["scene"]["heard"].get("made", {}).get("file") != fx["path"].name
+
+        going = [fx for fx in sounds if not fx["path"].is_file() or unheard(fx)]
+        try:
+            for fx in going:  # a sound made before, not heard yet: its first take
+                if fx["path"].is_file():
+                    await asyncio.to_thread(os.replace, fx["path"], take(fx, 0))
+            for n in range(FX_TAKES if listens else 1):
+                making = [fx for fx in going if not take(fx, n).is_file()]
+                if making or todo:
+                    async with self._sound.working(stop):
+                        for path, make in todo:
+                            if stop.is_set():
+                                raise SoundError(tr("остановлено"))
+                            await make(path)
+                        todo = []
+                        for fx in making:
+                            if stop.is_set():
+                                raise SoundError(tr("остановлено"))
+                            scene = fx["scene"]
+                            await self._sound.effect(take(fx, n), stop, words=scene["sound_words"],
+                                                     seconds=fx["seconds"], take=n)  # fmt: skip
+                again = []
+                for fx in going:
+                    said = await self._verdict(found, fx["scene"], take(fx, n), hears, stop) if listens else None
+                    fx["takes"].append((said, take(fx, n)))
+                    if said is not None and said["bad"]:
+                        again.append(fx)
+                going = again
+                if not going:
+                    break
+            for fx in sounds:
+                if not fx["takes"]:
+                    continue
+                said, best = max(fx["takes"], key=lambda t: t[0]["mark"] if t[0] else -1)
+                await asyncio.to_thread(os.replace, best, fx["path"])
+                if said is not None:
+                    made = {"file": fx["path"].name, "heard": said["heard"], "bad": said["bad"],
+                            "takes": len(fx["takes"])}  # fmt: skip
+                    await self._keep_heard(film_id, fx["scene"]["n"], made=made)
+        finally:
+            for fx in sounds:  # «Стоп», or a failure: a take made is not lost, the others are not left
+                left = [path for path in (take(fx, n) for n in range(FX_TAKES)) if path.is_file()]
+                if left and not fx["path"].is_file():
+                    await asyncio.to_thread(os.replace, left.pop(0), fx["path"])
+                for path in left:
+                    with contextlib.suppress(OSError):
+                        await asyncio.to_thread(path.unlink, True)
+
+    async def _keep_heard(self, film_id: str, n: int, **said: Any) -> None:
+        """What was heard in a scene's sound, kept with the scene: `own` - the video model's, `made` - the engine's."""
+
+        def write(conn: sqlite3.Connection) -> None:
+            row = conn.execute("SELECT heard FROM film_scenes WHERE film_id = ? AND n = ?", (film_id, n)).fetchone()
+            if row is not None:
+                update_scene(conn, film_id, n, heard=json.dumps(heard_of(row["heard"]) | said, ensure_ascii=False))
+
+        await self._db.acall(write)
+        await self._changed(film_id)
+
+    async def _verdict(self, found: dict[str, Any], scene: dict[str, Any], sound: Path, hears: dict[str, Any],
+                       stop: asyncio.Event, *, at: float | None = None,
+                       seconds: float | None = None) -> dict[str, Any] | None:  # fmt: skip
+        """What is heard in a sound of the scene and whether it is right (53.13; hub/hearing.py): {heard, bad,
+        mark}. The listener names what sounds, ffmpeg measures where its energy lies, the director's model says
+        whether that is what the scene asks for (`_fits`). None - the listener did not say: nothing is known of the
+        sound, and it stays as it is."""
+        try:
+            labels = await self._sound.listen(sound, stop)
+            bands = await self._studio.ffmpeg_asks(lambda program: ffmpeg.bands(program, sound, at=at, seconds=seconds))
+        except (SoundError, visual.VisualError) as exc:
+            if stop.is_set():
+                raise SoundError(tr("остановлено")) from None
+            log.warning("film %s, scene %s: the sound is not heard: %s", found["id"], scene["n"], exc)
+            return None
+        return hearing.verdict(labels, bands, await self._fits(found, scene, labels, hears, stop))
+
+    async def _fits(self, found: dict[str, Any], scene: dict[str, Any], labels: list[tuple[str, float]],
+                    hears: dict[str, Any], stop: asyncio.Event) -> dict[str, Any] | None:  # fmt: skip
+        """The director's model's word on a scene's sound (53.13): {fits, heard, why}; None - it is not asked (no
+        model for the role, the joining's money for it spent) or did not answer - then the sound is judged by its
+        measure alone, and no other sound of this joining is asked about (`hears`: spent, off)."""
+        if hears["off"] or stop.is_set():
+            return None
+        chosen = found["director"] or await self._db.acall(role_model)
+        if not chosen or hears["spent"] >= HEAR_USD:
+            hears["off"] = "no model" if not chosen else "spent"
+            return None
+        system, prompt, form = hearing.question(scene, labels)
+        try:
+            said = await self._judge.complete(chosen, system, prompt, hearing.reader(), conversation_id=None,
+                                              meta={"purpose": "director", "film_id": found["id"], "scene": scene["n"]},
+                                              form=form, timeout_s=HEAR_TIMEOUT_S, cancel=stop)  # fmt: skip
+        except JudgeError as exc:
+            hears["off"] = str(exc)
+            log.warning("film %s: the sounds are judged by their measure alone: %s", found["id"], exc)
+            return None
+        hears["spent"] += said["cost_usd"]
+        await self._db.acall(lambda conn: conn.execute(
+            "UPDATE films SET tokens = tokens + ?, cost_usd = round(cost_usd + ?, 6) WHERE id = ?",
+            (said["tokens"], said["cost_usd"], found["id"])))  # fmt: skip
+        return said
 
     async def _join(self, film_id: str, clips: list[tuple[Path, float]], fps: int, fade: float,
                     added: dict[str, Any] | None = None) -> None:  # fmt: skip
@@ -1043,7 +1182,8 @@ class Director:
             await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
             await self._studio.with_ffmpeg(cut, lambda program: ffmpeg.join(program, clips, cut, fps=fps, fade_s=fade))
             if added:
-                made = await self._pieces(film_id, added, self._stops[film_id])
+                found = await self._db.acall(lambda conn: film(conn, film_id))
+                made = await self._pieces(found, added, self._stops[film_id])
                 note = made["note"]
                 await self._studio.with_ffmpeg(target, lambda program: ffmpeg.dub(
                     program, cut, target, seconds=added["seconds"], lines=made["lines"], music=made["music"],
