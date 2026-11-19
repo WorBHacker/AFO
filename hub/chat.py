@@ -858,6 +858,8 @@ class ChatService:
             linked[pid] = (other, text.replace("<live_state", "<linked_project_state", 1).replace(
                 "</live_state>", "</linked_project_state>"))  # fmt: skip
         known = {p.id: p for p in attached}
+        if settings["pinned"] and settings["mode"] == "sandbox":  # its copy's files, as its tools see them (61.2)
+            known = {p.id: p for p in await self.tool_projects(conversation_id)}
         pinned = {
             f"file:{item['project_id']}:{item['path']}": (known[item["project_id"]], item["path"])
             for item in settings["pinned"]

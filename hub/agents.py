@@ -99,6 +99,7 @@ ENDED = {"done": "done", "error": "failed", "cancelled": "cancelled"}  # a run's
 STATUSES = ("done", "escalated", "failed", "cancelled", "skipped", "checking", "running", "pending")
 MISSED = {"failed": "failed", "skipped": "was skipped", "cancelled": "was cancelled", "escalated": "needs a person"}
 DONE_WHEN = "\n\nDONE WHEN (the hub checks it when you end; you cannot declare it done):\n"
+FILES_NOTE = "\n\nTHE FILES OF THIS TASK - their text is in your context (read_file gives more of a long one): "
 UNCHECKED = "the hub restarted before the task was checked: nobody checks it now"
 RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
@@ -351,7 +352,8 @@ def autonomous_profile(conn: sqlite3.Connection, model_id: str) -> dict[str, Any
 
 def _task(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row) | {"dependencies": json.loads(row["dependencies"]),
-                        "criteria": json.loads(row["criteria"]) if row["criteria"] else []}  # fmt: skip
+                        "criteria": json.loads(row["criteria"]) if row["criteria"] else [],
+                        "files": json.loads(row["files"]) if row["files"] else []}  # fmt: skip
 
 
 def list_tasks(conn: sqlite3.Connection, coordinator: str, batch: int | None = None) -> list[dict[str, Any]]:
@@ -408,13 +410,44 @@ def save_batch(conn: sqlite3.Connection, coordinator: str, tasks: list[dict[str,
     number = conn.execute("SELECT COALESCE(MAX(batch), 0) + 1 FROM delegated_tasks WHERE coordinator = ?",
                           (coordinator,)).fetchone()[0]  # fmt: skip
     conn.executemany(
-        "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies, criteria)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies, criteria,"
+        " files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [(coordinator, t["task_id"], number, n, t["agent_profile"], t["prompt"], json.dumps(t["dependencies"]),
-          json.dumps(t["criteria"], ensure_ascii=False) if t.get("criteria") else None)
+          json.dumps(t["criteria"], ensure_ascii=False) if t.get("criteria") else None,
+          json.dumps(t["files"], ensure_ascii=False) if t.get("files") else None)
          for n, t in enumerate(tasks)],
     )  # fmt: skip
     return number
+
+
+def task_files(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, str]]:
+    """A task's own files (61.2) in its agent's projects - {project_id, path, project} each - or AgentError: a path
+    inside a project, not a file of secrets; «project: path» when the agent has several projects."""
+    attached = []
+    for pid in profile["project_ids"]:
+        try:
+            attached.append(get_project(conn, pid))
+        except ProjectError:
+            continue
+    if task.get("files") and not attached:
+        raise AgentError(f"task {task['task_id']!r} names files, but its agent «{profile['name']}» has no project")
+    by_name = {p.name.casefold(): p for p in attached}
+    out = []
+    for given in task.get("files") or []:
+        name, colon, rest = given.partition(":")
+        project = by_name.get(name.strip().casefold()) if colon else None
+        if project is None and len(attached) > 1:
+            names = ", ".join(f"«{p.name}»" for p in attached)
+            raise AgentError(f"task {task['task_id']!r}: say whose «{given}» is - «project: path»; its agent has "
+                             f"{names}")  # fmt: skip
+        path = (rest if project is not None else given).replace("\\", "/").strip().strip("/")
+        project = project or attached[0]
+        if not path or ".." in path.split("/") or ":" in path:
+            raise AgentError(f"task {task['task_id']!r}: «{given}» is not a path inside a project")
+        if is_secret_file(path):
+            raise AgentError(f"task {task['task_id']!r}: «{given}» holds secrets - a model never gets it")
+        out.append({"project_id": project.id, "path": path, "project": project.name})
+    return out
 
 
 def _mark(conn: sqlite3.Connection, coordinator: str, task_id: str, **fields: Any) -> None:
@@ -710,6 +743,8 @@ class AgentRunner:
             for task_id, profile in found.items():
                 model = store.get_model(conn, profile["model_id"])
                 local[task_id] = model["id"] if model is not None and model["locality"] == "local" else None
+            for task in tasks:  # its own files (61.2): in its agent's projects
+                task["files"] = task_files(conn, task, found[task["task_id"]])
             for task in tasks:  # how the hub checks each (16.3): against the agent's own projects
                 if task["criteria"]:
                     task["criteria"] = _criteria(conn, task, found[task["task_id"]])
@@ -841,6 +876,8 @@ class AgentRunner:
                          for d in task["dependencies"]]  # fmt: skip
                 prompt = task["prompt"] + ("\n\nWhat the tasks this one waited for found:\n\n" + "\n\n".join(found)
                                            if found else "")  # fmt: skip
+                if task.get("files"):  # its own files (61.2)
+                    prompt += FILES_NOTE + ", ".join(f"«{f['project']}: {f['path']}»" for f in task["files"])
                 if task["criteria"]:  # it works knowing how it is checked (16.3)
                     prompt += DONE_WHEN + goals.criteria_text({"criteria": task["criteria"]})
                 try:
@@ -848,6 +885,8 @@ class AgentRunner:
                 except (AgentError, ProjectError) as exc:
                     _mark(conn, parent_id, task_id, status="failed", detail=str(exc), ended_at=utc_now())
                     return None
+                if task.get("files"):  # in its context, and nothing else of the projects: the window is the work's
+                    store.set_context_settings(conn, run_id, map=False, live=False, pinned=task["files"])
                 writes = profile["mode"] != "read_only" and bool(profile["project_ids"])
                 sees = bool(profile["project_ids"]) and any(rows[d]["sandbox"] for d in task["dependencies"])
                 if writes or sees:  # a copy of its own: to write into, or to read what those it waited for left

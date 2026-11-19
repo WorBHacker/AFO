@@ -625,6 +625,58 @@ def test_a_cloud_coordinator_is_not_shown_a_local_only_projects_changes(hub, rep
     assert not error and agents.LOCAL_ONLY.format(name="proj") in text and "print" not in text
 
 
+# --- a task's own files and model (stages 61.2, 61.3) ---
+
+
+def given(*tasks, call_id="b1"):
+    """A batch of tasks written whole: (task_id, agent, prompt, {more fields}) each."""
+    written = [{"task_id": t[0], "agent_profile": t[1], "prompt": t[2], **(t[3] if len(t) > 3 else {})} for t in tasks]
+    return {"id": call_id, "name": "delegate_tasks", "input": {"tasks": written}}
+
+
+def _system(call):
+    return "\n".join(m["content"] for m in call[1] if m["role"] == "system")
+
+
+def test_a_task_gets_its_own_files_and_nothing_else_of_the_projects(hub, repo):  # noqa: F811
+    """61.2: a task's `files` are put before its agent - from its copy, as the task it waited for left them - and the
+    map of the projects and their live state are left out; a path outside a project, a file of secrets, files for an
+    agent with no project are refused before anything starts."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    wrong = [
+        (given(("a", "Правщик", "x", {"files": ["../x.py"]})), "task 'a': «../x.py» is not a path inside a project"),
+        (given(("a", "Правщик", "x", {"files": [".env"]})), "task 'a': «.env» holds secrets - a model never gets it"),
+        (given(("a", "Правщик", "x", {"files": ["a", "b", "c", "d"]})), "task 'a': `files` - up to 3 paths"),
+        (given(("a", "Пустой", "x", {"files": ["x.py"]})),
+         "task 'a' names files, but its agent «Пустой» has no project"),
+    ]  # fmt: skip
+    good = given(
+        ("a", "Правщик", "Поправь a"),
+        ("b", "Читатель", "Посмотри", {"dependencies": ["a"], "files": ["proj: src/app.py"]}),
+    )
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [*([dict(c, id=f"c{n}")] for n, (c, _) in
+                                                                enumerate(wrong)), [good]]}, pause=0.02,
+                                edits={"Поправь a": edit(old="print('hi')", new="print('a')")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
+    profile(hub, name="Пустой", tools=[])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    said = outputs(hub, run_id)
+    assert [(b["output"], b["error"]) for b in said[:-1]] == [(error, True) for _, error in wrong]
+    assert said[-1]["output"].startswith("2 tasks: 2 done.")
+    writer = next(c for c in provider.calls if _first_text(c[1]).startswith("Поправь a"))
+    reader = next(c for c in provider.calls if _first_text(c[1]).startswith("Посмотри"))
+    assert "Projects on this computer" in _system(writer) and "<live_state" in _system(writer)  # as before
+    seen = _system(reader)
+    assert '<file project="proj" path="src/app.py">\n1| print(\'a\')' in seen  # from its copy: a's result
+    assert "Projects on this computer" not in seen and "<live_state" not in seen  # nothing else of the projects
+    assert _first_text(reader[1]).endswith(agents.FILES_NOTE + "«proj: src/app.py»")
+    tasks = hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]
+    assert tasks[1]["files"] == [{"project_id": pid, "path": "src/app.py", "project": "proj"}]
+
+
 # --- a task checked before the coordinator gets it (stage 16.3, D50) ---
 
 DONE = "if (Test-Path done.txt) { exit 0 } else { exit 1 }"

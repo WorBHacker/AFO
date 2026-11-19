@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 MAX_TASKS = 8
+MAX_FILES = 3  # a task's own files (61.2): put before its agent, the rest of its window left for the work
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ROUNDS = 3  # a task with criteria: its work, then rounds after checks that found it short - in all (16.3)
 
@@ -66,6 +67,14 @@ DELEGATE_MANY: dict[str, Any] = {
                             f"for the judge model. Not met: the agent works on with what the check found, up to "
                             f"{ROUNDS} rounds in all; then the task needs a person. The user allows the commands.",
                         },
+                        "files": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": f"Up to {MAX_FILES} files the task is about: the hub puts their text "
+                            "before the agent and leaves out the map of the projects and their live state - a small "
+                            "model's window stays for the work. A path in the agent's project, or «project: path» "
+                            "when it has several.",
+                        },
                     },
                     "required": ["task_id", "agent_profile", "prompt"],
                 },
@@ -118,8 +127,12 @@ def check_batch(args: dict[str, Any]) -> list[dict[str, Any]]:
         deps = item.get("dependencies") or []
         deps = list(dict.fromkeys(str(d) for d in deps)) if isinstance(deps, list) else [str(deps)]
         criteria = item.get("criteria") or None  # checked against the agent's projects (hub/agents.py)
+        files = item.get("files") or []  # found in the agent's projects (hub/agents.py)
+        if (not isinstance(files, list) or len(files) > MAX_FILES
+                or not all(isinstance(f, str) and f.strip() for f in files)):  # fmt: skip
+            raise BatchError(f"task {task_id!r}: `files` - up to {MAX_FILES} paths")
         tasks.append({"task_id": task_id, "agent_profile": agent, "prompt": prompt, "dependencies": deps,
-                      "criteria": criteria})  # fmt: skip
+                      "criteria": criteria, "files": list(dict.fromkeys(f.strip() for f in files))})  # fmt: skip
     ids = {t["task_id"] for t in tasks}
     for task in tasks:
         for dep in task["dependencies"]:
