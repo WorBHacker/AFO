@@ -213,7 +213,7 @@ def _model(models: Path, part: str, backend: str) -> list[str]:
 
 def language_of(text: str) -> str:
     """The language named to the voice: Russian for Cyrillic letters, else its own guess."""
-    return "Russian" if re.search("[а-яё]", text.lower()) else ""
+    return "Russian" if re.search("[а-яё]", text.lower()) else ""  # i18n: keep
 
 
 def speak_args(models: Path, backend: str, *, text: str, voice: str) -> list[str]:

@@ -5,7 +5,8 @@ import QtQuick.Dialogs
 // «Режиссёр» (stage 50.9): a film of scenes, in the Studio beside «Вручную». Left: the product's photo, the idea, the
 // length, the shape, «Собрать сценарий»; the centre: the scenes' cards - the clip's first frame, what happens,
 // «Изменить», «Переснять» -, the player (a scene's clip or the joined film), «Снять всё», «Собрать ролик». The hub
-// makes the film (hub/director.py); Films (app/ui/film_view.py) asks and shows.
+// makes the film (hub/director.py); Films (app/ui/film_view.py) asks and shows. (53.6) «Звук фильма…»: the sheet of
+// the sound added at the join - the narrator, the music, the parts of the engine of sound.
 Item {
     id: director
     objectName: "directorView"
@@ -71,6 +72,197 @@ Item {
         items: Films.filmChoices
         onChosen: (id) => Films.pick(id)
     }
+    FileDialog {  // 53.6: the user's own music
+        id: musicDialog
+        title: qsTr("Файл музыки")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Звук (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus)")]
+        onAccepted: Films.chooseMusic(selectedFile.toString())
+    }
+    MenuPopup {  // 53.6: the narrator's voices, «Без диктора» first
+        id: voiceMenu
+        objectName: "voiceMenu"
+        menuWidth: 300
+        below: true
+        items: Films.voiceChoices
+        onChosen: (id) => Films.setVoice(id)
+    }
+
+    // 53.6: the sound added to the film when it is joined - the narrator, the music - and the parts of the engine
+    // of sound that make it: each fetched once, by a click here. What is chosen goes to the hub at once; the
+    // music's description - when the sheet closes.
+    Popup {
+        id: soundSheet
+        objectName: "soundSheet"
+
+        function openUp() {
+            musicWords.text = Films.musicWords
+            open()
+        }
+
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, parent ? parent.width - 40 : 560)
+        padding: 20
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        onClosed: Films.setMusicWords(musicWords.text)
+        Overlay.modal: Rectangle { color: Theme.dark ? Qt.rgba(0.02, 0.02, 0.03, 0.55) : Qt.rgba(0.1, 0.1, 0.12, 0.22) }
+        background: Rectangle {
+            radius: 10
+            color: Theme.p.popup
+            border.color: Theme.p.hairline_strong
+            SoftShadow { corner: 10 }
+        }
+        contentItem: Column {
+            spacing: 10
+            Text {
+                text: qsTr("Звук фильма")
+                color: Theme.p.text
+                font.family: Theme.uiFont
+                font.pixelSize: 16
+                font.weight: Font.DemiBold
+            }
+            Label { text: qsTr("Диктор") }
+            Chip {
+                id: voiceChip
+                objectName: "filmVoice"
+                text: Films.voiceName
+                enabled: !Films.busy
+                onClicked: { voiceMenu.anchor = voiceChip; voiceMenu.open() }
+            }
+            Note {
+                width: soundSheet.availableWidth
+                text: qsTr("Текст диктора пишет режиссёр вместе со сценарием — по реплике на сцену, на языке идеи. У готового сценария впишите реплики сами («Изменить» у сцены) или перепишите сценарий.")
+                color: Theme.p.faint
+            }
+            Label { text: qsTr("Музыка") }
+            Segmented {
+                objectName: "filmMusic"
+                width: soundSheet.availableWidth
+                enabled: !Films.busy
+                options: Films.musics
+                value: Films.music
+                onPicked: (id) => {
+                    if (id === "file" && !Films.hasMusicFile)
+                        musicDialog.open()
+                    else
+                        Films.setMusic(id)
+                }
+            }
+            Area {
+                id: musicWords
+                edit.objectName: "filmMusicWords"
+                visible: Films.music === "made"
+                enabled: !Films.busy
+                width: soundSheet.availableWidth
+                height: 48
+                placeholder: qsTr("Какая музыка, по-английски: calm warm piano, slow. Пусто — режиссёр предложит сам вместе со сценарием")
+            }
+            Row {
+                visible: Films.music === "file"
+                spacing: 10
+                Text {
+                    objectName: "filmMusicFile"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, soundSheet.availableWidth - 170)
+                    elide: Text.ElideMiddle
+                    text: Films.musicFileName
+                    color: Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                PlainButton {
+                    objectName: "filmMusicOther"
+                    enabled: !Films.busy
+                    text: qsTr("Другой файл…")
+                    onClicked: musicDialog.open()
+                }
+            }
+            Note {
+                width: soundSheet.availableWidth
+                text: qsTr("Музыка идёт под всем роликом и становится тише, пока говорит диктор. Свой файл короче ролика повторяется.")
+                color: Theme.p.faint
+            }
+            Label { text: qsTr("Что для этого нужно") }
+            Repeater {
+                model: Films.soundParts
+                delegate: Item {
+                    id: part
+                    required property var modelData
+                    objectName: "soundPart_" + part.modelData.id
+                    width: soundSheet.availableWidth
+                    height: 38
+                    Column {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - partDo.width - 12
+                        spacing: 2
+                        Text {
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: part.modelData.name + " — " + part.modelData.about
+                            color: Theme.p.text
+                            font.family: Theme.uiFont
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            objectName: "soundNote_" + part.modelData.id
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: part.modelData.note
+                            color: part.modelData.failed ? Theme.p.error : Theme.p.faint
+                            font.family: Theme.uiFont
+                            font.pixelSize: 11
+                        }
+                    }
+                    Row {
+                        id: partDo
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        PlainButton {
+                            objectName: "soundGet_" + part.modelData.id
+                            visible: part.modelData.state === "missing"
+                            iconName: "download"
+                            text: part.modelData.getText
+                            onClicked: Films.getSound(part.modelData.id)
+                        }
+                        PlainButton {
+                            objectName: "soundStop_" + part.modelData.id
+                            visible: part.modelData.state === "loading"
+                            kind: "danger"
+                            iconName: "stop"
+                            text: qsTr("Стоп")
+                            onClicked: Films.stopSound(part.modelData.id)
+                        }
+                        IconButton {
+                            objectName: "soundRemove_" + part.modelData.id
+                            visible: part.modelData.state === "ready"
+                            iconName: "trash"
+                            tip: qsTr("Удалить с диска")
+                            enabled: !Films.busy
+                            onClicked: Films.removeSound(part.modelData.id)
+                        }
+                    }
+                }
+            }
+            Note {
+                width: soundSheet.availableWidth
+                visible: !Films.soundEngine
+                text: qsTr("С первой частью скачается и сама программа звука audio.cpp — до 1 ГБ. Звук делается на этом компьютере, в облако ничего не уходит.")
+                color: Theme.p.faint
+            }
+            Row {
+                anchors.right: parent.right
+                PlainButton {
+                    objectName: "soundDone"
+                    kind: "primary"
+                    text: qsTr("Готово")
+                    onClicked: soundSheet.close()
+                }
+            }
+        }
+    }
 
     // a scene changed by hand: what happens (the person's language), the description the video model films by, how
     // the scene begins, its length
@@ -90,6 +282,7 @@ Item {
             sceneWords.text = card.words
             scenePrompt.text = card.prompt
             sceneSound.text = card.sound
+            sceneSay.text = card.say
             open()
         }
 
@@ -138,6 +331,15 @@ Item {
                 width: sceneSheet.availableWidth
                 height: 48
             }
+            Label { text: qsTr("Диктор: что говорит за кадром"); visible: sceneSay.visible }
+            Area {  // 53.6: a film with a narrator
+                id: sceneSay
+                edit.objectName: "sceneSay"
+                visible: Films.voice !== ""
+                width: sceneSheet.availableWidth
+                height: 48
+                placeholder: qsTr("Пусто — диктор в этой сцене молчит. Около 11 знаков на секунду сцены")
+            }
             Label { text: qsTr("Как начинается") }
             Segmented {
                 objectName: "sceneMode"
@@ -156,7 +358,7 @@ Item {
             }
             Note {
                 width: sceneSheet.availableWidth
-                text: qsTr("Изменилось описание, звук, начало или длина — сцену нужно переснять, а с ней и те, что её продолжают.")
+                text: qsTr("Изменилось описание, звук, начало или длина — сцену нужно переснять, а с ней и те, что её продолжают. Реплика диктора пересъёмки не требует — только «Собрать ролик» заново.")
                 color: Theme.p.faint
             }
             Row {
@@ -170,7 +372,7 @@ Item {
                     enabled: scenePrompt.text.trim() !== ""
                     onClicked: {
                         Films.saveScene(sceneSheet.n, sceneWords.text, scenePrompt.text, sceneSheet.mode,
-                                        sceneSheet.length, sceneSound.text)
+                                        sceneSheet.length, sceneSound.text, sceneSay.text)
                         sceneSheet.close()
                     }
                 }
@@ -307,7 +509,17 @@ Item {
                 }
                 Note {
                     visible: Films.canSound
-                    text: qsTr("Модель видео снимает сцены со звуком. Что слышно в сцене, пишет режиссёр; поправить — «Изменить» у сцены. Выключатель действует на сцены, снятые после него.")
+                    text: Films.soundNote
+                    color: Theme.p.faint
+                }
+                PlainButton {  // 53.6: the narrator, the music, the parts of the engine of sound
+                    objectName: "filmAdded"
+                    text: qsTr("Звук фильма…")
+                    onClicked: soundSheet.openUp()
+                }
+                Note {
+                    objectName: "filmAddedText"
+                    text: Films.addedText
                     color: Theme.p.faint
                 }
                 Label { text: qsTr("Стыки сцен"); visible: Films.hasScenes }
@@ -539,11 +751,15 @@ Item {
                 onClicked: Films.state === "filming" ? Films.stop() : Films.shoot()
             }
             PlainButton {
+                id: joinButton
                 objectName: "filmJoin"
-                iconName: "layers"
-                enabled: Films.canJoin
-                text: Films.joined ? qsTr("Собрать заново") : qsTr("Собрать ролик")
-                onClicked: Films.join()
+                // 53.6: a film with added sound is joined for minutes - its sound is made first; «Стоп» stops that
+                readonly property bool stops: Films.state === "joining" && Films.addsSound
+                kind: stops ? "danger" : "plain"
+                iconName: stops ? "stop" : "layers"
+                enabled: stops || Films.canJoin
+                text: stops ? qsTr("Стоп") : Films.joined ? qsTr("Собрать заново") : qsTr("Собрать ролик")
+                onClicked: stops ? Films.stop() : Films.join()
             }
             PlainButton {
                 objectName: "filmWhole"

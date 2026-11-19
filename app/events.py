@@ -33,6 +33,7 @@ TOPICS = [
     "gpu.*",  # the graphics card for models: programs moved, the switch (43.7)
     "visual.*",  # pictures: a job, its step and preview (29.5)
     "film.*",  # «Режиссёр»: a film and its scenes as they change (50.9)
+    "sound.*",  # a film's added sound: the engine's parts as they are fetched (53.6)
     "setup.*",
     "release.*",  # AFO's own updates (10.4d)
     "tune.*",  # launch settings by measurement (15.2)

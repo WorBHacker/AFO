@@ -1939,7 +1939,7 @@ class Controller(QObject):
             self.install_view.on_event(kind, payload)
         elif kind.startswith("visual."):
             self.visual_view.on_event(kind, payload)
-        elif kind.startswith("film."):
+        elif kind.startswith(("film.", "sound.")):  # the added sound is the film's (53.6)
             self.film_view.on_event(kind, payload)
         elif kind.startswith("gpu."):
             self.gpu_view.on_event(kind, payload)

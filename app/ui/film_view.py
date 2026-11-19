@@ -2,6 +2,9 @@
 «Собрать сценарий»; the centre - the scenes' cards (the clip's first frame, what happens, «Изменить», «Переснять»),
 the player - a scene's clip or the joined film -, «Снять всё», «Собрать ролик», and how long is left. (51.4) «Проверять
 сцены»: the director's model looks at each scene filmed - a card says what it said, and why a scene is filmed anew.
+(53.6) «Звук фильма…»: the sound added when the film is joined - the narrator's voice, the music (by its description
+or the user's own file) - and the parts of the engine of sound, each fetched by a click; a scene's sheet has the
+narrator's line.
 
 The hub does it all (hub/director.py): this asks and shows. A film's changes come with `film.changed`. A scene's clip
 is a video of the Studio's: its step, its time and its MP4 for the player are the Studio view's
@@ -21,6 +24,7 @@ from common.i18n import N_, tr
 from common.picture_sizes import clip_of, scene_modes
 
 from ..hub_client import HubError
+from .install_view import gb
 from .visual_view import seconds_text, still_of
 
 if TYPE_CHECKING:
@@ -33,6 +37,7 @@ SCENE_MODES = {"picture": N_("по фото"), "continue": N_("продолже�
                "text": N_("по описанию")}  # fmt: skip
 SCENE_LENGTHS = [("2", N_("2 с")), ("3", N_("3 с")), ("4", N_("4 с")), ("5", N_("5 с"))]
 JOINTS = [("cut", N_("Встык")), ("fade", N_("Плавно"))]
+MUSICS = [("", N_("Нет")), ("made", N_("По описанию")), ("file", N_("Свой файл"))]  # (53.6) the film's music
 FADE_S = 0.5  # «Плавно»: a cross-fade at each joint
 BUSY = ("writing", "filming", "joining")
 
@@ -56,6 +61,7 @@ def left_text(seconds: float) -> str:
 class FilmView(QObject):
     changed = Signal()
     scenesChanged = Signal()  # the cards alone: a list given anew takes the row back to its start
+    partsChanged = Signal()  # the parts of the engine of sound alone: their rows are not built anew at each change
 
     def __init__(self, app: Controller):
         super().__init__(app)
@@ -74,6 +80,11 @@ class FilmView(QObject):
         self._joint = "cut"
         self._checks = True  # «Проверять сцены» of a film not begun yet; one begun has its own
         self._sound = True  # «Со звуком» (52.6), the same way
+        # (53.6) the added sound of a film not begun yet: the narrator's voice, the music - its kind, its
+        # description, the user's own file (a path: sent once the film is begun)
+        self._voice, self._music, self._music_words, self._music_path = "", "", "", ""
+        self._sounds: dict[str, Any] = {}  # the engine of sound and its parts, as the hub has them (/v1/sound)
+        self._parts: list[dict[str, Any]] = []
         self._shown = 0  # the scene in the player; 0 - the joined film
         self._run: set[int] = set()  # the scenes of the shooting going on: «ещё ≈» counts them
         self._asking = False  # a request of this view's is on its way
@@ -208,15 +219,114 @@ class FilmView(QObject):
         """«Проверять сцены» (51.4): the director's model looks at each scene filmed; one not good is filmed anew."""
         return bool(self._film.get("checks", self._checks)) if self.hasFilm else self._checks
 
+    def _films_sound(self) -> bool:
+        return bool((self._model() or {}).get("sound"))
+
+    def _part_ready(self, part: str) -> bool:
+        return any(p["id"] == part and p["state"] == "ready" for p in self._sounds.get("parts") or [])
+
     @Property(bool, notify=changed)
     def canSound(self) -> bool:
-        """Whether the film can have sound (52.6): its video model films it."""
-        return bool((self._model() or {}).get("sound"))
+        """Whether the film's scenes can have sound: its video model films it (52.6) - or the engine of sound makes
+        it for a scene filmed without («Звуки сцен» installed, 53.6)."""
+        return self._films_sound() or self._part_ready("effects")
 
     @Property(bool, notify=changed)
     def sound(self) -> bool:
         """«Со звуком» (52.6): the scenes are filmed with sound, the director says what is heard in each."""
         return bool(self._film.get("sound", self._sound)) if self.hasFilm else self._sound
+
+    @Property(str, notify=changed)
+    def soundNote(self) -> str:
+        """What «Со звуком» does - by who makes the scenes' sound."""
+        if self._films_sound():
+            return tr("Модель видео снимает сцены со звуком. Что слышно в сцене, пишет режиссёр; поправить — "
+                      "«Изменить» у сцены. Выключатель действует на сцены, снятые после него.")  # fmt: skip
+        return tr("Модель видео снимает без звука — звук каждой сцены делается по её «что слышно», когда ролик "
+                  "собирается. Что слышно, пишет режиссёр; поправить — «Изменить» у сцены.")  # fmt: skip
+
+    # ---- the added sound (53.6): the narrator, the music, the parts of the engine ----
+
+    @Property(str, notify=changed)
+    def voice(self) -> str:
+        """The narrator's voice; "" - the film has no narrator."""
+        return self._film.get("voice") or "" if self.hasFilm else self._voice
+
+    @Property(list, notify=changed)
+    def voiceChoices(self) -> list:
+        now = self.voice
+        none = {"id": "", "name": tr("Без диктора"), "note": "", "selected": not now}
+        return [none, *({"id": v["id"], "name": v["name"], "note": "", "selected": v["id"] == now}
+                        for v in self._sounds.get("voices") or [])]  # fmt: skip
+
+    @Property(str, notify=changed)
+    def voiceName(self) -> str:
+        now = self.voice
+        named = next((v["name"] for v in self._sounds.get("voices") or [] if v["id"] == now), now)
+        return named if now else tr("Без диктора")
+
+    @Property(list, notify=changed)
+    def musics(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in MUSICS]
+
+    @Property(str, notify=changed)
+    def music(self) -> str:
+        """The film's music: "" - none, "made" - by its description, "file" - the user's own."""
+        return self._film.get("music") or "" if self.hasFilm else self._music
+
+    @Property(str, notify=changed)
+    def musicWords(self) -> str:
+        return self._film.get("music_words") or "" if self.hasFilm else self._music_words
+
+    @Property(bool, notify=changed)
+    def hasMusicFile(self) -> bool:
+        """The user's own music is chosen: the hub keeps its copy - or, a film not begun, the path is here."""
+        return bool(self._film.get("music_file")) if self.hasFilm else bool(self._music_path)
+
+    @Property(str, notify=changed)
+    def musicFileName(self) -> str:
+        if not self.hasMusicFile:
+            return tr("файл не выбран")
+        return tr("файл выбран") if self.hasFilm else Path(self._music_path).name
+
+    @Property(str, notify=changed)
+    def addedText(self) -> str:
+        """The film's added sound in a line, beside «Звук фильма…»."""
+        said = tr("диктор: {voice}", voice=self.voiceName) if self.voice else tr("без диктора")
+        music = tr({"": N_("без музыки"), "made": N_("музыка по описанию"), "file": N_("своя музыка")}[self.music])
+        return f"{said} · {music}"
+
+    @Property(bool, notify=changed)
+    def addsSound(self) -> bool:
+        """«Собрать ролик» makes sound too - a voice, music, the sounds of scenes filmed without: it takes longer,
+        and it can be stopped."""
+        made = self.sound and self._part_ready("effects") and not self._films_sound()
+        return bool(self.voice or self.music) or made
+
+    def _parts_now(self) -> list[dict[str, Any]]:
+        """The parts of the engine of sound: what each is for, whether it is here, how far its download is."""
+        parts = []
+        for p in self._sounds.get("parts") or []:
+            size, percent = gb(p["size"]), round(100 * p["got"] / p["total"]) if p.get("total") else 0
+            if p["state"] == "ready":
+                note = tr("установлено · {size}", size=size)
+            elif p["state"] == "loading":
+                note = tr("скачивается: {percent}%", percent=percent) if p["got"] else tr("скачивается…")
+            else:
+                note = p.get("error") or tr("не установлено · {size}", size=size)
+            parts.append({"id": p["id"], "name": p["name"], "about": p["about"], "state": p["state"], "note": note,
+                          "failed": p["state"] == "missing" and bool(p.get("error")),
+                          "getText": tr("Скачать {size}", size=size)})  # fmt: skip
+        return parts
+
+    @Property(list, notify=partsChanged)
+    def soundParts(self) -> list:
+        return self._parts
+
+    @Property(bool, notify=changed)
+    def soundEngine(self) -> bool:
+        """The program of sound is here already; not yet - it comes with the first part."""
+        return bool((self._sounds.get("engine") or {}).get("ready"))
 
     # ---- the film's words ----
 
@@ -253,7 +363,7 @@ class FilmView(QObject):
         if status == "writing":
             return tr("режиссёр пишет сценарий…")
         if status == "joining":
-            return tr("склеиваю ролик…")
+            return tr("делаю звук и склеиваю ролик…") if self.addsSound else tr("склеиваю ролик…")
         if status == "filming":
             if film.get("checking"):
                 return tr("режиссёр смотрит сцену {n} из {all}…", n=film["checking"], all=len(scenes))
@@ -337,7 +447,7 @@ class FilmView(QObject):
                             length=length_text(seconds)),
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
                 "failed": status == "failed" or rejected, "filmed": clip is not None,
-                "sound": scene.get("sound_words") or "",
+                "sound": scene.get("sound_words") or "", "say": scene.get("say") or "",
                 "thumb": QUrl.fromLocalFile(str(still_of(clip))).toString() if clip is not None else "",
                 "shootText": tr("Переснять") if clip is not None else tr("Снять")}  # fmt: skip
 
@@ -420,6 +530,16 @@ class FilmView(QObject):
             self.changed.emit()
 
         self.app._call(lambda: self.app.client.films(), films, lambda _e: None)
+        self.app._call(lambda: self.app.client.sound(), self._take_sound, lambda _e: None)
+
+    def _take_sound(self, state: dict[str, Any]) -> None:
+        """The engine of sound and its parts as the hub has them now (53.6)."""
+        self._sounds = state or {}
+        parts = self._parts_now()
+        if parts != self._parts:
+            self._parts = parts
+            self.partsChanged.emit()
+        self.changed.emit()
 
     def _open(self, film: dict[str, Any]) -> None:
         """A film on the screen - or {}: a new one; its own values in the fields."""
@@ -430,6 +550,8 @@ class FilmView(QObject):
         self._joint = "fade" if film.get("fade") else "cut"
         self._checks = bool(film.get("checks", True))
         self._sound = bool(film.get("sound", True))
+        self._voice, self._music = film.get("voice") or "", film.get("music") or ""
+        self._music_words, self._music_path = film.get("music_words") or "", ""
         if not film.get("file"):  # not joined yet: its latest scene filmed plays
             filmed = [s["n"] for s in self._scenes() if s["status"] == "done" and self._clip(s) is not None]
             self._shown = filmed[-1] if filmed else 0
@@ -533,6 +655,76 @@ class FilmView(QObject):
         else:
             self.changed.emit()
 
+    def _added(self, fields: dict[str, Any], failed: str) -> None:
+        """The film's added sound changed (53.6): a film begun is told at once - its joined file is another film
+        now, the scenes stay; one not begun keeps it for «Собрать сценарий»."""
+        if not self.hasFilm:
+            self.changed.emit()
+            return
+        film_id = self._film["id"]
+        self.app._call(lambda: self.app.client.update_film(film_id, fields),
+                       lambda r: (self._take(r["film"]), self.changed.emit()),
+                       lambda e: self.app.show_error(tr(failed, error=e)))  # fmt: skip
+
+    @Slot(str)
+    def setVoice(self, voice: str) -> None:
+        """«Диктор»: a voice, or "" - no narrator."""
+        if voice == self.voice or self.busy:
+            return
+        self._voice = voice
+        self._added({"voice": voice}, N_("Диктора не выбрать: {error}"))
+
+    @Slot(str)
+    def setMusic(self, music: str) -> None:
+        """«Музыка»: none, by its description, the user's own file - that one when a file is chosen
+        (`chooseMusic`)."""
+        if music not in {k for k, _n in MUSICS} or music == self.music or self.busy:
+            return
+        if music == "file" and not self.hasMusicFile:
+            return
+        self._music = music
+        self._added({"music": music}, N_("Музыку не переключить: {error}"))
+
+    @Slot(str)
+    def setMusicWords(self, words: str) -> None:
+        """What music the film needs, in words: the engine makes it by them."""
+        words = " ".join(words.split())
+        if words == self.musicWords or self.busy:
+            return
+        self._music_words = words
+        self._added({"music_words": words}, N_("Описание музыки не сохранить: {error}"))
+
+    @Slot(str)
+    def chooseMusic(self, url: str) -> None:
+        """«Свой файл»: a sound file of this computer; the hub keeps its own copy beside the film."""
+        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
+        if not path or self.busy:
+            return
+        path = str(Path(path))  # as this computer writes it
+        self._music, self._music_path = "file", path
+        self._added({"music_path": path}, N_("Файл музыки не взять: {error}"))
+
+    def _sound_part(self, call, failed: str) -> None:
+        self.app._call(call, self._take_sound, lambda e: self.app.show_error(tr(failed, error=e)))
+
+    @Slot(str)
+    def getSound(self, part: str) -> None:
+        """«Скачать»: the part's model - and, the first time, the program of sound."""
+        self._sound_part(lambda: self.app.client.install_sound(part), N_("Не скачать: {error}"))
+
+    @Slot(str)
+    def stopSound(self, part: str) -> None:
+        self._sound_part(lambda: self.app.client.stop_sound(part), N_("Не остановить: {error}"))
+
+    @Slot(str)
+    def removeSound(self, part: str) -> None:
+        """A part's model off the disk - asked first."""
+        name = next((p["name"] for p in self._sounds.get("parts") or [] if p["id"] == part), part)
+        self.app._ask(tr("Удалить «{name}»?", name=name),
+                      tr("Файл модели удалится с диска. Понадобится снова — скачается заново."), tr("Удалить"),
+                      lambda yes: self._sound_part(lambda: self.app.client.remove_sound(part),
+                                                   N_("Не удалить: {error}")) if yes else None)  # fmt: skip
+
     @Slot(str)
     def choosePhoto(self, url: str) -> None:
         """«Фото товара…»: any picture Qt reads, sent as PNG with «Собрать сценарий»."""
@@ -576,10 +768,16 @@ class FilmView(QObject):
             fields["photo_png"] = self._photo["png"]
         elif self._no_photo:
             fields["photo"] = ""
+        # (53.6) a film not begun: its narrator and music go with it; its own music file - once it is begun
+        added = {"voice": self._voice, "music": self._music if self._music != "file" else "",
+                 "music_words": self._music_words}  # fmt: skip
+        own = self._music_path if self._music == "file" else ""
 
         def ask() -> dict[str, Any]:
             if not film.get("id"):
-                made = client.new_film({k: v for k, v in fields.items() if k != "photo"})["film"]
+                made = client.new_film({k: v for k, v in (fields | added).items() if k != "photo"})["film"]
+                if own:
+                    made = client.update_film(made["id"], {"music_path": own})["film"]
             else:
                 new = {k: v for k, v in fields.items() if k in ("photo_png", "photo") or v != film.get(k)}
                 made = client.update_film(film["id"], new)["film"] if new else film
@@ -615,8 +813,10 @@ class FilmView(QObject):
 
     @Slot()
     def stop(self) -> None:
-        """«Стоп»: the director's question let go, the scene being filmed stopped."""
-        if self._film.get("status") in ("writing", "filming"):
+        """«Стоп»: the director's question let go, the scene being filmed stopped - or (53.6) the making of the
+        film's added sound: the pieces made stay for the next «Собрать ролик»."""
+        status = self._film.get("status")
+        if status in ("writing", "filming") or (status == "joining" and self.addsSound):
             film_id = self._film["id"]
             self.app._call(lambda: self.app.client.stop_film(film_id), lambda r: (self._take(r["film"]),
                                                                                   self.changed.emit()),
@@ -630,10 +830,11 @@ class FilmView(QObject):
         film_id, fade = self._film["id"], FADE_S if self._joint == "fade" else 0.0
         self._request(lambda: self.app.client.join_film(film_id, fade), N_("Не собрать ролик: {error}"))
 
-    @Slot(int, str, str, str, str, str)
-    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str, sound: str) -> None:
+    @Slot(int, str, str, str, str, str, str)
+    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str, sound: str, say: str) -> None:
         """«Изменить» → «Сохранить»: what has changed of the scene - what happens, the description for the video
-        model, how it begins, its length (`length`: whole seconds, "" - as it is), what is heard in it (52.6)."""
+        model, how it begins, its length (`length`: whole seconds, "" - as it is), what is heard in it (52.6),
+        what the narrator says over it (53.6)."""
         scene = next((s for s in self._scenes() if s["n"] == n), None)
         if scene is None or self.busy:
             return
@@ -648,6 +849,8 @@ class FilmView(QObject):
             fields["seconds"] = float(length)
         if " ".join(sound.split()) != (scene.get("sound_words") or ""):
             fields["sound_words"] = sound
+        if " ".join(say.split()) != (scene.get("say") or ""):
+            fields["say"] = say
         if fields:
             film_id = self._film["id"]
             self._request(lambda: self.app.client.update_scene(film_id, n, fields), N_("Сцену не изменить: {error}"))
@@ -701,6 +904,9 @@ class FilmView(QObject):
             self._films = [f for f in self._films if f["id"] != payload.get("id")]
             if self.hasFilm and self._film["id"] == payload.get("id"):
                 self._open({})
+        elif kind == "sound.changed":  # (53.6) a part's download: how far, done, stopped
+            self._take_sound(payload)
+            return
         else:
             return
         self.changed.emit()

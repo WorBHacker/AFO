@@ -325,7 +325,7 @@ def test_a_film_gets_its_narrator_music_and_silent_scenes_sounds_when_it_is_join
     # the engine's clip of a scene: a silent WebP of 73 frames - 3 s
     FakeDrawSwap.filmed = animated_webp([_solid((20, 40, 30 + 3 * k)) for k in range(73)], 64, 64)
     install(hub, "voice", "effects")
-    cloud = SeeingCloud([json.dumps(BOARD, ensure_ascii=False)])
+    cloud = SeeingCloud([json.dumps(BOARD, ensure_ascii=False)] * 2)
     try:
         use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
         roles(hub, director="studio-cloud/eye")
@@ -423,5 +423,12 @@ def test_a_film_gets_its_narrator_music_and_silent_scenes_sounds_when_it_is_join
         client.join_film(film_id)  # nothing added: the film as its scenes are - silent, as before the stage
         bare = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
         assert len(hub.asked()) == before and "Audio:" not in _said(program, "-i", str(media / bare["file"]))
+
+        # (53.6) the music's description the user wrote stays: the director is asked for it only while there is none
+        client.update_film(film_id, {"music": "made", "music_words": "slow jazz"})
+        client.write_film(film_id)
+        again = _until(hub, film_id, lambda f: f["status"] == "ready" and not f["file"])
+        assert again["music_words"] == "slow jazz" and len(cloud.asked) == 2
+        assert "one sentence: the genre" in asked and "one sentence: the genre" not in json.dumps(cloud.asked[1])
     finally:
         cloud.close()

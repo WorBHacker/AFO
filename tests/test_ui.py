@@ -392,6 +392,17 @@ class FakeClient:
         self.visual_videos = []  # the video models (29.8)
         self.film_calls = []  # «Режиссёр» (50.9)
         self.films_list = []
+        self.sound_calls = []  # a film's added sound (53.6): the engine's parts
+        self.sound_state = {
+            "engine": {"tag": "v0.9.5", "build": "cuda-13", "ready": False},
+            "parts": [{"id": part, "name": name, "about": about, "size": size, "licence": "Apache-2.0",
+                       "state": "missing", "got": 0, "total": size, "error": ""}
+                      for part, name, about, size in (
+                          ("voice", "Голос диктора", "Qwen3-TTS 1.7B: девять голосов", 2817055200),
+                          ("music", "Музыка", "ACE-Step 1.5 turbo: музыка без слов по описанию", 6185468096),
+                          ("effects", "Звуки сцен", "MOSS-SoundEffect v2: звук сцены по описанию", 4001175520))],
+            "voices": [{"id": "ryan", "name": "Райан — мужской"}, {"id": "serena", "name": "Серена — женский"}],
+        }  # fmt: skip
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -724,14 +735,35 @@ class FakeClient:
                 "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "", "director": "",
                 "model_id": "", "status": "draft", "error": "", "file": "", "fade": 0.0, "tokens": 0,
                 "cost_usd": 0.0, "checks": spec.get("checks", True), "checking": 0,
-                "sound": spec.get("sound", True), "scenes": []}  # fmt: skip
+                "sound": spec.get("sound", True), "voice": spec.get("voice", ""), "music": spec.get("music", ""),
+                "music_words": spec.get("music_words", ""), "music_file": "", "scenes": []}  # fmt: skip
         self.films_list.insert(0, film)
         return {"film": film}
 
     def update_film(self, film_id, fields):
         self.film_calls.append(("update", film_id, fields))
-        return self._film(film_id, **{k: v for k, v in fields.items()
-                                      if k in ("idea", "seconds", "shape", "fade", "checks", "sound")})  # fmt: skip
+        kept = {k: v for k, v in fields.items() if k in ("idea", "seconds", "shape", "fade", "checks", "sound",
+                                                         "voice", "music", "music_words")}  # fmt: skip
+        if fields.get("music_path"):  # the user's own music: the hub keeps its copy beside the film
+            kept |= {"music": "file", "music_file": f"2026-11/film-{film_id}-own-1.mp3"}
+        return self._film(film_id, **kept)
+
+    def sound(self):
+        return copy.deepcopy(self.sound_state)
+
+    def _sound_part(self, call, part, **fields):
+        self.sound_calls.append((call, part))
+        next(p for p in self.sound_state["parts"] if p["id"] == part).update(fields)
+        return self.sound()
+
+    def install_sound(self, part):
+        return self._sound_part("install", part, state="loading", got=0, error="")
+
+    def stop_sound(self, part):
+        return self._sound_part("stop", part, state="missing", got=0)
+
+    def remove_sound(self, part):
+        return self._sound_part("remove", part, state="missing", got=0)
 
     def delete_film(self, film_id):
         self.film_calls.append(("delete", film_id))
@@ -11034,6 +11066,178 @@ def test_the_directors_film_has_a_sound_switch_and_a_scenes_sound_is_changed_by_
         wait_until(lambda: not app.bg.busy and not films.canSound)
         window.grabWindow()
         assert not switch.property("visible")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clicks(qapp, tmp_path):
+    """53.6: «Звук фильма…» - the sheet of the film's added sound. A part of the engine of sound is fetched by a
+    click - how far it is, «Стоп», and once it is here, that it is; with «Звуки сцен» a film of a silent video model
+    has «Со звуком» too. The narrator's voice from the menu, the music - by its description (kept when the sheet
+    closes) or the user's own file - go to the hub at once; a scene's sheet has the narrator's line; a film being
+    joined with added sound says so and has «Стоп». A film not begun keeps all of it for «Собрать сценарий». Real
+    QML, mouse clicks, no screen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "wan", "name": "Wan2.2", "tier": "video", "size": 832, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text", "picture", "frames"],
+                                 "clip": {"fps": 24, "step": 8}}]  # films no sound  # fmt: skip
+        client.films_list = [{"id": "f1", "idea": "Лампа на столе", "seconds": 15, "shape": "wide", "photo": "",
+                              "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
+                              "tokens": 0, "cost_usd": 0.0, "checks": True, "checking": 0, "sound": True,
+                              "voice": "", "music": "", "music_words": "", "music_file": "",
+                              "scenes": film_scenes("done", "done", "done", "done",
+                                                    s1={"say": "Тёплый свет для дома"})}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        films = app.film_view
+        app.visual_view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and films.available)
+        window = quick.window
+        studio = window.findChild(QObject, "studioView")
+        window.grabWindow()
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
+        wait_until(lambda: not app.bg.busy and films.hasFilm and len(films.soundParts) == 3)
+        director = item_named(studio, "directorView")
+        window.grabWindow()
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        def hub_sound(engine=None, **parts):
+            """The hub's `sound.changed`: the parts as they are now."""
+            for part in client.sound_state["parts"]:
+                part.update(parts.get(part["id"], {}))
+            if engine is not None:
+                client.sound_state["engine"]["ready"] = engine
+            app.on_event({"type": "sound.changed", "payload": client.sound()})
+            window.grabWindow()
+
+        switch, summary = item_named(director, "filmSound"), item_named(director, "filmAddedText")
+        assert not films.canSound and not switch.property("visible")  # a silent model, no «Звуки сцен» yet
+        assert summary.property("text") == "без диктора · без музыки" and not films.addsSound
+
+        click(window, item_named(director, "filmAdded"))  # «Звук фильма…»
+        sheet = window.findChild(QObject, "soundSheet")
+        wait_until(lambda: sheet.property("opened"))
+        window.grabWindow()
+        get = named("soundGet_voice")
+        assert get.property("visible") and get.property("text") == "Скачать 2,8 ГБ"
+        assert named("soundNote_voice").property("text") == "не установлено · 2,8 ГБ"
+        click(window, get)
+        wait_until(lambda: not app.bg.busy and client.sound_calls == [("install", "voice")])
+        window.grabWindow()
+        assert named("soundNote_voice").property("text") == "скачивается…"
+        assert named("soundStop_voice").property("visible") and not named("soundGet_voice").property("visible")
+        hub_sound(voice={"got": 1408527600})
+        assert named("soundNote_voice").property("text") == "скачивается: 50%"
+        click(window, named("soundStop_voice"))
+        wait_until(lambda: not app.bg.busy and client.sound_calls[-1] == ("stop", "voice"))
+        hub_sound(voice={"state": "missing", "got": 0, "error": "файл повреждён — скачайте ещё раз"})
+        assert named("soundNote_voice").property("text") == "файл повреждён — скачайте ещё раз"
+        hub_sound(engine=True, voice={"state": "ready", "error": ""}, effects={"state": "ready"})
+        assert named("soundNote_voice").property("text") == "установлено · 2,8 ГБ"
+        assert named("soundRemove_voice").property("visible") and not named("soundGet_voice").property("visible")
+        # «Звуки сцен» is here: the film of a silent model has «Со звуком», its scenes' sound is made at the join
+        assert films.canSound and switch.property("visible") and films.addsSound
+        assert "без звука" in films.soundNote
+
+        click(window, named("filmVoice"))  # the narrator
+        wait_until(lambda: named("menuItem_serena") is not None)
+        click(window, named("menuItem_serena"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"voice": "serena"}))
+        assert films.voice == "serena" and named("filmVoice").property("text") == "Серена — женский"
+        voices = window.findChild(QObject, "voiceMenu")
+        wait_until(lambda: not voices.property("visible"))  # closed: the next press is not the one that closes it
+
+        words = named("filmMusicWords")
+        assert not words.property("visible")
+        click(window, item_saying(named("filmMusic"), "По описанию"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"music": "made"}))
+        window.grabWindow()
+        assert words.property("visible")
+        words.setProperty("text", "calm warm piano")
+        click(window, named("soundDone"))  # «Готово»: the description is kept
+        wait_until(lambda: not sheet.property("opened") and not app.bg.busy)
+        assert client.film_calls[-1] == ("update", "f1", {"music_words": "calm warm piano"})
+        assert summary.property("text") == "диктор: Серена — женский · музыка по описанию"
+
+        click(window, item_named(director, "filmAdded"))  # the user's own music
+        wait_until(lambda: sheet.property("opened"))
+        assert words.property("text") == "calm warm piano"
+        (tmp_path / "song.mp3").write_bytes(b"ID3")
+        films.chooseMusic(QUrl.fromLocalFile(str(tmp_path / "song.mp3")).toString())  # the file dialog's answer
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "update")
+        assert client.film_calls[-1] == ("update", "f1", {"music_path": str(tmp_path / "song.mp3")})
+        window.grabWindow()
+        assert films.music == "file" and films.hasMusicFile and named("filmMusicFile").property("visible")
+        click(window, item_saying(named("filmMusic"), "Нет"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"music": ""}))
+        click(window, item_saying(named("filmMusic"), "Свой файл"))  # the file is kept: no dialog
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"music": "file"}))
+        calls = len(client.film_calls)
+        click(window, named("soundDone"))
+        wait_until(lambda: not sheet.property("opened") and not app.bg.busy)
+        assert len(client.film_calls) == calls  # nothing typed: nothing sent
+        assert summary.property("text") == "диктор: Серена — женский · своя музыка"
+
+        click(window, item_named(director, "filmEdit_1"))  # a scene's sheet: the narrator's line
+        scene = window.findChild(QObject, "sceneSheet")
+        wait_until(lambda: scene.property("opened"))
+        line = window.findChild(QObject, "sceneSay")
+        assert line.property("visible") and line.property("text") == "Тёплый свет для дома"
+        line.setProperty("text", "Свет, который остаётся с вами")
+        click(window, window.findChild(QObject, "sceneSave"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "scene")
+        assert client.film_calls[-1] == ("scene", "f1", 1, {"say": "Свет, который остаётся с вами"})
+        wait_until(lambda: not scene.property("opened"))
+
+        join = item_named(director, "filmJoin")  # the film joined with its sound: it says so, and stops
+        assert join.property("text") == "Собрать ролик" and join.property("enabled")
+        click(window, join)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("join", "f1", 0.0))
+        window.grabWindow()
+        assert films.statusText == "делаю звук и склеиваю ролик…"
+        assert join.property("text") == "Стоп" and join.property("enabled")
+        click(window, join)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("stop", "f1"))
+        window.grabWindow()
+        assert join.property("text") == "Собрать ролик"
+
+        films.pick("")  # a film not begun: what is chosen waits for «Собрать сценарий»
+        window.grabWindow()
+        assert summary.property("text") == "без диктора · без музыки"
+        calls = len(client.film_calls)
+        click(window, item_named(director, "filmAdded"))
+        wait_until(lambda: sheet.property("opened"))
+        click(window, named("filmVoice"))
+        wait_until(lambda: named("menuItem_ryan") is not None)
+        click(window, named("menuItem_ryan"))
+        wait_until(lambda: films.voice == "ryan" and not voices.property("visible"))
+        films.chooseMusic(str(tmp_path / "song.mp3"))
+        click(window, named("soundDone"))
+        wait_until(lambda: not sheet.property("opened") and not app.bg.busy)
+        assert len(client.film_calls) == calls and films.music == "file"
+        assert summary.property("text") == "диктор: Райан — мужской · своя музыка"
+        item_named(director, "filmIdea").setProperty("text", "Ролик о чайнике")
+        click(window, item_named(director, "filmWrite"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "write")
+        new, own = client.film_calls[calls], client.film_calls[calls + 1]
+        assert new[0] == "new" and (new[1]["voice"], new[1]["music"], new[1]["music_words"]) == ("ryan", "", "")
+        assert own == ("update", client.films_list[0]["id"], {"music_path": str(tmp_path / "song.mp3")})
+        assert films.voice == "ryan" and films.music == "file" and films.hasMusicFile
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

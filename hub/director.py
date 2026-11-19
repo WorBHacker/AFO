@@ -633,7 +633,9 @@ class Director:
         # (52.6) what is heard - asked of a film with sound: its video model films it, or (53.4) the engine of
         # sound makes it for the scenes filmed without
         loud = bool(found["sound"]) and (bool(model.get("sound")) or await self._sound.ready("effects"))
-        asks = {"sound": loud, "say": bool(found["voice"]), "music": found["music"] == "made"}
+        # the music's description is the director's only while the film has none: the user's own words stay
+        tune = found["music"] == "made" and not found["music_words"]
+        asks = {"sound": loud, "say": bool(found["voice"]), "music": tune}
         system, prompt, form = question(found["idea"], found["seconds"], found["shape"], model["modes"], bool(images),
                                         **asks)  # fmt: skip
         read = reader(clip=model["clip"], modes=model["modes"], photo=bool(images), seconds=found["seconds"],
@@ -973,7 +975,7 @@ class Director:
             plan["lines"] = [(starts[k], s["say"]) for k, s in enumerate(found["scenes"]) if s["say"]]
         if found["music"] == "made":
             if not found["music_words"]:
-                raise DirectorError(tr("напишите, какая музыка нужна фильму: «Звук» → «Музыка»"), 422)
+                raise DirectorError(tr("напишите, какая музыка нужна фильму: «Звук фильма» → «Музыка»"), 422)
             plan["music"] = found["music_words"]
         elif found["music"] == "file":
             if self.own(found["music_file"]) is None:
@@ -981,7 +983,7 @@ class Director:
             plan["music"] = self.own(found["music_file"])
         for part, needed in (("voice", bool(plan["lines"])), ("music", found["music"] == "made")):
             if needed and not await self._sound.ready(part):
-                raise DirectorError(tr("«{part}» не установлено: «Звук» → «Скачать»",
+                raise DirectorError(tr("«{part}» не установлено: «Звук фильма» → «Скачать»",
                                        part=tr(audio_cpp.PARTS[part]["name"])), 422)  # fmt: skip
         if found["sound"] and await self._sound.ready("effects"):
             plan["effects"] = [(starts[k], s["sound_words"], lengths[k]) for k, (s, job) in enumerate(
