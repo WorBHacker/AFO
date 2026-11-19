@@ -31,6 +31,7 @@ from .api import (
     connections,
     conversations,
     editor,
+    enhance,
     events_ws,
     films,
     goals,
@@ -83,6 +84,7 @@ from .connections import kept as kept_secrets
 from .db import Database
 from .director import Director
 from .editor import Editor
+from .enhance import Enhance
 from .events import EventBus
 from .gateway.registry import build_default_gateway
 from .goals import Goals
@@ -259,6 +261,9 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         app.state.sound = Sound(bus, card=app.state.card, llama_swap_url=settings.llama_swap_url,
                                 tools=app.state.visual.tools, models=models_home(),
                                 build=app.state.setup.recommended_build)  # fmt: skip
+        # «Улучшить ролик» (54): its programs beside ffmpeg, RelayVSR's weights beside the models
+        app.state.enhance = Enhance(bus, tools=app.state.visual.tools, models=models_home(),
+                                    machine=lambda: app.state.installer.machine())  # fmt: skip
         app.state.director = Director(db, bus, app.state.judge, app.state.visual,
                                       app.state.sound)  # the Studio's films (50)  # fmt: skip
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
@@ -359,6 +364,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.gpu.stop()
             await app.state.director.close()  # a film being shot: before the Studio's queue is closed
             await app.state.sound.close()  # a part's download: what came stays
+            await app.state.enhance.close()
             await app.state.visual.stop()
             await app.state.resources.stop()  # a failed fetch's next try (39.1)
             await app.state.setup.stop()
@@ -392,6 +398,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(visual.router)
     app.include_router(films.router)
     app.include_router(sound.router)
+    app.include_router(enhance.router)
     app.include_router(setup.router)
     app.include_router(release.router)
     app.include_router(tuning.router)
