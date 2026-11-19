@@ -723,14 +723,15 @@ class FakeClient:
         film = {"id": film_id, "idea": spec["idea"], "seconds": spec["seconds"], "shape": spec.get("shape", "wide"),
                 "photo": f"2026-11/film-{film_id}-photo.png" if spec.get("photo_png") else "", "director": "",
                 "model_id": "", "status": "draft", "error": "", "file": "", "fade": 0.0, "tokens": 0,
-                "cost_usd": 0.0, "checks": spec.get("checks", True), "checking": 0, "scenes": []}  # fmt: skip
+                "cost_usd": 0.0, "checks": spec.get("checks", True), "checking": 0,
+                "sound": spec.get("sound", True), "scenes": []}  # fmt: skip
         self.films_list.insert(0, film)
         return {"film": film}
 
     def update_film(self, film_id, fields):
         self.film_calls.append(("update", film_id, fields))
         return self._film(film_id, **{k: v for k, v in fields.items()
-                                      if k in ("idea", "seconds", "shape", "fade", "checks")})  # fmt: skip
+                                      if k in ("idea", "seconds", "shape", "fade", "checks", "sound")})  # fmt: skip
 
     def delete_film(self, film_id):
         self.film_calls.append(("delete", film_id))
@@ -10966,6 +10967,73 @@ def test_the_director_in_the_studio_makes_a_film_by_clicks(qapp, tmp_path):
         click(window, item_saying(item_named(studio, "studioKind"), "Вручную"))
         assert films.kind == "manual" and item_named(studio, "visualDraw").property("visible")
         assert not director.property("visible")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_directors_film_has_a_sound_switch_and_a_scenes_sound_is_changed_by_hand(qapp):
+    """52.6: a film whose video model films with sound - «Со звуком», the film's own switch, told to the hub at the
+    click; a scene's sheet shows what is heard in it and saves it changed. A film whose model films no sound has
+    neither. Real QML, mouse clicks, no screen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX-2.3", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text", "picture", "frames"], "sound": True,
+                                 "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.films_list = [{"id": "f1", "idea": "Гроза над городом", "seconds": 15, "shape": "wide", "photo": "",
+                              "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
+                              "tokens": 0, "cost_usd": 0.0, "checks": True, "checking": 0, "sound": True,
+                              "scenes": film_scenes("new", "new", "new", "new",
+                                                    s1={"sound_words": "heavy rain"})}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        films = app.film_view
+        app.visual_view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and films.available)
+        window = quick.window
+        studio = window.findChild(QObject, "studioView")
+        window.grabWindow()
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
+        wait_until(lambda: not app.bg.busy and films.hasFilm)
+        director = item_named(studio, "directorView")
+        switch = item_named(director, "filmSound")
+        window.grabWindow()
+        assert films.canSound and films.sound and switch.property("visible") and switch.property("checked")
+        click(window, switch)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"sound": False}))
+        assert not films.sound and not switch.property("checked")
+        click(window, switch)
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("update", "f1", {"sound": True}))
+        assert films.sound and switch.property("checked")
+
+        click(window, item_named(director, "filmEdit_1"))  # «Изменить»
+        sheet = window.findChild(QObject, "sceneSheet")
+        wait_until(lambda: sheet.property("opened"))
+        heard = window.findChild(QObject, "sceneSound")
+        assert heard.property("visible") and heard.property("text") == "heavy rain"
+        heard.setProperty("text", "distant thunder")
+        click(window, window.findChild(QObject, "sceneSave"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "scene")
+        assert client.film_calls[-1] == ("scene", "f1", 1, {"sound_words": "distant thunder"})
+        wait_until(lambda: not sheet.property("opened"))
+
+        client.visual_videos[0]["sound"] = False  # a model that films no sound: neither the switch nor the field
+        app.visual_view.load()
+        wait_until(lambda: not app.bg.busy and not films.canSound)
+        window.grabWindow()
+        assert not switch.property("visible")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

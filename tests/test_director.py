@@ -595,3 +595,78 @@ def test_a_films_look_at_its_scenes_is_a_switch_and_a_scene_keeps_what_the_look_
     hub.portal.call(hub.app.state.director.start)  # the hub comes up again
     after = client.film(film_id)["film"]
     assert (after["status"], after["checking"], after["checks"]) == ("ready", 0, True)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_film_is_written_filmed_and_joined_with_sound(hub, monkeypatch, tmp_path):  # noqa: F811
+    """52.6: a film whose video model films with sound - the director is asked what is heard in each scene and its
+    answer kept; a scene is filmed with that sound (the engine asked for a WebM, the words after the prompt), the
+    scenes joined into a film with sound (a real ffmpeg). What is heard changed by hand - the scene is stale; the
+    film's «Со звуком» off - its scenes are filmed silent. A film whose model films no sound is asked nothing."""
+    from app.hub_client import HubClient
+    from hub import ffmpeg
+    from tests.test_ffmpeg import _clip_with_sound, _said
+    from tests.test_visual import FakeDrawSwap, _install
+
+    system, _prompt, form = director.question("Гроза над городом", 10, "wide", ["text"], False, sound=True)
+    assert '"sound": "..."' in form and "what is heard" in system
+    system, _prompt, form = director.question("Гроза над городом", 10, "wide", ["text"], False)
+    assert '"sound"' not in form and "what is heard" not in system
+    board = {"scenes": [
+        {"mode": "text", "seconds": 5, "words": "Дождь", "prompt": "rain falls on a street", "sound": " heavy  rain "},
+        {"mode": "text", "seconds": 5, "words": "Молния", "prompt": "lightning over the roofs"}]}  # fmt: skip
+    read = director.reader(clip=CLIP, modes=["text"], photo=False, seconds=10, sound=True)
+    assert [s["sound_words"] for s in read(json.dumps(board))["scenes"]] == ["heavy rain", ""]
+    silent = director.reader(clip=CLIP, modes=["text"], photo=False, seconds=10)
+    assert [s["sound_words"] for s in silent(json.dumps(board))["scenes"]] == ["", ""]
+
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    files = [
+        {"role": role, "repo": "test/Film-GGUF", "path": name, "size": 1, "at": str(tmp_path / name)}
+        for role, name in (("diffusion-model", "film.gguf"), ("audio-vae", "film_audio_vae.safetensors"))
+    ]
+    for f in files:
+        Path(f["at"]).write_bytes(b"x")
+    _install(hub, "film", LTX, files)
+    loud = tmp_path / "loud.webm"
+    _clip_with_sound(program, loud, 121)
+    FakeDrawSwap.filmed = loud.read_bytes()
+    cloud = SeeingCloud([json.dumps(board, ensure_ascii=False)])
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+        media = hub.app.state.visual.media
+        made = client.new_film({"idea": "Гроза над городом", "seconds": 10, "checks": False})["film"]
+        film_id = made["id"]
+        assert made["sound"] is True
+        client.write_film(film_id)
+        written = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [s["sound_words"] for s in written["scenes"]] == ["heavy rain", ""]
+        assert "what is heard" in json.dumps(cloud.asked[0]["messages"][0])
+
+        client.shoot_film(film_id)
+        shot = _until(hub, film_id, lambda f: f["status"] == "ready" and all(s["status"] == "done"
+                                                                              for s in f["scenes"]))  # fmt: skip
+        asked = FakeDrawSwap.video[-2:]
+        assert [a["output_format"] for a in asked] == ["webm", "webm"]
+        assert [a["prompt"] for a in asked] == ["rain falls on a street Sound: heavy rain", "lightning over the roofs"]
+        assert all(s["clip"].endswith(".webm") for s in shot["scenes"])
+        client.join_film(film_id)
+        joined = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+        assert "Audio: aac" in _said(program, "-i", str(media / joined["file"]))
+
+        edited = client.update_scene(film_id, 2, {"sound_words": "  distant   thunder "})["film"]
+        assert (edited["scenes"][1]["sound_words"], edited["scenes"][1]["status"]) == ("distant thunder", "stale")
+        assert edited["file"] == "" and edited["scenes"][0]["status"] == "done"
+        off = client.update_film(film_id, {"sound": False})["film"]
+        assert off["sound"] is False
+        FakeDrawSwap.filmed = None  # the engine's WebP, as a silent clip is
+        client.shoot_film(film_id, 2)
+        again = _until(hub, film_id, lambda f: f["status"] == "ready" and f["scenes"][1]["status"] == "done")
+        assert again["scenes"][1]["clip"].endswith(".webp")
+        assert (FakeDrawSwap.video[-1]["output_format"], FakeDrawSwap.video[-1]["prompt"]) == (
+            "webp", "lightning over the roofs")  # fmt: skip
+    finally:
+        cloud.close()

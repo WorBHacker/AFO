@@ -73,6 +73,7 @@ class FilmView(QObject):
         self._no_photo = False  # the film's photo taken away, not sent yet
         self._joint = "cut"
         self._checks = True  # «Проверять сцены» of a film not begun yet; one begun has its own
+        self._sound = True  # «Со звуком» (52.6), the same way
         self._shown = 0  # the scene in the player; 0 - the joined film
         self._run: set[int] = set()  # the scenes of the shooting going on: «ещё ≈» counts them
         self._asking = False  # a request of this view's is on its way
@@ -207,6 +208,16 @@ class FilmView(QObject):
         """«Проверять сцены» (51.4): the director's model looks at each scene filmed; one not good is filmed anew."""
         return bool(self._film.get("checks", self._checks)) if self.hasFilm else self._checks
 
+    @Property(bool, notify=changed)
+    def canSound(self) -> bool:
+        """Whether the film can have sound (52.6): its video model films it."""
+        return bool((self._model() or {}).get("sound"))
+
+    @Property(bool, notify=changed)
+    def sound(self) -> bool:
+        """«Со звуком» (52.6): the scenes are filmed with sound, the director says what is heard in each."""
+        return bool(self._film.get("sound", self._sound)) if self.hasFilm else self._sound
+
     # ---- the film's words ----
 
     def _model(self) -> dict[str, Any] | None:
@@ -326,6 +337,7 @@ class FilmView(QObject):
                             length=length_text(seconds)),
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
                 "failed": status == "failed" or rejected, "filmed": clip is not None,
+                "sound": scene.get("sound_words") or "",
                 "thumb": QUrl.fromLocalFile(str(still_of(clip))).toString() if clip is not None else "",
                 "shootText": tr("Переснять") if clip is not None else tr("Снять")}  # fmt: skip
 
@@ -417,6 +429,7 @@ class FilmView(QObject):
         self._shape = film.get("shape", "wide")
         self._joint = "fade" if film.get("fade") else "cut"
         self._checks = bool(film.get("checks", True))
+        self._sound = bool(film.get("sound", True))
         if not film.get("file"):  # not joined yet: its latest scene filmed plays
             filmed = [s["n"] for s in self._scenes() if s["status"] == "done" and self._clip(s) is not None]
             self._shown = filmed[-1] if filmed else 0
@@ -506,6 +519,20 @@ class FilmView(QObject):
         else:
             self.changed.emit()
 
+    @Slot(bool)
+    def setSound(self, on: bool) -> None:
+        """«Со звуком» (52.6): a film begun is told at once - the scenes filmed stay as they are, the next ones are
+        filmed so; one not begun keeps it for «Собрать сценарий»."""
+        if on == self.sound:
+            return
+        self._sound = on
+        if self.hasFilm:
+            film_id = self._film["id"]
+            self._request(lambda: self.app.client.update_film(film_id, {"sound": on}),
+                          N_("Звук не переключить: {error}"))  # fmt: skip
+        else:
+            self.changed.emit()
+
     @Slot(str)
     def choosePhoto(self, url: str) -> None:
         """«Фото товара…»: any picture Qt reads, sent as PNG with «Собрать сценарий»."""
@@ -544,7 +571,7 @@ class FilmView(QObject):
     def _write(self) -> None:
         client, film = self.app.client, self._film
         fields: dict[str, Any] = {"idea": self._idea.strip(), "seconds": int(self._length), "shape": self._shape,
-                                  "checks": self.checks}  # fmt: skip
+                                  "checks": self.checks, "sound": self.sound}  # fmt: skip
         if self._photo:
             fields["photo_png"] = self._photo["png"]
         elif self._no_photo:
@@ -603,10 +630,10 @@ class FilmView(QObject):
         film_id, fade = self._film["id"], FADE_S if self._joint == "fade" else 0.0
         self._request(lambda: self.app.client.join_film(film_id, fade), N_("Не собрать ролик: {error}"))
 
-    @Slot(int, str, str, str, str)
-    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str) -> None:
+    @Slot(int, str, str, str, str, str)
+    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str, sound: str) -> None:
         """«Изменить» → «Сохранить»: what has changed of the scene - what happens, the description for the video
-        model, how it begins, its length (`length`: whole seconds, "" - as it is)."""
+        model, how it begins, its length (`length`: whole seconds, "" - as it is), what is heard in it (52.6)."""
         scene = next((s for s in self._scenes() if s["n"] == n), None)
         if scene is None or self.busy:
             return
@@ -619,6 +646,8 @@ class FilmView(QObject):
             fields["mode"] = mode
         if length and round((scene["frames"] - 1) / self._fps(), 2) != float(length):
             fields["seconds"] = float(length)
+        if " ".join(sound.split()) != (scene.get("sound_words") or ""):
+            fields["sound_words"] = sound
         if fields:
             film_id = self._film["id"]
             self._request(lambda: self.app.client.update_scene(film_id, n, fields), N_("Сцену не изменить: {error}"))

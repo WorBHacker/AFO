@@ -62,6 +62,7 @@ class New(Photo):
     director: str = Field(default="", max_length=200)  # '' - the model of the role «Режиссёр»
     model: str = Field(default="", max_length=120)  # '' - the first video model that can film it
     checks: bool = True  # (51.1) each scene filmed is looked at by the director's model
+    sound: bool = True  # (52.6) the scenes are filmed with sound, when the video model films it
 
 
 class Change(Photo):
@@ -74,6 +75,7 @@ class Change(Photo):
     model: str | None = Field(default=None, max_length=120)
     fade: float | None = Field(default=None, ge=d.FADE_S[0], le=d.FADE_S[1])
     checks: bool | None = None
+    sound: bool | None = None
     photo: Literal[""] | None = None
 
 
@@ -85,6 +87,7 @@ class Scene(BaseModel):
     mode: Literal["text", "picture", "continue", "frames"] | None = None
     seconds: float | None = Field(default=None, ge=d.SCENE_S[0], le=d.SCENE_S[1])
     seed: int | None = None
+    sound_words: str | None = Field(default=None, max_length=2000)  # (52.6) what is heard in the scene
 
 
 class Shoot(BaseModel):

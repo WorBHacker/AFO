@@ -7,10 +7,13 @@ lie in data/media: the photo (film-<id>-photo.png), the clips (their jobs'), the
 new name each time it is joined) - the cleanup of old pictures leaves them alone while the film is there (`kept`,
 hub/retention.py).
 
-The look (stage 51): each scene filmed is shown to the director's model - three frames of the take and the product's
-photo; a take with a plain fault (the wrong product, no motion, distortions, drifted colours, not the scene) is
-filmed anew by the prompt the look writes - twice a scene at most, within the shooting's own limits. A look that
-does not come out stops no film.
+The look (stage 51): each scene filmed is shown to the director's model - six frames of the take and the product's
+photo; a take with a plain fault (the wrong product, no motion, parts out of number or place, distortions, drifted
+colours, not the scene) is filmed anew by the prompt the look writes - twice a scene at most, within the shooting's
+own limits. A look that does not come out stops no film.
+
+Sound (stage 52): a film whose video model films with sound (hub/visual.py) has its own switch; the director is
+asked what is heard in each scene, a scene is filmed with it, and the joined film keeps the scenes' sound.
 """
 
 from __future__ import annotations
@@ -67,8 +70,8 @@ alone stays a still picture.
 - Something must visibly move in every scene. Do not write "static" or "still" in a scene whose subject moves: \
 the camera follows, tracks or holds on the subject.
 - "words": one short sentence saying what happens in the scene, in the language of the idea - the user reads it.
-- Keep the product the same from scene to scene: the same thing, the same colours, the same place unless the idea \
-moves it.
+{sound}- Keep the product the same from scene to scene: the same thing, the same colours, the same place unless \
+the idea moves it.
 
 Answer with the JSON object only: {form}"""  # i18n: keep
 MODE_WORDS = {
@@ -80,14 +83,18 @@ MODE_WORDS = {
               "frame - a return to the product. Not for the first scene.",
     "text": '- "text": by your words alone, nothing shown to the video model.',
 }  # fmt: skip
-FORM = ('{{"scenes": [{{"mode": {modes}, "seconds": <number>, "words": "...", "prompt": "..."}}, ...]}} - '
+# (52.6) asked only of a film whose video model films with sound
+SOUND_RULE = ('- "sound": English, one short sentence: what is heard in the scene - the place\'s own sounds, the '
+              "product's, what moves in it. No music and no speech unless the idea asks for them. The video model "
+              "films the scene with this sound.\n")  # fmt: skip
+FORM = ('{{"scenes": [{{"mode": {modes}, "seconds": <number>, "words": "...", "prompt": "..."{sound}}}, ...]}} - '
         "{seconds} seconds in all")  # fmt: skip
 SHAPES = ("wide", "tall", "square")
 MODES = ("text", "picture", "continue", "frames")  # how a scene begins: film_scenes.mode
 FILM_FIELDS = ("idea", "seconds", "shape", "photo", "director", "model_id", "status", "error", "file", "fade",
-               "tokens", "cost_usd", "checks", "checking")  # fmt: skip
+               "tokens", "cost_usd", "checks", "checking", "sound")  # fmt: skip
 SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error", "cfg", "tries", "verdict",
-                "reason")  # fmt: skip
+                "reason", "sound_words")  # fmt: skip
 UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the look has said nothing of (51.1)
 
 
@@ -99,7 +106,7 @@ def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
     ).fetchall()  # fmt: skip
     listed = [{k: s[k] for k in s.keys() if k != "film_id"} for s in scenes]  # noqa: SIM118
-    return {**dict(row), "checks": bool(row["checks"]), "scenes": listed}
+    return {**dict(row), "checks": bool(row["checks"]), "sound": bool(row["sound"]), "scenes": listed}
 
 
 def film(conn: sqlite3.Connection, film_id: str) -> dict[str, Any] | None:
@@ -115,13 +122,15 @@ def films(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def new_film(conn: sqlite3.Connection, *, idea: str, seconds: int, shape: str = "wide", photo: str = "",
-             director: str = "", model_id: str = "", checks: bool = True) -> dict[str, Any]:  # fmt: skip
-    """A film begun: a draft, no scenes yet. `checks` (51.1) - its scenes are looked at once filmed."""
+             director: str = "", model_id: str = "", checks: bool = True,
+             sound: bool = True) -> dict[str, Any]:  # fmt: skip
+    """A film begun: a draft, no scenes yet. `checks` (51.1) - its scenes are looked at once filmed; `sound` (52.6)
+    - they are filmed with sound, when the video model films it."""
     film_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id, checks) VALUES (?, ?, ?, ?, ?, ?, "
-        "?, ?)",
-        (film_id, idea, seconds, shape, photo, director, model_id, int(checks)),
+        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id, checks, sound) VALUES (?, ?, ?, ?, "
+        "?, ?, ?, ?, ?)",
+        (film_id, idea, seconds, shape, photo, director, model_id, int(checks), int(sound)),
     )
     return film(conn, film_id)
 
@@ -139,9 +148,10 @@ def set_scenes(conn: sqlite3.Connection, film_id: str, scenes: list[dict[str, An
     of them filmed yet."""
     conn.execute("DELETE FROM film_scenes WHERE film_id = ?", (film_id,))
     conn.executemany(
-        "INSERT INTO film_scenes (film_id, n, mode, words, prompt, frames, seed) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [(film_id, n, s["mode"], s.get("words", ""), s["prompt"], int(s["frames"]), s.get("seed"))
-         for n, s in enumerate(scenes, start=1)],
+        "INSERT INTO film_scenes (film_id, n, mode, words, prompt, frames, seed, sound_words) VALUES (?, ?, ?, ?, ?, "
+        "?, ?, ?)",
+        [(film_id, n, s["mode"], s.get("words", ""), s["prompt"], int(s["frames"]), s.get("seed"),
+          s.get("sound_words", "")) for n, s in enumerate(scenes, start=1)],
     )  # fmt: skip
     conn.execute("UPDATE films SET updated_at = ? WHERE id = ?", (utc_now(), film_id))
 
@@ -174,11 +184,15 @@ def role_model(conn: sqlite3.Connection) -> str | None:
     return roles.get(ROLE) or None
 
 
-def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool) -> tuple[str, str, str]:
-    """What the director is asked: (system, prompt, form) - the form is said again when the answer is not it."""
+def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool, *,
+             sound: bool = False) -> tuple[str, str, str]:  # fmt: skip
+    """What the director is asked: (system, prompt, form) - the form is said again when the answer is not it.
+    `sound` (52.6) - the film is filmed with sound: what is heard in each scene is asked too."""
     can = scene_modes(modes, photo)
-    form = FORM.format(modes=" | ".join(f'"{m}"' for m in can), seconds=seconds)
-    system = SYSTEM.format(modes="\n".join(MODE_WORDS[m] for m in can), low=SCENE_S[0], high=SCENE_S[1], form=form)
+    form = FORM.format(modes=" | ".join(f'"{m}"' for m in can), seconds=seconds,
+                       sound=', "sound": "..."' if sound else "")  # fmt: skip
+    system = SYSTEM.format(modes="\n".join(MODE_WORDS[m] for m in can), low=SCENE_S[0], high=SCENE_S[1], form=form,
+                           sound=SOUND_RULE if sound else "")  # fmt: skip
     frame = {"wide": "wide (landscape)", "tall": "tall (portrait, for a phone)", "square": "square"}[shape]
     prompt = (f"<idea>\n{idea}\n</idea>\nThe film: {seconds} seconds, {frame}. "
               + ("The product's photo is attached." if photo else "There is no photo of the product.")
@@ -186,8 +200,10 @@ def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool)
     return system, prompt, form
 
 
-def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int) -> Callable[[str], dict | None]:
-    """What reads the director's answer: {scenes: [{mode, words, prompt, frames}], notes} - a scene's seconds into
+def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int,
+           sound: bool = False) -> Callable[[str], dict | None]:  # fmt: skip
+    """What reads the director's answer: {scenes: [{mode, words, prompt, frames, sound_words - what is heard, of a
+    film with sound (52.6), else ''}], notes} - a scene's seconds into
     the frames the family's VAE takes (`clip`: fps, step), its length within a scene's, a mode this film cannot
     film put right; None - no storyboard, asked again: no JSON, no scenes or too many, a scene with no prompt, and -
     the first time only - a length far from the one asked (the second is taken as it is, and said)."""
@@ -220,9 +236,10 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int)
                 return None
             length = min(SCENE_S[1], max(SCENE_S[0], length or SCENE_S[1]))
             words = " ".join(str(item.get("words") or "").split()) or prompt
+            heard = " ".join(str(item.get("sound") or "").split())[: visual.SOUND_WORDS] if sound else ""
             scenes.append({"mode": mode_of(str(item.get("mode") or ""), not scenes),
                            "words": words[: TEXT_CHARS["words"]], "prompt": prompt[: TEXT_CHARS["prompt"]],
-                           "frames": frames_for(length, fps, step)})  # fmt: skip
+                           "frames": frames_for(length, fps, step), "sound_words": heard})  # fmt: skip
         got = sum(s["frames"] - 1 for s in scenes) / fps
         notes = []
         if abs(got - seconds) > seconds * NEAR:
@@ -448,8 +465,8 @@ class Director:
                     path.unlink()
 
     async def create(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """A film begun (50.8): {idea, seconds, shape, director, model, checks} and the product's photo, if there is
-        one (`_picture`). A draft, no scenes yet."""
+        """A film begun (50.8): {idea, seconds, shape, director, model, checks, sound} and the product's photo, if
+        there is one (`_picture`). A draft, no scenes yet."""
         idea = str(spec.get("idea") or "").strip()
         if not idea:
             raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
@@ -457,7 +474,7 @@ class Director:
         made = await self._db.acall(lambda conn: new_film(
             conn, idea=idea, seconds=int(spec.get("seconds") or 15), shape=str(spec.get("shape") or "wide"),
             director=str(spec.get("director") or ""), model_id=str(spec.get("model") or ""),
-            checks=spec.get("checks") is not False))  # fmt: skip
+            checks=spec.get("checks") is not False, sound=spec.get("sound") is not False))  # fmt: skip
         kept = {"photo": await self._keep_photo(made["id"], photo)} if photo is not None else {}
         return await self._changed(made["id"], **kept)
 
@@ -475,6 +492,8 @@ class Director:
             fields["model_id"] = str(spec["model"])
         if spec.get("checks") is not None:
             fields["checks"] = int(bool(spec["checks"]))
+        if spec.get("sound") is not None:  # (52.6) the scenes filmed stay as they are: the next ones are filmed so
+            fields["sound"] = int(bool(spec["sound"]))
         photo = await self._picture(spec)
         if photo is not None:
             fields["photo"] = await self._keep_photo(film_id, photo)
@@ -537,8 +556,11 @@ class Director:
         if not chosen:
             raise DirectorError(tr("выберите модель для роли «Режиссёр»: «Модели» → «Роли»"), 422)
         images = await self._photo(found)
-        system, prompt, form = question(found["idea"], found["seconds"], found["shape"], model["modes"], bool(images))
-        read = reader(clip=model["clip"], modes=model["modes"], photo=bool(images), seconds=found["seconds"])
+        loud = bool(found["sound"]) and bool(model.get("sound"))  # (52.6) what is heard - asked of a film with sound
+        system, prompt, form = question(found["idea"], found["seconds"], found["shape"], model["modes"], bool(images),
+                                        sound=loud)  # fmt: skip
+        read = reader(clip=model["clip"], modes=model["modes"], photo=bool(images), seconds=found["seconds"],
+                      sound=loud)  # fmt: skip
         stop = self._stops[film_id] = asyncio.Event()
         began = await self._changed(film_id, status="writing", error="")
 
@@ -593,7 +615,8 @@ class Director:
 
     async def edit_scene(self, film_id: str, n: int, spec: dict[str, Any]) -> dict[str, Any]:
         """A scene changed by hand (50.8) - only what `spec` names: words, prompt, mode, seconds, seed (none or below
-        0 - a new one each time it is filmed). What the video model is given has changed - a clip filmed is of the
+        0 - a new one each time it is filmed), sound_words (52.6: what is heard). What the video model is given has
+        changed - a clip filmed is of the
         scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten, and
         what the look said of it (51.1) is of another scene. The words alone change nothing else."""
         found = await self._film(film_id)
@@ -621,7 +644,9 @@ class Director:
                 fields["frames"] = frames_for(length, int(model["clip"]["fps"]), int(model["clip"]["step"]))
         if "seed" in spec:
             fields["seed"] = None if spec["seed"] is None or int(spec["seed"]) < 0 else int(spec["seed"])
-        other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed") if k in fields)
+        if spec.get("sound_words") is not None:
+            fields["sound_words"] = " ".join(str(spec["sound_words"]).split())[: visual.SOUND_WORDS]
+        other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed", "sound_words") if k in fields)
         if other:
             fields |= UNLOOKED
         if other and scene["status"] != "new":
@@ -675,6 +700,8 @@ class Director:
                 "seconds": (scene["frames"] - 1) / fps, "seed": scene["seed"]}  # fmt: skip
         if scene.get("cfg"):  # (51.3) the guidance the look asked for
             spec["cfg"] = scene["cfg"]
+        # (52.6) the film's switch and what is heard in the scene; a model that films no sound takes neither
+        spec |= {"sound": bool(found["sound"]), "sound_words": scene.get("sound_words") or ""}
         if scene["mode"] in ("picture", "frames"):
             photo = (await self._photo(found) or [{}])[0].get("data")
             if not photo:

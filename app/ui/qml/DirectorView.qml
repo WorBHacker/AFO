@@ -89,6 +89,7 @@ Item {
             modes = Films.sceneModes(card.n)
             sceneWords.text = card.words
             scenePrompt.text = card.prompt
+            sceneSound.text = card.sound
             open()
         }
 
@@ -129,6 +130,14 @@ Item {
                 width: sceneSheet.availableWidth
                 height: 110
             }
+            Label { text: qsTr("Звук: что слышно (по-английски)"); visible: sceneSound.visible }
+            Area {  // 52.6: a film with sound
+                id: sceneSound
+                edit.objectName: "sceneSound"
+                visible: Films.canSound && Films.sound
+                width: sceneSheet.availableWidth
+                height: 48
+            }
             Label { text: qsTr("Как начинается") }
             Segmented {
                 objectName: "sceneMode"
@@ -147,7 +156,7 @@ Item {
             }
             Note {
                 width: sceneSheet.availableWidth
-                text: qsTr("Изменилось описание, начало или длина — сцену нужно переснять, а с ней и те, что её продолжают.")
+                text: qsTr("Изменилось описание, звук, начало или длина — сцену нужно переснять, а с ней и те, что её продолжают.")
                 color: Theme.p.faint
             }
             Row {
@@ -160,7 +169,8 @@ Item {
                     text: qsTr("Сохранить")
                     enabled: scenePrompt.text.trim() !== ""
                     onClicked: {
-                        Films.saveScene(sceneSheet.n, sceneWords.text, scenePrompt.text, sceneSheet.mode, sceneSheet.length)
+                        Films.saveScene(sceneSheet.n, sceneWords.text, scenePrompt.text, sceneSheet.mode,
+                                        sceneSheet.length, sceneSound.text)
                         sceneSheet.close()
                     }
                 }
@@ -283,7 +293,21 @@ Item {
                     Binding { target: checks; property: "checked"; value: Films.checks }  // a click does not cut it
                 }
                 Note {
-                    text: qsTr("Режиссёр смотрит три кадра каждой снятой сцены и фото товара. Брак — товар не тот, нет движения, искажения, ушёл цвет — переснимается с исправленным описанием, не больше двух раз. Облачной модели кадры уходят в облако.")
+                    text: qsTr("Режиссёр смотрит шесть кадров каждой снятой сцены и фото товара. Брак — товар не тот, нет движения, искажения, ушёл цвет — переснимается с исправленным описанием, не больше двух раз. Облачной модели кадры уходят в облако.")
+                    color: Theme.p.faint
+                }
+                OnOff {  // 52.6: a video model that films with sound
+                    id: filmSound
+                    objectName: "filmSound"
+                    visible: Films.canSound
+                    text: qsTr("Со звуком")
+                    enabled: !Films.busy
+                    onToggled: Films.setSound(checked)
+                    Binding { target: filmSound; property: "checked"; value: Films.sound }  // a click does not cut it
+                }
+                Note {
+                    visible: Films.canSound
+                    text: qsTr("Модель видео снимает сцены со звуком. Что слышно в сцене, пишет режиссёр; поправить — «Изменить» у сцены. Выключатель действует на сцены, снятые после него.")
                     color: Theme.p.faint
                 }
                 Label { text: qsTr("Стыки сцен"); visible: Films.hasScenes }
