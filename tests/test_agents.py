@@ -677,6 +677,40 @@ def test_a_task_gets_its_own_files_and_nothing_else_of_the_projects(hub, repo): 
     assert tasks[1]["files"] == [{"project_id": pid, "path": "src/app.py", "project": "proj"}]
 
 
+def test_a_task_runs_on_the_model_it_names(hub, repo):  # noqa: F811
+    """61.3: a task's `model` instead of a profile for each model - its agent's role, tools and rights on it; the GPU's
+    queue goes by it; a model the hub does not offer, a cloud one for a local-only project are refused before
+    anything starts; the coordinator's role names the models."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local-only by default (D10)
+    wrong = [
+        (given(("a", "Писатель", "x", {"model": "nope"})),
+         "task 'a': no model 'nope' to run it on; the models: cloudy/echo (cloud), fake/echo (local), fake/other "
+         "(local)"),
+        (given(("a", "Правщик", "x", {"model": "cloudy/echo"})),
+         "task 'a': proj - only local models may see it (D10), and cloudy/echo is a cloud one"),
+    ]  # fmt: skip
+    good = given(("x", "Писатель", "x1", {"model": "fake/other"}), ("y", "Писатель", "y1"),
+                 ("z", "Писатель", "z1", {"model": "other"}))  # fmt: skip
+    script = [*([dict(c, id=f"c{n}")] for n, (c, _) in enumerate(wrong)), [good]]
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": script}, pause=0.05, refs=("echo", "other")))
+    plug(hub, ByTask("cloudy", "cloud", {}))
+    profile(hub, name="Писатель", tools=[])
+    profile(hub, name="Правщик", tools=["read_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    said = outputs(hub, run_id)
+    assert [(b["output"], b["error"]) for b in said[:-1]] == [(error, True) for _, error in wrong]
+    assert said[-1]["output"].startswith("3 tasks: 3 done.")
+    assert ("Models a task of delegate_tasks may run on (`model`): cloudy/echo (cloud), fake/echo (local), "
+            "fake/other (local)") in _system(provider.calls[0])  # fmt: skip
+    assert provider.started == [("other", "x1"), ("other", "z1"), ("echo", "y1")]  # the GPU's queue: by the model
+    tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert {k: (t["model_id"], t["given_model_id"]) for k, t in tasks.items()} == {
+        "x": ("fake/other", "fake/other"), "y": ("fake/echo", None), "z": ("fake/other", "fake/other")}  # fmt: skip
+    assert run_of(hub, tasks["x"]["run_id"])["profile_name"] == "Писатель"  # its agent, on another model
+
+
 # --- a task checked before the coordinator gets it (stage 16.3, D50) ---
 
 DONE = "if (Test-Path done.txt) { exit 0 } else { exit 1 }"

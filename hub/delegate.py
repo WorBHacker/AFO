@@ -6,10 +6,15 @@ before anything starts."""
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import Callable
 from typing import Any
 
+from . import store
+from .claude_code import PROVIDER as CLAUDE_CODE
+
 MAX_TASKS = 8
+MODELS_SHOWN = 30  # the models a coordinator's role and its errors name (61.3): a hub may know hundreds
 MAX_FILES = 3  # a task's own files (61.2): put before its agent, the rest of its window left for the work
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ROUNDS = 3  # a task with criteria: its work, then rounds after checks that found it short - in all (16.3)
@@ -75,6 +80,11 @@ DELEGATE_MANY: dict[str, Any] = {
                             "model's window stays for the work. A path in the agent's project, or «project: path» "
                             "when it has several.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "The model to run the task on, as your role lists the models - instead "
+                            "of its agent's own; the agent's role, tools and rights stay.",
+                        },
                     },
                     "required": ["task_id", "agent_profile", "prompt"],
                 },
@@ -131,8 +141,12 @@ def check_batch(args: dict[str, Any]) -> list[dict[str, Any]]:
         if (not isinstance(files, list) or len(files) > MAX_FILES
                 or not all(isinstance(f, str) and f.strip() for f in files)):  # fmt: skip
             raise BatchError(f"task {task_id!r}: `files` - up to {MAX_FILES} paths")
+        model = item.get("model") or ""  # found among the hub's models (hub/agents.py)
+        if not isinstance(model, str):
+            raise BatchError(f"task {task_id!r}: `model` - a model's name, as your role lists them")
         tasks.append({"task_id": task_id, "agent_profile": agent, "prompt": prompt, "dependencies": deps,
-                      "criteria": criteria, "files": list(dict.fromkeys(f.strip() for f in files))})  # fmt: skip
+                      "criteria": criteria, "files": list(dict.fromkeys(f.strip() for f in files)),
+                      "model": model.strip()})  # fmt: skip
     ids = {t["task_id"] for t in tasks}
     for task in tasks:
         for dep in task["dependencies"]:
@@ -142,6 +156,17 @@ def check_batch(args: dict[str, Any]) -> list[dict[str, Any]]:
     if circle:
         raise BatchError(f"the tasks wait for each other in a circle: {', '.join(circle)}")
     return tasks
+
+
+def task_models(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The models a task may be given (61.3): enabled, offered in the picker, not Claude Code (an agent of its own)."""
+    return [m for m in store.list_models(conn) if not m.get("hidden") and m["provider"] != CLAUDE_CODE]
+
+
+def models_text(models: list[dict[str, Any]]) -> str:
+    """The models by their names as a task takes them, local or cloud - MODELS_SHOWN of them at most."""
+    shown = ", ".join(f"{m['id']} ({m['locality']})" for m in models[:MODELS_SHOWN]) or "none"
+    return shown + (f" and {len(models) - MODELS_SHOWN} more" if len(models) > MODELS_SHOWN else "")
 
 
 def _circle(tasks: list[dict[str, Any]]) -> list[str]:

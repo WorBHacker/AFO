@@ -98,7 +98,7 @@ from .approvals import (
 )
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
-from .delegate import TASK_DIFF
+from .delegate import TASK_DIFF, models_text, task_models
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block, until_cancelled
@@ -1760,6 +1760,8 @@ def _instructions(conn, conversation_id: str) -> str:
         ).fetchall()
         lines = [f"- {o['name']}: {(o['instructions'].splitlines() or [''])[0][:200]}" for o in others]
         text += f"\n\nAgents you can give tasks to with {' or '.join(giving)}:\n" + ("\n".join(lines) or "- none yet")
+    if "delegate_tasks" in giving:  # a task may run on another model than its agent's (61.3)
+        text += f"\nModels a task of delegate_tasks may run on (`model`): {models_text(task_models(conn))}"
     return text
 
 

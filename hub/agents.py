@@ -61,7 +61,18 @@ from .autonomous import NOTE
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
-from .delegate import DELEGATE, DELEGATE_MANY, DIFF_PIECE, ROUNDS, TASK_DIFF, BatchError, check_batch, order
+from .delegate import (
+    DELEGATE,
+    DELEGATE_MANY,
+    DIFF_PIECE,
+    ROUNDS,
+    TASK_DIFF,
+    BatchError,
+    check_batch,
+    models_text,
+    order,
+    task_models,
+)
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
@@ -411,13 +422,39 @@ def save_batch(conn: sqlite3.Connection, coordinator: str, tasks: list[dict[str,
                           (coordinator,)).fetchone()[0]  # fmt: skip
     conn.executemany(
         "INSERT INTO delegated_tasks (coordinator, task_id, batch, position, agent, prompt, dependencies, criteria,"
-        " files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " files, given_model_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [(coordinator, t["task_id"], number, n, t["agent_profile"], t["prompt"], json.dumps(t["dependencies"]),
           json.dumps(t["criteria"], ensure_ascii=False) if t.get("criteria") else None,
-          json.dumps(t["files"], ensure_ascii=False) if t.get("files") else None)
+          json.dumps(t["files"], ensure_ascii=False) if t.get("files") else None, t.get("given_model_id"))
          for n, t in enumerate(tasks)],
     )  # fmt: skip
     return number
+
+
+def task_profile(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    """What a task runs as (61.3): its agent's profile - on the model the task names, when it names one, or
+    AgentError: a model the hub offers (by its id or name), a cloud one only for projects the cloud may see (D10)."""
+    wanted = task.get("model") or ""
+    if not wanted:
+        return profile
+    models = task_models(conn)
+    found = next((m for m in models if m["id"] == wanted), None) or next(
+        (m for m in models if wanted.casefold() in (m["id"].casefold(), m["name"].casefold())), None)  # fmt: skip
+    if found is None:
+        raise AgentError(f"task {task['task_id']!r}: no model {wanted!r} to run it on; the models: "
+                         f"{models_text(models)}")  # fmt: skip
+    if found["locality"] == "cloud":
+        local = []
+        for pid in profile["project_ids"]:
+            try:
+                project = get_project(conn, pid)
+            except ProjectError:
+                continue
+            local += [] if project.cloud_ok else [project.name]
+        if local:
+            raise AgentError(f"task {task['task_id']!r}: {', '.join(local)} - only local models may see it (D10), "
+                             f"and {found['id']} is a cloud one")  # fmt: skip
+    return {**profile, "model_id": found["id"]}
 
 
 def task_files(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str, Any]) -> list[dict[str, str]]:
@@ -739,6 +776,9 @@ class AgentRunner:
             found = {t["task_id"]: by_name[t["agent_profile"].casefold()] for t in tasks}
             for task in tasks:  # the board says the agent's own name
                 task["agent_profile"] = found[task["task_id"]]["name"]
+            for task in tasks:  # on the model the task names (61.3): money and the GPU's queue go by it below
+                found[task["task_id"]] = task_profile(conn, task, found[task["task_id"]])
+                task["given_model_id"] = found[task["task_id"]]["model_id"] if task.get("model") else None
             local = {}
             for task_id, profile in found.items():
                 model = store.get_model(conn, profile["model_id"])
