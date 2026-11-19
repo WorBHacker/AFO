@@ -81,6 +81,7 @@ from . import (
     model_settings,
     notes,
     sandbox,
+    snapshot,
     store,
     visual,
     web,
@@ -132,6 +133,7 @@ READING = frozenset(
         "folder_list",
         "folder_read",
         TASK_DIFF["name"],
+        snapshot.NAME,
         *computer.READING,
         *mail.READING,
     }
@@ -160,7 +162,8 @@ PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the
 # what brings in text someone else wrote - pages, searches, letters, an API's answers, other programs' screens -
 # the hub's tools and Claude Code's: a chat that used one asks its writes and commands every time (D19)
 OUTSIDE = (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], *sorted(mail.READING), "http_request", "screen_look",
-           "WebFetch", "WebSearch")  # fmt: skip
+           "WebFetch", "WebSearch", snapshot.NAME)  # fmt: skip
+SNAPSHOTS_SHOWN = "[AFO hub] The pictures page_snapshot took just now, in the order of its calls."
 # a «yes» typed in answer to the hub's own question (33.2), not a button
 YES = re.compile(r"\s*(да|yes|ok|ок|разрешаю|разрешить)\b", re.IGNORECASE)  # i18n: keep
 
@@ -191,6 +194,7 @@ class ChatService:
         self.goals = None  # set by the server: a chat's goal hears how each of its turns ended (D44, 11.1)
         self.blobs: Path | None = None  # data/blobs: the files and pictures sent with messages (2026-10-29)
         self.visual: visual.Visual | None = None  # set by the server: pictures a model asks for (29.6, D55)
+        self.own_ports: set[int] = set()  # set by the server: the hub's and llama-swap's - page_snapshot's not (61.7)
         self.card = GpuCard()  # the server's: a local model's turn counts on it as a whole (48.9а)
         # set by the server: words when other programs hold the memory a loading model needs (38.2, the installer's)
         self.memory_now: Callable[[str, str], Awaitable[str]] | None = None
@@ -1013,6 +1017,8 @@ class ChatService:
                 output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
+            elif call["name"] == snapshot.NAME:  # a page's picture, for the model that sees pictures (61.7)
+                output, error, picture = await self._page_snapshot(conversation_id, call, ctx, cloud)
             elif call["name"] in COORDINATING:  # a coordinator's (D20; a batch - D50; its changes - 61.1)
                 if self.agents is None:
                     output, error = "agents are not available here", True
@@ -1272,6 +1278,44 @@ class ChatService:
             return output, error, {}
         blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
         return output, error, {"blob": blob, "media_type": "image/webp" if video else "image/png", "size": len(data)}
+
+    async def _page_snapshot(self, conversation_id: str, call: dict, ctx: ToolContext,
+                             cloud: bool) -> tuple[str, bool, dict[str, Any]]:  # fmt: skip
+        """page_snapshot (61.7): a page of this computer, or an HTML file of a task's copy or of the chat's project,
+        drawn by Edge without a window (hub/snapshot.py) - nothing to ask: it only looks, and only here. The PNG is
+        kept with the chat (shown under the call) and goes to the model with its next request (`_to_prompt`)."""
+        args = call["input"] if isinstance(call["input"], dict) else {}
+        try:
+            width, height = snapshot.size(args)
+            if args.get("url"):
+                if cloud and await self._db.acall(lambda c: any(not p.cloud_ok for p in _attached(c, conversation_id))):
+                    raise snapshot.SnapshotError("a page of this computer is not shown to a cloud model in a chat with "
+                                                 "a local-only project (D10)")  # fmt: skip
+                page, shown = snapshot.page_url(args["url"], self.own_ports), str(args["url"]).strip()
+            elif not args.get("path"):
+                raise snapshot.SnapshotError("`url` (a page of this computer) or `path` (an HTML file)")
+            elif args.get("task_id"):
+                if self.agents is None:
+                    raise snapshot.SnapshotError("agents are not available here")
+                task_id = str(args["task_id"]).strip()
+                root, project = await self.agents.task_folder(conversation_id, task_id, str(args.get("project") or ""))
+                page = await asyncio.to_thread(snapshot.page_file, root, args["path"])
+                shown = f"{args['path']} of task {task_id} («{project.name}»)"
+            else:
+                try:
+                    project = ctx.project(args.get("project"))
+                except ToolError as exc:
+                    raise snapshot.SnapshotError(str(exc)) from None
+                page = await asyncio.to_thread(snapshot.page_file, Path(project.path), args["path"])
+                shown = f"{args['path']} of «{project.name}»"
+            data = await asyncio.to_thread(snapshot.take, page, width, height)
+        except snapshot.SnapshotError as exc:
+            return str(exc), True, {}
+        if self.blobs is None:
+            return "pictures are not kept in this hub", True, {}
+        blob = await asyncio.to_thread(attachments.keep, self.blobs, data)
+        said = f"The picture of {shown}, {width}x{height} pixels: it comes to you after this result."
+        return said, False, {"blob": blob, "media_type": "image/png", "size": len(data)}
 
     async def _web_search(self, conversation_id: str, call: dict, ctx: ToolContext, cancel) -> tuple[str, bool]:
         """A search the model wants: asked every time - the query leaves this computer (D19) - unless the chat is
@@ -1856,6 +1900,12 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: P
                 for b in message.content
                 if b.get("type") == "tool_result"
             ]
+            taken = [{"type": "image", "blob": b["blob"], "media_type": b.get("media_type") or "image/png"}
+                     for b in message.content if b.get("type") == "tool_result" and b.get("name") == snapshot.NAME
+                     and b.get("blob") and not b.get("error")]  # fmt: skip
+            pictures = attachments.images(blobs, taken)
+            if pictures:  # the pages page_snapshot drew (61.7): a tool's answer carries no picture in every API
+                prompt.append({"role": "user", "content": SNAPSHOTS_SHOWN, "images": pictures})
             continue
         if message.role not in ("user", "assistant"):
             continue

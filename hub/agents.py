@@ -79,6 +79,7 @@ from .gateway import GatewayError
 from .gateway.base import tool_result_block
 from .projects import ProjectError, get_project
 from .secret_filter import clean, is_secret_file
+from .snapshot import PAGE_SNAPSHOT, SnapshotError
 from .visual import GENERATE_IMAGE, GENERATE_VIDEO
 
 log = logging.getLogger("hub.agents")
@@ -101,6 +102,7 @@ WAITING_CHANGES = "\nIts changes wait in a sandbox, not in the project yet - onl
 DIFF_SHOWN = 3000  # characters of a task's changes on the board, in short (61.1); task_diff gives them whole
 IN_SHORT = "\nWhat it changed, in short - the lines taken out (-) and put in (+); task_diff gives it whole:\n"
 LOCAL_ONLY = "«{name}» is local-only (D10): its changes are not shown to a cloud model\n"
+LOCAL_PAGES = "«{name}» is local-only (D10): its pages are not shown to a cloud model"
 SECRET_PART = "(a file of secrets: its lines are not shown)\n"
 RESERVE_USD = 0.5  # what a batch keeps for a paid task whose agent has no budget of its own (16.4)
 CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
@@ -295,6 +297,8 @@ def create_run(
     chosen = [t for t in AGENT_TOOLS if t["name"] in wanted]
     if DELEGATE_MANY["name"] in wanted:  # who gives batches reads what their tasks changed, whole (61.1)
         chosen.append(TASK_DIFF)
+        if (model.get("capabilities") or {}).get("vision"):  # and sees the pages they made (61.7)
+            chosen.append(PAGE_SNAPSHOT)
     # sized to the model: one per name, no project tools without projects, short for a small window (hub/compact.py)
     window = (model.get("capabilities") or {}).get("context")
     tools = compact.for_model(chosen + extra, window, projects=bool(project_ids))
@@ -1033,6 +1037,34 @@ class AgentRunner:
         end = start + len(piece)
         more = f"; cut here - ask again with start_char={end}" if end < len(text) else ""
         return f"Task {task_id}: its changes, characters {start}-{end} of {len(text)}{more}.\n{piece}", False
+
+    async def task_folder(self, coordinator: str, task_id: str, project: str = "") -> tuple[Path, Any]:
+        """Where a task of the coordinator's batches has its files (61.7): its copy of the project, or the project
+        itself when it has no copy (it did not write, or the copy went onto the project); with the project. `project`
+        - which of the task's, when it has several. SnapshotError (for the model) - no such task, no project, or a
+        local-only one for a cloud coordinator (D10)."""
+
+        def read(conn):
+            tasks = {t["task_id"]: t for t in list_tasks(conn, coordinator)}
+            task = tasks.get(task_id)
+            projects = _attached(conn, task["run_id"]) if task and task["run_id"] else []
+            return list(tasks), task, projects, _cloud(conn, coordinator)
+
+        names, task, projects, cloud = await self._db.acall(read)
+        if task is None:
+            raise SnapshotError(f"no task {task_id!r} in your batches; yours: {', '.join(names) or 'none'}")
+        if not projects:
+            raise SnapshotError(f"task {task_id!r} worked in no project: it has no files to show")
+        wanted = project.strip().casefold()
+        found = [p for p in projects if p.name.casefold() == wanted] if wanted else projects[:1]
+        if not found or (len(projects) > 1 and not wanted):
+            listed = ", ".join(p.name for p in projects)
+            raise SnapshotError(f"`project`: which of task {task_id!r}'s projects - {listed}")
+        chosen = found[0]
+        if cloud and not chosen.cloud_ok:
+            raise SnapshotError(LOCAL_PAGES.format(name=chosen.name))
+        copy = sandbox.place(self._chat.sandboxes, task["run_id"], chosen) if self._chat.sandboxes else None
+        return (copy if task["sandbox"] and copy is not None and copy.is_dir() else Path(chosen.path)), chosen
 
     async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any] | None,
                           ends: dict[str, asyncio.Event], before: str | None, cloud: asyncio.Semaphore | None,

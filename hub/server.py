@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from starlette.routing import Route
@@ -257,6 +258,8 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   machine=lambda: app.state.installer.machine(),
                                   card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
+        swap = urlsplit(settings.llama_swap_url)  # AFO's own ports: no page of them for page_snapshot (61.7)
+        app.state.chat.own_ports = {settings.port, swap.port or (443 if swap.scheme == "https" else 80)}
         # a film's added sound (53): audio.cpp beside ffmpeg, its models beside the others'
         app.state.sound = Sound(bus, card=app.state.card, llama_swap_url=settings.llama_swap_url,
                                 tools=app.state.visual.tools, models=models_home(),
