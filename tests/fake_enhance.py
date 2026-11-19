@@ -3,9 +3,10 @@
 
 - rife-ncnn-vulkan.exe -i <in> -o <out> -n <frames> -m <model> -f <pattern>: `frames` frames into <out>, each a copy
   of the input frame nearest its time; the model's folder must lie beside it.
-- realesrgan-ncnn-vulkan.exe -i <in> -o <out> -n <model> -s 4 -f png: each input frame copied by its name; the
-  model's files must lie in models/.
-- sd-cli.exe -M vid_upscale ... --input-frames <in> -o <out>/%06d.png: each input frame copied, numbered from 1.
+- realesrgan-ncnn-vulkan.exe -i <in> -o <out> -n <model> -s 4 -f png: each input frame four times larger, by its
+  name; the model's files must lie in models/.
+- sd-cli.exe -M vid_upscale ... --input-frames <in> --upscale-factor 2 -o <out>/%06d.png: each input frame twice as
+  large, numbered from 1. (A file that is no picture is copied as it is.)
 
 What it was asked is a line of $FAKE_ENHANCE_LOG (JSON). $FAKE_ENHANCE_SLOW - seconds it waits first (to be stopped);
 $FAKE_ENHANCE_FAIL - «oom»: sd-cli's words for a card too small, exit 1; anything else: those words, exit 1.
@@ -21,6 +22,17 @@ from pathlib import Path
 
 def value(args, flag):
     return args[args.index(flag) + 1] if flag in args else None
+
+
+def larger(frame, target, times):
+    """A frame `times` larger each way, as an enlarging program gives it; a file that is no picture - copied."""
+    from PySide6.QtGui import QImage
+
+    image = QImage(str(frame))
+    if image.isNull():
+        shutil.copyfile(frame, target)
+        return
+    image.scaled(image.width() * times, image.height() * times).save(str(target), "PNG")
 
 
 def main():
@@ -51,11 +63,11 @@ def main():
             print("model not found")
             sys.exit(2)
         for frame in sorted(source.iterdir()):
-            shutil.copyfile(frame, target / frame.name)
+            larger(frame, target / frame.name, int(value(args, "-s")))
     elif name == "sd-cli.exe":
         source, pattern = Path(value(args, "--input-frames")), value(args, "-o")
         for k, frame in enumerate(sorted(source.iterdir())):
-            shutil.copyfile(frame, pattern % (k + 1))
+            larger(frame, Path(pattern % (k + 1)), int(value(args, "--upscale-factor")))
         print(f"[I] {len(list(source.iterdir()))}/{len(list(source.iterdir()))} images saved")
     else:
         print(f"unknown program {name}")

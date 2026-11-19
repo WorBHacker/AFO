@@ -32,6 +32,7 @@ import contextlib
 import fnmatch
 import itertools
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -102,6 +103,9 @@ OUT_OF_CARD = "cannot make enough memory available"  # sd-cli's words when the c
 FRAMES = video.FRAME_NAME  # how the frames of a piece are named, in and out
 MOTIONS = ("fps60", "slow2", "slow4")  # (54.3) 60 frames a second over the same time; two or four times slower
 SMOOTH_FPS = 60
+SIZES = ("sharp", "detail")  # (54.4) twice as large: the fast way, or with details drawn
+PIECE_FRAMES = 121  # a piece enlarged at once - a scene at most: RelayVSR holds all its frames (54.1: 121 - 14.4 GB)
+DETAIL_PIXELS = 450_000  # (54.1) 832×480, 768×512, 640×640 fit the card with RelayVSR; 1280×704 does not
 
 
 class EnhanceError(Exception):
@@ -340,6 +344,30 @@ def shots(count: int, cuts: list[int]) -> list[tuple[int, int]]:
     return list(itertools.pairwise([0, *sorted({c for c in cuts if 0 < c < count}), count]))
 
 
+def pieces(count: int, cuts: list[int], longest: int | None = None) -> list[tuple[int, int]]:
+    """[first, end) of each piece enlarged at once (54.4): shot by shot - RelayVSR looks at the frames around, and
+    another shot's are not this one's -, a long shot in even pieces of `longest` at most; a shot of one frame goes
+    with the one before it (or after): a piece of one frame is no video to RelayVSR."""
+    found: list[tuple[int, int]] = []
+    longest = longest or PIECE_FRAMES
+    for first, end in shots(count, cuts):
+        if end - first < 2 and found:
+            found[-1] = (found[-1][0], end)
+            continue
+        parts = math.ceil((end - first) / longest)
+        found += itertools.pairwise([first + round(k * (end - first) / parts) for k in range(parts + 1)])
+    if len(found) > 1 and found[0][1] - found[0][0] < 2:
+        found[:2] = [(found[0][0], found[1][1])]
+    return found
+
+
+def png_size(path: Path) -> tuple[int, int]:
+    """A PNG's width and height, from its header."""
+    with path.open("rb") as file:
+        head = file.read(24)
+    return int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+
+
 def _gather(frames: Path, first: int, end: int, piece: Path) -> None:
     """The frames first..end-1 (from 0) of a folder moved into `piece`, numbered from 1 - a program takes a folder."""
     piece.mkdir()
@@ -496,25 +524,49 @@ class Enhance:
             raise EnhanceError(str(exc), 502) from None
 
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
-                   motion: str | None = None, told: Callable[[float], Awaitable[None]] | None = None,
-                   ) -> Path:  # fmt: skip
+                   size: str | None = None, motion: str | None = None,
+                   told: Callable[[float], Awaitable[None]] | None = None) -> Path:  # fmt: skip
         """A video improved into `target` (MP4): its frames taken out by ffmpeg, made by the parts' programs, put
-        back together. `motion` (54.3): «fps60» - 60 frames a second over the same time, its sound kept; «slow2»,
-        «slow4» - so many times slower, at its own rate, without sound (a sound stretched so is not the sound). The
-        frames between are made shot by shot: none across a cut. `told(share)` - how far, after each piece. The
-        frames lie beside `target` meanwhile and are gone after, whatever happened."""
-        if motion is not None and motion not in MOTIONS:
+        back together, its sound with them. `size` (54.4): «sharp» - twice as large by Real-ESRGAN (four times, then
+        ffmpeg brings each piece to twice: its frames of four times are not kept), «detail» - by RelayVSR, only a
+        video of the usual sizes (`DETAIL_PIXELS`). `motion` (54.3): «fps60» - 60 frames a second over the same
+        time; «slow2», «slow4» - so many times slower, at its own rate, without sound (a sound stretched so is not the
+        sound). Larger first, then the motion: fewer frames are enlarged. Both go shot by shot: nothing is made across
+        a cut. `told(share)` - how far, after each piece. The frames lie beside `target` meanwhile and are gone
+        after, whatever happened."""
+        if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
+        if motion is None and size is None:
+            raise EnhanceError(tr("выберите, что улучшить"), 422)
         if motion == "fps60" and fps >= SMOOTH_FPS:
             raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
         work = target.with_name(f".{target.stem}.work")
         await asyncio.to_thread(engines.remove_tree, work)
+        stages = [s for s in (size, motion) if s is not None]
+
+        async def stage(n: int) -> Callable[[float], Awaitable[None]] | None:
+            if told is None:
+                return None
+
+            async def share(done: float) -> None:
+                await told((n + done) / len(stages))
+
+            return share
+
         try:
             frames = work / "in"
             count = await asyncio.to_thread(video.frames_out, ffmpeg, source, frames)
+            width, height = await asyncio.to_thread(png_size, frames / (FRAMES % 1))
+            if size == "detail" and width * height > DETAIL_PIXELS:
+                raise EnhanceError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
+                                      "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
+            cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
+            if size is not None:
+                frames = await self._enlarge(frames, work, pieces(count, cut), size, (width, height), fps, ffmpeg,
+                                             cancel, await stage(0))  # fmt: skip
             if motion is not None:
-                cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
-                frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel, told)
+                frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel,
+                                            await stage(len(stages) - 1))  # fmt: skip
             sound = None if motion in ("slow2", "slow4") else source
             await asyncio.to_thread(video.from_frames, ffmpeg, frames, target,
                                     fps=SMOOTH_FPS if motion == "fps60" else fps, sound=sound)  # fmt: skip
@@ -524,13 +576,45 @@ class Enhance:
             await asyncio.to_thread(engines.remove_tree, work)
         return target
 
-    async def _smooth(self, frames: Path, work: Path, pieces: list[tuple[int, int]], motion: str, fps: int,
+    async def _enlarge(self, frames: Path, work: Path, spans: list[tuple[int, int]], size: str,
+                       side: tuple[int, int], fps: int, ffmpeg: Path, cancel: asyncio.Event,
+                       told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
+        """Twice as large, piece by piece: each piece's frames into a folder of its own, enlarged, put one after
+        another - Real-ESRGAN's four times brought to twice at once and thrown away."""
+        whole, made = work / "large", 0
+        await asyncio.to_thread(whole.mkdir)
+        for n, (first, end) in enumerate(spans):
+            if cancel.is_set():
+                raise EnhanceError(tr("остановлено"))
+            piece, out = work / "piece", work / "piece-out"
+            await asyncio.to_thread(_gather, frames, first, end, piece)
+            await asyncio.to_thread(out.mkdir)
+            if size == "sharp":
+                await self.run("sharp", sharp_args(piece, out), cancel)
+                came = len(await asyncio.to_thread(os.listdir, out))
+                if came != end - first:
+                    raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                         wanted=end - first))  # fmt: skip
+                await asyncio.to_thread(video.scaled_frames, ffmpeg, out, whole, width=side[0] * 2,
+                                        height=side[1] * 2, start=made + 1)  # fmt: skip
+                made += end - first
+            else:
+                await self.run("detail", detail_args(self.models, piece, out, frames=end - first, fps=fps), cancel)
+                made = await asyncio.to_thread(_append, out, whole, made, end - first)
+            await asyncio.to_thread(engines.remove_tree, piece)
+            await asyncio.to_thread(engines.remove_tree, out)
+            if told is not None:
+                await told((n + 1) / len(spans))
+        await asyncio.to_thread(engines.remove_tree, frames)
+        return whole
+
+    async def _smooth(self, frames: Path, work: Path, spans: list[tuple[int, int]], motion: str, fps: int,
                       cancel: asyncio.Event, told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
         """RIFE shot by shot: each shot's frames into a folder of its own, the frames between them made, the shots
         put one after another. A shot of one frame is that frame held."""
         whole, made = work / "smooth", 0
-        whole.mkdir()
-        for n, (first, end) in enumerate(pieces):
+        await asyncio.to_thread(whole.mkdir)
+        for n, (first, end) in enumerate(spans):
             if cancel.is_set():
                 raise EnhanceError(tr("остановлено"))
             piece, out = work / "piece", work / "piece-out"
@@ -546,5 +630,5 @@ class Enhance:
             await asyncio.to_thread(engines.remove_tree, piece)
             await asyncio.to_thread(engines.remove_tree, out)
             if told is not None:
-                await told((n + 1) / len(pieces))
+                await told((n + 1) / len(spans))
         return whole

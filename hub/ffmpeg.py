@@ -231,6 +231,14 @@ def cuts(program: Path, source: Path) -> list[int]:
     return found
 
 
+def scaled_frames(program: Path, folder: Path, target: Path, *, width: int, height: int, start: int) -> None:
+    """The PNG frames of `folder` (FRAME_NAME, from 1) brought to `width` × `height` into `target`, numbered from
+    `start` (54.4, blocking): Real-ESRGAN's four times to twice, a piece at a time - its frames are not kept."""
+    _run(program, ["-i", str(folder / FRAME_NAME), "-vf", f"scale={width}:{height}:flags=lanczos", "-start_number",
+                   str(start), str(target / FRAME_NAME)], N_("ffmpeg не уменьшил кадры: {said}"),
+         timeout=JOIN_TIMEOUT_S)  # fmt: skip
+
+
 def from_frames(program: Path, folder: Path, target: Path, *, fps: int, sound: Path | None = None) -> None:
     """A video of the PNG frames in `folder` (FRAME_NAME) at `fps` (54.3, blocking): H.264 as `to_mp4` makes it,
     with the sound of `sound` - another video - when it has one, cut to the picture's length."""

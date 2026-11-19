@@ -347,3 +347,56 @@ def test_a_video_is_made_smoother_or_slower_shot_by_shot_and_keeps_its_sound(sta
         make(hub, source, stopped, fps=24, motion="fps60", stop_after=1.0)
     assert time.monotonic() - began < 15
     assert not stopped.exists() and not list(tmp_path.glob(".*.work")) and not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_a_video_is_made_twice_as_large_piece_by_piece_then_smoother(stand, tmp_path, monkeypatch):
+    """54.4: «Увеличить ×2» - fast: Real-ESRGAN makes each frame of a piece four times larger and ffmpeg brings the
+    piece to twice at once; with details: RelayVSR, its window the whole piece. Pieces go shot by shot, a long shot in
+    even pieces; the video's sound stays. Larger and smoother at once: enlarged first, then the frames between - at
+    the new size. A video larger than RelayVSR fits on the card - said, the fast way named."""
+    hub = stand  # noqa: F811
+    source = tmp_path / "two-shots.mp4"
+    two_shots(source)
+    install(hub, "smooth")
+    install(hub, "sharp")
+    install(hub, "detail")
+
+    both = tmp_path / "both.mp4"
+    shares = make(hub, source, both, fps=24, size="sharp", motion="fps60")
+    assert shares == [0.25, 0.5, 0.75, 1.0]  # two pieces enlarged, two shots made smoother
+    asked = hub.asked()
+    assert [a["program"] for a in asked] == ["realesrgan-ncnn-vulkan.exe"] * 2 + ["rife-ncnn-vulkan.exe"] * 2
+    assert [a["args"][a["args"].index("-s") + 1] for a in asked[:2]] == ["4", "4"]
+    shown = described(both)
+    assert shown["size"] == (128, 128) and shown["fps"] == 60 and shown["sound"]
+    frames = frames_of(both, tmp_path / "both")
+    assert len(frames) == 180 and not red(frames[119]) and red(frames[120])
+    assert not list(tmp_path.glob(".*.work"))
+
+    monkeypatch.setattr(enhance, "PIECE_FRAMES", 20)  # a long shot in even pieces
+    large = tmp_path / "large.mp4"
+    make(hub, source, large, fps=24, size="detail")
+    windows = [a["args"][a["args"].index("--vsr-window-size") + 1] for a in hub.asked()
+               if a["program"] == "sd-cli.exe"]  # fmt: skip
+    assert windows == ["16", "16", "16", "12", "12"]  # 48 frames in three, 24 in two: none across the cut
+    shown = described(large)
+    assert shown["size"] == (128, 128) and shown["fps"] == 24 and shown["sound"] and abs(shown["seconds"] - 3) < 0.1
+    frames = frames_of(large, tmp_path / "large")
+    assert len(frames) == 72 and not red(frames[47]) and red(frames[48])
+
+    monkeypatch.setattr(enhance, "DETAIL_PIXELS", 64 * 64 - 1)
+    with pytest.raises(enhance.EnhanceError, match="быстрое увеличение") as refused:
+        make(hub, source, tmp_path / "too-large.mp4", fps=24, size="detail")
+    assert refused.value.status == 422 and not list(tmp_path.glob(".*.work"))
+    with pytest.raises(enhance.EnhanceError, match="выберите"):
+        make(hub, source, tmp_path / "nothing.mp4", fps=24)
+
+
+def test_a_video_is_cut_into_pieces_by_its_shots_and_its_length():
+    """54.4: the pieces enlarged at once - shot by shot, a long shot in even pieces, a shot of one frame with its
+    neighbour (RelayVSR takes no video of one frame)."""
+    assert enhance.pieces(72, [48], longest=121) == [(0, 48), (48, 72)]
+    assert enhance.pieces(250, [], longest=121) == [(0, 83), (83, 167), (167, 250)]
+    assert enhance.pieces(50, [20, 21], longest=121) == [(0, 21), (21, 50)]
+    assert enhance.pieces(30, [1], longest=121) == [(0, 30)]
