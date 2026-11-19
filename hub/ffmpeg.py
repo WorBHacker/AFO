@@ -248,8 +248,13 @@ GAIN_DB = 24.0  # the most a track is made louder or quieter to come to its leve
 VOICE_CUT = "highpass=f=90"
 MUSIC_CUT = "highpass=f=80,highpass=f=80"  # twice: a steep cut - the bottom is loud
 EFFECT_CUT = "highpass=f=100,highpass=f=100"
-# what is not the voice goes down while the voice speaks: about 10 dB under a voice of VOICE_DB
-DUCK = "sidechaincompress=threshold=0.03:ratio=8:attack=15:release=400"
+# What is not the voice goes down while the narrator speaks - once for a stretch of speech, by so many dB, slowly
+# down and slowly up again; a pause shorter than BED_PAUSE_S between two lines is still that stretch. (53.8, the
+# user's ear: «дождь как через шумоподавление») A compressor keyed by the voice did it before: 10-20 dB down at
+# every word and up again in every pause between words - the film's rain jumped several times in five seconds.
+BED_DOWN_DB = 6.0
+BED_SLOPE_S = 0.4
+BED_PAUSE_S = 1.5
 MUSIC_FADES_S = (0.5, 1.5)  # music comes in and goes out
 EFFECT_FADE_S = 0.15  # a scene's made sound comes in and goes out: no click at a cut
 
@@ -286,6 +291,29 @@ def _level(now: float | None, wanted: float) -> str:
     return f"volume={max(-GAIN_DB, min(GAIN_DB, wanted - now)):.1f}dB"
 
 
+def _stretches(spoken: list[tuple[float, float]], seconds: float) -> list[tuple[float, float]]:
+    """When the bed is down: each line's time with a slope's room before and after it, the lines a short pause
+    apart as one stretch; inside the film."""
+    found: list[tuple[float, float]] = []
+    for begins, ends in sorted(spoken):
+        begins, ends = max(0.0, begins - BED_SLOPE_S), min(seconds, ends + BED_SLOPE_S)
+        if found and begins - found[-1][1] < BED_PAUSE_S:
+            found[-1] = (found[-1][0], max(found[-1][1], ends))
+        else:
+            found.append((begins, ends))
+    return found
+
+
+def _lowered(spoken: list[tuple[float, float]], seconds: float) -> str:
+    """The filter that takes the bed down under the narrator's stretches of speech: its volume by the film's time."""
+    slopes = [f"clip(min((t-{a:.3f})/{BED_SLOPE_S},({b:.3f}-t)/{BED_SLOPE_S}),0,1)" for a, b in
+              _stretches(spoken, seconds)]  # fmt: skip
+    down = slopes[0]
+    for slope in slopes[1:]:
+        down = f"max({down},{slope})"
+    return f"volume=volume='1-{1 - 10 ** (-BED_DOWN_DB / 20):.4f}*{down}':eval=frame"
+
+
 def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: list[tuple[Path, float]] | None = None,
         music: Path | None = None, effects: list[tuple[Path, float, float]] | None = None,
         own_music: bool = False) -> None:  # fmt: skip
@@ -294,8 +322,9 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
     (`effects`: file, the second it begins at, how long it is), music under the whole film (`music`: a shorter one
     goes round again; it comes in and fades out) and the narrator's lines, each at its second (`lines`; one that
     runs past the film's end is cut there). Each kind is brought to its own mean volume; while the narrator speaks,
-    all the rest goes down. A made piece is cut below its kind's frequency first (VOICE_CUT...), and its volume is
-    that of what is left; `own_music` - the music is the user's file: as it is.
+    all the rest is down by BED_DOWN_DB - steadily, a stretch of speech at a time. A made piece is cut below its
+    kind's frequency first (VOICE_CUT...), and its volume is that of what is left; `own_music` - the music is the
+    user's file: as it is.
 
     Every sound is cut to its length where it is read (`-t` before its `-i`), and a track is made as long as the
     film by mixing it with silence of that length - nothing in the graph throws a sound's end away. Cut inside the
@@ -304,7 +333,7 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
     lines, effects = lines or [], effects or []
     args, graph = ["-i", str(source)], []
     silence = f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={seconds:.3f},aformat=sample_fmts=fltp"
-    bed, said, at = [], [], 1
+    bed, said, spoken, at = [], [], [], 1
     if heard(program, source):
         graph.append(f"[0:a]{SOUND}[own]")
         bed.append("[own]")
@@ -333,9 +362,11 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
         if seconds - begins < 0.1:  # a line that would begin where the film ends
             continue
         args += ["-t", f"{seconds - begins:.3f}", "-i", str(clip)]
-        level = _level(loudness(program, clip, VOICE_CUT), VOICE_DB)
-        graph.append(f"[{at}:a]{VOICE_CUT},{SOUND},{level},adelay={round(begins * 1000)}:all=1[l{at}]")
+        mean, long = _measured(program, clip, VOICE_CUT)
+        graph.append(f"[{at}:a]{VOICE_CUT},{SOUND},{_level(mean, VOICE_DB)},adelay={round(begins * 1000)}:all=1"
+                     f"[l{at}]")  # fmt: skip
         said.append(f"[l{at}]")
+        spoken.append((begins, min(seconds, begins + (long or seconds))))
         at += 1
     if not bed and not said:
         raise EngineError(tr("добавлять нечего: ни голоса, ни музыки, ни звуков"))
@@ -348,9 +379,8 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
         return f"[{name}]"
 
     if said and bed:
-        graph.append(f"{whole(said, 'voice')}asplit=2[say][key]")
-        graph.append(f"{whole(bed, 'bed')}[key]{DUCK}[low]")
-        graph.append("[low][say]amix=inputs=2:normalize=0:dropout_transition=0[all]")
+        graph.append(f"{whole(bed, 'bed')}{_lowered(spoken, seconds)}[low]")
+        graph.append(f"[low]{whole(said, 'voice')}amix=inputs=2:normalize=0:dropout_transition=0[all]")
         last = "[all]"
     else:
         last = whole(said or bed, "all")

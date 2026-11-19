@@ -460,7 +460,7 @@ def test_a_films_added_sound_is_mixed_the_voice_over_the_rest(tmp_path, monkeypa
 
     alone = _band(program, film, 660, 0.8, 0.8)  # music before the narrator
     assert -33 < alone < -22, alone  # the loud file at music's level
-    assert _band(program, film, 660, 2.4, 0.9) < alone - 6  # under the narrator
+    assert alone - 8 < _band(program, film, 660, 2.4, 0.9) < alone - 4  # under the narrator: down, by 6 dB
     assert _band(program, film, 660, 4.05, 0.4) > alone - 4  # up again - and round again: the file is 2.5 s long
     assert _band(program, film, 660, 5.8, 0.2) < alone - 6  # fades out at the end
     # the line, at 2 s (where it is not, its pitch is only what the filter lets through of the music)
@@ -472,7 +472,7 @@ def test_a_films_added_sound_is_mixed_the_voice_over_the_rest(tmp_path, monkeypa
     own = tmp_path / "own.mp4"  # the film's own sound stays, and goes down under the narrator too
     ffmpeg.dub(program, loud, own, seconds=6.0, lines=[(voice, 2.0)])
     before = _band(program, own, 110, 0.5, 1.0)
-    assert before > -30 and _band(program, own, 110, 2.4, 0.9) < before - 6
+    assert before > -30 and before - 8 < _band(program, own, 110, 2.4, 0.9) < before - 4
     assert _band(program, own, 220, 2.3, 1.0) > -26
 
     spoken = tmp_path / "spoken.mp4"  # the voice alone, on a film that had no sound
@@ -531,3 +531,34 @@ def test_a_made_piece_is_levelled_by_what_is_heard_of_it_not_by_its_rumble(tmp_p
     own = tmp_path / "own.mp4"  # the user's own music: its bottom is its own
     ffmpeg.dub(program, silent, own, seconds=6.0, music=music, own_music=True)
     assert _band(program, own, 30, 0.8, 1.6) > -32 and _band(program, own, 660, 0.8, 1.6) < -50
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_the_bed_is_down_once_for_a_stretch_of_speech_not_at_every_word(tmp_path):
+    """53.8, the user's ear («дождь как через шумоподавление») - a real ffmpeg: the narrator speaks with pauses
+    between the words, as a person does. The bed - the film's own sound, the music - is down by the same 6 dB
+    under a word and in the pause after it, and comes back slowly only when a stretch of speech is over; two lines
+    a short pause apart are one stretch. A compressor keyed by the voice took the bed 10-20 dB down at each word and
+    let it up in each pause."""
+    program = Path(shutil.which("ffmpeg"))
+    quiet = [str(program), "-hide_banner", "-loglevel", "error", "-y"]
+    rain = tmp_path / "rain.mp4"  # a film with a steady sound of its own
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=10", "-f", "lavfi", "-i",
+                    "sine=frequency=1760:sample_rate=48000:duration=10", "-c:v", "libx264", "-g", "1", "-pix_fmt",
+                    "yuv420p", "-c:a", "aac", str(rain)], check=True, timeout=60)  # fmt: skip
+    line = tmp_path / "line.wav"  # two words of half a second, 0.6 s of silence between them
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=24000:duration=1.6", "-af",
+                    "volume='if(between(t,0.5,1.1),0,2)':eval=frame", "-ac", "1", str(line)], check=True,
+                   timeout=60)  # fmt: skip
+    assert ffmpeg._stretches([(2.0, 3.6), (4.2, 5.8)], 10.0) == [(1.6, 6.2)]  # 0.6 s apart: one stretch
+    assert ffmpeg._stretches([(2.0, 3.6), (8.0, 9.9)], 10.0) == [(1.6, 4.0), (7.6, 10.0)]
+
+    film = tmp_path / "film.mp4"
+    ffmpeg.dub(program, rain, film, seconds=10.0, lines=[(line, 2.0), (line, 4.2)])
+    alone = _band(program, film, 1760, 0.2, 1.0)  # before the narrator: as it was filmed
+    word, pause = _band(program, film, 1760, 2.1, 0.3), _band(program, film, 1760, 2.65, 0.3)
+    assert alone - 7.5 < word < alone - 4.5 and abs(word - pause) < 1.0, (alone, word, pause)
+    between = _band(program, film, 1760, 3.75, 0.3)  # between the two lines: the same stretch
+    assert abs(between - word) < 1.0, (word, between)
+    assert abs(_band(program, film, 1760, 5.0, 0.3) - word) < 1.0
+    assert _band(program, film, 1760, 7.0, 1.5) > alone - 1.0  # the speech over: up again
