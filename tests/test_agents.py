@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from hub import agents, checks
+from hub import agents, checks, store
 from hub import projects as projects_module
 from hub import sandbox as sandbox_module
 from hub.chat import Limits
@@ -921,3 +921,81 @@ def test_tasks_not_begun_when_the_hub_stopped_are_cancelled(hub):  # noqa: F811
         ("c", "escalated", agents.UNCHECKED)]  # nobody checks it now: a person looks  # fmt: skip
     assert tasks[2]["criteria"] == [{"kind": "semantic", "rule": "готово", "n": 1}]
     assert hub.get("/v1/runs/nope/tasks").status_code == 404
+
+
+def _stopped_in_a_batch(hub, boss_profile, writer_profile, *, checked=True):  # noqa: F811
+    """As if the hub had stopped while the coordinator waited for its batch: a done, b running, c (after a and b) not
+    begun, d being checked."""
+
+    def interrupted(conn):
+        boss = agents.create_run(conn, agents.get_profile(conn, boss_profile["id"]), "Сделай", [])
+        conn.execute("UPDATE agent_runs SET status = 'running' WHERE conversation_id = ?", (boss,))
+        store.add_message(conn, boss, "user", [{"type": "text", "text": "Сделай"}])
+        call = {"type": "tool_call", "id": "b1", "name": "delegate_tasks", "input": {"tasks": []}}
+        store.add_message(conn, boss, "assistant", [{"type": "text", "text": "Делю. "}, call])
+        writer = agents.get_profile(conn, writer_profile["id"])
+        rows = [
+            {"task_id": "a", "agent_profile": "Писатель", "prompt": "Готово раньше", "dependencies": []},
+            {"task_id": "b", "agent_profile": "Писатель", "prompt": "Работай b", "dependencies": []},
+            {"task_id": "c", "agent_profile": "Писатель", "prompt": "Потом c", "dependencies": ["a", "b"]},
+        ]
+        if checked:
+            rows.append({"task_id": "d", "agent_profile": "Писатель", "prompt": "Проверяли d", "dependencies": [],
+                         "criteria": [{"kind": "semantic", "rule": "готово", "n": 1}]})  # fmt: skip
+        agents.save_batch(conn, boss, rows)
+        conn.execute("UPDATE delegated_tasks SET status = 'done', answer = 'раньше' WHERE task_id = 'a'")
+        b_run = agents.create_run(conn, writer, "Работай b", [], parent_run=boss)
+        store.add_message(conn, b_run, "user", [{"type": "text", "text": "Работай b"}])
+        conn.execute("UPDATE agent_runs SET status = 'running' WHERE conversation_id = ?", (b_run,))
+        conn.execute("UPDATE delegated_tasks SET status = 'running', run_id = ?, started_at = ? WHERE task_id = 'b'",
+                     (b_run, "2026-11-20T10:00:00.000Z"))  # fmt: skip
+        if checked:
+            d_run = agents.create_run(conn, writer, "Проверяли d", [], parent_run=boss)
+            conn.execute("UPDATE agent_runs SET status = 'done' WHERE conversation_id = ?", (d_run,))
+            conn.execute("UPDATE delegated_tasks SET status = 'checking', run_id = ?, rounds = 1 WHERE task_id = 'd'",
+                         (d_run,))  # fmt: skip
+        return boss, b_run
+
+    return hub.app.state.db.call(interrupted)
+
+
+def test_a_batch_goes_on_after_the_hub_restarts(hub):  # noqa: F811
+    """61.5: the hub stopped while the coordinator waited for its batch - a task done stays, one running ends as its
+    run does, one not begun starts after them with their answers, one being checked is checked again; the board
+    answers the coordinator's call, and the coordinator goes on with it."""
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": []}, pause=0.05))
+    writer = profile(hub, name="Писатель", tools=[])
+    boss_profile = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    boss, b_run = _stopped_in_a_batch(hub, boss_profile, writer)
+    assert set(hub.portal.call(hub.app.state.agents.start)) == {boss, b_run}
+    assert ended(hub, boss)["status"] == "done"
+    tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{boss}/tasks").json()["tasks"]}
+    assert {k: t["status"] for k, t in tasks.items()} == {"a": "done", "b": "done", "c": "done", "d": "escalated"}
+    assert "проверить некому" in tasks["d"]["detail"]  # checked again - not «nobody checks it now»
+    started = [t for _, t in provider.started]
+    later = next(t for t in started if t.startswith("Потом c"))
+    assert started.index("Работай b") < started.index(later)  # c after b, with what a and b found
+    assert "[a] «Писатель»:\nраньше" in later and "[b] «Писатель»:\nответ: Работай b" in later
+    (said,) = outputs(hub, boss)
+    assert said["id"] == "b1" and said["error"] is True and said["output"].startswith("4 tasks: 3 done, 1 escalated.")
+    last = provider.calls[-1][1]
+    assert [m for m in last if m["role"] == "user"][-1]["content"] == agents.BATCH_RESUMED
+    assert hub.app.state.agents._resumed == {}
+
+
+def test_stopping_a_coordinator_whose_batch_goes_on_after_a_restart(hub):  # noqa: F811
+    """61.5: «Стоп» while the batch goes on after the restart stops it - its running task and the one not begun -
+    and the coordinator ends stopped, its call answered with the board."""
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": []}, pause=30))
+    writer = profile(hub, name="Писатель", tools=[])
+    boss_profile = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    boss, b_run = _stopped_in_a_batch(hub, boss_profile, writer, checked=False)
+    hub.portal.call(hub.app.state.agents.start)
+    wait(lambda: provider.active == 1)
+    assert hub.post(f"/v1/runs/{boss}/cancel").json() == {"cancelled": True}
+    assert ended(hub, boss)["status"] == "cancelled"
+    tasks = {t["task_id"]: t for t in hub.get(f"/v1/runs/{boss}/tasks").json()["tasks"]}
+    assert (tasks["b"]["status"], ended(hub, b_run)["status"]) == ("cancelled", "cancelled")
+    assert (tasks["c"]["status"], tasks["c"]["run_id"]) == ("cancelled", None)  # it never began
+    (said,) = outputs(hub, boss)
+    assert said["output"].startswith("3 tasks: 1 done, 2 cancelled.")

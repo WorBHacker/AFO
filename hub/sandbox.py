@@ -166,6 +166,15 @@ def base_of(path: Path, conversation_id: str) -> str:
     return found or _git(path, "rev-parse", "HEAD").strip()
 
 
+def base_tree(folder: Path, conversation_id: str, project: Project) -> str | None:
+    """The files the sandbox began with, as a git tree - where a coordinator's task's check diffs from when the hub
+    restarted while it worked (61.5); None when there is no sandbox."""
+    path = place(folder, conversation_id, project)
+    if not (path / ".git").exists():
+        return None
+    return _git(path, "rev-parse", base_of(path, conversation_id) + "^{tree}").strip()
+
+
 def changes(folder: Path, conversation_id: str, project: Project) -> dict[str, Any]:
     """What the model changed there: the files and the diff (new files too), against the commit it began from."""
     path = place(folder, conversation_id, project)

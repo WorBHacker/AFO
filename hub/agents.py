@@ -76,6 +76,7 @@ from .delegate import (
 )
 from .events import EventBus
 from .gateway import GatewayError
+from .gateway.base import tool_result_block
 from .projects import ProjectError, get_project
 from .secret_filter import clean, is_secret_file
 from .visual import GENERATE_IMAGE, GENERATE_VIDEO
@@ -114,6 +115,9 @@ DONE_WHEN = "\n\nDONE WHEN (the hub checks it when you end; you cannot declare i
 FILES_NOTE = "\n\nTHE FILES OF THIS TASK - their text is in your context (read_file gives more of a long one): "
 UNCHECKED = "the hub restarted before the task was checked: nobody checks it now"
 RESUMED = "[AFO hub] The hub restarted while you worked on this task. Look at where you stopped and go on."
+BATCH_RESUMED = ("[AFO hub] The hub restarted while your batch of tasks ran; the batch went on, and its board is your "
+                 "delegate_tasks call's result now. Go on from there.")  # fmt: skip
+NOT_KEPT = "the hub restarted during this turn: what this call did, if anything, was not kept"
 FIELDS = ("name", "instructions", "model_id", "tools", "mode", "project_ids", "max_steps", "max_minutes", "budget_usd")
 
 
@@ -646,6 +650,22 @@ def round_note(task: dict[str, Any], found: dict[str, Any], round_no: int) -> st
             f"YOUR TASK: {task['prompt'][:2000]}\n" + goals.check_text(found) + "</task_check>")  # fmt: skip
 
 
+def _answer_batch_call(conn: sqlite3.Connection, coordinator: str, said: str, error: bool) -> store.MessageRow | None:
+    """The coordinator's delegate_tasks call the restart left unanswered gets the batch's board (61.5); the other
+    calls of that turn, that what they did was not kept - one message of results, as after any turn of tools. None:
+    there is no such call."""
+    messages = store.get_messages(conn, coordinator)
+    answered = {b.get("id") for m in messages if m.role == "tool" for b in m.content}
+    last = next((m for m in reversed(messages) if m.role == "assistant"), None)
+    calls = [b for b in (last.content if last else []) if b.get("type") == "tool_call" and b.get("id") not in answered]
+    batch = [b for b in calls if b.get("name") == DELEGATE_MANY["name"]]
+    if not batch:
+        return None
+    results = [tool_result_block(b["id"], b["name"], said, error) if b is batch[-1]
+               else tool_result_block(b["id"], b.get("name", ""), NOT_KEPT, True) for b in calls]  # fmt: skip
+    return store.add_message(conn, coordinator, "tool", results)
+
+
 def _cloud(conn: sqlite3.Connection, run_id: str) -> bool:
     """Whether the run's model answers in the cloud: it is not shown local-only projects' changes (D10, 61.1)."""
     model = store.get_model(conn, get_run(conn, run_id)["model_id"])
@@ -672,25 +692,53 @@ class AgentRunner:
         self._held: set[str] = set()  # runs holding the GPU now
         self._waiting: dict[str, asyncio.Task] = {}  # runs not under way yet: queued for the GPU, or getting ready
         self._ended: dict[str, asyncio.Event] = {}  # sub-runs a coordinator waits for
+        self._resumed: dict[str, asyncio.Event] = {}  # coordinators whose batch goes on after a restart: their «Стоп»
+        self._resuming: set[asyncio.Task] = set()
         self.goals = None  # set by the server: the goals' checks check a batch's tasks too (16.3)
 
     async def start(self) -> list[str]:
-        """Runs the hub was running (or had queued) when it stopped go on now; a batch's tasks that had not begun
-        will not (nobody waits for them now); those running end as their runs do."""
+        """Runs the hub was running (or had queued) when it stopped go on now. A batch whose coordinator still waits
+        for it goes on too (61.5): its tasks not begun start by their dependencies, those running end as their runs
+        do, those being checked are checked again; its board is then the answer to the coordinator's call, and the
+        coordinator goes on with it. Of a batch nobody waits for, the tasks not begun will not, those being checked
+        need a person."""
 
-        def unfinished_runs(conn) -> list[str]:
-            conn.execute("UPDATE delegated_tasks SET status = 'cancelled', detail = ?, ended_at = ?"
-                         " WHERE status = 'pending'", ("the hub restarted before it began", utc_now()))  # fmt: skip
-            conn.execute("UPDATE delegated_tasks SET status = 'escalated', detail = ?, ended_at = ? WHERE status ="
-                         " 'checking' OR (status = 'running' AND criteria IS NOT NULL)",
-                         (UNCHECKED, utc_now()))  # fmt: skip
-            return [r["conversation_id"] for r in conn.execute(
+        def unfinished_runs(conn) -> tuple[list[str], list[tuple[str, int, list[dict[str, Any]]]]]:
+            runs = [r["conversation_id"] for r in conn.execute(
                 "SELECT conversation_id FROM agent_runs WHERE status IN ('queued', 'running') ORDER BY created_at"
             ).fetchall()]  # fmt: skip
+            open_batches = conn.execute(
+                "SELECT coordinator, MAX(batch) FROM delegated_tasks WHERE status IN ('pending', 'running', 'checking')"
+                " GROUP BY coordinator"
+            ).fetchall()
+            going = [(c, b) for c, b in open_batches if c in runs]  # the last batch of a coordinator that waits
+            for row in conn.execute("SELECT coordinator, batch, task_id, status, criteria FROM delegated_tasks WHERE"
+                                    " status IN ('pending', 'running', 'checking')").fetchall():  # fmt: skip
+                if (row["coordinator"], row["batch"]) in going:
+                    continue
+                if row["status"] == "pending":  # nobody waits for it now
+                    _mark(conn, row["coordinator"], row["task_id"], status="cancelled",
+                          detail="the hub restarted before it began", ended_at=utc_now())  # fmt: skip
+                elif row["status"] == "checking" or row["criteria"]:
+                    _mark(conn, row["coordinator"], row["task_id"], status="escalated", detail=UNCHECKED,
+                          ended_at=utc_now())  # fmt: skip
+            return runs, [(c, b, list_tasks(conn, c, b)) for c, b in going]
 
-        unfinished = await self._db.acall(unfinished_runs)
+        unfinished, batches = await self._db.acall(unfinished_runs)
+        coordinators = {c for c, _, _ in batches}
+        for coordinator, _, tasks in batches:  # set before any run goes on: whoever waits hears each end
+            self._resumed[coordinator] = asyncio.Event()
+            for task in tasks:
+                if task["status"] == "running" and task["run_id"]:
+                    self._ended[task["run_id"]] = asyncio.Event()
         for run_id in unfinished:
-            await self._launch(run_id, resume=True)
+            if run_id not in coordinators:  # a coordinator goes on once its batch has ended
+                await self._launch(run_id, resume=True)
+        for coordinator, number, tasks in batches:
+            going = asyncio.create_task(self._resume_batch(coordinator, number, tasks))
+            self._resuming.add(going)
+            going.add_done_callback(self._resuming.discard)
+            going.add_done_callback(log_task_exception)
         return unfinished
 
     async def run(self, profile_id: str, task: str, project_ids: list[str] | None = None) -> dict[str, Any]:
@@ -839,27 +887,40 @@ class AgentRunner:
         except AgentError as exc:
             return str(exc), True
         await self._told(parent_id)
-        ordered = order(tasks, lambda t: local[t["task_id"]])
         ends = {t["task_id"]: asyncio.Event() for t in tasks}
-        before: dict[str, str | None] = {}  # a local task: the local task before it (the GPU, one after another)
-        last = None
-        for task in ordered:
-            if local[task["task_id"]] is not None:
-                before[task["task_id"]], last = last, task["task_id"]
-        cloud = asyncio.Semaphore(CLOUD_AT_ONCE)
         gave_up = parent_id in self._held  # the GPU goes to the batch while the coordinator waits
         if gave_up:
             self._held.discard(parent_id)
             self._gpu.release()
         try:
-            await asyncio.gather(*(
-                self._batch_task(parent_id, t, profiles[t["task_id"]], ends, before.get(t["task_id"]),
-                                 None if local[t["task_id"]] else cloud, cancel)
-                for t in ordered))  # fmt: skip
+            await self._go_through(parent_id, order(tasks, lambda t: local[t["task_id"]]), [], profiles, local, ends,
+                                   cancel)  # fmt: skip
         finally:
             if gave_up:
                 await self._gpu.acquire()
                 self._held.add(parent_id)
+        return await self._board_of(parent_id, number, cloud_here)
+
+    async def _go_through(self, parent_id: str, new: list[dict[str, Any]], under_way: list[dict[str, Any]],
+                          profiles: dict[str, dict[str, Any] | None], local: dict[str, str | None],
+                          ends: dict[str, asyncio.Event], cancel: asyncio.Event) -> None:  # fmt: skip
+        """A batch's tasks to their ends: `new` ones in an order they can start in - cloud ones CLOUD_AT_ONCE at a
+        time, a local one after the local one before it (the GPU, one after another) -, and those `under_way` when
+        the hub restarted (61.5)."""
+        before: dict[str, str | None] = {}  # a local task: the local task before it
+        last = None
+        for task in new:
+            if local[task["task_id"]] is not None:
+                before[task["task_id"]], last = last, task["task_id"]
+        cloud = asyncio.Semaphore(CLOUD_AT_ONCE)
+        await asyncio.gather(
+            *(self._batch_task(parent_id, t, profiles[t["task_id"]], ends, before.get(t["task_id"]),
+                               None if local[t["task_id"]] else cloud, cancel) for t in new),
+            *(self._batch_task(parent_id, t, None, ends, None, None, cancel, resumed=True) for t in under_way),
+        )  # fmt: skip
+
+    async def _board_of(self, parent_id: str, number: int, cloud_here: bool) -> tuple[str, bool]:
+        """The board of a batch that ended - what the coordinator gets - and whether a task of it did not end done."""
         ended = await self._db.acall(lambda conn: list_tasks(conn, parent_id, number))
         made = await self.task_changes(parent_id, number)
         changed = await asyncio.to_thread(lambda: {
@@ -867,6 +928,58 @@ class AgentRunner:
                             "short": changes_in_short(p, cloud_here)} for p in t["projects"]]
             for t in made})  # fmt: skip
         return board(ended, changed), any(t["status"] != "done" for t in ended)
+
+    async def _resume_batch(self, coordinator: str, number: int, rows: list[dict[str, Any]]) -> None:
+        """A batch the hub was running when it stopped, its coordinator waiting for it (61.5): its tasks go on; its
+        board answers the coordinator's call, and the coordinator goes on with it - or ends stopped, when the user
+        stopped it meanwhile («Стоп»: `cancel`)."""
+        cancel = self._resumed[coordinator]
+        try:
+
+            def prepare(conn):
+                by_name = {p["name"]: p for p in list_profiles(conn)}
+                profiles: dict[str, dict[str, Any] | None] = {}
+                local: dict[str, str | None] = {}
+                for t in rows:
+                    profile = by_name.get(t["agent"])
+                    if profile is not None and t["given_model_id"]:  # the model the task named (61.3)
+                        profile = {**profile, "model_id": t["given_model_id"]}
+                    model = store.get_model(conn, profile["model_id"]) if profile is not None else None
+                    profiles[t["task_id"]] = profile
+                    local[t["task_id"]] = model["id"] if model is not None and model["locality"] == "local" else None
+                    if profile is None and t["status"] == "pending":
+                        _mark(conn, coordinator, t["task_id"], status="failed", ended_at=utc_now(),
+                              detail=f"its agent «{t['agent']}» is gone")  # fmt: skip
+                        t["status"] = "failed"
+                return profiles, local, _cloud(conn, coordinator)
+
+            profiles, local, cloud_here = await self._db.acall(prepare)
+            ends = {t["task_id"]: asyncio.Event() for t in rows}
+            for t in rows:
+                if t["status"] not in ("pending", "running", "checking"):
+                    ends[t["task_id"]].set()
+            pending = {t["task_id"]: t for t in rows if t["status"] == "pending"}
+            ready = order([{**t, "dependencies": [d for d in t["dependencies"] if d in pending]}
+                           for t in pending.values()], lambda t: local[t["task_id"]])  # fmt: skip
+            under_way = [t for t in rows if t["status"] in ("running", "checking")]
+            await self._told(coordinator)
+            await self._go_through(coordinator, [pending[t["task_id"]] for t in ready], under_way, profiles, local,
+                                   ends, cancel)  # fmt: skip
+            if self._chat.stopping:  # the hub stops again: the batch goes on after its next start
+                return
+            said, error = await self._board_of(coordinator, number, cloud_here)
+            answered = await self._db.acall(lambda conn: _answer_batch_call(conn, coordinator, said, error))
+            if answered is not None:
+                await self._bus.publish("chat.message", {"conversation_id": coordinator,
+                                                         "message": answered.to_json()})  # fmt: skip
+            if cancel.is_set():
+                await self._finish(coordinator, Outcome(status="cancelled"))
+            else:
+                await self._launch(coordinator, resume=True, text=BATCH_RESUMED)
+        except AgentError:  # the coordinator's chat was deleted meanwhile, and its run with it
+            log.info("coordinator %s is gone: its batch %s ended with nobody to tell", coordinator, number)
+        finally:
+            self._resumed.pop(coordinator, None)
 
     async def task_diff(self, coordinator: str, args: dict[str, Any], cancel: asyncio.Event | None = None
                         ) -> tuple[str, bool]:  # fmt: skip
@@ -921,14 +1034,19 @@ class AgentRunner:
         more = f"; cut here - ask again with start_char={end}" if end < len(text) else ""
         return f"Task {task_id}: its changes, characters {start}-{end} of {len(text)}{more}.\n{piece}", False
 
-    async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any],
+    async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any] | None,
                           ends: dict[str, asyncio.Event], before: str | None, cloud: asyncio.Semaphore | None,
-                          cancel: asyncio.Event) -> None:  # fmt: skip
+                          cancel: asyncio.Event, *, resumed: bool = False) -> None:  # fmt: skip
         """One task of a batch: waits for its dependencies (and a local one for the local task before it), then runs
-        as a sub-run of the coordinator; its row says how it went (`_finish` writes a run's end)."""
+        as a sub-run of the coordinator; its row says how it went (`_finish` writes a run's end). `resumed`: it ran
+        or was being checked when the hub restarted (61.5)."""
         task_id = task["task_id"]
-        child_id = None
+        child_id = task["run_id"] if resumed else None
         try:
+            if resumed:
+                await self._resumed_task(parent_id, task, cancel)
+                return
+            assert profile is not None
             for waited in [*task["dependencies"], *([before] if before else [])]:
                 await _either(ends[waited], cancel)
             if cancel.is_set():
@@ -978,7 +1096,7 @@ class AgentRunner:
                 await self._told(parent_id)
                 if child_id is None:
                     return
-                ended = self._ended[child_id] = asyncio.Event()
+                self._ended[child_id] = asyncio.Event()
                 try:
                     clashed = await self._seed(parent_id, task, child_id)
                 except sandbox.SandboxError as exc:
@@ -992,26 +1110,7 @@ class AgentRunner:
                 if allowed := task_checks(task):  # allowed with the batch: run in its copy unasked (61.4)
                     self._chat.checks[child_id] = allowed
                 bases = await self._bases(child_id) if task["criteria"] else {}
-                since = utc_now()
-                note = None
-                for round_no in range(1, ROUNDS + 1):  # one round without criteria (16.3)
-                    await self._launch(child_id, resume=False, text=note)
-                    await _either(ended, cancel)
-                    if not ended.is_set():  # the coordinator was stopped: so is this task
-                        await self.cancel(child_id)
-                        await ended.wait()
-                        return
-                    if not task["criteria"]:
-                        return
-                    note = await self._check(parent_id, task, child_id, round_no, bases, since)
-                    if note is None:
-                        return
-                    if cancel.is_set():
-                        await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
-                                                                ended_at=utc_now()))  # fmt: skip
-                        await self._told(parent_id)
-                        return
-                    ended = self._ended[child_id] = asyncio.Event()
+                await self._rounds(parent_id, task, child_id, cancel, bases, utc_now(), first=1)
             finally:
                 if cloud is not None:
                     cloud.release()
@@ -1020,6 +1119,50 @@ class AgentRunner:
                 self._ended.pop(child_id, None)
                 self._chat.checks.pop(child_id, None)
             ends[task_id].set()
+
+    async def _resumed_task(self, parent_id: str, task: dict[str, Any], cancel: asyncio.Event) -> None:
+        """A task running or being checked when the hub restarted (61.5): its run goes on by itself (`start`), or it
+        is checked again; then round after round as before. Its check diffs from where its copy began."""
+        child_id = task["run_id"]
+        self._ended.setdefault(child_id, asyncio.Event())
+        if allowed := task_checks(task):  # the batch's checks were allowed before the restart
+            self._chat.checks[child_id] = allowed
+        bases = await self._copy_bases(child_id) if task["criteria"] else {}
+        checking = task["status"] == "checking"
+        done_rounds = task["rounds"] or 0  # checks made: one is under way when it is being checked
+        first = min(max(done_rounds, 1) if checking else done_rounds + 1, ROUNDS)
+        await self._rounds(parent_id, task, child_id, cancel, bases, task["started_at"] or utc_now(), first=first,
+                           under_way=True, ended=checking)  # fmt: skip
+
+    async def _rounds(self, parent_id: str, task: dict[str, Any], child_id: str, cancel: asyncio.Event,
+                      bases: dict[str, str], since: str, *, first: int, under_way: bool = False,
+                      ended: bool = False) -> None:  # fmt: skip
+        """A task's run, then its check, round after round from `first` (16.3; one round without criteria);
+        `under_way` - its run goes on already, `ended` - it ended and waits for its check (61.5)."""
+        task_id = task["task_id"]
+        note = None
+        for round_no in range(first, ROUNDS + 1):
+            its_end = self._ended[child_id]
+            if not under_way:
+                await self._launch(child_id, resume=False, text=note)
+            if not ended:
+                await _either(its_end, cancel)
+                if not its_end.is_set():  # the coordinator was stopped: so is this task
+                    await self.cancel(child_id)
+                    await its_end.wait()
+                    return
+            under_way = ended = False
+            if not task["criteria"]:
+                return
+            note = await self._check(parent_id, task, child_id, round_no, bases, since)
+            if note is None:
+                return
+            if cancel.is_set():
+                await self._db.acall(lambda conn: _mark(conn, parent_id, task_id, status="cancelled",
+                                                        ended_at=utc_now()))  # fmt: skip
+                await self._told(parent_id)
+                return
+            self._ended[child_id] = asyncio.Event()
 
     async def _allow_checks(self, parent_id: str, tasks: list[dict[str, Any]], mode: str,
                             cancel: asyncio.Event) -> str | None:  # fmt: skip
@@ -1050,6 +1193,27 @@ class AgentRunner:
             if not allowed:
                 return why or "not allowed"
         return None
+
+    async def _copy_bases(self, run_id: str) -> dict[str, str]:
+        """Where a task's copies began, as git trees (61.5): after a restart its check's diff runs from there."""
+        folder = self._chat.sandboxes
+        if folder is None:
+            return {}
+        projects = await self._db.acall(lambda conn: _attached(conn, run_id))
+
+        def read() -> dict[str, str]:
+            out = {}
+            for project in (p for p in projects if sandbox.is_git(p)):
+                try:
+                    tree = sandbox.base_tree(folder, run_id, project)
+                except sandbox.SandboxError as exc:
+                    log.warning("task run %s: no starting point for %s: %s", run_id, project.name, exc)
+                    continue
+                if tree:
+                    out[project.id] = tree
+            return out
+
+        return await asyncio.to_thread(read)
 
     async def _bases(self, run_id: str) -> dict[str, str]:
         """Where each git project's files stand as the task begins (in its copy): the judge's diff runs from there."""
@@ -1214,6 +1378,10 @@ class AgentRunner:
         return {"discarded": gone}
 
     async def cancel(self, run_id: str) -> bool:
+        resumed = self._resumed.get(run_id)
+        if resumed is not None:  # a coordinator whose batch goes on after a restart (61.5): stopped with it
+            resumed.set()
+            return True
         queued = self._waiting.pop(run_id, None)
         if queued is not None:  # not under way yet - waiting for the GPU, or getting ready: it never starts
             queued.cancel()
@@ -1263,7 +1431,7 @@ class AgentRunner:
             (utc_now(), run_id)))  # fmt: skip
         current = await self._db.acall(lambda conn: get_run(conn, run_id))
         await self._bus.publish("run.started", {"run": current, "resumed": resume})
-        text = RESUMED if resume else text or run["task"]
+        text = (text or RESUMED) if resume else (text or run["task"])
         await self._chat.start(run_id, model_id, text, limits=limits,
                                on_end=lambda outcome: self._finish(run_id, outcome))  # fmt: skip
         self._waiting.pop(run_id, None)  # under way: a stop goes to its chat run now
