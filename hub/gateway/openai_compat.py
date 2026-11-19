@@ -10,7 +10,8 @@ outside the `data:` lines, which is an error, not an empty answer (`_refusal`, 0
 
 Tools go out as OpenAI functions (llama.cpp serves them for models started with --jinja); a call streams in
 fragments by index and is put together at the end. Arguments that are not valid JSON are passed on marked
-({"__invalid_json__": text}), so the chat answers the model with an error instead of failing the run.
+({"__invalid_json__": text}), so the chat answers the model with an error instead of failing the run. A local model
+that wrote its call as text, with no `tool_calls` (61.6), has it read from the text (hub/gateway/text_calls.py).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from common.efforts import nearest_effort
 from common.i18n import tr
 
 from .. import llama_config
+from . import text_calls
 from .base import Model, ProviderError, StreamEvent
 
 log = logging.getLogger("hub.gateway.openai")
@@ -209,6 +211,7 @@ class OpenAICompatProvider:
             self._levels = self._with_aliases(await self.efforts())
         body = self.request_body(model_ref, messages, effort, tools, params)
         calls: dict[int, dict[str, str]] = {}  # tool calls being put together, by index
+        said: list[str] = []  # the answer's text as it came: a local model's call written in it (61.6)
         thought: list[str] = []  # the reasoning as it came, for a provider that wants it back (DeepSeek)
         details: list[dict[str, Any]] = []  # OpenRouter's reasoning_details, to be sent back unchanged
         started = time.monotonic()
@@ -288,6 +291,7 @@ class OpenAICompatProvider:
                         thought.append(think)
                         yield StreamEvent("reasoning", think)
                     if text:
+                        said.append(text)
                         yield StreamEvent("content", text)
         except httpx.ReadTimeout as exc:  # the socket went silent: a hung server, a half-open connection
             raise ProviderError(f"{self.name}: nothing came for {self.READ_TIMEOUT_S:g} s") from exc
@@ -296,12 +300,17 @@ class OpenAICompatProvider:
         if held := banner.flush():  # it ended while still looking like the banner's start: the model's own
             thought.append(held)
             yield StreamEvent("reasoning", held)
+        made = [_call(index, call) for index, call in sorted(calls.items()) if call["name"]]
+        if not made and tools and self.locality == "local" and not cancel.is_set():  # its call written as text (61.6)
+            made = text_calls.found("".join(said), {t["name"] for t in tools})
+            if made:
+                log.info("%s: %d tool call(s) read from the answer's text", model_ref, len(made))
         yield StreamEvent(
             "end",
             usage=self.priced(model_ref, _usage(usage, chunks), usage),
             stats=_stats(usage, timings, started, first_at),
             stop_reason=finish_reason,
-            tool_calls=[_call(index, call) for index, call in sorted(calls.items()) if call["name"]],
+            tool_calls=made,
             raw=self.kept("".join(thought), details),
         )
 
