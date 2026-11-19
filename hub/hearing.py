@@ -17,7 +17,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from common.i18n import tr
+from common.i18n import language, tr
 
 # AudioSet's names of what is a broad noise by its nature - rain, water, wind, steam: without its top it is not that
 BROAD = frozenset({
@@ -51,9 +51,12 @@ does not make the sound wrong. It does not fit when the surest labels name anoth
 music or speech where none was asked, an engine instead of rain - or silence.
 
 Answer with the JSON object only: {form}"""  # i18n: keep
-FORM = ('{"fits": true | false, "heard": "<what is heard: two to five words, in the language of what the scene '
-        'shows>", "why": "<when it does not fit: one short phrase in that language - what was asked for and what is '
-        'heard instead; else empty>"}')  # fmt: skip
+FORM = ('{{"fits": true | false, "heard": "<what is heard: two to five words, in {tongue}>", "why": "<when it does '
+        'not fit: one short phrase in {tongue} - what was asked for and what is heard instead; else empty>"}}'
+        )  # fmt: skip
+# (53.16, the live film) told «in the language of what the scene shows», the model named one sound of eight in
+# English: the window's language is named to it
+TONGUES = {"ru": "Russian", "en": "English"}
 
 Labels = list[tuple[str, float]]
 
@@ -76,7 +79,8 @@ def question(scene: dict[str, Any], labels: Labels) -> tuple[str, str, str]:
     prompt = (f"<scene>\nWhat it shows: {scene.get('words') or scene.get('prompt') or ''}\n"
               f"Asked to sound like: {scene['sound_words']}\n</scene>\n<heard>\n{listed}\n</heard>\n"
               "Does the sound fit? Answer with the JSON only.")  # fmt: skip
-    return SYSTEM.format(form=FORM), prompt, FORM
+    form = FORM.format(tongue=TONGUES.get(language(), "English"))
+    return SYSTEM.format(form=form), prompt, form
 
 
 def reader() -> Callable[[str], dict[str, Any] | None]:

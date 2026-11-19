@@ -615,6 +615,7 @@ def test_a_scenes_made_sound_is_heard_and_made_again_until_it_is_right(stand, mo
         assert not list(media.glob("*/*.take*")) and card.holder == ""
         said = json.dumps(cloud.asked[1]["messages"], ensure_ascii=False)
         assert "Asked to sound like: rain" in said and "- Music: 0.80" in said and "Дождь" in said
+        assert "two to five words, in Russian" in said  # the window's language, by its name
         assert len(cloud.asked) == 4 and second["tokens"] > spent  # the director's words are counted to the film
         film = media / second["file"]
         assert _band(program, film, 1760, 0.5, 2.0) > -45 and _band(program, film, 660, 0.5, 2.0) < -50
