@@ -5,8 +5,13 @@ long as asked - a tone of its own pitch each, so a test can tell them in a mix. 
 JSON each time, into the file $FAKE_AUDIO_LOG names. $FAKE_AUDIO_SLEEP - seconds it works before it writes;
 $FAKE_AUDIO_FAIL - the family whose piece fails as the engine does, in words and with an exit code;
 $FAKE_AUDIO_HIGH - so many of the voice's first readings (counted in the log) come a fifth up, as the engine's
-voice that did not hold; $FAKE_AUDIO_LONG - so many go on to the end of their tokens (--max-tokens, 12.5 a second)."""
+voice that did not hold; $FAKE_AUDIO_LONG - so many go on to the end of their tokens (--max-tokens, 12.5 a second).
 
+The listener (`--task cls`, 53.11) writes no file: it says what is heard in the WAV `--audio` names - by its pitch,
+as the engine does, in a line of JSON: the stand-in's own tones are speech, music and rain (`HEARD`), 440 Hz a dog,
+another one silence."""
+
+import itertools
 import json
 import math
 import os
@@ -16,10 +21,53 @@ import time
 import wave
 
 TONES = {"qwen3_tts": 220.0, "ace_step": 660.0, "moss_soundeffect": 1760.0}
+HEARD = {220.0: [("Speech", 0.9), ("Narration, monologue", 0.4)], 440.0: [("Dog", 0.82), ("Bark", 0.65)],
+         660.0: [("Music", 0.8), ("Piano", 0.3)], 1760.0: [("Rain", 0.64), ("Rain on surface", 0.5)]}  # fmt: skip
+
+
+def pitch(path: str) -> float:
+    """The pitch of a WAV's tone: how often its first channel crosses zero."""
+    with wave.open(path, "rb") as sound:
+        rate, channels = sound.getframerate(), sound.getnchannels()
+        raw = sound.readframes(min(sound.getnframes(), 2 * rate))
+    samples = struct.unpack(f"<{len(raw) // 2}h", raw)[::channels]
+    crossed = sum((a < 0) != (b < 0) for a, b in itertools.pairwise(samples))
+    return crossed * rate / (2 * max(1, len(samples)))
+
+
+def listen(args: list[str]) -> int:
+    def value(name: str, default: str = "") -> str:
+        return args[args.index(name) + 1] if name in args else default
+
+    family, audio = value("--family"), value("--audio")
+    options = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a == "--request-option")
+    if log := os.environ.get("FAKE_AUDIO_LOG"):
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"family": family, "task": "cls", "audio": audio, "model": value("--model"),
+                                "backend": value("--backend"), "top": options.get("top_k", ""),
+                                "cwd": os.getcwd()}, ensure_ascii=False) + "\n")  # fmt: skip
+    if not os.path.isfile(value("--model")):
+        print("error: model file not found")
+        return 2
+    until = time.monotonic() + float(os.environ.get("FAKE_AUDIO_SLEEP") or 0)
+    while time.monotonic() < until:
+        time.sleep(0.05)
+    if os.environ.get("FAKE_AUDIO_FAIL") == family:
+        print("error: failed to read the audio file")
+        return 1
+    now = pitch(audio)
+    near = min(HEARD, key=lambda tone: abs(tone - now))
+    found = HEARD[near] if abs(near - now) < 0.1 * near else [("Silence", 0.3)]
+    scores = [{"index": k, "label": label, "score": score, "logit": 0.0} for k, (label, score) in enumerate(found)]
+    print("loading the model")
+    print("custom_schema_output=" + json.dumps({"schema": "ced.classification.v1", "data": {"scores": scores}}))
+    return 0
 
 
 def main() -> int:
     args = sys.argv[1:]
+    if "--task" in args and args[args.index("--task") + 1] == "cls":
+        return listen(args)
 
     def value(name: str, default: str = "") -> str:
         return args[args.index(name) + 1] if name in args else default

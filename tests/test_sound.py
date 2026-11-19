@@ -162,7 +162,7 @@ def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card
     was = hub.get("/v1/sound").json()
     assert was["engine"] == {"tag": audio_cpp.TAG, "build": BUILD, "ready": False}
     assert [(p["id"], p["state"], p["size"]) for p in was["parts"]] == [
-        (name, "missing", len(MODELS[name])) for name in ("voice", "music", "effects")]  # fmt: skip
+        (name, "missing", len(MODELS[name])) for name in ("voice", "music", "effects", "listener")]  # fmt: skip
     assert [v["id"] for v in was["voices"]][:2] == ["ryan", "aiden"] and len(was["voices"]) == 9
     assert hub.post("/v1/sound/parts/drums").status_code == 404
 
@@ -281,6 +281,69 @@ def test_a_piece_stopped_or_failed_leaves_nothing_and_gives_the_card(stand, tmp_
     with pytest.raises(sound.SoundError):
         hub.portal.call(behind_a_video)
     assert card.holder == "" and len(hub.asked()) == 2
+
+
+def tone(path, pitch, seconds=1.0, rate=48000):
+    """A WAV of one tone, as the engine writes a sound."""
+    with wave.open(str(path), "wb") as clip:
+        clip.setnchannels(1)
+        clip.setsampwidth(2)
+        clip.setframerate(rate)
+        clip.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * pitch * n / rate)))
+                                  for n in range(int(seconds * rate))))  # fmt: skip
+    return path
+
+
+def test_the_listener_says_what_is_heard_in_a_sound_without_the_card(stand, tmp_path, monkeypatch):
+    """53.11: the listener is the fourth part of the engine of sound - fetched as the others are, pinned by size
+    and sha256. Asked what is heard in a WAV, the program - a real process - answers with its labels, the surest
+    first; it works on the processor, so the card is not taken and nothing is unloaded: it answers while the Studio
+    holds the card. Not here - said so; «Стоп» kills it at once; a program that fails says why in words."""
+    hub = stand  # noqa: F811
+    service, card = hub.app.state.sound, hub.app.state.card
+    rain, dog = tone(tmp_path / "rain.wav", 1760), tone(tmp_path / "dog.wav", 440)
+
+    async def listen(path, stop_after=None):
+        cancel = asyncio.Event()
+        if stop_after is not None:
+            asyncio.get_running_loop().call_later(stop_after, cancel.set)
+        return await service.listen(path, cancel)
+
+    install(hub, "voice")  # the engine is here, the listener is not
+    with pytest.raises(sound.SoundError, match="Слушатель") as missing:
+        hub.portal.call(lambda: listen(rain))
+    assert missing.value.status == 422 and hub.asked() == []
+
+    found = part(hub.get("/v1/sound").json(), "listener")
+    assert (found["state"], found["size"], found["licence"]) == ("missing", len(MODELS["listener"]), "Apache-2.0")
+    install(hub, "listener")
+    assert audio_cpp.model_file(service.models, "listener").read_bytes() == MODELS["listener"]
+
+    async def behind_the_studio():  # the card is the Studio's: the listener does not wait for it
+        await card.take("studio", chats=True)
+        try:
+            return await listen(rain), card.holder
+        finally:
+            card.give("studio")
+
+    heard, holder = hub.portal.call(behind_the_studio)
+    assert heard == [("Rain", 0.64), ("Rain on surface", 0.5)] and holder == "studio"
+    assert hub.portal.call(lambda: listen(dog))[0] == ("Dog", 0.82)
+    assert FakeDrawSwap.unloaded == []  # the models llama-swap holds stay where they are
+    asked = hub.asked()[-1]
+    assert (asked["family"], asked["task"], asked["backend"], asked["top"]) == ("ced", "cls", "cpu", "8")
+    assert Path(asked["audio"]) == dog and Path(asked["model"]) == audio_cpp.model_file(service.models, "listener")
+
+    monkeypatch.setenv("FAKE_AUDIO_SLEEP", "30")
+    began = time.monotonic()
+    with pytest.raises(sound.SoundError):
+        hub.portal.call(lambda: listen(rain, 0.5))
+    assert time.monotonic() - began < 10
+    monkeypatch.setenv("FAKE_AUDIO_SLEEP", "0")
+    monkeypatch.setenv("FAKE_AUDIO_FAIL", "ced")
+    with pytest.raises(sound.SoundError, match="failed to read the audio file") as failed:
+        hub.portal.call(lambda: listen(rain))
+    assert failed.value.status == 502 and card.holder == ""
 
 
 def test_a_part_broken_on_the_way_stopped_and_removed(stand):

@@ -10,16 +10,19 @@ driver - its runtime is a second archive), else the processor's. The Vulkan buil
 The models are single GGUF files of audio-cpp/audio.cpp-gguf on Hugging Face, pinned by size and sha256 (`PARTS`):
 the voice (Qwen3-TTS 1.7B Base: it reads by a clip of a voice - nine clips lie beside this module, `VOICE_CLIPS`;
 Russian among its ten languages), music (ACE-Step 1.5 turbo),
-sound effects (MOSS-SoundEffect v2). Measured on an RTX 5080: 12 s of speech in 3-5 s and 2.3-3.5 GB of the card
-(15 s on the processor alone), 20 s of music in 8 s and 9.8 GB, 10 s of a sound effect in 15 s and 5.4 GB - none of
-them fits beside a video model, so the hub unloads the models first (hub/sound.py).
+sound effects (MOSS-SoundEffect v2), and the listener (CED small: it says what is heard in a sound - AudioSet's
+527 names; 0.2 s on the processor, the card not needed). Measured on an RTX 5080: 12 s of speech in 3-5 s and
+2.3-3.5 GB of the card (15 s on the processor alone), 20 s of music in 8 s and 9.8 GB, 10 s of a sound effect in
+15 s and 5.4 GB - none of them fits beside a video model, so the hub unloads the models first (hub/sound.py).
 """
 
 from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import math
+import os
 import re
 import shutil
 import statistics
@@ -71,6 +74,12 @@ PARTS: dict[str, dict[str, Any]] = {
         "size": 4001175520, "sha256": "99feab80176e5fdd178aa005fa5e4079f8f6a8c45e576b8c4b48f26981ce63a1",
         "family": "moss_soundeffect", "licence": "Apache-2.0",
     },
+    "listener": {
+        "name": N_("Слушатель"), "about": N_("CED small: узнаёт, что слышно в звуке сцены, — проверка звука"),
+        "path": "CED-GGUF/ced-small-f32.gguf",
+        "size": 86607904, "sha256": "82c3c1535552717a76d9a9ea934c7dd9f2f0f801bba7cbf24631b06db53f8e12",
+        "family": "ced", "licence": "Apache-2.0",
+    },
 }  # fmt: skip
 # The narrator's voices. Each is a clip beside this module (voices/<id>.wav, 7-12 s of Russian, 24 kHz mono): the
 # model reads a line by the clip's voice. (53.8, the user's ear: «говорят несколько голосов») The model with the
@@ -94,6 +103,9 @@ PITCH_OFF = 0.25  # how far a line's pitch may be from its voice's clip
 SAY_LONG = (3.0, 1.5)  # a line is too long past this many times its text's time, and these seconds more
 CODEC_HZ = 12.5  # the voice model's speech tokens a second
 RUN_TIMEOUT_S = 900.0
+HEARD = 8  # the listener's labels of a sound, the surest first
+HEAR_TIMEOUT_S = 120.0
+_HEARD = "custom_schema_output="  # the line the listener's answer is on
 _METRIC = re.compile(r"^metrics\.([a-z_.]+)=([-0-9.eE]+)\s*$", re.M)
 
 
@@ -184,19 +196,15 @@ class Stopped(EngineError):
     """The piece was stopped: nothing is left of it."""
 
 
-def run(program: Path, args: list[str], target: Path, cancel: threading.Event, *,
-        timeout: float = RUN_TIMEOUT_S) -> dict[str, float]:  # fmt: skip
-    """The program once (blocking): one piece of sound into `target` - written beside under another name, then put
-    in place; what it measured ({wall_ms, audio_duration_ms, ...}). `cancel` set, or the time out - the program is
-    killed and nothing is left. What it says goes to a file, not a pipe: nothing reads a pipe while we wait."""
-    part = target.with_name(f"{target.stem}.part{target.suffix}")
+def _started(program: Path, args: list[str], cancel: threading.Event, timeout: float) -> tuple[int, str]:
+    """The program once (blocking): (its exit code, what it said). `cancel` set, or the time out - the program is
+    killed. What it says goes to a file, not a pipe: nothing reads a pipe while we wait."""
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    target.parent.mkdir(parents=True, exist_ok=True)
     began = time.monotonic()
     with tempfile.TemporaryFile() as said:
         try:
-            process = subprocess.Popen([*command(program), *args, "--metrics", "--out", str(part)], stdout=said,
-                                       stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=str(program.parent),
+            process = subprocess.Popen([*command(program), *args], stdout=said, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL, cwd=str(program.parent),
                                        creationflags=flags)  # fmt: skip
         except OSError as exc:
             raise EngineError(tr("движок звука не запустился: {error}", error=exc)) from exc
@@ -210,17 +218,44 @@ def run(program: Path, args: list[str], target: Path, cancel: threading.Event, *
                     raise EngineError(tr("движок звука не ответил за {seconds} с", seconds=round(timeout)))
                 time.sleep(0.1)
             said.seek(0)
-            text = said.read().decode("utf-8", "replace")
-            if process.returncode != 0 or not part.is_file() or part.stat().st_size < 64:
-                last = " ".join(text.split())[-300:]
-                raise EngineError(tr("движок звука не сделал файл: {said}", said=last or process.returncode))
-            part.replace(target)
+            return process.returncode, said.read().decode("utf-8", "replace")
         finally:
             if process.poll() is None:
                 process.kill()
-            with contextlib.suppress(OSError):
-                part.unlink()
+
+
+def run(program: Path, args: list[str], target: Path, cancel: threading.Event, *,
+        timeout: float = RUN_TIMEOUT_S) -> dict[str, float]:  # fmt: skip
+    """The program once (blocking): one piece of sound into `target` - written beside under another name, then put
+    in place; what it measured ({wall_ms, audio_duration_ms, ...}). `cancel` set, or the time out - the program is
+    killed and nothing is left."""
+    part = target.with_name(f"{target.stem}.part{target.suffix}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        code, text = _started(program, [*args, "--metrics", "--out", str(part)], cancel, timeout)
+        if code != 0 or not part.is_file() or part.stat().st_size < 64:
+            last = " ".join(text.split())[-300:]
+            raise EngineError(tr("движок звука не сделал файл: {said}", said=last or code))
+        part.replace(target)
+    finally:
+        with contextlib.suppress(OSError):
+            part.unlink()
     return {name: float(value) for name, value in _METRIC.findall(text)}
+
+
+def hear(program: Path, args: list[str], cancel: threading.Event, *,
+         timeout: float = HEAR_TIMEOUT_S) -> list[tuple[str, float]]:  # fmt: skip
+    """What the listener hears in a sound (blocking): its labels, the surest first - [(AudioSet's name, how sure:
+    0..1)]. `cancel` set, or the time out - the program is killed."""
+    code, text = _started(program, args, cancel, timeout)
+    for line in text.splitlines() if code == 0 else []:
+        if line.startswith(_HEARD):
+            try:
+                scores = json.loads(line[len(_HEARD) :])["data"]["scores"]
+                return [(str(score["label"]), float(score["score"])) for score in scores]
+            except ValueError, KeyError, TypeError:
+                break
+    raise EngineError(tr("движок звука не сказал, что слышно: {said}", said=" ".join(text.split())[-300:] or code))
 
 
 def _model(models: Path, part: str, backend: str) -> list[str]:
@@ -324,6 +359,13 @@ def effect_args(models: Path, backend: str, *, words: str, seconds: float) -> li
     length = min(EFFECT_S[1], max(EFFECT_S[0], seconds))
     return ["--task", "gen", *_model(models, "effects", backend), "--text", words, "--request-option",
             f"duration_sec={length:.1f}", "--request-option", f"seed={SEED}"]  # fmt: skip
+
+
+def listen_args(models: Path, *, audio: Path) -> list[str]:
+    """What is heard in a sound file (a WAV) - on the processor, whatever the build: it takes a fifth of a second
+    there (53.10), and the card is someone else's meanwhile."""
+    return ["--task", "cls", *_model(models, "listener", "cpu"), "--audio", str(audio), "--threads",
+            str(min(8, os.cpu_count() or 4)), "--request-option", f"top_k={HEARD}"]  # fmt: skip
 
 
 def remove(path: Path) -> None:

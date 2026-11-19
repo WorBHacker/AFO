@@ -1,5 +1,6 @@
 """The sound added to a film (stage 53): the narrator's voice, music, a scene's sounds - made by audio.cpp
-(hub/audio_cpp.py), a program the hub runs once for each piece.
+(hub/audio_cpp.py), a program the hub runs once for each piece. The fourth part is the listener (53.11): it says
+what is heard in a sound - on the processor, the card not taken.
 
 Its parts are fetched when the user asks for them (`install`): the engine's build for this computer the first time
 - with any part - and the part's model, a GGUF file of some gigabytes into <models>/audio. What is on the disk is
@@ -55,7 +56,7 @@ def seconds_of(path: Path) -> float:
 
 class Sound:
     """The engine's parts (`state`, `install`, `stop`, `remove`) and its pieces: `speak`, `music`, `effect` -
-    inside `working`, which holds the card."""
+    inside `working`, which holds the card; `listen` - what is heard in a sound, without the card."""
 
     def __init__(self, bus: EventBus, *, card: GpuCard, llama_swap_url: str, tools: Path, models: Path,
                  build: Callable[[], Awaitable[str]]):  # fmt: skip
@@ -226,29 +227,41 @@ class Sound:
             finally:
                 self._card.give(SOUND)
 
-    async def _make(self, part: str, target: Path, cancel: asyncio.Event, args: Callable[[str], list[str]]) -> Path:
+    async def _run[T](self, part: str, cancel: asyncio.Event,
+                      work: Callable[[Path, str, threading.Event], T]) -> T:  # fmt: skip
+        """The engine's program at a part's work, in a thread: `work(program, backend, halt)`; `cancel` kills it."""
         build = await self.build()
         program = await asyncio.to_thread(audio_cpp.find, self.tools, build)
         if program is None or not await asyncio.to_thread(audio_cpp.has, self.models, part):
             raise SoundError(tr("«{part}» не установлено: «Звук фильма» → «Скачать»",
                                 part=tr(audio_cpp.PARTS[part]["name"])), 422)  # fmt: skip
         halt = threading.Event()
-        work = asyncio.ensure_future(asyncio.to_thread(audio_cpp.run, program, args(audio_cpp.backend_of(build)),
-                                                       target, halt))  # fmt: skip
+        going = asyncio.ensure_future(asyncio.to_thread(work, program, audio_cpp.backend_of(build), halt))
         waiting = asyncio.ensure_future(cancel.wait())
         try:
-            await asyncio.wait({work, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({going, waiting}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             waiting.cancel()
-            if not work.done():
+            if not going.done():
                 halt.set()  # «Стоп», or the hub closes: the program is killed, its thread ends
         try:
-            await work
+            return await going
         except audio_cpp.Stopped as exc:
             raise SoundError(str(exc)) from None
         except EngineError as exc:
             raise SoundError(str(exc), 502) from None
+
+    async def _make(self, part: str, target: Path, cancel: asyncio.Event, args: Callable[[str], list[str]]) -> Path:
+        await self._run(
+            part, cancel, lambda program, backend, halt: audio_cpp.run(program, args(backend), target, halt)
+        )
         return target
+
+    async def listen(self, path: Path, cancel: asyncio.Event) -> list[tuple[str, float]]:
+        """What is heard in a sound file (a WAV): the listener's labels, the surest first - [(AudioSet's name, how
+        sure: 0..1)]. On the processor: the card is not taken, and `working` is not needed."""
+        args = audio_cpp.listen_args(self.models, audio=path)
+        return await self._run("listener", cancel, lambda program, _backend, halt: audio_cpp.hear(program, args, halt))
 
     async def speak(self, target: Path, cancel: asyncio.Event, *, text: str, voice: str) -> Path:
         """A line read by a voice into `target` (WAV). Inside `working`. (53.8) A reading that came in another
