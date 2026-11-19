@@ -35,7 +35,9 @@ from .db import utc_now
 log = logging.getLogger("hub.release")
 
 REPO = "WorBHacker/AFO"
-TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+# a release's number: three numbers or four (the user's word of 2026-11-19 - 0.1.17 read three only, a v0.1.17.1 would
+# not have been seen); Windows' file version, the installer's, holds four at most
+TAG = re.compile(r"^v?(\d+(?:\.\d+){2,3})$")
 HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 HERE = ("127.0.0.1", "localhost", "::1")  # the tests' stand-in for GitHub
 AUTO_KEY = "release.auto"
@@ -53,9 +55,19 @@ class ReleaseError(Exception):
     """A release cannot be read, fetched or put in; the message is for the window."""
 
 
-def version(tag: str) -> tuple[int, int, int] | None:
+def number_of(tag: str) -> str | None:
+    """A release's number as its tag says it (v0.1.18 -> 0.1.18), or None: not a release of this kind."""
     found = TAG.match(tag or "")
-    return (int(found[1]), int(found[2]), int(found[3])) if found else None
+    return found[1] if found else None
+
+
+def version(tag: str) -> tuple[int, ...] | None:
+    """A release's number to compare, four numbers: 0.1.18 is 0.1.18.0, older than 0.1.18.1."""
+    said = number_of(tag)
+    if said is None:
+        return None
+    numbers = [int(n) for n in said.split(".")]
+    return (*numbers, *[0] * (4 - len(numbers)))
 
 
 def newer(latest: str, current: str) -> bool:
@@ -89,10 +101,9 @@ async def latest(http: httpx.AsyncClient) -> dict[str, Any] | None:
         data = await engines.github(http, REPO, "releases/latest", missing_ok=True)
     except engines.EngineError as exc:
         raise ReleaseError(str(exc)) from exc
-    found = version(str((data or {}).get("tag_name") or ""))
-    if found is None:
+    number = number_of(str((data or {}).get("tag_name") or ""))
+    if number is None:
         return None
-    number = ".".join(map(str, found))
     name = f"AFO-Setup-{number}.exe"
     assets = {a.get("name"): a for a in data.get("assets") or []}
     setup = assets.get(name)

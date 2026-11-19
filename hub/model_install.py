@@ -1756,8 +1756,9 @@ class Installer:
         if state != "add":
             raise InstallError(tr("эта модель снимает без звука: добавить нечего"))
         family = next(e for e in sets if e["id"] == found["plan"]["set"])
-        extra = await self.picture_files({**family, "files": [f for f in family["files"]
-                                                              if f["role"] == visual.SOUND_ROLE]})  # fmt: skip
+        # its sum with the token (the fix after 0.1.17): the file is shared with the other installs by it (_share)
+        sound = {**family, "files": [f for f in family["files"] if f["role"] == visual.SOUND_ROLE]}
+        extra = await self.picture_files(sound, sums=True)
         if closed := await self._closed(extra, fresh=True):
             raise InstallError(tr("{name}: {words}", name=found["name"],
                                   words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip

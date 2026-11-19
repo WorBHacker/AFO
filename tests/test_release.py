@@ -87,11 +87,26 @@ async def newest():
 
 
 def test_versions_compare_as_numbers():
-    assert release.version("v0.10.0") == (0, 10, 0) and release.version("0.1.0") == (0, 1, 0)
+    assert release.version("v0.10.0") == (0, 10, 0, 0) and release.version("0.1.0") == (0, 1, 0, 0)
     assert release.version("b5000") is None and release.version("v1.2") is None
     assert release.newer("0.10.0", "0.9.1") and release.newer("1.0.0", "0.99.99")
     assert not release.newer("0.1.0", "0.1.0") and not release.newer("0.0.9", "0.1.0")
     assert not release.newer("nightly", "0.1.0")
+
+
+def test_a_release_of_four_numbers_is_seen(hub, github):  # noqa: F811
+    """The user's word of 2026-11-19, on «0.1.17.1»: AFO 0.1.17 read a release's number as three numbers only - a tag
+    v0.1.17.1 was «not a release of this kind», no update was offered. Now a number has three or four (Windows' file
+    version holds four): 0.1.18 is 0.1.18.0, older than 0.1.18.1; the installer is named by the tag's own number."""
+    assert release.newer("0.1.17.1", "0.1.17") and release.newer("0.1.18", "0.1.17.1"), "a fourth number not seen"
+    assert not release.newer("0.1.17.0", "0.1.17") and not release.newer("0.1.17", "0.1.17.0")
+    assert release.version("v0.1.2.3.4") is None
+    later = f"{__version__}.1"
+    published(tag=f"v{later}", name=f"AFO-Setup-{later}.exe")
+    found = hub.post("/v1/release/check").json()
+    assert found["newer"] and found["latest"] == later
+    assert hub.post("/v1/release/download").json()["job"]["status"] == "downloading"
+    assert wait_for(hub, "ready")["job"]["version"] == later
 
 
 def test_the_newest_release_and_its_installer(github):
