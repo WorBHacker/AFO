@@ -21,7 +21,8 @@ With delegate_tasks (16.1, D50) it gives a batch: each task a row of `delegated_
 read. Tasks that do not wait for each other run at once: cloud ones together (CLOUD_AT_ONCE of a batch at a time),
 local ones one after another through the same GPU queue, in the batch's order grouped by model (hub/delegate.py). A
 task with dependencies starts when they are done, with their answers after its prompt; one whose dependency did not
-end done is skipped. The coordinator waits for the whole batch and gets the board back.
+end done is skipped. The coordinator waits for the whole batch and gets the board back - with what each task changed
+in its copies in short, and task_diff gives it whole (61.1): the architect looks at the work, not at file names.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import asyncio
 import collections
 import json
 import logging
+import re
 import sqlite3
 import time
 import uuid
@@ -59,10 +61,11 @@ from .autonomous import NOTE
 from .chat import CHAT_TOOLS, ChatService, Limits, Outcome, _attached
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database, utc_now
-from .delegate import DELEGATE, DELEGATE_MANY, ROUNDS, BatchError, check_batch, order
+from .delegate import DELEGATE, DELEGATE_MANY, DIFF_PIECE, ROUNDS, TASK_DIFF, BatchError, check_batch, order
 from .events import EventBus
 from .gateway import GatewayError
 from .projects import ProjectError, get_project
+from .secret_filter import clean, is_secret_file
 from .visual import GENERATE_IMAGE, GENERATE_VIDEO
 
 log = logging.getLogger("hub.agents")
@@ -82,6 +85,10 @@ ANSWER_CHARS = 6000  # of each answer on the coordinator's board
 CHANGED_SHOWN = 12  # files named per project on the board
 # the coordinator cannot put them there - live on 2026-11-05 it offered to (16.5)
 WAITING_CHANGES = "\nIts changes wait in a sandbox, not in the project yet - only the user puts them there: "
+DIFF_SHOWN = 3000  # characters of a task's changes on the board, in short (61.1); task_diff gives them whole
+IN_SHORT = "\nWhat it changed, in short - the lines taken out (-) and put in (+); task_diff gives it whole:\n"
+LOCAL_ONLY = "«{name}» is local-only (D10): its changes are not shown to a cloud model\n"
+SECRET_PART = "(a file of secrets: its lines are not shown)\n"
 RESERVE_USD = 0.5  # what a batch keeps for a paid task whose agent has no budget of its own (16.4)
 CONFLICTED = ("\n\nThe files of your copy of the project carry conflict marks where the tasks you waited for changed "
               "the same place - mend them first: ")  # fmt: skip
@@ -268,10 +275,12 @@ def create_run(
     wanted = profile["tools"] or DEFAULT_TOOLS
     screen = computer.TOOLS if goal and goal.get("computer", True) else []  # a schedule's run: only if allowed (Q23)
     extra = autonomous.TOOLS + memory.TOOLS + agent_tools.TOOLS + mail.TOOLS + screen + (outside or []) if goal else []
+    chosen = [t for t in AGENT_TOOLS if t["name"] in wanted]
+    if DELEGATE_MANY["name"] in wanted:  # who gives batches reads what their tasks changed, whole (61.1)
+        chosen.append(TASK_DIFF)
     # sized to the model: one per name, no project tools without projects, short for a small window (hub/compact.py)
     window = (model.get("capabilities") or {}).get("context")
-    tools = compact.for_model([t for t in AGENT_TOOLS if t["name"] in wanted] + extra, window,
-                              projects=bool(project_ids))  # fmt: skip
+    tools = compact.for_model(chosen + extra, window, projects=bool(project_ids))
     conn.execute("UPDATE conversations SET tools = ? WHERE id = ?", (json.dumps(tools), conversation_id))
     conn.execute(
         "INSERT INTO agent_runs (conversation_id, profile_id, profile_version, profile_name, instructions, model_id,"
@@ -415,9 +424,41 @@ def _mark(conn: sqlite3.Connection, coordinator: str, task_id: str, **fields: An
     )
 
 
-def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[str]]]] | None = None) -> str:
+def diff_files(diff: str, paths: list[str]) -> list[tuple[str, str]]:
+    """A project's diff file by file - (path, its part): git gives the parts in the order of its files (61.1). A diff
+    cut short (sandbox.DIFF_MAX) gives what it has."""
+    parts = [p for p in re.split(r"(?m)^(?=diff --git )", diff) if p.startswith("diff --git ")]
+    return list(zip(paths, parts, strict=False))
+
+
+def safe_part(path: str, part: str) -> str:
+    """A file's part of a diff as a model may see it: a file of secrets by its head only, any other with the secrets
+    in it cut out (hub/secret_filter.py)."""
+    if is_secret_file(path):
+        return part.split("\n", 1)[0] + "\n" + SECRET_PART
+    return clean(part)
+
+
+def in_short(part: str) -> str:
+    """Only what changed: the file's head, each change's @@ line, the lines taken out and put in - none around."""
+    heads = ("diff --git", "new file", "deleted file", "Binary files", "@@", "+", "-", "(")
+    kept = [line for line in part.splitlines() if line.startswith(heads)]
+    return "\n".join(kept) + "\n" if kept else ""
+
+
+def changes_in_short(project: dict[str, Any], cloud: bool) -> str:
+    """A project's changes in a task's copy, as the board shows them (61.1); a cloud coordinator is not shown those
+    of a local-only project (D10)."""
+    if cloud and not project.get("cloud_ok", True):
+        return LOCAL_ONLY.format(name=project["name"])
+    paths = [f["path"] for f in project["files"]]
+    return "".join(in_short(safe_part(path, part)) for path, part in diff_files(project["diff"], paths))
+
+
+def board(tasks: list[dict[str, Any]], changed: dict[str, list[dict[str, Any]]] | None = None) -> str:
     """What the coordinator gets back: how many ended how, then each task with the agent's answer and, for one that
-    wrote into a sandbox, the files it changed there - per project (16.2)."""
+    wrote into a sandbox, the files it changed there - per project (16.2) - and the changes in short (61.1):
+    `changed` - per task, {name, paths, short} per project."""
     counts = collections.Counter(t["status"] for t in tasks)
     told = [f"{counts[s]} {s}" for s in STATUSES if counts[s]]
     lines = [f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}: {', '.join(told)}."]
@@ -436,11 +477,17 @@ def board(tasks: list[dict[str, Any]], changed: dict[str, list[tuple[str, list[s
         if len(answer) > ANSWER_CHARS:
             answer = answer[:ANSWER_CHARS] + "\n… (cut here; the whole answer is in the agent's run)"
         entry = f"{head}. Answer:\n{answer}" if answer else f"{head}."
-        files = [f"«{name}»: {', '.join(paths[:CHANGED_SHOWN])}"
-                 + (f" and {len(paths) - CHANGED_SHOWN} more" if len(paths) > CHANGED_SHOWN else "")
-                 for name, paths in (changed or {}).get(t["task_id"], [])]  # fmt: skip
+        mine = (changed or {}).get(t["task_id"], [])
+        files = [f"«{c['name']}»: {', '.join(c['paths'][:CHANGED_SHOWN])}"
+                 + (f" and {len(c['paths']) - CHANGED_SHOWN} more" if len(c["paths"]) > CHANGED_SHOWN else "")
+                 for c in mine]  # fmt: skip
         if files:
             entry += WAITING_CHANGES + "; ".join(files)
+        short = "".join(c["short"] for c in mine)
+        if short:
+            if len(short) > DIFF_SHOWN:
+                short = short[:DIFF_SHOWN] + "\n… (cut here; task_diff gives the rest)"
+            entry += IN_SHORT + short.rstrip("\n")
         lines.append(entry)
     return "\n\n".join(lines)
 
@@ -495,6 +542,12 @@ def round_note(task: dict[str, Any], found: dict[str, Any], round_no: int) -> st
             f"The hub checked your task: not done yet - this is round {round_no} of {ROUNDS}. Fix what is missing; "
             "the check runs again when you end. After the last round a person looks at it.\n"
             f"YOUR TASK: {task['prompt'][:2000]}\n" + goals.check_text(found) + "</task_check>")  # fmt: skip
+
+
+def _cloud(conn: sqlite3.Connection, run_id: str) -> bool:
+    """Whether the run's model answers in the cloud: it is not shown local-only projects' changes (D10, 61.1)."""
+    model = store.get_model(conn, get_run(conn, run_id)["model_id"])
+    return model is not None and model["locality"] == "cloud"
 
 
 async def _either(first: asyncio.Event, second: asyncio.Event) -> None:
@@ -663,12 +716,12 @@ class AgentRunner:
             short = _short_of_money(conn, tasks, found)
             if short:
                 raise AgentError(f"nothing started: {short}")
-            return found, local, store.context_settings(conn, parent_id)["mode"]
+            return found, local, store.context_settings(conn, parent_id)["mode"], _cloud(conn, parent_id)
 
         if any(t["criteria"] for t in tasks) and self.goals is None:
             return "the hub cannot check tasks here: give the batch without `criteria`", True
         try:
-            profiles, local, mode = await self._db.acall(prepare)
+            profiles, local, mode, cloud_here = await self._db.acall(prepare)
         except AgentError as exc:
             return str(exc), True
         refused = await self._allow_checks(parent_id, tasks, mode, cancel)
@@ -701,9 +754,65 @@ class AgentRunner:
                 await self._gpu.acquire()
                 self._held.add(parent_id)
         ended = await self._db.acall(lambda conn: list_tasks(conn, parent_id, number))
-        changed = {t["task_id"]: [(p["name"], [f["path"] for f in p["files"]]) for p in t["projects"]]
-                   for t in await self.task_changes(parent_id, number)}  # fmt: skip
+        made = await self.task_changes(parent_id, number)
+        changed = await asyncio.to_thread(lambda: {
+            t["task_id"]: [{"name": p["name"], "paths": [f["path"] for f in p["files"]],
+                            "short": changes_in_short(p, cloud_here)} for p in t["projects"]]
+            for t in made})  # fmt: skip
         return board(ended, changed), any(t["status"] != "done" for t in ended)
+
+    async def task_diff(self, coordinator: str, args: dict[str, Any], cancel: asyncio.Event | None = None
+                        ) -> tuple[str, bool]:  # fmt: skip
+        """A coordinator's task_diff (61.1): what a task of its batches changed in its copies, whole - per project,
+        or one file's - in pieces of DIFF_PIECE characters; a cloud coordinator is not shown a local-only project's
+        (D10), nor anyone a file of secrets."""
+        task_id = str(args.get("task_id") or "").strip()
+        path = str(args.get("path") or "").replace("\\", "/").strip().strip("/")
+        start = args.get("start_char") or 0
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+            return "`start_char`: a whole number from 0", True
+
+        def read(conn):
+            tasks = {t["task_id"]: t for t in list_tasks(conn, coordinator)}
+            task = tasks.get(task_id)
+            projects = _attached(conn, task["run_id"]) if task and task["run_id"] and task["sandbox"] else []
+            return list(tasks), task, projects, _cloud(conn, coordinator)
+
+        names, task, projects, cloud = await self._db.acall(read)
+        if task is None:
+            return f"no task {task_id!r} in your batches; yours: {', '.join(names) or 'none'}", True
+        folder = self._chat.sandboxes
+        projects = [p for p in projects if sandbox.is_git(p)]
+        if folder is None or not projects:
+            return f"task {task_id!r} wrote into no copy of a project: there is nothing of it to show", True
+
+        def whole() -> tuple[str, list[str]]:
+            pieces, seen = [], []
+            for project in projects:
+                found = sandbox.changes(folder, task["run_id"], project)
+                paths = [f["path"] for f in found["files"]]
+                seen += paths
+                if not paths or (path and path not in paths):
+                    continue
+                if cloud and not project.cloud_ok:
+                    pieces.append(f"=== «{project.name}» ===\n" + LOCAL_ONLY.format(name=project.name))
+                    continue
+                parts = [safe_part(p, part) for p, part in diff_files(found["diff"], paths) if not path or p == path]
+                pieces.append(f"=== «{project.name}» ===\n" + "".join(parts))
+            return "\n".join(pieces), seen
+
+        text, seen = await asyncio.to_thread(whole)
+        if not text:
+            if path and seen:
+                return f"task {task_id!r} did not change {path!r}; it changed: {', '.join(seen)}", True
+            return (f"task {task_id!r} has no changes waiting in its copies: it made none, or the user applied them "
+                    "to the project or threw them away"), False  # fmt: skip
+        if start >= len(text):
+            return f"`start_char` {start} is past the end: the diff has {len(text)} characters", True
+        piece = text[start : start + DIFF_PIECE]
+        end = start + len(piece)
+        more = f"; cut here - ask again with start_char={end}" if end < len(text) else ""
+        return f"Task {task_id}: its changes, characters {start}-{end} of {len(text)}{more}.\n{piece}", False
 
     async def _batch_task(self, parent_id: str, task: dict[str, Any], profile: dict[str, Any],
                           ends: dict[str, asyncio.Event], before: str | None, cloud: asyncio.Semaphore | None,
@@ -929,7 +1038,9 @@ class AgentRunner:
         out = []
         for task, projects in await self._sandboxed_tasks(coordinator, batch):
             found = await asyncio.to_thread(
-                lambda task=task, projects=projects: [sandbox.changes(folder, task["run_id"], p) for p in projects]
+                lambda task=task, projects=projects: [
+                    sandbox.changes(folder, task["run_id"], p) | {"cloud_ok": p.cloud_ok} for p in projects
+                ]
             )
             found = [p for p in found if p["files"]]
             if found:

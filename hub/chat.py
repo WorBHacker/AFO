@@ -98,6 +98,7 @@ from .approvals import (
 )
 from .claude_code import PROVIDER as CLAUDE_CODE
 from .db import Database
+from .delegate import TASK_DIFF
 from .events import EventBus
 from .gateway import Completion, Gateway, GatewayError, ProviderError, blocks_to_prompt_text
 from .gateway.base import cost_usd, tool_result_block, until_cancelled
@@ -130,10 +131,12 @@ READING = frozenset(
         websearch.WEB_SEARCH["name"],
         "folder_list",
         "folder_read",
+        TASK_DIFF["name"],
         *computer.READING,
         *mail.READING,
     }
 )
+COORDINATING = frozenset({"delegate_task", "delegate_tasks", TASK_DIFF["name"]})  # hub/agents.py runs them
 STEP_LIMIT = "not run: the step limit for one answer was reached; answer now from what you already have"
 STOP_WAIT_S = 10.0  # the hub stops: how long its answers get to end as stopped ones
 CUT_WAIT_S = 2.0  # and how long one that did not gets once it is cut off
@@ -1006,12 +1009,13 @@ class ChatService:
                 output, error = await self._mcp_tool(conversation_id, call, ctx, cancel)
             elif own and self.autonomy is not None:  # an autonomous run's plan, steps and memory (D40)
                 output, error = await self.autonomy.handle(conversation_id, call, cancel, cloud=cloud)
-            elif call["name"] in ("delegate_task", "delegate_tasks"):  # a coordinator's (D20; a batch - D50)
+            elif call["name"] in COORDINATING:  # a coordinator's (D20; a batch - D50; its changes - 61.1)
                 if self.agents is None:
                     output, error = "agents are not available here", True
                 else:
                     args = call["input"] if isinstance(call["input"], dict) else {}
-                    give = self.agents.delegate if call["name"] == "delegate_task" else self.agents.delegate_many
+                    give = {"delegate_task": self.agents.delegate, "delegate_tasks": self.agents.delegate_many,
+                            TASK_DIFF["name"]: self.agents.task_diff}[call["name"]]  # fmt: skip
                     output, error = await give(conversation_id, args, cancel)
             else:
                 output, error = await run_tool(call["name"], call["input"], ctx)

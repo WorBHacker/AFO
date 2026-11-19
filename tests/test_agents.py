@@ -561,6 +561,70 @@ def test_the_user_throws_the_tasks_changes_away(hub, repo):  # noqa: F811
     assert (repo / "src" / "app.py").read_text(encoding="utf-8") == before
 
 
+# --- the architect sees what its tasks changed (stage 61.1) ---
+
+
+def test_the_coordinator_reads_what_its_tasks_changed(hub, repo, monkeypatch):  # noqa: F811
+    """61.1: the board shows each task's changes in short - the lines taken out and put in, none around, secrets cut;
+    task_diff (given to whoever gives batches) gives them whole, one file's alone, in pieces."""
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "second")
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    key = "sk-proj-" + "a1b2c3d4" * 4
+    look = [{"id": "t1", "name": "task_diff", "input": {"task_id": "a"}}]
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [[batch(("a", "Правщик", "Поправь a"), ("b", "Правщик",
+                                                                    "Поправь b"))], look]}, pause=0.02, edits={
+        "Поправь a": edit(old="print('hi')", new=f"print('{key}')"),
+        "Поправь b": edit(path="README.md", old="# Проект", new="# B")}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    assert "task_diff" in [t["name"] for t in provider.calls[0][2]]  # given with delegate_tasks
+    said, whole = outputs(hub, run_id)
+    assert agents.IN_SHORT in said["output"] and "-print('hi')" in said["output"] and "+# B" in said["output"]
+    assert "+print('[REDACTED]')" in said["output"] and key not in said["output"]  # the secret is cut out
+    assert "print('new line')" not in said["output"]  # no lines around a change on the board
+    assert whole["error"] is False and whole["output"].startswith("Task a: its changes, characters 0-")
+    assert "=== «proj» ===" in whole["output"] and " print('new line')" in whole["output"]  # whole: with them
+    assert key not in whole["output"] and "README" not in whole["output"]  # a's own changes only
+
+    def diff(**args):
+        return hub.portal.call(hub.app.state.agents.task_diff, run_id, args)
+
+    text, error = diff(task_id="b", path="README.md")
+    assert not error and "-# Проект" in text and "+# B" in text
+    assert diff(task_id="a", path="README.md") == ("task 'a' did not change 'README.md'; it changed: src/app.py", True)
+    assert diff(task_id="zz") == ("no task 'zz' in your batches; yours: a, b", True)
+    full = whole["output"].split("\n", 1)[1]
+    assert diff(task_id="a", start_char=10)[0].split("\n", 1)[1] == full[10:]  # where the last piece was cut
+    assert diff(task_id="a", start_char=99999)[1] is True
+    monkeypatch.setattr(agents, "DIFF_PIECE", 40)
+    first = diff(task_id="a")[0]
+    assert first.startswith(f"Task a: its changes, characters 0-40 of {len(full)}; cut here - ask again with "
+                            "start_char=40.\n") and first.endswith(full[:40])  # fmt: skip
+    hub.post(f"/v1/runs/{run_id}/tasks/apply")
+    assert diff(task_id="a")[0].startswith("task 'a' has no changes waiting in its copies")  # applied: gone
+    secret = agents.safe_part(".env", "diff --git a/.env b/.env\n+TOKEN=x1y2z3w4v5u6\n")
+    assert secret == "diff --git a/.env b/.env\n" + agents.SECRET_PART  # a file of secrets: its head only
+
+
+def test_a_cloud_coordinator_is_not_shown_a_local_only_projects_changes(hub, repo):  # noqa: F811
+    """D10, 61.1: a local agent worked on a local-only project - the cloud coordinator hears that it changed files,
+    not what is in them."""
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]  # local-only by default (D10)
+    plug(hub, ByTask("cloudy", "cloud", {"Сделай": [[batch(("a", "Правщик", "Поправь a"))]]}))
+    plug(hub, ByTask("fake", "local", {}, pause=0.02, edits={"Поправь a": edit(old="print('hi')", new="print('a')")}))
+    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    boss = profile(hub, name="Координатор", model_id="cloudy/echo", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    assert ended(hub, run_id)["status"] == "done"
+    (said,) = outputs(hub, run_id)
+    assert agents.LOCAL_ONLY.format(name="proj").strip() in said["output"] and "print('a')" not in said["output"]
+    text, error = hub.portal.call(hub.app.state.agents.task_diff, run_id, {"task_id": "a"})
+    assert not error and agents.LOCAL_ONLY.format(name="proj") in text and "print" not in text
+
+
 # --- a task checked before the coordinator gets it (stage 16.3, D50) ---
 
 DONE = "if (Test-Path done.txt) { exit 0 } else { exit 1 }"

@@ -76,6 +76,24 @@ DELEGATE_MANY: dict[str, Any] = {
 }
 
 
+DIFF_PIECE = 12_000  # characters of a task's changes per task_diff call (61.1)
+TASK_DIFF: dict[str, Any] = {
+    "name": "task_diff",
+    "description": "The changes a task of your batches made in its copy of a project: the diff with the lines around "
+    "each change - the board shows them only in short. A long one comes in pieces: ask again from `start_char`. "
+    "None of it is in the project yet: only the user puts it there.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "The task, as your batch named it."},
+            "path": {"type": "string", "description": "Only this file's changes, as the board names it."},
+            "start_char": {"type": "integer", "description": "Where to go on from, when the last piece was cut."},
+        },
+        "required": ["task_id"],
+    },
+}
+
+
 class BatchError(ValueError):
     """The batch cannot run as written; the message is for the model."""
 
