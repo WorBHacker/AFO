@@ -612,3 +612,28 @@ def test_where_a_sounds_energy_lies_is_measured_by_bands(tmp_path):
     with pytest.raises(EngineError, match="не взял звук клипа"):
         ffmpeg.sound_of(program, silent, tmp_path / "no.wav")
     assert not (tmp_path / "no.wav").exists()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_the_films_own_sound_is_silent_where_a_scene_got_a_made_one(tmp_path):
+    """53.14 - a real ffmpeg: a scene whose sound, as the video model filmed it, was not right gets a made one. In
+    the film's sound track the scene's own sound is taken away for its stretch - down and up in a moment, as the
+    made one comes in and goes out - and is as it was before and after it."""
+    program = Path(shutil.which("ffmpeg"))
+    quiet = [str(program), "-hide_banner", "-loglevel", "error", "-y"]
+    source = tmp_path / "source.mp4"
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=6", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=6", "-c:v", "libx264", "-g", "1", "-pix_fmt",
+                    "yuv420p", "-c:a", "aac", "-b:a", "192k", str(source)], check=True, timeout=60)  # fmt: skip
+    effect = _tone(program, tmp_path / "rain.wav", 1760, 2.0, channels=1)
+
+    film = tmp_path / "film.mp4"
+    ffmpeg.dub(program, source, film, seconds=6.0, effects=[(effect, 2.0, 2.0)], mute=[(2.0, 2.0)])
+    before, inside, after = (_band(program, film, 440, at, 1.2) for at in (0.4, 2.4, 4.4))
+    # (what is left there is the made tone's skirt in the measure's band, not the scene's own sound)
+    assert before > -30 and after > -30 and inside < before - 30, (before, inside, after)
+    assert _band(program, film, 1760, 2.4, 1.2) > -30 and _band(program, film, 1760, 0.4, 1.2) < -50
+
+    both = tmp_path / "both.mp4"  # nothing muted: the scene's own sound under the made one, as before the step
+    ffmpeg.dub(program, source, both, seconds=6.0, effects=[(effect, 2.0, 2.0)])
+    assert abs(_band(program, both, 440, 2.4, 1.2) - before) < 1.0

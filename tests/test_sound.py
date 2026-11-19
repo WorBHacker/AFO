@@ -644,7 +644,7 @@ def test_a_scenes_made_sound_is_heard_and_made_again_until_it_is_right(stand, mo
         plain = joined()
         assert effects(before) == [("rain on leaves", "7")] and len(cloud.asked) == 8
         assert heard(plain, 1) == {"file": heard(plain, 1)["file"], "heard": "Rain, Rain on surface", "bad": "",
-                                   "takes": 1}  # fmt: skip
+                                   "mark": 3, "takes": 1}  # fmt: skip
 
         monkeypatch.setenv("FAKE_AUDIO_DULL", "1000")
         monkeypatch.setenv("FAKE_AUDIO_SLEEP", "2")
@@ -659,5 +659,139 @@ def test_a_scenes_made_sound_is_heard_and_made_again_until_it_is_right(stand, mo
         assert (stopped["status"], stopped["error"], stopped["file"]) == ("ready", "", "")
         assert card.holder == "" and not list(media.glob("*/*.take*")) and not list(media.glob("*/*.part.wav"))
         assert len(pieces()) == 3  # a take made is not lost
+    finally:
+        cloud.close()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_scenes_own_sound_is_heard_and_gives_way_to_a_made_one_when_it_is_not_right(stand, monkeypatch, tmp_path):
+    """53.14, the user's ear («дождь как из старой советской динамики») and word («заменять самому»): the sound a
+    video model films with a scene is heard once the scene is filmed - its card says what sounds in it - and not
+    twice for one clip. Joined, a film whose scenes all sound right is the film as it was; a scene whose own sound
+    is not what was asked for, or is a rain without its top, gets the engine's - made, heard, and put in the
+    film in place of its own, which is silent there. A made sound that came out no better is left out: the scene
+    keeps its own. A real hub, a real ffmpeg, the engine's stand-in."""
+    import subprocess
+
+    from app.hub_client import HubClient
+    from hub import ffmpeg
+    from hub.gateway.openai_compat import OpenAICompatProvider
+    from tests.test_autonomous import use
+    from tests.test_director import LTX, _until
+    from tests.test_ffmpeg import _band, _said
+    from tests.test_judge import SeeingCloud, roles
+    from tests.test_visual import _install
+
+    hub = stand  # noqa: F811
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    files = [{"role": role, "repo": "test/Film-GGUF", "path": name, "size": 1, "at": str(tmp_path / name)}
+             for role, name in (("diffusion-model", "film.gguf"),
+                                ("audio-vae", "film_audio_vae.safetensors"))]  # fmt: skip
+    for f in files:
+        Path(f["at"]).write_bytes(b"x")
+    _install(hub, "film", LTX, files)
+
+    def filmed(name, sound):
+        """A clip as the engine films one with sound: 73 frames, its sound - this lavfi graph."""
+        subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                        "testsrc=size=64x64:rate=24", "-f", "lavfi", "-t", "3.0", "-i", sound, "-frames:v", "73",
+                        "-ac", "2", "-c:v", "libvpx", "-g", "1", "-c:a", "pcm_s16le", "-f", "matroska",
+                        str(tmp_path / name)], check=True, timeout=60)  # fmt: skip
+        return (tmp_path / name).read_bytes()
+
+    tone = "sine=frequency={hz}:sample_rate=48000"
+    rain = filmed("rain.webm", tone.format(hz=1760) + "[a];anoisesrc=color=white:sample_rate=48000:amplitude=0.08"
+                  "[b];[a][b]amix=inputs=2:normalize=0")  # fmt: skip
+    music, dull = filmed("music.webm", tone.format(hz=660)), filmed("dull.webm", tone.format(hz=1760))
+    board = {"scenes": [{"mode": "text", "seconds": 3, "words": "Дождь", "prompt": "rain falls", "sound": "rain"},
+                        {"mode": "text", "seconds": 3, "words": "Шаги", "prompt": "a man walks",
+                         "sound": "steps in the rain"},
+                        {"mode": "text", "seconds": 3, "words": "Крыша", "prompt": "a roof",
+                         "sound": "rain on a roof"}]}  # fmt: skip
+    no = {"fits": False, "heard": "музыка", "why": "просили шаги под дождём, а слышна музыка"}
+    yes = {"fits": True, "heard": "шум дождя", "why": ""}
+    cloud = SeeingCloud([json.dumps(a, ensure_ascii=False) for a in (board, yes, yes, yes, no, yes, yes, yes, yes,
+                                                                     yes, yes, yes)])  # fmt: skip
+
+    def asked(since=0):
+        return [(a["family"], a.get("text", ""), a.get("seed", "")) for a in hub.asked()[since:]]
+
+    def own(film, n):
+        return film["scenes"][n - 1]["heard"].get("own")
+
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+        media, card = hub.app.state.visual.media, hub.app.state.card
+        install(hub, "effects", "listener")
+        film_id = client.new_film({"idea": "Дождь", "seconds": 9, "checks": False})["film"]["id"]
+
+        def shot(only=None):
+            client.shoot_film(film_id, only)
+            return _until(hub, film_id, lambda f: f["status"] == "ready" and all(s["status"] == "done"
+                                                                                  for s in f["scenes"]))  # fmt: skip
+
+        def joined():
+            client.join_film(film_id)
+            return _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+
+        client.write_film(film_id)
+        _until(hub, film_id, lambda f: f["status"] == "ready")
+        FakeDrawSwap.filmed = rain
+        first = shot()  # each scene is heard as it is filmed: the card says what sounds in it
+        assert asked() == [("ced", "", "")] * 3 and len(cloud.asked) == 4
+        assert [own(first, n)["heard"] for n in (1, 2, 3)] == ["шум дождя"] * 3
+        assert [(own(first, n)["bad"], own(first, n)["mark"]) for n in (1, 2, 3)] == [("", 5)] * 3
+        assert own(first, 2)["job"] == first["scenes"][1]["job_id"]
+        said = json.dumps(cloud.asked[2]["messages"], ensure_ascii=False)
+        assert "Asked to sound like: steps in the rain" in said and "- Rain: 0.64" in said
+
+        whole = joined()  # every scene sounds right: nothing is made, the film is as its scenes are
+        assert len(hub.asked()) == 3 and len(cloud.asked) == 4 and whole["error"] == ""
+        assert "Audio: aac" in _said(program, "-i", str(media / whole["file"]))
+        assert not list(media.glob("*/*.cut.mp4")) and "replaced" not in own(whole, 1)
+
+        FakeDrawSwap.filmed = music  # the second scene filmed anew: music where steps in the rain were asked for
+        again = shot(2)
+        assert again["file"] == "" and (own(again, 2)["bad"], own(again, 2)["mark"]) == (no["why"], 0)
+        assert own(again, 2)["job"] != own(first, 2)["job"] and own(again, 1) == own(first, 1)
+        FakeDrawSwap.filmed = dull  # the third: a rain, but as from an old loudspeaker
+        again = shot(3)
+        assert "глухо" in own(again, 3)["bad"] and own(again, 3)["mark"] == 4 and len(cloud.asked) == 6
+
+        before = len(hub.asked())
+        mixed = joined()
+        assert asked(before) == [
+            ("moss_soundeffect", "steps in the rain", "7"),
+            ("moss_soundeffect", "rain on a roof", "7"),
+            ("ced", "", ""),
+            ("ced", "", ""),
+        ]
+        assert [own(mixed, n).get("replaced") for n in (1, 2, 3)] == [None, True, True] and card.holder == ""
+        assert [mixed["scenes"][n]["heard"]["made"]["mark"] for n in (1, 2)] == [5, 5] and len(cloud.asked) == 8
+        film = media / mixed["file"]
+        # the first scene keeps its own rain; in the second the music is gone and the made rain is there
+        assert _band(program, film, 1760, 0.5, 2.0) > -45 and _band(program, film, 660, 0.5, 2.0) < -50
+        assert _band(program, film, 660, 3.5, 2.2) < -50 and _band(program, film, 1760, 3.5, 2.2) > -45
+        assert ffmpeg.bands(program, film, at=6.5, seconds=2.2)["air"] > 0.03  # the third has its top now
+
+        # a made sound that is no better - three takes without a top - is left out: the scene keeps its own
+        client.update_scene(film_id, 3, {"sound_words": "rain on a tin roof"})
+        again = shot()
+        assert "глухо" in own(again, 3)["bad"] and "replaced" not in own(again, 3)
+        monkeypatch.setenv("FAKE_AUDIO_DULL", "1000")
+        before = len(hub.asked())
+        kept = joined()
+        assert [a for a in asked(before) if a[0] != "ced"] == [
+            ("moss_soundeffect", "rain on a tin roof", seed) for seed in ("7", "8", "9")]  # fmt: skip
+        made = kept["scenes"][2]["heard"]["made"]
+        assert (made["takes"], made["mark"]) == (3, 4) and "глухо" in made["bad"] and len(cloud.asked) == 12
+        assert [own(kept, n).get("replaced") for n in (2, 3)] == [True, False]
+        film = media / kept["file"]
+        assert ffmpeg.bands(program, film, at=6.5, seconds=2.2)["air"] < 0.01
+        assert _band(program, film, 1760, 6.5, 2.2) > -45 and _band(program, film, 660, 3.5, 2.2) < -50
+        assert not list(media.glob("*/*.take*")) and not list(media.glob("*/*.cut.mp4"))
     finally:
         cloud.close()

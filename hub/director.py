@@ -24,7 +24,9 @@ joined MP4: the narrator's line at the beginning of its scene, the rest quieter 
 Heard (53.13; hub/hearing.py): with the listener installed a scene's made sound is heard before it goes into the
 film - what sounds in it, where its energy lies, whether that is what the scene asks for (the director's model's
 word) - and one that is not right is made again, three takes at most, the best kept; what was heard is the
-scene's (`heard`).
+scene's (`heard`). (53.14, the user's word: «заменять самому») The sound the video model filmed is heard too - once
+the scene is filmed, so its card says what sounds in it, or when the film is joined; one that is not right gives
+way to a made one, when that came out better: in the film the scene's own sound is silent there.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import tempfile
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -131,8 +134,9 @@ UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the
 
 
 def heard_of(kept: str | None) -> dict[str, Any]:
-    """What was heard in a scene's sounds (53.13; film_scenes.heard, JSON): {own: {job, heard, bad} - the sound the
-    video model filmed, made: {file, heard, bad, takes} - the one the engine of sound made}; {} - nothing yet."""
+    """What was heard in a scene's sounds (53.13; film_scenes.heard, JSON): {own: {job, heard, bad, mark, replaced -
+    the made one is in the film in its place} - the sound the video model filmed, made: {file, heard, bad, mark,
+    takes} - the one the engine of sound made}; {} - nothing yet."""
     try:
         found = json.loads(kept) if kept else {}
     except json.JSONDecodeError:
@@ -932,6 +936,7 @@ class Director:
         # scene alone has its own RETAKES)
         retakes = max(RETAKES, len(numbers))
         looks = {"left": retakes, "all": retakes, "spent": 0.0, "off": "", "on": bool(found["checks"])}
+        hears = {"spent": 0.0, "off": "", "kept": True}  # (53.14) the words on the scenes' own sound
         try:
             for n in numbers:
                 if stop.is_set():
@@ -943,6 +948,7 @@ class Director:
                         break
                 if job is None:  # not filmed, or «Стоп»: the next scene would go on from nothing
                     break
+                await self._heard_filmed(found, n, job, hears, stop)
             error = error or looks["off"]
         except Exception:
             log.exception("film %s", film_id)
@@ -1009,7 +1015,12 @@ class Director:
         if found["sound"] and await self._sound.ready("effects"):
             plan["effects"] = [(starts[k], s, lengths[k]) for k, (s, job) in enumerate(
                 zip(found["scenes"], jobs, strict=True)) if s["sound_words"] and not job.get("sound")]  # fmt: skip
-        return plan if plan["lines"] or plan["effects"] or plan["music"] else None
+        # (53.14) the scenes filmed with sound are heard: (begins, scene, seconds, job)
+        plan["own"] = []
+        if found["sound"] and await self._sound.ready("listener"):
+            plan["own"] = [(starts[k], s, lengths[k], job) for k, (s, job) in enumerate(
+                zip(found["scenes"], jobs, strict=True)) if s["sound_words"] and job.get("sound")]  # fmt: skip
+        return plan if plan["lines"] or plan["effects"] or plan["music"] or plan["own"] else None
 
     def _piece(self, film_id: str, kind: str, *key: Any) -> Path:
         """Where a piece of the film's added sound lies - made before by the same words, or to be made (blocking):
@@ -1052,6 +1063,76 @@ class Director:
                       over=f"{free - SAY_GAP_S[1] - seconds:.1f}")  # fmt: skip
         return {"lines": lines, "effects": [(fx["path"], fx["at"], fx["seconds"]) for fx in sounds], "music": music,
                 "note": note}  # fmt: skip
+
+    async def _own_heard(self, found: dict[str, Any], scene: dict[str, Any], job: dict[str, Any],
+                         hears: dict[str, Any], stop: asyncio.Event) -> dict[str, Any] | None:  # fmt: skip
+        """What is heard in the sound the video model filmed with a scene (53.14): {job, heard, bad, mark} - kept
+        with the scene, and not heard twice for one clip. None - nothing is known: no clip, no sound in it, the
+        listener did not say."""
+        kept = scene["heard"].get("own") or {}
+        if kept.get("job") == job["id"]:
+            return kept
+        clip = self._studio.file(job)
+        if clip is None:
+            return None
+        with tempfile.TemporaryDirectory() as folder:
+            wav = Path(folder) / "own.wav"
+            try:
+                await self._studio.with_ffmpeg(wav, lambda program: ffmpeg.sound_of(program, clip, wav))
+            except visual.VisualError:
+                return None
+            said = await self._verdict(found, scene, wav, hears, stop)
+        if said is None:
+            return None
+        own = {"job": job["id"], "heard": said["heard"], "bad": said["bad"], "mark": said["mark"]}
+        await self._keep_heard(found["id"], scene["n"], own=own)
+        return own
+
+    async def _heard_filmed(self, found: dict[str, Any], n: int, job: dict[str, Any], hears: dict[str, Any],
+                            stop: asyncio.Event) -> None:  # fmt: skip
+        """A scene just filmed with sound is heard (53.14): its card says what sounds in it before the film is
+        joined. It stops no shooting: what is not heard now is heard when the film is joined."""
+        if not found["sound"] or not job.get("sound") or stop.is_set() or not await self._sound.ready("listener"):
+            return
+        scene = await self._the_scene(found["id"], n)
+        if scene["sound_words"]:
+            with contextlib.suppress(SoundError):
+                await self._own_heard(found, scene, job, hears, stop)
+
+    async def _own(self, found: dict[str, Any], plan: dict[str, Any], stop: asyncio.Event) -> dict[int, float]:
+        """The scenes' own sound heard, each scene's (53.14; the user's word: «заменять самому»): for one that is
+        not right the engine of sound makes the scene's sound - it joins the plan's `effects`, when that part is
+        here. Such scenes: {n: the mark of its own sound}."""
+        hears, amiss = {"spent": 0.0, "off": ""}, {}
+        makes = bool(plan["own"]) and await self._sound.ready("effects")
+        for at, scene, seconds, job in plan["own"]:
+            if stop.is_set():
+                raise SoundError(tr("остановлено"))
+            own = await self._own_heard(found, scene, job, hears, stop)
+            if own is not None and own["bad"] and makes:
+                plan["effects"].append((at, scene, seconds))
+                amiss[scene["n"]] = own.get("mark", 0)
+        return amiss
+
+    async def _replaced(self, film_id: str, plan: dict[str, Any], made: dict[str, Any],
+                        amiss: dict[int, float]) -> list[tuple[float, float]]:  # fmt: skip
+        """Which scenes' own sound gives way to the made one (53.14): where the made sound came out better than
+        the scene's own. The stretches of the film to be silenced (begins, seconds); a made sound that is no
+        better is left out of the mix (`made["effects"]`) - the scene keeps its own. Said with each scene."""
+        now = (await self._db.acall(lambda conn: film(conn, film_id)))["scenes"]
+        mute, out = [], set()
+        for at, scene, seconds in plan["effects"]:
+            if (n := scene["n"]) not in amiss:
+                continue
+            heard = next(s for s in now if s["n"] == n)["heard"]
+            better = heard.get("made", {}).get("mark", -1) > amiss[n]
+            if better:
+                mute.append((at, seconds))
+            else:
+                out.add(at)
+            await self._keep_heard(film_id, n, own=heard.get("own", {}) | {"replaced": better})
+        made["effects"] = [fx for fx in made["effects"] if fx[1] not in out]
+        return mute
 
     async def _takes(self, found: dict[str, Any], sounds: list[dict[str, Any]],
                      todo: list[tuple[Path, Callable[[Path], Awaitable[Path]]]],
@@ -1108,7 +1189,7 @@ class Director:
                 await asyncio.to_thread(os.replace, best, fx["path"])
                 if said is not None:
                     made = {"file": fx["path"].name, "heard": said["heard"], "bad": said["bad"],
-                            "takes": len(fx["takes"])}  # fmt: skip
+                            "mark": said["mark"], "takes": len(fx["takes"])}  # fmt: skip
                     await self._keep_heard(film_id, fx["scene"]["n"], made=made)
         finally:
             for fx in sounds:  # «Стоп», or a failure: a take made is not lost, the others are not left
@@ -1159,6 +1240,9 @@ class Director:
             hears["off"] = "no model" if not chosen else "spent"
             return None
         system, prompt, form = hearing.question(scene, labels)
+        local = bool(hears.get("kept")) and self._judge.local(chosen)
+        if local:  # while the film is shot the card is kept for it: let go for the answer, as for a look (51.3)
+            self._studio.unkeep()
         try:
             said = await self._judge.complete(chosen, system, prompt, hearing.reader(), conversation_id=None,
                                               meta={"purpose": "director", "film_id": found["id"], "scene": scene["n"]},
@@ -1167,6 +1251,9 @@ class Director:
             hears["off"] = str(exc)
             log.warning("film %s: the sounds are judged by their measure alone: %s", found["id"], exc)
             return None
+        finally:
+            if local:
+                self._keep_card(stop)
         hears["spent"] += said["cost_usd"]
         await self._db.acall(lambda conn: conn.execute(
             "UPDATE films SET tokens = tokens + ?, cost_usd = round(cost_usd + ?, 6) WHERE id = ?",
@@ -1182,14 +1269,20 @@ class Director:
             await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
             await self._studio.with_ffmpeg(cut, lambda program: ffmpeg.join(program, clips, cut, fps=fps, fade_s=fade))
             if added:
+                stop = self._stops[film_id]
                 found = await self._db.acall(lambda conn: film(conn, film_id))
-                made = await self._pieces(found, added, self._stops[film_id])
+                amiss = await self._own(found, added, stop)
+            if added and (added["lines"] or added["effects"] or added["music"]):
+                made = await self._pieces(found, added, stop)
                 note = made["note"]
+                used = {p for p, *_ in (*made["lines"], *made["effects"])} | {made["music"]}
+                mute = await self._replaced(film_id, added, made, amiss)
                 await self._studio.with_ffmpeg(target, lambda program: ffmpeg.dub(
                     program, cut, target, seconds=added["seconds"], lines=made["lines"], music=made["music"],
-                    effects=made["effects"], own_music=isinstance(added["music"], Path)))  # fmt: skip
-                used = {p for p, *_ in (*made["lines"], *made["effects"])} | {made["music"]}
+                    effects=made["effects"], own_music=isinstance(added["music"], Path), mute=mute))  # fmt: skip
                 await asyncio.to_thread(self._unlink_pieces, film_id, used)
+            elif added:  # the scenes' own sound was heard, and nothing is to be added: the film as it was joined
+                await asyncio.to_thread(os.replace, cut, target)
         except (visual.VisualError, SoundError) as exc:
             stopped = (stop := self._stops.get(film_id)) is not None and stop.is_set()
             await self._changed(film_id, status="ready", error="" if stopped else str(exc))

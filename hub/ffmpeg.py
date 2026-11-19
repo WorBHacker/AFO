@@ -357,9 +357,22 @@ def _lowered(spoken: list[tuple[float, float]], seconds: float) -> str:
     return f"volume=volume='1-{1 - 10 ** (-BED_DOWN_DB / 20):.4f}*{down}':eval=frame"
 
 
+def _silenced(stretches: list[tuple[float, float]]) -> str:
+    """The filter that takes the film's own sound away in these stretches (the second each begins at, how long it
+    is): down and up again in EFFECT_FADE_S - as the made sound that takes its place comes in and goes out."""
+    if not stretches:
+        return ""
+    gone = [f"clip(min((t-{at:.3f})/{EFFECT_FADE_S},({at + long:.3f}-t)/{EFFECT_FADE_S}),0,1)"
+            for at, long in stretches]  # fmt: skip
+    down = gone[0]
+    for one in gone[1:]:
+        down = f"max({down},{one})"
+    return f",volume=volume='1-{down}':eval=frame"
+
+
 def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: list[tuple[Path, float]] | None = None,
         music: Path | None = None, effects: list[tuple[Path, float, float]] | None = None,
-        own_music: bool = False) -> None:  # fmt: skip
+        own_music: bool = False, mute: list[tuple[float, float]] | None = None) -> None:  # fmt: skip
     """The joined film with its added sound (53.5, blocking): the picture as it is - copied, not coded anew - and
     one sound track of `seconds`: the film's own sound (its scenes', when they have one), the scenes' made sounds
     (`effects`: file, the second it begins at, how long it is), music under the whole film (`music`: a shorter one
@@ -367,7 +380,8 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
     runs past the film's end is cut there). Each kind is brought to its own mean volume; while the narrator speaks,
     all the rest is down by BED_DOWN_DB - steadily, a stretch of speech at a time. A made piece is cut below its
     kind's frequency first (VOICE_CUT...), and its volume is that of what is left; `own_music` - the music is the
-    user's file: as it is.
+    user's file: as it is. `mute` (53.14) - the stretches of the film (begins, seconds) where its own sound is taken
+    away: the scenes whose sound, as the video model filmed it, was not right - a made one is in `effects`.
 
     Every sound is cut to its length where it is read (`-t` before its `-i`), and a track is made as long as the
     film by mixing it with silence of that length - nothing in the graph throws a sound's end away. Cut inside the
@@ -378,7 +392,7 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
     silence = f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={seconds:.3f},aformat=sample_fmts=fltp"
     bed, said, spoken, at = [], [], [], 1
     if heard(program, source):
-        graph.append(f"[0:a]{SOUND}[own]")
+        graph.append(f"[0:a]{SOUND}{_silenced(mute or [])}[own]")
         bed.append("[own]")
     for clip, begins, length in effects:
         length = min(length, seconds - begins)
