@@ -50,6 +50,7 @@ from contextvars import ContextVar
 from common.i18n import N_, tr
 
 STUDIO = "studio"  # the Studio's job: a picture or a video
+SOUND = "sound"  # a film's added sound (53.2): the voice, music, a scene's sounds - audio.cpp, past llama-swap
 TRIAL = "trial"  # an install's trial - and its requests (48.9а)
 TUNE = "tune"  # tuning's measuring and its check (48.9б1)
 # who asks a local model (48.9а)
@@ -62,11 +63,12 @@ ASKER: ContextVar[str] = ContextVar("asker", default=AGENT)  # nobody named: a p
 QUIET_S = 180.0  # background work waits for the card still this long (48.9б2): time to think of the next message
 BUSY_PCT = 15  # the card at this much load or more works for someone - a game, another program
 # each holder's and asker's rank: 1 the person now, 2 their work without them, 3 an install's trial, 4 tuning (48.9б1)
-RANKS = {CHAT: 1, BUTTON: 1, STUDIO: 1, AGENT: 2, COMPLETION: 2, OPENAI: 2, TRIAL: 3, TUNE: 4}
+RANKS = {CHAT: 1, BUTTON: 1, STUDIO: 1, SOUND: 1, AGENT: 2, COMPLETION: 2, OPENAI: 2, TRIAL: 3, TUNE: 4}
 GIVEN_WORDS = N_("видеокарта отдана — „Продолжить“")  # what waits while the card is the person's (48.9г)
 # why a local chat waits, in words - who holds the card from it: the Studio only for a video; a trial of a picture or
 # video model (2б) and tuning while they let go (48.9в, 48.9б1)
 WORDS = {STUDIO: N_("видеокарта снимает видео — ответ начнётся после него"),
+         SOUND: N_("видеокарта озвучивает фильм — ответ начнётся после этого"),
          TRIAL: N_("видеокарта откладывает пробный запуск новой модели — ответ начнётся сразу после"),
          TUNE: N_("видеокарта останавливает подбор параметров — ответ начнётся сразу после")}  # fmt: skip
 

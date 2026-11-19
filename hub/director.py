@@ -37,6 +37,7 @@ from . import ffmpeg, model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
+from .sound import Sound
 
 log = logging.getLogger(__name__)
 
@@ -381,11 +382,12 @@ class Director:
     joined into one MP4 (`join`). What takes long goes on in the background, the film's changes told by
     `film.changed`."""
 
-    def __init__(self, db: Database, bus: EventBus, judge: Judge, studio: visual.Visual):
+    def __init__(self, db: Database, bus: EventBus, judge: Judge, studio: visual.Visual, sound: Sound):
         self._db = db
         self._bus = bus
         self._judge = judge
         self._studio = studio
+        self._sound = sound  # the voice, music and a scene's sounds (53)
         self.media = studio.media
         self._stops: dict[str, asyncio.Event] = {}  # «Стоп» of a film's question or filming
         self._tasks: dict[str, asyncio.Task] = {}  # the films at work in the background: written, shot, joined

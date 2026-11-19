@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from starlette.routing import Route
 
 from common import __version__
+from common.paths import models_home
 
 from . import autostart, language, mcp_server
 from .agent_tools import AgentToolbox
@@ -54,6 +55,7 @@ from .api import (
     sandbox,
     schedules,
     setup,
+    sound,
     stats,
     support,
     system,
@@ -108,6 +110,7 @@ from .secrets import Masking, SecretStore, default_secret_store
 from .security import LocalOnlyMiddleware
 from .settings import HubSettings
 from .setup import Setup
+from .sound import Sound
 from .system_status import StatusMonitor
 from .telegram import TelegramBot
 from .terminals import TerminalManager
@@ -252,7 +255,12 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
                                   machine=lambda: app.state.installer.machine(),
                                   card=app.state.card)  # pictures (29.4, D55)  # fmt: skip
         app.state.chat.visual = app.state.visual  # a chat's model draws too (29.6)
-        app.state.director = Director(db, bus, app.state.judge, app.state.visual)  # the Studio's films (50)
+        # a film's added sound (53): audio.cpp beside ffmpeg, its models beside the others'
+        app.state.sound = Sound(bus, card=app.state.card, llama_swap_url=settings.llama_swap_url,
+                                tools=app.state.visual.tools, models=models_home(),
+                                build=app.state.setup.recommended_build)  # fmt: skip
+        app.state.director = Director(db, bus, app.state.judge, app.state.visual,
+                                      app.state.sound)  # the Studio's films (50)  # fmt: skip
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)
         app.state.visual.missing = app.state.installer.missing  # a model's file deleted by hand (48's review)
         if (swap := app.state.gateway.provider("llama-swap")) is not None:  # a video holds the card (29.8а)
@@ -350,6 +358,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
             await app.state.installer.stop()
             await app.state.gpu.stop()
             await app.state.director.close()  # a film being shot: before the Studio's queue is closed
+            await app.state.sound.close()  # a part's download: what came stays
             await app.state.visual.stop()
             await app.state.resources.stop()  # a failed fetch's next try (39.1)
             await app.state.setup.stop()
@@ -382,6 +391,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
     app.include_router(install.router)
     app.include_router(visual.router)
     app.include_router(films.router)
+    app.include_router(sound.router)
     app.include_router(setup.router)
     app.include_router(release.router)
     app.include_router(tuning.router)
