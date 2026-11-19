@@ -910,8 +910,9 @@ async def model_efforts(path: Path | None = None) -> dict[str, list[str]]:
 
 
 async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | None = None, *,
-                   timeout_s: float | None = None) -> tuple[bool, str]:  # fmt: skip
-    """Whether llama-swap read the file: it lists every model again (and the new context, when that changed)."""
+                   timeout_s: float | None = None, gone: list[str] | None = None) -> tuple[bool, str]:  # fmt: skip
+    """Whether llama-swap read the file: it lists every model again (and the new context, when that changed) - and
+    none of `gone`, the models taken out of the file (52.7): the one sign of a reread when no model is new."""
     url = f"{base_url.rstrip('/')}/v1/models"
     deadline = time.monotonic() + (timeout_s or RELOAD_S)
     seen = ""
@@ -925,7 +926,8 @@ async def reloaded(base_url: str, ids: list[str], context: tuple[str, int] | Non
                 missing = [m for m in ids if m not in listed]
                 said = context and ((listed.get(context[0]) or {}).get("meta") or {}).get("llamaswap", {}).get(
                     "context")  # fmt: skip
-                if not missing and (context is None or said == context[1]):
+                still = [m for m in gone or [] if m in listed]
+                if not missing and not still and (context is None or said == context[1]):
                     return True, ""
                 seen = tr("llama-swap не видит: {models}", models=", ".join(missing)) if missing else \
                     tr("llama-swap ещё не перечитал файл")  # fmt: skip

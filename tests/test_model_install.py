@@ -945,6 +945,7 @@ def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, 
     assert row(job["id"])["sound"] == "add" and row(draw["id"])["sound"] == ""
     assert not hub.get("/v1/visual/models").json()["videos"][0]["sound"]
     FakeHub.picture_auth.clear()
+    FakeLlamaSwap.listed.clear()
     trials = len(FakeLlamaSwap.video)
     asked = hub.post(f"/v1/install/jobs/{job['id']}/sound").json()["job"]
     assert asked["status"] == "queued" and [f["role"] for f in asked["files"]][-1] == "audio-vae"
@@ -958,6 +959,11 @@ def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, 
     assert f'--audio-vae "{kept.as_posix()}"' in view["command"] and "--t5xxl" in view["command"]
     assert list(lc.model_blocks(hub.config.read_text(encoding="utf-8"))).count("clip") == 1
     assert len(FakeLlamaSwap.video) == trials + 1  # tried again, with the file
+    # (52.7 live) a block written again under its own name: llama-swap names the model before it has reread the
+    # file and after alike - the trial came while it was rereading («group is shutting down»). The hub takes the
+    # block out first and sees the model gone - llama-swap has reread - then writes it back and sees it named
+    gone = next(i for i, ids in enumerate(FakeLlamaSwap.listed) if "clip" not in ids)
+    assert any("clip" in ids for ids in FakeLlamaSwap.listed[gone:])
     assert hub.get("/v1/visual/models").json()["videos"][0]["sound"]
 
     again = hub.post(f"/v1/install/jobs/{job['id']}/sound")

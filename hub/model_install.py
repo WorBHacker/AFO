@@ -2219,6 +2219,21 @@ class Installer:
                 text = llama_config.with_macro(text, macro, "'\"" + str(server).replace("\\", "/") + "\"'")
             if sd_server(text) is None:
                 raise InstallError(tr("в config.yaml нет движка картинок (sd-server) — поставьте модель заново"))
+            # (52.7 live, «Добавить звук») its own block written again under the same name: llama-swap names the
+            # model before it has reread the file and after alike, and the trial came while it was rereading - «group
+            # is shutting down». The block is taken out first and the model seen gone: llama-swap has reread; then it
+            # is written back as a new one
+            path, first = llama_config.config_path(), None
+            mine = [
+                b
+                for b in (found["model_id"], f"{found['model_id']}-cpu")
+                if b in llama_config.model_blocks(text) and _ours(text, b, job_id)
+            ]
+            if mine:
+                for block_id in mine:
+                    text = llama_config.remove_model(text, block_id)
+                first = await asyncio.to_thread(llama_config.write, path, text)
+                await llama_config.reloaded(self._url, list(llama_config.model_blocks(text)), gone=mine)
             blocks = [(found["model_id"], SD_MACRO, tr("{name}, установлена AFO: рисует картинки.", name=found["name"]),
                        found["name"])]  # fmt: skip
             video = found["plan"].get("kind") == "video"  # a video on the processor: hours - no block there (29.8)
@@ -2250,12 +2265,11 @@ class Installer:
                 text = llama_config.add_model(text, block_id, block)
                 ids.append(block_id)
             model_id, cpu_id = ids[0], (ids[1] if len(ids) > 1 else "")
-            path = llama_config.config_path()
             new = text
             backup = await asyncio.to_thread(llama_config.write, path, new)
             ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
             if not ok and problem != tr(llama_config.NOT_ANSWERING):
-                await asyncio.to_thread(llama_config.restore, path, backup)
+                await asyncio.to_thread(llama_config.restore, path, first or backup)  # as it was before all this
                 raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
                                       problem=problem), 502)  # fmt: skip
         await self._set(job_id, model_id=model_id, plan={**found["plan"], **({"cpu": cpu_id} if cpu_id else {})})

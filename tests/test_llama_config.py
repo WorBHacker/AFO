@@ -336,6 +336,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
     filming: ClassVar = None  # a video being filmed (48's review): its job is «generating» until this Event is set
     answering: ClassVar = None  # a chat's answer (48's review): it comes once this Event is set
     unloaded: ClassVar[list] = []  # the unloads asked for (48.9г): /api/models/unload, or …/unload/<model>
+    listed: ClassVar[list] = []  # the models named at each look at /v1/models (52.7): what the hub saw of a reload
 
     def log_message(self, *args):
         pass
@@ -378,6 +379,7 @@ class FakeLlamaSwap(BaseHTTPRequestHandler):
             if view["engine"] == lc.SD_ENGINE:  # what the config's metadata says, as llama-swap passes it on
                 meta = {"engine": lc.SD_ENGINE}
             data.append({"id": model_id, "name": view["name"], "meta": {"llamaswap": meta}})
+        FakeLlamaSwap.listed.append([m["id"] for m in data])
         self._send(200, {"data": data})
 
     def do_POST(self):
