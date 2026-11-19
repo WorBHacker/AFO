@@ -152,7 +152,12 @@ def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
     ).fetchall()  # fmt: skip
     listed = [{k: s[k] for k in s.keys() if k != "film_id"} | {"heard": heard_of(s["heard"])} for s in scenes]  # noqa: SIM118
-    return {**dict(row), "checks": bool(row["checks"]), "sound": bool(row["sound"]), "scenes": listed}
+    # (54.5) its joined video improved: the Studio's jobs, the newest first
+    improved = [dict(j) | {"enhance": json.loads(j["enhance"])} for j in conn.execute(
+        "SELECT id, status, error, file, width, height, fps, enhance FROM visual_jobs WHERE film_id = ? "
+        "ORDER BY created_at DESC", (row["id"],)).fetchall()]  # fmt: skip
+    return {**dict(row), "checks": bool(row["checks"]), "sound": bool(row["sound"]), "scenes": listed,
+            "improved": improved}  # fmt: skip
 
 
 def film(conn: sqlite3.Connection, film_id: str) -> dict[str, Any] | None:

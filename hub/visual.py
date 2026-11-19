@@ -67,6 +67,7 @@ import httpx
 from common.i18n import N_, tr
 from common.picture_sizes import (
     CPU_PIXELS,
+    FPS,
     SECONDS,
     SHAPES,
     SIDES,
@@ -82,7 +83,7 @@ from common.picture_sizes import (
     video_size,
 )
 
-from . import ffmpeg, hf
+from . import enhance, ffmpeg, hf
 from .db import utc_now
 from .engines import EngineError
 from .gpu_card import ASKER, STUDIO, GpuCard, rank
@@ -373,13 +374,15 @@ def engine_prompt(found: dict[str, Any]) -> str:
 
 def clip_type(path: Path) -> str | None:
     """A job's file's type by its first bytes: a picture's, a silent video's (WebP) - or a video's with sound, the
-    engine's WebM (52.3); None - neither (or not there)."""
+    engine's WebM (52.3), an improved video's MP4 (54.5); None - neither (or not there)."""
     try:
         with path.open("rb") as f:
-            head = f.read(4)
+            head = f.read(8)
     except OSError:
         return None
-    return "video/webm" if head == WEBM else picture_type(path)
+    if head[4:8] == b"ftyp":
+        return "video/mp4"
+    return "video/webm" if head[:4] == WEBM else picture_type(path)
 
 
 def moving(data: bytes) -> bool:
@@ -507,6 +510,7 @@ def follows(model: dict[str, Any]) -> bool:
 def _row(row) -> dict[str, Any]:
     out = dict(row)
     out["tries"] = json.loads(out["tries"] or "[]")
+    out["enhance"] = json.loads(out["enhance"]) if out.get("enhance") else None  # (54.5) what it improves, and how
     return out
 
 
@@ -686,13 +690,17 @@ class Visual:
         # (50.7) a film is being shot: the card stays the Studio's between its scenes - `keep`; how the film is
         # stopped when the card is taken from it meanwhile («Выгрузить», its model removed)
         self._kept: Callable[[], None] | None = None
+        self.enhance: enhance.Enhance | None = None  # «Улучшить ролик»'s programs (54.5), set by the server
+        self._enhancing: asyncio.Event | None = None  # the «Стоп» of the video being improved now
 
     async def start(self) -> int:
         """Pictures and videos a stopped hub left going or waiting are failed: llama-swap let them go with it - each in
         its own words (48.10г: a video «не снято», not «картинка не нарисована»)."""
 
         def fail(conn) -> int:
-            failed = 0
+            failed = conn.execute("UPDATE visual_jobs SET status = 'failed', error = ?, updated_at = ? WHERE status "
+                                  "IN ('queued', 'running') AND enhance != ''",
+                                  (tr("хаб перезапускался — ролик не улучшен"), utc_now())).rowcount  # fmt: skip
             for kind, words in (("image", N_("хаб перезапускался — картинка не нарисована")),
                                 ("video", N_("хаб перезапускался — видео не снято"))):  # fmt: skip
                 failed += conn.execute("UPDATE visual_jobs SET status = 'failed', error = ?, updated_at = ? WHERE "
@@ -785,6 +793,74 @@ class Visual:
                 (job_id, prompt, (spec.get("negative") or "").strip(), model["model_id"], width, height, seed, client,
                  spec.get("conversation_id"), frames, clip["fps"], kept.get("source", ""), kept.get("last", ""),
                  spec.get("steps"), spec.get("cfg"), int(sound), heard),
+            )  # fmt: skip
+
+        await self._db.acall(add)
+        self._more = True
+        self._persons()
+        await self._publish(job_id)
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._work())
+        return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def improve(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
+        """«Улучшить ролик» (54.5): a video of the Studio's (`from_job`) or a film's joined one (`film`) improved -
+        `size` (sharp | detail: twice as large), `motion` (fps60 | slow2 | slow4) - as a job of the queue, in turn
+        with the rest: its result a new video, the source as it was. The parts it needs not here, a size RelayVSR
+        does not fit, 60 a second of a video that has them - refused at once."""
+        size, motion = spec.get("size") or None, spec.get("motion") or None
+        if size not in (None, *enhance.SIZES) or motion not in (None, *enhance.MOTIONS):
+            raise VisualError(tr("нет такого улучшения"), 422)
+        if size is None and motion is None:
+            raise VisualError(tr("выберите, что улучшить"), 422)
+        for part in [p for p in (size, "smooth" if motion else None) if p]:
+            if self.enhance is None or not await self.enhance.ready(part):
+                raise VisualError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
+                                     part=tr(enhance.PARTS[part]["name"])), 422)  # fmt: skip
+        film_id = None
+        if spec.get("film"):
+            film_id = str(spec["film"])
+
+            def of_film(conn) -> dict[str, Any] | None:
+                row = conn.execute("SELECT idea, file FROM films WHERE id = ?", (film_id,)).fetchone()
+                shot = conn.execute(
+                    "SELECT j.width, j.height FROM film_scenes s JOIN visual_jobs j ON j.id = s.job_id "
+                    "WHERE s.film_id = ? AND j.status = 'done' LIMIT 1",
+                    (film_id,),
+                ).fetchone()
+                return {**dict(row), **dict(shot)} if row and shot else None
+
+            found = await self._db.acall(of_film)
+            if found is None or not found["file"] or not (self.media / found["file"]).is_file():
+                raise VisualError(tr("ролик фильма ещё не собран"), 404)
+            source, prompt, fps = found["file"], found["idea"], FPS
+            width, height = found["width"], found["height"]
+            sound = await self.ffmpeg_asks(lambda program: ffmpeg.heard(program, self.media / source))
+            from_job = ""
+        else:
+            from_job = str(spec.get("from_job") or "")
+            found = await self._db.acall(lambda conn: job(conn, from_job)) if from_job else None
+            if found is None or found.get("kind") != "video" or found.get("status") != "done":
+                raise VisualError(tr("нет такого ролика"), 404)
+            source = (await self.mp4(found)).relative_to(self.media).as_posix()
+            prompt, fps, width, height = found["prompt"], int(found.get("fps") or FPS), found["width"], found["height"]
+            sound = bool(found.get("sound")) or bool(found.get("enhance") and found["enhance"].get("sound"))
+        if size == "detail" and width * height > enhance.DETAIL_PIXELS:
+            raise VisualError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
+                                 "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
+        if motion == "fps60" and fps >= enhance.SMOOTH_FPS:
+            raise VisualError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
+        sound = sound and motion not in ("slow2", "slow4")  # a slowed video goes without its sound (54.3)
+        times = 2 if size else 1
+        how = {"source": source, "job": from_job, "fps": fps, "size": size, "motion": motion, "sound": sound}
+        job_id = uuid.uuid4().hex[:12]
+
+        def add(conn) -> None:
+            conn.execute(
+                "INSERT INTO visual_jobs (id, kind, prompt, model_id, width, height, seed, status, client, fps, sound, "
+                "enhance, film_id) VALUES (?, 'video', ?, 'enhance', ?, ?, 0, 'queued', ?, ?, ?, ?, ?)",
+                (job_id, prompt, width * times, height * times, client,
+                 enhance.SMOOTH_FPS if motion == "fps60" else fps, int(sound), json.dumps(how), film_id),
             )  # fmt: skip
 
         await self._db.acall(add)
@@ -947,6 +1023,8 @@ class Visual:
             # worker has just taken, not yet «running»: «отменено» was written over by «running», and it went on. The
             # worker looks at `_stopping` right before the model is asked for; one asked for already is unloaded
             self._stopping.add(job_id)
+            if self._enhancing is not None and job_id == self._running:  # (54.5) a video being improved: its program
+                self._enhancing.set()
             if self._watching is not None:  # its next look at the progress would load the model again
                 self._watch_stop.set()
                 self._watching.cancel()
@@ -1219,7 +1297,10 @@ class Visual:
                 found = await self._db.acall(functools.partial(job, job_id=job_id))  # «✕» while it waited for the card
                 if found is None or found["status"] != "queued":
                     continue
-                await (self._run_video(found) if found.get("kind") == "video" else self._run(found))
+                if found.get("enhance"):
+                    await self._run_enhance(found)
+                else:
+                    await (self._run_video(found) if found.get("kind") == "video" else self._run(found))
             except Exception:  # one picture's trouble must not stop the rest
                 log.exception("picture %s", job_id)
                 await self._set(job_id, status="failed", error=tr("внутренняя ошибка хаба — подробности в журнале"))
@@ -1436,6 +1517,56 @@ class Visual:
         # from its start - the clip began twice. The window, asking meanwhile, waits for this one (`_ffmpeg`)
         if not loud:
             await self._mp4_now(self.media / name)
+
+    async def _run_enhance(self, found: dict[str, Any]) -> None:
+        """A video improved (54.5): the models llama-swap holds leave the card first - the programs run past it, and
+        RelayVSR takes 14.5 GB of it; ffmpeg fetched the first time; the parts' programs (hub/enhance.py) piece by
+        piece, how far told to the window as a video's steps are; a poster beside the new MP4 for the lists. ✕,
+        «Выгрузить» - its program is killed, nothing is left."""
+        job_id, how = found["id"], found["enhance"]
+        if job_id in self._stopping:
+            await self._set(job_id, status="cancelled", error="")
+            return
+        await self._set(job_id, status="running", error="")
+        source = self.media / how["source"]
+        if not await asyncio.to_thread(source.is_file):
+            await self._set(job_id, status="failed", error=tr("исходного ролика уже нет"))
+            return
+        month = f"{datetime.now(UTC):%Y-%m}"
+        name = f"{month}/film-{found['film_id']}-{job_id}.mp4" if found.get("film_id") else f"{month}/{job_id}.mp4"
+        target, start = self.media / name, time.monotonic()
+        self._enhancing = cancel = asyncio.Event()
+        if job_id in self._stopping:  # ✕ while «running» was written
+            cancel.set()
+
+        async def told(share: float) -> None:
+            await self._said(job_id, round(share * 100), 100, time.monotonic() - start)
+
+        try:
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            with contextlib.suppress(httpx.HTTPError):
+                async with httpx.AsyncClient(timeout=60.0) as http:
+                    await http.post(f"{self._url}/api/models/unload")
+            async with self._ffmpeg:
+                program = await self._ffmpeg_does(lambda program: program)
+            if self.enhance is None:
+                raise VisualError(tr("«Улучшить ролик» не готово"), 503)
+            frames = await self.enhance.make(source, target, cancel, ffmpeg=program, fps=int(how["fps"]),
+                                             size=how["size"], motion=how["motion"], told=told)  # fmt: skip
+        except (enhance.EnhanceError, VisualError) as exc:
+            stopped = job_id in self._stopping or cancel.is_set()
+            await self._set(job_id, status="cancelled" if stopped else "failed", error="" if stopped else str(exc),
+                            seconds=round(time.monotonic() - start, 1))  # fmt: skip
+            return
+        finally:
+            self._enhancing = None
+        poster = target.with_suffix(POSTER_SUFFIX)
+        try:
+            await self.with_ffmpeg(poster, lambda program: ffmpeg.poster(program, target, poster))
+        except VisualError as exc:
+            log.warning("improved video %s: no poster: %s", job_id, exc)
+        await self._set(job_id, status="done", error="", file=name, frames=frames,
+                        seconds=round(time.monotonic() - start, 1))  # fmt: skip
 
     async def _still(self, clip: Path, frames: int) -> bool:
         """Whether a clip with sound shows one picture all along (52.3; a WebP says it by itself, `moving`): three

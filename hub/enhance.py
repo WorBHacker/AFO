@@ -525,15 +525,15 @@ class Enhance:
 
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
                    size: str | None = None, motion: str | None = None,
-                   told: Callable[[float], Awaitable[None]] | None = None) -> Path:  # fmt: skip
-        """A video improved into `target` (MP4): its frames taken out by ffmpeg, made by the parts' programs, put
-        back together, its sound with them. `size` (54.4): «sharp» - twice as large by Real-ESRGAN (four times, then
-        ffmpeg brings each piece to twice: its frames of four times are not kept), «detail» - by RelayVSR, only a
-        video of the usual sizes (`DETAIL_PIXELS`). `motion` (54.3): «fps60» - 60 frames a second over the same
-        time; «slow2», «slow4» - so many times slower, at its own rate, without sound (a sound stretched so is not the
-        sound). Larger first, then the motion: fewer frames are enlarged. Both go shot by shot: nothing is made across
-        a cut. `told(share)` - how far, after each piece. The frames lie beside `target` meanwhile and are gone
-        after, whatever happened."""
+                   told: Callable[[float], Awaitable[None]] | None = None) -> int:  # fmt: skip
+        """A video improved into `target` (MP4); how many frames it has. Its frames taken out by ffmpeg, made by the
+        parts' programs, put back together, its sound with them. `size` (54.4): «sharp» - twice as large by
+        Real-ESRGAN (four times, then ffmpeg brings each piece to twice: its frames of four times are not kept),
+        «detail» - by RelayVSR, only a video of the usual sizes (`DETAIL_PIXELS`). `motion` (54.3): «fps60» - 60
+        frames a second over the same time; «slow2», «slow4» - so many times slower, at its own rate, without sound
+        (a sound stretched so is not the sound). Larger first, then the motion: fewer frames are enlarged. Both go
+        shot by shot: nothing is made across a cut. `told(share)` - how far, after each piece. The frames lie beside
+        `target` meanwhile and are gone after, whatever happened."""
         if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
         if motion is None and size is None:
@@ -568,13 +568,14 @@ class Enhance:
                 frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel,
                                             await stage(len(stages) - 1))  # fmt: skip
             sound = None if motion in ("slow2", "slow4") else source
+            made = len(await asyncio.to_thread(os.listdir, frames))
             await asyncio.to_thread(video.from_frames, ffmpeg, frames, target,
                                     fps=SMOOTH_FPS if motion == "fps60" else fps, sound=sound)  # fmt: skip
         except EngineError as exc:
             raise EnhanceError(str(exc), 502) from None
         finally:
             await asyncio.to_thread(engines.remove_tree, work)
-        return target
+        return made
 
     async def _enlarge(self, frames: Path, work: Path, spans: list[tuple[int, int]], size: str,
                        side: tuple[int, int], fps: int, ffmpeg: Path, cancel: asyncio.Event,

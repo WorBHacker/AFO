@@ -2,7 +2,8 @@
 
 GET /models - the picture models installed and the one a picture is drawn with by default; POST /images - a picture
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
-POST /videos - a video (29.8а, Wan2.2; a job like a picture's); GET /jobs/<id>/file - the picture itself (PNG; a
+POST /videos - a video (29.8а, Wan2.2; a job like a picture's); POST /improve - «Улучшить ролик» (54.5): a video
+of the Studio's or a film's improved, a job too; GET /jobs/<id>/file - the picture itself (PNG; a
 video - WebP); GET /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg; 48.12: the window plays it); GET
 /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6: a model drew it), /pictures/<sha256>/mp4 - a chat's
 video as MP4 (48.12). Events: visual.changed (a job), visual.progress (step and preview).
@@ -98,6 +99,25 @@ async def video(request: Request, body: Video, client: Annotated[Client, Depends
     ask_as(STUDIO)  # the person's, in the Studio: the card given away is theirs again (48.9г)
     try:
         return {"job": await _visual(request).video(body.model_dump(), client.name)}
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+
+
+class Improve(BaseModel):
+    """«Улучшить ролик» (54.5): a video of the Studio's or a film's joined one; twice as large (fast or with
+    details), 60 frames a second or slowed - one of them or both."""
+
+    from_job: str = Field(default="", max_length=64)
+    film: str = Field(default="", max_length=64)
+    size: Literal["sharp", "detail"] | None = None
+    motion: Literal["fps60", "slow2", "slow4"] | None = None
+
+
+@router.post("/improve")
+async def improve(request: Request, body: Improve, client: Annotated[Client, Depends(require_app)]) -> dict:
+    ask_as(STUDIO)  # the person's, in the Studio: the card given away is theirs again (48.9г)
+    try:
+        return {"job": await _visual(request).improve(body.model_dump(), client.name)}
     except v.VisualError as exc:
         raise _refusal(exc) from exc
 

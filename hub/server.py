@@ -264,6 +264,7 @@ def create_app(settings: HubSettings, secret_store: SecretStore | None = None) -
         # «Улучшить ролик» (54): its programs beside ffmpeg, RelayVSR's weights beside the models
         app.state.enhance = Enhance(bus, tools=app.state.visual.tools, models=models_home(),
                                     machine=lambda: app.state.installer.machine())  # fmt: skip
+        app.state.visual.enhance = app.state.enhance  # its jobs run in the Studio's queue (54.5)
         app.state.director = Director(db, bus, app.state.judge, app.state.visual,
                                       app.state.sound)  # the Studio's films (50)  # fmt: skip
         app.state.visual.blobs = paths.blobs  # a chat's pictures: sources for «По картинке» (29.6б)

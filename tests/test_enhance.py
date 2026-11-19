@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -391,6 +392,125 @@ def test_a_video_is_made_twice_as_large_piece_by_piece_then_smoother(stand, tmp_
     assert refused.value.status == 422 and not list(tmp_path.glob(".*.work"))
     with pytest.raises(enhance.EnhanceError, match="выберите"):
         make(hub, source, tmp_path / "nothing.mp4", fps=24)
+
+
+def a_video_job(hub, *, side=64):  # noqa: F811
+    """A video the Studio filmed with sound, as it lies in data/media: the engine's WebM, its poster, its MP4."""
+    visual, job_id = hub.app.state.visual, uuid.uuid4().hex[:12]
+    (visual.media / "2026-11").mkdir(parents=True, exist_ok=True)
+    two_shots(visual.media / f"2026-11/{job_id}.mp4", side)
+    (visual.media / f"2026-11/{job_id}.webm").write_bytes(b"\x1a\x45\xdf\xa3 the engine's clip")
+    (visual.media / f"2026-11/{job_id}.jpg").write_bytes(b"\xff\xd8\xff poster")
+    hub.app.state.db.call(lambda conn: conn.execute(
+        "INSERT INTO visual_jobs (id, kind, prompt, model_id, width, height, seed, status, file, fps, sound, frames) "
+        "VALUES (?, 'video', 'a lamp', 'film', ?, ?, 1, 'done', ?, 24, 1, 72)",
+        (job_id, side, side, f"2026-11/{job_id}.webm")))  # fmt: skip
+    return job_id
+
+
+def wait_job(hub, job_id, *statuses, timeout=30.0):  # noqa: F811
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = hub.get(f"/v1/visual/jobs/{job_id}").json()["job"]
+        if found["status"] in statuses:
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"{job_id} is still {found}")
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_an_improved_video_is_a_job_of_the_studios_queue_beside_its_source(stand, tmp_path, monkeypatch):
+    """54.5: «Улучшить ролик» - a job of the Studio's queue, in turn with the rest: the models llama-swap holds leave
+    the card, how far it is goes to the window as a video's steps do, its result a new MP4 with a poster beside, the
+    source as it was. A part not fetched, nothing chosen, no such video - refused at once. ✕ - its program killed,
+    nothing left. A film's joined video improved - named as the film's own (the cleanup leaves it while the film is),
+    listed with the film; slowed - without sound."""
+    from hub import director, retention
+    from tests.test_visual import FakeDrawSwap
+
+    hub = stand  # noqa: F811
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
+    media = hub.app.state.visual.media
+    source_id = a_video_job(hub)
+    source = media / f"2026-11/{source_id}.mp4"
+    before = source.read_bytes()
+
+    refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "motion": "fps60"})
+    assert refused.status_code == 422 and "не установлено" in refused.json()["detail"]
+    install(hub, "smooth")
+    install(hub, "sharp")
+    assert hub.post("/v1/visual/improve", json={"from_job": source_id}).status_code == 422
+    assert hub.post("/v1/visual/improve", json={"from_job": "nothing", "motion": "fps60"}).status_code == 404
+    assert hub.post("/v1/visual/improve", json={"from_job": source_id, "motion": "fast"}).status_code == 422
+
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "size": "sharp", "motion": "fps60"})
+    assert asked.status_code == 200, asked.text
+    job_id = asked.json()["job"]["id"]
+    assert asked.json()["job"]["enhance"] == {"source": f"2026-11/{source_id}.mp4", "job": source_id, "fps": 24,
+                                              "size": "sharp", "motion": "fps60", "sound": True}  # fmt: skip
+    done = wait_job(hub, job_id, "done", "failed", "cancelled")
+    assert done["status"] == "done", done
+    month = done["file"].split("/")[0]
+    assert done["file"] == f"{month}/{job_id}.mp4" and done["frames"] == 180 and done["fps"] == 60
+    assert (done["width"], done["height"], done["sound"]) == (128, 128, 1)
+    improved = media / done["file"]
+    shown = described(improved)
+    assert shown["size"] == (128, 128) and shown["fps"] == 60 and shown["sound"] and abs(shown["seconds"] - 3) < 0.1
+    assert (media / f"{month}/{job_id}.jpg").read_bytes()[:3] == b"\xff\xd8\xff"  # the poster the lists show
+    assert source.read_bytes() == before  # the source as it was
+    assert "unload" in FakeDrawSwap.unloaded  # llama-swap's models left the card first
+    steps = [p["step"] for kind, p in hub.seen if kind == "visual.progress" and p["id"] == job_id]
+    assert steps == [25, 50, 75, 100] and all(p["steps"] == 100 for kind, p in hub.seen
+                                              if kind == "visual.progress" and p["id"] == job_id)  # fmt: skip
+    served = hub.get(f"/v1/visual/jobs/{job_id}/file")
+    assert served.status_code == 200 and served.headers["content-type"] == "video/mp4"
+    assert hub.get(f"/v1/visual/jobs/{job_id}/mp4").content == improved.read_bytes()
+    assert not [p for p in media.rglob("*") if p.name.startswith(".") or p.suffix == ".part"]
+
+    again = hub.post("/v1/visual/improve", json={"from_job": job_id, "motion": "fps60"})  # an improved one, again
+    assert again.status_code == 422 and "уже 60" in again.json()["detail"]
+
+    monkeypatch.setenv("FAKE_ENHANCE_SLOW", "30")
+    stopping = hub.post("/v1/visual/improve", json={"from_job": source_id, "motion": "slow2"}).json()["job"]["id"]
+    wait_job(hub, stopping, "running")
+    time.sleep(0.5)
+    began = time.monotonic()
+    assert hub.post(f"/v1/visual/jobs/{stopping}/cancel").status_code == 200
+    stopped = wait_job(hub, stopping, "cancelled", "failed", "done")
+    assert stopped["status"] == "cancelled" and stopped["error"] == "" and time.monotonic() - began < 15
+    assert not list(media.glob(f"*/{stopping}*")) and not [p for p in media.rglob("*") if p.name.startswith(".")]
+    monkeypatch.delenv("FAKE_ENHANCE_SLOW")
+
+    db = hub.app.state.db
+    film_id = db.call(lambda conn: director.new_film(conn, idea="Ролик о лампе", seconds=3, checks=False))["id"]
+    joined = f"2026-11/film-{film_id}-joined.mp4"
+    shutil.copyfile(source, media / joined)
+
+    def filmed(conn):
+        conn.execute("INSERT INTO film_scenes (film_id, n, mode, words, prompt, frames, job_id, status) VALUES "
+                     "(?, 1, 'picture', 'Лампа', 'a lamp', 73, ?, 'done')", (film_id, source_id))  # fmt: skip
+        director.update_film(conn, film_id, file=joined, status="ready")
+
+    db.call(filmed)
+    slow = hub.post("/v1/visual/improve", json={"film": film_id, "motion": "slow2"})
+    assert slow.status_code == 200, slow.text
+    slowed = wait_job(hub, slow.json()["job"]["id"], "done", "failed", "cancelled")
+    assert slowed["status"] == "done" and slowed["film_id"] == film_id and not slowed["sound"]
+    assert slowed["file"] == f"{month}/film-{film_id}-{slowed['id']}.mp4" and slowed["frames"] == 144
+    shown = described(media / slowed["file"])
+    assert shown["fps"] == 24 and not shown["sound"] and abs(shown["seconds"] - 6) < 0.1
+    assert retention.owner(Path(slowed["file"]).name) in db.call(director.kept)  # kept as long as the film
+    listed = hub.get(f"/v1/films/{film_id}").json()["film"]["improved"]
+    assert [(i["id"], i["status"], i["file"]) for i in listed] == [(slowed["id"], "done", slowed["file"])]
+    assert hub.post("/v1/visual/improve", json={"film": "nothing", "motion": "slow2"}).status_code == 404
+
+    left = uuid.uuid4().hex[:12]  # the hub went away while a video was being improved
+    db.call(lambda conn: conn.execute(
+        "INSERT INTO visual_jobs (id, kind, prompt, model_id, width, height, seed, status, enhance) VALUES "
+        "(?, 'video', 'a lamp', 'enhance', 64, 64, 0, 'running', ?)",
+        (left, json.dumps({"source": joined}))))  # fmt: skip
+    assert hub.portal.call(hub.app.state.visual.start) == 1
+    assert wait_job(hub, left, "failed")["error"] == "хаб перезапускался — ролик не улучшен"
 
 
 def test_a_video_is_cut_into_pieces_by_its_shots_and_its_length():
