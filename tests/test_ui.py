@@ -10681,6 +10681,12 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         QMetaObject.invokeMethod(added, "close")
         wait_until(lambda: not added.property("visible"))
         app.film_view.setKind("manual")
+        improve = window.findChild(QObject, "improveSheet")  # «Улучшить ролик» (54.6): the size, the motion - the
+        QMetaObject.invokeMethod(improve, "open")  # Studio's sheet; the film's is the same declaration
+        wait_until(lambda: improve.property("opened"))
+        go(improve.property("contentItem"))
+        QMetaObject.invokeMethod(improve, "close")
+        wait_until(lambda: not improve.property("visible"))
         app.setMode("chats")
 
         drawers = [o for o in window.findChildren(QObject) if o.inherits("QQuickDrawer")]
