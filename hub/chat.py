@@ -203,6 +203,8 @@ class ChatService:
         self.refused: set[str] = set()
         # «Песочница» chats' git projects whose worktree could not be made: project id -> why (D46)
         self.sandbox_broken: dict[str, dict[str, str]] = {}
+        # a coordinator's task run: its check commands by project, allowed with the batch - run in its copy unasked
+        self.checks: dict[str, dict[str, set[str]]] = {}
         # what each chat's model read: "<project id>:<path>" -> sha256 (D46; tools.ToolContext.seen)
         self.seen_files: dict[str, dict[str, str]] = {}
         # chats whose user answered «Без проекта» in the answer going on: not asked again in it (31.2)
@@ -1216,13 +1218,15 @@ class ChatService:
             return READ_ONLY, True
         try:
             project = ctx.project(args.get("project"))
-            commands.command_of(args)
+            command = commands.command_of(args)
         except ToolError as exc:
             return str(exc), True
         if settings["mode"] == "sandbox" and (why := self.sandbox_broken.get(conversation_id, {}).get(project.id)):
             return _no_sandbox(project, why), True  # not in the project itself: the user chose a copy (D46)
-        said = ""  # asked - an answer for the chat or the project holds after reading the web too (2026-11-18)
-        if settings["mode"] == "trusted":
+        said: str | None = ""  # asked - an answer for the chat or the project holds after reading the web too
+        if settings["mode"] == "sandbox" and command in self.checks.get(conversation_id, {}).get(project.id, ()):
+            said = None  # a check of its task, allowed with the batch: in its copy, unasked (61.4)
+        elif settings["mode"] == "trusted":
             said = await self.trusted_verdict(conversation_id, call["name"], args, project.root, project.id)
         if said:
             return said, True

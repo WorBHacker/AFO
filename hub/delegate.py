@@ -67,10 +67,12 @@ DELEGATE_MANY: dict[str, Any] = {
                             "type": "array",
                             "items": {"type": "object"},
                             "description": "How the hub checks the task when the agent ends - the agent cannot "
-                            "declare it done: {command, project?, expected_exit_code?, path?} - a command that only "
-                            "looks (tests, a build), run in the task's copy of the project; or {rule} - in words, "
-                            f"for the judge model. Not met: the agent works on with what the check found, up to "
-                            f"{ROUNDS} rounds in all; then the task needs a person. The user allows the commands.",
+                            "declare it done: {checks: true, project?} - the project's own checks the hub finds by "
+                            "its files (tests, a linter, types); {command, project?, expected_exit_code?, path?} - a "
+                            "command that only looks (tests, a build); both run in the task's copy of the project, and "
+                            "its agent may run them there itself; or {rule} - in words, for the judge model. Not met: "
+                            f"the agent works on with what the check found, up to {ROUNDS} rounds in all; then the "
+                            "task needs a person. The user allows the commands.",
                         },
                         "files": {
                             "type": "array",

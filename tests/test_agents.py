@@ -2,9 +2,12 @@
 GPU queue, stopping, and going on after a restart."""
 
 import asyncio
+import shutil
+import sys
 import time
+from pathlib import Path
 
-from hub import agents
+from hub import agents, checks
 from hub import projects as projects_module
 from hub import sandbox as sandbox_module
 from hub.chat import Limits
@@ -751,6 +754,53 @@ def test_a_task_goes_round_after_round_until_its_check_passes(hub, repo):  # noq
     assert not (repo / "done.txt").exists()  # the check ran in the task's copy, not in the project
     (said,) = outputs(hub, run_id)
     assert "[a] «Правщик» — done (checked: цель достигнута: все критерии выполнены)." in said["output"]
+
+
+def test_a_projects_own_checks_run_in_a_tasks_copy_unasked(hub, repo):  # noqa: F811
+    """61.4: {"checks": true} - the commands the hub found by the project's files (here ruff of its own environment);
+    one card for the batch, then the check runs in the copy round after round, and the task's agent runs it there
+    itself with no card; a project with no checks the hub knows is refused before anything starts."""
+    scripts = repo / ".venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(Path(sys.executable).parent / "ruff.exe", scripts / "ruff.exe")
+    (repo / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8", newline="\n")
+    with (repo / ".gitignore").open("a", encoding="utf-8", newline="\n") as ignored:
+        ignored.write(".venv/\n")
+    run_git(repo, "add", ".")
+    run_git(repo, "commit", "-q", "-m", "ruff")
+    (check,) = checks.found(repo)
+    assert check == f'& "{scripts / "ruff.exe"}" check .'
+    other = repo.parent / "other"
+    other.mkdir()
+    run_git(other, "init", "-q", "-b", "main")
+    pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
+    oid = hub.post("/v1/projects", json={"path": str(other)}).json()["id"]
+    wrong = given(("a", "Чужой", "x", {"criteria": [{"checks": True}]}), call_id="b0")
+    tasks = given(("a", "Правщик", "Сделай чисто", {"criteria": [{"checks": True}]}),
+                  ("b", "Правщик", "Проверь сам", {"criteria": [{"checks": True, "project": "proj"}]}))  # fmt: skip
+    provider = plug(hub, ByTask("fake", "local", {"Сделай": [[wrong], [tasks]]}, pause=0.02, work={
+        "Сделай чисто": [{"name": "edit_file", "input": edit(old="print('hi')", new="import os\nprint('a')")},
+                         {"name": "edit_file", "input": edit(old="import os\n", new="")}],
+        "Проверь сам": [{"name": "run_command", "input": {"project": "proj", "command": check}}]}))  # fmt: skip
+    profile(hub, name="Правщик", tools=["edit_file", "run_command"], project_ids=[pid])
+    profile(hub, name="Чужой", tools=["edit_file"], project_ids=[oid])
+    boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
+    run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
+    asked = allow_checks(hub)  # the batch's one card
+    assert asked["input"]["command"] == check and "may run it there itself" in asked["input"]["purpose"]
+    assert ended(hub, run_id, timeout=60)["status"] == "done"  # nothing else was asked: no card waits
+    refused, said = outputs(hub, run_id)
+    assert refused["error"] and refused["output"].startswith("task 'a': the hub found no checks of «other» it can run")
+    board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert (board["a"]["status"], board["a"]["rounds"]) == ("done", 2)  # the unused import failed round 1
+    assert [c["command"] for c in board["a"]["criteria"]] == [check]
+    assert (board["b"]["status"], board["b"]["rounds"]) == ("done", 1)
+    mine = [c[1] for c in provider.calls if _first_text(c[1]).startswith("Проверь сам")]
+    ran = [m for messages in mine for m in messages if m["role"] == "tool"]
+    assert "All checks passed!" in ran[-1]["content"]  # its own run of the check, in its copy, with no card
+    assert hub.get("/v1/approvals").json()["approvals"] == []
+    assert said["output"].startswith("2 tasks: 2 done.")
+    assert hub.app.state.chat.checks == {}  # forgotten with the batch
 
 
 def test_a_task_that_never_passes_needs_a_person(hub, repo):  # noqa: F811

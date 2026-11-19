@@ -46,6 +46,7 @@ from . import (
     approvals,
     autonomous,
     budgets,
+    checks,
     compact,
     computer,
     goals,
@@ -571,13 +572,44 @@ def _criteria(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str,
             attached.append(get_project(conn, pid))
         except ProjectError:
             continue
+    raw = task["criteria"]
+    if isinstance(raw, list):  # {"checks": true} - the project's own checks, found by its files (61.4)
+        raw = [c for item in raw for c in (_own_checks(task, item, attached)
+                                           if isinstance(item, dict) and item.get("checks") else [item])]  # fmt: skip
     try:
-        checked = goals.check_criteria(task["criteria"], attached)
+        checked = goals.check_criteria(raw, attached)
     except goals.GoalError as exc:
         raise AgentError(f"task {task['task_id']!r}: {exc}") from None
     names = {p.id: p.name for p in attached}
     return [c | {"n": n, "project_name": names.get(c.get("project_id"), ""), "path": c.get("path", "")}
             for n, c in enumerate(checked, 1)]  # fmt: skip
+
+
+def task_checks(task: dict[str, Any]) -> dict[str, set[str]]:
+    """A task's check commands by project: allowed with its batch, its agent runs them in its copy unasked (61.4)."""
+    out: dict[str, set[str]] = {}
+    for c in task.get("criteria") or []:
+        if c.get("kind") == "command":
+            out.setdefault(c["project_id"], set()).add(c["command"])
+    return out
+
+
+def _own_checks(task: dict[str, Any], item: dict[str, Any], attached: list) -> list[dict[str, Any]]:
+    """A criterion {"checks": true, "project"?} as the commands the hub found by the project's files (61.4), or
+    AgentError: which project, and that it has checks the hub knows."""
+    ref = str(item.get("project") or "").strip()
+    project = next((p for p in attached if ref and (p.id == ref or p.name.casefold() == ref.casefold())), None)
+    if project is None and not ref and len(attached) == 1:
+        project = attached[0]
+    if project is None:
+        names = ", ".join(f"«{p.name}»" for p in attached) or "none"
+        raise AgentError(f"task {task['task_id']!r}: `checks` - name the project, one of its agent's ({names})")
+    found = checks.criteria(project)
+    if not found:
+        raise AgentError(f"task {task['task_id']!r}: the hub found no checks of «{project.name}» it can run (a "
+                         "Python project's pytest, ruff or mypy, cargo, go - with their programs on this computer): "
+                         "give the command itself")  # fmt: skip
+    return found
 
 
 def _short_of_money(conn: sqlite3.Connection, tasks: list[dict[str, Any]], found: dict[str, dict]) -> str | None:
@@ -957,6 +989,8 @@ class AgentRunner:
                     await self._db.acall(lambda conn: conn.execute(
                         "UPDATE agent_runs SET task = task || ? WHERE conversation_id = ?",
                         (CONFLICTED + ", ".join(clashed), child_id)))  # fmt: skip
+                if allowed := task_checks(task):  # allowed with the batch: run in its copy unasked (61.4)
+                    self._chat.checks[child_id] = allowed
                 bases = await self._bases(child_id) if task["criteria"] else {}
                 since = utc_now()
                 note = None
@@ -984,6 +1018,7 @@ class AgentRunner:
         finally:
             if child_id is not None:
                 self._ended.pop(child_id, None)
+                self._chat.checks.pop(child_id, None)
             ends[task_id].set()
 
     async def _allow_checks(self, parent_id: str, tasks: list[dict[str, Any]], mode: str,
@@ -1008,7 +1043,8 @@ class AgentRunner:
             asked = {
                 "project": project.name,
                 "command": "\n".join(commands),
-                "purpose": "the checks of the coordinator's tasks: each runs in a task's copy when it ends",
+                "purpose": "the checks of the coordinator's tasks: each runs in a task's copy when it ends, and the "
+                "task's agent may run it there itself",
             }
             allowed, why = await self._chat._ask_user(parent_id, "run_command", asked, project, cancel, cover=False)
             if not allowed:
