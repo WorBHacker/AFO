@@ -73,6 +73,7 @@ OWN_TERMS = re.compile(r"llama|gemma|qwen|tongyi|deepseek|openrail|gpl|nvidia-op
 QUANT = re.compile(r"(?i)(?<![A-Z0-9])((?:UD-)?(?:I?Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|MXFP4(?:_MOE)?|NVFP4|BF16|F16|FP16|F32))"
                    r"(?![A-Z0-9])")  # fmt: skip
 SPLIT = re.compile(r"-(\d{5})-of-(\d{5})$")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 # files beside the model that are not a variant of it: vision projectors (offered apart), speculative drafts, imatrix
 # data (imatrix.gguf, model.imatrix.gguf) - a model's own name may say «imatrix» too (32.3: …-iMatrix-NVFP4.gguf)
 NOT_MODEL = re.compile(r"(?i)^(mmproj|mtp-|dflash-|eagle\d*-|draft|imatrix)|[._-]imatrix\.gguf$")
@@ -370,16 +371,35 @@ def picture_variants(files: list[dict[str, Any]], *, has: list[str] | tuple[str,
     return sorted(out, key=lambda v: v["size"])
 
 
+def sha256_of(value: Any) -> str | None:
+    """A sha256 as Hugging Face gave it - or None: none given, or hidden (the fix after 0.1.17: a gated repository's
+    files listed to one it does not let in carry 64 asterisks in its place)."""
+    return value.lower() if isinstance(value, str) and SHA256.fullmatch(value.lower()) else None
+
+
+async def _tree(http: httpx.AsyncClient, repo: str, token: str | None,
+                revision: str = "main") -> tuple[list[dict[str, Any]], bool]:  # fmt: skip
+    """A repository's files at a commit - path, size, sha256 (sha256_of) - and whether Hugging Face hid their sums:
+    asked without a token it lets in."""
+    tree = await _get(http, f"/api/models/{repo}/tree/{revision}", repo, token, recursive="true")
+    files, hidden = [], False
+    for f in tree:
+        if not (isinstance(f, dict) and f.get("type") == "file"):
+            continue
+        lfs = f.get("lfs") or {}
+        given = lfs.get("oid") or lfs.get("sha256")
+        files.append({"path": f["path"], "size": int(f.get("size") or 0), "sha256": sha256_of(given)})
+        hidden = hidden or (bool(given) and files[-1]["sha256"] is None)
+    return files, hidden
+
+
 async def repository(http: httpx.AsyncClient, repo: str, token: str | None = None) -> dict[str, Any]:
     """A repository: its licence and gating, its parameter count and trained context (when Hugging Face read the
-    GGUF), the variants and the vision projectors."""
+    GGUF), the variants and the vision projectors; `hidden` - Hugging Face hid the files' sha256 (_tree)."""
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise HubError(tr("имя репозитория — «автор/модель»"), 422)
     info = await _get(http, f"/api/models/{repo}", repo, token, **{"expand[]": list(INFO_FIELDS)})
-    tree = await _get(http, f"/api/models/{repo}/tree/main", repo, token, recursive="true")
-    files = [{"path": f["path"], "size": int(f.get("size") or 0),
-              "sha256": (f.get("lfs") or {}).get("oid") or (f.get("lfs") or {}).get("sha256")}
-             for f in tree if isinstance(f, dict) and f.get("type") == "file"]  # fmt: skip
+    files, hidden = await _tree(http, repo, token)
     found, projectors = variants(files)
     gguf = info.get("gguf") or {}
     params = params_of({**info, "id": info.get("id") or repo})
@@ -388,20 +408,25 @@ async def repository(http: httpx.AsyncClient, repo: str, token: str | None = Non
     return {**summary({**info, "id": info.get("id") or repo}), "revision": info.get("sha") or "main",
             "params": params, "architecture": gguf.get("architecture") or "",
             "context_trained": int(gguf.get("context_length") or 0), "variants": found,
-            "projectors": projectors}  # fmt: skip
+            "projectors": projectors, "hidden": hidden}  # fmt: skip
 
 
 async def files(http: httpx.AsyncClient, repo: str, token: str | None = None) -> dict[str, Any]:
     """A repository's files - {path: {size, sha256}} - with its licence and the commit they are at: a picture model
-    takes its files from several repositories (D55, 29.3)."""
+    takes its files from several repositories (D55, 29.3); `hidden` - Hugging Face hid their sha256 (_tree)."""
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
         raise HubError(tr("имя репозитория — «автор/модель»"), 422)
     info = await _get(http, f"/api/models/{repo}", repo, token, **{"expand[]": list(INFO_FIELDS)})
-    tree = await _get(http, f"/api/models/{repo}/tree/main", repo, token, recursive="true")
-    listed = {f["path"]: {"size": int(f.get("size") or 0),
-                          "sha256": (f.get("lfs") or {}).get("oid") or (f.get("lfs") or {}).get("sha256")}
-              for f in tree if isinstance(f, dict) and f.get("type") == "file"}  # fmt: skip
-    return {**summary({**info, "id": info.get("id") or repo}), "revision": info.get("sha") or "main", "files": listed}
+    found, hidden = await _tree(http, repo, token)
+    listed = {f["path"]: {"size": f["size"], "sha256": f["sha256"]} for f in found}
+    return {**summary({**info, "id": info.get("id") or repo}), "revision": info.get("sha") or "main", "files": listed,
+            "hidden": hidden}  # fmt: skip
+
+
+async def sums(http: httpx.AsyncClient, repo: str, revision: str, token: str | None) -> dict[str, str | None]:
+    """The sha256 of a repository's files at a commit (the fix after 0.1.17): a file of an install whose sum is not
+    known - Hugging Face hid it from a look without the token - has it asked before it comes."""
+    return {f["path"]: f["sha256"] for f in (await _tree(http, repo, token, revision))[0]}
 
 
 def file_url(repo: str, path: str, revision: str = "main") -> str:
