@@ -583,7 +583,7 @@ Item {
             x: 20
             y: 46
             width: parent.width - 40
-            height: Films.hasScenes ? 212 : 0
+            height: Films.hasScenes ? (Films.anyHeard ? 228 : 212) : 0
             visible: Films.hasScenes
             orientation: ListView.Horizontal
             spacing: 8
@@ -595,7 +595,7 @@ Item {
                 required property var modelData
                 objectName: "filmCard_" + card.modelData.n
                 width: 220
-                height: 204
+                height: Films.anyHeard ? 220 : 204
                 radius: 6
                 color: Theme.p.card
                 border.color: Films.shownScene === card.modelData.n ? Theme.p.accent : Theme.p.hairline
@@ -669,9 +669,24 @@ Item {
                     ToolTip.text: text
                     MouseArea { id: statusMouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                 }
+                Text {  // 53.15: what the listener heard in the scene's sound - its own, or the made one
+                    objectName: "filmHeard_" + card.modelData.n
+                    x: 10
+                    y: 168
+                    width: parent.width - 20
+                    visible: card.modelData.heard !== ""
+                    text: card.modelData.heard
+                    elide: Text.ElideRight
+                    color: card.modelData.heardBad ? Theme.p.error : Theme.p.faint
+                    font.family: Theme.uiFont
+                    font.pixelSize: 11
+                    ToolTip.visible: heardMouse.containsMouse
+                    ToolTip.text: card.modelData.heardHint
+                    MouseArea { id: heardMouse; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                }
                 Row {
                     x: 6
-                    y: 168
+                    y: Films.anyHeard ? 184 : 168
                     spacing: 2
                     IconButton {
                         objectName: "filmEdit_" + card.modelData.n

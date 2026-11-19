@@ -400,7 +400,8 @@ class FakeClient:
                       for part, name, about, size in (
                           ("voice", "Голос диктора", "Qwen3-TTS 1.7B: девять голосов", 2817055200),
                           ("music", "Музыка", "ACE-Step 1.5 turbo: музыка без слов по описанию", 6185468096),
-                          ("effects", "Звуки сцен", "MOSS-SoundEffect v2: звук сцены по описанию", 4001175520))],
+                          ("effects", "Звуки сцен", "MOSS-SoundEffect v2: звук сцены по описанию", 4001175520),
+                          ("listener", "Слушатель", "CED small: узнаёт, что слышно в звуке сцены", 86607904))],
             "voices": [{"id": "ryan", "name": "Райан — мужской"}, {"id": "serena", "name": "Серена — женский"}],
         }  # fmt: skip
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
@@ -11115,7 +11116,7 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
         studio = window.findChild(QObject, "studioView")
         window.grabWindow()
         click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
-        wait_until(lambda: not app.bg.busy and films.hasFilm and len(films.soundParts) == 3)
+        wait_until(lambda: not app.bg.busy and films.hasFilm and len(films.soundParts) == 4)
         director = item_named(studio, "directorView")
         window.grabWindow()
 
@@ -11343,6 +11344,111 @@ def test_the_directors_look_at_the_scenes_is_switched_by_a_click_and_said_in_the
         films.pick("f1")  # the film before: its own again
         window.grabWindow()
         assert films.checks and switch.property("checked")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_scenes_card_says_what_sounds_in_it_and_the_listener_is_fetched_as_a_part_of_sound(qapp, tmp_path):
+    """53.15: what the hub's listener heard in a scene's sound is a line of the scene's card - «Слышно: …»: the
+    sound the video model filmed; one that is not right - in the error's colour, with why, and the hint says it
+    will be made anew when the film is joined; a sound made in place of the scene's own says «звук заменён», the
+    hint - what the video model had filmed. With such a line the cards are a line taller, their buttons lower; a
+    film nothing was heard of has its cards as before. The listener is the fourth part in «Звук фильма…», fetched
+    by a click. Real QML, mouse clicks, no screen."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app = quick.controller
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX-2.3", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text", "picture", "frames"], "sound": True,
+                                 "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        media = app.paths.media / "2026-11"
+        media.mkdir(parents=True, exist_ok=True)
+        for job in ("j1", "j2", "j3", "j4"):
+            (media / f"{job}.webp").write_bytes(animated_clip(COLOURS))
+            (media / f"{job}.mp4").write_bytes(mjpeg_mp4(COLOURS))
+        took = {f"s{n}": {"job_id": f"j{n}", "clip": f"2026-11/j{n}.webp", "took": 80.0} for n in (1, 2, 3, 4)}
+        dull = "глухо, как из старого динамика: нет верхних частот"
+        heard = {"s1": {"own": {"job": "j1", "heard": "шум дождя", "bad": "", "mark": 5}},
+                 "s2": {"own": {"job": "j2", "heard": "музыка", "bad": "просили шаги, а слышна музыка", "mark": 0}},
+                 "s3": {"own": {"job": "j3", "heard": "дождь", "bad": dull, "mark": 4, "replaced": True},
+                        "made": {"file": "film-f1-fx-0123456789.wav", "heard": "дождь по крыше", "bad": "", "mark": 5,
+                                 "takes": 2}},
+                 "s4": {}}  # fmt: skip
+        scenes = film_scenes("done", "done", "done", "done", **{k: {**took[k], "heard": heard[k]} for k in took})
+        client.films_list = [{"id": "f1", "idea": "Ночной город под дождём", "seconds": 15, "shape": "wide",
+                              "photo": "", "director": "", "model_id": "", "status": "ready", "error": "", "file": "",
+                              "fade": 0.0, "tokens": 0, "cost_usd": 0.0, "checks": False, "checking": 0, "sound": True,
+                              "voice": "", "music": "", "music_words": "", "music_file": "",
+                              "scenes": scenes}]  # fmt: skip
+        for program in client.program_list:
+            program["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        films = app.film_view
+        app.visual_view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and films.available)
+        window = quick.window
+        studio = window.findChild(QObject, "studioView")
+        window.grabWindow()
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))
+        wait_until(lambda: not app.bg.busy and films.hasFilm and len(films.soundParts) == 4)
+        director = item_named(studio, "directorView")
+        window.grabWindow()
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        assert [(c["heard"], c["heardBad"]) for c in films.scenes] == [
+            ("Слышно: шум дождя", False), ("Слышно: музыка — не то: просили шаги, а слышна музыка", True),
+            ("Слышно: дождь по крыше · звук заменён", False), ("", False)]  # fmt: skip
+        assert "При сборке ролика звук сцены будет сделан заново" in films.scenes[1]["heardHint"]
+        assert f"Модель видео сняла: дождь — {dull}" in films.scenes[2]["heardHint"]
+        assert films.anyHeard
+        lines = [item_named(director, f"filmHeard_{n}") for n in (1, 2, 3)]
+        assert [line.property("visible") for line in lines] == [True, True, True]
+        assert lines[1].property("text") == "Слышно: музыка — не то: просили шаги, а слышна музыка"
+        assert lines[1].property("color") != lines[0].property("color")  # the error's colour
+        card, edit = item_named(director, "filmCard_2"), item_named(director, "filmEdit_2")
+        assert card.property("height") == 220 and edit.parentItem().property("y") == 184
+        assert lines[1].property("y") + lines[1].property("height") <= edit.parentItem().property("y")
+
+        # the made sound came out no better: the scene keeps its own, and the hint says so
+        heard["s2"]["own"]["replaced"] = False
+        client.films_list[0] = {**client.films_list[0], "scenes": film_scenes(
+            "done", "done", "done", "done", **{k: {**took[k], "heard": heard[k]} for k in took})}  # fmt: skip
+        app.on_event({"type": "film.changed", "payload": {"film": client.films_list[0]}})
+        window.grabWindow()
+        assert films.scenes[1]["heard"] == "Слышно: музыка — не то: просили шаги, а слышна музыка"
+        assert "оставлен звук модели видео" in films.scenes[1]["heardHint"]
+
+        # nothing heard - no listener: the cards as before the step
+        client.films_list[0] = {**client.films_list[0], "scenes": film_scenes("done", "done", "done", "done", **took)}
+        app.on_event({"type": "film.changed", "payload": {"film": client.films_list[0]}})
+        window.grabWindow()
+        assert not films.anyHeard and [c["heard"] for c in films.scenes] == [""] * 4
+        card, edit = item_named(director, "filmCard_2"), item_named(director, "filmEdit_2")
+        assert card.property("height") == 204 and edit.parentItem().property("y") == 168
+        assert not item_named(director, "filmHeard_1").property("visible")
+
+        click(window, item_named(director, "filmAdded"))  # «Звук фильма…»: the listener is its fourth part
+        sheet = window.findChild(QObject, "soundSheet")
+        wait_until(lambda: sheet.property("opened"))
+        window.grabWindow()
+        get = named("soundGet_listener")
+        assert get is not None and get.property("visible")
+        assert named("soundPart_listener") is not None
+        assert named("soundNote_listener").property("text").startswith("не установлено")
+        click(window, get)
+        wait_until(lambda: not app.bg.busy and client.sound_calls == [("install", "listener")])
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

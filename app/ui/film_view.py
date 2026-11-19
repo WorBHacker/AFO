@@ -418,8 +418,39 @@ class FilmView(QObject):
         path = self.app.paths.media / scene["clip"] if scene.get("clip") else None
         return path if path is not None and path.is_file() else None
 
+    @staticmethod
+    def _heard(scene: dict[str, Any]) -> tuple[str, str, bool]:
+        """What sounds in a scene, for its card (53.15): (the line, the whole of it for a hint, whether it is not
+        right). The hub's listener heard the sound the video model filmed (`own`) and the one the engine of sound
+        made (`made`); the made one is in the film where there was no own sound, or in place of one that was not
+        right (`replaced`). ('', '', False) - nothing was heard: no listener, a scene not filmed."""
+        heard = scene.get("heard") or {}
+        own, made = heard.get("own") or {}, heard.get("made") or {}
+        if not own and not made:
+            return "", "", False
+        if own and not own.get("replaced"):  # the scene's own sound is the film's
+            if not own.get("bad"):
+                line = tr("Слышно: {heard}", heard=own["heard"])
+                return line, line, False
+            line = tr("Слышно: {heard} — не то: {bad}", heard=own["heard"], bad=own["bad"])
+            if "replaced" not in own:
+                hint = tr("{line}. При сборке ролика звук сцены будет сделан заново.", line=line)
+            else:
+                hint = tr("{line}. Сделанный заново звук вышел не лучше — оставлен звук модели видео.", line=line)
+            return line, hint, True
+        line = tr("Слышно: {heard}", heard=made["heard"])
+        if made.get("bad"):
+            line = tr("Слышно: {heard} — не то: {bad}", heard=made["heard"], bad=made["bad"])
+        hint = line
+        if own:
+            line = tr("{line} · звук заменён", line=line)
+            hint = tr("{line}. Модель видео сняла: {heard} — {bad}. Звук сцены сделан заново.", line=hint,
+                      heard=own["heard"], bad=own["bad"])  # fmt: skip
+        return line, hint, bool(made.get("bad"))
+
     def _card(self, scene: dict[str, Any], fps: int) -> dict[str, Any]:
         status, clip = scene["status"], self._clip(scene)
+        heard, hint, amiss = self._heard(scene)
         seconds = (scene["frames"] - 1) / fps
         verdict, reason, tries = scene.get("verdict", ""), scene.get("reason", ""), scene.get("tries", 0)
         rejected = status == "done" and verdict == "reject"
@@ -448,6 +479,7 @@ class FilmView(QObject):
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
                 "failed": status == "failed" or rejected, "filmed": clip is not None,
                 "sound": scene.get("sound_words") or "", "say": scene.get("say") or "",
+                "heard": heard, "heardHint": hint, "heardBad": amiss,
                 "thumb": QUrl.fromLocalFile(str(still_of(clip))).toString() if clip is not None else "",
                 "shootText": tr("Переснять") if clip is not None else tr("Снять")}  # fmt: skip
 
@@ -461,6 +493,11 @@ class FilmView(QObject):
     @Property(list, notify=scenesChanged)
     def scenes(self) -> list:
         return self._cards
+
+    @Property(bool, notify=scenesChanged)
+    def anyHeard(self) -> bool:
+        """Whether a scene's card says what sounds in it (53.15): the cards are a line taller then."""
+        return any(card["heard"] for card in self._cards)
 
     @Slot(int, result=list)
     def sceneModes(self, n: int) -> list:
