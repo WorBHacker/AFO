@@ -283,6 +283,49 @@ def loudness(program: Path, source: Path, cut: str = "") -> float | None:
     return _measured(program, source, cut)[0]
 
 
+# (53.12) where a sound's energy lies: what is left of it above each of these frequencies, Hz
+BAND_CUTS = (100, 1000, 4000, 8000)
+SILENCE_DB = -70.0  # a sound quieter than this is none
+
+
+def bands(program: Path, source: Path, *, at: float | None = None,
+          seconds: float | None = None) -> dict[str, float] | None:  # fmt: skip
+    """Where the energy of a file's sound lies (53.12, blocking): {level - its mean volume, dB; low - the share of
+    its energy below 100 Hz, a rumble no ordinary loudspeaker gives; mid - of what is above 100 Hz, the share above
+    1 kHz; top - the share above 4 kHz; air - above 8 kHz}. `at`, `seconds` - of that piece of it alone. None - no
+    sound, silence, or it cannot be read. A sound as from a telephone has next to no `top` and no `air`; a hum has
+    no `mid` either (53.10: the video model's «rain» - top 0.05, air 0.01, its «thunder» - mid 0.01; the rain the
+    engine of sound makes - top 0.12-0.35, air 0.06-0.19). One run of ffmpeg: the sound split, each copy cut twice
+    below its frequency - a steep slope - and measured."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    piece = [] if at is None else ["-ss", f"{at:.3f}", "-t", f"{seconds or 0:.3f}"]
+    copies = "".join(f"[i{k}]" for k in range(len(BAND_CUTS) + 1))
+    graph = [f"[0:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=mono,asplit={len(BAND_CUTS) + 1}"
+             f"{copies}", "[i0]volumedetect[o0]"]  # fmt: skip
+    graph += [f"[i{k}]highpass=f={hz},highpass=f={hz},volumedetect[o{k}]" for k, hz in enumerate(BAND_CUTS, start=1)]
+    outs = [arg for k in range(len(BAND_CUTS) + 1) for arg in ("-map", f"[o{k}]", "-f", "null", "-")]
+    try:
+        done = subprocess.run([str(program), "-hide_banner", *piece, "-i", str(source), "-vn", "-filter_complex",
+                               ";".join(graph), *outs], capture_output=True, timeout=CONVERT_TIMEOUT_S,
+                              creationflags=flags, check=False)  # fmt: skip
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    said = (done.stderr or b"").decode("utf-8", "replace")
+    found = sorted((int(n), float(db)) for n, db in re.findall(
+        r"Parsed_volumedetect_(\d+)[^\n]*mean_volume: (-?[\d.]+) dB", said))  # fmt: skip
+    if len(found) != len(BAND_CUTS) + 1 or found[0][1] < SILENCE_DB:
+        return None
+    whole, heard, *above = (10 ** (db / 10) for _n, db in found)
+    mid, top, air = (min(1.0, part / heard) if heard else 0.0 for part in above)
+    return {"level": found[0][1], "low": max(0.0, 1 - heard / whole), "mid": mid, "top": top, "air": air}
+
+
+def sound_of(program: Path, source: Path, target: Path) -> None:
+    """A clip's sound alone, a WAV of 48 kHz mono (53.12, blocking): what the listener is given to hear."""
+    _written(program, ["-i", str(source), "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le",
+                       "-f", "wav"], target, N_("ffmpeg не взял звук клипа: {said}"))  # fmt: skip
+
+
 def _level(now: float | None, wanted: float) -> str:
     """The filter that brings a track of this mean volume to the one wanted; one that is silence, or unread, is left
     as it is."""

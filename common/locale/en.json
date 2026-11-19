@@ -155,6 +155,7 @@
  "[AFO: журнал достиг предела, дальше вывод не сохраняется]": "[AFO: the log reached its limit; further output is not saved]",
  "`{command}` в «{project}» → код {code}": "`{command}` in “{project}” → code {code}",
  "`{command}` → код {code}": "`{command}` → code {code}",
+ "ffmpeg не взял звук клипа: {said}": "ffmpeg could not take the clip's sound: {said}",
  "ffmpeg не взял кадры видео: {said}": "ffmpeg did not take the video's frames: {said}",
  "ffmpeg не взял первый кадр: {said}": "ffmpeg did not take the first frame: {said}",
  "ffmpeg не взял последний кадр: {said}": "ffmpeg did not take the last frame: {said}",

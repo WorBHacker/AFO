@@ -562,3 +562,53 @@ def test_the_bed_is_down_once_for_a_stretch_of_speech_not_at_every_word(tmp_path
     assert abs(between - word) < 1.0, (word, between)
     assert abs(_band(program, film, 1760, 5.0, 0.3) - word) < 1.0
     assert _band(program, film, 1760, 7.0, 1.5) > alone - 1.0  # the speech over: up again
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_where_a_sounds_energy_lies_is_measured_by_bands(tmp_path):
+    """53.12 - a real ffmpeg: the listener says what sounds, not that it sounds as from an old loudspeaker (53.10:
+    the video model's rain had next to nothing above 4 kHz, its thunder nothing above 800 Hz - and both passed for
+    rain). `bands` says where a sound's energy lies: the rumble below 100 Hz, and of the rest - how much is above
+    1 kHz, above 4 and above 8 kHz; of a piece of a film too; silence and a file without sound - None. A clip's
+    sound alone is taken as a WAV for the listener."""
+    program = Path(shutil.which("ffmpeg"))
+    quiet = [str(program), "-hide_banner", "-loglevel", "error", "-y"]
+
+    def made(name: str, source: str, chain: str = "anull") -> Path:
+        subprocess.run([*quiet, "-f", "lavfi", "-i", source, "-af", chain, "-ac", "1", str(tmp_path / name)],
+                       check=True, timeout=60)  # fmt: skip
+        return tmp_path / name
+
+    noise = "anoisesrc=color=white:sample_rate=48000:duration=3:amplitude=0.3:seed=5"
+    rain = ffmpeg.bands(program, made("rain.wav", noise))
+    assert rain["top"] > 0.7 and rain["mid"] > 0.9 and rain["low"] < 0.05 and -30 < rain["level"] < -5, rain
+    assert 0.5 < rain["air"] < rain["top"]
+    # the same through an old loudspeaker: nothing above 3 kHz
+    old = ffmpeg.bands(program, made("old.wav", noise, "lowpass=f=3000,lowpass=f=3000,lowpass=f=3000"))
+    assert old["top"] < 0.08 and old["air"] < 0.01 and old["mid"] > 0.4, old
+    hum = ffmpeg.bands(program, made("hum.wav", noise, "lowpass=f=500,lowpass=f=500,lowpass=f=500"))
+    assert hum["top"] < 0.01 and hum["mid"] < 0.1, hum
+    rumble = ffmpeg.bands(program, made("rumble.wav", "sine=frequency=40:sample_rate=48000:duration=3"))
+    assert rumble["low"] > 0.9, rumble
+    assert ffmpeg.bands(program, made("none.wav", "anullsrc=sample_rate=48000:duration=2")) is None
+
+    film = tmp_path / "film.mp4"  # a hum for two seconds, then the rain: each scene's stretch by itself
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=4", "-i",
+                    str(tmp_path / "hum.wav"), "-i", str(tmp_path / "rain.wav"), "-filter_complex",
+                    "[1:a]atrim=duration=2[a];[2:a]atrim=duration=2[b];[a][b]concat=n=2:v=0:a=1[s]", "-map", "0:v",
+                    "-map", "[s]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                    str(film)], check=True, timeout=60)  # fmt: skip
+    first, second = ffmpeg.bands(program, film, at=0.2, seconds=1.6), ffmpeg.bands(program, film, at=2.2, seconds=1.6)
+    assert first["mid"] < 0.1 and second["top"] > 0.6, (first, second)
+    silent = tmp_path / "silent.mp4"
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=1", "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", str(silent)], check=True, timeout=60)  # fmt: skip
+    assert ffmpeg.bands(program, silent) is None and ffmpeg.bands(program, tmp_path / "missing.wav") is None
+
+    wav = tmp_path / "heard.wav"
+    ffmpeg.sound_of(program, film, wav)
+    said = _said(program, "-i", str(wav))
+    assert "pcm_s16le" in said and "48000 Hz" in said and "mono" in said and not list(tmp_path.glob("*.part"))
+    with pytest.raises(EngineError, match="не взял звук клипа"):
+        ffmpeg.sound_of(program, silent, tmp_path / "no.wav")
+    assert not (tmp_path / "no.wav").exists()
