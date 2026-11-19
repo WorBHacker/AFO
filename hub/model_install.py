@@ -782,11 +782,14 @@ class Installer:
     # --- Hugging Face, cached ---
 
     def _load_answers(self) -> None:
-        """hf_answers.json into memory, with how old each answer is; anything odd in it is left out: only a memory."""
+        """hf_answers.json into memory, with how old each answer is; anything odd in it is left out: only a memory - an
+        answer that does not say whether Hugging Face hid its sums too (kept before the fix after 0.1.17: they may be
+        its asterisks, taken for sums)."""
         kept = kept_json.read(self._answers_file) if self._answers_file is not None else {}
         shift = time.time() - time.monotonic()  # the file's clock against this run's
         with contextlib.suppress(AttributeError, KeyError, TypeError):
-            repos = {key: (entry["at"] - shift, entry["found"]) for key, entry in kept.get("repos", {}).items()}
+            repos = {key: (entry["at"] - shift, entry["found"]) for key, entry in kept.get("repos", {}).items()
+                     if "hidden" in entry["found"]}  # fmt: skip
             headers = {(entry["repo"], entry["path"]): entry["info"] for entry in kept.get("headers", [])}
             self._repos, self._headers = repos, headers
 
@@ -882,7 +885,7 @@ class Installer:
         """A catalog's draft with its file as Hugging Face has it now - when it is DRAFT_RATIO times smaller than the
         model and its vocabulary the model's (42.3); None - not."""
         try:
-            listed = await self._listed(entry["repo"])
+            listed = await self._listed(entry["repo"], sums=True)  # the download checks its sum (_download_draft)
         except hf.HubError as exc:
             log.info("no draft %s: %s", entry["repo"], exc)
             return None
@@ -1293,10 +1296,12 @@ class Installer:
 
     # --- picture models (29.3) ---
 
-    async def _listed(self, repo: str) -> dict[str, Any]:
+    async def _listed(self, repo: str, *, sums: bool = False) -> dict[str, Any]:
+        """A repository's files as Hugging Face listed them (hf.files), kept; `sums` - their sha256 count: an answer
+        that hid them (given before the token came, the fix after 0.1.17) is asked again."""
         key = f"files:{repo}"
         kept = self._repos.get(key)
-        if kept:
+        if kept and not (sums and kept[1].get("hidden", True)):
             if time.monotonic() - kept[0] >= REPO_TTL_S:
                 self._renew(key, self._ask_files(repo))
             return kept[1]
@@ -1309,9 +1314,11 @@ class Installer:
         self._answers_new = True
         return found
 
-    async def picture_files(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
-        """A picture model's files as Hugging Face has them now: each with its repository, commit, size, sha256."""
-        found = {repo: await self._listed(repo) for repo in dict.fromkeys(f["repo"] for f in entry["files"])}
+    async def picture_files(self, entry: dict[str, Any], *, sums: bool = False) -> list[dict[str, Any]]:
+        """A picture model's files as Hugging Face has them now: each with its repository, commit, size, sha256
+        (`sums` - known where Hugging Face lets this token see them: _listed)."""
+        repos = dict.fromkeys(f["repo"] for f in entry["files"])
+        found = {repo: await self._listed(repo, sums=sums) for repo in repos}
         out = []
         for f in entry["files"]:
             listed = found[f["repo"]]["files"].get(f["path"])
@@ -1563,7 +1570,8 @@ class Installer:
             raise InstallError(tr("видео на этом компьютере — только в облаке: {why}", why=machine.get("why", "")))
         parts = {**entry, "files": [f for f in entry["files"] if f["role"] not in PICTURE_MAIN]}
         own, licence = (await self._found_main(entry, repo, quant)) if found_repo else ([], entry["license"])
-        files = [*own, *await self.picture_files(parts if own else entry)]
+        # the parts' sums: an install shares a part with the others by them (_share)
+        files = [*own, *await self.picture_files(parts if own else entry, sums=True)]
         if closed := await self._closed(files, fresh=True):  # nothing starts that would stop on it (after 0.1.16)
             raise InstallError(tr("{name}: {words}", name=f"{repo_name(repo)} {quant}" if own else entry["name"],
                                   words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip
@@ -1748,8 +1756,9 @@ class Installer:
         if state != "add":
             raise InstallError(tr("эта модель снимает без звука: добавить нечего"))
         family = next(e for e in sets if e["id"] == found["plan"]["set"])
-        extra = await self.picture_files({**family, "files": [f for f in family["files"]
-                                                              if f["role"] == visual.SOUND_ROLE]})  # fmt: skip
+        # its sum with the token (the fix after 0.1.17): the file is shared with the other installs by it (_share)
+        sound = {**family, "files": [f for f in family["files"] if f["role"] == visual.SOUND_ROLE]}
+        extra = await self.picture_files(sound, sums=True)
         if closed := await self._closed(extra, fresh=True):
             raise InstallError(tr("{name}: {words}", name=found["name"],
                                   words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip
@@ -2105,13 +2114,18 @@ class Installer:
     async def _fetch(self, found: dict[str, Any], f: dict[str, Any], dest: Path, base: int,
                      cancel: threading.Event) -> None:  # fmt: skip
         # a picture model's file names its repository and commit; the engine's archive is GitHub's (no token there)
-        url = f.get("url") or hf.file_url(f.get("repo") or found["repo"], f["path"], f.get("revision") or
-                                          found["revision"])  # fmt: skip
+        repo, revision = f.get("repo") or found["repo"], f.get("revision") or found["revision"]
+        url = f.get("url") or hf.file_url(repo, f["path"], revision)
         progress = hf.Progress()
         report = self._reporter(found["id"], base, found["total_bytes"])
         broken = 0
         for attempt in range(len(RETRIES_S) + 1):
             try:
+                if not f.get("url") and hf.sha256_of(f.get("sha256")) is None:
+                    # not known: Hugging Face hid it from a look without the token - 0.1.17 kept its asterisks (the fix
+                    # after 0.1.17). Asked at the file's commit with the token; kept with the file once it is down
+                    async with httpx.AsyncClient(timeout=30.0) as http:
+                        f["sha256"] = (await hf.sums(http, repo, revision, self.token())).get(f["path"])
                 await asyncio.to_thread(hf.download, url, dest, size=f["size"], sha256=f.get("sha256"),
                                         token=None if f.get("url") else self.token(), report=report, cancel=cancel,
                                         progress=progress)  # fmt: skip

@@ -7,6 +7,7 @@ One passed at first, six showed one part breaking another: each became a step of
 since its step."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import sqlite3
@@ -1711,8 +1712,8 @@ def test_a_found_video_model_at_the_cards_edge_is_not_called_fast(installs, qapp
     listed, real = installer._listed, {"distilled/film-distilled-Q4_0.gguf": model, "words-Q4_K_M.gguf": encoder,
                                        "split_files/vae/vae.safetensors": vae}  # fmt: skip
 
-    async def sized(repo):  # the stand's files are kilobytes: Hugging Face's sizes of the real ones
-        found = await listed(repo)
+    async def sized(repo, **how):  # the stand's files are kilobytes: Hugging Face's sizes of the real ones
+        found = await listed(repo, **how)
         return {**found, "files": {p: {**f, "size": real.get(p, f["size"])} for p, f in found["files"].items()}}
 
     monkeypatch.setattr(installer, "_listed", sized)
@@ -1812,6 +1813,69 @@ def test_a_part_closed_on_hugging_face_is_said_before_anything_downloads(install
         film = install_of(installs, "film-distilled")
         assert wait_for(installs, film["id"], "done", "failed")["status"] == "done"
         assert quick.warnings == []
+
+
+def test_a_sum_hidden_before_the_token_came_does_not_spoil_the_download(installs, monkeypatch):  # noqa: F811
+    """The user's complaint (2026-11-19, AFO 0.1.17): «LTX-2.5 UD-Q3_K_XL — не вышло: gemma4-12b-with-proj-ltx-2.5-
+    Q4_K_M.gguf: файл пришёл повреждённым (sha256 не совпал) — скачается заново» - four times in half an hour, after
+    8,4 GB twice each. Hugging Face lists a gated repository's files to one it does not let in with 64 asterisks in
+    place of each sha256; the hub had looked at the encoder's repository before the token came (AFO 0.1.16), kept the
+    answer in hf_answers.json, and the install and its «Повторить» checked the file against the asterisks. Now an answer
+    kept before is asked again, and a file whose sum is not known - in an install 0.1.17 made - has its sum asked at its
+    commit with the token before it comes: «Повторить» brings that file alone."""
+    from tests import test_model_install as tmi
+
+    closed, path = "someone/Closed-Words-GGUF", "closed-words-Q4_K_M.gguf"
+    encoder = {"role": "llm", "repo": closed, "path": path}  # LTX-2.5's Gemma 4 12B, as it lies
+    family = {**DISTILLED, "files": [DISTILLED["files"][0], encoder, DISTILLED["files"][2]]}
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    mi.CATALOG.write_text(json.dumps({**catalog, "pictures": [family]}), encoding="utf-8")
+    installer = installs.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installs.app.state.visual, "_machine", lambda: MACHINE)
+    monkeypatch.setattr(tmi, "SEARCH", [*tmi.SEARCH, FOUND_FILM])
+    token = {"now": None}  # «Подключения»: no Hugging Face token yet, as on the user's computer
+    monkeypatch.setattr(installer, "token", lambda: token["now"])
+    memory = {**tmi.SPACE["memory"], "commit_limit_gib": 80.0, "commit_used_gib": 20.0}
+    installs.app.state.status.latest = {**tmi.SPACE, "memory": memory}
+    real = hashlib.sha256(tmi.PICTURES[closed][path]).hexdigest()
+
+    # AFO 0.1.16 looked at the model without the token and kept what Hugging Face said as it said it: the asterisks
+    assert installs.get(f"/v1/install/pictures/repo/{FOUND_FILM['id']}").status_code == 200
+    file = data_paths().hf_answers
+    kept = json.loads(file.read_text(encoding="utf-8"))
+    for entry in kept["repos"].values():
+        entry["found"].pop("hidden", None)
+    for listed in kept["repos"][f"files:{closed}"]["found"]["files"].values():
+        listed["sha256"] = "*" * 64
+    file.write_text(json.dumps(kept), encoding="utf-8")
+    installer._repos.clear()
+    installer._load_answers()  # the update to 0.1.17: a new hub, the answers from the file
+
+    # the token of an account that accepted the terms: the install goes to the end, the encoder checked
+    token["now"] = "hf_good"
+    answer = installs.post("/v1/install/pictures", json={"id": "film-distilled", "repo": FOUND_FILM["id"],
+                                                         "quant": "Q4_0"})  # fmt: skip
+    assert answer.status_code == 200, answer.text
+    film = wait_for(installs, answer.json()["job"]["id"], "done", "failed")
+    assert film["status"] == "done", film["error"]
+    part = next(f for f in film["files"] if f["role"] == "llm")
+    assert part["sha256"] == real
+
+    # the install as 0.1.17 left it on the user's computer: the encoder's sum the asterisks, its file thrown away
+    model = Path(film["folder"]) / "distilled" / "film-distilled-Q4_0.gguf"
+    before = model.stat().st_mtime_ns
+    Path(part["at"]).unlink()
+    files = [{**f, "sha256": "*" * 64, "done": False} if f["role"] == "llm" else f for f in film["files"]]
+    said = f"{path}: файл пришёл повреждённым (sha256 не совпал) — скачается заново"
+    installs.app.state.db.call(lambda conn: mi._update(conn, film["id"], files=files, status="failed", error=said))
+    assert installs.post(f"/v1/install/jobs/{film['id']}/resume").status_code == 200  # «Повторить»
+    again = wait_for(installs, film["id"], "done", "failed")
+    assert again["status"] == "done", again["error"]
+    assert Path(part["at"]).read_bytes() == tmi.PICTURES[closed][path]
+    assert next(f for f in again["files"] if f["role"] == "llm")["sha256"] == real
+    assert model.stat().st_mtime_ns == before  # the model's 12 GB stayed: only the encoder came again
 
 
 @pytest.mark.filterwarnings("ignore:You should not use the .timeout. argument")  # the window's client

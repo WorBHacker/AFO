@@ -235,9 +235,13 @@ class FakeHub(BaseHTTPRequestHandler):
                 licence = [] if picture in BASES else ["license:apache-2.0"]  # leejet's FLUX.3 klein says none (47.9)
                 self._json({"id": picture, "sha": "def456", "tags": [*licence, *BASES.get(picture, [])],
                             **({"gated": "auto"} if picture in CLOSED else {})})  # fmt: skip
-            elif path == f"/api/models/{picture}/tree/main":
+            elif path.startswith(f"/api/models/{picture}/tree/"):  # at main or at a commit (the fix after 0.1.17)
+                # as Hugging Face lists a gated repository to one it does not let in (elix3r's, 2026-11-19): 64
+                # asterisks in place of each sha256
+                hidden = picture in CLOSED and self.headers.get("Authorization") != "Bearer hf_good"
                 self._json([{"type": "file", "path": name, "size": len(data),
-                             "lfs": {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}}
+                             "lfs": {"oid": "*" * 64 if hidden else hashlib.sha256(data).hexdigest(),
+                                     "size": len(data)}}
                             for name, data in files.items()])  # fmt: skip
             else:  # /<repo>/resolve/<commit>/<path>
                 FakeHub.picture_auth.append(self.headers.get("Authorization"))
@@ -390,6 +394,40 @@ def test_the_parameter_count_by_the_name_when_hugging_face_read_a_projector():
     assert hf.params_of({"id": "x/Qwen3-30B-A3B-GGUF", "gguf": {"total": 30_532_122_624}}) == 30_532_122_624
     assert hf.params_of({"id": "ggml-org/gemma-4-E4B-it-GGUF", "gguf": {"total": 7_518_000_000}}) == 7_518_000_000
     assert hf.params_of({"id": "x/SmolLM2-135M-GGUF"}) == 135_000_000 and hf.params_of({"id": "x/y"}) == 0
+
+
+def test_a_sum_hugging_face_hides_is_no_sum(fake_hub):
+    """The user's complaint (2026-11-19, AFO 0.1.17): LTX-2.5's encoder «файл пришёл повреждённым (sha256 не совпал)»
+    four times, after 8,4 GB twice each. Hugging Face lists a gated repository's files to one it does not let in with
+    64 asterisks in place of each sha256 (elix3r/gemma4-12b-with-proj-ltx-2.5-GGUF, looked at that day); the hub took
+    them for a sum and checked the file against them. Now a hidden sum is no sum, the answer says Hugging Face hid
+    them, and the sums of a repository's files at a commit are asked with the token."""
+    closed, path = "someone/Closed-Words-GGUF", "closed-words-Q4_K_M.gguf"
+    real = hashlib.sha256(PICTURES[closed][path]).hexdigest()
+
+    async def look(repo, token):
+        async with httpx.AsyncClient() as http:
+            return await hf.files(http, repo, token), await hf.repository(http, repo, token)
+
+    def sums(found):
+        return [f["sha256"] for v in found["variants"] for f in v["files"]]
+
+    listed, found = asyncio.run(look(closed, None))
+    assert listed["files"][path]["sha256"] is None and sums(found) == [None], "a hidden sum taken for one"
+    assert listed["hidden"] and found["hidden"]
+    listed, found = asyncio.run(look(closed, "hf_good"))
+    assert listed["files"][path]["sha256"] == real and sums(found) == [real]
+    assert not listed["hidden"] and not found["hidden"]
+    vae = "split_files/vae/vae.safetensors"
+    listed, _ = asyncio.run(look("test/Vae", None))  # a repository open to all: its sums to anyone
+    assert listed["files"][vae]["sha256"] == hashlib.sha256(PICTURES["test/Vae"][vae]).hexdigest()
+    assert not listed["hidden"]
+
+    async def at(token):
+        async with httpx.AsyncClient() as http:
+            return await hf.sums(http, closed, "def456", token)
+
+    assert asyncio.run(at("hf_good")) == {path: real} and asyncio.run(at(None)) == {path: None}
 
 
 def test_this_computer_against_a_model():
