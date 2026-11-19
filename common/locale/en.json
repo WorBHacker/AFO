@@ -139,7 +139,7 @@
  "PDF не читается ({error})": "the PDF cannot be read ({error})",
  "PDF пока не читается: нужен пакет pypdf. Сохраните документ как текст или .docx": "PDFs cannot be read yet: the pypdf package is needed. Save the document as text or .docx",
  "Python в папке задачи · {net} · до {seconds} с": "Python in the task's folder · {net} · up to {seconds} s",
- "Qwen3-TTS 1.7B: девять голосов, русский и ещё девять языков": "Qwen3-TTS 1.7B: nine voices, Russian and nine more languages",
+ "Qwen3-TTS 1.7B: читает голосом по образцу, девять голосов": "Qwen3-TTS 1.7B: reads in the voice of a sample, nine voices",
  "README соответствует коду; изменения перечислены": "the README matches the code; the changes are listed",
  "Strata накладывает на модель вектор, который убирает отказы отвечать. Выключено — обычная модель, как её выпустили: на некоторые темы может отказаться. «Как у модели» — включено. Модель не перезагружается; у новой задачи агента можно выбрать своё.": "Strata applies a vector to the model that removes its refusals to answer. Off — the ordinary model as it was released: it may refuse some topics. “Model default” — on. The model is not reloaded; a new agent task can choose its own.",
  "Strata убирает у модели отказы отвечать (abliterated).": "Strata removes the model's refusals to answer (abliterated).",

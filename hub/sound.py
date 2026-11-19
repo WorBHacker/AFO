@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import threading
 import wave
@@ -250,9 +251,24 @@ class Sound:
         return target
 
     async def speak(self, target: Path, cancel: asyncio.Event, *, text: str, voice: str) -> Path:
-        """A line read by a voice into `target` (WAV). Inside `working`."""
-        args = lambda b: audio_cpp.speak_args(self.models, b, text=text, voice=voice)  # noqa: E731
-        return await self._make("voice", target, cancel, args)
+        """A line read by a voice into `target` (WAV). Inside `working`. (53.8) A reading that came in another
+        voice than the clip's, or did not end by itself, is not the line: it is read again by the next seed,
+        `SAY_TAKES` times at most - the nearest to the voice is kept."""
+        takes: list[tuple[float, Path]] = []
+        try:
+            for n in range(audio_cpp.SAY_TAKES):
+                take = target.with_name(f"{target.stem}.take{n}{target.suffix}")
+                args = lambda b, n=n: audio_cpp.speak_args(self.models, b, text=text, voice=voice, take=n)  # noqa: E731
+                await self._make("voice", take, cancel, args)
+                takes.append((await asyncio.to_thread(audio_cpp.amiss, take, text=text, voice=voice), take))
+                if takes[-1][0] <= audio_cpp.PITCH_OFF:
+                    break
+            await asyncio.to_thread(os.replace, min(takes, key=lambda t: t[0])[1], target)
+        finally:
+            for _far, take in takes:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(take.unlink, True)
+        return target
 
     async def music(self, target: Path, cancel: asyncio.Event, *, words: str, seconds: float) -> Path:
         """Music without words by its description into `target` (WAV). Inside `working`."""

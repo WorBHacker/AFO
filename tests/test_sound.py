@@ -6,10 +6,13 @@ import asyncio
 import hashlib
 import io
 import json
+import math
 import shutil
+import struct
 import sys
 import threading
 import time
+import wave
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,6 +107,17 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
         monkeypatch.setitem(audio_cpp.PARTS, part, {**audio_cpp.PARTS[part], "size": len(data),
                                                     "sha256": hashlib.sha256(data).hexdigest()})  # fmt: skip
     monkeypatch.setattr(audio_cpp, "command", lambda _program: [sys.executable, str(CLI)])
+    clips = tmp_path / "voices"  # the voices' clips: the stand-in's own voice, a tone of 220 Hz
+    clips.mkdir()
+    for voice in audio_cpp.VOICES:
+        with wave.open(str(clips / f"{voice}.wav"), "wb") as clip:
+            clip.setnchannels(1)
+            clip.setsampwidth(2)
+            clip.setframerate(24000)
+            clip.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * 220 * n / 24000)))
+                                      for n in range(24000)))  # fmt: skip
+    monkeypatch.setattr(audio_cpp, "VOICE_CLIPS", clips)
+    audio_cpp.voice_pitch.cache_clear()
     log = tmp_path / "engine.jsonl"
     monkeypatch.setenv("FAKE_AUDIO_LOG", str(log))
     monkeypatch.setattr(sound, "TICK_S", 0.05)
@@ -138,7 +152,7 @@ def install(hub, *names):  # noqa: F811
         assert wait_part(hub, name, "ready", "missing")["state"] == "ready", name
 
 
-def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card(stand, tmp_path):
+def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card(stand, tmp_path, monkeypatch):
     """53.2: «Скачать» fetches the engine's build for this computer (the sha256 GitHub gives checked, its archives
     not kept) and the part's model (pinned by size and sha256); the window is told as it goes. A piece is made by
     the program - a real process - while the hub holds the card from local chats, the models llama-swap held
@@ -181,10 +195,35 @@ def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card
     asked = hub.asked()[-1]
     assert (asked["family"], asked["text"], asked["voice"], asked["language"], asked["backend"]) == (
         "qwen3_tts", "Привет, это диктор «АФО»", "serena", "Russian", "cuda")  # fmt: skip
+    assert (asked["alone"], asked["seed"]) == ("true", "7")  # by the voice's clip, its voice alone; the first take
     assert Path(asked["model"]) == audio_cpp.model_file(service.models, "voice")
     assert Path(asked["cwd"]) == program.parent  # the program's own folder: its model_specs lie there
     assert sound.seconds_of(target) == pytest.approx(len("Привет, это диктор «АФО»") / 12, abs=0.01)
     assert [p.name for p in tmp_path.glob("line*")] == ["line.wav"]
+
+    # (53.8) a reading in another voice is not the line: read again by the next seed, the take in the clip's
+    # voice kept; three takes at most - then the nearest; one that went on to the end of its tokens is not kept
+    def said(env, value, text):
+        monkeypatch.setenv(env, str(len([a for a in hub.asked() if a["family"] == "qwen3_tts"]) + value))
+        before = len(hub.asked())
+        path = tmp_path / f"{env}-{value}.wav"
+
+        async def line():
+            cancel = asyncio.Event()
+            async with service.working(cancel):
+                return await service.speak(path, cancel, text=text, voice="ryan")
+
+        hub.portal.call(line)
+        monkeypatch.delenv(env)
+        return path, [a["seed"] for a in hub.asked()[before:]]
+
+    path, seeds = said("FAKE_AUDIO_HIGH", 2, "Утро в горах.")
+    assert seeds == ["7", "8", "9"] and audio_cpp.pitch_of(path) == pytest.approx(220, rel=0.05)
+    path, seeds = said("FAKE_AUDIO_HIGH", 5, "Утро в горах.")
+    assert seeds == ["7", "8", "9"] and audio_cpp.pitch_of(path) == pytest.approx(330, rel=0.08)  # none held
+    path, seeds = said("FAKE_AUDIO_LONG", 1, "Утро в горах.")
+    assert seeds == ["7", "8"] and sound.seconds_of(path) == pytest.approx(len("Утро в горах.") / 12, abs=0.01)
+    assert not list(tmp_path.glob("*.take*")) and card.holder == ""
 
     async def music():
         cancel = asyncio.Event()

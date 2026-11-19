@@ -8,7 +8,8 @@ driver - its runtime is a second archive), else the processor's. The Vulkan buil
 <app>/tools/audio.cpp/<tag>-<build>.
 
 The models are single GGUF files of audio-cpp/audio.cpp-gguf on Hugging Face, pinned by size and sha256 (`PARTS`):
-the voice (Qwen3-TTS 1.7B CustomVoice: nine voices, Russian among its ten languages), music (ACE-Step 1.5 turbo),
+the voice (Qwen3-TTS 1.7B Base: it reads by a clip of a voice - nine clips lie beside this module, `VOICE_CLIPS`;
+Russian among its ten languages), music (ACE-Step 1.5 turbo),
 sound effects (MOSS-SoundEffect v2). Measured on an RTX 5080: 12 s of speech in 3-5 s and 2.3-3.5 GB of the card
 (15 s on the processor alone), 20 s of music in 8 s and 9.8 GB, 10 s of a sound effect in 15 s and 5.4 GB - none of
 them fits beside a video model, so the hub unloads the models first (hub/sound.py).
@@ -17,13 +18,18 @@ them fits beside a video model, so the hub unloads the models first (hub/sound.p
 from __future__ import annotations
 
 import contextlib
+import functools
+import math
 import re
 import shutil
+import statistics
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import wave
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -48,9 +54,9 @@ MODELS = "audio-cpp/audio.cpp-gguf"  # the repository on Hugging Face
 REVISION = "32c1ce1fea57a513eb9386aa62408d47b1cf7ab2"  # as it was on 2026-11-19: the files measured in 53.1
 PARTS: dict[str, dict[str, Any]] = {
     "voice": {
-        "name": N_("Голос диктора"), "about": N_("Qwen3-TTS 1.7B: девять голосов, русский и ещё девять языков"),
-        "path": "Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF/qwen3-tts-12hz-1.7b-customvoice-q8_0.gguf",
-        "size": 2817055200, "sha256": "c8ac3f94b6e73f137c0e7ecc9270bc8faec7a476ff799b87e48844d1d0987ac3",
+        "name": N_("Голос диктора"), "about": N_("Qwen3-TTS 1.7B: читает голосом по образцу, девять голосов"),
+        "path": "Qwen3-TTS-12Hz-1.7B-Base-GGUF/qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+        "size": 2695186240, "sha256": "92641a8022d521efd79a5db45e952589b3f2b781680f9abfcf26f075d37b86c6",
         "family": "qwen3_tts", "licence": "Apache-2.0",
     },
     "music": {
@@ -66,7 +72,13 @@ PARTS: dict[str, dict[str, Any]] = {
         "family": "moss_soundeffect", "licence": "Apache-2.0",
     },
 }  # fmt: skip
-# the voices of the CustomVoice checkpoint (the program's own list, 53.1); whose they are - by the model's card
+# The narrator's voices. Each is a clip beside this module (voices/<id>.wav, 7-12 s of Russian, 24 kHz mono): the
+# model reads a line by the clip's voice. (53.8, the user's ear: «говорят несколько голосов») The model with the
+# voices built in (CustomVoice) did not hold a voice from one short Russian line to the next - a man's «ryan» came
+# at 109, 114, 153 and 240 Hz in one film, and so with all nine; neither the seed, nor a low temperature, nor a
+# style instruction, nor the whole text at once helped. By one clip the same lines come at 104-136 Hz. The clips are
+# that model's own takes - the steadiest of five of each voice, its words checked by a recogniser.
+VOICE_CLIPS = Path(__file__).with_name("voices")
 VOICES: dict[str, str] = {
     "ryan": N_("Райан — мужской"), "aiden": N_("Эйден — мужской"), "eric": N_("Эрик — мужской"),
     "dylan": N_("Дилан — мужской"), "uncle_fu": N_("Дядя Фу — мужской, низкий"),
@@ -77,6 +89,10 @@ SPEECH_CPS = 12.0  # characters of Russian a second the voices read (53.1: 148 i
 EFFECT_S = (0.1, 30.0)  # a sound effect's length, as the model takes it
 MUSIC_S = (5.0, 240.0)  # music asked for at once
 SEED = 7  # the same words give the same sound: a piece made is kept and not made twice
+SAY_TAKES = 3  # a line that came in another voice, or far too long, is read again - by the next seed
+PITCH_OFF = 0.25  # how far a line's pitch may be from its voice's clip
+SAY_LONG = (3.0, 1.5)  # a line is too long past this many times its text's time, and these seconds more
+CODEC_HZ = 12.5  # the voice model's speech tokens a second
 RUN_TIMEOUT_S = 900.0
 _METRIC = re.compile(r"^metrics\.([a-z_.]+)=([-0-9.eE]+)\s*$", re.M)
 
@@ -216,12 +232,83 @@ def language_of(text: str) -> str:
     return "Russian" if re.search("[а-яё]", text.lower()) else ""  # i18n: keep
 
 
-def speak_args(models: Path, backend: str, *, text: str, voice: str) -> list[str]:
-    """A line read by one of the model's voices - a WAV of 24 kHz, mono."""
+def voice_clip(voice: str) -> Path:
+    """The clip a voice reads by; a voice not known - the first one's."""
+    return VOICE_CLIPS / f"{voice if voice in VOICES else next(iter(VOICES))}.wav"
+
+
+def say_seconds(text: str) -> float:
+    """The longest a line of this text may be: the model, lost, goes on to the end of its tokens - eleven minutes
+    of sound for three words (53.8, seen with a low temperature)."""
+    return SAY_LONG[0] * len(text) / SPEECH_CPS + SAY_LONG[1]
+
+
+def speak_args(models: Path, backend: str, *, text: str, voice: str, take: int = 0) -> list[str]:
+    """A line read by a voice's clip - a WAV of 24 kHz, mono. The clip gives the voice alone (its words are not
+    the model's business: `x_vector_only_mode`); `take` - which reading it is: another seed."""
     named = language_of(text)
-    return ["--task", "tts", *_model(models, "voice", backend), "--text", text, "--request-option",
-            f"voice_id={voice if voice in VOICES else next(iter(VOICES))}", *(["--language", named] if named else []),
-            "--seed", str(SEED)]  # fmt: skip
+    return ["--task", "tts", *_model(models, "voice", backend), "--text", text, "--voice-ref",
+            str(voice_clip(voice)), "--request-option", "x_vector_only_mode=true",
+            *(["--language", named] if named else []), "--seed", str(SEED + take), "--max-tokens",
+            str(math.ceil(CODEC_HZ * say_seconds(text)))]  # fmt: skip
+
+
+def pitch_of(path: Path, most_s: float = 8.0) -> float | None:
+    """The pitch of the voice in a WAV, Hz (blocking, about a second): the median over its voiced pieces of 40 ms,
+    each by autocorrelation between 60 and 400 Hz, the sound taken down to 6 kHz. None - no voice is found."""
+    try:
+        with wave.open(str(path), "rb") as sound:
+            rate, channels, width = sound.getframerate(), sound.getnchannels(), sound.getsampwidth()
+            raw = sound.readframes(min(sound.getnframes(), int(most_s * rate)))
+    except OSError, wave.Error, EOFError:
+        return None
+    if width != 2 or not raw:
+        return None
+    samples = struct.unpack(f"<{len(raw) // 2}h", raw)[::channels]
+    down = max(1, rate // 6000)
+    low = [sum(samples[at : at + down]) / down for at in range(0, len(samples) - down + 1, down)]
+    rate //= down
+    size, hop, first, last = int(0.04 * rate), int(0.02 * rate), rate // 400, rate // 60
+    if len(low) < size + last:
+        return None
+    loud = 0.25 * sum(v * v for v in low) / len(low)  # half the whole's volume, squared
+    found = []
+    for at in range(0, len(low) - size - last, hop):
+        frame = low[at : at + size]
+        power = sum(v * v for v in frame)
+        if power / size < loud:
+            continue
+        near = [sum(a * b for a, b in zip(frame, low[at + n : at + n + size], strict=True))
+                for n in range(first, last + 1)]  # fmt: skip
+        best = max(near)
+        if best <= 0:
+            continue
+        # the shortest period that is as good as the best: two and three periods of a steady sound are as good too
+        lag = first + next(k for k, value in enumerate(near) if value >= 0.9 * best)
+        other = sum(v * v for v in low[at + lag : at + lag + size])
+        if best > 0.5 * math.sqrt(power * other):  # as periodic as a vowel is
+            found.append(rate / lag)
+    return statistics.median(found) if len(found) >= 3 else None
+
+
+@functools.lru_cache(maxsize=32)
+def voice_pitch(voice: str) -> float | None:
+    """The pitch of a voice's clip (blocking the first time)."""
+    return pitch_of(voice_clip(voice))
+
+
+def amiss(path: Path, *, text: str, voice: str) -> float:
+    """How far a line read is from what it should be (blocking): 0 - its voice's pitch exactly; over PITCH_OFF -
+    another voice; 1 and more - far too long, or no voice in it at all."""
+    try:
+        with wave.open(str(path), "rb") as sound:
+            seconds = sound.getnframes() / sound.getframerate()
+    except OSError, wave.Error, EOFError:
+        return 2.0
+    usual, now = voice_pitch(voice), pitch_of(path)
+    if now is None or seconds >= say_seconds(text) - 0.2:  # at the end of its tokens: it did not stop by itself
+        return 1.0 + (0.0 if now is None or not usual else abs(now / usual - 1))
+    return abs(now / usual - 1) if usual else 0.0
 
 
 def music_args(models: Path, backend: str, *, words: str, seconds: float) -> list[str]:

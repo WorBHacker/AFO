@@ -1009,8 +1009,9 @@ class Director:
                 todo.append((path, make))
             return path
 
+        # "clip": read by the voice's clip (53.8) - a line read before that, by the model's own voices, is not kept
         said = [(place("say", lambda p, t=text: self._sound.speak(p, stop, text=t, voice=plan["voice"]),
-                       plan["voice"], text), at) for at, text in plan["lines"]]  # fmt: skip
+                       "clip", plan["voice"], text), at) for at, text in plan["lines"]]  # fmt: skip
         heard = [(place("fx", lambda p, w=words, n=length: self._sound.effect(p, stop, words=w, seconds=n),
                         words, round(length, 2)), at, length) for at, words, length in plan["effects"]]  # fmt: skip
         music = plan["music"]
