@@ -14,6 +14,12 @@ own limits. A look that does not come out stops no film.
 
 Sound (stage 52): a film whose video model films with sound (hub/visual.py) has its own switch; the director is
 asked what is heard in each scene, a scene is filmed with it, and the joined film keeps the scenes' sound.
+
+Added sound (stage 53; hub/sound.py): a film may have a narrator (`voice`: the director writes each scene's line,
+`say`), music (`music`: made by its description, or the user's own file) and - for scenes filmed without sound -
+the scenes' sounds made by their descriptions. They are made when the film is joined, each piece kept as a file
+beside the film (film-<id>-say-…, -music-…, -fx-…) and made anew only when its words change, and mixed into the
+joined MP4: the narrator's line at the beginning of its scene, the rest quieter under it (`ffmpeg.dub`).
 """
 
 from __future__ import annotations
@@ -21,8 +27,10 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
+import shutil
 import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
@@ -33,11 +41,11 @@ from typing import Any
 from common.i18n import N_, tr
 from common.picture_sizes import SECONDS, frames_for, scene_modes
 
-from . import ffmpeg, model_settings, visual
+from . import audio_cpp, ffmpeg, model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
-from .sound import Sound
+from .sound import Sound, SoundError, seconds_of
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +56,7 @@ FILM_S = (5, int(SCENES[1] * SCENE_S[1]))  # a film's length, seconds
 FADE_S = (0.0, 1.0)  # a cross-fade at each joint of the joined film
 NEAR = 0.2  # a storyboard this far from the length asked is asked again, once
 WRITE_TIMEOUT_S = 180.0  # one answer of the director's
-TEXT_CHARS = {"prompt": 2000, "words": 400}
+TEXT_CHARS = {"prompt": 2000, "words": 400, "say": 400}
 SYSTEM = """You are the director of a short product video. You get an idea, the length of the film and - when one is \
 attached - a photo of the product. Write the storyboard: the scenes in order. A video model films each scene from \
 your prompt, a few seconds each; the scenes are then joined into one film.
@@ -71,9 +79,9 @@ alone stays a still picture.
 - Something must visibly move in every scene. Do not write "static" or "still" in a scene whose subject moves: \
 the camera follows, tracks or holds on the subject.
 - "words": one short sentence saying what happens in the scene, in the language of the idea - the user reads it.
-{sound}- Keep the product the same from scene to scene: the same thing, the same colours, the same place unless \
-the idea moves it.
-
+{sound}{say}- Keep the product the same from scene to scene: the same thing, the same colours, the same place \
+unless the idea moves it.
+{music}
 Answer with the JSON object only: {form}"""  # i18n: keep
 MODE_WORDS = {
     "picture": '- "picture": the scene begins with the product\'s photo as its first frame - the product itself, as '
@@ -88,14 +96,28 @@ MODE_WORDS = {
 SOUND_RULE = ('- "sound": English, one short sentence: what is heard in the scene - the place\'s own sounds, the '
               "product's, what moves in it. No music and no speech unless the idea asks for them. The video model "
               "films the scene with this sound.\n")  # fmt: skip
-FORM = ('{{"scenes": [{{"mode": {modes}, "seconds": <number>, "words": "...", "prompt": "..."{sound}}}, ...]}} - '
-        "{seconds} seconds in all")  # fmt: skip
+# (53.3) asked of a film with a narrator: the line read while the scene goes
+SAY_CPS = 11  # characters a second a line may have: the voices read 12-14 (53.1) - a breath is left
+SAY_RULE = ('- "say": the narrator\'s line read while the scene goes, in the language of the idea - a voice-over that '
+            "sells, not a description of the picture; at most {cps} characters for each second of the scene (a scene "
+            'of 3 seconds - {three} characters); "" for a scene the narrator is silent in. The lines together are one '
+            "short text that makes sense heard without the picture.\n")  # fmt: skip
+# (53.4) asked of a film whose music is made
+MUSIC_RULE = ('\nThe storyboard also names the film\'s music - "music": English, one sentence: the genre, the '
+              "instruments, the mood, the tempo; no vocals.\n")  # fmt: skip
+FORM = ('{{"scenes": [{{"mode": {modes}, "seconds": <number>, "words": "...", "prompt": "..."{sound}{say}}}, ...]'
+        "{music}}} - {seconds} seconds in all")  # fmt: skip
+MUSIC = ("", "made", "file")  # films.music: none, made by its description, the user's own file
+MUSIC_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")
+MUSIC_BYTES = 200 << 20
+SAY_GAP_S = (0.15, 0.25)  # a line begins this long after its scene does, and this long after the line before ends
 SHAPES = ("wide", "tall", "square")
 MODES = ("text", "picture", "continue", "frames")  # how a scene begins: film_scenes.mode
 FILM_FIELDS = ("idea", "seconds", "shape", "photo", "director", "model_id", "status", "error", "file", "fade",
-               "tokens", "cost_usd", "checks", "checking", "sound")  # fmt: skip
+               "tokens", "cost_usd", "checks", "checking", "sound", "voice", "music", "music_words",
+               "music_file")  # fmt: skip
 SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error", "cfg", "tries", "verdict",
-                "reason", "sound_words")  # fmt: skip
+                "reason", "sound_words", "say")  # fmt: skip
 UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the look has said nothing of (51.1)
 
 
@@ -123,15 +145,16 @@ def films(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def new_film(conn: sqlite3.Connection, *, idea: str, seconds: int, shape: str = "wide", photo: str = "",
-             director: str = "", model_id: str = "", checks: bool = True,
-             sound: bool = True) -> dict[str, Any]:  # fmt: skip
+             director: str = "", model_id: str = "", checks: bool = True, sound: bool = True, voice: str = "",
+             music: str = "", music_words: str = "") -> dict[str, Any]:  # fmt: skip
     """A film begun: a draft, no scenes yet. `checks` (51.1) - its scenes are looked at once filmed; `sound` (52.6)
-    - they are filmed with sound, when the video model films it."""
+    - they are filmed with sound, when the video model films it; `voice` (53.3) - the narrator's, '' - none;
+    `music` (53.4) - '' none, 'made' by `music_words`."""
     film_id = uuid.uuid4().hex[:12]
     conn.execute(
-        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id, checks, sound) VALUES (?, ?, ?, ?, "
-        "?, ?, ?, ?, ?)",
-        (film_id, idea, seconds, shape, photo, director, model_id, int(checks), int(sound)),
+        "INSERT INTO films (id, idea, seconds, shape, photo, director, model_id, checks, sound, voice, music, "
+        "music_words) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (film_id, idea, seconds, shape, photo, director, model_id, int(checks), int(sound), voice, music, music_words),
     )
     return film(conn, film_id)
 
@@ -149,10 +172,10 @@ def set_scenes(conn: sqlite3.Connection, film_id: str, scenes: list[dict[str, An
     of them filmed yet."""
     conn.execute("DELETE FROM film_scenes WHERE film_id = ?", (film_id,))
     conn.executemany(
-        "INSERT INTO film_scenes (film_id, n, mode, words, prompt, frames, seed, sound_words) VALUES (?, ?, ?, ?, ?, "
-        "?, ?, ?)",
+        "INSERT INTO film_scenes (film_id, n, mode, words, prompt, frames, seed, sound_words, say) VALUES (?, ?, ?, ?, "
+        "?, ?, ?, ?, ?)",
         [(film_id, n, s["mode"], s.get("words", ""), s["prompt"], int(s["frames"]), s.get("seed"),
-          s.get("sound_words", "")) for n, s in enumerate(scenes, start=1)],
+          s.get("sound_words", ""), s.get("say", "")) for n, s in enumerate(scenes, start=1)],
     )  # fmt: skip
     conn.execute("UPDATE films SET updated_at = ? WHERE id = ?", (utc_now(), film_id))
 
@@ -185,15 +208,19 @@ def role_model(conn: sqlite3.Connection) -> str | None:
     return roles.get(ROLE) or None
 
 
-def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool, *,
-             sound: bool = False) -> tuple[str, str, str]:  # fmt: skip
+def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool, *, sound: bool = False,
+             say: bool = False, music: bool = False) -> tuple[str, str, str]:  # fmt: skip
     """What the director is asked: (system, prompt, form) - the form is said again when the answer is not it.
-    `sound` (52.6) - the film is filmed with sound: what is heard in each scene is asked too."""
+    `sound` (52.6) - the film is filmed with sound: what is heard in each scene is asked too; `say` (53.3) - the
+    film has a narrator: each scene's line; `music` (53.4) - its music is made: what music."""
     can = scene_modes(modes, photo)
     form = FORM.format(modes=" | ".join(f'"{m}"' for m in can), seconds=seconds,
-                       sound=', "sound": "..."' if sound else "")  # fmt: skip
+                       sound=', "sound": "..."' if sound else "", say=', "say": "..."' if say else "",
+                       music=', "music": "..."' if music else "")  # fmt: skip
     system = SYSTEM.format(modes="\n".join(MODE_WORDS[m] for m in can), low=SCENE_S[0], high=SCENE_S[1], form=form,
-                           sound=SOUND_RULE if sound else "")  # fmt: skip
+                           sound=SOUND_RULE if sound else "",
+                           say=SAY_RULE.format(cps=SAY_CPS, three=3 * SAY_CPS) if say else "",
+                           music=MUSIC_RULE if music else "")  # fmt: skip
     frame = {"wide": "wide (landscape)", "tall": "tall (portrait, for a phone)", "square": "square"}[shape]
     prompt = (f"<idea>\n{idea}\n</idea>\nThe film: {seconds} seconds, {frame}. "
               + ("The product's photo is attached." if photo else "There is no photo of the product.")
@@ -201,10 +228,11 @@ def question(idea: str, seconds: int, shape: str, modes: list[str], photo: bool,
     return system, prompt, form
 
 
-def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int,
-           sound: bool = False) -> Callable[[str], dict | None]:  # fmt: skip
+def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int, sound: bool = False,
+           say: bool = False, music: bool = False) -> Callable[[str], dict | None]:  # fmt: skip
     """What reads the director's answer: {scenes: [{mode, words, prompt, frames, sound_words - what is heard, of a
-    film with sound (52.6), else ''}], notes} - a scene's seconds into
+    film with sound (52.6), else '', say - the narrator's line, of a film with one (53.3), else ''}], music_words -
+    of a film whose music is made (53.4), notes} - a scene's seconds into
     the frames the family's VAE takes (`clip`: fps, step), its length within a scene's, a mode this film cannot
     film put right; None - no storyboard, asked again: no JSON, no scenes or too many, a scene with no prompt, and -
     the first time only - a length far from the one asked (the second is taken as it is, and said)."""
@@ -238,16 +266,18 @@ def reader(*, clip: dict[str, Any], modes: list[str], photo: bool, seconds: int,
             length = min(SCENE_S[1], max(SCENE_S[0], length or SCENE_S[1]))
             words = " ".join(str(item.get("words") or "").split()) or prompt
             heard = " ".join(str(item.get("sound") or "").split())[: visual.SOUND_WORDS] if sound else ""
+            line = " ".join(str(item.get("say") or "").split())[: TEXT_CHARS["say"]] if say else ""
             scenes.append({"mode": mode_of(str(item.get("mode") or ""), not scenes),
                            "words": words[: TEXT_CHARS["words"]], "prompt": prompt[: TEXT_CHARS["prompt"]],
-                           "frames": frames_for(length, fps, step), "sound_words": heard})  # fmt: skip
+                           "frames": frames_for(length, fps, step), "sound_words": heard, "say": line})  # fmt: skip
         got = sum(s["frames"] - 1 for s in scenes) / fps
         notes = []
         if abs(got - seconds) > seconds * NEAR:
             if tries[0] == 1:
                 return None
             notes.append(tr("сценарий вышел на {got} с вместо {asked} с", got=round(got), asked=seconds))
-        return {"scenes": scenes, "notes": notes}
+        tune = " ".join(str(data.get("music") or "").split())[: visual.SOUND_WORDS] if music else ""
+        return {"scenes": scenes, "notes": notes, "music_words": tune}
 
     return read
 
@@ -467,25 +497,66 @@ class Director:
                     path.unlink()
 
     async def create(self, spec: dict[str, Any]) -> dict[str, Any]:
-        """A film begun (50.8): {idea, seconds, shape, director, model, checks, sound} and the product's photo, if
-        there is one (`_picture`). A draft, no scenes yet."""
+        """A film begun (50.8): {idea, seconds, shape, director, model, checks, sound, voice, music, music_words}
+        and the product's photo, if there is one (`_picture`). A draft, no scenes yet."""
         idea = str(spec.get("idea") or "").strip()
         if not idea:
             raise DirectorError(tr("нужна идея ролика: о чём он"), 422)
+        added = self._added(spec)
+        if added.get("music") == "file":
+            raise DirectorError(tr("свой файл музыки добавляется к начатому фильму"), 422)
         photo = await self._picture(spec)
         made = await self._db.acall(lambda conn: new_film(
             conn, idea=idea, seconds=int(spec.get("seconds") or 15), shape=str(spec.get("shape") or "wide"),
             director=str(spec.get("director") or ""), model_id=str(spec.get("model") or ""),
-            checks=spec.get("checks") is not False, sound=spec.get("sound") is not False))  # fmt: skip
+            checks=spec.get("checks") is not False, sound=spec.get("sound") is not False, **added))  # fmt: skip
         kept = {"photo": await self._keep_photo(made["id"], photo)} if photo is not None else {}
         return await self._changed(made["id"], **kept)
+
+    @staticmethod
+    def _added(spec: dict[str, Any]) -> dict[str, Any]:
+        """The added sound a request names (53.3, 53.4): the narrator's voice ('' - none), the music's kind and
+        its description."""
+        fields: dict[str, Any] = {}
+        if (voice := spec.get("voice")) is not None:
+            if voice and voice not in audio_cpp.VOICES:
+                raise DirectorError(tr("нет такого голоса диктора"), 422)
+            fields["voice"] = str(voice)
+        if (music := spec.get("music")) is not None:
+            if music not in MUSIC:
+                raise DirectorError(tr("музыка — «нет», «по описанию» или «свой файл»"), 422)
+            fields["music"] = music
+        if spec.get("music_words") is not None:
+            fields["music_words"] = " ".join(str(spec["music_words"]).split())[: visual.SOUND_WORDS]
+        return fields
+
+    async def _keep_music(self, film_id: str, path: str) -> str:
+        """The user's own music, a file on this computer, copied beside the film (53.4): film-<id>-own-<x>.<ext>."""
+        source = Path(path)
+        if source.suffix.lower() not in MUSIC_FILES or not await asyncio.to_thread(source.is_file):
+            raise DirectorError(tr("файл музыки не найден или это не звук: {formats}",
+                                   formats=", ".join(f[1:] for f in MUSIC_FILES)), 422)  # fmt: skip
+        if (await asyncio.to_thread(source.stat)).st_size > MUSIC_BYTES:
+            raise DirectorError(tr("файл музыки больше {mb} МБ", mb=MUSIC_BYTES >> 20), 413)
+        name = f"{datetime.now(UTC):%Y-%m}/film-{film_id}-own-{uuid.uuid4().hex[:6]}{source.suffix.lower()}"
+        await asyncio.to_thread((self.media / name).parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copyfile, source, self.media / name)
+        return name
 
     async def change(self, film_id: str, spec: dict[str, Any]) -> dict[str, Any]:
         """The film's own changed (50.8) - only what `spec` names: idea, seconds, shape, director, model, fade, checks
         (51.1: whether its scenes are looked at), the photo (as `create` takes one; `photo: ""` - none). Another
-        shape, photo or video model - the scenes filmed are of the film as it was: stale, the joined file forgotten."""
+        shape, photo or video model - the scenes filmed are of the film as it was: stale, the joined file forgotten.
+        Its added sound (53.3, 53.4): voice, music, music_words, music_path - the user's own file, copied beside
+        the film; another of them - the joined file is of the film as it sounded: forgotten, the scenes stay."""
         found = await self._film(film_id)
         fields = {k: spec[k] for k in ("idea", "seconds", "shape", "director", "fade") if spec.get(k) is not None}
+        fields |= self._added(spec)
+        if spec.get("music_path"):
+            fields |= {"music_file": await self._keep_music(film_id, str(spec["music_path"])), "music": "file"}
+        if fields.get("music", found["music"]) == "file" and not fields.get("music_file", found["music_file"]):
+            raise DirectorError(tr("выберите файл музыки"), 422)
+        heard = any(k in fields and fields[k] != found[k] for k in ("voice", "music", "music_words", "music_file"))
         if "idea" in fields:
             fields["idea"] = str(fields["idea"]).strip()
             if not fields["idea"]:
@@ -504,15 +575,16 @@ class Director:
         look = "photo" in fields or any(k in fields and fields[k] != found[k] for k in ("shape", "model_id"))
 
         def write(conn: sqlite3.Connection) -> None:
-            update_film(conn, film_id, **fields, **({"file": ""} if look else {}))
+            update_film(conn, film_id, **fields, **({"file": ""} if look or heard else {}))
             if look:
                 conn.execute("UPDATE film_scenes SET status = 'stale' WHERE film_id = ? AND status = 'done'",
                              (film_id,))  # fmt: skip
 
         await self._db.acall(write)
-        if found["photo"] and fields.get("photo", found["photo"]) != found["photo"]:
-            with contextlib.suppress(OSError):
-                await asyncio.to_thread((self.media / found["photo"]).unlink, True)
+        for kept in ("photo", "music_file"):  # the file before: the film has another now
+            if found[kept] and fields.get(kept, found[kept]) != found[kept]:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread((self.media / found[kept]).unlink, True)
         return await self._changed(film_id)
 
     async def remove(self, film_id: str) -> None:
@@ -558,11 +630,14 @@ class Director:
         if not chosen:
             raise DirectorError(tr("выберите модель для роли «Режиссёр»: «Модели» → «Роли»"), 422)
         images = await self._photo(found)
-        loud = bool(found["sound"]) and bool(model.get("sound"))  # (52.6) what is heard - asked of a film with sound
+        # (52.6) what is heard - asked of a film with sound: its video model films it, or (53.4) the engine of
+        # sound makes it for the scenes filmed without
+        loud = bool(found["sound"]) and (bool(model.get("sound")) or await self._sound.ready("effects"))
+        asks = {"sound": loud, "say": bool(found["voice"]), "music": found["music"] == "made"}
         system, prompt, form = question(found["idea"], found["seconds"], found["shape"], model["modes"], bool(images),
-                                        sound=loud)  # fmt: skip
+                                        **asks)  # fmt: skip
         read = reader(clip=model["clip"], modes=model["modes"], photo=bool(images), seconds=found["seconds"],
-                      sound=loud)  # fmt: skip
+                      **asks)  # fmt: skip
         stop = self._stops[film_id] = asyncio.Event()
         began = await self._changed(film_id, status="writing", error="")
 
@@ -590,6 +665,7 @@ class Director:
                     file="",
                     tokens=found["tokens"] + got["tokens"],
                     cost_usd=round(found["cost_usd"] + got["cost_usd"], 6),
+                    **({"music_words": got["music_words"]} if got.get("music_words") else {}),
                 )
 
             await self._db.acall(keep)
@@ -617,10 +693,11 @@ class Director:
 
     async def edit_scene(self, film_id: str, n: int, spec: dict[str, Any]) -> dict[str, Any]:
         """A scene changed by hand (50.8) - only what `spec` names: words, prompt, mode, seconds, seed (none or below
-        0 - a new one each time it is filmed), sound_words (52.6: what is heard). What the video model is given has
-        changed - a clip filmed is of the
+        0 - a new one each time it is filmed), sound_words (52.6: what is heard), say (53.3: the narrator's line).
+        What the video model is given has changed - a clip filmed is of the
         scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten, and
-        what the look said of it (51.1) is of another scene. The words alone change nothing else."""
+        what the look said of it (51.1) is of another scene. The words alone change nothing else; another line of
+        the narrator's - the joined file alone is forgotten: the clip stays."""
         found = await self._film(film_id)
         scene = next((s for s in found["scenes"] if s["n"] == n), None)
         if scene is None:
@@ -648,7 +725,10 @@ class Director:
             fields["seed"] = None if spec["seed"] is None or int(spec["seed"]) < 0 else int(spec["seed"])
         if spec.get("sound_words") is not None:
             fields["sound_words"] = " ".join(str(spec["sound_words"]).split())[: visual.SOUND_WORDS]
+        if spec.get("say") is not None:
+            fields["say"] = " ".join(str(spec["say"]).split())[: TEXT_CHARS["say"]]
         other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed", "sound_words") if k in fields)
+        spoken = "say" in fields and fields["say"] != scene["say"]
         if other:
             fields |= UNLOOKED
         if other and scene["status"] != "new":
@@ -659,6 +739,7 @@ class Director:
                 update_scene(conn, film_id, n, **fields)
             if other:
                 _stale_after(conn, film_id, n)
+            if other or spoken:
                 update_film(conn, film_id, file="")
 
         await self._db.acall(write)
@@ -681,11 +762,12 @@ class Director:
 
     async def stop(self, film_id: str) -> dict[str, Any]:
         """«Стоп»: the director's question is let go, or the scene being filmed is stopped in the engine and no next
-        one begins; the film as it is once it has stopped. A film being joined is not stopped: ffmpeg is quick."""
+        one begins; the film as it is once it has stopped. A film being joined is not stopped: ffmpeg is quick -
+        but one whose added sound is being made (53.3) is: the engine of sound is killed, the pieces made stay."""
         found = await self._db.acall(lambda conn: film(conn, film_id))
         if found is None:
             raise DirectorError(tr("нет такого фильма"), 404)
-        if found["status"] == "joining":
+        if found["status"] == "joining" and film_id not in self._stops:
             raise DirectorError(tr("ролик склеивается — это недолго, дождитесь конца"))
         if (stop := self._stops.get(film_id)) is not None:
             stop.set()
@@ -869,22 +951,118 @@ class Director:
             clips.append((path, job["frames"] / job["fps"]))
         if len({(job["width"], job["height"], job["fps"]) for job in jobs}) > 1:
             raise DirectorError(tr("сцены сняты в разном размере — переснимите их одной моделью"), 422)
+        added = await self._added_sound(found, jobs, [seconds for _clip, seconds in clips], fade)
+        if added is not None:
+            self._stops[film_id] = asyncio.Event()  # «Стоп» of the pieces' making
         began = await self._changed(film_id, status="joining", error="")
         self._tasks[film_id] = asyncio.create_task(
-            self._background(film_id, self._join(film_id, clips, int(jobs[0]["fps"]), fade))
+            self._background(film_id, self._join(film_id, clips, int(jobs[0]["fps"]), fade, added))
         )
         return began
 
-    async def _join(self, film_id: str, clips: list[tuple[Path, float]], fps: int, fade: float) -> None:
+    async def _added_sound(self, found: dict[str, Any], jobs: list[dict[str, Any]], lengths: list[float],
+                           fade: float) -> dict[str, Any] | None:  # fmt: skip
+        """What is added to the joined film's sound (53.3, 53.4), or None - nothing: the narrator's lines (the
+        scenes that have one, of a film with a voice), the music, and the sounds of the scenes filmed without
+        (of a film with sound, when that part is here). Each scene begins where the ones before end, less the
+        fades. What cannot be made is refused here, before anything begins."""
+        starts = [sum(lengths[:k]) - k * fade for k in range(len(lengths))]
+        plan: dict[str, Any] = {"seconds": sum(lengths) - (len(lengths) - 1) * fade, "lines": [], "effects": [],
+                                "music": None, "voice": found["voice"]}  # fmt: skip
+        if found["voice"]:
+            plan["lines"] = [(starts[k], s["say"]) for k, s in enumerate(found["scenes"]) if s["say"]]
+        if found["music"] == "made":
+            if not found["music_words"]:
+                raise DirectorError(tr("напишите, какая музыка нужна фильму: «Звук» → «Музыка»"), 422)
+            plan["music"] = found["music_words"]
+        elif found["music"] == "file":
+            if self.own(found["music_file"]) is None:
+                raise DirectorError(tr("файла музыки уже нет — выберите его снова"), 404)
+            plan["music"] = self.own(found["music_file"])
+        for part, needed in (("voice", bool(plan["lines"])), ("music", found["music"] == "made")):
+            if needed and not await self._sound.ready(part):
+                raise DirectorError(tr("«{part}» не установлено: «Звук» → «Скачать»",
+                                       part=tr(audio_cpp.PARTS[part]["name"])), 422)  # fmt: skip
+        if found["sound"] and await self._sound.ready("effects"):
+            plan["effects"] = [(starts[k], s["sound_words"], lengths[k]) for k, (s, job) in enumerate(
+                zip(found["scenes"], jobs, strict=True)) if s["sound_words"] and not job.get("sound")]  # fmt: skip
+        return plan if plan["lines"] or plan["effects"] or plan["music"] else None
+
+    def _piece(self, film_id: str, kind: str, *key: Any) -> Path:
+        """Where a piece of the film's added sound lies - made before by the same words, or to be made (blocking):
+        film-<id>-<kind>-<what it is made from, hashed>.wav."""
+        name = f"film-{film_id}-{kind}-{hashlib.sha256(repr(key).encode()).hexdigest()[:10]}.wav"
+        made = next(iter(self.media.glob(f"*/{name}")), None)
+        return made or self.media / f"{datetime.now(UTC):%Y-%m}" / name
+
+    async def _pieces(self, film_id: str, plan: dict[str, Any], stop: asyncio.Event) -> dict[str, Any]:
+        """The plan's pieces as files (53.3, 53.4): {lines: [(file, at)], effects: [(file, at, seconds)], music,
+        note}. The ones not made yet are made now, the card held for all of them in a row. A line begins with its
+        scene, and after the line before has ended; one that runs past the film's end is said (`note`)."""
+        seconds, todo = plan["seconds"], []
+
+        def place(kind: str, make: Callable[[Path], Awaitable[Path]], *key: Any) -> Path:
+            path = self._piece(film_id, kind, *key)
+            if not path.is_file():
+                todo.append((path, make))
+            return path
+
+        said = [(place("say", lambda p, t=text: self._sound.speak(p, stop, text=t, voice=plan["voice"]),
+                       plan["voice"], text), at) for at, text in plan["lines"]]  # fmt: skip
+        heard = [(place("fx", lambda p, w=words, n=length: self._sound.effect(p, stop, words=w, seconds=n),
+                        words, round(length, 2)), at, length) for at, words, length in plan["effects"]]  # fmt: skip
+        music = plan["music"]
+        if isinstance(music, str):
+            music = place("music", lambda p: self._sound.music(p, stop, words=plan["music"], seconds=seconds),
+                          plan["music"], round(seconds))  # fmt: skip
+        if todo:
+            async with self._sound.working(stop):
+                for path, make in todo:
+                    if stop.is_set():
+                        raise SoundError(tr("остановлено"))
+                    await make(path)
+        lines, free, note = [], 0.0, ""
+        for path, at in said:
+            begins = max(at + SAY_GAP_S[0], free)
+            free = begins + await asyncio.to_thread(seconds_of, path) + SAY_GAP_S[1]
+            lines.append((path, begins))
+        if lines and free - SAY_GAP_S[1] > seconds + 0.05:
+            note = tr("диктор не уместился в фильм на {over} с — сократите его текст",
+                      over=f"{free - SAY_GAP_S[1] - seconds:.1f}")  # fmt: skip
+        return {"lines": lines, "effects": heard, "music": music, "note": note}
+
+    async def _join(self, film_id: str, clips: list[tuple[Path, float]], fps: int, fade: float,
+                    added: dict[str, Any] | None = None) -> None:  # fmt: skip
         name = f"{datetime.now(UTC):%Y-%m}/film-{film_id}-{uuid.uuid4().hex[:6]}.mp4"
-        target = self.media / name
+        target, note = self.media / name, ""
+        cut = target.with_name(target.stem + ".cut.mp4") if added else target  # the scenes joined, before the mix
         try:
             await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-            await self._studio.with_ffmpeg(
-                target, lambda program: ffmpeg.join(program, clips, target, fps=fps, fade_s=fade)
-            )
-        except visual.VisualError as exc:
-            await self._changed(film_id, status="ready", error=str(exc))
+            await self._studio.with_ffmpeg(cut, lambda program: ffmpeg.join(program, clips, cut, fps=fps, fade_s=fade))
+            if added:
+                made = await self._pieces(film_id, added, self._stops[film_id])
+                note = made["note"]
+                await self._studio.with_ffmpeg(target, lambda program: ffmpeg.dub(
+                    program, cut, target, seconds=added["seconds"], lines=made["lines"], music=made["music"],
+                    effects=made["effects"]))  # fmt: skip
+                used = {p for p, *_ in (*made["lines"], *made["effects"])} | {made["music"]}
+                await asyncio.to_thread(self._unlink_pieces, film_id, used)
+        except (visual.VisualError, SoundError) as exc:
+            stopped = (stop := self._stops.get(film_id)) is not None and stop.is_set()
+            await self._changed(film_id, status="ready", error="" if stopped else str(exc))
             raise DirectorError(str(exc), exc.status) from None
+        finally:
+            self._stops.pop(film_id, None)
+            if cut != target:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(cut.unlink, True)
         await asyncio.to_thread(self._unlink, film_id, "*.mp4", target)  # the ones joined before
-        await self._changed(film_id, status="ready", file=name, fade=fade, error="")
+        await self._changed(film_id, status="ready", file=name, fade=fade, error=note)
+
+    def _unlink_pieces(self, film_id: str, used: set[Path | None]) -> None:
+        """The pieces of the film's added sound that the film as it is now does not use (blocking)."""
+        for kind in ("say", "fx", "music"):
+            for path in self.media.glob(f"*/film-{film_id}-{kind}-*.wav"):
+                if path not in used:
+                    with contextlib.suppress(OSError):
+                        path.unlink()

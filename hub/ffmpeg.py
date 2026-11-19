@@ -14,6 +14,7 @@ itself (29.8а live) - RIFE ×2 was for models of 16.
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import subprocess
@@ -235,3 +236,112 @@ def join(program: Path, clips: list[tuple[Path, float]], target: Path, *, fps: i
     heard_too = ["-map", f"[{sound}]"] if loud else []
     _written(program, [*args, "-filter_complex", ";".join(graph), "-map", f"[{out}]", *heard_too, *H264], target,
              N_("ffmpeg не склеил сцены: {said}"), timeout=JOIN_TIMEOUT_S)  # fmt: skip
+
+
+# (53.5) the film's added sound, each kind at a mean volume of its own, dB: the voice is heard over the rest
+VOICE_DB, MUSIC_DB, EFFECT_DB = -18.0, -27.0, -23.0
+GAIN_DB = 24.0  # the most a track is made louder or quieter to come to its level
+# what is not the voice goes down while the voice speaks: about 10 dB under a voice of VOICE_DB
+DUCK = "sidechaincompress=threshold=0.03:ratio=8:attack=15:release=400"
+MUSIC_FADES_S = (0.5, 1.5)  # music comes in and goes out
+EFFECT_FADE_S = 0.15  # a scene's made sound comes in and goes out: no click at a cut
+
+
+def _measured(program: Path, source: Path) -> tuple[float | None, float | None]:
+    """A file's sound as ffmpeg measures it (blocking): (its mean volume in dB, its length in seconds); None - it
+    has no sound, or cannot be read."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        done = subprocess.run([str(program), "-hide_banner", "-i", str(source), "-vn", "-af", "volumedetect", "-f",
+                               "null", "-"], capture_output=True, timeout=CONVERT_TIMEOUT_S, creationflags=flags,
+                              check=False)  # fmt: skip
+    except OSError, subprocess.TimeoutExpired:
+        return None, None
+    said = (done.stderr or b"").decode("utf-8", "replace")
+    mean = re.search(r"mean_volume: (-?[\d.]+) dB", said)
+    long = re.search(r"Duration: (\d+):(\d+):([\d.]+)", said)
+    seconds = int(long.group(1)) * 3600 + int(long.group(2)) * 60 + float(long.group(3)) if long else None
+    return (float(mean.group(1)), seconds) if mean else (None, None)
+
+
+def loudness(program: Path, source: Path) -> float | None:
+    """The mean volume of a file's sound, dB (blocking); None - it has none, or cannot be read."""
+    return _measured(program, source)[0]
+
+
+def _level(now: float | None, wanted: float) -> str:
+    """The filter that brings a track of this mean volume to the one wanted; one that is silence, or unread, is left
+    as it is."""
+    if now is None or now < -80:
+        return "volume=1"
+    return f"volume={max(-GAIN_DB, min(GAIN_DB, wanted - now)):.1f}dB"
+
+
+def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: list[tuple[Path, float]] | None = None,
+        music: Path | None = None, effects: list[tuple[Path, float, float]] | None = None) -> None:  # fmt: skip
+    """The joined film with its added sound (53.5, blocking): the picture as it is - copied, not coded anew - and
+    one sound track of `seconds`: the film's own sound (its scenes', when they have one), the scenes' made sounds
+    (`effects`: file, the second it begins at, how long it is), music under the whole film (`music`: a shorter one
+    goes round again; it comes in and fades out) and the narrator's lines, each at its second (`lines`; one that
+    runs past the film's end is cut there). Each kind is brought to its own mean volume; while the narrator speaks,
+    all the rest goes down.
+
+    Every sound is cut to its length where it is read (`-t` before its `-i`), and a track is made as long as the
+    film by mixing it with silence of that length - nothing in the graph throws a sound's end away. Cut inside the
+    graph (`apad,atrim` after a line longer than what is left of the film), ffmpeg 9.0 never ended every second
+    time (53.5, the test); so did music asked to go round without end - it goes round a counted number of times."""
+    lines, effects = lines or [], effects or []
+    args, graph = ["-i", str(source)], []
+    silence = f"anullsrc=channel_layout=stereo:sample_rate=48000:duration={seconds:.3f},aformat=sample_fmts=fltp"
+    bed, said, at = [], [], 1
+    if heard(program, source):
+        graph.append(f"[0:a]{SOUND}[own]")
+        bed.append("[own]")
+    for clip, begins, length in effects:
+        length = min(length, seconds - begins)
+        if length <= 2 * EFFECT_FADE_S:
+            continue
+        args += ["-t", f"{length:.3f}", "-i", str(clip)]
+        graph.append(f"[{at}:a]{SOUND},{_level(loudness(program, clip), EFFECT_DB)},afade=t=in:d={EFFECT_FADE_S},"
+                     f"afade=t=out:st={length - EFFECT_FADE_S:.3f}:d={EFFECT_FADE_S},"
+                     f"adelay={round(begins * 1000)}:all=1[e{at}]")  # fmt: skip
+        bed.append(f"[e{at}]")
+        at += 1
+    if music is not None:
+        mean, long = _measured(program, music)
+        again = max(0, math.ceil(seconds / long) - 1) if long else 0  # times it goes round after the first
+        args += [*(["-stream_loop", str(again)] if again else []), "-t", f"{seconds:.3f}", "-i", str(music)]
+        come, go = MUSIC_FADES_S
+        graph.append(f"[{at}:a]{SOUND},{_level(mean, MUSIC_DB)},afade=t=in:d={come},"
+                     f"afade=t=out:st={max(0.0, seconds - go):.3f}:d={go}[music]")  # fmt: skip
+        bed.append("[music]")
+        at += 1
+    for clip, begins in lines:
+        if seconds - begins < 0.1:  # a line that would begin where the film ends
+            continue
+        args += ["-t", f"{seconds - begins:.3f}", "-i", str(clip)]
+        level = _level(loudness(program, clip), VOICE_DB)
+        graph.append(f"[{at}:a]{SOUND},{level},adelay={round(begins * 1000)}:all=1[l{at}]")
+        said.append(f"[l{at}]")
+        at += 1
+    if not bed and not said:
+        raise EngineError(tr("добавлять нечего: ни голоса, ни музыки, ни звуков"))
+
+    def whole(tracks: list[str], name: str) -> str:
+        """The tracks as one, as long as the film: mixed with silence of the film's length."""
+        graph.append(f"{silence}[quiet{name}]")
+        graph.append(f"[quiet{name}]{''.join(tracks)}amix=inputs={len(tracks) + 1}:normalize=0:"
+                     f"dropout_transition=0[{name}]")  # fmt: skip
+        return f"[{name}]"
+
+    if said and bed:
+        graph.append(f"{whole(said, 'voice')}asplit=2[say][key]")
+        graph.append(f"{whole(bed, 'bed')}[key]{DUCK}[low]")
+        graph.append("[low][say]amix=inputs=2:normalize=0:dropout_transition=0[all]")
+        last = "[all]"
+    else:
+        last = whole(said or bed, "all")
+    graph.append(f"{last}alimiter=limit=0.95[a]")
+    _written(program, [*args, "-filter_complex", ";".join(graph), "-map", "0:v", "-map", "[a]", "-c:v", "copy",
+                       "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4"], target,
+             N_("ffmpeg не свёл звук фильма: {said}"), timeout=JOIN_TIMEOUT_S)  # fmt: skip

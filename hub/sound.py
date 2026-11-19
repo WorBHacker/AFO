@@ -199,11 +199,25 @@ class Sound:
                 await http.post(f"{self._url}/api/models/unload")
 
     @contextlib.asynccontextmanager
-    async def working(self, stop: Callable[[], None]) -> AsyncIterator[None]:
-        """The card for the pieces made inside: taken once, the models unloaded, given at the end. `stop` - how the
-        work is stopped when the card is taken from it («Выгрузить»)."""
+    async def working(self, cancel: asyncio.Event) -> AsyncIterator[None]:
+        """The card for the pieces made inside: taken once, the models unloaded, given at the end. `cancel` - the
+        work's «Стоп»: set by whoever takes the card from it («Выгрузить»), and it ends the wait for the card too -
+        a film waiting behind the Studio's video stops at once."""
         async with self._one:
-            await self._card.take(SOUND, chats=True, stop=stop)
+            taking = asyncio.ensure_future(self._card.take(SOUND, chats=True, stop=cancel.set))
+            waiting = asyncio.ensure_future(cancel.wait())
+            try:
+                await asyncio.wait({taking, waiting}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                waiting.cancel()
+                if not taking.done():  # «Стоп» came first - or the hub closes
+                    taking.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await taking
+                    if not taking.cancelled():  # the card came in that very instant
+                        self._card.give(SOUND)
+            if taking.cancelled():
+                raise SoundError(tr("остановлено"))
             try:
                 if audio_cpp.backend_of(await self.build()) != "cpu":
                     await self._unload()

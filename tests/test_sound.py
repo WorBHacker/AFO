@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import json
+import shutil
 import sys
 import threading
 import time
@@ -170,7 +171,7 @@ def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card
 
     async def speak():
         cancel = asyncio.Event()
-        async with service.working(cancel.set):
+        async with service.working(cancel):
             held.append((card.holder, card.free.is_set()))
             return await service.speak(target, cancel, text="Привет, это диктор «АФО»", voice="serena")
 
@@ -187,7 +188,7 @@ def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card
 
     async def music():
         cancel = asyncio.Event()
-        async with service.working(cancel.set):
+        async with service.working(cancel):
             return await service.music(tmp_path / "music.wav", cancel, words="calm piano", seconds=7)
 
     hub.portal.call(music)
@@ -208,7 +209,7 @@ def test_a_piece_stopped_or_failed_leaves_nothing_and_gives_the_card(stand, tmp_
         cancel = asyncio.Event()
         if stop_after is not None:
             asyncio.get_running_loop().call_later(stop_after, cancel.set)
-        async with service.working(cancel.set):
+        async with service.working(cancel):
             return await getattr(service, kind)(tmp_path / f"{kind}.wav", cancel, **what)
 
     monkeypatch.setenv("FAKE_AUDIO_SLEEP", "30")
@@ -227,6 +228,20 @@ def test_a_piece_stopped_or_failed_leaves_nothing_and_gives_the_card(stand, tmp_
     with pytest.raises(sound.SoundError, match="Звуки сцен") as missing:  # the engine is here, the part is not
         hub.portal.call(lambda: piece("effect", words="rain", seconds=3))
     assert missing.value.status == 422 and len(hub.asked()) == 2
+
+    async def behind_a_video():  # the Studio films: the wait for the card ends with «Стоп», nothing is started
+        cancel = asyncio.Event()
+        await card.take("studio", chats=True)
+        asyncio.get_running_loop().call_later(0.3, cancel.set)
+        try:
+            async with service.working(cancel):
+                raise AssertionError("the card was the Studio's")
+        finally:
+            card.give("studio")
+
+    with pytest.raises(sound.SoundError):
+        hub.portal.call(behind_a_video)
+    assert card.holder == "" and len(hub.asked()) == 2
 
 
 def test_a_part_broken_on_the_way_stopped_and_removed(stand):
@@ -255,3 +270,158 @@ def test_a_part_broken_on_the_way_stopped_and_removed(stand):
     assert left.read_bytes() == MODELS["effects"]
     removed = hub.delete("/v1/sound/parts/effects").json()
     assert part(removed, "effects")["state"] == "missing" and removed["engine"]["ready"] and not left.exists()
+
+
+BOARD = {"scenes": [
+    {"mode": "text", "seconds": 3, "words": "Дождь", "prompt": "rain falls on a street", "sound": "rain on a roof",
+     "say": " Дождь не  страшен. "},
+    {"mode": "text", "seconds": 3, "words": "Прохожий", "prompt": "a man walks by", "sound": "", "say": ""},
+    {"mode": "text", "seconds": 3, "words": "Гром", "prompt": "lightning over the roofs", "sound": "thunder",
+     "say": "Наш дождевик не промокает."}],
+    "music": " calm piano,  slow "}  # fmt: skip
+SILENT = {"engine": "sd", "set": "film", "kind": "video", "tier": "video", "size": 768, "modes": ["text"],
+          "flags": ["--cfg-scale", "1", "--steps", "8"],
+          "clip": {"fps": 24, "step": 8, "grid": 32, "sizes": {"wide": [768, 512], "tall": [512, 768],
+                                                               "square": [640, 640]}}}  # fmt: skip
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_film_gets_its_narrator_music_and_silent_scenes_sounds_when_it_is_joined(stand, monkeypatch, tmp_path):
+    """53.3-53.5: a film with a narrator and made music - the director is asked each scene's line and what music,
+    and its answer kept; joined, the film gets the lines read by the film's voice (each at its scene), the music,
+    and the sounds of the scenes filmed without sound - made by the engine (a real process), the card held, and
+    mixed by a real ffmpeg. A piece made is not made twice; another line - that line alone is made anew, the clip
+    stays; the user's own music takes the made one's place; «Стоп» while the pieces are made stops at once; a part
+    that is not here is said before anything begins."""
+    from app.hub_client import HubClient, HubError
+    from hub import director, ffmpeg
+    from hub.gateway.openai_compat import OpenAICompatProvider
+    from tests.test_autonomous import use
+    from tests.test_director import _until
+    from tests.test_ffmpeg import _band, _said, _solid, _tone, animated_webp
+    from tests.test_judge import SeeingCloud, roles
+    from tests.test_visual import _install
+
+    hub = stand  # noqa: F811
+    asks = {"sound": True, "say": True, "music": True}
+    system, _prompt, form = director.question("Дождевик", 9, "wide", ["text"], False, **asks)
+    assert '"say": "..."' in form and '"music": "..."' in form and "narrator's line" in system
+    assert "33 characters" in system and '"music": English' in system
+    system, _prompt, form = director.question("Дождевик", 9, "wide", ["text"], False)
+    assert '"say"' not in form and '"music"' not in form and "narrator" not in system
+    clip = {"fps": 24, "step": 8}
+    read = director.reader(clip=clip, modes=["text"], photo=False, seconds=9, **asks)(json.dumps(BOARD))
+    assert [s["say"] for s in read["scenes"]] == ["Дождь не страшен.", "", "Наш дождевик не промокает."]
+    assert read["music_words"] == "calm piano, slow"
+    plain = director.reader(clip=clip, modes=["text"], photo=False, seconds=9)(json.dumps(BOARD))
+    assert [s["say"] for s in plain["scenes"]] == ["", "", ""] and plain["music_words"] == ""
+
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    model = tmp_path / "film.gguf"
+    model.write_bytes(b"x")
+    _install(hub, "film", SILENT, [{"role": "diffusion-model", "repo": "test/Film-GGUF", "path": model.name,
+                                    "size": 1, "at": str(model)}])  # a video model that films no sound  # fmt: skip
+    # the engine's clip of a scene: a silent WebP of 73 frames - 3 s
+    FakeDrawSwap.filmed = animated_webp([_solid((20, 40, 30 + 3 * k)) for k in range(73)], 64, 64)
+    install(hub, "voice", "effects")
+    cloud = SeeingCloud([json.dumps(BOARD, ensure_ascii=False)])
+    try:
+        use(hub, OpenAICompatProvider("studio-cloud", cloud.url, locality="cloud", api_key="k"))
+        roles(hub, director="studio-cloud/eye")
+        client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+        media, card = hub.app.state.visual.media, hub.app.state.card
+        with pytest.raises(HubError, match="нет такого голоса"):
+            client.new_film({"idea": "Дождевик", "seconds": 9, "voice": "caruso"})
+        made = client.new_film({"idea": "Дождевик", "seconds": 9, "checks": False, "voice": "serena",
+                                "music": "made"})["film"]  # fmt: skip
+        film_id = made["id"]
+        assert (made["voice"], made["music"], made["music_words"]) == ("serena", "made", "")
+        client.write_film(film_id)
+        written = _until(hub, film_id, lambda f: f["status"] == "ready")
+        assert [s["say"] for s in written["scenes"]] == ["Дождь не страшен.", "", "Наш дождевик не промокает."]
+        assert [s["sound_words"] for s in written["scenes"]] == ["rain on a roof", "", "thunder"]  # the engine's part
+        assert written["music_words"] == "calm piano, slow"
+        asked = json.dumps(cloud.asked[0]["messages"][0])
+        assert "narrator" in asked and "music" in asked
+
+        client.shoot_film(film_id)
+        _until(hub, film_id, lambda f: f["status"] == "ready" and all(s["status"] == "done" for s in f["scenes"]))
+        with pytest.raises(HubError, match="Музыка"):  # the music's part is not here: said before anything begins
+            client.join_film(film_id)
+        assert hub.asked() == [] and client.film(film_id)["film"]["status"] == "ready"
+        install(hub, "music")
+
+        client.join_film(film_id)
+        joined = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+        assert joined["error"] == "" and card.holder == "" and card.free.is_set()
+        made = hub.asked()
+        assert sorted((a["family"], a["text"]) for a in made if a["family"] != "ace_step") == [
+            ("moss_soundeffect", "rain on a roof"), ("moss_soundeffect", "thunder"),
+            ("qwen3_tts", "Дождь не страшен."), ("qwen3_tts", "Наш дождевик не промокает.")]  # fmt: skip
+        assert {a["voice"] for a in made if a["family"] == "qwen3_tts"} == {"serena"}
+        tune = next(a for a in made if a["family"] == "ace_step")
+        assert tune["text"].startswith("calm piano, slow") and tune["seconds"] == pytest.approx(9.1, abs=0.1)
+        assert [a["seconds"] for a in made if a["family"] == "moss_soundeffect"] == [pytest.approx(3.0, abs=0.1)] * 2
+        film = media / joined["file"]
+        assert "Audio: aac" in _said(program, "-i", str(film))
+        # the voice's pitch where its two lines are: at the first scene's beginning and the third's (6.08 s)
+        assert _band(program, film, 220, 0.3, 1.0) > -30 and _band(program, film, 220, 6.5, 1.5) > -30
+        assert _band(program, film, 220, 3.5, 2.0) < -42
+        alone = _band(program, film, 660, 3.5, 2.0)  # the music, alone in the second scene - and lower under a line
+        assert alone > -40 and _band(program, film, 660, 6.5, 1.5) < alone - 5
+        # a silent scene's own sound: the first scene's, none in the second - it has no «what is heard»
+        assert _band(program, film, 1760, 2.0, 0.9) > -45 and _band(program, film, 1760, 3.5, 2.0) < -50
+        pieces = sorted(p.name.split("-")[2] for p in media.glob(f"*/film-{film_id}-*.wav"))
+        assert pieces == ["fx", "fx", "music", "say", "say"] and not list(media.glob("*/*.cut.mp4"))
+
+        client.join_film(film_id)  # joined again: no piece is made twice
+        _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"] and f["file"] != joined["file"])
+        assert len(hub.asked()) == len(made) and not (media / joined["file"]).exists()
+
+        long = "Наш дождевик не промокает даже в самую сильную грозу, проверено годами."
+        edited = client.update_scene(film_id, 3, {"say": long})["film"]
+        assert edited["file"] == "" and [s["status"] for s in edited["scenes"]] == ["done"] * 3  # the clip stays
+        client.join_film(film_id)
+        late = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+        assert [(a["family"], a["text"]) for a in hub.asked()[len(made) :]] == [("qwen3_tts", long)]
+        assert "диктор не уместился" in late["error"]  # 6 s of speech in a scene of 3, the film's last
+        assert len(list(media.glob(f"*/film-{film_id}-say-*.wav"))) == 2  # the line before is gone
+
+        own = _tone(program, tmp_path / "own.wav", 330, 4.0)
+        with pytest.raises(HubError):
+            client.update_film(film_id, {"music_path": str(tmp_path / "missing.mp3")})
+        with pytest.raises(HubError):
+            client.update_film(film_id, {"music_path": str(model)})  # not a sound file
+        mine = client.update_film(film_id, {"music_path": str(own)})["film"]
+        assert mine["music"] == "file" and (media / mine["music_file"]).read_bytes() == own.read_bytes()
+        assert mine["file"] == ""
+        before = len(hub.asked())
+        client.join_film(film_id)
+        with_own = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+        assert len(hub.asked()) == before  # nothing to make: the lines are here, the music is the user's
+        assert _band(program, media / with_own["file"], 330, 3.5, 2.0) > -40
+        assert not list(media.glob(f"*/film-{film_id}-music-*.wav"))  # the made music is not the film's any more
+
+        monkeypatch.setenv("FAKE_AUDIO_SLEEP", "30")
+        client.update_scene(film_id, 1, {"say": "Совсем другая строка."})
+        began = client.join_film(film_id)["film"]
+        assert began["status"] == "joining"
+        deadline = time.monotonic() + 10
+        while len(hub.asked()) == before and time.monotonic() < deadline:
+            time.sleep(0.05)
+        started = time.monotonic()
+        stopped = client.stop_film(film_id)["film"]
+        assert time.monotonic() - started < 10
+        assert (stopped["status"], stopped["error"], stopped["file"]) == ("ready", "", "")
+        assert card.holder == "" and not list(media.glob("*/*.cut.mp4")) and not list(media.glob("*/*.part.wav"))
+
+        monkeypatch.setenv("FAKE_AUDIO_SLEEP", "0")
+        off = client.update_film(film_id, {"voice": "", "music": "", "sound": False})["film"]
+        assert (off["voice"], off["music"]) == ("", "")
+        before = len(hub.asked())
+        client.join_film(film_id)  # nothing added: the film as its scenes are - silent, as before the stage
+        bare = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"])
+        assert len(hub.asked()) == before and "Audio:" not in _said(program, "-i", str(media / bare["file"]))
+    finally:
+        cloud.close()

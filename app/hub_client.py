@@ -231,13 +231,14 @@ class HubClient:
         return self._call("GET", f"/v1/films/{film_id}")
 
     def new_film(self, spec: dict) -> dict:
-        """A film begun: {idea, seconds, shape, director, model} and the product's photo - photo_png (base64),
-        from_job or from_blob."""
+        """A film begun: {idea, seconds, shape, director, model, voice, music, music_words} and the product's
+        photo - photo_png (base64), from_job or from_blob."""
         return self._call("POST", "/v1/films", spec)
 
     def update_film(self, film_id: str, fields: dict) -> dict:
         """Only what is named changes: idea, seconds, shape, director, model, fade, checks (51.1: the look at each
-        scene filmed), the photo (`photo: ""` - none)."""
+        scene filmed), the photo (`photo: ""` - none), the added sound (53: voice, music, music_words,
+        music_path - the user's own file)."""
         return self._call("PATCH", f"/v1/films/{film_id}", fields)
 
     def delete_film(self, film_id: str) -> dict:
@@ -248,7 +249,7 @@ class HubClient:
         return self._call("POST", f"/v1/films/{film_id}/storyboard")
 
     def update_scene(self, film_id: str, n: int, fields: dict) -> dict:
-        """A scene changed by hand - only what is named: words, prompt, mode, seconds, seed."""
+        """A scene changed by hand - only what is named: words, prompt, mode, seconds, seed, sound_words, say."""
         return self._call("PUT", f"/v1/films/{film_id}/scenes/{n}", fields)
 
     def shoot_film(self, film_id: str, scene: int | None = None) -> dict:
@@ -270,6 +271,22 @@ class HubClient:
     def film_photo(self, film_id: str) -> bytes:
         """The product's photo, a PNG."""
         return self._raw("GET", f"/v1/films/{film_id}/photo")
+
+    def sound(self) -> dict:
+        """A film's added sound (53.2): the engine, its parts - voice, music, effects: ready, loading, missing - and
+        the narrator's voices."""
+        return self._call("GET", "/v1/sound")
+
+    def install_sound(self, part: str) -> dict:
+        """«Скачать»: the engine the first time, and the part's model - in the background (sound.changed)."""
+        return self._call("POST", f"/v1/sound/parts/{part}")
+
+    def stop_sound(self, part: str) -> dict:
+        """A part's download stopped; what came stays for the next time."""
+        return self._call("POST", f"/v1/sound/parts/{part}/stop", timeout=60)
+
+    def remove_sound(self, part: str) -> dict:
+        return self._call("DELETE", f"/v1/sound/parts/{part}", timeout=60)
 
     def install_search(self, query: str, *, task: str = "", size: str = "", sort: str = "downloads",
                        plain: bool = False, build: str = "", language: str = "", license: str = "",

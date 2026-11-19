@@ -8,6 +8,10 @@ the director's model is asked, in the background; PUT /<id>/scenes/<n> - a scene
 the Studio's: /v1/visual/jobs/<job>/mp4. Events: film.changed (the film with its scenes), film.progress (a scene
 begun: id, scene, job), film.deleted (id).
 
+(Stage 53) The added sound: `voice` - the narrator's voice (GET /v1/sound names them; '' - none), a scene's `say` -
+the line read while it goes; `music` - '' | made | file, `music_words` - what music is made, `music_path` (PATCH) -
+the user's own file. They are made and mixed in when the film is joined; POST /<id>/stop stops their making.
+
 (Stage 51) `checks` - the film's switch, at its beginning and in PATCH: each scene filmed is looked at by the
 director's model, one that is not good is filmed anew. The film says the scene looked at now (`checking`), a scene -
 what the look said of it (`verdict`, `reason`, `tries`).
@@ -63,6 +67,9 @@ class New(Photo):
     model: str = Field(default="", max_length=120)  # '' - the first video model that can film it
     checks: bool = True  # (51.1) each scene filmed is looked at by the director's model
     sound: bool = True  # (52.6) the scenes are filmed with sound, when the video model films it
+    voice: str = Field(default="", max_length=40)  # (53.3) the narrator's voice; '' - no narrator
+    music: Literal["", "made"] = ""  # (53.4) music made by its description
+    music_words: str = Field(default="", max_length=2000)
 
 
 class Change(Photo):
@@ -77,6 +84,10 @@ class Change(Photo):
     checks: bool | None = None
     sound: bool | None = None
     photo: Literal[""] | None = None
+    voice: str | None = Field(default=None, max_length=40)  # (53.3)
+    music: Literal["", "made", "file"] | None = None  # (53.4)
+    music_words: str | None = Field(default=None, max_length=2000)
+    music_path: str | None = Field(default=None, max_length=1000)  # the user's own file, on this computer
 
 
 class Scene(BaseModel):
@@ -88,6 +99,7 @@ class Scene(BaseModel):
     seconds: float | None = Field(default=None, ge=d.SCENE_S[0], le=d.SCENE_S[1])
     seed: int | None = None
     sound_words: str | None = Field(default=None, max_length=2000)  # (52.6) what is heard in the scene
+    say: str | None = Field(default=None, max_length=2000)  # (53.3) the narrator's line
 
 
 class Shoot(BaseModel):

@@ -410,3 +410,89 @@ def test_a_clip_with_sound_keeps_it_in_its_mp4_and_in_the_joined_film(tmp_path):
     ffmpeg.join(program, [(silent, 9 / 24), (silent, 9 / 24)], mute, fps=24)
     assert "Audio:" not in _said(program, "-i", str(mute))
     assert not list(tmp_path.glob("*.part"))
+
+
+def _tone(program: Path, target: Path, hz: int, seconds: float, *, rate: int = 48000, channels: int = 2,
+          volume: float = 0.3) -> Path:  # fmt: skip
+    subprocess.run([str(program), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency={hz}:sample_rate={rate}:duration={seconds}", "-af", f"volume={volume}", "-ac",
+                    str(channels), str(target)], check=True, timeout=60)  # fmt: skip
+    return target
+
+
+def _band(program: Path, video: Path, hz: int, start: float, length: float) -> float:
+    """The mean volume of one pitch in a piece of a file's sound, dB."""
+    import re
+
+    said = _said(program, "-ss", f"{start}", "-t", f"{length}", "-i", str(video), "-vn", "-af",
+                 f"bandpass=f={hz}:width_type=h:w=40,volumedetect", "-f", "null", "-")  # fmt: skip
+    return float(re.search(r"mean_volume: (-?[\d.]+) dB", said).group(1))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_films_added_sound_is_mixed_the_voice_over_the_rest(tmp_path, monkeypatch):
+    """53.5 - a real ffmpeg, the hub's own arguments: the joined film gets one sound track as long as itself - the
+    narrator's line at its second, music under the whole film (a short one goes round again, a loud one is brought
+    down to its level), a scene's made sound at its place and no longer than asked; while the narrator speaks the
+    music and the film's own sound go down; the picture is copied, frame for frame."""
+    import re
+
+    program = Path(shutil.which("ffmpeg"))
+    silent, loud = tmp_path / "silent.mp4", tmp_path / "loud.mp4"
+    picture = ["-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=6"]
+    video = ["-c:v", "libx264", "-g", "1", "-pix_fmt", "yuv420p"]
+    quiet = [str(program), "-hide_banner", "-loglevel", "error", "-y"]
+    subprocess.run([*quiet, *picture, *video, str(silent)], check=True, timeout=60)
+    subprocess.run([*quiet, *picture, "-f", "lavfi", "-i", "sine=frequency=110:sample_rate=48000:duration=6", "-af",
+                    "volume=2", *video, "-c:a", "aac", str(loud)], check=True, timeout=60)  # fmt: skip
+    voice = _tone(program, tmp_path / "voice.wav", 220, 1.5, rate=24000, channels=1)
+    music = _tone(program, tmp_path / "music.wav", 660, 2.5, volume=6.0)  # short and loud
+    effect = _tone(program, tmp_path / "effect.wav", 1760, 2.0, channels=1)
+    assert ffmpeg.loudness(program, music) > -12 and ffmpeg.loudness(program, silent) is None
+
+    film = tmp_path / "film.mp4"
+    ffmpeg.dub(program, silent, film, seconds=6.0, lines=[(voice, 2.0)], music=music, effects=[(effect, 4.0, 1.0)])
+    said = _said(program, "-i", str(film))
+    assert "Video: h264" in said and "Audio: aac" in said and "48000 Hz, stereo" in said, said
+    assert len(_frames_of(program, film, tmp_path / "frames")) == 144  # the picture as it was
+    whole = _said(program, "-i", str(film), "-map", "0:a", "-f", "null", "-")
+    assert abs(float(re.findall(r"time=\d+:\d+:([\d.]+)", whole)[-1]) - 6.0) < 0.06, whole
+
+    alone = _band(program, film, 660, 0.8, 0.8)  # music before the narrator
+    assert -33 < alone < -22, alone  # the loud file at music's level
+    assert _band(program, film, 660, 2.4, 0.9) < alone - 6  # under the narrator
+    assert _band(program, film, 660, 4.05, 0.4) > alone - 4  # up again - and round again: the file is 2.5 s long
+    assert _band(program, film, 660, 5.8, 0.2) < alone - 6  # fades out at the end
+    # the line, at 2 s (where it is not, its pitch is only what the filter lets through of the music)
+    assert _band(program, film, 220, 2.3, 1.0) > -26 and _band(program, film, 220, 0.8, 0.8) < -42
+    assert _band(program, film, 220, 4.0, 1.5) < -42
+    assert _band(program, film, 1760, 4.3, 0.5) > -40  # the scene's sound, in its scene
+    assert _band(program, film, 1760, 1.0, 1.0) < -50 and _band(program, film, 1760, 5.3, 0.6) < -50  # 1 s, not 2
+
+    own = tmp_path / "own.mp4"  # the film's own sound stays, and goes down under the narrator too
+    ffmpeg.dub(program, loud, own, seconds=6.0, lines=[(voice, 2.0)])
+    before = _band(program, own, 110, 0.5, 1.0)
+    assert before > -30 and _band(program, own, 110, 2.4, 0.9) < before - 6
+    assert _band(program, own, 220, 2.3, 1.0) > -26
+
+    spoken = tmp_path / "spoken.mp4"  # the voice alone, on a film that had no sound
+    ffmpeg.dub(program, silent, spoken, seconds=6.0, lines=[(voice, 0.0), (voice, 3.0)])
+    assert _band(program, spoken, 220, 0.2, 1.0) > -26 and _band(program, spoken, 220, 3.2, 1.0) > -26
+    assert _band(program, spoken, 220, 1.8, 1.0) < -60
+
+    # a line longer than what is left of the film is cut at its end - and ffmpeg ends: cut inside the graph, it
+    # never ended every second time (a time limit here, so that a hang is a failure, not a test that never ends)
+    monkeypatch.setattr(ffmpeg, "JOIN_TIMEOUT_S", 30.0)
+    for n in range(4):
+        late = tmp_path / f"late-{n}.mp4"
+        ffmpeg.dub(program, silent, late, seconds=6.0, lines=[(voice, 0.5), (voice, 5.2)], music=music,
+                   effects=[(effect, 5.0, 2.0)])  # fmt: skip
+        whole = _said(program, "-i", str(late), "-map", "0:a", "-f", "null", "-")
+        assert abs(float(re.findall(r"time=\d+:\d+:([\d.]+)", whole)[-1]) - 6.0) < 0.06, whole
+    assert _band(program, late, 220, 5.4, 0.5) > -30
+
+    with pytest.raises(EngineError):
+        ffmpeg.dub(program, silent, tmp_path / "nothing.mp4", seconds=6.0)
+    with pytest.raises(EngineError):
+        ffmpeg.dub(program, silent, tmp_path / "broken.mp4", seconds=6.0, music=tmp_path / "missing.wav")
+    assert not (tmp_path / "broken.mp4").exists() and not list(tmp_path.glob("*.part"))
