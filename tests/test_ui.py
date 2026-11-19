@@ -404,6 +404,17 @@ class FakeClient:
                           ("listener", "Слушатель", "CED small: узнаёт, что слышно в звуке сцены", 86607904))],
             "voices": [{"id": "ryan", "name": "Райан — мужской"}, {"id": "serena", "name": "Серена — женский"}],
         }  # fmt: skip
+        self.enhance_calls = []  # «Улучшить ролик» (54.6): its parts
+        self.enhance_state = {"parts": [
+            {"id": "smooth", "name": "Плавность", "about": "RIFE 4.26: 60 кадров в секунду и замедление в 2 и 4 раза",
+             "size": 33555661, "state": "ready", "why": ""},
+            {"id": "sharp", "name": "Быстрое увеличение", "about": "Real-ESRGAN: ролик вдвое больше — кадр за кадром",
+             "size": 45474481, "state": "missing", "why": ""},
+            {"id": "detail", "name": "Увеличение с дорисовкой", "about": "RelayVSR: вдвое больше, с новыми деталями",
+             "size": 5703420209, "state": "unavailable",
+             "why": "нужна видеокарта NVIDIA от 16 ГБ, здесь — 12 ГБ"}]}  # fmt: skip
+        for part in self.enhance_state["parts"]:
+            part |= {"licence": "MIT", "got": 0, "total": part["size"], "error": ""}
         self.found = {"job": {"status": "idle"}, "at": "", "models": []}  # the models on the drives (15.1)
         self.tune_status = {"job": {"status": "idle", "queue": []}, "results": {}, "auto": True}  # 15.2
         self.tune_calls = []
@@ -705,6 +716,36 @@ class FakeClient:
     def visual_cancel(self, job_id):
         self.visual_calls.append(("cancel", job_id))
         return {"job": {"id": job_id, "status": "running"}}
+
+    def visual_job(self, job_id):
+        return {"job": next(j for j in self.visual_jobs_list if j["id"] == job_id)}
+
+    def visual_improve(self, spec):
+        self.visual_calls.append(("improve", spec))
+        how = {"source": "2026-11/x.mp4", "job": spec.get("from_job", ""), "fps": 24, "size": spec["size"],
+               "motion": spec["motion"], "sound": True}  # fmt: skip
+        job = {"id": f"e{len(self.visual_calls)}", "kind": "video", "prompt": "дождь на улице", "model_id": "enhance",
+               "status": "queued", "width": 64, "height": 64, "frames": 0, "fps": 24, "seed": 0, "error": "",
+               "seconds": None, "file": "", "enhance": how, "film_id": spec.get("film") or None}  # fmt: skip
+        self.visual_jobs_list.insert(0, job)
+        return {"job": job}
+
+    def enhance(self):
+        return copy.deepcopy(self.enhance_state)
+
+    def _enhance_part(self, call, part, **fields):
+        self.enhance_calls.append((call, part))
+        next(p for p in self.enhance_state["parts"] if p["id"] == part).update(fields)
+        return self.enhance()
+
+    def install_enhance(self, part):
+        return self._enhance_part("install", part, state="loading", got=0, error="")
+
+    def stop_enhance(self, part):
+        return self._enhance_part("stop", part, state="missing", got=0)
+
+    def remove_enhance(self, part):
+        return self._enhance_part("remove", part, state="missing", got=0)
 
     def visual_file(self, job_id):
         return PICTURE
@@ -11449,6 +11490,179 @@ def test_a_scenes_card_says_what_sounds_in_it_and_the_listener_is_fetched_as_a_p
         assert named("soundNote_listener").property("text").startswith("не установлено")
         click(window, get)
         wait_until(lambda: not app.bg.busy and client.sound_calls == [("install", "listener")])
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
+    """54.6: «Улучшить…» under a video of the Studio's and under a joined film - the sheet: the size, the motion, the
+    parts they take (one fetched by a click - how far, then here; one that does not work here says why), «Улучшить»
+    only once all of it is here. The job goes into the Studio's queue - «улучшаю: N%», ✕; done, it is a video of
+    its own: its poster in the lists, its MP4 plays, saved as MP4 only, what was done to it said. A film's improved
+    video is listed under the film - how far, ✕, «Открыть в «Студии»». Real QML, mouse clicks, no screen."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        month = app.paths.media / "2026-11"
+        month.mkdir(parents=True, exist_ok=True)
+        quiet = month / "q1.webp"
+        quiet.write_bytes(animated_clip(COLOURS[:4]))
+        ffmpeg.to_mp4(program, quiet, quiet.with_suffix(".mp4"))
+
+        def improved(name):  # an MP4 with its poster beside, as the hub leaves an improved video
+            shutil.copyfile(quiet.with_suffix(".mp4"), month / name)
+            ffmpeg.poster(program, month / name, (month / name).with_suffix(".jpg"))
+
+        improved("film-f1-joined.mp4")
+        client.films_list = [{"id": "f1", "idea": "Лампа на столе", "seconds": 15, "shape": "wide", "photo": "",
+                              "director": "", "model_id": "", "status": "ready", "error": "",
+                              "file": "2026-11/film-f1-joined.mp4", "fade": 0.0, "tokens": 0, "cost_usd": 0.0,
+                              "checks": False, "checking": 0, "sound": False, "voice": "", "music": "",
+                              "music_words": "", "music_file": "", "improved": [],
+                              "scenes": film_scenes("done", "done", "done", "done")}]  # fmt: skip
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        client.visual_jobs_list = [{"id": "q1", "kind": "video", "prompt": "дождь на улице", "model_id": "ltx",
+                                    "status": "done", "seconds": 64.0, "width": 64, "height": 64, "frames": 4,
+                                    "fps": 24, "seed": 1, "error": "", "file": "2026-11/q1.webp"}]  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, improve, films = app.visual_view, app.enhance_view, app.film_view
+        view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded and view.recent)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        view.pick("q1")
+        wait_until(lambda: view.videoFile.endswith("/q1.webp"))
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        def hub_parts(**parts):
+            """The hub's `enhance.changed`: the parts as they are now."""
+            for part in client.enhance_state["parts"]:
+                part.update(parts.get(part["id"], {}))
+            app.on_event({"type": "enhance.changed", "payload": client.enhance()})
+            window.grabWindow()
+
+        click(window, item_named(studio, "visualImprove"))  # «Улучшить…» under the video shown
+        sheet = window.findChild(QObject, "improveSheet")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        window.grabWindow()
+        go, need = named("improveGo"), named("improveNeed")
+        assert named("improveTitle").property("text") == "Ролик: дождь на улице"
+        assert not go.property("enabled") and need.property("text") == "Выберите размер или движение"
+        assert named("improvePartNote_smooth").property("text") == "установлено · 34 МБ"
+        assert named("improvePartNote_detail").property("text") == "нужна видеокарта NVIDIA от 16 ГБ, здесь — 12 ГБ"
+        assert not named("improveGet_detail").property("visible")
+
+        click(window, item_saying(named("improveSize"), "×2 с дорисовкой"))  # does not work on this card
+        wait_until(lambda: improve.size == "detail")
+        window.grabWindow()
+        assert need.property("text").startswith("«Увеличение с дорисовкой» на этом компьютере не работает: нужна")
+        assert not go.property("enabled") and "832 × 480" in named("improveNote").property("text")
+
+        click(window, item_saying(named("improveSize"), "×2 быстро"))  # not here yet: fetched by a click
+        wait_until(lambda: improve.size == "sharp")
+        window.grabWindow()
+        assert need.property("text") == "Сначала скачайте «Быстрое увеличение» — ниже"
+        get = named("improveGet_sharp")
+        assert get.property("visible") and get.property("text") == "Скачать 45 МБ"
+        click(window, get)
+        wait_until(lambda: not app.bg.busy and client.enhance_calls == [("install", "sharp")])
+        window.grabWindow()
+        assert named("improvePartNote_sharp").property("text") == "скачивается…"
+        assert named("improveStop_sharp").property("visible") and not go.property("enabled")
+        hub_parts(sharp={"got": 22737240})
+        assert named("improvePartNote_sharp").property("text") == "скачивается: 50%"
+        hub_parts(sharp={"state": "ready"})
+        assert named("improvePartNote_sharp").property("text") == "установлено · 45 МБ"
+        assert go.property("enabled") and not need.property("visible")
+
+        click(window, item_saying(named("improveMotion"), "60 к/с"))
+        wait_until(lambda: improve.motion == "fps60")
+        window.grabWindow()
+        click(window, go)  # «Улучшить»: into the Studio's queue, the sheet closed
+        wait_until(lambda: not app.bg.busy and client.visual_calls and client.visual_calls[-1][0] == "improve")
+        assert client.visual_calls[-1] == ("improve", {"from_job": "q1", "size": "sharp", "motion": "fps60"})
+        wait_until(lambda: not sheet.property("opened"))
+        job = client.visual_jobs_list[0]
+        wait_until(lambda: [q["id"] for q in view.queue] == [job["id"]])
+        assert view.queue[0]["words"] == "в очереди"
+        app.on_event({"type": "visual.changed", "payload": {"job": {**job, "status": "running"}}})
+        app.on_event({"type": "visual.progress", "payload": {"id": job["id"], "step": 25, "steps": 100,
+                                                             "preview": "", "seconds": 3.0}})  # fmt: skip
+        wait_until(lambda: view.queue and view.queue[0]["words"] == "улучшаю: 25%")
+        assert view.queue[0]["percent"] == 25.0
+        window.grabWindow()
+        click(window, item_named(studio, f"visualCancel_{job['id']}"))  # ✕
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1] == ("cancel", job["id"]))
+
+        improved(f"{job['id']}.mp4")  # done: a video of its own
+        done = {**job, "status": "done", "seconds": 12.0, "frames": 180, "fps": 60, "width": 128, "height": 128,
+                "file": f"2026-11/{job['id']}.mp4"}  # fmt: skip
+        app.on_event({"type": "visual.changed", "payload": {"job": done}})
+        wait_until(lambda: not view.queue)
+        thumbs = {r["id"]: r["source"] for r in view.recent}
+        assert thumbs[job["id"]].endswith(f"/{job['id']}.jpg") and thumbs["q1"].endswith("/q1.webp")
+        view.pick(job["id"])
+        video = item_named(studio, "visualVideo")
+        wait_until(lambda: view.videoFile.endswith(f"/{job['id']}.jpg") and video.property("seekable"), 10)
+        assert view.videoMp4.endswith(f"/{job['id']}.mp4") and view.videoLoud  # saved as MP4 only
+        assert view.statusText == "готово за 12 с — ×2 быстро · 60 к/с"
+
+        click(window, item_saying(item_named(studio, "studioKind"), "Режиссёр"))  # a film's joined video
+        wait_until(lambda: not app.bg.busy and films.hasFilm and films.joined)
+        director = item_named(studio, "directorView")
+        window.grabWindow()
+        click(window, item_named(director, "filmImprove"))
+        film_sheet = window.findChild(QObject, "filmImproveSheet")
+        wait_until(lambda: film_sheet.property("opened") and not app.bg.busy)
+        window.grabWindow()
+        assert named("filmImproveTitle").property("text") == "Фильм: Лампа на столе"
+        assert (improve.size, improve.motion) == ("", "")  # each time anew
+        click(window, item_saying(named("filmImproveMotion"), "Медленнее ×2"))
+        wait_until(lambda: improve.motion == "slow2")
+        window.grabWindow()
+        assert "без звука" in named("filmImproveNote").property("text")
+        click(window, named("filmImproveGo"))
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][0] == "improve")
+        assert client.visual_calls[-1] == ("improve", {"film": "f1", "size": None, "motion": "slow2"})
+        film_job = client.visual_jobs_list[0]
+        wait_until(lambda: [i["id"] for i in films.improved] == [film_job["id"]])
+        window.grabWindow()
+        row, cancel = named(f"filmImprovedText_{film_job['id']}"), named(f"filmImprovedCancel_{film_job['id']}")
+        assert row.property("text") == "Медленнее ×2 — в очереди" and cancel.property("visible")
+        click(window, cancel)
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1] == ("cancel", film_job["id"]))
+        improved(f"film-f1-{film_job['id']}.mp4")
+        app.on_event({"type": "visual.changed", "payload": {"job": {
+            **film_job, "status": "done", "seconds": 20.0, "frames": 144,
+            "file": f"2026-11/film-f1-{film_job['id']}.mp4"}}})  # fmt: skip
+        wait_until(lambda: films.improved[0]["done"])
+        window.grabWindow()  # the rows made anew
+        row, cancel = named(f"filmImprovedText_{film_job['id']}"), named(f"filmImprovedCancel_{film_job['id']}")
+        assert row.property("text") == "Медленнее ×2 — готово" and not cancel.property("visible")
+        click(window, named(f"filmImprovedOpen_{film_job['id']}"))  # «Открыть в «Студии»»
+        wait_until(lambda: films.kind == "manual" and view.shown_job().get("id") == film_job["id"])
+        assert view.videoFile.endswith(f"/film-f1-{film_job['id']}.jpg")
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

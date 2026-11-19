@@ -513,6 +513,35 @@ def test_an_improved_video_is_a_job_of_the_studios_queue_beside_its_source(stand
     assert wait_job(hub, left, "failed")["error"] == "хаб перезапускался — ролик не улучшен"
 
 
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_the_windows_client_improves_a_video_through_the_hub(stand, monkeypatch):
+    """54.6: what the window asks, as it asks it (app/hub_client.py) - the parts, «Скачать», «Стоп», «Удалить»,
+    «Улучшить», the job - against the real hub; what the hub refuses comes as its words; `enhance.*` reaches the
+    window."""
+    from app.events import TOPICS
+    from app.hub_client import HubClient, HubError
+    from hub.events import matches
+
+    hub = stand  # noqa: F811
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
+    client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+    assert [p["state"] for p in client.enhance()["parts"]] == ["missing", "missing", "missing"]
+    assert client.install_enhance("smooth")["parts"][0]["state"] in ("loading", "ready")
+    wait_part(hub, "smooth", "ready")
+    assert any(kind == "enhance.changed" for kind, _p in hub.seen) and matches("enhance.changed", tuple(TOPICS))
+    source_id = a_video_job(hub)
+    with pytest.raises(HubError, match="не установлено"):
+        client.visual_improve({"from_job": source_id, "size": "sharp", "motion": None})
+    job = client.visual_improve({"from_job": source_id, "size": None, "motion": "slow2"})["job"]
+    assert job["enhance"]["motion"] == "slow2" and job["status"] in ("queued", "running")
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled")
+    assert done["status"] == "done" and client.visual_job(job["id"])["job"]["file"] == done["file"]
+    assert client.visual_mp4(job["id"]) == (hub.app.state.visual.media / done["file"]).read_bytes()
+    assert client.remove_enhance("smooth")["parts"][0]["state"] == "missing"
+    with pytest.raises(HubError, match="нет такой части"):
+        client.stop_enhance("nothing")
+
+
 def test_a_video_is_cut_into_pieces_by_its_shots_and_its_length():
     """54.4: the pieces enlarged at once - shot by shot, a long shot in even pieces, a shot of one frame with its
     neighbour (RelayVSR takes no video of one frame)."""

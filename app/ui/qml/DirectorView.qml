@@ -264,6 +264,12 @@ Item {
         }
     }
 
+    ImproveSheet {  // 54.6: «Улучшить…» of the joined film
+        id: improveSheet
+        objectName: "filmImproveSheet"
+        prefix: "filmImprove"
+    }
+
     // a scene changed by hand: what happens (the person's language), the description the video model films by, how
     // the scene begins, its length
     Popup {
@@ -711,7 +717,8 @@ Item {
             anchors.top: cards.bottom
             anchors.topMargin: cards.visible ? 4 : 0
             width: parent.width - 40
-            height: parent.height - y - actions.height - (player.visible ? player.height + 8 : 0) - 36
+            height: parent.height - y - actions.height - (player.visible ? player.height + 8 : 0)
+                    - (improvedList.visible ? improvedList.height + 10 : 0) - 36
             radius: 8
             color: Theme.p.card
             border.color: Theme.p.hairline
@@ -789,6 +796,80 @@ Item {
                 iconName: "download"
                 text: qsTr("Сохранить как…")
                 onClicked: saveDialog.open()
+            }
+            PlainButton {
+                objectName: "filmImprove"  // 54.6: twice as large, 60 a second, slowed - a video of its own
+                visible: Films.joined
+                enabled: !Films.busy
+                iconName: "sparkle"
+                text: qsTr("Улучшить…")
+                onClicked: {
+                    Improve.openFilm()
+                    improveSheet.open()
+                }
+            }
+        }
+        // 54.6: the film's video improved - each as the Studio's queue has it: how far, ✕; done - to the Studio
+        Column {
+            id: improvedList
+            x: 20
+            width: parent.width - 40
+            anchors.top: actions.bottom
+            anchors.topMargin: visible ? 10 : 0
+            visible: Films.improved.length > 0
+            spacing: 6
+            Repeater {
+                model: Films.improved
+                delegate: Item {
+                    id: better
+                    required property var modelData
+                    objectName: "filmImproved_" + better.modelData.id
+                    width: improvedList.width
+                    height: 28
+                    Text {
+                        objectName: "filmImprovedText_" + better.modelData.id
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width - betterDo.width - 12
+                        elide: Text.ElideRight
+                        text: better.modelData.what + " — " + better.modelData.state
+                        color: better.modelData.failed ? Theme.p.error : Theme.p.text_soft
+                        font.family: Theme.uiFont
+                        font.pixelSize: 12
+                    }
+                    Rectangle {
+                        visible: better.modelData.going
+                        anchors.bottom: parent.bottom
+                        width: parent.width - betterDo.width - 12
+                        height: 2
+                        radius: 1
+                        color: Theme.p.hairline
+                        Rectangle {
+                            width: parent.width * better.modelData.percent / 100
+                            height: parent.height
+                            radius: 1
+                            color: Theme.p.accent
+                        }
+                    }
+                    Row {
+                        id: betterDo
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        PlainButton {
+                            objectName: "filmImprovedOpen_" + better.modelData.id
+                            visible: better.modelData.done
+                            iconName: "play"
+                            text: qsTr("Открыть в «Студии»")
+                            onClicked: Films.openImproved(better.modelData.id)
+                        }
+                        IconButton {
+                            objectName: "filmImprovedCancel_" + better.modelData.id
+                            visible: better.modelData.going
+                            iconName: "close"
+                            tip: qsTr("Отменить")
+                            onClicked: Visual.cancelJob(better.modelData.id)
+                        }
+                    }
+                }
             }
         }
     }

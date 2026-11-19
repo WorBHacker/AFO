@@ -24,8 +24,9 @@ from common.i18n import N_, tr
 from common.picture_sizes import clip_of, scene_modes
 
 from ..hub_client import HubError
+from .enhance_view import improvement
 from .install_view import gb
-from .visual_view import seconds_text, still_of
+from .visual_view import STATUS, improving, seconds_text, still_of
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -898,6 +899,47 @@ class FilmView(QObject):
         scene = next((s for s in self._scenes() if s["n"] == n), None)
         self._shown = n if scene is not None and self._clip(scene) is not None else 0
         self.changed.emit()
+
+    # ---- (54.6) its joined video improved: the Studio's jobs of this film ----
+
+    def open_film(self) -> dict[str, Any]:
+        """The film open, joined (54.6: «Улучшить…» improves its video); {} - none."""
+        return self._film if self._joined() is not None else {}
+
+    def _improved(self) -> list[dict[str, Any]]:
+        """The film's improved videos, the newest first: those the hub listed with the film, each as the Studio's
+        queue has it now, and those sent since."""
+        film_id = self._film.get("id")
+        if not film_id:
+            return []
+        live = {j["id"]: j for j in self.studio.latest() if j.get("film_id") == film_id}
+        listed = [live.pop(j["id"], j) for j in self._film.get("improved") or []]
+        return [*live.values(), *listed]
+
+    @Property(list, notify=changed)
+    def improved(self) -> list:
+        """Each improved video in a line: what was done, how far (✕ while it goes), done - opened in the Studio."""
+        out = []
+        for j in self._improved():
+            status, step = j.get("status", ""), self.studio.step_of(j["id"])
+            if status == "running":
+                state = improving(step)
+            elif status == "failed":
+                state = tr("не вышло: {error}", error=j.get("error") or "")
+            else:
+                state = tr(STATUS[status]) if status in STATUS else status
+            here = bool(j.get("file")) and (self.app.paths.media / j["file"]).is_file()
+            out.append({"id": j["id"], "what": improvement(j.get("enhance")) or tr("Улучшенный"), "state": state,
+                        "going": status in ("queued", "running"), "done": status == "done" and here,
+                        "failed": status == "failed",
+                        "percent": round(100.0 * step[0] / step[1], 1) if step[1] else 0.0})  # fmt: skip
+        return out
+
+    @Slot(str)
+    def openImproved(self, job_id: str) -> None:
+        """«Открыть в «Студии»»: the improved video on the Studio's canvas - played, saved, improved again."""
+        self.setKind("manual")
+        self.studio.open_job(job_id)
 
     @Slot(str)
     def saveAs(self, url: str) -> None:

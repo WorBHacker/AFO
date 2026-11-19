@@ -200,6 +200,9 @@ class HubClient:
     def visual_jobs(self, limit: int = 30) -> dict:
         return self._call("GET", "/v1/visual/jobs", params={"limit": limit})
 
+    def visual_job(self, job_id: str) -> dict:
+        return self._call("GET", f"/v1/visual/jobs/{job_id}")
+
     def visual_cancel(self, job_id: str) -> dict:
         return self._call("POST", f"/v1/visual/jobs/{job_id}/cancel")
 
@@ -214,6 +217,26 @@ class HubClient:
     def visual_mp4(self, job_id: str) -> bytes:
         """A video's MP4 (29.8в): the first one fetches ffmpeg in the hub - minutes on a slow line."""
         return self._raw("GET", f"/v1/visual/jobs/{job_id}/mp4", timeout=900)
+
+    def visual_improve(self, spec: dict) -> dict:
+        """«Улучшить ролик» (54.5): {from_job | film, size: sharp | detail | None, motion: fps60 | slow2 | slow4 |
+        None} - a job of the Studio's queue."""
+        return self._call("POST", "/v1/visual/improve", spec)
+
+    def enhance(self) -> dict:
+        """The parts that improve a video (54.2): RIFE, Real-ESRGAN, RelayVSR - ready, loading, missing,
+        unavailable (why)."""
+        return self._call("GET", "/v1/enhance")
+
+    def install_enhance(self, part: str) -> dict:
+        """«Скачать»: the part's program and model, in the background (enhance.changed)."""
+        return self._call("POST", f"/v1/enhance/parts/{part}")
+
+    def stop_enhance(self, part: str) -> dict:
+        return self._call("POST", f"/v1/enhance/parts/{part}/stop", timeout=60)
+
+    def remove_enhance(self, part: str) -> dict:
+        return self._call("DELETE", f"/v1/enhance/parts/{part}", timeout=60)
 
     def visual_picture(self, blob: str) -> bytes:
         """A picture a chat holds (29.6), by its sha256."""

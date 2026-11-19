@@ -34,6 +34,7 @@ from common.i18n import N_, tr
 from common.picture_sizes import CPU_PIXELS, SHAPES, clip_of, fit, size_for, video_size
 
 from ..hub_client import HubError
+from .enhance_view import improvement
 
 if TYPE_CHECKING:
     from .controller import Controller
@@ -119,12 +120,21 @@ class PictureProvider(QQuickImageProvider):
 
 
 LOUD = ".webm"  # a clip with sound (52.5): the engine's WebM - no picture to QML; its poster lies beside it
+IMPROVED = ".mp4"  # an improved video (54.5): an MP4 itself - no picture to QML either; its poster lies beside it
 
 
 def still_of(clip: Path) -> Path:
     """What the window shows of a clip as a picture - in its lists, in the player until the MP4 plays: a silent
-    clip's WebP itself, a clip with sound's poster, which the hub makes with its MP4 (52.3)."""
-    return clip.with_suffix(".jpg") if clip.suffix == LOUD else clip
+    clip's WebP itself, a clip with sound's poster, which the hub makes with its MP4 (52.3), an improved video's
+    poster (54.5)."""
+    return clip.with_suffix(".jpg") if clip.suffix in (LOUD, IMPROVED) else clip
+
+
+def improving(step: tuple[int, int]) -> str:
+    """A video being improved, in words (54.6): how far, out of 100."""
+    if step[1]:
+        return tr("улучшаю: {percent}%", percent=round(100 * step[0] / step[1]))
+    return tr("улучшаю…")
 
 
 class VisualView(QObject):
@@ -324,9 +334,10 @@ class VisualView(QObject):
 
     @Property(bool, notify=changed)
     def videoLoud(self) -> bool:
-        """Whether the video shown has sound (52.5): saved as MP4 only - its own file is the engine's WebM."""
+        """Whether the video shown is saved as MP4 only: it has sound (52.5) - its own file is the engine's WebM -,
+        or it is an improved one (54.5), an MP4 itself."""
         path = self._video_file(self._job)
-        return path is not None and path.suffix == LOUD
+        return path is not None and path.suffix in (LOUD, IMPROVED)
 
     @Property(str, notify=changed)
     def videoMp4(self) -> str:
@@ -461,6 +472,8 @@ class VisualView(QObject):
         status, how = self._job.get("status", ""), self._how()
         if not status:
             return ""
+        if status == "running" and self._job.get("enhance"):  # a video being improved (54.6)
+            return improving(self._step)
         if status == "running" and self._job.get("kind") == "video":  # its step, or its time (48's review)
             return filming(self._step, self._clock.get(self._job.get("id", ""))) or tr("снимаю видео…")
         if status == "running" and self._step[1]:
@@ -470,6 +483,7 @@ class VisualView(QObject):
             return tr("не вышло — пробую {how}", how=how)
         if status == "done":
             text = tr("готово за {time}", time=seconds_text(self._job.get("seconds")))
+            how = how or improvement(self._job.get("enhance"))  # (54.6) what was done to it
             return tr("{text} — {how}", text=text, how=how) if how else text
         if status == "failed":
             return tr("не вышло: {error}", error=self._job.get("error", ""))
@@ -540,6 +554,8 @@ class VisualView(QObject):
             step, steps = self._progress.get(j["id"], (0, 0))
             if j["status"] == "queued" and not steps:  # after «Выгрузить» it waits for the person (48.9д)
                 words = tr("видеокарта отдана — „Продолжить“") if self.app.status.get("studioHeld") else tr("в очереди")
+            elif j.get("enhance"):  # a video being improved (54.6)
+                words = improving((step, steps))
             elif video:
                 words = filming((step, steps), self._clock.get(j["id"])) or tr("снимаю")
             else:
@@ -612,6 +628,38 @@ class VisualView(QObject):
 
     def video_models(self) -> list[dict[str, Any]]:
         return self._videos
+
+    def latest(self) -> list[dict[str, Any]]:
+        """The latest jobs, the newest first - the queue's among them (54.6: a film's improved videos)."""
+        return self._recent
+
+    def shown_job(self) -> dict[str, Any]:
+        """The job on the canvas (54.6: «Улучшить…» improves it); {} - none."""
+        return self._job
+
+    def queued(self, job: dict[str, Any]) -> None:
+        """A job the hub took from elsewhere - an improved video (54.6) - among the latest: the queue shows it."""
+        self._keep(job)
+        self.changed.emit()
+
+    def open_job(self, job_id: str) -> None:
+        """A job of the Studio's on its canvas - from «Режиссёр» (54.6: a film's improved video): one of the latest,
+        or asked of the hub."""
+        if self.busy:
+            return
+        found = next((j for j in self._recent if j["id"] == job_id), None)
+        if found is not None:
+            self.pick(job_id)
+            return
+
+        def got(result: dict[str, Any]) -> None:
+            job = result.get("job") or {}
+            if job.get("id") and not self.busy:
+                self._keep(job)
+                self._job, self._prompt = job, job.get("prompt", "")
+                self.changed.emit()
+
+        self.app._call(lambda: self.app.client.visual_job(job_id), got, lambda _e: None)
 
     def step_of(self, job_id: str) -> tuple[int, int]:
         """A job's step out of its steps; (0, 0) - none said yet."""
@@ -924,7 +972,7 @@ class VisualView(QObject):
     def saveAs(self, url: str) -> None:
         video = self._video_file(self._job)  # a video: its WebP as it is (29.8б), or MP4 from the hub (29.8в)
         target = QUrl(url).toLocalFile() if url.startswith("file:") else url
-        if video is not None and target and (video.suffix == LOUD or not target.lower().endswith(".webp")):
+        if video is not None and target and (video.suffix != ".webp" or not target.lower().endswith(".webp")):
             self._save_mp4(self._job["id"], target if target.lower().endswith(".mp4") else target + ".mp4")
             return
         data = video.read_bytes() if video is not None else self.provider.pictures.get(self._job.get("id", ""))

@@ -71,6 +71,12 @@ Item {
         onAccepted: Visual.saveAs(selectedFile.toString())
     }
 
+    ImproveSheet {  // 54.6: «Улучшить…» of the video shown
+        id: improveSheet
+        objectName: "improveSheet"
+        prefix: "improve"
+    }
+
     Item {  // 50.9: by hand, or the director's film
         id: kindBar
         visible: Films.available
@@ -478,6 +484,16 @@ Item {
                 iconName: "image"
                 text: qsTr("По этой картинке")
                 onClicked: Visual.fromThis()
+            }
+            PlainButton {
+                objectName: "visualImprove"  // 54.6: twice as large, 60 a second, slowed - a new video beside
+                visible: Visual.videoFile !== ""
+                iconName: "sparkle"
+                text: qsTr("Улучшить…")
+                onClicked: {
+                    Improve.openStudio()
+                    improveSheet.open()
+                }
             }
             PlainButton {
                 objectName: "visualSave"

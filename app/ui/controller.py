@@ -40,6 +40,7 @@ from .composer import Mentions
 from .computer_view import ComputerView
 from .connections import Connections
 from .editor import EditorView
+from .enhance_view import EnhanceView
 from .feed import Feed
 from .film_view import FilmView
 from .goal_view import GoalView
@@ -288,6 +289,7 @@ class Controller(QObject):
         self.history_view = HistoryView(self)  # «История файла»: a project file's versions (stage 26)
         self.visual_view = VisualView(self)  # «Нарисовать»: pictures (29.5, D55)
         self.film_view = FilmView(self)  # «Режиссёр» in the Studio: a film of scenes (50.9)
+        self.enhance_view = EnhanceView(self)  # «Улучшить ролик»: a video of the Studio's or a film's (54.6)
         self.setup_view.openRequested.connect(lambda: self.uiRequested.emit("setup-first-run"))
         self.setup_view.modelsRequested.connect(lambda: self.uiRequested.emit("setup-first-model"))  # 39.3
         self.contextChanged.connect(self.sandbox_view.load)  # another chat, or its mode changed
@@ -1941,6 +1943,8 @@ class Controller(QObject):
             self.visual_view.on_event(kind, payload)
         elif kind.startswith(("film.", "sound.")):  # the added sound is the film's (53.6)
             self.film_view.on_event(kind, payload)
+        elif kind.startswith("enhance."):
+            self.enhance_view.on_event(kind, payload)
         elif kind.startswith("gpu."):
             self.gpu_view.on_event(kind, payload)
         elif kind.startswith("setup."):

@@ -131,6 +131,7 @@ class QuickApp:
         context.setContextProperty("Installer", self.controller.install_view)
         context.setContextProperty("Visual", self.controller.visual_view)
         context.setContextProperty("Films", self.controller.film_view)
+        context.setContextProperty("Improve", self.controller.enhance_view)
         context.setContextProperty("Setup", self.controller.setup_view)
         context.setContextProperty("Release", self.controller.release_view)
         context.setContextProperty("Check", self.controller.check_view)
