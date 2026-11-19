@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fnmatch
+import itertools
 import logging
 import os
 import shutil
@@ -48,6 +49,7 @@ from common.i18n import N_, decimal, tr
 from common.paths import engines_home
 
 from . import engines, hf
+from . import ffmpeg as video
 from .engines import EngineError
 from .events import EventBus
 
@@ -97,7 +99,9 @@ ROOM = 1 << 30  # left free on the disk after a download
 TICK_S = 0.5  # how often a download is told to the window
 RUN_TIMEOUT_S = 3600.0  # one piece - a scene at most (54.1: RelayVSR 35 s for 121 frames, Real-ESRGAN ~1 s a frame)
 OUT_OF_CARD = "cannot make enough memory available"  # sd-cli's words when the card is too small for the piece
-FRAMES = "%06d.png"  # how the frames of a piece are named, in and out
+FRAMES = video.FRAME_NAME  # how the frames of a piece are named, in and out
+MOTIONS = ("fps60", "slow2", "slow4")  # (54.3) 60 frames a second over the same time; two or four times slower
+SMOOTH_FPS = 60
 
 
 class EnhanceError(Exception):
@@ -323,9 +327,41 @@ def detail_args(models: Path, source: Path, target: Path, *, frames: int, fps: i
             "-o", str(target / FRAMES)]  # fmt: skip
 
 
+def motion_frames(frames: int, motion: str, fps: int) -> int:
+    """How many frames a shot of `frames` becomes (54.3): 60 a second over the same time, or two or four times as
+    many at the video's own rate - so much slower."""
+    if motion == "fps60":
+        return max(frames, round(frames * SMOOTH_FPS / fps))
+    return frames * int(motion.removeprefix("slow"))
+
+
+def shots(count: int, cuts: list[int]) -> list[tuple[int, int]]:
+    """[first, end) of each shot of a video of `count` frames, by the frames where a new one begins (54.3)."""
+    return list(itertools.pairwise([0, *sorted({c for c in cuts if 0 < c < count}), count]))
+
+
+def _gather(frames: Path, first: int, end: int, piece: Path) -> None:
+    """The frames first..end-1 (from 0) of a folder moved into `piece`, numbered from 1 - a program takes a folder."""
+    piece.mkdir()
+    for n in range(first, end):
+        (frames / (FRAMES % (n + 1))).replace(piece / (FRAMES % (n - first + 1)))
+
+
+def _append(out: Path, whole: Path, made: int, wanted: int) -> int:
+    """A piece's frames that came out moved to the end of `whole`; how many `whole` has now. Not as many as asked -
+    the program did not do it."""
+    came = sorted(out.iterdir())
+    if len(came) != wanted:
+        raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=len(came),
+                             wanted=wanted))  # fmt: skip
+    for n, frame in enumerate(came, start=made + 1):
+        frame.replace(whole / (FRAMES % n))
+    return made + len(came)
+
+
 class Enhance:
-    """The parts (`state`, `install`, `stop`, `remove`) and their programs at work (`run`). The card is not taken
-    here: the Studio's job that runs them holds it."""
+    """The parts (`state`, `install`, `stop`, `remove`) and their programs at work (`run`, `make`). The card is not
+    taken here: the Studio's job that runs them holds it."""
 
     def __init__(self, bus: EventBus, *, tools: Path, models: Path, machine: Callable[[], dict[str, Any]]):
         self._bus = bus
@@ -458,3 +494,57 @@ class Enhance:
             raise EnhanceError(str(exc)) from None
         except EngineError as exc:
             raise EnhanceError(str(exc), 502) from None
+
+    async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
+                   motion: str | None = None, told: Callable[[float], Awaitable[None]] | None = None,
+                   ) -> Path:  # fmt: skip
+        """A video improved into `target` (MP4): its frames taken out by ffmpeg, made by the parts' programs, put
+        back together. `motion` (54.3): «fps60» - 60 frames a second over the same time, its sound kept; «slow2»,
+        «slow4» - so many times slower, at its own rate, without sound (a sound stretched so is not the sound). The
+        frames between are made shot by shot: none across a cut. `told(share)` - how far, after each piece. The
+        frames lie beside `target` meanwhile and are gone after, whatever happened."""
+        if motion is not None and motion not in MOTIONS:
+            raise EnhanceError(tr("нет такого улучшения"), 422)
+        if motion == "fps60" and fps >= SMOOTH_FPS:
+            raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
+        work = target.with_name(f".{target.stem}.work")
+        await asyncio.to_thread(engines.remove_tree, work)
+        try:
+            frames = work / "in"
+            count = await asyncio.to_thread(video.frames_out, ffmpeg, source, frames)
+            if motion is not None:
+                cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
+                frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel, told)
+            sound = None if motion in ("slow2", "slow4") else source
+            await asyncio.to_thread(video.from_frames, ffmpeg, frames, target,
+                                    fps=SMOOTH_FPS if motion == "fps60" else fps, sound=sound)  # fmt: skip
+        except EngineError as exc:
+            raise EnhanceError(str(exc), 502) from None
+        finally:
+            await asyncio.to_thread(engines.remove_tree, work)
+        return target
+
+    async def _smooth(self, frames: Path, work: Path, pieces: list[tuple[int, int]], motion: str, fps: int,
+                      cancel: asyncio.Event, told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
+        """RIFE shot by shot: each shot's frames into a folder of its own, the frames between them made, the shots
+        put one after another. A shot of one frame is that frame held."""
+        whole, made = work / "smooth", 0
+        whole.mkdir()
+        for n, (first, end) in enumerate(pieces):
+            if cancel.is_set():
+                raise EnhanceError(tr("остановлено"))
+            piece, out = work / "piece", work / "piece-out"
+            await asyncio.to_thread(_gather, frames, first, end, piece)
+            await asyncio.to_thread(out.mkdir)
+            wanted = motion_frames(end - first, motion, fps)
+            if end - first == 1:
+                for k in range(wanted):
+                    await asyncio.to_thread(shutil.copyfile, piece / (FRAMES % 1), out / (FRAMES % (k + 1)))
+            else:
+                await self.run("smooth", smooth_args(piece, out, wanted), cancel)
+            made = await asyncio.to_thread(_append, out, whole, made, wanted)
+            await asyncio.to_thread(engines.remove_tree, piece)
+            await asyncio.to_thread(engines.remove_tree, out)
+            if told is not None:
+                await told((n + 1) / len(pieces))
+        return whole

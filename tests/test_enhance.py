@@ -5,6 +5,9 @@ import asyncio
 import hashlib
 import io
 import json
+import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -16,8 +19,10 @@ from typing import ClassVar
 import pytest
 
 from common.paths import engines_home, models_home
-from hub import engines, enhance, hf
+from hub import engines, enhance, ffmpeg, hf
 from tests.test_visual import hub  # noqa: F401 - the Studio's stand
+
+FFMPEG = shutil.which("ffmpeg")
 
 FAKE = Path(__file__).with_name("fake_enhance.py")
 RIFE_ROOT = "rife-ncnn-vulkan-refs/heads/master-windows/"  # as TNTwise's archive nests it (54.1)
@@ -251,3 +256,94 @@ def test_a_part_runs_its_program_in_its_folder_and_stop_kills_it(stand, tmp_path
     assert sorted(f.name for f in out.iterdir()) == ["000001.png", "000002.png", "000003.png"]
     asked = hub.asked()[-1]["args"]
     assert asked[asked.index("--vsr-window-size") + 1] == "3"  # the window takes the whole piece (54.1)
+
+
+def two_shots(target, side=64):
+    """A video as a film may be: 48 frames of a moving picture, a hard cut, 24 frames of red - 24 a second, a tone of
+    440 Hz all along."""
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"testsrc=size={side}x{side}:rate=24:duration=2", "-f", "lavfi", "-i",
+                    f"color=c=red:size={side}x{side}:rate=24:duration=1", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=3", "-filter_complex",
+                    "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-pix_fmt",
+                    "yuv420p", "-g", "1", "-c:a", "aac", str(target)], check=True, timeout=60)  # fmt: skip
+
+
+def described(video):
+    """What ffmpeg says of a video: its frames a second, its size, whether it has sound, its length."""
+    said = subprocess.run([FFMPEG, "-hide_banner", "-i", str(video)], capture_output=True, timeout=60,
+                          check=False).stderr.decode("utf-8", "replace")  # fmt: skip
+    picture = re.search(r"Video: .*?, (\d+)x(\d+).*?, ([\d.]+) fps", said)
+    hours, minutes, seconds = re.search(r"Duration: (\d+):(\d+):([\d.]+)", said).groups()
+    return {"fps": float(picture.group(3)), "size": (int(picture.group(1)), int(picture.group(2))),
+            "sound": " Audio: " in said, "seconds": int(hours) * 3600 + int(minutes) * 60 + float(seconds)}  # fmt: skip
+
+
+def frames_of(video, into):
+    into.mkdir()
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-i", str(video), "-fps_mode", "passthrough",
+                    str(into / "%d.png")], check=True, timeout=60)  # fmt: skip
+    return sorted(into.iterdir(), key=lambda f: int(f.stem))
+
+
+def red(frame):
+    from PySide6.QtGui import QImage
+
+    image = QImage(str(frame))
+    pixel = image.pixelColor(image.width() // 2, image.height() // 2)
+    return pixel.red() > 200 and pixel.green() < 60 and pixel.blue() < 60
+
+
+def make(hub, source, target, *, stop_after=None, **how):  # noqa: F811
+    shares = []
+
+    async def told(share):
+        shares.append(share)
+
+    async def go():
+        cancel = asyncio.Event()
+        if stop_after is not None:
+            asyncio.get_running_loop().call_later(stop_after, cancel.set)
+        return await hub.app.state.enhance.make(source, target, cancel, ffmpeg=Path(FFMPEG), told=told, **how)
+
+    hub.portal.call(go)
+    return shares
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_a_video_is_made_smoother_or_slower_shot_by_shot_and_keeps_its_sound(stand, tmp_path, monkeypatch):
+    """54.3: «60 кадров в секунду» - ffmpeg takes the video apart into frames, finds where a new shot begins, RIFE
+    makes the frames between shot by shot (none across the cut), ffmpeg puts them together at 60 a second, the
+    video's sound with them; the same length. «Замедлить ×4» - four times the frames at the video's own rate, four
+    times longer, without sound. «Стоп» - nothing is left, not even the frames."""
+    hub = stand  # noqa: F811
+    source = tmp_path / "two-shots.mp4"
+    two_shots(source)
+    assert ffmpeg.cuts(Path(FFMPEG), source) == [48]  # the red shot begins at frame 48
+    install(hub, "smooth")
+
+    smooth = tmp_path / "smooth.mp4"
+    assert make(hub, source, smooth, fps=24, motion="fps60") == [0.5, 1.0]  # told after each shot
+    asked = [a["args"] for a in hub.asked() if a["program"] == "rife-ncnn-vulkan.exe"]
+    assert [a[a.index("-n") + 1] for a in asked] == ["120", "60"]  # 48 frames → 2 s at 60; 24 → 1 s
+    shown = described(smooth)
+    assert shown["fps"] == 60 and shown["sound"] and abs(shown["seconds"] - 3.0) < 0.1
+    frames = frames_of(smooth, tmp_path / "smooth")
+    assert len(frames) == 180 and not red(frames[119]) and red(frames[120])  # the cut where it was: none across
+    assert not list(tmp_path.glob(".*.work"))
+
+    slow = tmp_path / "slow.mp4"
+    make(hub, source, slow, fps=24, motion="slow4")
+    shown = described(slow)
+    assert shown["fps"] == 24 and not shown["sound"] and abs(shown["seconds"] - 12.0) < 0.1
+    assert len(frames_of(slow, tmp_path / "slow")) == 288
+
+    with pytest.raises(enhance.EnhanceError, match="уже 60"):
+        make(hub, smooth, tmp_path / "again.mp4", fps=60, motion="fps60")
+    monkeypatch.setenv("FAKE_ENHANCE_SLOW", "30")
+    stopped = tmp_path / "stopped.mp4"
+    began = time.monotonic()
+    with pytest.raises(enhance.EnhanceError, match="остановлено"):
+        make(hub, source, stopped, fps=24, motion="fps60", stop_after=1.0)
+    assert time.monotonic() - began < 15
+    assert not stopped.exists() and not list(tmp_path.glob(".*.work")) and not list(tmp_path.glob("*.part"))

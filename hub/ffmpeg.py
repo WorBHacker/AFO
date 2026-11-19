@@ -8,8 +8,8 @@ program AFO runs, never linked: its GPL build (with x264) is the user's download
 For the director's film (50.3) the same ffmpeg takes a clip's last frame (the next scene goes on from it), the
 frames asked for by number, and joins scenes into one MP4 - cut to cut or with a cross-fade.
 
-The video is not made smoother by RIFE (planned in docs/visual.md §4.6): Wan2.2-TI2V-5B gives 24 frames a second
-itself (29.8а live) - RIFE ×2 was for models of 16.
+For «Улучшить ролик» (54.3) it takes a video apart into frames for the programs (hub/enhance.py), finds where a new
+shot begins - the frames between are not made across it - and puts the frames back together, the sound with them.
 """
 
 from __future__ import annotations
@@ -191,6 +191,54 @@ def frames_at(program: Path, source: Path, folder: Path, numbers: list[int], *, 
     if not all(f.is_file() for f in found):
         raise EngineError(tr(words, said=tr("в видео меньше кадров, чем спрошено")))
     return found
+
+
+CUT_SCORE = 10.0  # (54.1) scdet's score of a hard cut between two clips - 38; the rest of a film's frames 3.3 at most
+FRAME_NAME = "%06d.png"  # (54.3) a video's frames in a folder: 000001.png, 000002.png...
+
+
+def frames_out(program: Path, source: Path, folder: Path) -> int:
+    """All of a video's frames as PNGs in `folder`, by FRAME_NAME (54.3, blocking): what «Улучшить ролик» gives its
+    programs; how many."""
+    folder.mkdir(parents=True, exist_ok=True)
+    _run(program, ["-i", str(source), "-fps_mode", "passthrough", str(folder / FRAME_NAME)],
+         N_("ffmpeg не разобрал видео на кадры: {said}"), timeout=JOIN_TIMEOUT_S)  # fmt: skip
+    count = sum(1 for _ in folder.glob("*.png"))
+    if not count:
+        raise EngineError(tr("ffmpeg не разобрал видео на кадры: {said}", said=tr("кадров нет")))
+    return count
+
+
+def cuts(program: Path, source: Path) -> list[int]:
+    """Where a new shot begins in a video - its frames' numbers, from 0 (54.3, blocking): ffmpeg's scene detector,
+    a score past CUT_SCORE. A film's scenes that go on from the last frame of the one before have none (54.1)."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    command = [str(program), "-hide_banner", "-i", str(source), "-an", "-vf",
+               f"scdet=threshold={CUT_SCORE:g},metadata=print:file=-", "-f", "null", "-"]  # fmt: skip
+    try:
+        done = subprocess.run(command, capture_output=True, timeout=JOIN_TIMEOUT_S, creationflags=flags, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EngineError(tr("ffmpeg не запустился: {error}", error=exc)) from exc
+    if done.returncode != 0:
+        said = " ".join((done.stderr or b"").decode("utf-8", "replace").split())[-300:]
+        raise EngineError(tr("ffmpeg не нашёл стыки сцен: {said}", said=said or done.returncode))
+    found, frame = [], -1
+    for line in (done.stdout or b"").decode("utf-8", "replace").splitlines():
+        if line.startswith("frame:"):
+            frame = int(line.split()[0].removeprefix("frame:"))
+        elif line.startswith("lavfi.scd.time=") and frame > 0:
+            found.append(frame)
+    return found
+
+
+def from_frames(program: Path, folder: Path, target: Path, *, fps: int, sound: Path | None = None) -> None:
+    """A video of the PNG frames in `folder` (FRAME_NAME) at `fps` (54.3, blocking): H.264 as `to_mp4` makes it,
+    with the sound of `sound` - another video - when it has one, cut to the picture's length."""
+    args = ["-framerate", str(fps), "-i", str(folder / FRAME_NAME)]
+    if sound is not None:
+        args += ["-i", str(sound), "-map", "0:v", "-map", "1:a?", "-shortest"]
+    _written(program, [*args, *H264], target, N_("ffmpeg не собрал видео из кадров: {said}"),
+             timeout=JOIN_TIMEOUT_S)  # fmt: skip
 
 
 def join(program: Path, clips: list[tuple[Path, float]], target: Path, *, fps: int, fade_s: float = 0.0) -> None:
