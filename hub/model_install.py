@@ -544,6 +544,19 @@ def sound_of(row: dict[str, Any], sets: list[dict[str, Any]]) -> str:
     return "add" if can and row.get("status") == "done" else ""
 
 
+def flags_now(plan: dict[str, Any], sets: list[dict[str, Any]]) -> list[str]:
+    """The flags a picture model's block is written with: its family's in the catalog of today and what the install
+    added for this computer (`--vae-tiling`); a family the catalog has no more - as it was installed. (52.7 live: a
+    block written again - «Добавить звук», «Повторить» - kept the flags of the day of the install, and LTX without
+    its later `--flash-attn auto,te=off` filmed one still picture.)"""
+    was = list(plan.get("flags") or [])
+    family = next((e for e in sets if e["id"] == plan.get("set")), None)
+    if family is None:
+        return was
+    tiles = "--vae-tiling" in was and "--vae-tiling" not in family["flags"]
+    return [*family["flags"], *(["--vae-tiling"] if tiles else [])]
+
+
 def _pictures_root(folder: Path) -> Path:
     """The «pictures» folder a picture install lies in (its own folder is one or two below it: a set's, a found
     repository's): the family's shared files are beside, in `SHARED`."""
@@ -2241,7 +2254,7 @@ class Installer:
                 blocks.append((f"{found['model_id']}-cpu", SD_CPU_MACRO, tr(
                     "{name}, установлена AFO: рисует картинки процессором, когда видеокарта не может.",
                     name=found["name"]), tr("{name} — на процессоре", name=found["name"])))  # fmt: skip
-            ids = []
+            ids, flags = [], flags_now(found["plan"], await asyncio.to_thread(picture_sets))
             for wanted, macro, description, name in blocks:
                 block_id = wanted
                 if block_id in llama_config.model_blocks(text):
@@ -2255,7 +2268,7 @@ class Installer:
                     description=description,
                     server=f"${{{macro}}}",
                     files={f["role"]: str(_dest(folder, f)) for f in found["files"] if f["role"] != "engine"},
-                    flags=list(found["plan"].get("flags") or []),
+                    flags=flags,
                     metadata={
                         "source": f"huggingface.co/{found['repo']}",
                         "license": found["license"] or "?",
@@ -2272,7 +2285,8 @@ class Installer:
                 await asyncio.to_thread(llama_config.restore, path, first or backup)  # as it was before all this
                 raise InstallError(tr("llama-swap не принял новую модель ({problem}) — конфиг возвращён",
                                       problem=problem), 502)  # fmt: skip
-        await self._set(job_id, model_id=model_id, plan={**found["plan"], **({"cpu": cpu_id} if cpu_id else {})})
+        await self._set(job_id, model_id=model_id,
+                        plan={**found["plan"], "flags": flags, **({"cpu": cpu_id} if cpu_id else {})})  # fmt: skip
         await self._bus.publish("llama.config", {"model_id": model_id, "installed": True, "backup": backup.name})
         return ok
 

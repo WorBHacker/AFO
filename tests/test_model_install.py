@@ -940,8 +940,12 @@ def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, 
     assert refused.status_code == 409 and "без звука" in refused.json()["detail"]
 
     sound = {"role": "audio-vae", "repo": "test/Sound-Vae", "path": "vae/clip_audio_vae.safetensors"}
-    catalog["pictures"] = [DRAW, {**CLIP, "files": [*CLIP["files"], sound]}]
+    # (52.7 live) and its flags of today: the stand's LTX, installed before the family got `--flash-attn auto,te=off`,
+    # had its block written again with the flags of that day - and filmed one still picture
+    today = {**CLIP, "files": [*CLIP["files"], sound], "flags": [*CLIP["flags"], "--flash-attn", "auto,te=off"]}
+    catalog["pictures"] = [DRAW, today]
     mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    assert "--flash-attn" not in lc.model_view(hub.config.read_text(encoding="utf-8"), "clip")["command"]
     assert row(job["id"])["sound"] == "add" and row(draw["id"])["sound"] == ""
     assert not hub.get("/v1/visual/models").json()["videos"][0]["sound"]
     FakeHub.picture_auth.clear()
@@ -957,6 +961,8 @@ def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, 
     assert len(FakeHub.picture_auth) == 1  # the one file fetched, nothing else again
     view = lc.model_view(hub.config.read_text(encoding="utf-8"), "clip")
     assert f'--audio-vae "{kept.as_posix()}"' in view["command"] and "--t5xxl" in view["command"]
+    assert "--flash-attn auto,te=off" in view["command"]  # the family's flags of today, kept in the row
+    assert row(job["id"])["plan"]["flags"] == today["flags"]
     assert list(lc.model_blocks(hub.config.read_text(encoding="utf-8"))).count("clip") == 1
     assert len(FakeLlamaSwap.video) == trials + 1  # tried again, with the file
     # (52.7 live) a block written again under its own name: llama-swap names the model before it has reread the
