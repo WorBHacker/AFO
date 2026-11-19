@@ -496,3 +496,38 @@ def test_a_films_added_sound_is_mixed_the_voice_over_the_rest(tmp_path, monkeypa
     with pytest.raises(EngineError):
         ffmpeg.dub(program, silent, tmp_path / "broken.mp4", seconds=6.0, music=tmp_path / "missing.wav")
     assert not (tmp_path / "broken.mp4").exists() and not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_made_piece_is_levelled_by_what_is_heard_of_it_not_by_its_rumble(tmp_path):
+    """53.7, the live film - a real ffmpeg: the engine of sound gives a scene's «wind» with nine tenths of its energy
+    below 60 Hz, and music with a loud bottom no loudspeaker of a notebook gets. Levelled as they came, what is heard
+    of them sank 20-30 dB under its place. A made piece is cut below its kind's frequency before it is measured and
+    mixed: what is heard comes to the kind's level, the rumble is gone; the user's own music is left as it is."""
+    program = Path(shutil.which("ffmpeg"))
+    quiet = [str(program), "-hide_banner", "-loglevel", "error", "-y"]
+    silent = tmp_path / "silent.mp4"
+    subprocess.run([*quiet, "-f", "lavfi", "-i", "testsrc=size=64x64:rate=24:duration=6", "-c:v", "libx264", "-g",
+                    "1", "-pix_fmt", "yuv420p", str(silent)], check=True, timeout=60)  # fmt: skip
+
+    def rumbling(name: str, hz: int, seconds: float) -> Path:
+        """A loud rumble of 30 Hz and, 30 dB under it, the sound itself."""
+        subprocess.run([*quiet, "-f", "lavfi", "-i", f"sine=frequency=30:sample_rate=48000:duration={seconds}", "-f",
+                        "lavfi", "-i", f"sine=frequency={hz}:sample_rate=48000:duration={seconds}",
+                        "-filter_complex", "[0:a]volume=4[low];[1:a]volume=0.12[high];[low][high]amix=inputs=2:"
+                        "normalize=0", "-ac", "1", str(tmp_path / name)], check=True, timeout=60)  # fmt: skip
+        return tmp_path / name
+
+    effect, music = rumbling("wind.wav", 1760, 2.0), rumbling("music.wav", 660, 6.0)
+    assert ffmpeg.loudness(program, effect) - ffmpeg.loudness(program, effect, ffmpeg.EFFECT_CUT) > 20
+
+    film = tmp_path / "film.mp4"
+    ffmpeg.dub(program, silent, film, seconds=6.0, music=music, effects=[(effect, 3.0, 2.0)])
+    assert -30 < _band(program, film, 1760, 3.4, 1.2) < -19  # the scene's sound at its level
+    assert -34 < _band(program, film, 660, 0.8, 1.6) < -23  # the music at its own
+    # the rumble, 30 dB over the sound as it came, is under it now
+    assert _band(program, film, 30, 0.8, 1.6) < -32 and _band(program, film, 30, 3.4, 1.2) < -28
+
+    own = tmp_path / "own.mp4"  # the user's own music: its bottom is its own
+    ffmpeg.dub(program, silent, own, seconds=6.0, music=music, own_music=True)
+    assert _band(program, own, 30, 0.8, 1.6) > -32 and _band(program, own, 660, 0.8, 1.6) < -50

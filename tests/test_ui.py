@@ -10562,7 +10562,7 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
                                     "seconds": 2.0, "file": "j1.png"}]  # fmt: skip
         client.films_list = [{"id": "f1", "idea": "Ролик о лампе", "seconds": 15, "shape": "wide", "photo": "",
                               "director": "", "model_id": "", "status": "ready", "error": "", "file": "", "fade": 0.0,
-                              "tokens": 0, "cost_usd": 0.0,
+                              "tokens": 0, "cost_usd": 0.0, "music_file": "2026-11/film-f1-own-1.mp3",
                               "scenes": film_scenes("new", "new", "new", "new")}]  # «Режиссёр»: a film  # fmt: skip
         for program in client.program_list:
             program["fresh"] = False  # the question about a new program would cover the screens
@@ -10632,6 +10632,12 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         go(scene.property("contentItem"))
         QMetaObject.invokeMethod(scene, "close")
         wait_until(lambda: not scene.property("visible"))
+        click(window, item_named(window.contentItem(), "filmAdded"))  # «Звук фильма…» (53.6): the film's music
+        added = window.findChild(QObject, "soundSheet")
+        wait_until(lambda: added.property("opened"))
+        go(added.property("contentItem"))
+        QMetaObject.invokeMethod(added, "close")
+        wait_until(lambda: not added.property("visible"))
         app.film_view.setKind("manual")
         app.setMode("chats")
 

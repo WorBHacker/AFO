@@ -1046,7 +1046,7 @@ class Director:
                 note = made["note"]
                 await self._studio.with_ffmpeg(target, lambda program: ffmpeg.dub(
                     program, cut, target, seconds=added["seconds"], lines=made["lines"], music=made["music"],
-                    effects=made["effects"]))  # fmt: skip
+                    effects=made["effects"], own_music=isinstance(added["music"], Path)))  # fmt: skip
                 used = {p for p, *_ in (*made["lines"], *made["effects"])} | {made["music"]}
                 await asyncio.to_thread(self._unlink_pieces, film_id, used)
         except (visual.VisualError, SoundError) as exc:

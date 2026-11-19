@@ -241,19 +241,27 @@ def join(program: Path, clips: list[tuple[Path, float]], target: Path, *, fps: i
 # (53.5) the film's added sound, each kind at a mean volume of its own, dB: the voice is heard over the rest
 VOICE_DB, MUSIC_DB, EFFECT_DB = -18.0, -27.0, -23.0
 GAIN_DB = 24.0  # the most a track is made louder or quieter to come to its level
+# (53.7, the live film) a piece made by the engine of sound is cut below its kind's frequency before it is measured
+# and mixed: what lies there is a rumble no ear and no ordinary loudspeaker gets - but it was most of the piece (a
+# scene's «wind»: 90% of its energy below 60 Hz; music: 40% between 20 and 60), so the level was set by it and what
+# is heard sank 20-30 dB under its place. The user's own music is left as it is.
+VOICE_CUT = "highpass=f=90"
+MUSIC_CUT = "highpass=f=80,highpass=f=80"  # twice: a steep cut - the bottom is loud
+EFFECT_CUT = "highpass=f=100,highpass=f=100"
 # what is not the voice goes down while the voice speaks: about 10 dB under a voice of VOICE_DB
 DUCK = "sidechaincompress=threshold=0.03:ratio=8:attack=15:release=400"
 MUSIC_FADES_S = (0.5, 1.5)  # music comes in and goes out
 EFFECT_FADE_S = 0.15  # a scene's made sound comes in and goes out: no click at a cut
 
 
-def _measured(program: Path, source: Path) -> tuple[float | None, float | None]:
-    """A file's sound as ffmpeg measures it (blocking): (its mean volume in dB, its length in seconds); None - it
-    has no sound, or cannot be read."""
+def _measured(program: Path, source: Path, cut: str = "") -> tuple[float | None, float | None]:
+    """A file's sound as ffmpeg measures it (blocking): (its mean volume in dB - `cut`: after that filter -, its
+    length in seconds); None - it has no sound, or cannot be read."""
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
-        done = subprocess.run([str(program), "-hide_banner", "-i", str(source), "-vn", "-af", "volumedetect", "-f",
-                               "null", "-"], capture_output=True, timeout=CONVERT_TIMEOUT_S, creationflags=flags,
+        heard = f"{cut},volumedetect" if cut else "volumedetect"
+        done = subprocess.run([str(program), "-hide_banner", "-i", str(source), "-vn", "-af", heard, "-f", "null",
+                               "-"], capture_output=True, timeout=CONVERT_TIMEOUT_S, creationflags=flags,
                               check=False)  # fmt: skip
     except OSError, subprocess.TimeoutExpired:
         return None, None
@@ -264,9 +272,10 @@ def _measured(program: Path, source: Path) -> tuple[float | None, float | None]:
     return (float(mean.group(1)), seconds) if mean else (None, None)
 
 
-def loudness(program: Path, source: Path) -> float | None:
-    """The mean volume of a file's sound, dB (blocking); None - it has none, or cannot be read."""
-    return _measured(program, source)[0]
+def loudness(program: Path, source: Path, cut: str = "") -> float | None:
+    """The mean volume of a file's sound, dB (blocking) - `cut`: of what that filter leaves of it; None - it has
+    none, or cannot be read."""
+    return _measured(program, source, cut)[0]
 
 
 def _level(now: float | None, wanted: float) -> str:
@@ -278,13 +287,15 @@ def _level(now: float | None, wanted: float) -> str:
 
 
 def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: list[tuple[Path, float]] | None = None,
-        music: Path | None = None, effects: list[tuple[Path, float, float]] | None = None) -> None:  # fmt: skip
+        music: Path | None = None, effects: list[tuple[Path, float, float]] | None = None,
+        own_music: bool = False) -> None:  # fmt: skip
     """The joined film with its added sound (53.5, blocking): the picture as it is - copied, not coded anew - and
     one sound track of `seconds`: the film's own sound (its scenes', when they have one), the scenes' made sounds
     (`effects`: file, the second it begins at, how long it is), music under the whole film (`music`: a shorter one
     goes round again; it comes in and fades out) and the narrator's lines, each at its second (`lines`; one that
     runs past the film's end is cut there). Each kind is brought to its own mean volume; while the narrator speaks,
-    all the rest goes down.
+    all the rest goes down. A made piece is cut below its kind's frequency first (VOICE_CUT...), and its volume is
+    that of what is left; `own_music` - the music is the user's file: as it is.
 
     Every sound is cut to its length where it is read (`-t` before its `-i`), and a track is made as long as the
     film by mixing it with silence of that length - nothing in the graph throws a sound's end away. Cut inside the
@@ -302,17 +313,19 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
         if length <= 2 * EFFECT_FADE_S:
             continue
         args += ["-t", f"{length:.3f}", "-i", str(clip)]
-        graph.append(f"[{at}:a]{SOUND},{_level(loudness(program, clip), EFFECT_DB)},afade=t=in:d={EFFECT_FADE_S},"
+        level = _level(loudness(program, clip, EFFECT_CUT), EFFECT_DB)
+        graph.append(f"[{at}:a]{EFFECT_CUT},{SOUND},{level},afade=t=in:d={EFFECT_FADE_S},"
                      f"afade=t=out:st={length - EFFECT_FADE_S:.3f}:d={EFFECT_FADE_S},"
                      f"adelay={round(begins * 1000)}:all=1[e{at}]")  # fmt: skip
         bed.append(f"[e{at}]")
         at += 1
     if music is not None:
-        mean, long = _measured(program, music)
+        cut = "" if own_music else MUSIC_CUT
+        mean, long = _measured(program, music, cut)
         again = max(0, math.ceil(seconds / long) - 1) if long else 0  # times it goes round after the first
         args += [*(["-stream_loop", str(again)] if again else []), "-t", f"{seconds:.3f}", "-i", str(music)]
         come, go = MUSIC_FADES_S
-        graph.append(f"[{at}:a]{SOUND},{_level(mean, MUSIC_DB)},afade=t=in:d={come},"
+        graph.append(f"[{at}:a]{cut + ',' if cut else ''}{SOUND},{_level(mean, MUSIC_DB)},afade=t=in:d={come},"
                      f"afade=t=out:st={max(0.0, seconds - go):.3f}:d={go}[music]")  # fmt: skip
         bed.append("[music]")
         at += 1
@@ -320,8 +333,8 @@ def dub(program: Path, source: Path, target: Path, *, seconds: float, lines: lis
         if seconds - begins < 0.1:  # a line that would begin where the film ends
             continue
         args += ["-t", f"{seconds - begins:.3f}", "-i", str(clip)]
-        level = _level(loudness(program, clip), VOICE_DB)
-        graph.append(f"[{at}:a]{SOUND},{level},adelay={round(begins * 1000)}:all=1[l{at}]")
+        level = _level(loudness(program, clip, VOICE_CUT), VOICE_DB)
+        graph.append(f"[{at}:a]{VOICE_CUT},{SOUND},{level},adelay={round(begins * 1000)}:all=1[l{at}]")
         said.append(f"[l{at}]")
         at += 1
     if not bed and not said:
