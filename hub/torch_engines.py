@@ -237,9 +237,11 @@ def script_of(engine: str) -> Path:
 def fingerprint(engine: str) -> dict[str, Any]:
     """What an engine was put in with: another one in AFO's code - it is put in anew."""
     spec = ENGINES[engine]
-    return {"python": PYTHON, "torch": [t["sha256"] for t in TORCH], "code": (spec["code"] or {}).get("sha256"),
-            "packages": list(spec.get("packages", ())), "pins": [*TORCH_PINS, *spec["pins"]],
-            "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
+    found = {"python": PYTHON, "torch": [t["sha256"] for t in TORCH], "code": (spec["code"] or {}).get("sha256"),
+             "pins": [*TORCH_PINS, *spec["pins"]], "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
+    if spec.get("packages"):  # (58) only an engine that has them: SAM put in by 56 stays put in
+        found["packages"] = list(spec["packages"])
+    return found
 
 
 def torch_here(base: Path) -> bool:

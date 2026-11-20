@@ -84,6 +84,7 @@ def test_the_replace_engine_is_put_in_beside_another_and_takes_what_afo_has(stan
     assert os.path.samefile(encoder, near)  # linked, not a copy
     assert not [p for p in FakeFiles.asked if p.endswith(".gguf")]
     assert torch_engines.fingerprint("replace")["code"] is None
+    assert "packages" not in torch_engines.fingerprint("select")  # SAM put in by 56 is not taken for missing
 
     monkeypatch.setenv("FAKE_UV_SLOW", "3")
     hub.delete("/v1/enhance/parts/select")

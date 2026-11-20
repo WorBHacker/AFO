@@ -117,7 +117,12 @@ STEPS = {True: 20, False: 25}  # «Быстрее», «Тщательнее» (5
 VACE_FPS = 16  # «Быстрее» draws a video of 24 a second at 16; RIFE makes the frames between
 GUIDANCE, SEED = 5.0, 42  # without guidance - a blur (58.1)
 GROW, FEATHER = 9, 4  # the object's mask grown at VACE's size; the drawn area's soft edge at the video's
-NEGATIVE = "blurry, distorted, deformed, low quality, flicker, watermark, text"
+# Wan's own negative words, as its examples give them (58.6: with a short one a background drawn anew was all a net of
+# dots - the same with the full umT5 and English words; with these - clean)
+NEGATIVE = ("Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, "
+            "overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, "
+            "poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still "
+            "picture, messy background, three legs, many people in the background, walking backwards")  # fmt: skip
 WORDS_MAX = 500
 STEP_S = 40.0  # a step at most, for the time out (58.1: 17.8-19.3 s, the VAE besides)
 LOAD_S = 1200.0  # the model and umT5 loaded, the text encoded
