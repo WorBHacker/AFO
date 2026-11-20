@@ -155,7 +155,7 @@ def test_the_programs_that_improve_a_video_are_fetched_as_parts_and_keep_only_wh
         ("smooth", "missing", sizes["windows.zip"]),
         ("sharp", "missing", sizes["realesrgan-ncnn-vulkan-20220424-windows.zip"]),
         ("detail", "missing", sizes[SD_ARCHIVE] + sizes[engines.SD_RUNTIME] + weights)]  # fmt: skip
-    assert [p["id"] for p in was["parts"][3:]] == ["select"]  # (56) the engine on PyTorch after them
+    assert [p["id"] for p in was["parts"][3:]] == ["select", "replace"]  # (56, 58) the engines on PyTorch after them
     assert hub.post("/v1/enhance/parts/sparkle").status_code == 404
 
     FakeSources.corrupt = {"windows.zip"}
@@ -232,7 +232,8 @@ def test_a_part_runs_its_program_in_its_folder_and_stop_kills_it(stand, tmp_path
     assert missing.value.status == 422 and "Плавность" in str(missing.value)
     install(hub, "smooth")
     run("smooth", enhance.smooth_args(source, target, 7))
-    assert [f.read_bytes() for f in sorted(target.iterdir())] == [b"frame %d" % n for n in (1, 1, 2, 2, 2, 3, 3)]
+    # (58) frame k is at k × 3 / 7 of the inputs - where the real RIFE puts them
+    assert [f.read_bytes() for f in sorted(target.iterdir())] == [b"frame %d" % n for n in (1, 1, 1, 2, 2, 3, 3)]
     asked = hub.asked()[-1]
     assert asked["program"] == "rife-ncnn-vulkan.exe" and Path(asked["cwd"]) == enhance.folder(service.tools, "smooth")
     assert asked["args"][asked["args"].index("-m") + 1] == enhance.RIFE_MODEL
@@ -528,7 +529,7 @@ def test_the_windows_client_improves_a_video_through_the_hub(stand, monkeypatch)
     hub = stand  # noqa: F811
     monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
     client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
-    assert [p["state"] for p in client.enhance()["parts"]] == ["missing", "missing", "missing", "missing"]
+    assert [p["state"] for p in client.enhance()["parts"]] == ["missing"] * 5
     assert client.install_enhance("smooth")["parts"][0]["state"] in ("loading", "ready")
     wait_part(hub, "smooth", "ready")
     assert any(kind == "enhance.changed" for kind, _p in hub.seen) and matches("enhance.changed", tuple(TOPICS))

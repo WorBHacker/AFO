@@ -35,10 +35,13 @@ def uv_archive():
 
 UV_ZIP = uv_archive()
 WEIGHTS = b"sam2.1" * 50000
+# (58) the replace engine's files - each its own bytes, as many as there are of it
+REPLACE = {w["path"]: (w["path"].encode() + b"|") * (40 if w["path"].endswith((".safetensors", ".gguf")) else 2)
+           for w in torch_engines.ENGINES["replace"]["weights"]}  # fmt: skip
 
 
 class FakeFiles(BaseHTTPRequestHandler):
-    """uv's archive where GitHub keeps it, SAM 2.1's weights where Hugging Face does; a wrong byte when asked."""
+    """uv's archive where GitHub keeps it, the engines' weights where Hugging Face does; a wrong byte when asked."""
 
     corrupt: ClassVar[set] = set()
     asked: ClassVar[list] = []
@@ -48,11 +51,12 @@ class FakeFiles(BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).asked.append(self.path)
-        spec = torch_engines.ENGINES["select"]["weights"][0]
+        served = {f"/{w['hf']}/resolve/{w['revision']}/{w['path']}": REPLACE.get(w["path"], WEIGHTS)
+                  for spec in torch_engines.ENGINES.values() for w in spec["weights"]}  # fmt: skip
         if self.path == "/" + torch_engines.UV["url"].split("://", 1)[1]:
             body = UV_ZIP
-        elif self.path == f"/{spec['hf']}/resolve/{spec['revision']}/{spec['path']}":
-            body = WEIGHTS
+        elif self.path in served:
+            body = served[self.path]
         else:
             self.send_response(404)
             self.end_headers()
@@ -80,6 +84,10 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     spec = torch_engines.ENGINES["select"]
     weight = spec["weights"][0] | {"size": len(WEIGHTS), "sha256": hashlib.sha256(WEIGHTS).hexdigest()}
     monkeypatch.setitem(torch_engines.ENGINES, "select", spec | {"weights": (weight,)})
+    spec = torch_engines.ENGINES["replace"]
+    weights = tuple(w | {"size": len(REPLACE[w["path"]]), "sha256": hashlib.sha256(REPLACE[w["path"]]).hexdigest()}
+                    for w in spec["weights"])  # fmt: skip
+    monkeypatch.setitem(torch_engines.ENGINES, "replace", spec | {"weights": weights})
     monkeypatch.setattr(torch_engines, "command", lambda program: [sys.executable, str(FAKE_UV)])
     monkeypatch.setattr(torch_engines, "script_of", lambda engine: FAKE_ENGINE)
     monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)

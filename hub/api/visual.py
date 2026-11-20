@@ -112,15 +112,30 @@ class Subject(BaseModel):
     y: float = Field(ge=0.0, le=1.0)
 
 
+class Draw(BaseModel):
+    """(58) «Заменить предмет» (`object`), «Заменить фон» (`background`) - where the object was clicked, what to
+    draw; «Формат» (`edges`) - the format the edges are drawn to. `fast` - «Быстрее», else «Тщательнее»."""
+
+    kind: Literal["object", "background", "edges"]
+    words: str = Field(default="", max_length=500)
+    fast: bool = True
+    share: float | None = Field(default=None, ge=0.0, le=1.0)
+    x: float | None = Field(default=None, ge=0.0, le=1.0)
+    y: float | None = Field(default=None, ge=0.0, le=1.0)
+    canvas: Literal["9:16", "1:1", "16:9"] | None = None
+
+
 class Improve(BaseModel):
     """«Улучшить ролик» (54.5): a video of the Studio's or a film's joined one; twice as large (fast or with
-    details), 60 frames a second or slowed, only the object clicked (56) - any of them, or several."""
+    details), 60 frames a second or slowed, only the object clicked (56), an object, the background or the edges
+    drawn anew (58) - any of them, or several (`select` and `draw` - not together)."""
 
     from_job: str = Field(default="", max_length=64)
     film: str = Field(default="", max_length=64)
     size: Literal["sharp", "detail"] | None = None
     motion: Literal["fps60", "slow2", "slow4"] | None = None
     select: Subject | None = None
+    draw: Draw | None = None
 
 
 @router.post("/improve")

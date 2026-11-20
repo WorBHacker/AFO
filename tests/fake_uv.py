@@ -26,12 +26,29 @@ def value(args, flag):
     return args[args.index(flag) + 1] if flag in args else None
 
 
+def appended(path, line):
+    """A line to the end of a log several stand-ins write at once (58.2: two installs) - one at a time, by a lock
+    file: Windows' append from two processes may write one over the other."""
+    lock, deadline, held = f"{path}.lock", time.monotonic() + 30, None
+    while held is None and time.monotonic() < deadline:
+        try:
+            held = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            time.sleep(0.01)
+    try:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(line)
+    finally:
+        if held is not None:
+            os.close(held)
+            os.unlink(lock)
+
+
 def main():
     args = sys.argv[1:]
     if log := os.environ.get("FAKE_UV_LOG"):
         seen = {k: v for k, v in os.environ.items() if k.startswith(("UV_", "SAM2_")) or k in ("TEMP", "TMP")}
-        with open(log, "a", encoding="utf-8") as out:
-            out.write(json.dumps({"args": args, "cwd": os.getcwd(), "env": seen}) + "\n")
+        appended(log, json.dumps({"args": args, "cwd": os.getcwd(), "env": seen}) + "\n")
     (Path(tempfile.mkdtemp()) / "build.txt").write_text("a build's file", encoding="utf-8")  # as a build leaves
     if args[:2] == ["python", "install"]:
         if "--no-bin" not in args or "--no-registry" not in args:

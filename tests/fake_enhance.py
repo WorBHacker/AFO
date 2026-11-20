@@ -1,8 +1,9 @@
 """A stand-in of «Улучшить ролик»'s programs (stage 54; hub/enhance.py) - a real process, started as
 `python fake_enhance.py <the program's name> <its arguments>`, in the program's folder as the hub starts it.
 
-- rife-ncnn-vulkan.exe -i <in> -o <out> -n <frames> -m <model> -f <pattern>: `frames` frames into <out>, each a copy
-  of the input frame nearest its time; the model's folder must lie beside it.
+- rife-ncnn-vulkan.exe -i <in> -o <out> -n <frames> -m <model> -f <pattern>: `frames` frames into <out>, frame k a
+  copy of the input frame at or before its time k × inputs / frames - where the real one puts its inputs (58.1: input
+  j is output j × frames / inputs exactly); the model's folder must lie beside it.
 - realesrgan-ncnn-vulkan.exe -i <in> -o <out> -n <model> -s 4 -f png: each input frame four times larger, by its
   name; the model's files must lie in models/.
 - sd-cli.exe -M vid_upscale ... --input-frames <in> --upscale-factor 2 -o <out>/%06d.png: each input frame twice as
@@ -55,8 +56,8 @@ def main():
             sys.exit(2)
         frames = sorted(source.iterdir())
         for k in range(count):
-            nearest = frames[round(k * (len(frames) - 1) / max(count - 1, 1))]
-            shutil.copyfile(nearest, target / (value(args, "-f") % (k + 1)))
+            at = frames[min(k * len(frames) // count, len(frames) - 1)]
+            shutil.copyfile(at, target / (value(args, "-f") % (k + 1)))
     elif name == "realesrgan-ncnn-vulkan.exe":
         source, target = Path(value(args, "-i")), Path(value(args, "-o"))
         if not Path("models", value(args, "-n") + ".param").is_file():

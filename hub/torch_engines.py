@@ -23,11 +23,20 @@ The engines (`ENGINES`):
   followed through a video from one point (hub/torch_scripts/select.py). Its code - the archive of its commit,
   built without its CUDA extension (`SAM2_BUILD_CUDA=0`: only a mask's small holes are not filled; no compiler), its
   weights from Hugging Face by revision.
+- «Замена и дорисовка» (`replace`, stage 58): Wan2.1-VACE-1.3B (Wan-AI, Apache-2.0) through diffusers'
+  WanVACEPipeline - an object or the background drawn anew, a frame's edges drawn (hub/torch_scripts/replace.py).
+  No code archive: its libraries from PyPI by their pins (the last for Python 3.10 - diffusers 0.41.0, 58). The
+  text encoder is city96's umT5-xxl Q4_K_M GGUF (3.7 GB), not the repository's bf16 (11.4 GB): 58.1 saw the same
+  frames; when AFO's Wan2.2 holds it already (`near`), it is linked, not fetched.
+
+Two engines put in or taken off at once (58.2): what they share - uv, its Python, PyTorch in uv's cache - is made by
+one at a time (`_SHARED`), and the last one taken off leaves the shared folder to an engine still being put in.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -85,7 +94,53 @@ ENGINES: dict[str, dict[str, Any]] = {
                      "path": "sam2.1_hiera_large.pt", "size": 898083611,
                      "sha256": "2647878d5dfa5098f2f8649825738a9345572bae2d4350a2468587ece47dd318"},),
     },
+    "replace": {
+        "name": N_("Замена и дорисовка"),
+        "about": N_("Wan2.1 VACE: заменить предмет или фон, дорисовать края — видеокарта NVIDIA от 16 ГБ"),
+        "licence": "Apache-2.0", "card_gib": 15.5, "script": "replace.py", "code": None,
+        "packages": ("diffusers==0.41.0", "transformers==5.20.2", "accelerate==1.15.0", "ftfy==6.3.1",
+                     "gguf==0.19.0"),
+        # what those take, as 58.1 had it (uv pip freeze), but PyTorch's own (TORCH_PINS)
+        "pins": ("annotated-doc==0.0.6", "annotated-types==0.8.0", "anyio==4.16.0", "certifi==2026.10.23",
+                 "charset-normalizer==3.5.2", "click==8.5.1", "colorama==0.4.6", "exceptiongroup==1.3.2",
+                 "h11==0.16.0", "hf-xet==1.8.0", "httpcore==1.0.9", "httpx==0.28.1", "huggingface-hub==1.33.0",
+                 "idna==3.20", "importlib-metadata==9.0.1", "markdown-it-py==4.3.0", "mdurl==0.1.2",
+                 "packaging==26.3", "psutil==7.2.2", "pydantic==2.14.4", "pydantic-core==2.50.5",
+                 "pygments==2.21.0", "pyyaml==6.0.3", "regex==2026.9.29", "requests==2.34.2", "rich==15.0.0",
+                 "safetensors==0.8.0", "shellingham==1.5.4", "tokenizers==0.23.3", "tomli==2.5.0", "tqdm==4.70.1",
+                 "typer==0.29.1", "typing-inspection==0.4.5", "urllib3==2.8.0", "wcwidth==0.9.4", "zipp==4.1.2"),
+        "build": {},
+        "weights": (
+            *({"hf": "Wan-AI/Wan2.1-VACE-1.3B-diffusers", "revision": "ec4d2cb062b548996b179d493fdd05340de702a1",
+               "into": "Wan2.1-VACE-1.3B", "path": path, "size": size, "sha256": sha256} for path, size, sha256 in (
+                ("model_index.json", 408, "078a0c056f61edae212c2e7e78fcb061e48a9bc886c08fb245bf5e165e371ea2"),
+                ("scheduler/scheduler_config.json", 751,
+                 "070dc020808eec985634b83015c1596425c264d8fa80afe22aa1e02e9e903e6c"),
+                ("tokenizer/special_tokens_map.json", 7079,
+                 "456b58fd240a06c743a7c2cf8008bec501240d68ebd1fc4018ea569505fea270"),
+                ("tokenizer/spiece.model", 4548313, "e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458"),
+                ("tokenizer/tokenizer.json", 16837459,
+                 "20a46ac256746594ed7e1e3ef733b83fbc5a6f0922aa7480eda961743de080ef"),
+                ("tokenizer/tokenizer_config.json", 61786,
+                 "89bef11d01c80a229079666dd470d536aba87b8eaa00b51cc481ba625be59269"),
+                ("transformer/config.json", 662, "58a07adcbe6ae67624d66918ca2ba65615f931c4a26d8f384ae8ac1e68de0608"),
+                ("transformer/diffusion_pytorch_model.safetensors.index.json", 114130,
+                 "2ed4b491e7a7f3e8185526d5d9a259944871a122a1eec86808bac9194a965d83"),
+                ("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4999964504,
+                 "192804a4e10b5bb0a13f5c224bc4ec9707b3b8cc0def8eea005dbce7c9d6752a"),
+                ("transformer/diffusion_pytorch_model-00002-of-00002.safetensors", 2146103400,
+                 "dadaf1d5e9ccf826e2c497aa9fc2756a044f606d0aa919e5405a734a121bcf7e"),
+                ("vae/config.json", 724, "7a3afcf422b9a9d63e0b6ca7e0d3b5193220a61f5b203bb8417900bc090705e8"),
+                ("vae/diffusion_pytorch_model.safetensors", 507591892,
+                 "d6e524b3fffede1787a74e81b30976dce5400c4439ba64222168e607ed19e793"),
+            )),
+            {"hf": "city96/umt5-xxl-encoder-gguf", "revision": "b535255bee98c2b0a59ea7c0ae2dcd0c6657b3b7",
+             "path": "umt5-xxl-encoder-Q4_K_M.gguf", "size": 3655145312, "near": "pictures",
+             "sha256": "17cf97a5bbbc60a646d6105b832b6f657ce904a8a1ad970e4b59df0c67584a40"},
+        ),
+    },
 }  # fmt: skip
+VACE = "Wan2.1-VACE-1.3B"  # the replace engine's model: its folder under <models>/replace
 UV_TIMEOUT_S = 3600.0  # PyTorch's 3.5 GB over a slow line
 CHECK_TIMEOUT_S = 600.0  # the first import of PyTorch reads its 7 GB
 RUN_TIMEOUT_S = 3600.0
@@ -94,6 +149,9 @@ OUT_OF_CARD = ("CUDA out of memory", "OutOfMemoryError")  # PyTorch's words when
 LOOK_S = 0.5  # how often what the disk took is told while uv works
 SCRATCH = "tmp"  # (56.6) where uv's and an engine's temporary files go - a folder a run, gone after it
 DROPPED = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "CONDA_PREFIX", "PIP_REQUIRE_VIRTUALENV"}
+_SHARED = threading.Lock()  # (58.2) uv, its Python, PyTorch in uv's cache: made by one install at a time
+_GUARD = threading.Lock()  # over `_PUTTING`, and the shared folder's removal
+_PUTTING: set[str] = set()  # the engines being put in now
 
 
 class Stopped(EngineError):
@@ -133,7 +191,42 @@ def home_of(base: Path, engine: str) -> Path:
 
 
 def weight_file(models: Path, engine: str, spec: dict[str, Any]) -> Path:
-    return models / engine / spec["path"].rsplit("/", 1)[-1]
+    """<models>/<engine>/[<into>/]<its path in the repository> (58.2: VACE has config.json in several folders; SAM's
+    path has none - its file stays where 56 put it)."""
+    return models / engine / spec.get("into", "") / spec["path"]
+
+
+def vace_dir(models: Path) -> Path:
+    """The replace engine's model, as diffusers reads it: a folder of the repository's files."""
+    return models / "replace" / VACE
+
+
+def encoder_file(models: Path) -> Path:
+    spec = ENGINES["replace"]["weights"][-1]
+    return weight_file(models, "replace", spec)
+
+
+def _linkable(models: Path | None, spec: dict[str, Any]) -> Path | None:
+    """(58.2) The same file another part of AFO keeps (`near`: a folder under <models>) - its name and size; its
+    sha256 is checked before it is linked. None - none there."""
+    if models is None or not spec.get("near"):
+        return None
+    name = spec["path"].rsplit("/", 1)[-1]
+    with contextlib.suppress(OSError):
+        for found in (models / spec["near"]).rglob(name):
+            if found.is_file() and found.stat().st_size == spec["size"]:
+                return found
+    return None
+
+
+def _sha256(path: Path, cancel: threading.Event) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while chunk := file.read(1 << 24):
+            if cancel.is_set():
+                raise hf.Cancelled()
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def script_of(engine: str) -> Path:
@@ -144,8 +237,9 @@ def script_of(engine: str) -> Path:
 def fingerprint(engine: str) -> dict[str, Any]:
     """What an engine was put in with: another one in AFO's code - it is put in anew."""
     spec = ENGINES[engine]
-    return {"python": PYTHON, "torch": [t["sha256"] for t in TORCH], "code": spec["code"]["sha256"],
-            "pins": [*TORCH_PINS, *spec["pins"]], "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
+    return {"python": PYTHON, "torch": [t["sha256"] for t in TORCH], "code": (spec["code"] or {}).get("sha256"),
+            "packages": list(spec.get("packages", ())), "pins": [*TORCH_PINS, *spec["pins"]],
+            "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
 
 
 def torch_here(base: Path) -> bool:
@@ -181,8 +275,8 @@ def size(engine: str, models: Path | None = None) -> int:
     base, spec = home(), ENGINES[engine]
     shared = (0 if uv_exe(base).is_file() else UV["size"]) + (0 if python_here(base) else PYTHON_SIZE)
     shared += 0 if torch_here(base) else sum(t["size"] for t in TORCH)
-    weights = sum(w["size"] for w in spec["weights"] if not _whole(models, engine, w))
-    return shared + LIBRARIES_SIZE + spec["code"]["size"] + weights
+    weights = sum(w["size"] for w in spec["weights"] if not _whole(models, engine, w) and not _linkable(models, w))
+    return shared + LIBRARIES_SIZE + (spec["code"] or {}).get("size", 0) + weights
 
 
 def disk(engine: str) -> int:
@@ -194,7 +288,7 @@ def disk(engine: str) -> int:
         if ready.get("fingerprint") == fingerprint(engine) and ready.get("disk"):
             return int(ready["disk"])
     shared = (0 if python_here(base) else BASE_DISK) + (0 if torch_here(base) else TORCH_DISK)
-    return shared + spec["code"]["disk"] + sum(w["size"] for w in spec["weights"])
+    return shared + (spec["code"] or {}).get("disk", LIBRARIES_SIZE * 3) + sum(w["size"] for w in spec["weights"])
 
 
 def measured(base: Path, engine: str) -> int:
@@ -350,70 +444,98 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
     came stays for the next time; the environment is made anew then - from uv's cache, without fetching again."""
     base, spec = home(), ENGINES[engine]
     total, got = size(engine, models), 0
-    base.mkdir(parents=True, exist_ok=True)
+    with _GUARD:  # (58.2) an engine being taken off now leaves the shared folder to this one
+        _PUTTING.add(engine)
 
     def at(n: float) -> None:
         report(min(got + int(n), total), total)
 
     try:
-        if not uv_exe(base).is_file():
-            _fetch_uv(base, cancel, at)
-            got += UV["size"]
-        if not python_here(base):
-            _uv(base, ["python", "install", PYTHON, "--no-bin", "--no-registry"], cancel,
-                told=lambda share: at(share * PYTHON_SIZE), takes=BASE_DISK)  # fmt: skip
-            got += PYTHON_SIZE
         place, py = engine_dir(base, engine), python_of(base, engine)
-        (place / "ready.json").unlink(missing_ok=True)
-        engines.remove_tree(place / "env")
-        place.mkdir(parents=True, exist_ok=True)
-        wanted = [f"{t['name']} @ {source(t['url'])}#sha256={t['sha256']}" for t in TORCH]
-        (place / "requirements.txt").write_bytes(("\n".join([*wanted, *TORCH_PINS[-2:]]) + "\n").encode())
-        (place / "pins.txt").write_bytes(("\n".join([*TORCH_PINS, *spec["pins"]]) + "\n").encode())
-        _uv(base, ["venv", str(place / "env"), "--python", PYTHON, "--no-project"], cancel)
-        shared = torch_here(base)
-        bring = (0 if shared else sum(t["size"] for t in TORCH)) + LIBRARIES_SIZE // 2
-        _uv(base, ["pip", "install", "--python", str(py), "-r", str(place / "requirements.txt"), "-c",
-                   str(place / "pins.txt")], cancel, told=lambda share: at(share * bring),
-            takes=(0 if shared else TORCH_DISK) + (LIBRARIES_SIZE // 2) * 3)  # fmt: skip
-        got += bring
-        (base / "torch.json").write_bytes(json.dumps([t["sha256"] for t in TORCH]).encode())
-        code = spec["code"]
-        bring = code["size"] + LIBRARIES_SIZE - LIBRARIES_SIZE // 2
+        with _held(_SHARED, cancel):  # uv, its Python, PyTorch: one install at a time makes them
+            base.mkdir(parents=True, exist_ok=True)
+            if not uv_exe(base).is_file():
+                _fetch_uv(base, cancel, at)
+                got += UV["size"]
+            if not python_here(base):
+                _uv(base, ["python", "install", PYTHON, "--no-bin", "--no-registry"], cancel,
+                    told=lambda share: at(share * PYTHON_SIZE), takes=BASE_DISK)  # fmt: skip
+                got += PYTHON_SIZE
+            (place / "ready.json").unlink(missing_ok=True)
+            engines.remove_tree(place / "env")
+            place.mkdir(parents=True, exist_ok=True)
+            wanted = [f"{t['name']} @ {source(t['url'])}#sha256={t['sha256']}" for t in TORCH]
+            (place / "requirements.txt").write_bytes(("\n".join([*wanted, *TORCH_PINS[-2:]]) + "\n").encode())
+            (place / "pins.txt").write_bytes(("\n".join([*TORCH_PINS, *spec["pins"]]) + "\n").encode())
+            _uv(base, ["venv", str(place / "env"), "--python", PYTHON, "--no-project"], cancel)
+            shared = torch_here(base)
+            bring = (0 if shared else sum(t["size"] for t in TORCH)) + LIBRARIES_SIZE // 2
+            _uv(base, ["pip", "install", "--python", str(py), "-r", str(place / "requirements.txt"), "-c",
+                       str(place / "pins.txt")], cancel, told=lambda share: at(share * bring),
+                takes=(0 if shared else TORCH_DISK) + (LIBRARIES_SIZE // 2) * 3)  # fmt: skip
+            got += bring
+            (base / "torch.json").write_bytes(json.dumps([t["sha256"] for t in TORCH]).encode())
+            engines.remove_tree(base / "downloads")  # uv's archive: here, under the lock - another may fetch it
+        code = spec["code"] or {}
+        wanted = [f"{code['package']} @ {source(code['url'])}#sha256={code['sha256']}"] if code else []
+        bring = code.get("size", 0) + LIBRARIES_SIZE - LIBRARIES_SIZE // 2
         _uv(base, ["pip", "install", "--python", str(py), "--no-build-isolation", "-c", str(place / "pins.txt"),
-                   f"{code['package']} @ {source(code['url'])}#sha256={code['sha256']}"], cancel, add=spec["build"],
-            told=lambda share: at(share * bring), takes=code["disk"])  # fmt: skip
+                   *wanted, *spec.get("packages", ())], cancel, add=spec["build"],
+            told=lambda share: at(share * bring), takes=code.get("disk", LIBRARIES_SIZE * 3))  # fmt: skip
         got += bring
         for weight in spec["weights"]:
-            if not _whole(models, engine, weight):  # whole - not fetched, not counted in `total`
-                path = weight_file(models, engine, weight)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                hf.download(hf.file_url(weight["hf"], weight["path"], weight["revision"]), path, size=weight["size"],
-                            sha256=weight["sha256"], token=None, cancel=cancel, report=at)  # fmt: skip
-                got += weight["size"]
+            if _whole(models, engine, weight):  # whole - not fetched, not counted in `total`
+                continue
+            path = weight_file(models, engine, weight)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            near = _linkable(models, weight)
+            if near is not None and _sha256(near, cancel) == weight["sha256"]:  # AFO has it: linked, not counted
+                path.unlink(missing_ok=True)
+                try:
+                    os.link(near, path)
+                except OSError:
+                    shutil.copyfile(near, path)
+                continue
+            hf.download(hf.file_url(weight["hf"], weight["path"], weight["revision"]), path, size=weight["size"],
+                        sha256=weight["sha256"], token=None, cancel=cancel, report=at)  # fmt: skip
+            got += weight["size"]
         home_of(base, engine).mkdir(parents=True, exist_ok=True)
         looked = _started([str(py), "-I", str(script_of(engine)), "--check"], env=engine_env(base, engine),
                           cwd=home_of(base, engine), cancel=cancel, timeout=CHECK_TIMEOUT_S,
                           failed=N_("«{name}» не запустилось: {said}"), name=tr(spec["name"]),
                           scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
-        engines.remove_tree(base / "downloads")
         (place / "ready.json").write_bytes(json.dumps({"fingerprint": fingerprint(engine), "check": _tail(looked),
                                                        "disk": measured(base, engine)}).encode())  # fmt: skip
         report(total, total)
     except Stopped:
         raise hf.Cancelled() from None
+    finally:
+        with _GUARD:
+            _PUTTING.discard(engine)
+
+
+@contextlib.contextmanager
+def _held(lock: threading.Lock, cancel: threading.Event):
+    """The lock, waited for while another install holds it; «Стоп» meanwhile - stopped."""
+    while not lock.acquire(timeout=0.2):
+        if cancel.is_set():
+            raise hf.Cancelled()
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def remove(models: Path, engine: str) -> None:
-    """An engine gone from the disk: its environment and weights; the last one takes uv, its Python and the cache
-    with it - nothing of the engines on PyTorch is left."""
+    """An engine gone from the disk: its environment and weights (its folder under <models>; a file linked from
+    another part of AFO - only the link); the last one takes uv, its Python and the cache with it - nothing of the
+    engines on PyTorch is left. (58.2) Not while another engine is being put in: that one needs them."""
     base = home()
     engines.remove_tree(engine_dir(base, engine))
-    for weight in ENGINES[engine]["weights"]:
-        with contextlib.suppress(OSError):
-            weight_file(models, engine, weight).unlink(missing_ok=True)
-    if not any((engine_dir(base, other) / "env").exists() for other in ENGINES):
-        engines.remove_tree(base)
+    engines.remove_tree(models / engine)
+    with _GUARD:
+        if not (_PUTTING - {engine}) and not any((engine_dir(base, o) / "env").exists() for o in ENGINES):
+            engines.remove_tree(base)
 
 
 def run(engine: str, args: list[str], cancel: threading.Event, *, timeout: float = RUN_TIMEOUT_S) -> str:
@@ -426,9 +548,11 @@ def run(engine: str, args: list[str], cancel: threading.Event, *, timeout: float
                     short=OUT_OF_CARD, scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
 
 
-def select_args(models: Path, frames: Path, out: Path, *, at: int, x: float, y: float) -> list[str]:
+def select_args(models: Path, frames: Path, out: Path, *, at: int, x: float, y: float,
+                masks: bool = False) -> list[str]:  # fmt: skip
     """SAM 2.1: the object at (x, y) - shares of the frame's width and height - of frame `at` (from 0) followed
-    through the frames of `frames` (FRAME_NAME) into `out` by the same names: it as it is, the rest darkened."""
+    through the frames of `frames` (FRAME_NAME) into `out` by the same names: it as it is, the rest darkened; (58)
+    `masks` - its masks instead (white the object, black the rest)."""
     weights = weight_file(models, "select", ENGINES["select"]["weights"][0])
     return ["--weights", str(weights), "--frames", str(frames), "--out", str(out), "--at", str(at), "--x",
-            f"{x:.4f}", "--y", f"{y:.4f}"]  # fmt: skip
+            f"{x:.4f}", "--y", f"{y:.4f}", *(["--masks"] if masks else [])]  # fmt: skip

@@ -5,7 +5,8 @@ python -I select.py --check
 python -I select.py --weights <sam2.1_hiera_large.pt> --frames <dir> --out <dir> --at <frame> --x <0..1> --y <0..1>
 
 `--check`: PyTorch, sam2 and the card - a line of JSON, exit 3 when the card is not seen. Else the frames of
-`--frames` (000001.png...) come out into `--out` by the same names: the object as it is, the rest darkened (DIM).
+`--frames` (000001.png...) come out into `--out` by the same names: the object as it is, the rest darkened (DIM);
+with `--masks` (58) - its masks, one-channel PNGs: 255 the object, 0 the rest.
 `--at` - the frame clicked, from 0; `--x`, `--y` - where, in shares of its width and height.
 
 SAM holds a video's frames on the card (56.1: 244 frames of 832×480 - 4.8 GiB), so a long one is followed piece by
@@ -92,8 +93,14 @@ def select(args: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
     shown = 0
     for n in range(count):
-        frame = np.asarray(Image.open(frames / (NAME % (n + 1))).convert("RGB")).astype(np.float32)
         mask = masks.get(n)
+        if args.masks:  # (58) the masks themselves: white the object, black the rest
+            empty = mask is None or not mask.any()
+            shown += 0 if empty else 1
+            made = np.zeros((height, width), np.uint8) if empty else (mask * 255).astype(np.uint8)
+            Image.fromarray(made, "L").save(out / (NAME % (n + 1)))
+            continue
+        frame = np.asarray(Image.open(frames / (NAME % (n + 1))).convert("RGB")).astype(np.float32)
         if mask is None or not mask.any():
             made = frame * DIM
         else:
@@ -113,6 +120,7 @@ def main() -> int:
     parser.add_argument("--at", type=int, default=0)
     parser.add_argument("--x", type=float, default=0.5)
     parser.add_argument("--y", type=float, default=0.5)
+    parser.add_argument("--masks", action="store_true")  # (58) the masks, for «Заменить предмет», «Заменить фон»
     args = parser.parse_args()
     return check() if args.check else select(args)
 

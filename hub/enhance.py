@@ -15,6 +15,11 @@ runs, never linked.
   when that build is here, else the archive is fetched.
 - «Выделение предмета» (`select`, stage 56): SAM 2.1 - the first engine on PyTorch, with Python: its environment,
   install and runs are hub/torch_engines.py's; here it is a part as the others are.
+- «Замена и дорисовка» (`replace`, stage 58): Wan2.1-VACE-1.3B, the second engine on PyTorch - an object or the
+  background drawn anew where SAM 2.1 found it, or the frame's edges drawn to another format. Planned here (which
+  frames, which masks, the windows of 81 frames - `windows_of`), drawn by hub/torch_scripts/replace.py. «Быстрее»
+  (58.1): 20 steps, and a video of 24 frames a second drawn at 16 - the frames between by RIFE («Плавность»):
+  a third fewer windows, the object following the hand in the probe; «Тщательнее» - 25 steps, every frame.
 
 What 54.1 measured (RTX 5080; a scene of LTX, 768×512, 73 frames): RIFE 2.4-3.9 s for 60 a second, +0.5 GB of the
 card; Real-ESRGAN 35 s, +2.4 GB; RelayVSR 24 s, +14 GB - its window must take the whole piece (`detail_args`): with
@@ -33,6 +38,7 @@ import asyncio
 import contextlib
 import fnmatch
 import itertools
+import json
 import logging
 import math
 import os
@@ -43,6 +49,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -98,7 +105,22 @@ PARTS: dict[str, dict[str, Any]] = {
     },
     # (56) an engine on PyTorch: its own environment, put in and run by hub/torch_engines.py
     "select": {key: torch_engines.ENGINES["select"][key] for key in ("name", "about", "licence")} | {"torch": True},
+    "replace": {key: torch_engines.ENGINES["replace"][key] for key in ("name", "about", "licence")} | {"torch": True},
 }  # fmt: skip
+# (58) «Замена и дорисовка»: what VACE draws anew, the formats the edges are drawn to - VACE's frame for each (its
+# sides of 16; the new frame takes its proportions, so the source lies in both at one place)
+DRAWS = ("object", "background", "edges")
+CANVASES = {"9:16": (480, 832), "1:1": (624, 624), "16:9": (832, 480)}
+VACE_PIXELS = 832 * 480  # 480p - VACE-1.3B's only size; a larger video is drawn smaller, put back at its own
+WINDOW, OVERLAP = 81, 9  # frames a window, the last ones of a window the next one keeps (58.1: no jump at the seam)
+STEPS = {True: 20, False: 25}  # «Быстрее», «Тщательнее» (58.1: 20 looked as 25; 15 flatter)
+VACE_FPS = 16  # «Быстрее» draws a video of 24 a second at 16; RIFE makes the frames between
+GUIDANCE, SEED = 5.0, 42  # without guidance - a blur (58.1)
+GROW, FEATHER = 9, 4  # the object's mask grown at VACE's size; the drawn area's soft edge at the video's
+NEGATIVE = "blurry, distorted, deformed, low quality, flicker, watermark, text"
+WORDS_MAX = 500
+STEP_S = 40.0  # a step at most, for the time out (58.1: 17.8-19.3 s, the VAE besides)
+LOAD_S = 1200.0  # the model and umT5 loaded, the text encoded
 DETAIL_GIB = 15.5  # a card of 16 GB says 15.9: RelayVSR took 14.0-14.5 of it (54.1)
 ROOM = 1 << 30  # left free on the disk after a download
 TICK_S = 0.5  # how often a download is told to the window
@@ -372,6 +394,95 @@ def subject(raw: Any) -> dict[str, float] | None:
     return found
 
 
+def drawing(raw: Any) -> dict[str, Any] | None:
+    """(58) «Заменить предмет», «Заменить фон», «Формат»: {kind: object | background | edges, words: what to draw,
+    fast: «Быстрее» (else «Тщательнее»), share, x, y: where the object was clicked (object, background), canvas: the
+    format (edges)}; None - not asked. The words are wanted for an object or background. Anything else - refused."""
+    if raw is None:
+        return None
+    try:
+        kind, words, fast = str(raw["kind"]), str(raw.get("words") or "").strip(), raw.get("fast", True)
+    except TypeError, KeyError, AttributeError:
+        raise EnhanceError(tr("нет такого улучшения"), 422) from None
+    if kind not in DRAWS or len(words) > WORDS_MAX or not isinstance(fast, bool):
+        raise EnhanceError(tr("нет такого улучшения"), 422)
+    found: dict[str, Any] = {"kind": kind, "words": words, "fast": fast}
+    if kind == "edges":
+        if raw.get("canvas") not in CANVASES:
+            raise EnhanceError(tr("нет такого улучшения"), 422)
+        return found | {"canvas": raw["canvas"]}
+    if not words:
+        raise EnhanceError(tr("напишите, на что заменить"), 422)
+    return found | subject({k: raw.get(k) for k in ("share", "x", "y")})  # type: ignore[operator]
+
+
+def vace_size(width: int, height: int) -> tuple[int, int]:
+    """The size VACE draws a video of this size at: its own when 480p or less with sides of 16 (LTX's 768 × 512, a
+    film's 832 × 480), else of VACE_PIXELS, the same proportions, sides of 16."""
+    if width * height <= VACE_PIXELS and width % 16 == 0 and height % 16 == 0:
+        return width, height
+    scale = min(1.0, math.sqrt(VACE_PIXELS / (width * height)))
+    return max(16, round(width * scale / 16) * 16), max(16, round(height * scale / 16) * 16)
+
+
+def canvas_of(width: int, height: int, canvas: str) -> tuple[int, int, int, int]:
+    """(58) The new frame for «Формат»: its width and height (even), where the source lies in it (x, y) - the source
+    at its own size in the middle, the canvas of VACE's proportions around it. Of that format already - refused."""
+    vw, vh = CANVASES[canvas]
+    if abs(width / height - vw / vh) < 0.03:
+        raise EnhanceError(tr("ролик уже в формате {canvas}", canvas=canvas), 422)
+    if width / height > vw / vh:  # wider than the format: drawn above and below
+        cw, ch = width + width % 2, round(width * vh / vw / 2) * 2
+    else:  # narrower: drawn at the sides
+        cw, ch = round(height * vw / vh / 2) * 2, height + height % 2
+    return cw, ch, (cw - width) // 2, (ch - height) // 2
+
+
+def stride(fps: int, fast: bool) -> Fraction:
+    """How many of a video's frames one frame VACE draws spans (58.1): 1 - each; «Быстрее» on a video of 24 a second
+    - 3/2 (it draws 16 a second, RIFE makes the frames between: a frame at a half the source's - its own half-frame
+    by RIFE first), of 32 - 2. Other rates - each frame."""
+    if not fast or fps <= VACE_FPS:
+        return Fraction(1)
+    found = Fraction(fps, VACE_FPS)
+    return found if found.denominator in (1, 2) else Fraction(1)
+
+
+def moments_of(frames: int, step: Fraction) -> list[Fraction]:
+    """The moments of a shot of `frames` frames VACE draws, in its frames from 0: each `step` - the last one at its
+    last frame at most."""
+    if step == 1 or frames < 2:
+        return [Fraction(j) for j in range(frames)]
+    return [min(k * step, Fraction(frames - 1)) for k in range(math.ceil((frames - 1) / step) + 1)]
+
+
+def windows_of(count: int, longest: int = WINDOW, keep: int = OVERLAP) -> list[tuple[int, int, int]]:
+    """[first, end, kept] of each window VACE draws of `count` moments: `longest` at most, each after the first
+    beginning with the `keep` last moments of the one before - kept as drawn there (58.1: the new object does not
+    change at the seam)."""
+    found = [(0, min(count, longest), 0)]
+    while found[-1][1] < count:
+        first = found[-1][1] - keep
+        found.append((first, min(first + longest, count), keep))
+    return found
+
+
+def _copied(frames: Path, first: int, end: int, piece: Path) -> None:
+    """The frames first..end-1 (from 0) of a folder into `piece`, numbered from 1 - linked, the folder keeps them."""
+    piece.mkdir(parents=True)
+    for n in range(first, end):
+        _link(frames / (FRAMES % (n + 1)), piece / (FRAMES % (n - first + 1)))
+
+
+def _progress(path: Path) -> float | None:
+    """What replace.py wrote of its steps: a share; None - not yet, or caught while it writes."""
+    try:
+        done, total = (int(v) for v in path.read_text(encoding="utf-8").split())
+    except OSError, ValueError:
+        return None
+    return done / total if total else None
+
+
 def motion_frames(frames: int, motion: str, fps: int) -> int:
     """How many frames a shot of `frames` becomes (54.3): 60 a second over the same time, or two or four times as
     many at the video's own rate - so much slower."""
@@ -548,14 +659,17 @@ class Enhance:
         for part in list(self._loads):
             await self.stop(part)
 
-    async def run(self, part: str, args: list[str], cancel: asyncio.Event) -> str:
-        """The part's program at a piece, in a thread; `cancel` kills it. Not here - said so."""
+    async def run(self, part: str, args: list[str], cancel: asyncio.Event, *, timeout: float | None = None) -> str:
+        """The part's program at a piece, in a thread; `cancel` kills it. Not here - said so. `timeout` - the
+        program's own, when the piece is long (58: a film's windows)."""
         program = await asyncio.to_thread(find, self.tools, part)
         if program is None or not await self.ready(part):
             raise EnhanceError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
                                   part=tr(PARTS[part]["name"])), 422)  # fmt: skip
         halt = threading.Event()
-        work = (lambda: torch_engines.run(part, args, halt)) if on_torch(part) else (lambda: run(program, args, halt))
+        limit = timeout or RUN_TIMEOUT_S
+        work = (lambda: torch_engines.run(part, args, halt, timeout=limit)) if on_torch(part) else (
+            lambda: run(program, args, halt, timeout=limit))  # fmt: skip
         going = asyncio.ensure_future(asyncio.to_thread(work))
         waiting = asyncio.ensure_future(cancel.wait())
         try:
@@ -573,6 +687,7 @@ class Enhance:
 
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
                    size: str | None = None, motion: str | None = None, select: dict[str, Any] | None = None,
+                   draw: dict[str, Any] | None = None,
                    told: Callable[[float], Awaitable[None]] | None = None) -> int:  # fmt: skip
         """A video improved into `target` (MP4); how many frames it has. Its frames taken out by ffmpeg, made by the
         parts' programs, put back together, its sound with them. `size` (54.4): «sharp» - twice as large by
@@ -581,18 +696,21 @@ class Enhance:
         frames a second over the same time; «slow2», «slow4» - so many times slower, at its own rate, without sound
         (a sound stretched so is not the sound). `select` (56, `subject`): the object clicked kept, the rest
         darkened - first, at the video's own size. Then larger, then the motion: fewer frames are enlarged. Both go
-        shot by shot: nothing is made across a cut. `told(share)` - how far, after each piece. The frames lie beside
-        `target` meanwhile and are gone after, whatever happened."""
+        shot by shot: nothing is made across a cut. `draw` (58, `drawing`): an object, the background or the
+        edges drawn anew by VACE - first, at the video's own size; not with `select`. `told(share)` - how far, after
+        each piece. The frames lie beside `target` meanwhile and are gone after, whatever happened."""
         if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
-        select = subject(select)
-        if motion is None and size is None and select is None:
+        select, draw = subject(select), drawing(draw)
+        if motion is None and size is None and select is None and draw is None:
             raise EnhanceError(tr("выберите, что улучшить"), 422)
+        if select is not None and draw is not None:
+            raise EnhanceError(tr("нет такого улучшения"), 422)
         if motion == "fps60" and fps >= SMOOTH_FPS:
             raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
         work = target.with_name(f".{target.stem}.work")
         await asyncio.to_thread(engines.remove_tree, work)
-        stages = [s for s in ("select" if select else None, size, motion) if s is not None]
+        stages = [s for s in ("draw" if draw else None, "select" if select else None, size, motion) if s is not None]
 
         async def stage(n: int) -> Callable[[float], Awaitable[None]] | None:
             if told is None:
@@ -607,10 +725,14 @@ class Enhance:
             frames = work / "in"
             count = await asyncio.to_thread(video.frames_out, ffmpeg, source, frames)
             width, height = await asyncio.to_thread(png_size, frames / (FRAMES % 1))
+            if draw is not None and draw["kind"] == "edges":  # (58) the new frame's size
+                width, height, *_place = canvas_of(width, height, draw["canvas"])
             if size == "detail" and width * height > DETAIL_PIXELS:
                 raise EnhanceError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
                                       "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
             cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
+            if draw is not None:
+                frames = await self._draw(frames, work, count, fps, cut, draw, cancel, await stage(0))
             if select is not None:
                 frames = await self._select(frames, work, count, select, cancel, await stage(0))
             if size is not None:
@@ -628,6 +750,110 @@ class Enhance:
         finally:
             await asyncio.to_thread(engines.remove_tree, work)
         return made
+
+    async def _draw(self, frames: Path, work: Path, count: int, fps: int, cut: list[int], draw: dict[str, Any],
+                    cancel: asyncio.Event, told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
+        """(58) VACE draws anew: SAM 2.1's masks of the object clicked first (an object, the background); then
+        shot by shot - nothing drawn across a cut - the moments it draws: each frame, or at «Быстрее» 16 a second
+        (RIFE's half-frames for those between two), in windows of 81 that keep the last moments of the one before;
+        the frames between drawn ones by RIFE back at the video's rate; then each frame the source with only the
+        drawn area put in, its edge soft (edges: the source in the middle of the new frame). The frames come back
+        numbered as they were."""
+        kind, step = draw["kind"], stride(fps, draw["fast"])
+        width, height = await asyncio.to_thread(png_size, frames / (FRAMES % 1))
+        masks = None
+        if kind != "edges":
+            at = min(count - 1, max(0, round(draw["share"] * (count - 1))))
+            masks = work / "masks"
+            await self.run("select", torch_engines.select_args(self.models, frames, masks, at=at, x=draw["x"],
+                                                               y=draw["y"], masks=True), cancel)  # fmt: skip
+            came = len(await asyncio.to_thread(os.listdir, masks)) if await asyncio.to_thread(masks.is_dir) else 0
+            if came != count:
+                raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                     wanted=count))  # fmt: skip
+        if told is not None:
+            await told(0.05)
+        canvas = place = None
+        if kind == "edges":
+            cw, ch, x, y = canvas_of(width, height, draw["canvas"])
+            vw, vh = CANVASES[draw["canvas"]]
+            fit = vw / cw  # VACE's frame and the new one are of the same proportions
+            canvas, place = [cw, ch, x, y], [round(x * fit), round(y * fit), round(width * fit), round(height * fit)]
+        else:
+            vw, vh = vace_size(width, height)
+        moments: list[dict[str, Any]] = []
+        windows: list[tuple[int, int, int]] = []
+        shots_made: list[tuple[int, int, int, int, Fraction]] = []  # first, end, its first moment, moments, step
+        for n, (first, end) in enumerate(shots(count, cut)):
+            own = step if end - first > 1 else Fraction(1)
+            times = moments_of(end - first, own)
+            if own.denominator == 2:  # RIFE: the shot's half-frames - those at a half of the source's
+                piece, half = work / "piece", work / "half" / str(n)
+                await asyncio.to_thread(_copied, frames, first, end, piece)
+                await asyncio.to_thread(half.mkdir, parents=True)
+                await self.run("smooth", smooth_args(piece, half, (end - first) * 2), cancel)
+                await asyncio.to_thread(engines.remove_tree, piece)
+                pictures = [half / (FRAMES % (int(t * 2) + 1)) for t in times]  # RIFE's -n: input j at 2j (58.1)
+            else:
+                pictures = [frames / (FRAMES % (first + int(t) + 1)) for t in times]
+            base = len(moments)
+            for t, picture in zip(times, pictures, strict=True):
+                near = dict.fromkeys((first + math.floor(t), first + math.ceil(t)))
+                moments.append({"frame": str(picture),
+                                "masks": [str(masks / (FRAMES % (j + 1))) for j in near] if masks else []})  # fmt: skip
+            windows += [(base + a, base + b, k) for a, b, k in windows_of(len(times))]
+            shots_made.append((first, end, base, len(times), own))
+        drawn, progress = work / "drawn", work / "progress.txt"
+        steps, models = STEPS[draw["fast"]], self.models
+        plan = {"mode": kind, "prompt": draw["words"], "negative": NEGATIVE, "steps": steps, "guidance": GUIDANCE,
+                "seed": SEED, "size": [vw, vh], "grow": GROW, "place": place,
+                "model": str(torch_engines.vace_dir(models)), "encoder": str(torch_engines.encoder_file(models)),
+                "moments": moments, "windows": windows, "out": str(drawn), "progress": str(progress)}  # fmt: skip
+        await asyncio.to_thread((work / "draw.json").write_bytes, json.dumps(plan).encode())
+        limit = LOAD_S + len(windows) * steps * STEP_S
+        drawing_task = asyncio.ensure_future(self.run("replace", ["--draw", str(work / "draw.json")], cancel,
+                                                      timeout=limit))  # fmt: skip
+        try:
+            while not drawing_task.done():  # how far it is: the steps it wrote
+                await asyncio.wait({drawing_task}, timeout=TICK_S * 4)
+                share = await asyncio.to_thread(_progress, progress)
+                if told is not None and share is not None and not drawing_task.done():
+                    await told(0.05 + 0.85 * share)
+            await drawing_task
+        finally:
+            if not drawing_task.done():  # the job itself cancelled: the engine killed with it
+                drawing_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await drawing_task
+        made = []  # each frame: the source, what VACE drew at its moment, its mask
+        for n, (first, end, base, many, own) in enumerate(shots_made):
+            if own == 1:
+                pictures = [drawn / (FRAMES % (base + j + 1)) for j in range(end - first)]
+            else:  # RIFE back: -n many × numerator puts moment k at k × numerator; frame j is at j × denominator
+                piece, back = work / "piece", work / "back" / str(n)
+                await asyncio.to_thread(_copied, drawn, base, base + many, piece)
+                await asyncio.to_thread(back.mkdir, parents=True)
+                await self.run("smooth", smooth_args(piece, back, many * own.numerator), cancel)
+                await asyncio.to_thread(engines.remove_tree, piece)
+                pictures = [back / (FRAMES % (j * own.denominator + 1)) for j in range(end - first)]
+            for j, picture in enumerate(pictures, start=first):
+                made.append({"source": str(frames / (FRAMES % (j + 1))), "drawn": str(picture),
+                             "mask": str(masks / (FRAMES % (j + 1))) if masks else None})  # fmt: skip
+        out = work / "drawn-in"
+        compose = {"mode": kind, "grow": round(GROW * width / vw), "feather": FEATHER, "frames": made,
+                   "canvas": canvas, "out": str(out)}  # fmt: skip
+        await asyncio.to_thread((work / "compose.json").write_bytes, json.dumps(compose).encode())
+        await self.run("replace", ["--compose", str(work / "compose.json")], cancel)
+        came = len(await asyncio.to_thread(os.listdir, out)) if await asyncio.to_thread(out.is_dir) else 0
+        if came != count:
+            raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                 wanted=count))  # fmt: skip
+        for done in (frames, masks, drawn, work / "half", work / "back"):
+            if done is not None:
+                await asyncio.to_thread(engines.remove_tree, done)
+        if told is not None:
+            await told(1.0)
+        return out
 
     async def _select(self, frames: Path, work: Path, count: int, select: dict[str, float], cancel: asyncio.Event,
                       told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip

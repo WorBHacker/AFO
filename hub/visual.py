@@ -820,22 +820,22 @@ class Visual:
     async def improve(self, spec: dict[str, Any], client: str) -> dict[str, Any]:
         """«Улучшить ролик» (54.5): a video of the Studio's (`from_job`) or a film's joined one (`film`) improved -
         `size` (sharp | detail: twice as large), `motion` (fps60 | slow2 | slow4), `select` (56: {share, x, y} -
-        only the object clicked) - as a job of the queue, in turn with the rest: its result a new video, the source
-        as it was. The parts it needs not here, a size RelayVSR does not fit, 60 a second of a video that has them -
-        refused at once."""
+        only the object clicked), `draw` (58, `enhance.drawing`: an object, the background or the edges drawn anew;
+        the edges' words, unless said, the video's own) - as a job of the queue, in turn with the rest: its result a
+        new video, the source as it was. The parts it needs not here, a size RelayVSR does not fit, 60 a second of a
+        video that has them, a format the video has - refused at once."""
         size, motion = spec.get("size") or None, spec.get("motion") or None
         if size not in (None, *enhance.SIZES) or motion not in (None, *enhance.MOTIONS):
             raise VisualError(tr("нет такого улучшения"), 422)
         try:
             select = enhance.subject(spec.get("select"))  # (56) «Только предмет»: where it was clicked
+            draw = enhance.drawing(spec.get("draw"))  # (58) «Заменить предмет», «Заменить фон», «Формат»
         except enhance.EnhanceError as exc:
             raise VisualError(str(exc), exc.status) from None
-        if size is None and motion is None and select is None:
+        if size is None and motion is None and select is None and draw is None:
             raise VisualError(tr("выберите, что улучшить"), 422)
-        for part in [p for p in ("select" if select else None, size, "smooth" if motion else None) if p]:
-            if self.enhance is None or not await self.enhance.ready(part):
-                raise VisualError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
-                                     part=tr(enhance.PARTS[part]["name"])), 422)  # fmt: skip
+        if select is not None and draw is not None:
+            raise VisualError(tr("нет такого улучшения"), 422)
         film_id = None
         if spec.get("film"):
             film_id = str(spec["film"])
@@ -864,6 +864,20 @@ class Visual:
             source = (await self.mp4(found)).relative_to(self.media).as_posix()
             prompt, fps, width, height = found["prompt"], int(found.get("fps") or FPS), found["width"], found["height"]
             sound = bool(found.get("sound")) or bool(found.get("enhance") and found["enhance"].get("sound"))
+        parts = ["select" if select else None, size, "smooth" if motion else None]
+        if draw is not None:  # (58) VACE; SAM for the object; RIFE when «Быстрее» draws fewer frames
+            parts += ["replace", "select" if draw["kind"] != "edges" else None,
+                      "smooth" if enhance.stride(fps, draw["fast"]) != 1 else None]  # fmt: skip
+            if draw["kind"] == "edges":
+                try:
+                    width, height, *_place = enhance.canvas_of(width, height, draw["canvas"])
+                except enhance.EnhanceError as exc:
+                    raise VisualError(str(exc), exc.status) from None
+                draw["words"] = draw["words"] or prompt  # the edges: what the video was made of, unless said
+        for part in dict.fromkeys(p for p in parts if p):
+            if self.enhance is None or not await self.enhance.ready(part):
+                raise VisualError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
+                                     part=tr(enhance.PARTS[part]["name"])), 422)  # fmt: skip
         if size == "detail" and width * height > enhance.DETAIL_PIXELS:
             raise VisualError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
                                  "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
@@ -874,6 +888,8 @@ class Visual:
         how = {"source": source, "job": from_job, "fps": fps, "size": size, "motion": motion, "sound": sound}
         if select is not None:
             how["select"] = select
+        if draw is not None:
+            how["draw"] = draw
         job_id = uuid.uuid4().hex[:12]
 
         def add(conn) -> None:
@@ -1605,7 +1621,7 @@ class Visual:
                 raise VisualError(tr("«Улучшить ролик» не готово"), 503)
             frames = await self.enhance.make(source, target, cancel, ffmpeg=program, fps=int(how["fps"]),
                                              size=how["size"], motion=how["motion"], select=how.get("select"),
-                                             told=told)  # fmt: skip
+                                             draw=how.get("draw"), told=told)  # fmt: skip
         except (enhance.EnhanceError, VisualError) as exc:
             stopped = job_id in self._stopping or cancel.is_set()
             await self._set(job_id, status="cancelled" if stopped else "failed", error="" if stopped else str(exc),
