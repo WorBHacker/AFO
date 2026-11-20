@@ -1028,6 +1028,25 @@ def sd_block(model_id: str, *, name: str, description: str, server: str, files: 
     return "\n".join(lines)
 
 
+def with_flags(text: str, model_id: str, flags: list[str]) -> str:
+    """The config with a picture model's command given the flags (name, value, name, value…) it has none of
+    («Стабилизация», 2026-11-20: room on the card for a video model installed before): after the flags on the line
+    before `--listen-ip` - where `sd_block` writes them; a flag it has keeps its value; every other line as it was."""
+    lines = text.splitlines()
+    start, end = model_blocks(text)[model_id]
+    first, last = _cmd_lines(lines, start, end)
+    have = set(_TOKEN.findall(" ".join(lines[first:last])))
+    missing = [f"{name} {value}" for name, value in zip(flags[::2], flags[1::2], strict=True) if name not in have]
+    if not missing:
+        return text
+    home = next((i - 1 for i in range(first + 1, last) if "--listen-ip" in _TOKEN.findall(lines[i])), last - 1)
+    lines[home] = " ".join([lines[home].rstrip(), *missing])
+    out = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    if set(model_blocks(out)) != set(model_blocks(text)):
+        raise ConfigError(tr("правка задела другие модели — не записано"))
+    return out
+
+
 def _in_groups(lines: list[str], model_id: str) -> bool:
     """Whether a model is a member of a group: the top-level `groups:` (and `matrix:`), or llama-swap's own since v270,
     `routing:` (29.1) - a model gone from a group's members makes llama-swap refuse the config."""

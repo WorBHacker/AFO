@@ -673,6 +673,7 @@ class Installer:
         self._naming = asyncio.create_task(self.name_ollama_models())  # in the background: llama-swap may not be up
         self._keep(self._quietly(self.unhook_lost_drafts()))  # a draft's file gone while the hub was off (42.5)
         self._keep(self._quietly(self.fit_to_build()))  # a flag the build took away (0.1.12)
+        self._keep(self._quietly(self.keep_room()))  # a video model installed before it kept room on the card
         return left
 
     async def load_reserve(self) -> None:
@@ -1107,6 +1108,45 @@ class Installer:
         log.info("commands fitted to the build (copy %s): %s", backup.name, found)
         await self._bus.publish("llama.config", {"fitted": found, "backup": backup.name})
         return found
+
+    async def keep_room(self) -> list[str]:
+        """(«Стабилизация», 2026-11-20) an installed video model's block written before its engine kept room on the
+        card (`VIDEO_RESERVE`; the user's LTX-2.3) gets it, at the hub's start: under the writers' lock, a copy kept,
+        every other line as it was; llama-swap does not take it - the copy back. The models changed; [] - nothing to
+        change, or no config."""
+
+        def videos(conn) -> list[str]:
+            plans = [(r["model_id"], r.get("plan") or {}) for r in jobs(conn) if r["status"] in IN_CONFIG]
+            return [m for m, plan in plans if m and plan.get("engine") == "sd" and plan.get("kind") == "video"]
+
+        ids = await self._db.acall(videos)
+        if not ids:
+            return []
+        path = llama_config.config_path()
+        async with llama_config.writing():
+            new = text = await asyncio.to_thread(config_text)
+            changed = []
+            for model_id in ids:
+                if model_id not in llama_config.model_blocks(new):
+                    continue
+                try:
+                    kept = llama_config.with_flags(new, model_id, VIDEO_RESERVE)
+                except llama_config.ConfigError as exc:  # a one-line `cmd:` - not edited
+                    log.info("no room kept for %s: %s", model_id, exc)
+                    continue
+                if kept != new:
+                    new, changed = kept, [*changed, model_id]
+            if new == text:
+                return []
+            backup = await asyncio.to_thread(llama_config.write, path, new)
+            ok, problem = await llama_config.reloaded(self._url, list(llama_config.model_blocks(new)))
+            if not ok and problem != tr(llama_config.NOT_ANSWERING):
+                await asyncio.to_thread(llama_config.restore, path, backup)
+                raise InstallError(tr("llama-swap не принял правку ({problem}) — конфиг возвращён",
+                                      problem=problem), 502)  # fmt: skip
+        log.info("room kept on the card for %s (copy %s)", changed, backup.name)
+        await self._bus.publish("llama.config", {"room": changed, "backup": backup.name})
+        return changed
 
     def space(self) -> dict[str, Any]:
         status = self._status() or self._kept_machine()

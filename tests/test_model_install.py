@@ -978,6 +978,42 @@ def test_a_video_models_engine_keeps_room_on_the_card_for_its_own_work(hub, monk
     assert "--max-vram" not in lc.model_view(text, "draw")["command"]
 
 
+def test_a_video_model_installed_before_gets_room_on_the_card_when_the_hub_starts(hub, monkeypatch):
+    """«Стабилизация», 2026-11-20: the user's LTX-2.3 was installed before its engine kept room on the card. When the
+    hub starts, an installed video model's block written without it gets `--max-vram -2` on its flags line - the
+    block then is as an install writes it now, a copy of the file kept, every other line as it was; a block naming a
+    reserve of its own keeps it; a picture model's is not touched; nothing to change - the file is not written."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, CLIP]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "tiles": False})
+    for model_id in ("clip", "draw"):
+        job = hub.post("/v1/install/pictures", json={"id": model_id}).json()["job"]
+        done = wait_for(hub, job["id"], "done", "failed")
+        assert done["status"] == "done", done["error"]
+    path = hub.config
+    now = path.read_text(encoding="utf-8")
+    before = now.replace(" --max-vram -2", "")  # the block as the code before the fix wrote it
+    assert before != now and "--max-vram" not in before
+    path.write_bytes(before.encode("utf-8"))
+
+    hub.portal.call(installer.start)
+    deadline = time.monotonic() + 15
+    while "--max-vram" not in path.read_text(encoding="utf-8") and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert path.read_text(encoding="utf-8") == now, "the hub started, the video model's block has no room kept"
+    assert lc.backups(path)[-1].read_text(encoding="utf-8") == before  # the file as it was, kept beside
+    written = path.stat().st_mtime_ns
+    assert hub.portal.call(installer.keep_room) == []  # nothing more to change: not written again
+    assert path.stat().st_mtime_ns == written
+
+    own = now.replace("--max-vram -2", "--max-vram -3")  # one the person set by hand
+    path.write_bytes(own.encode("utf-8"))
+    assert hub.portal.call(installer.keep_room) == [] and path.read_text(encoding="utf-8") == own
+
+
 def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, monkeypatch):
     """52.4: the catalog gives a video family its audio VAE; a model installed before has none - its row says the
     sound can be added, «Добавить звук» fetches that one file (the others are not fetched again), writes it into the
