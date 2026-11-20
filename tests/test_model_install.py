@@ -954,6 +954,30 @@ def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):
     assert refused.status_code == 409 and "облак" in refused.json()["detail"]
 
 
+def test_a_video_models_engine_keeps_room_on_the_card_for_its_own_work(hub, monkeypatch):
+    """«Стабилизация», the user's words of 2026-11-20: «первый ролик падает, если другие программы заняли часть
+    видеокарты». Stage 55's probe: sd.cpp `master-1053` keeps LTX-2.3's whole DiT (12.9 GB) on the card, and with
+    ≈ 1.2 GB held by other programs the step's own memory and the 1 GB Windows keeps aside no longer fit
+    («cannot make enough memory available on CUDA0» - «generate_video returned no results»), every video until one
+    with a LoRA made the engine run by blocks. A video model's sd-server is started keeping room free on the card for
+    its own work (`--max-vram` with a negative value - a reserve, not a budget); a picture model's - as it was."""
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [DRAW, CLIP]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: {**MACHINE, "tiles": False})
+    for model_id in ("clip", "draw"):
+        job = hub.post("/v1/install/pictures", json={"id": model_id}).json()["job"]
+        done = wait_for(hub, job["id"], "done", "failed")
+        assert done["status"] == "done", done["error"]
+    text = hub.config.read_text(encoding="utf-8")
+    clip = lc.model_view(text, "clip")["command"].split()
+    assert "--max-vram" in clip, "a video model's engine keeps no room on the card for its own work"
+    assert float(clip[clip.index("--max-vram") + 1]) < 0  # a reserve of the card's free memory
+    assert "--max-vram" not in lc.model_view(text, "draw")["command"]
+
+
 def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, monkeypatch):
     """52.4: the catalog gives a video family its audio VAE; a model installed before has none - its row says the
     sound can be added, «Добавить звук» fetches that one file (the others are not fetched again), writes it into the
@@ -1000,7 +1024,7 @@ def test_a_video_model_installed_before_its_family_had_sound_gets_it_added(hub, 
     view = lc.model_view(hub.config.read_text(encoding="utf-8"), "clip")
     assert f'--audio-vae "{kept.as_posix()}"' in view["command"] and "--t5xxl" in view["command"]
     assert "--flash-attn auto,te=off" in view["command"]  # the family's flags of today, kept in the row
-    assert row(job["id"])["plan"]["flags"] == today["flags"]
+    assert row(job["id"])["plan"]["flags"] == [*today["flags"], *mi.VIDEO_RESERVE]  # and room kept on the card
     assert list(lc.model_blocks(hub.config.read_text(encoding="utf-8"))).count("clip") == 1
     assert len(FakeLlamaSwap.video) == trials + 1  # tried again, with the file
     # (52.7 live) a block written again under its own name: llama-swap names the model before it has reread the

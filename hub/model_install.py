@@ -544,17 +544,26 @@ def sound_of(row: dict[str, Any], sets: list[dict[str, Any]]) -> str:
     return "add" if can and row.get("status") == "done" else ""
 
 
+# («Стабилизация», 2026-11-20: «первый ролик падает, если другие программы заняли часть видеокарты») sd.cpp
+# master-1053 keeps a video model's whole DiT on the card and, with ~1.2 GB held by others, has no room left for the
+# step itself: every video fails until the engine runs it by blocks. 2 GiB kept free - it runs by blocks from the
+# start (live: 3 of 3 on a fresh engine, the same frames)
+VIDEO_RESERVE = ["--max-vram", "-2"]
+
+
 def flags_now(plan: dict[str, Any], sets: list[dict[str, Any]]) -> list[str]:
     """The flags a picture model's block is written with: its family's in the catalog of today and what the install
     added for this computer (`--vae-tiling`); a family the catalog has no more - as it was installed. (52.7 live: a
     block written again - «Добавить звук», «Повторить» - kept the flags of the day of the install, and LTX without
-    its later `--flash-attn auto,te=off` filmed one still picture.)"""
+    its later `--flash-attn auto,te=off` filmed one still picture.) A video model's - with room kept on the card for
+    the engine's own work (`VIDEO_RESERVE`), unless its flags say how much already."""
     was = list(plan.get("flags") or [])
     family = next((e for e in sets if e["id"] == plan.get("set")), None)
-    if family is None:
-        return was
-    tiles = "--vae-tiling" in was and "--vae-tiling" not in family["flags"]
-    return [*family["flags"], *(["--vae-tiling"] if tiles else [])]
+    tiles = family is not None and "--vae-tiling" in was and "--vae-tiling" not in family["flags"]
+    flags = was if family is None else [*family["flags"], *(["--vae-tiling"] if tiles else [])]
+    if plan.get("kind") == "video" and VIDEO_RESERVE[0] not in flags:
+        flags = [*flags, *VIDEO_RESERVE]
+    return flags
 
 
 def _pictures_root(folder: Path) -> Path:
