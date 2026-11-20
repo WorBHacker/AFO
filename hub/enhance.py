@@ -170,10 +170,11 @@ def runtime_here() -> Path | None:
     return found if all((found / name).is_file() for name in RUNTIME_DLLS) else None
 
 
-def size(part: str, linked: bool) -> int:
-    """What «Скачать» brings, in bytes: the archives (the CUDA libraries not, when they are linked) and the weights."""
+def size(part: str, linked: bool, models: Path | None = None) -> int:
+    """What «Скачать» brings, in bytes: the archives (the CUDA libraries not, when they are linked) and the weights
+    (of an engine on PyTorch - those not whole in `models` yet)."""
     if on_torch(part):
-        return torch_engines.size(part)
+        return torch_engines.size(part, models)
     return sum(f["size"] for f in PARTS[part]["files"] if not (f.get("runtime") and linked))
 
 
@@ -443,7 +444,7 @@ class Enhance:
         going = bool(load.get("going"))
         ready = has(self.tools, self.models, part)
         state = "loading" if going else "ready" if ready else "unavailable" if why else "missing"
-        whole = size(part, linked)
+        whole = size(part, linked, self.models)
         return {"id": part, "name": tr(spec["name"]), "about": tr(spec["about"]), "size": whole,
                 "disk": disk(part, linked), "licence": spec["licence"], "state": state, "why": why,
                 "got": load.get("got", 0) if going else 0, "total": load.get("total", whole),
@@ -482,7 +483,7 @@ class Enhance:
             raise EnhanceError(tr("«{part}» на этом компьютере не работает: {why}", part=tr(PARTS[part]["name"]),
                                   why=why), 422)  # fmt: skip
         runtime = await asyncio.to_thread(runtime_here)
-        whole = await asyncio.to_thread(size, part, runtime is not None)
+        whole = await asyncio.to_thread(size, part, runtime is not None, self.models)
         needs = await asyncio.to_thread(disk, part, runtime is not None)
         place = torch_engines.home().parent if on_torch(part) else self.tools  # (56) its disk: <engines>
         await asyncio.to_thread(place.mkdir, parents=True, exist_ok=True)

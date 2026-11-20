@@ -160,8 +160,8 @@ class EnhanceView(QObject):
         wanted, parts = needed(self._size, self._motion, self._subject), []
         for p in self._state.get("parts") or []:
             size, percent = gb(p["size"]), round(100 * p["got"] / p["total"]) if p.get("total") else 0
-            if p["state"] == "ready":
-                note = tr("установлено · {size}", size=size)
+            if p["state"] == "ready":  # (56.6) what it takes: an engine on PyTorch - more than it brings
+                note = tr("установлено · {size}", size=gb(p.get("disk") or p["size"]))
             elif p["state"] == "loading":
                 note = tr("скачивается: {percent}%", percent=percent) if p["got"] else tr("скачивается…")
             elif p["state"] == "unavailable":

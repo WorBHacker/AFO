@@ -31,6 +31,7 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,7 @@ RUN_TIMEOUT_S = 3600.0
 JOB_MEMORY = 1 << 40  # the job is for «Стоп», not for a limit: an engine takes what its video needs
 OUT_OF_CARD = ("CUDA out of memory", "OutOfMemoryError")  # PyTorch's words when the card is too small
 LOOK_S = 0.5  # how often what the disk took is told while uv works
+SCRATCH = "tmp"  # (56.6) where uv's and an engine's temporary files go - a folder a run, gone after it
 DROPPED = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV", "CONDA_PREFIX", "PIP_REQUIRE_VIRTUALENV"}
 
 
@@ -162,24 +164,50 @@ def has(models: Path, engine: str) -> bool:
     except OSError, ValueError:
         return False
     return (ready.get("fingerprint") == fingerprint(engine) and python_of(base, engine).is_file()
-            and all((p := weight_file(models, engine, w)).is_file() and p.stat().st_size == w["size"]
-                    for w in ENGINES[engine]["weights"]))  # fmt: skip
+            and all(_whole(models, engine, w) for w in ENGINES[engine]["weights"]))  # fmt: skip
 
 
-def size(engine: str) -> int:
+def _whole(models: Path | None, engine: str, spec: dict[str, Any]) -> bool:
+    """A weights file here at its size: not fetched again."""
+    if models is None:
+        return False
+    path = weight_file(models, engine, spec)
+    return path.is_file() and path.stat().st_size == spec["size"]
+
+
+def size(engine: str, models: Path | None = None) -> int:
     """What «Скачать» brings, in bytes: what is not here yet of uv, its Python and PyTorch, the libraries, the
-    engine's code and weights."""
+    engine's code and weights (56.6: weights already whole in `models` are not fetched - not counted)."""
     base, spec = home(), ENGINES[engine]
     shared = (0 if uv_exe(base).is_file() else UV["size"]) + (0 if python_here(base) else PYTHON_SIZE)
     shared += 0 if torch_here(base) else sum(t["size"] for t in TORCH)
-    return shared + LIBRARIES_SIZE + spec["code"]["size"] + sum(w["size"] for w in spec["weights"])
+    weights = sum(w["size"] for w in spec["weights"] if not _whole(models, engine, w))
+    return shared + LIBRARIES_SIZE + spec["code"]["size"] + weights
 
 
 def disk(engine: str) -> int:
-    """What it takes on the disk once in: PyTorch unpacked is twice its download (56.1)."""
+    """What it takes on the disk once in: put in - as measured then (56.6: the window said «установлено · 98 МБ»
+    of 8.6 GB); not yet - PyTorch unpacked is twice its download (56.1)."""
     base, spec = home(), ENGINES[engine]
+    with contextlib.suppress(OSError, ValueError, TypeError):
+        ready = json.loads((engine_dir(base, engine) / "ready.json").read_text(encoding="utf-8"))
+        if ready.get("fingerprint") == fingerprint(engine) and ready.get("disk"):
+            return int(ready["disk"])
     shared = (0 if python_here(base) else BASE_DISK) + (0 if torch_here(base) else TORCH_DISK)
     return shared + spec["code"]["disk"] + sum(w["size"] for w in spec["weights"])
+
+
+def measured(base: Path, engine: str) -> int:
+    """What an engine put in takes on the disk: the folder of the engines on PyTorch - uv, its Python, its cache, the
+    environments; a file uv linked in several places once - and the engine's weights."""
+    seen, total = set(), 0
+    for path in base.rglob("*"):
+        with contextlib.suppress(OSError):
+            found = path.lstat()
+            if stat.S_ISREG(found.st_mode) and (found.st_dev, found.st_ino) not in seen:
+                seen.add((found.st_dev, found.st_ino))
+                total += found.st_size
+    return total + sum(w["size"] for w in ENGINES[engine]["weights"])
 
 
 def usable(engine: str, machine: dict[str, Any]) -> str:
@@ -223,10 +251,22 @@ def _tail(text: str) -> str:
 
 
 def _started(args: list[str], *, env: dict[str, str], cwd: Path, cancel: threading.Event, timeout: float,
-             failed: str, name: str, short: tuple[str, ...] = ()) -> str:  # fmt: skip
+             failed: str, name: str, short: tuple[str, ...] = (), scratch: Path) -> str:  # fmt: skip
     """A program once (blocking), in a Windows job: what it said. `cancel` set, or the time out - the job is killed,
     with everything the program started. It failed - `failed` with its words ({name}, {said}); the card too small
-    (`short`) - said so."""
+    (`short`) - said so. Its temporary files (TEMP, TMP) - in a folder of its own under `scratch`, in AFO's folder,
+    gone after it (56.6: SAM's frames of a run killed by ✕ stayed in the person's TEMP)."""
+    scratch.mkdir(parents=True, exist_ok=True)
+    own = Path(tempfile.mkdtemp(dir=scratch))
+    try:
+        return _once(args, env=env | {"TEMP": str(own), "TMP": str(own), "TMPDIR": str(own)}, cwd=cwd, cancel=cancel,
+                     timeout=timeout, failed=failed, name=name, short=short)  # fmt: skip
+    finally:
+        engines.remove_tree(own)
+
+
+def _once(args: list[str], *, env: dict[str, str], cwd: Path, cancel: threading.Event, timeout: float,
+          failed: str, name: str, short: tuple[str, ...]) -> str:  # fmt: skip
     flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     began = time.monotonic()
     with tempfile.TemporaryFile() as said, winjob.Job(JOB_MEMORY) as job:  # a file, not a pipe: nothing reads one
@@ -277,7 +317,8 @@ def _uv(base: Path, args: list[str], cancel: threading.Event, *, add: dict[str, 
         watcher.start()
     try:
         return _started([*command(uv_exe(base)), *args], env=uv_env(base, add), cwd=base, cancel=cancel,
-                        timeout=UV_TIMEOUT_S, failed=N_("uv не поставил «{name}»: {said}"), name=args[0])  # fmt: skip
+                        timeout=UV_TIMEOUT_S, failed=N_("uv не поставил «{name}»: {said}"), name=args[0],
+                        scratch=base / SCRATCH)  # fmt: skip
     finally:
         done.set()
         if watcher is not None:
@@ -308,7 +349,7 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
     their pins, its code -, its weights, then a look that it starts and sees the card. «Стоп» (hf.Cancelled): what
     came stays for the next time; the environment is made anew then - from uv's cache, without fetching again."""
     base, spec = home(), ENGINES[engine]
-    total, got = size(engine), 0
+    total, got = size(engine, models), 0
     base.mkdir(parents=True, exist_ok=True)
 
     def at(n: float) -> None:
@@ -344,19 +385,20 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
             told=lambda share: at(share * bring), takes=code["disk"])  # fmt: skip
         got += bring
         for weight in spec["weights"]:
-            path = weight_file(models, engine, weight)
-            if not (path.is_file() and path.stat().st_size == weight["size"]):
+            if not _whole(models, engine, weight):  # whole - not fetched, not counted in `total`
+                path = weight_file(models, engine, weight)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 hf.download(hf.file_url(weight["hf"], weight["path"], weight["revision"]), path, size=weight["size"],
                             sha256=weight["sha256"], token=None, cancel=cancel, report=at)  # fmt: skip
-            got += weight["size"]
+                got += weight["size"]
         home_of(base, engine).mkdir(parents=True, exist_ok=True)
         looked = _started([str(py), "-I", str(script_of(engine)), "--check"], env=engine_env(base, engine),
                           cwd=home_of(base, engine), cancel=cancel, timeout=CHECK_TIMEOUT_S,
-                          failed=N_("«{name}» не запустилось: {said}"), name=tr(spec["name"]))  # fmt: skip
-        (place / "ready.json").write_bytes(json.dumps({"fingerprint": fingerprint(engine),
-                                                       "check": _tail(looked)}).encode())  # fmt: skip
+                          failed=N_("«{name}» не запустилось: {said}"), name=tr(spec["name"]),
+                          scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
         engines.remove_tree(base / "downloads")
+        (place / "ready.json").write_bytes(json.dumps({"fingerprint": fingerprint(engine), "check": _tail(looked),
+                                                       "disk": measured(base, engine)}).encode())  # fmt: skip
         report(total, total)
     except Stopped:
         raise hf.Cancelled() from None
@@ -381,7 +423,7 @@ def run(engine: str, args: list[str], cancel: threading.Event, *, timeout: float
     return _started([str(python_of(base, engine)), "-I", str(script_of(engine)), *args],
                     env=engine_env(base, engine), cwd=home_of(base, engine), cancel=cancel, timeout=timeout,
                     failed=N_("«{name}» не справилось: {said}"), name=tr(ENGINES[engine]["name"]),
-                    short=OUT_OF_CARD)  # fmt: skip
+                    short=OUT_OF_CARD, scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
 
 
 def select_args(models: Path, frames: Path, out: Path, *, at: int, x: float, y: float) -> list[str]:

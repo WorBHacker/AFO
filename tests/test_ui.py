@@ -11776,7 +11776,8 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
         assert "Останется только предмет" in named("improveNote").property("text")
         click(window, named("improveGet_select"))
         wait_until(lambda: not app.bg.busy and client.enhance_calls == [("install", "select")])
-        hub_parts(select={"state": "ready"})
+        hub_parts(select={"state": "ready", "size": 98_000_000})  # put in: what it takes on the disk, not brings
+        assert named("improvePartNote_select").property("text") == "установлено · 8,2 ГБ"
         assert need.property("text") == "Щёлкните по предмету на кадре" and not go.property("enabled")
 
         area = named("improveFrameClick")  # the picture as painted: the bands beside it are no frame

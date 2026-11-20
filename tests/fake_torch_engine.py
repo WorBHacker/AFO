@@ -6,7 +6,8 @@ the hub with the engine's own Python (`python -I fake_torch_engine.py <arguments
   frames back, the object kept.
 
 $FAKE_ENGINE_LOG - each run a JSON line: its arguments, folder, its Python, whether it runs isolated (-I), and the
-environment it was given for its caches. $FAKE_ENGINE_SLOW=<seconds> - it waits so long first, a child of its own
+environment it was given for its caches and temporary files. A run at frames leaves a file in a temporary folder of
+its own, as SAM's frames are. $FAKE_ENGINE_SLOW=<seconds> - it waits so long first, a child of its own
 waiting with it (its pid into $FAKE_ENGINE_CHILD); $FAKE_ENGINE_FAIL - «oom»: PyTorch's words for a card too small,
 exit 1; anything else: those words, exit 1.
 """
@@ -16,11 +17,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 GIVEN = ("HF_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
-         "PYTHONNOUSERSITE", "VIRTUAL_ENV", "PYTHONPATH")  # fmt: skip
+         "PYTHONNOUSERSITE", "VIRTUAL_ENV", "PYTHONPATH", "TEMP", "TMP")  # fmt: skip
 
 
 def value(args, flag):
@@ -34,6 +36,8 @@ def main():
             out.write(json.dumps({"args": args, "cwd": os.getcwd(), "python": sys.executable,
                                   "isolated": bool(sys.flags.isolated),
                                   "env": {k: os.environ.get(k) for k in GIVEN}}) + "\n")  # fmt: skip
+    if "--frames" in args:  # as SAM's frames for a piece: JPEGs in a temporary folder - a run killed leaves them
+        (Path(tempfile.mkdtemp()) / "0.jpg").write_bytes(b"\xff\xd8\xff a frame")
     if slow := float(os.environ.get("FAKE_ENGINE_SLOW") or 0):
         child = subprocess.Popen([sys.executable, "-c", f"import time; time.sleep({slow})"])
         Path(os.environ["FAKE_ENGINE_CHILD"]).write_text(str(child.pid))

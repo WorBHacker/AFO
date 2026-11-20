@@ -149,6 +149,10 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
         assert call["env"]["UV_CACHE_DIR"] == str(base / "cache")
         assert call["env"]["UV_PYTHON_INSTALL_DIR"] == str(base / "python")
         assert call["env"]["UV_NO_CONFIG"] == "1" and "UV_INDEX_URL" not in call["env"]
+        # (56.6) its temporary files - in AFO's folder, a folder a call, gone after it
+        assert inside(call["env"]["TEMP"], base / "tmp") and call["env"]["TMP"] == call["env"]["TEMP"]
+        assert not Path(call["env"]["TEMP"]).exists()
+    assert len({c["env"]["TEMP"] for c in calls}) == len(calls)
     assert {"--no-bin", "--no-registry"} <= set(calls[0]["args"]) and "--no-project" in calls[1]["args"]
     torch_line, code_call = calls[2]["args"], calls[3]
     assert "--no-build-isolation" not in torch_line and "--no-build-isolation" in code_call["args"]
@@ -167,6 +171,7 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
     assert Path(looked["cwd"]) == base / "select" / "home"
     assert all(inside(looked["env"][k], base / "select" / "home") for k in ("HF_HOME", "TORCH_HOME", "MPLCONFIGDIR"))
     assert looked["env"]["HF_HUB_OFFLINE"] == "1" and looked["env"]["VIRTUAL_ENV"] is None
+    assert inside(looked["env"]["TEMP"], base / "select" / "tmp") and not Path(looked["env"]["TEMP"]).exists()
     weight = torch_engines.weight_file(models_home(), "select", spec["weights"][0])
     assert weight.read_bytes() == WEIGHTS and not (base / "downloads").exists()
     told = [p for kind, p in hub.seen if kind == "enhance.changed"]
@@ -174,6 +179,20 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
     assert any(g["state"] == "loading" for g in going) and going[-1]["state"] == "ready"
     shared = torch_engines.size("select")  # uv, its Python and PyTorch are here: another engine would not fetch them
     assert shared == torch_engines.LIBRARIES_SIZE + spec["code"]["size"] + len(WEIGHTS)
+    assert state(hub)["size"] == shared - len(WEIGHTS)  # (56.6) nor its weights, whole here: not counted
+    env_files = sum(f.stat().st_size for f in (base / "select" / "env").rglob("*") if f.is_file())
+    assert state(hub)["disk"] >= env_files + len(WEIGHTS) and state(hub)["disk"] != before["disk"]  # as measured
+    began = [p for kind, p in hub.seen if kind == "enhance.changed"]
+    weight_kept = weight.read_bytes()
+    engines_dir = torch_engines.engine_dir(base, "select")
+    (engines_dir / "ready.json").unlink()  # put in again with its weights here: they are not fetched, nor counted
+    asked = len(FakeFiles.asked)
+    assert hub.post("/v1/enhance/parts/select").status_code == 200
+    assert wait_state(hub, "ready", "missing")["state"] == "ready" and weight.read_bytes() == weight_kept
+    assert not FakeFiles.asked[asked:]
+    again = [next(x for x in p["parts"] if x["id"] == "select") for kind, p in hub.seen if kind == "enhance.changed"]
+    totals = {g["total"] for g in again[len(began) :] if g["state"] == "loading"}
+    assert totals == {torch_engines.LIBRARIES_SIZE + spec["code"]["size"]}
 
     assert hub.delete("/v1/enhance/parts/select").status_code == 200
     assert state(hub)["state"] == "missing" and not base.exists() and not weight.exists()
@@ -192,6 +211,7 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
         assert next(p for p in stopped["parts"] if p["id"] == "select")["state"] == "missing"
         assert time.monotonic() - began < 15
         assert not psutil.pid_exists(child)  # uv's own child went with it: the job
+        assert not Path(hub.uv()[-1]["env"]["TEMP"]).exists()  # and what it left in its temporary folder
     fetched, called = len(FakeFiles.asked), len(hub.uv())
     assert hub.post("/v1/enhance/parts/select").status_code == 200  # again: goes on from what came
     assert wait_state(hub, "ready", "missing")["state"] == "ready"
@@ -243,6 +263,7 @@ def test_a_video_keeps_only_the_object_clicked_and_the_engine_runs_in_its_folder
     assert value(run["args"], "--weights") == str(weight) and run["isolated"]
     assert Path(run["cwd"]) == base / "select" / "home"
     assert Path(run["python"]).resolve().is_relative_to((base / "select" / "env").resolve())
+    assert inside(run["env"]["TEMP"], base / "select" / "tmp") and not Path(run["env"]["TEMP"]).exists()
     shown = described(media / done["file"])
     assert shown["size"] == (64, 64) and shown["fps"] == 24 and shown["sound"] and abs(shown["seconds"] - 3) < 0.1
     assert done["frames"] == 72
@@ -264,6 +285,8 @@ def test_a_video_keeps_only_the_object_clicked_and_the_engine_runs_in_its_folder
     assert stopped["status"] == "cancelled" and stopped["error"] == "" and time.monotonic() - began < 15
     assert not psutil.pid_exists(child)  # what the engine started went with it: the job
     assert not list(media.glob(f"*/{stopping}*")) and not [p for p in media.rglob("*") if p.name.startswith(".")]
+    killed = hub.engine()[-1]["env"]["TEMP"]  # (56.6) its frames in its temporary folder: gone with it
+    assert inside(killed, base / "select" / "tmp") and not Path(killed).exists()
     monkeypatch.delenv("FAKE_ENGINE_SLOW")
 
     monkeypatch.setenv("FAKE_ENGINE_FAIL", "oom")
