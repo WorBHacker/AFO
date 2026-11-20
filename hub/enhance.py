@@ -13,6 +13,8 @@ runs, never linked.
   not flicker, but takes 14.5 GB of the card: an NVIDIA card of 16 GB (`DETAIL_GIB`), and not the «Качественнее»
   sizes. Its CUDA libraries are the filming build's own files (the same archive, `engines.SD_RUNTIME`): hard links
   when that build is here, else the archive is fetched.
+- «Выделение предмета» (`select`, stage 56): SAM 2.1 - the first engine on PyTorch, with Python: its environment,
+  install and runs are hub/torch_engines.py's; here it is a part as the others are.
 
 What 54.1 measured (RTX 5080; a scene of LTX, 768×512, 73 frames): RIFE 2.4-3.9 s for 60 a second, +0.5 GB of the
 card; Real-ESRGAN 35 s, +2.4 GB; RelayVSR 24 s, +14 GB - its window must take the whole piece (`detail_args`): with
@@ -49,7 +51,7 @@ import httpx
 from common.i18n import N_, decimal, tr
 from common.paths import engines_home
 
-from . import engines, hf
+from . import engines, hf, torch_engines
 from . import ffmpeg as video
 from .engines import EngineError
 from .events import EventBus
@@ -94,6 +96,8 @@ PARTS: dict[str, dict[str, Any]] = {
              "sha256": "b5bb0339acb5b52545911ea29a51b4c5b805776a779222b5a14591571f42e21c"},
         ),
     },
+    # (56) an engine on PyTorch: its own environment, put in and run by hub/torch_engines.py
+    "select": {key: torch_engines.ENGINES["select"][key] for key in ("name", "about", "licence")} | {"torch": True},
 }  # fmt: skip
 DETAIL_GIB = 15.5  # a card of 16 GB says 15.9: RelayVSR took 14.0-14.5 of it (54.1)
 ROOM = 1 << 30  # left free on the disk after a download
@@ -124,7 +128,15 @@ def folder(tools: Path, part: str) -> Path:
     return tools / "enhance" / part
 
 
+def on_torch(part: str) -> bool:
+    """A part that is an engine on PyTorch (56): hub/torch_engines.py puts it in and runs it."""
+    return bool(PARTS[part].get("torch"))
+
+
 def find(tools: Path, part: str) -> Path | None:
+    if on_torch(part):
+        program = torch_engines.python_of(torch_engines.home(), part)
+        return program if program.is_file() else None
     program = folder(tools, part) / PARTS[part]["program"]
     return program if program.is_file() else None
 
@@ -135,15 +147,17 @@ def weight_file(models: Path, spec: dict[str, Any]) -> Path:
 
 
 def weights(part: str) -> list[dict[str, Any]]:
-    return [f for f in PARTS[part]["files"] if "hf" in f]
+    return [f for f in PARTS[part].get("files", ()) if "hf" in f]
 
 
 def releases(part: str) -> list[dict[str, Any]]:
-    return [f for f in PARTS[part]["files"] if "repo" in f]
+    return [f for f in PARTS[part].get("files", ()) if "repo" in f]
 
 
 def has(tools: Path, models: Path, part: str) -> bool:
     """The part's program here, and its weights whole."""
+    if on_torch(part):
+        return torch_engines.has(models, part)
     return find(tools, part) is not None and all(
         (path := weight_file(models, spec)).is_file() and path.stat().st_size == spec["size"] for spec in weights(part)
     )
@@ -158,11 +172,20 @@ def runtime_here() -> Path | None:
 
 def size(part: str, linked: bool) -> int:
     """What «Скачать» brings, in bytes: the archives (the CUDA libraries not, when they are linked) and the weights."""
+    if on_torch(part):
+        return torch_engines.size(part)
     return sum(f["size"] for f in PARTS[part]["files"] if not (f.get("runtime") and linked))
+
+
+def disk(part: str, linked: bool) -> int:
+    """What the part takes on the disk once in: what it brings - an engine on PyTorch unpacks to more (56)."""
+    return torch_engines.disk(part) if on_torch(part) else size(part, linked)
 
 
 def usable(part: str, machine: dict[str, Any]) -> str:
     """Why the part cannot work on this computer, in words; '' - it can."""
+    if on_torch(part):
+        return torch_engines.usable(part, machine)
     if part != "detail":
         return ""
     if machine.get("build") != "cuda12" or float(machine.get("memory_gib") or 0) < DETAIL_GIB:
@@ -263,6 +286,9 @@ def install(part: str, found: list[dict[str, Any]], tools: Path, models: Path, c
 
 
 def remove(tools: Path, models: Path, part: str) -> None:
+    if on_torch(part):
+        torch_engines.remove(models, part)
+        return
     engines.remove_tree(folder(tools, part))
     for weight in weights(part):
         with contextlib.suppress(OSError):
@@ -405,8 +431,9 @@ class Enhance:
         state = "loading" if going else "ready" if ready else "unavailable" if why else "missing"
         whole = size(part, linked)
         return {"id": part, "name": tr(spec["name"]), "about": tr(spec["about"]), "size": whole,
-                "licence": spec["licence"], "state": state, "why": why, "got": load.get("got", 0) if going else 0,
-                "total": load.get("total", whole), "error": "" if going else load.get("error", "")}  # fmt: skip
+                "disk": disk(part, linked), "licence": spec["licence"], "state": state, "why": why,
+                "got": load.get("got", 0) if going else 0, "total": load.get("total", whole),
+                "error": "" if going else load.get("error", "")}  # fmt: skip
 
     async def state(self) -> dict[str, Any]:
         """What the window shows: each part - ready, loading (how far), missing (its size), unavailable (why)."""
@@ -441,12 +468,14 @@ class Enhance:
             raise EnhanceError(tr("«{part}» на этом компьютере не работает: {why}", part=tr(PARTS[part]["name"]),
                                   why=why), 422)  # fmt: skip
         runtime = await asyncio.to_thread(runtime_here)
-        whole = size(part, runtime is not None)
-        await asyncio.to_thread(self.tools.mkdir, parents=True, exist_ok=True)
-        free = (await asyncio.to_thread(shutil.disk_usage, self.tools)).free
-        if free < whole + ROOM:
+        whole = await asyncio.to_thread(size, part, runtime is not None)
+        needs = await asyncio.to_thread(disk, part, runtime is not None)
+        place = torch_engines.home().parent if on_torch(part) else self.tools  # (56) its disk: <engines>
+        await asyncio.to_thread(place.mkdir, parents=True, exist_ok=True)
+        free = (await asyncio.to_thread(shutil.disk_usage, place)).free
+        if free < needs + ROOM:
             raise EnhanceError(tr("на диске мало места: нужно {need} ГБ, свободно {free} ГБ",
-                                  need=decimal(f"{(whole + ROOM) / 2**30:.1f}"),
+                                  need=decimal(f"{(needs + ROOM) / 2**30:.1f}"),
                                   free=decimal(f"{free / 2**30:.1f}")), 507)  # fmt: skip
         load = self._loads[part] = {"got": 0, "total": whole, "error": "", "going": True, "cancel": threading.Event()}
         load["task"] = asyncio.create_task(self._install(part, load, runtime))
@@ -465,6 +494,9 @@ class Enhance:
             load["got"], load["total"] = got, total
 
         try:
+            if on_torch(part):  # (56) an engine on PyTorch: its pins are in AFO's code, GitHub is not asked
+                await self._told(asyncio.to_thread(torch_engines.install, part, self.models, load["cancel"], report))
+                return
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
                 found = await assets(http, part, runtime is not None) if not await asyncio.to_thread(
                     find, self.tools, part) else []  # fmt: skip
@@ -508,7 +540,8 @@ class Enhance:
             raise EnhanceError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
                                   part=tr(PARTS[part]["name"])), 422)  # fmt: skip
         halt = threading.Event()
-        going = asyncio.ensure_future(asyncio.to_thread(run, program, args, halt))
+        work = (lambda: torch_engines.run(part, args, halt)) if on_torch(part) else (lambda: run(program, args, halt))
+        going = asyncio.ensure_future(asyncio.to_thread(work))
         waiting = asyncio.ensure_future(cancel.wait())
         try:
             await asyncio.wait({going, waiting}, return_when=asyncio.FIRST_COMPLETED)
@@ -518,7 +551,7 @@ class Enhance:
                 halt.set()  # «Стоп», or the hub closes: the program is killed, its thread ends
         try:
             return await going
-        except Stopped as exc:
+        except (Stopped, torch_engines.Stopped) as exc:
             raise EnhanceError(str(exc)) from None
         except EngineError as exc:
             raise EnhanceError(str(exc), 502) from None

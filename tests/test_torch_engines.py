@@ -1,0 +1,205 @@
+"""Engines on PyTorch (stage 56): put in by uv in AFO's own folder, run in a Windows job. A real hub, a stand-in of
+the files' sources (uv's archive, Hugging Face), a stand-in of uv (tests/fake_uv.py) and of the engine's script
+(tests/fake_torch_engine.py) - real processes; the environment uv makes is a real one, of this Python."""
+
+import hashlib
+import io
+import json
+import sys
+import threading
+import time
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import ClassVar
+
+import psutil
+import pytest
+
+from common.paths import models_home
+from hub import enhance, hf, torch_engines
+from tests.test_visual import hub  # noqa: F401 - the Studio's stand
+
+FAKE_UV = Path(__file__).with_name("fake_uv.py")
+FAKE_ENGINE = Path(__file__).with_name("fake_torch_engine.py")
+
+
+def uv_archive():
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w") as zf:
+        for name in ("uv.exe", "uvw.exe", "uvx.exe"):
+            zf.writestr(name, b"MZ" + name.encode())
+    return data.getvalue()
+
+
+UV_ZIP = uv_archive()
+WEIGHTS = b"sam2.1" * 50000
+
+
+class FakeFiles(BaseHTTPRequestHandler):
+    """uv's archive where GitHub keeps it, SAM 2.1's weights where Hugging Face does; a wrong byte when asked."""
+
+    corrupt: ClassVar[set] = set()
+    asked: ClassVar[list] = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        type(self).asked.append(self.path)
+        spec = torch_engines.ENGINES["select"]["weights"][0]
+        if self.path == "/" + torch_engines.UV["url"].split("://", 1)[1]:
+            body = UV_ZIP
+        elif self.path == f"/{spec['hf']}/resolve/{spec['revision']}/{spec['path']}":
+            body = WEIGHTS
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        if self.path.rsplit("/", 1)[-1] in self.corrupt:
+            body = b"X" + body[1:]
+        self.send_response(200)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.fixture
+def stand(hub, monkeypatch, tmp_path):  # noqa: F811
+    """The hub with the stand-ins; the pins - the stand-ins' files'; an NVIDIA card of 16 GB; what uv and the engine
+    were asked - `hub.uv()`, `hub.engine()`; uv's own settings of the person - which must not reach it."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeFiles)
+    FakeFiles.corrupt, FakeFiles.asked = set(), []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setenv(torch_engines.SOURCES_ENV, base)
+    monkeypatch.setenv(hf.BASE_ENV, base)
+    monkeypatch.setitem(torch_engines.UV, "size", len(UV_ZIP))
+    monkeypatch.setitem(torch_engines.UV, "sha256", hashlib.sha256(UV_ZIP).hexdigest())
+    spec = torch_engines.ENGINES["select"]
+    weight = spec["weights"][0] | {"size": len(WEIGHTS), "sha256": hashlib.sha256(WEIGHTS).hexdigest()}
+    monkeypatch.setitem(torch_engines.ENGINES, "select", spec | {"weights": (weight,)})
+    monkeypatch.setattr(torch_engines, "command", lambda program: [sys.executable, str(FAKE_UV)])
+    monkeypatch.setattr(torch_engines, "script_of", lambda engine: FAKE_ENGINE)
+    monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)
+    monkeypatch.setattr(enhance, "TICK_S", 0.05)
+    monkeypatch.setenv("UV_INDEX_URL", "http://elsewhere.invalid/simple")  # the person's own: not for AFO's uv
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "someone-elses-env"))
+    for name in ("uv", "engine"):
+        monkeypatch.setenv(f"FAKE_{name.upper()}_LOG", str(tmp_path / f"{name}.jsonl"))
+
+    def read(name):
+        log = tmp_path / f"{name}.jsonl"
+        return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()] if log.is_file() else []
+
+    hub.uv, hub.engine = (lambda: read("uv")), (lambda: read("engine"))
+    hub.app.state.enhance.machine = lambda: {"build": "cuda12", "memory_gib": 15.9}
+    yield hub
+    server.shutdown()
+
+
+def state(hub):  # noqa: F811
+    return next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "select")
+
+
+def wait_state(hub, *states, timeout=60.0):  # noqa: F811
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = state(hub)
+        if found["state"] in states:
+            return found
+        time.sleep(0.05)
+    raise AssertionError(f"select is still {found}")
+
+
+def inside(path, folder):
+    return Path(path).resolve().is_relative_to(Path(folder).resolve())
+
+
+def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_is_left_outside(stand, tmp_path):
+    """56.2-56.3: «Скачать» of «Выделение предмета» - uv's archive (sha256), its own Python, an environment: PyTorch by
+    its URL and sha256, the libraries by their pins, SAM 2.1's code built without its CUDA extension, the weights
+    (sha256), then a look that it starts. Every call of uv is given AFO's folders - the cache, its Pythons - runs in
+    AFO's folder, with `--no-bin --no-registry --no-project`; the person's own uv settings do not reach it. The size
+    told before is what it brings; the second time PyTorch is in the cache - not counted. «Стоп» kills uv with what
+    it started; «Удалить» of the last engine leaves nothing of them. No NVIDIA card - not offered."""
+    hub = stand  # noqa: F811
+    base, spec = torch_engines.home(), torch_engines.ENGINES["select"]
+    before = state(hub)
+    wanted = (len(UV_ZIP) + torch_engines.PYTHON_SIZE + sum(t["size"] for t in torch_engines.TORCH)
+              + torch_engines.LIBRARIES_SIZE + spec["code"]["size"] + len(WEIGHTS))  # fmt: skip
+    assert before["state"] == "missing" and before["size"] == wanted and before["disk"] > before["size"]
+    assert before["name"] == "Выделение предмета"
+
+    FakeFiles.corrupt = {torch_engines.UV["name"]}
+    assert hub.post("/v1/enhance/parts/select").status_code == 200
+    broken = wait_state(hub, "missing", "ready")
+    assert broken["state"] == "missing" and "sha256" in broken["error"] and not torch_engines.uv_exe(base).exists()
+    FakeFiles.corrupt = set()
+
+    assert hub.post("/v1/enhance/parts/select").status_code == 200
+    ready = wait_state(hub, "ready", "missing")
+    assert ready["state"] == "ready", ready["error"]
+    calls = hub.uv()
+    assert [c["args"][:2] for c in calls] == [["python", "install"], ["venv", str(base / "select" / "env")],
+                                              ["pip", "install"], ["pip", "install"]]  # fmt: skip
+    for call in calls:  # AFO's folders, AFO's folder, none of the person's settings
+        assert Path(call["cwd"]) == base
+        assert call["env"]["UV_CACHE_DIR"] == str(base / "cache")
+        assert call["env"]["UV_PYTHON_INSTALL_DIR"] == str(base / "python")
+        assert call["env"]["UV_NO_CONFIG"] == "1" and "UV_INDEX_URL" not in call["env"]
+    assert {"--no-bin", "--no-registry"} <= set(calls[0]["args"]) and "--no-project" in calls[1]["args"]
+    torch_line, code_call = calls[2]["args"], calls[3]
+    assert "--no-build-isolation" not in torch_line and "--no-build-isolation" in code_call["args"]
+    assert code_call["env"]["SAM2_BUILD_CUDA"] == "0"
+    put = (base / "select" / "env" / "afo-fake-uv.txt").read_text(encoding="utf-8").splitlines()
+    for t in torch_engines.TORCH:  # PyTorch by its address and sum - uv checks it, and keeps it in its cache by it
+        assert f"{t['name']} @ {torch_engines.source(t['url'])}#sha256={t['sha256']}" in put
+    assert f"sam-2 @ {torch_engines.source(spec['code']['url'])}#sha256={spec['code']['sha256']}" in put
+    pins = (base / "select" / "pins.txt").read_text(encoding="utf-8").split()
+    assert "numpy==2.2.6" in pins and "hydra-core==1.3.8" in pins and calls[2]["args"][-2:] == ["-c", str(
+        base / "select" / "pins.txt")]  # fmt: skip
+
+    looked = hub.engine()[-1]  # the look: the engine's Python, isolated, in its folder, its caches there, offline
+    assert looked["args"] == ["--check"] and looked["isolated"]
+    assert Path(looked["python"]).resolve().is_relative_to((base / "select" / "env").resolve())
+    assert Path(looked["cwd"]) == base / "select" / "home"
+    assert all(inside(looked["env"][k], base / "select" / "home") for k in ("HF_HOME", "TORCH_HOME", "MPLCONFIGDIR"))
+    assert looked["env"]["HF_HUB_OFFLINE"] == "1" and looked["env"]["VIRTUAL_ENV"] is None
+    weight = torch_engines.weight_file(models_home(), "select", spec["weights"][0])
+    assert weight.read_bytes() == WEIGHTS and not (base / "downloads").exists()
+    told = [p for kind, p in hub.seen if kind == "enhance.changed"]
+    going = [next(x for x in p["parts"] if x["id"] == "select") for p in told]
+    assert any(g["state"] == "loading" for g in going) and going[-1]["state"] == "ready"
+    shared = torch_engines.size("select")  # uv, its Python and PyTorch are here: another engine would not fetch them
+    assert shared == torch_engines.LIBRARIES_SIZE + spec["code"]["size"] + len(WEIGHTS)
+
+    assert hub.delete("/v1/enhance/parts/select").status_code == 200
+    assert state(hub)["state"] == "missing" and not base.exists() and not weight.exists()
+
+    pid_file = tmp_path / "uv-child.pid"
+    with pytest.MonkeyPatch.context() as slow:
+        slow.setenv("FAKE_UV_SLOW", "60")
+        slow.setenv("FAKE_UV_CHILD", str(pid_file))
+        hub.post("/v1/enhance/parts/select")
+        deadline = time.monotonic() + 30
+        while not pid_file.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = int(pid_file.read_text())
+        began = time.monotonic()
+        stopped = hub.post("/v1/enhance/parts/select/stop").json()
+        assert next(p for p in stopped["parts"] if p["id"] == "select")["state"] == "missing"
+        assert time.monotonic() - began < 15
+        assert not psutil.pid_exists(child)  # uv's own child went with it: the job
+    fetched, called = len(FakeFiles.asked), len(hub.uv())
+    assert hub.post("/v1/enhance/parts/select").status_code == 200  # again: goes on from what came
+    assert wait_state(hub, "ready", "missing")["state"] == "ready"
+    assert not any(p.endswith(torch_engines.UV["name"]) for p in FakeFiles.asked[fetched:])  # uv is here
+    assert [c["args"][0] for c in hub.uv()[called:]] == ["venv", "pip", "pip"]  # and its Python
+
+    hub.delete("/v1/enhance/parts/select")
+    hub.app.state.enhance.machine = lambda: {"build": "vulkan", "memory_gib": 16.0}
+    other = state(hub)
+    assert other["state"] == "unavailable" and "NVIDIA" in other["why"]
+    refused = hub.post("/v1/enhance/parts/select")
+    assert refused.status_code == 422 and "NVIDIA" in refused.json()["detail"]

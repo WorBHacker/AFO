@@ -100,6 +100,8 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setenv(hf.BASE_ENV, f"http://127.0.0.1:{server.server_port}")
     by_name = {name: data for name, (_r, _t, data, _s) in ARCHIVES.items()}
     for part, spec in enhance.PARTS.items():
+        if enhance.on_torch(part):  # (56) an engine on PyTorch: tests/test_torch_engines.py
+            continue
         files = tuple(f | {"size": len(by_name[f["name"]]), "sha256": hashlib.sha256(by_name[f["name"]]).hexdigest()}
                       if "repo" in f else
                       f | {"size": len(WEIGHTS[f["path"]]), "sha256": hashlib.sha256(WEIGHTS[f["path"]]).hexdigest()}
@@ -149,10 +151,11 @@ def test_the_programs_that_improve_a_video_are_fetched_as_parts_and_keep_only_wh
     was = hub.get("/v1/enhance").json()
     sizes = {name: len(data) for name, (_r, _t, data, _s) in ARCHIVES.items()}
     weights = sum(len(w) for w in WEIGHTS.values())
-    assert [(p["id"], p["state"], p["size"]) for p in was["parts"]] == [
+    assert [(p["id"], p["state"], p["size"]) for p in was["parts"][:3]] == [
         ("smooth", "missing", sizes["windows.zip"]),
         ("sharp", "missing", sizes["realesrgan-ncnn-vulkan-20220424-windows.zip"]),
         ("detail", "missing", sizes[SD_ARCHIVE] + sizes[engines.SD_RUNTIME] + weights)]  # fmt: skip
+    assert [p["id"] for p in was["parts"][3:]] == ["select"]  # (56) the engine on PyTorch after them
     assert hub.post("/v1/enhance/parts/sparkle").status_code == 404
 
     FakeSources.corrupt = {"windows.zip"}
@@ -525,7 +528,7 @@ def test_the_windows_client_improves_a_video_through_the_hub(stand, monkeypatch)
     hub = stand  # noqa: F811
     monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
     client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
-    assert [p["state"] for p in client.enhance()["parts"]] == ["missing", "missing", "missing"]
+    assert [p["state"] for p in client.enhance()["parts"]] == ["missing", "missing", "missing", "missing"]
     assert client.install_enhance("smooth")["parts"][0]["state"] in ("loading", "ready")
     wait_part(hub, "smooth", "ready")
     assert any(kind == "enhance.changed" for kind, _p in hub.seen) and matches("enhance.changed", tuple(TOPICS))
