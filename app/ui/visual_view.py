@@ -100,6 +100,7 @@ class PictureProvider(QQuickImageProvider):
         self.fetch: Callable[[str], bytes] | None = None  # a chat's picture from the hub
         self.source = b""  # «По картинке»: the source shown (29.6б)
         self.last = b""  # a video's last frame shown (48.7б)
+        self.pick = b""  # (56) «Только предмет»: the frame the object is clicked on
 
     def requestImage(self, picture_id: str, size: QSize, requested: QSize) -> QImage:
         kind, _, key = picture_id.partition("/")
@@ -110,8 +111,8 @@ class PictureProvider(QQuickImageProvider):
                     data = self.blobs[key] = self.fetch(key)
                 except HubError:
                     data = b""
-        elif kind in ("source", "last"):
-            data = self.source if kind == "source" else self.last
+        elif kind in ("source", "last", "pick"):
+            data = self.source if kind == "source" else self.last if kind == "last" else self.pick
         else:
             data = self.preview if kind == "preview" else self.pictures.get(key, b"")
         image = QImage()

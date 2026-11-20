@@ -1,5 +1,6 @@
 """«Улучшить ролик» in the window (stage 54.6): a video of the Studio's or a film's joined one - twice as large (fast
-or with details) and/or 60 frames a second or slowed. The sheet: what to do with it, the parts that do it - each
+or with details) and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark.
+The sheet: what to do with it, the parts that do it - each
 fetched once by a click, how far, «Стоп» -, and «Улучшить»: a job of the Studio's queue, which goes on there as a
 video does and ends as a new video beside the source. The hub improves (hub/enhance.py, hub/visual.py); this asks
 and shows."""
@@ -17,19 +18,22 @@ if TYPE_CHECKING:
 
 SIZES = [("", N_("Как есть")), ("sharp", N_("×2 быстро")), ("detail", N_("×2 с дорисовкой"))]
 MOTIONS = [("", N_("Как есть")), ("fps60", N_("60 к/с")), ("slow2", N_("Медленнее ×2")), ("slow4", N_("Медленнее ×4"))]
+SUBJECTS = [("", N_("Весь кадр")), ("select", N_("Только предмет"))]  # (56) SAM 2.1: the object clicked, alone
 
 
 def improvement(how: dict[str, Any] | None) -> str:
-    """What an improved video is, in words - «×2 быстро · 60 к/с»; "" - not an improved one."""
+    """What an improved video is, in words - «Только предмет · ×2 быстро · 60 к/с»; "" - not an improved one."""
     if not how:
         return ""
-    words = [tr(n) for k, n in SIZES if k and k == how.get("size")]
+    words = [tr(SUBJECTS[1][1])] if how.get("select") else []
+    words += [tr(n) for k, n in SIZES if k and k == how.get("size")]
     return " · ".join(words + [tr(n) for k, n in MOTIONS if k and k == how.get("motion")])
 
 
-def needed(size: str, motion: str) -> list[str]:
-    """The parts a choice takes: the size's own, and «Плавность» for any motion."""
-    return [p for p in (size, "smooth" if motion else "") if p]
+def needed(size: str, motion: str, subject: str = "") -> list[str]:
+    """The parts a choice takes: «Выделение предмета» for the object alone, the size's own, «Плавность» for any
+    motion - in the order they work."""
+    return [p for p in (subject, size, "smooth" if motion else "") if p]
 
 
 class EnhanceView(QObject):
@@ -44,6 +48,10 @@ class EnhanceView(QObject):
         self._target: dict[str, str] = {}  # what is improved: {"from_job": id} or {"film": id}
         self._title = ""
         self._size, self._motion = "", ""
+        # (56) «Только предмет»: the moment of the video shown (a share of its length), its frame - the n-th one the
+        # provider was given, 0: none yet -, where the object was clicked on it, what the frame's fetch says
+        self._subject, self._moment, self._point = "", 0.0, None
+        self._frame, self._asked, self._frame_note = 0, 0, ""
 
     # ================= for QML =================
 
@@ -67,6 +75,39 @@ class EnhanceView(QObject):
     def motion(self) -> str:
         return self._motion
 
+    @Property(list, notify=changed)
+    def subjects(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in SUBJECTS]
+
+    @Property(str, notify=changed)
+    def subject(self) -> str:
+        return self._subject
+
+    @Property(float, notify=changed)
+    def moment(self) -> float:
+        return self._moment
+
+    @Property(str, notify=changed)
+    def frame(self) -> str:
+        """The frame to click the object on - the provider's; "" until it came."""
+        return f"image://pictures/pick/{self._frame}" if self._frame else ""
+
+    @Property(str, notify=changed)
+    def frameNote(self) -> str:
+        return self._frame_note
+
+    @Property(bool, notify=changed)
+    def picked(self) -> bool:
+        return self._point is not None
+
+    @Property(float, notify=changed)
+    def pointX(self) -> float:
+        return self._point[0] if self._point else 0.0
+
+    @Property(float, notify=changed)
+    def pointY(self) -> float:
+        return self._point[1] if self._point else 0.0
+
     @Property(list, notify=partsChanged)
     def parts(self) -> list:
         return self._parts
@@ -79,9 +120,9 @@ class EnhanceView(QObject):
         """What stands between the choice and «Улучшить»; "" - nothing."""
         if not self._target:
             return ""
-        if not self._size and not self._motion:
-            return tr("Выберите размер или движение")
-        for part in needed(self._size, self._motion):
+        if not self._size and not self._motion and not self._subject:
+            return tr("Выберите, что сделать с роликом")
+        for part in needed(self._size, self._motion, self._subject):
             found = self._part(part)
             name = found.get("name") or part
             if found.get("state") == "unavailable":
@@ -90,16 +131,21 @@ class EnhanceView(QObject):
                 return tr("«{name}» скачивается…", name=name)
             if found.get("state") != "ready":
                 return tr("Сначала скачайте «{name}» — ниже", name=name)
+        if self._subject and self._point is None:
+            return tr("Щёлкните по предмету на кадре")
         return ""
 
     @Property(bool, notify=changed)
     def canStart(self) -> bool:
-        return bool(self._target) and bool(self._size or self._motion) and not self.need
+        return bool(self._target) and bool(self._size or self._motion or self._subject) and not self.need
 
     @Property(str, notify=changed)
     def note(self) -> str:
         """What the choice does, besides the new video beside the source."""
         notes = []
+        if self._subject:
+            notes.append(tr("Останется только предмет, по которому вы щёлкнули, — всё вокруг станет тёмным. "
+                            "Предмет найдётся на всём ролике, до и после этого кадра."))  # fmt: skip
         if self._size == "detail":
             notes.append(tr("С дорисовкой — дольше быстрого и только для роликов обычного размера, до 832 × 480."))
         if self._motion in ("slow2", "slow4"):
@@ -111,7 +157,7 @@ class EnhanceView(QObject):
         """The parts: what each is for, whether it is here, how far its download is, whether the choice needs it."""
         from .install_view import gb  # here: it imports the Studio's view, which imports this one
 
-        wanted, parts = needed(self._size, self._motion), []
+        wanted, parts = needed(self._size, self._motion, self._subject), []
         for p in self._state.get("parts") or []:
             size, percent = gb(p["size"]), round(100 * p["got"] / p["total"]) if p.get("total") else 0
             if p["state"] == "ready":
@@ -120,8 +166,12 @@ class EnhanceView(QObject):
                 note = tr("скачивается: {percent}%", percent=percent) if p["got"] else tr("скачивается…")
             elif p["state"] == "unavailable":
                 note = p.get("why") or ""
+            elif p.get("error"):
+                note = p["error"]
+            elif p.get("disk", 0) > p["size"] * 1.2:  # (56) an engine on PyTorch unpacks to more than it brings
+                note = tr("не установлено · {size}, на диске ≈ {disk}", size=size, disk=gb(p["disk"]))
             else:
-                note = p.get("error") or tr("не установлено · {size}", size=size)
+                note = tr("не установлено · {size}", size=size)
             parts.append({"id": p["id"], "name": p["name"], "about": p["about"], "state": p["state"], "note": note,
                           "failed": p["state"] in ("missing", "unavailable") and bool(p.get("error") or p.get("why")),
                           "needed": p["id"] in wanted, "getText": tr("Скачать {size}", size=size)})  # fmt: skip
@@ -139,6 +189,8 @@ class EnhanceView(QObject):
 
     def _open(self, target: dict[str, str], title: str) -> None:
         self._target, self._title, self._size, self._motion = target, title, "", ""
+        self._subject, self._moment, self._point, self._frame, self._frame_note = "", 0.0, None, 0, ""
+        self._asked += 1  # a frame of the video before is not this one's
         self._take(self._state)
         self.app._call(lambda: self.app.client.enhance(), self._take, lambda _e: None)
 
@@ -165,6 +217,54 @@ class EnhanceView(QObject):
     def setMotion(self, motion: str) -> None:
         self._motion = motion if motion in {k for k, _n in MOTIONS} else ""
         self._take(self._state)
+
+    @Slot(str)
+    def setSubject(self, subject: str) -> None:
+        """(56) «Весь кадр» | «Только предмет» - its frame asked of the hub the first time."""
+        self._subject = subject if subject in {k for k, _n in SUBJECTS} else ""
+        self._take(self._state)
+        if self._subject and not self._frame and self._target:
+            self._fetch_frame()
+
+    @Slot(float)
+    def setMoment(self, share: float) -> None:
+        """(56) Another moment of the video - its frame; the point clicked on the one before is no more."""
+        share = min(max(float(share), 0.0), 1.0)
+        if not self._target or (share == self._moment and self._frame):
+            return
+        self._moment, self._point = share, None
+        self._take(self._state)
+        self._fetch_frame()
+
+    @Slot(float, float)
+    def pick(self, x: float, y: float) -> None:
+        """(56) The object clicked: where on the frame shown, shares of its width and height."""
+        if not self._frame:
+            return
+        self._point = (min(max(float(x), 0.0), 1.0), min(max(float(y), 0.0), 1.0))
+        self._take(self._state)
+
+    def _fetch_frame(self) -> None:
+        """The frame of the moment, from the hub - the one the engine will be given; a later ask wins."""
+        self._asked += 1
+        asked, target, share = self._asked, dict(self._target), self._moment
+        self._frame_note = tr("Беру кадр…")
+        self.changed.emit()
+
+        def got(data: bytes) -> None:
+            if asked == self._asked:
+                self.app.visual_view.provider.pick = data
+                self._frame, self._frame_note = self._frame + 1, ""
+                self.changed.emit()
+
+        def failed(error: Exception) -> None:
+            if asked == self._asked:
+                self._frame_note = tr("Кадр не взять: {error}", error=error)
+                self.changed.emit()
+
+        if not self.app._call(lambda: self.app.client.improve_frame(target, share), got, failed):
+            self._frame_note = ""  # no hub: said by the window already
+            self.changed.emit()
 
     def _part_call(self, call, failed: str) -> None:
         self.app._call(call, self._take, lambda e: self.app.show_error(tr(failed, error=e)))
@@ -193,7 +293,10 @@ class EnhanceView(QObject):
         """«Улучшить»: a job into the Studio's queue - it goes on there; the sheet closes."""
         if not self.canStart:
             return
-        spec = {**self._target, "size": self._size or None, "motion": self._motion or None}
+        spec: dict[str, Any] = {**self._target, "size": self._size or None, "motion": self._motion or None}
+        if self._subject and self._point is not None:
+            spec["select"] = {"share": round(self._moment, 4), "x": round(self._point[0], 4),
+                              "y": round(self._point[1], 4)}  # fmt: skip
 
         def started(result: dict[str, Any]) -> None:
             job = result.get("job") or {}

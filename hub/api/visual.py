@@ -4,7 +4,8 @@ GET /models - the picture models installed and the one a picture is drawn with b
 asked for (a job, drawn in turn); GET /jobs - the latest; GET /jobs/<id>; POST /jobs/<id>/cancel - «Стоп»;
 POST /videos - a video (29.8а, Wan2.2; a job like a picture's); POST /improve - «Улучшить ролик» (54.5): a video
 of the Studio's or a film's improved, a job too; GET /jobs/<id>/file - the picture itself (PNG; a
-video - WebP); GET /jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg; 48.12: the window plays it); GET
+video - WebP); GET /improve/frame - (56) a frame of the video to be improved, to click the object on; GET
+/jobs/<id>/mp4 - a video's MP4 (29.8в, ffmpeg; 48.12: the window plays it); GET
 /pictures/<sha256> - a picture a chat holds (data/blobs, 29.6: a model drew it), /pictures/<sha256>/mp4 - a chat's
 video as MP4 (48.12). Events: visual.changed (a job), visual.progress (step and preview).
 """
@@ -15,8 +16,8 @@ import asyncio
 import re
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from common.i18n import tr
@@ -129,6 +130,19 @@ async def improve(request: Request, body: Improve, client: Annotated[Client, Dep
         return {"job": await _visual(request).improve(body.model_dump(), client.name)}
     except v.VisualError as exc:
         raise _refusal(exc) from exc
+
+
+@router.get("/improve/frame")
+async def improve_frame(request: Request, client: Annotated[Client, Depends(require_app)],
+                        share: Annotated[float, Query(ge=0.0, le=1.0)], from_job: str = "",
+                        film: str = "") -> Response:  # fmt: skip
+    """(56) «Только предмет»: a frame of the video to be improved - `share` of its length - as a JPEG; the window
+    shows it, the object is clicked on it."""
+    try:
+        data = await _visual(request).frame({"from_job": from_job[:64], "film": film[:64]}, share)
+    except v.VisualError as exc:
+        raise _refusal(exc) from exc
+    return Response(data, media_type="image/jpeg")
 
 
 @router.get("/jobs")

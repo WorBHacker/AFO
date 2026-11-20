@@ -209,6 +209,23 @@ def frames_out(program: Path, source: Path, folder: Path) -> int:
     return count
 
 
+def frame_count(program: Path, source: Path) -> int:
+    """How many frames a video has (56, blocking): its picture copied to nowhere - nothing decoded - and the last
+    count ffmpeg tells. An MP4's frame is one packet each: what `frames_out` would write."""
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    command = [str(program), "-hide_banner", "-i", str(source), "-map", "0:v:0", "-c", "copy", "-f", "null", "-"]
+    try:
+        done = subprocess.run(command, capture_output=True, timeout=JOIN_TIMEOUT_S, creationflags=flags, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise EngineError(tr("ffmpeg не запустился: {error}", error=exc)) from exc
+    said = (done.stderr or b"").decode("utf-8", "replace")
+    counted = re.findall(r"frame=\s*(\d+)", said)
+    if done.returncode != 0 or not counted or not int(counted[-1]):
+        raise EngineError(tr("ffmpeg не сосчитал кадры видео: {said}", said=" ".join(said.split())[-300:] or
+                             done.returncode))  # fmt: skip
+    return int(counted[-1])
+
+
 def cuts(program: Path, source: Path) -> list[int]:
     """Where a new shot begins in a video - its frames' numbers, from 0 (54.3, blocking): ffmpeg's scene detector,
     a score past CUT_SCORE. A film's scenes that go on from the last frame of the one before have none (54.1)."""

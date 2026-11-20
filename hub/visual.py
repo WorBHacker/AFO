@@ -376,6 +376,7 @@ SOUND_ROLE = "audio-vae"  # the file a model films sound with (52.3): LTX's audi
 WEBM = b"\x1a\x45\xdf\xa3"  # how the engine's clip with sound begins: Matroska's header
 SOUND_SUFFIX, POSTER_SUFFIX = ".webm", ".jpg"
 SOUND_WORDS = 600  # the longest «what is heard»
+PICK_SIDE = 960  # (56) a frame shown to click the object on: its longer side at most
 
 
 def engine_prompt(found: dict[str, Any]) -> str:
@@ -890,6 +891,33 @@ class Visual:
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._work())
         return await self._db.acall(lambda conn: job(conn, job_id))
+
+    async def frame(self, spec: dict[str, Any], share: float) -> bytes:
+        """(56) «Только предмет»: a frame of the video to be improved - a Studio's (`from_job`) or a film's (`film`)
+        - `share` of its length, as a JPEG, its longer side PICK_SIDE at most: the window shows it to be clicked on.
+        The same video, the same frame by number that the engine is given (`enhance.make`)."""
+        if spec.get("film"):
+            film_id = str(spec["film"])
+            row = await self._db.acall(
+                lambda conn: conn.execute("SELECT file FROM films WHERE id = ?", (film_id,)).fetchone())  # fmt: skip
+            source = self.media / row["file"] if row is not None and row["file"] else None
+            if source is None or not await asyncio.to_thread(source.is_file):
+                raise VisualError(tr("ролик фильма ещё не собран"), 404)
+        else:
+            from_job = str(spec.get("from_job") or "")
+            found = await self._db.acall(lambda conn: job(conn, from_job)) if from_job else None
+            if found is None or found.get("kind") != "video" or found.get("status") != "done":
+                raise VisualError(tr("нет такого ролика"), 404)
+            source = await self.mp4(found)
+
+        def take(program: Path) -> bytes:
+            count = ffmpeg.frame_count(program, source)
+            with tempfile.TemporaryDirectory() as folder:
+                shown = ffmpeg.frames_at(program, source, Path(folder), [round(share * (count - 1))], small=PICK_SIDE)
+                return shown[0].read_bytes()
+
+        async with self._ffmpeg:
+            return await self._ffmpeg_does(take)
 
     async def source(self, spec: dict[str, Any]) -> bytes | None:
         """«По картинке» (29.6б): the source's PNG - a job's picture, a chat's (by its sha256), one sent - or None.

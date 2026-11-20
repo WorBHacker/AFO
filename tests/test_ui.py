@@ -405,6 +405,7 @@ class FakeClient:
             "voices": [{"id": "ryan", "name": "Райан — мужской"}, {"id": "serena", "name": "Серена — женский"}],
         }  # fmt: skip
         self.enhance_calls = []  # «Улучшить ролик» (54.6): its parts
+        self.frame_calls, self.frame = [], PICTURE  # (56) the frames asked to click the object on
         self.enhance_state = {"parts": [
             {"id": "smooth", "name": "Плавность", "about": "RIFE 4.26: 60 кадров в секунду и замедление в 2 и 4 раза",
              "size": 33555661, "state": "ready", "why": ""},
@@ -724,11 +725,16 @@ class FakeClient:
         self.visual_calls.append(("improve", spec))
         how = {"source": "2026-11/x.mp4", "job": spec.get("from_job", ""), "fps": 24, "size": spec["size"],
                "motion": spec["motion"], "sound": True}  # fmt: skip
+        how |= {"select": spec["select"]} if "select" in spec else {}
         job = {"id": f"e{len(self.visual_calls)}", "kind": "video", "prompt": "дождь на улице", "model_id": "enhance",
                "status": "queued", "width": 64, "height": 64, "frames": 0, "fps": 24, "seed": 0, "error": "",
                "seconds": None, "file": "", "enhance": how, "film_id": spec.get("film") or None}  # fmt: skip
         self.visual_jobs_list.insert(0, job)
         return {"job": job}
+
+    def improve_frame(self, target, share):  # (56) the frame «Только предмет» is clicked on
+        self.frame_calls.append((target, share))
+        return self.frame
 
     def enhance(self):
         return copy.deepcopy(self.enhance_state)
@@ -11574,7 +11580,7 @@ def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
         window.grabWindow()
         go, need = named("improveGo"), named("improveNeed")
         assert named("improveTitle").property("text") == "Ролик: дождь на улице"
-        assert not go.property("enabled") and need.property("text") == "Выберите размер или движение"
+        assert not go.property("enabled") and need.property("text") == "Выберите, что сделать с роликом"
         assert named("improvePartNote_smooth").property("text") == "установлено · 34 МБ"
         assert named("improvePartNote_detail").property("text") == "нужна видеокарта NVIDIA от 16 ГБ, здесь — 12 ГБ"
         assert not named("improveGet_detail").property("visible")
@@ -11669,6 +11675,152 @@ def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
         click(window, named(f"filmImprovedOpen_{film_job['id']}"))  # «Открыть в «Студии»»
         wait_until(lambda: films.kind == "manual" and view.shown_job().get("id") == film_job["id"])
         assert view.videoFile.endswith(f"/film-f1-{film_job['id']}.jpg")
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
+    """56.5: «Улучшить…» → «Только предмет»: «Выделение предмета» fetched by a click - what it brings and what it
+    takes on the disk said; the video's first frame asked of the hub and shown, its whole picture to be clicked on;
+    a click marks the point where the mouse was; the slider - another moment of the video, its frame, the point
+    gone; «Улучшить» only once the object is clicked - the job asks for the moment and the point; done, the video
+    says what was done to it. Real QML, mouse clicks, no screen."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QPointF
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtTest import QTest
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        wide = QImage(320, 180, QImage.Format.Format_RGB32)  # a wide frame in the sheet's frame: bands left and right
+        wide.fill(QColor(30, 120, 200))
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        wide.save(buffer, "JPG")
+        client.frame = bytes(data)
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        month = app.paths.media / "2026-11"
+        month.mkdir(parents=True, exist_ok=True)
+        quiet = month / "q1.webp"
+        quiet.write_bytes(animated_clip(COLOURS[:4]))
+        ffmpeg.to_mp4(program, quiet, quiet.with_suffix(".mp4"))
+        client.visual_jobs_list = [{"id": "q1", "kind": "video", "prompt": "кружка на столе", "model_id": "ltx",
+                                    "status": "done", "seconds": 64.0, "width": 64, "height": 64, "frames": 4,
+                                    "fps": 24, "seed": 1, "error": "", "file": "2026-11/q1.webp"}]  # fmt: skip
+        client.enhance_state["parts"].append(
+            {"id": "select", "name": "Выделение предмета", "licence": "Apache-2.0", "state": "missing", "why": "",
+             "about": "SAM 2.1: предмет на всём ролике по одному щелчку — видеокарта NVIDIA от 8 ГБ",
+             "size": 3_120_000_000, "disk": 8_240_000_000, "got": 0, "total": 3_120_000_000, "error": ""})  # fmt: skip
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, improve = app.visual_view, app.enhance_view
+        view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded and view.recent)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        view.pick("q1")
+        wait_until(lambda: view.videoFile.endswith("/q1.webp"))
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        def hub_parts(**parts):
+            for part in client.enhance_state["parts"]:
+                part.update(parts.get(part["id"], {}))
+            app.on_event({"type": "enhance.changed", "payload": client.enhance()})
+            window.grabWindow()
+
+        def click_on(item, across, down):
+            """A click at a share of the item's width and height - the sheet scrolled to its top first."""
+            sheet.property("contentItem").setProperty("contentY", 0)
+            window.grabWindow()
+            at = item.mapToScene(QPointF(item.width() * across, item.height() * down))
+            QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                             QPoint(round(at.x()), round(at.y())))  # fmt: skip
+            for _ in range(5):
+                QApplication.processEvents()
+            return at
+
+        click(window, item_named(studio, "visualImprove"))
+        sheet = window.findChild(QObject, "improveSheet")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        window.grabWindow()
+        go, need, frame = named("improveGo"), named("improveNeed"), named("improveFrame")
+        assert need.property("text") == "Выберите, что сделать с роликом"
+        assert not named("improvePick").property("visible") and client.frame_calls == []
+
+        click(window, item_saying(named("improveSubject"), "Только предмет"))
+        wait_until(lambda: improve.subject == "select" and not app.bg.busy and improve.frame)
+        window.grabWindow()
+        assert client.frame_calls == [({"from_job": "q1"}, 0.0)]  # the video's first frame
+        assert named("improvePick").property("visible") and frame.property("paintedWidth") > 0  # it is shown
+        assert need.property("text") == "Сначала скачайте «Выделение предмета» — ниже"
+        assert named("improvePartNote_select").property("text") == "не установлено · 3,1 ГБ, на диске ≈ 8,2 ГБ"
+        assert "Останется только предмет" in named("improveNote").property("text")
+        click(window, named("improveGet_select"))
+        wait_until(lambda: not app.bg.busy and client.enhance_calls == [("install", "select")])
+        hub_parts(select={"state": "ready"})
+        assert need.property("text") == "Щёлкните по предмету на кадре" and not go.property("enabled")
+
+        area = named("improveFrameClick")  # the picture as painted: the bands beside it are no frame
+        assert abs(area.property("width") / area.property("height") - 16 / 9) < 0.02
+        assert area.property("width") < frame.property("width")
+        at = click_on(area, 0.25, 0.75)
+        wait_until(lambda: improve.picked)
+        assert abs(improve.pointX - 0.25) < 0.01 and abs(improve.pointY - 0.75) < 0.01
+        window.grabWindow()
+        dot = named("improveDot")
+        middle = dot.mapToScene(QPointF(dot.width() / 2, dot.height() / 2))
+        assert dot.property("visible") and abs(middle.x() - at.x()) < 2 and abs(middle.y() - at.y()) < 2
+        assert go.property("enabled") and not need.property("visible")
+
+        click_on(named("improveMoment"), 0.75, 0.5)  # another moment: its frame, the point gone
+        wait_until(lambda: len(client.frame_calls) == 2 and not app.bg.busy)
+        share = client.frame_calls[-1][1]
+        assert 0.65 < share < 0.85 and improve.moment == share and client.frame_calls[-1][0] == {"from_job": "q1"}
+        window.grabWindow()
+        assert not improve.picked and not named("improveDot").property("visible")
+        assert need.property("text") == "Щёлкните по предмету на кадре" and not go.property("enabled")
+        click_on(area, 0.5, 0.4)
+        wait_until(lambda: improve.picked)
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and client.visual_calls and client.visual_calls[-1][0] == "improve")
+        spec = client.visual_calls[-1][1]
+        assert spec.keys() == {"from_job", "size", "motion", "select"} and spec["from_job"] == "q1"
+        assert spec["select"]["share"] == round(share, 4) and (spec["size"], spec["motion"]) == (None, None)
+        assert abs(spec["select"]["x"] - 0.5) < 0.01 and abs(spec["select"]["y"] - 0.4) < 0.01
+        wait_until(lambda: not sheet.property("opened"))
+
+        job = client.visual_jobs_list[0]
+        shutil.copyfile(quiet.with_suffix(".mp4"), month / f"{job['id']}.mp4")
+        ffmpeg.poster(program, month / f"{job['id']}.mp4", month / f"{job['id']}.jpg")
+        app.on_event({"type": "visual.changed", "payload": {"job": {
+            **job, "status": "done", "seconds": 41.0, "frames": 4, "file": f"2026-11/{job['id']}.mp4"}}})  # fmt: skip
+        wait_until(lambda: not view.queue)
+        view.pick(job["id"])
+        wait_until(lambda: view.videoFile.endswith(f"/{job['id']}.jpg"))
+        assert view.statusText == "готово за 41 с — Только предмет"
+
+        click(window, item_named(studio, "visualImprove"))  # opened again: anew, no frame of the video before
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        assert (improve.subject, improve.frame, improve.picked) == ("", "", False)
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

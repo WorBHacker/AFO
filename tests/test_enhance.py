@@ -545,6 +545,42 @@ def test_the_windows_client_improves_a_video_through_the_hub(stand, monkeypatch)
         client.stop_enhance("nothing")
 
 
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_the_frame_to_click_the_object_on_is_the_one_the_engine_is_given(stand, tmp_path, monkeypatch):
+    """56.5: «Только предмет» - the window shows a frame of the video to click the object on: a share of its length
+    is the frame of the same number the engine gets (`round(share * (frames - 1))`): of 72 frames, 48 moving and
+    24 red, 0.66 is frame 47 - still moving -, 0.68 frame 48 - red. A Studio's video and a film's joined one; no
+    such video, a share past the video - refused; the hub's words reach the window."""
+    from app.hub_client import HubClient, HubError
+    from hub import director
+
+    hub = stand  # noqa: F811
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
+    client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+    source_id = a_video_job(hub, side=96)
+
+    def shown(data, name):
+        assert data[:3] == b"\xff\xd8\xff"  # a JPEG
+        (tmp_path / name).write_bytes(data)
+        return red(tmp_path / name)
+
+    assert not shown(client.improve_frame({"from_job": source_id}, 0.66), "47.jpg")
+    assert shown(client.improve_frame({"from_job": source_id}, 0.68), "48.jpg")
+    assert not shown(client.improve_frame({"from_job": source_id}, 0.0), "0.jpg")
+    db, media = hub.app.state.db, hub.app.state.visual.media
+    film_id = db.call(lambda conn: director.new_film(conn, idea="Ролик о кружке", seconds=3, checks=False))["id"]
+    with pytest.raises(HubError, match="ролик фильма ещё не собран"):
+        client.improve_frame({"film": film_id}, 1.0)
+    joined = f"2026-11/film-{film_id}-joined.mp4"
+    shutil.copyfile(media / f"2026-11/{source_id}.mp4", media / joined)
+    db.call(lambda conn: director.update_film(conn, film_id, file=joined, status="ready"))
+    assert shown(client.improve_frame({"film": film_id}, 1.0), "film.jpg")
+    with pytest.raises(HubError, match="нет такого ролика"):
+        client.improve_frame({"from_job": "nothing"}, 0.5)
+    past = hub.get("/v1/visual/improve/frame", params={"from_job": source_id, "share": 1.5})
+    assert past.status_code == 422
+
+
 def test_a_video_is_cut_into_pieces_by_its_shots_and_its_length():
     """54.4: the pieces enlarged at once - shot by shot, a long shot in even pieces, a shot of one frame with its
     neighbour (RelayVSR takes no video of one frame)."""

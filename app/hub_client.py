@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import Callable, Iterator
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -86,7 +87,7 @@ class HubClient:
         return response.json() if response.content else None
 
     def _raw(self, method: str, path: str, timeout: float | None = None) -> bytes:
-        """A response's bytes as they are (a picture)."""
+        """A response's bytes as they are (a picture); refused - the hub's words (56), when it gives them."""
         extra = {"timeout": httpx.Timeout(timeout, connect=3.0)} if timeout else {}
         try:
             with self._waiting(timeout):
@@ -94,7 +95,11 @@ class HubClient:
         except httpx.HTTPError as exc:
             raise HubError(tr("хаб не отвечает ({error})", error=exc)) from exc
         if response.status_code >= 400:
-            raise HubError(f"HTTP {response.status_code}")
+            try:
+                detail = response.json().get("detail")
+            except ValueError, AttributeError:
+                detail = None
+            raise HubError(str(detail) if isinstance(detail, str) and detail else f"HTTP {response.status_code}")
         return response.content
 
     def _waiting(self, timeout: float | None) -> contextlib.AbstractContextManager:
@@ -220,8 +225,14 @@ class HubClient:
 
     def visual_improve(self, spec: dict) -> dict:
         """«Улучшить ролик» (54.5): {from_job | film, size: sharp | detail | None, motion: fps60 | slow2 | slow4 |
-        None} - a job of the Studio's queue."""
+        None, select: {share, x, y} - (56) only the object clicked} - a job of the Studio's queue."""
         return self._call("POST", "/v1/visual/improve", spec)
+
+    def improve_frame(self, target: dict, share: float) -> bytes:
+        """(56) «Только предмет»: a frame of the video to be improved ({from_job | film}), `share` of its length - a
+        JPEG to click the object on; the first one may fetch ffmpeg in the hub."""
+        query = urlencode({**target, "share": f"{share:.4f}"})
+        return self._raw("GET", f"/v1/visual/improve/frame?{query}", timeout=900)
 
     def enhance(self) -> dict:
         """The parts that improve a video (54.2): RIFE, Real-ESRGAN, RelayVSR - ready, loading, missing,
