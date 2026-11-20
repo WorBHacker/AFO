@@ -2,7 +2,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // «Улучшить ролик» (54.6): a video of the Studio's or a film's joined one - twice as large (fast or with details)
-// and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark. What it takes -
+// and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark; (58) the object
+// clicked or the background drawn anew by the words, or the edges drawn to another format - «Быстрее» or
+// «Тщательнее», the person's choice, with what each costs. What it takes -
 // the parts - is fetched here, each by a click; «Улучшить» sends it to the Studio's queue, where it goes on as a
 // video does. `prefix` names its parts: one sheet in the Studio, one in «Режиссёр». Taller than the window - it
 // scrolls.
@@ -163,7 +165,45 @@ Popup {
             }
             Note {
                 visible: Improve.subject !== ""
-                text: qsTr("Щёлкните по предмету на кадре. Не видно его здесь — передвиньте ползунок к другому моменту ролика.")
+                text: Improve.pickHint
+            }
+            // (58) the edges drawn to another format - for the whole frame only
+            Label {
+                visible: Improve.subject === ""
+                text: qsTr("Формат")
+            }
+            Segmented {
+                objectName: sheet.prefix + "Format"
+                visible: Improve.subject === ""
+                options: Improve.formats
+                value: Improve.format
+                onPicked: (id) => Improve.setFormat(id)
+            }
+            // (58) what VACE draws, and how fast - the person's choice
+            Field {
+                objectName: sheet.prefix + "Words"
+                visible: Improve.drawing
+                width: sheet.availableWidth
+                maximumLength: 500
+                placeholderText: Improve.wordsHint
+                text: Improve.words
+                onTextEdited: Improve.setWords(text)
+            }
+            Label {
+                visible: Improve.drawing
+                text: qsTr("Скорость")
+            }
+            Segmented {
+                objectName: sheet.prefix + "Speed"
+                visible: Improve.drawing
+                options: Improve.speeds
+                value: Improve.speed
+                onPicked: (id) => Improve.setSpeed(id)
+            }
+            Note {
+                objectName: sheet.prefix + "SpeedNote"
+                visible: Improve.drawing
+                text: Improve.speedNote
             }
             Note {
                 objectName: sheet.prefix + "Note"

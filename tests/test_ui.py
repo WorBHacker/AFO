@@ -11687,13 +11687,16 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
     takes on the disk said; the video's first frame asked of the hub and shown, its whole picture to be clicked on;
     a click marks the point where the mouse was; the slider - another moment of the video, its frame, the point
     gone; «Улучшить» only once the object is clicked - the job asks for the moment and the point; done, the video
-    says what was done to it. Real QML, mouse clicks, no screen."""
+    says what was done to it. (58) «Формат 9:16» - the words, the speed and what each speed costs shown; «Заменить
+    предмет» - the format gone, the point and the words wanted, the job asks for both and the speed chosen. Real
+    QML, mouse clicks, keys, no screen."""
     from pathlib import Path
 
-    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPoint, QPointF
-    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, QPointF
+    from PySide6.QtGui import QColor, QImage, QKeyEvent
     from PySide6.QtTest import QTest
 
+    from app.ui import enhance_view
     from app.ui.main import QuickApp
     from hub import ffmpeg
 
@@ -11822,6 +11825,54 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
         click(window, item_named(studio, "visualImprove"))  # opened again: anew, no frame of the video before
         wait_until(lambda: sheet.property("opened") and not app.bg.busy)
         assert (improve.subject, improve.frame, improve.picked) == ("", "", False)
+
+        # (58) a format: the edges drawn - the words may be left out; the speed is the person's, what each costs said
+        hub_parts(select={"state": "ready"})
+        client.enhance_state["parts"].append(
+            {"id": "replace", "name": "Замена и дорисовка", "licence": "Apache-2.0", "state": "missing", "why": "",
+             "about": "Wan2.1 VACE: заменить предмет или фон, дорисовать края — видеокарта NVIDIA от 16 ГБ",
+             "size": 11_300_000_000, "disk": 11_500_000_000, "got": 0, "total": 11_300_000_000,
+             "error": ""})  # fmt: skip
+        hub_parts()
+        assert not named("improveWords").property("visible") and not named("improveSpeed").property("visible")
+        click(window, item_saying(named("improveFormat"), "9:16"))
+        wait_until(lambda: improve.format == "9:16")
+        window.grabWindow()
+        assert named("improveWords").property("visible") and named("improveSpeed").property("visible")
+        assert need.property("text") == "Сначала скачайте «Замена и дорисовка» — ниже"
+        said = named("improveSpeedNote").property("text")
+        assert said.startswith("Этот ролик: быстрее — около 8 мин, тщательнее — около 9 мин.")  # 4 frames: a window
+        assert "16 кадров в секунду" in said and "«Плавность»" in said
+        assert named("improvePartNote_replace").property("text").startswith("не установлено")
+        hub_parts(replace={"state": "ready"})
+        assert go.property("enabled") and "кадра 9:16" in named("improveNote").property("text")
+        click(window, item_saying(named("improveSpeed"), "Тщательнее"))
+        wait_until(lambda: improve.speed == "careful")
+
+        # an object replaced: the format gone - one drawing at a time; the point and the words wanted
+        click(window, item_saying(named("improveSubject"), "Заменить предмет"))
+        wait_until(lambda: improve.subject == "object" and improve.format == "" and not app.bg.busy and improve.frame)
+        window.grabWindow()
+        assert not named("improveFormat").property("visible")
+        assert named("improveWords").property("placeholderText").startswith("На что заменить")
+        click_on(area, 0.6, 0.5)
+        wait_until(lambda: improve.picked)
+        assert need.property("text") == "Напишите, на что заменить" and not go.property("enabled")
+        click(window, named("improveWords"))
+        for letter in "красная кружка":  # typed: a key with its letter, as a keyboard gives it
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(window, QKeyEvent(kind, 0, Qt.KeyboardModifier.NoModifier, letter))
+        wait_until(lambda: improve.words == "красная кружка")
+        assert go.property("enabled")
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][1].get("draw"))
+        spec = client.visual_calls[-1][1]
+        assert spec.keys() == {"from_job", "size", "motion", "draw"}
+        draw = spec["draw"]
+        assert (draw["kind"], draw["words"], draw["fast"]) == ("object", "красная кружка", False)
+        assert abs(draw["x"] - 0.6) < 0.01 and abs(draw["y"] - 0.5) < 0.01 and draw["share"] == 0.0
+        assert enhance_view.improvement(draw and {"draw": draw}) == "Замена предмета"
+        assert enhance_view.improvement({"draw": {"kind": "edges", "canvas": "9:16"}}) == "Формат 9:16"
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []
