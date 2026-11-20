@@ -811,8 +811,14 @@ def hopeless(error: str) -> bool:
 
 async def said(base_url: str, model_id: str) -> str:
     """Why a model's last start failed, in its llama-server's own words (0.1.12: llama-swap says only «upstream
-    command exited prematurely», and AFO guessed): the model's log llama-swap keeps (/logs/stream/<id>), read for
-    LOG_READ_S - cause(); '' - llama-swap does not answer, or keeps nothing that tells."""
+    command exited prematurely», and AFO guessed): the model's log llama-swap keeps - cause(); '' - llama-swap does
+    not answer, or keeps nothing that tells."""
+    return cause(await kept_log(base_url, model_id))
+
+
+async def kept_log(base_url: str, model_id: str) -> str:
+    """What llama-swap kept of a model's output (/logs/stream/<id>: a stream - what it kept comes at once, then it
+    waits for more), read for LOG_READ_S; '' - llama-swap does not answer, or keeps nothing."""
     got = bytearray()
     url = f"{base_url.rstrip('/')}/logs/stream/{quote(model_id, safe='')}"
     timeout = httpx.Timeout(3.0, read=LOG_READ_S)
@@ -830,7 +836,7 @@ async def said(base_url: str, model_id: str) -> str:
                     break
     except httpx.HTTPError, TimeoutError:  # the stream waits for more: what came is all it kept
         pass
-    return cause(got.decode("utf-8", "replace"))
+    return got.decode("utf-8", "replace")
 
 
 # --- the reasoning depths a model's chat template takes (0.1.13) ---

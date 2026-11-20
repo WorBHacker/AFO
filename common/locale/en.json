@@ -2724,6 +2724,7 @@
  "не указан": "not given",
  "не установлено · {size}": "not installed · {size}",
  "не хватило памяти видеокарты — закройте программы, которые её занимают, или выберите быстрое увеличение": "the graphics card ran out of memory - close the programs that hold it, or choose the fast enlargement",
+ "не хватило памяти видеокарты — закройте программы, которые её занимают, или снимите ролик короче или меньше": "the graphics card ran out of memory - close the programs that hold it, or make the video shorter or smaller",
  "не хватит памяти компьютера": "not enough computer memory",
  "не читается": "unreadable",
  "неверный пароль": "wrong password",

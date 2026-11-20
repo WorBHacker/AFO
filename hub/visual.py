@@ -50,6 +50,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import shutil
 import struct
 import tempfile
@@ -83,7 +84,7 @@ from common.picture_sizes import (
     video_size,
 )
 
-from . import enhance, ffmpeg, hf
+from . import enhance, ffmpeg, hf, llama_config
 from .db import utc_now
 from .engines import EngineError
 from .gpu_card import ASKER, STUDIO, GpuCard, rank
@@ -357,6 +358,18 @@ async def trial_video(base_url: str, model_id: str, *, frames: int = 9, clip: di
 
 
 STILL_WORDS = N_("вместо видео — одна неподвижная картинка: все кадры вышли одинаковыми, модель снимает неверно")
+# («Стабилизация», 2026-11-20) a video the card had no room for: sd-server says only «generate_video returned no
+# results» to the job, its log says why - the model manager's words (model_manager.cpp 2041), CUDA's own
+CARD_SHORT = re.compile(r"cannot make enough memory available|out of memory|cudaMalloc failed|failed to allocate")
+FILMED = "generate_video completed"  # sd-server's line of a video it filmed (video.cpp 2282)
+CARD_WORDS = N_("не хватило памяти видеокарты — закройте программы, которые её занимают, или снимите ролик короче "
+                "или меньше")  # as «Улучшить ролик» says it (54.4)  # fmt: skip
+
+
+def short_of_card(log: str) -> bool:
+    """Whether an engine's log says the card had no room - since the last video it filmed: an older failure's line
+    is not this one's."""
+    return bool(CARD_SHORT.search(log.rsplit(FILMED, 1)[-1]))
 
 
 SOUND_ROLE = "audio-vae"  # the file a model films sound with (52.3): LTX's audio VAE, sd-server's flag of that name
@@ -1460,6 +1473,10 @@ class Visual:
                             break
                         if state.get("status") in ("failed", "cancelled"):
                             error = _engine_error(state)
+                            # its log says why, when the card had no room - not «generate_video returned no results»
+                            if state["status"] == "failed" and short_of_card(
+                                    await llama_config.kept_log(self._url, model_id)):  # fmt: skip
+                                error = tr(CARD_WORDS)
                             break
                         now = time.monotonic()
                         if (step := steps.seen(state.get("preview"))) is not None:  # each step once, as a picture's

@@ -255,6 +255,7 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
     heeds = True  # a job told to stop stops (sd-server's cancel: at a step's end) - or goes on
     cancelling = False
     fails: ClassVar = None  # the error a video's job ends with, as sd-server says it: {code, message}
+    logs: ClassVar[dict] = {}  # a model's log llama-swap keeps (/logs/stream/<id>): its sd-server's own lines
     filmed: ClassVar = None  # the WebP a video's job ends with: None - WEBP, an animated one (48.8: or STILL)
     asked: ClassVar[list] = []
     unloaded: ClassVar[list] = []
@@ -297,6 +298,18 @@ class FakeDrawSwap(BaseHTTPRequestHandler):
             self._send(200, {"id": "job_v", "status": "completed", "result": {
                 "b64_json": base64.b64encode(cls.filmed or WEBP).decode(), "mime_type": "image/webp",
                 "output_format": "webp", "fps": 24, "frame_count": cls.video[-1]["video_frames"]}})  # fmt: skip
+            return
+        if self.path.startswith("/logs/stream/"):  # llama-swap's: what it kept of the model's output, at once
+            kept = cls.logs.get(self.path.rsplit("/", 1)[1])
+            if kept is None:
+                self._send(404, {"error": "no such model"})
+                return
+            data = kept.encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/plain; charset=utf-8")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if self.path == "/running":  # llama-swap's: the video's model, until it is unloaded
             model = cls.video[-1]["path"].split("/")[2] if cls.video and not cls.stopped else ""
@@ -370,7 +383,7 @@ def hub(monkeypatch):
     FakeDrawSwap.steps_s, FakeDrawSwap.answer, FakeDrawSwap.asked, FakeDrawSwap.unloaded = 0.05, "picture", [], []
     FakeDrawSwap.video, FakeDrawSwap.video_polls, FakeDrawSwap.polls, FakeDrawSwap.passes = [], 3, 0, []
     FakeDrawSwap.cancels, FakeDrawSwap.heeds, FakeDrawSwap.cancelling, FakeDrawSwap.fails = [], True, False, None
-    FakeDrawSwap.filmed = None
+    FakeDrawSwap.filmed, FakeDrawSwap.logs = None, {}
     FakeDrawSwap.step = FakeDrawSwap.total = 0
     swap = ThreadingHTTPServer(("127.0.0.1", 0), FakeDrawSwap)
     threading.Thread(target=swap.serve_forever, daemon=True).start()
@@ -842,6 +855,48 @@ def test_a_video_that_came_back_as_one_still_picture_fails_in_words(hub):
 
     FakeDrawSwap.filmed = None  # an animated one: a video
     assert asyncio.run(visual.trial_video(hub.app.state.visual._url, "clip"))["ok"]
+
+
+SHORT_LOG = "\n".join(
+    (  # sd-server master-1053's own lines, as it failed on the stand (stage 55's probe)
+        "[I] generate_video 768x512x49 --- video.cpp:1928",
+        "[W] model manager memory on CUDA0: reported free 1245.02 MB / total 16275.75 MB, tracked weights 12941.76 MB"
+        " / other runtime 0.00 MB / current runtime 0.00 MB --- model_manager.cpp:1796",
+        "[W] model manager cannot make enough memory available on CUDA0: need 1639.89 MB device / 615.89 MB budget,"
+        " available 1245.02 MB device / 1531.24 MB budget --- model_manager.cpp:2046",
+        "[E] ltxav segment 1/1 (graph) failed during workspace capacity check --- ggml_runner.cpp:933",
+        "[E] sampling failed after 13.47s --- video.cpp:2022",
+        "",
+    )
+)
+FILMED_LOG = "[I] generate_video completed in 37.68s --- video.cpp:2282\n"
+NO_RESULTS = {"code": "generation_failed", "message": "generate_video returned no results"}
+
+
+def test_a_video_the_card_had_no_room_for_says_so(hub):
+    """«Стабилизация», 2026-11-20 («первый ролик падает, если другие программы заняли часть видеокарты»), the plan's
+    step 5 - the user's «Да, делай 5»: a video the engine could not film for the card's memory said only «движок не
+    снял видео: generate_video returned no results» - the Studio's red line, the Director's stopped film. The hub
+    reads the model's log llama-swap keeps: the engine's words of the card's memory since the last video it filmed -
+    the person is told so, and what to do. A failure its log says nothing of, a memory line of a video before one it
+    filmed, a log llama-swap does not give - the engine's words, as before."""
+    _install(hub, "clip", CLIP_PLAN)
+    FakeDrawSwap.fails = NO_RESULTS
+
+    def film(log):
+        FakeDrawSwap.logs = {} if log is None else {"clip": log}
+        job = hub.post("/v1/visual/videos", json={"prompt": "a fox", "model": "clip"}).json()["job"]
+        failed = _wait(hub, job["id"], "done", "failed")
+        assert failed["status"] == "failed" and not failed["file"]
+        return failed["error"]
+
+    short = film(SHORT_LOG)
+    assert "памяти видеокарты" in short and "generate_video" not in short, short
+    assert "закройте программы" in short  # what to do
+    for log in ("[I] generate_video 768x512x49 --- video.cpp:1928\n[E] sampling failed --- video.cpp:2022\n",
+                SHORT_LOG + FILMED_LOG + "[I] generate_video 768x512x49 --- video.cpp:1928\n", None):  # fmt: skip
+        said = film(log)
+        assert said.endswith("generate_video returned no results") and "памяти" not in said, said
 
 
 PAIR_PLAN = {**CLIP_PLAN, "set": "pair", "flags": [*WAN_FLAGS, "--high-noise-steps", "2"]}  # 2 high steps, 4 low
