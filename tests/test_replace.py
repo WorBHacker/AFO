@@ -40,6 +40,53 @@ def test_what_vace_draws_is_planned_in_windows_that_keep_the_seam():
         enhance.canvas_of(832, 480, "16:9")
 
 
+def _replace_script():
+    """hub/torch_scripts/replace.py as a module: the engine's Python runs it, the hub never imports it; its
+    PyTorch and diffusers are imported only where it draws."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("replace_script", torch_engines.SCRIPTS / "replace.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_each_window_goes_on_from_what_the_window_before_drew():
+    """58.6 found live: the film's second window drew another object from its first new frame - the first window's
+    last 9 moments had been dropped before the second took them, and it drew them anew. Each window is given its
+    first `keep` moments as the window before drew them (kept, mask black), the rest as they are with their areas;
+    a window before that drew nothing - those given as they are; each moment saved once; 4k + 1 frames."""
+    script = _replace_script()
+    painted, saved = [], []
+
+    def paint(videos, masks):
+        painted.append((list(videos), list(masks)))
+        return [f"w{len(painted)}:{v}" for v in videos]
+
+    def run(windows):
+        painted.clear()
+        saved.clear()
+        script.through(windows, given=lambda k: f"g{k}", area=lambda k: f"a{k}", black=lambda: "black",
+                       paint=paint, kept=lambda k, drawn, mask: f"kept {drawn} {mask}",
+                       save=lambda k, drawn: saved.append((k, drawn)))  # fmt: skip
+
+    run(enhance.windows_of(163))  # the film of 58.6: 244 frames at «Быстрее» - 163 moments
+    assert [len(videos) for videos, _masks in painted] == [81, 81, 21]  # the last: 19 moments and 2 more of its last
+    second, masks = painted[1]
+    assert second[:9] == [f"kept w1:g{k} a{k}" for k in range(72, 81)] and masks[:9] == ["black"] * 9
+    assert second[9:] == [f"g{k}" for k in range(81, 153)] and masks[9:] == [f"a{k}" for k in range(81, 153)]
+    third, masks = painted[2]
+    assert third[:9] == [f"kept w2:g{k} a{k}" for k in range(144, 153)] and masks[:9] == ["black"] * 9
+    assert third[19:] == ["g162", "g162"] and masks[19:] == ["a162", "a162"]
+    assert [k for k, _drawn in saved] == list(range(163))
+    assert saved[80] == (80, "w1:g80") and saved[81] == (81, "w2:g81") and saved[153] == (153, "w3:g153")
+
+    run([(0, 81, 0), (144, 163, 9)])  # the window between drew nothing: the object was not seen there
+    _first, (third, masks) = painted
+    assert third[:9] == [f"g{k}" for k in range(144, 153)] and masks[:9] == [f"a{k}" for k in range(144, 153)]
+    assert [k for k, _drawn in saved] == [*range(81), *range(144, 163)]
+
+
 def test_the_replace_engine_is_put_in_beside_another_and_takes_what_afo_has(stand, tmp_path, monkeypatch):  # noqa: F811
     """58.2: «Замена и дорисовка» - no code archive: its libraries by their pins in uv's second call; its weights in
     folders, as the repository has them; umT5's GGUF that AFO's Wan2.2 keeps - linked, not fetched, not counted. Two

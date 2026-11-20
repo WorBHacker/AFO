@@ -69,6 +69,35 @@ def told(path: str, done: int, total: int) -> None:
         Path(path).write_text(f"{done} {total}", encoding="utf-8")
 
 
+def through(windows, *, given, area, black, paint, kept, save) -> None:
+    """The windows drawn one after another, in order: a window is given its first `keep` moments as the window
+    before drew them (`kept`: as the next one goes on from them; mask `black()` - kept) and the rest as `given(k)`
+    with their `area(k)`, made 4k + 1 long by its last frame; `paint(videos, masks)` draws it; `save(k, picture)` -
+    each moment it drew. What a window keeps of the one before lives until that window has it (58.6: the first
+    window's were dropped before the second took them - it drew its object anew, another one, at the seam)."""
+    made: dict[int, object] = {}
+    for first, end, keep in windows:
+        for k in [k for k in made if k < first]:  # what this window does not keep is not needed any more
+            del made[k]
+        videos, masks = [], []
+        for k in range(first, end):
+            if k < first + keep and k in made:
+                videos.append(made[k])
+                masks.append(black())
+            else:  # a window before that drew nothing (the object not seen there) - drawn here
+                videos.append(given(k))
+                masks.append(area(k))
+        while (len(videos) - 1) % 4 or len(videos) < 5:  # VACE takes 4k + 1 frames
+            videos.append(videos[-1])
+            masks.append(masks[-1])
+        result = paint(videos, masks)
+        for k in range(first, end):
+            if k < first + keep and k in made:
+                continue  # as the window before drew it: saved then
+            save(k, result[k - first])
+            made[k] = kept(k, result[k - first], masks[k - first])
+
+
 def draw(plan: dict) -> int:
     import torch
     from diffusers import AutoencoderKLWan, WanVACEPipeline
@@ -129,7 +158,7 @@ def draw(plan: dict) -> int:
     del encoder
     pipe.to("cuda")
     positive, negative = positive.to("cuda"), negative.to("cuda")
-    made: dict[int, object] = {}  # the moments drawn, as they go on in the next window (composited)
+    found = {k: a for _window, areas in busy for k, a in areas.items()}
     done = 0
 
     def step(_pipe, _i, _t, kwargs):
@@ -138,33 +167,21 @@ def draw(plan: dict) -> int:
         told(plan["progress"], done, total)
         return kwargs
 
-    for (first, end, keep), areas in busy:
-        videos, masks = [], []
-        for k in range(first, end):
-            if k < first + keep and k in made:
-                videos.append(made[k])
-                masks.append(Image.new("L", (w, h), 0))
-            else:
-                videos.append(given(k))
-                masks.append(areas.get(k) or area(k))
-        while (len(videos) - 1) % 4 or len(videos) < 5:  # VACE takes 4k + 1 frames
-            videos.append(videos[-1])
-            masks.append(masks[-1])
+    def paint(videos, masks):
         generator = torch.Generator("cuda").manual_seed(int(plan["seed"]))
         with torch.inference_mode():
             result = pipe(video=videos, mask=masks, prompt_embeds=positive, negative_prompt_embeds=negative,
                           height=h, width=w, num_frames=len(videos), num_inference_steps=int(plan["steps"]),
                           guidance_scale=float(plan["guidance"]), generator=generator, output_type="pil",
                           callback_on_step_end=step).frames[0]  # fmt: skip
-        for k in range(first, end):
-            drawn = result[k - first].convert("RGB").resize((w, h))
-            if k >= first + keep:
-                drawn.save(out / (NAME % (k + 1)))
-            kept = drawn if mode == "edges" else Image.composite(drawn, frame(k).resize((w, h), Image.LANCZOS),
-                                                                 masks[k - first])  # fmt: skip
-            made[k] = kept
-        for k in [k for k in made if k < end - keep]:
-            del made[k]
+        return [picture.convert("RGB").resize((w, h)) for picture in result]
+
+    def kept(k, drawn, mask):  # as the next window goes on from it: only the drawn area, the rest the source's
+        return drawn if mode == "edges" else Image.composite(drawn, frame(k).resize((w, h), Image.LANCZOS), mask)
+
+    through([window for window, _areas in busy], given=given, area=lambda k: found[k] if k in found else area(k),
+            black=lambda: Image.new("L", (w, h), 0), paint=paint, kept=kept,
+            save=lambda k, drawn: drawn.save(out / (NAME % (k + 1))))  # fmt: skip
     peak = torch.cuda.max_memory_allocated() / 2**30
     print(json.dumps({"windows": len(windows), "drawn": len(busy), "peak_gib": round(peak, 2)}))
     return 0
