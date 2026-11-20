@@ -103,14 +103,23 @@ async def video(request: Request, body: Video, client: Annotated[Client, Depends
         raise _refusal(exc) from exc
 
 
+class Subject(BaseModel):
+    """(56) «Только предмет»: where the object was clicked - `share` of the video's length, `x`, `y` of the frame."""
+
+    share: float = Field(ge=0.0, le=1.0)
+    x: float = Field(ge=0.0, le=1.0)
+    y: float = Field(ge=0.0, le=1.0)
+
+
 class Improve(BaseModel):
     """«Улучшить ролик» (54.5): a video of the Studio's or a film's joined one; twice as large (fast or with
-    details), 60 frames a second or slowed - one of them or both."""
+    details), 60 frames a second or slowed, only the object clicked (56) - any of them, or several."""
 
     from_job: str = Field(default="", max_length=64)
     film: str = Field(default="", max_length=64)
     size: Literal["sharp", "detail"] | None = None
     motion: Literal["fps60", "slow2", "slow4"] | None = None
+    select: Subject | None = None
 
 
 @router.post("/improve")

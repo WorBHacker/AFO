@@ -17,7 +17,8 @@ import psutil
 import pytest
 
 from common.paths import models_home
-from hub import enhance, hf, torch_engines
+from hub import enhance, ffmpeg, hf, torch_engines
+from tests.test_enhance import FFMPEG, a_video_job, described, wait_job
 from tests.test_visual import hub  # noqa: F401 - the Studio's stand
 
 FAKE_UV = Path(__file__).with_name("fake_uv.py")
@@ -203,3 +204,73 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
     assert other["state"] == "unavailable" and "NVIDIA" in other["why"]
     refused = hub.post("/v1/enhance/parts/select")
     assert refused.status_code == 422 and "NVIDIA" in refused.json()["detail"]
+
+
+def value(args, flag):
+    return args[args.index(flag) + 1]
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_a_video_keeps_only_the_object_clicked_and_the_engine_runs_in_its_folder_in_a_job(stand, tmp_path,
+                                                                                          monkeypatch):  # fmt: skip
+    """56.4: «Только предмет» - a job of the Studio's queue: ffmpeg takes the video apart, the engine on PyTorch gets
+    its frames, the frame clicked (a share of the video - its frame by number) and the point (shares of the frame);
+    it runs with its own Python, isolated, in its folder; the frames it gives back become the new video, its sound
+    with it. ✕ - the engine killed with what it started, nothing left. A card too small - said plainly; another
+    failure - in the engine's words. Not put in, a point outside the frame - refused at once."""
+    hub = stand  # noqa: F811
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
+    media, base = hub.app.state.visual.media, torch_engines.home()
+    source_id = a_video_job(hub)  # 72 frames, 24 a second, with sound
+    clicked = {"share": 0.5, "x": 0.25, "y": 0.75}
+    refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked})
+    assert refused.status_code == 422 and "не установлено" in refused.json()["detail"]
+    hub.post("/v1/enhance/parts/select")
+    assert wait_state(hub, "ready", "missing")["state"] == "ready"
+    outside = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked | {"x": 1.5}})
+    assert outside.status_code == 422
+
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked})
+    assert asked.status_code == 200, asked.text
+    job = asked.json()["job"]
+    assert job["enhance"]["select"] == clicked and job["enhance"]["size"] is None
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled")
+    assert done["status"] == "done", done
+    run = hub.engine()[-1]
+    assert value(run["args"], "--at") == "36" and value(run["args"], "--x") == "0.2500"  # frame 36 of 0..71
+    assert value(run["args"], "--y") == "0.7500"
+    weight = torch_engines.weight_file(models_home(), "select", torch_engines.ENGINES["select"]["weights"][0])
+    assert value(run["args"], "--weights") == str(weight) and run["isolated"]
+    assert Path(run["cwd"]) == base / "select" / "home"
+    assert Path(run["python"]).resolve().is_relative_to((base / "select" / "env").resolve())
+    shown = described(media / done["file"])
+    assert shown["size"] == (64, 64) and shown["fps"] == 24 and shown["sound"] and abs(shown["seconds"] - 3) < 0.1
+    assert done["frames"] == 72
+    steps = [p["step"] for kind, p in hub.seen if kind == "visual.progress" and p["id"] == job["id"]]
+    assert steps == [100]
+    assert not [p for p in media.rglob("*") if p.name.startswith(".")]
+
+    pid_file = tmp_path / "engine-child.pid"
+    monkeypatch.setenv("FAKE_ENGINE_SLOW", "60")
+    monkeypatch.setenv("FAKE_ENGINE_CHILD", str(pid_file))
+    stopping = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked}).json()["job"]["id"]
+    deadline = time.monotonic() + 30
+    while not pid_file.is_file() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    child = int(pid_file.read_text())
+    began = time.monotonic()
+    assert hub.post(f"/v1/visual/jobs/{stopping}/cancel").status_code == 200
+    stopped = wait_job(hub, stopping, "cancelled", "failed", "done")
+    assert stopped["status"] == "cancelled" and stopped["error"] == "" and time.monotonic() - began < 15
+    assert not psutil.pid_exists(child)  # what the engine started went with it: the job
+    assert not list(media.glob(f"*/{stopping}*")) and not [p for p in media.rglob("*") if p.name.startswith(".")]
+    monkeypatch.delenv("FAKE_ENGINE_SLOW")
+
+    monkeypatch.setenv("FAKE_ENGINE_FAIL", "oom")
+    small = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked}).json()["job"]["id"]
+    failed = wait_job(hub, small, "failed", "done", "cancelled")
+    assert failed["status"] == "failed" and "не хватило памяти видеокарты" in failed["error"]
+    monkeypatch.setenv("FAKE_ENGINE_FAIL", "ModuleNotFoundError: No module named 'sam2'")
+    broken = hub.post("/v1/visual/improve", json={"from_job": source_id, "select": clicked}).json()["job"]["id"]
+    failed = wait_job(hub, broken, "failed", "done", "cancelled")
+    assert "No module named 'sam2'" in failed["error"] and "Выделение предмета" in failed["error"]

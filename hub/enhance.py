@@ -357,6 +357,20 @@ def detail_args(models: Path, source: Path, target: Path, *, frames: int, fps: i
             "-o", str(target / FRAMES)]  # fmt: skip
 
 
+def subject(raw: Any) -> dict[str, float] | None:
+    """«Только предмет» (56): {share: where in the video - 0 its first frame, 1 its last; x, y: where in the frame,
+    shares of its width and height}; None - not asked. Anything else - refused."""
+    if raw is None:
+        return None
+    try:
+        found = {k: float(raw[k]) for k in ("share", "x", "y")}
+    except TypeError, KeyError, ValueError:
+        raise EnhanceError(tr("нет такого улучшения"), 422) from None
+    if not all(0.0 <= v <= 1.0 for v in found.values()):
+        raise EnhanceError(tr("нет такого улучшения"), 422)
+    return found
+
+
 def motion_frames(frames: int, motion: str, fps: int) -> int:
     """How many frames a shot of `frames` becomes (54.3): 60 a second over the same time, or two or four times as
     many at the video's own rate - so much slower."""
@@ -557,25 +571,27 @@ class Enhance:
             raise EnhanceError(str(exc), 502) from None
 
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
-                   size: str | None = None, motion: str | None = None,
+                   size: str | None = None, motion: str | None = None, select: dict[str, Any] | None = None,
                    told: Callable[[float], Awaitable[None]] | None = None) -> int:  # fmt: skip
         """A video improved into `target` (MP4); how many frames it has. Its frames taken out by ffmpeg, made by the
         parts' programs, put back together, its sound with them. `size` (54.4): «sharp» - twice as large by
         Real-ESRGAN (four times, then ffmpeg brings each piece to twice: its frames of four times are not kept),
         «detail» - by RelayVSR, only a video of the usual sizes (`DETAIL_PIXELS`). `motion` (54.3): «fps60» - 60
         frames a second over the same time; «slow2», «slow4» - so many times slower, at its own rate, without sound
-        (a sound stretched so is not the sound). Larger first, then the motion: fewer frames are enlarged. Both go
+        (a sound stretched so is not the sound). `select` (56, `subject`): the object clicked kept, the rest
+        darkened - first, at the video's own size. Then larger, then the motion: fewer frames are enlarged. Both go
         shot by shot: nothing is made across a cut. `told(share)` - how far, after each piece. The frames lie beside
         `target` meanwhile and are gone after, whatever happened."""
         if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
-        if motion is None and size is None:
+        select = subject(select)
+        if motion is None and size is None and select is None:
             raise EnhanceError(tr("выберите, что улучшить"), 422)
         if motion == "fps60" and fps >= SMOOTH_FPS:
             raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
         work = target.with_name(f".{target.stem}.work")
         await asyncio.to_thread(engines.remove_tree, work)
-        stages = [s for s in (size, motion) if s is not None]
+        stages = [s for s in ("select" if select else None, size, motion) if s is not None]
 
         async def stage(n: int) -> Callable[[float], Awaitable[None]] | None:
             if told is None:
@@ -594,9 +610,11 @@ class Enhance:
                 raise EnhanceError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
                                       "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
             cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
+            if select is not None:
+                frames = await self._select(frames, work, count, select, cancel, await stage(0))
             if size is not None:
                 frames = await self._enlarge(frames, work, pieces(count, cut), size, (width, height), fps, ffmpeg,
-                                             cancel, await stage(0))  # fmt: skip
+                                             cancel, await stage(stages.index(size)))  # fmt: skip
             if motion is not None:
                 frames = await self._smooth(frames, work, shots(count, cut), motion, fps, cancel,
                                             await stage(len(stages) - 1))  # fmt: skip
@@ -609,6 +627,24 @@ class Enhance:
         finally:
             await asyncio.to_thread(engines.remove_tree, work)
         return made
+
+    async def _select(self, frames: Path, work: Path, count: int, select: dict[str, float], cancel: asyncio.Event,
+                      told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
+        """(56) The object clicked followed through the whole video by SAM 2.1, forward and back from the frame
+        clicked - a piece of frames on the card at a time (hub/torch_scripts/select.py). The frames come back by
+        their names: it as it is, the rest darkened."""
+        at = min(count - 1, max(0, round(select["share"] * (count - 1))))
+        out = work / "selected"
+        await self.run("select", torch_engines.select_args(self.models, frames, out, at=at, x=select["x"],
+                                                           y=select["y"]), cancel)  # fmt: skip
+        came = len(await asyncio.to_thread(os.listdir, out)) if await asyncio.to_thread(out.is_dir) else 0
+        if came != count:
+            raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                 wanted=count))  # fmt: skip
+        await asyncio.to_thread(engines.remove_tree, frames)
+        if told is not None:
+            await told(1.0)
+        return out
 
     async def _enlarge(self, frames: Path, work: Path, spans: list[tuple[int, int]], size: str,
                        side: tuple[int, int], fps: int, ffmpeg: Path, cancel: asyncio.Event,
