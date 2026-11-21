@@ -35,6 +35,13 @@ WINDOW_MIN = {True: 7.1, False: 8.7}
 # (57) MuseTalk: the mouth to the video's own sound, or to a voice's file chosen on this computer
 LIPS = [("", N_("Как есть")), ("clip", N_("Под звук ролика")), ("file", N_("Под файл…"))]
 VOICE_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")  # as the hub takes them
+# (59) ReCamMaster's moves, as the hub names them; its 81 frames - another count is RIFE's («Плавность»); ≈ 21 min
+# (59.1: 25 steps of 44 s, the text and the model loaded)
+CAMERAS = [("", N_("Как есть")), ("pan_right", N_("Панорама вправо")), ("pan_left", N_("Панорама влево")),
+           ("tilt_up", N_("Наклон вверх")), ("tilt_down", N_("Наклон вниз")), ("zoom_in", N_("Наезд")),
+           ("zoom_out", N_("Отъезд")), ("rise", N_("Подъём")), ("sink", N_("Спуск")), ("arc_left", N_("Облёт влево")),
+           ("arc_right", N_("Облёт вправо"))]  # fmt: skip
+CAMERA_FRAMES, CAMERA_MIN = 81, 21
 # (56 probe) the models loaded ≈ 20 s, then ≈ 0.23 s a frame: the face's points 0.15, the mouth and its pasting 0.08
 LIPS_LOAD_S, LIPS_FRAME_S = 20.0, 0.25
 
@@ -44,6 +51,9 @@ def improvement(how: dict[str, Any] | None) -> str:
     if not how:
         return ""
     words = [tr(SUBJECTS[1][1])] if how.get("select") else []
+    if camera := how.get("camera"):  # (59)
+        words.append(tr("Камера: {move}", move=next((tr(n) for k, n in CAMERAS if k and k == camera.get("move")),
+                                                    camera.get("move", ""))))  # fmt: skip
     if how.get("lips"):
         words.append(tr("Губы под голос"))
     if draw := how.get("draw"):
@@ -59,12 +69,15 @@ def subsampled(fps: int) -> bool:
 
 
 def needed(size: str, motion: str, subject: str = "", canvas: str = "", fast: bool = False, fps: int = 24,
-           lips: str = "") -> list[str]:  # fmt: skip
-    """The parts a choice takes: «Выделение предмета» for the object (alone, or replaced), (59) «Глубина кадра» for
+           lips: str = "", camera: str = "", frames: int = 0) -> list[str]:  # fmt: skip
+    """The parts a choice takes: (59) «Камера» - with «Замена и дорисовка» (its umT5 and VAE) and «Плавность» for a
+    video not of its 81 frames; «Выделение предмета» for the object (alone, or replaced), (59) «Глубина кадра» for
     the whole video drawn anew, «Замена и дорисовка» to draw anew, (57) «Губы под голос», the size's own,
     «Плавность» for any motion and for «Быстрее» drawing fewer frames - in the order they work, each once."""
     drawing = subject in DRAWN or bool(canvas)
-    parts = ["select" if subject in CLICKED else "", "depth" if subject == "motion" else "",
+    parts = ["camera" if camera else "", "replace" if camera else "",
+             "smooth" if camera and frames != CAMERA_FRAMES else "",
+             "select" if subject in CLICKED else "", "depth" if subject == "motion" else "",
              "replace" if drawing else "", "lips" if lips else "", size,
              "smooth" if motion or (drawing and fast and subsampled(fps)) else ""]  # fmt: skip
     return list(dict.fromkeys(p for p in parts if p))
@@ -104,17 +117,33 @@ class EnhanceView(QObject):
         self._fps, self._frames = 24, 0
         # (57) «Губы»: "" | clip | file, the voice's file, whether the video has sound (None - not known)
         self._lips, self._voice, self._sound = "", "", None
+        # (59) «Камера»: "" | a move; whether the video is wide (its frame is ReCamMaster's 832 × 480)
+        self._camera, self._wide = "", True
 
     def _drawing(self) -> bool:
         return self._subject in DRAWN or bool(self._canvas)
 
     def _wanted(self) -> list[str]:
-        return needed(self._size, self._motion, self._subject, self._canvas, self._fast, self._fps, self._lips)
+        return needed(self._size, self._motion, self._subject, self._canvas, self._fast, self._fps, self._lips,
+                      self._camera, self._frames)  # fmt: skip
 
     def _chosen(self) -> bool:
-        return bool(self._size or self._motion or self._subject or self._canvas or self._lips)
+        return bool(self._size or self._motion or self._subject or self._canvas or self._lips or self._camera)
 
     # ================= for QML =================
+
+    @Property(list, notify=changed)
+    def cameras(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in CAMERAS]
+
+    @Property(str, notify=changed)
+    def camera(self) -> str:
+        return self._camera
+
+    @Property(bool, notify=changed)
+    def canCamera(self) -> bool:
+        """(59) «Камера» - for a video of the Studio's: a film has cuts, and ReCamMaster films one shot."""
+        return "from_job" in self._target
 
     @Property(list, notify=changed)
     def lipsChoices(self) -> list:
@@ -266,6 +295,8 @@ class EnhanceView(QObject):
             return tr("Выберите файл с голосом")
         if self._lips == "clip" and self._sound is False:
             return tr("В ролике нет звука — выберите файл с голосом")
+        if self._camera and not self._wide:
+            return tr("«Камера» — только для горизонтального ролика")
         for part in self._wanted():
             found = self._part(part)
             name = found.get("name") or part
@@ -291,6 +322,10 @@ class EnhanceView(QObject):
     def note(self) -> str:
         """What the choice does, besides the new video beside the source."""
         notes = []
+        if self._camera:  # (59.1: the room around the man drawn as it would be; 832 × 480, 81 frames)
+            notes.append(tr("Ролик переснимется: камера пойдёт по-новому, а то, чего не было в кадре, дорисуется. "
+                            "Кадр станет 832 × 480, длина и звук останутся. Около {minutes} мин.",
+                            minutes=CAMERA_MIN))  # fmt: skip
         if self._lips:
             if self._lips == "clip":
                 notes.append(tr("Рот человека в кадре задвигается под голос — звук ролика."))
@@ -357,11 +392,12 @@ class EnhanceView(QObject):
     # ================= what the person does =================
 
     def _open(self, target: dict[str, str], title: str, *, fps: int = 24, frames: int = 0,
-              sound: bool | None = None) -> None:  # fmt: skip
+              sound: bool | None = None, wide: bool = True) -> None:  # fmt: skip
         self._target, self._title, self._size, self._motion = target, title, "", ""
         self._subject, self._moment, self._point, self._frame, self._frame_note = "", 0.0, None, 0, ""
         self._canvas, self._words, self._fast, self._fps, self._frames = "", "", True, fps, frames
         self._lips, self._voice, self._sound = "", "", sound
+        self._camera, self._wide = "", wide
         self._asked += 1  # a frame of the video before is not this one's
         self._take(self._state)
         self.app._call(lambda: self.app.client.enhance(), self._take, lambda _e: None)
@@ -373,7 +409,8 @@ class EnhanceView(QObject):
         if job.get("kind") == "video" and job.get("status") == "done" and job.get("id"):
             heard = bool(job.get("sound")) or bool((job.get("enhance") or {}).get("sound"))
             self._open({"from_job": job["id"]}, tr("Ролик: {prompt}", prompt=job.get("prompt", "")),
-                       fps=int(job.get("fps") or 24), frames=int(job.get("frames") or 0), sound=heard)  # fmt: skip
+                       fps=int(job.get("fps") or 24), frames=int(job.get("frames") or 0), sound=heard,
+                       wide=int(job.get("width") or 0) > int(job.get("height") or 0))  # fmt: skip
 
     @Slot()
     def openFilm(self) -> None:
@@ -403,7 +440,7 @@ class EnhanceView(QObject):
         whole video - not with a format: one drawing at a time; (57) nor with «Губы»."""
         self._subject = subject if subject in {k for k, _n in SUBJECTS} else ""
         if self._subject:
-            self._canvas, self._lips = "", ""
+            self._canvas, self._lips, self._camera = "", "", ""
         self._take(self._state)
         if self._subject in CLICKED and not self._frame and self._target:
             self._fetch_frame()
@@ -413,7 +450,7 @@ class EnhanceView(QObject):
         """(58) «Как есть» | 9:16 | 1:1 | 16:9 - the edges drawn; only for the whole frame; (57) not with «Губы»."""
         self._canvas = canvas if canvas in {k for k, _n in FORMATS} else ""
         if self._canvas:
-            self._subject, self._lips = "", ""
+            self._subject, self._lips, self._camera = "", "", ""
         self._take(self._state)
 
     @Slot(str)
@@ -422,9 +459,18 @@ class EnhanceView(QObject):
         made to say it; one thing at a time with «Предмет» and «Формат», not slowed."""
         self._lips = lips if lips in {k for k, _n in LIPS} else ""
         if self._lips:
-            self._subject, self._canvas = "", ""
+            self._subject, self._canvas, self._camera = "", "", ""
             if self._motion in ("slow2", "slow4"):
                 self._motion = ""
+        self._take(self._state)
+
+    @Slot(str)
+    def setCamera(self, camera: str) -> None:
+        """(59) «Как есть» | one of ReCamMaster's moves - the video filmed anew; one thing at a time with «Предмет»,
+        «Формат» and «Губы»."""
+        self._camera = camera if camera in {k for k, _n in CAMERAS} and self.canCamera else ""
+        if self._camera:
+            self._subject, self._canvas, self._lips = "", "", ""
         self._take(self._state)
 
     @Slot(str)
@@ -535,6 +581,8 @@ class EnhanceView(QObject):
             spec["draw"] = {"kind": self._subject, "words": self._words.strip(), "fast": self._fast, **clicked}
         elif self._canvas:
             spec["draw"] = {"kind": "edges", "canvas": self._canvas, "words": self._words.strip(), "fast": self._fast}
+        if self._camera:  # (59) its words - the video's own, the hub's
+            spec["camera"] = {"move": self._camera}
         if self._lips == "clip":  # (57)
             spec["lips"] = {"voice": "clip"}
         elif self._lips == "file":

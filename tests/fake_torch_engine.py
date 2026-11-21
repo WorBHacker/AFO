@@ -10,6 +10,9 @@ the hub with the engine's own Python (`python -I fake_torch_engine.py <arguments
   each frame's `drawn` copied - edges: scaled to the canvas - numbered from 1.
 - (59, hub/torch_scripts/depth.py) --depth <plan.json>: each of the plan's `frames` copied into its `out` as its
   depth, numbered from 1; the plan copied beside $FAKE_ENGINE_LOG as depth-<n>.json.
+- (59, hub/torch_scripts/camera.py) --camera <plan.json>: its steps written into `progress` ($FAKE_ENGINE_STEP_S a
+  step), then a gray frame of 832 × 480 for each of the plan's `frames`, numbered from 1; the plan copied beside
+  $FAKE_ENGINE_LOG as camera-<n>.json.
 - (57, hub/torch_scripts/lips.py) --frames <dir> --voice <wav> --out <dir> --fps <n>: each frame copied, as MuseTalk
   gives back a frame without a face; the voice copied beside $FAKE_ENGINE_LOG as voice-<n>.wav; the last line - JSON
   {"frames", "faces", "made"} ($FAKE_ENGINE_NO_FACE - no face found).
@@ -96,6 +99,20 @@ def main():
             shutil.copyfile(frame, out / f"{n:06d}.png")
             Path(plan["progress"]).write_text(f"{n} {len(plan['frames'])}", encoding="utf-8")
         print(json.dumps({"frames": len(plan["frames"])}))
+        return
+    if "--camera" in args:  # (59) as ReCamMaster: its steps told, its frames gray ones of 832 x 480
+        plan = json.loads(Path(value(args, "--camera")).read_text(encoding="utf-8"))
+        if log := os.environ.get("FAKE_ENGINE_LOG"):
+            kept = Path(log).with_name(f"camera-{len(list(Path(log).parent.glob('camera-*.json')))}.json")
+            kept.write_text(json.dumps(plan), encoding="utf-8")
+        for done in range(1, int(plan["steps"]) + 1):
+            time.sleep(float(os.environ.get("FAKE_ENGINE_STEP_S") or 0))
+            Path(plan["progress"]).write_text(f"{done} {plan['steps']}", encoding="utf-8")
+        out = Path(plan["out"])
+        out.mkdir(parents=True, exist_ok=True)
+        for n in range(1, len(plan["frames"]) + 1):
+            (out / f"{n:06d}.png").write_bytes(gray_png(832, 480))
+        print(json.dumps({"frames": len(plan["frames"]), "move": plan["move"]}))
         return
     if "--draw" in args or "--compose" in args:
         plan = json.loads(Path(value(args, "--draw") or value(args, "--compose")).read_text(encoding="utf-8"))

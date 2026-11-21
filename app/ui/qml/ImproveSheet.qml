@@ -7,7 +7,7 @@ import QtQuick.Dialogs
 // clicked or the background drawn anew by the words, or the edges drawn to another format - «Быстрее» or
 // «Тщательнее», the person's choice, with what each costs; (57) «Губы» - the mouth of the face made to say the
 // video's own sound or a voice's file; (59) «Перерисовать всё» - the whole video by its depth and the words, no
-// frame to click. What it takes -
+// frame to click; «Камера» - the video filmed anew by another camera's move. What it takes -
 // the parts - is fetched here, each by a click; «Улучшить» sends it to the Studio's queue, where it goes on as a
 // video does. `prefix` names its parts: one sheet in the Studio, one in «Режиссёр». Taller than the window - it
 // scrolls.
@@ -123,6 +123,19 @@ Popup {
                 fileMode: FileDialog.OpenFile
                 nameFilters: [qsTr("Звук (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus)")]
                 onAccepted: Improve.chooseVoice(selectedFile.toString())
+            }
+            // (59) the video filmed anew by another camera's move - a video of the Studio's: a film has cuts
+            Label {
+                visible: Improve.canCamera
+                text: qsTr("Камера")
+            }
+            Segmented {
+                objectName: sheet.prefix + "Camera"
+                visible: Improve.canCamera
+                width: sheet.availableWidth  // ten moves: in rows
+                options: Improve.cameras
+                value: Improve.camera
+                onPicked: (id) => Improve.setCamera(id)
             }
             Label { text: qsTr("Предмет") }
             Segmented {

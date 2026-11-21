@@ -832,10 +832,16 @@ class Visual:
             select = enhance.subject(spec.get("select"))  # (56) «Только предмет»: where it was clicked
             draw = enhance.drawing(spec.get("draw"))  # (58) «Заменить предмет», «Заменить фон», «Формат»
             lips = enhance.lips_of(spec.get("lips"))  # (57) «Губы под голос»: the video's own sound, or a file
+            camera = enhance.camera_of(spec.get("camera"))  # (59) «Камера»: the video filmed anew along a move
         except enhance.EnhanceError as exc:
             raise VisualError(str(exc), exc.status) from None
-        if size is None and motion is None and select is None and draw is None and lips is None:
+        if size is None and motion is None and select is None and draw is None and lips is None and camera is None:
             raise VisualError(tr("выберите, что улучшить"), 422)
+        if camera is not None and (select is not None or draw is not None or lips is not None):
+            raise VisualError(tr("«Камера» — отдельно от «Предмета», «Формата» и «Губ»: сделайте одно, потом улучшите "
+                                 "готовый ролик"), 422)  # fmt: skip
+        if camera is not None and spec.get("film"):
+            raise VisualError(tr("«Камера» — для ролика «Студии»: в фильме склейки"), 422)
         if select is not None and draw is not None:
             raise VisualError(tr("нет такого улучшения"), 422)
         if lips is not None and (select is not None or draw is not None):
@@ -881,6 +887,14 @@ class Visual:
         if lips is not None and lips["voice"] == "clip" and not sound:
             raise VisualError(tr("в ролике нет звука — выберите файл с голосом"), 422)
         parts = ["select" if select else None, "lips" if lips else None, size, "smooth" if motion else None]
+        if camera is not None:  # (59) ReCamMaster; VACE's umT5 and VAE; RIFE when the video is not of its 81 frames
+            if width <= height:
+                raise VisualError(tr("«Камера» — для горизонтального ролика"), 422)
+            if await self.ffmpeg_asks(lambda program: ffmpeg.cuts(program, self.media / source)):
+                raise VisualError(tr("в ролике есть склейки — «Камера» снимает одну сцену без склеек"), 422)
+            parts += ["camera", "replace", "smooth" if int(found.get("frames") or 0) != enhance.CAMERA_FRAMES else None]
+            width, height = enhance.CAMERA_SIZE
+            camera["words"] = camera["words"] or prompt  # what is in the video: its own words, unless said
         if draw is not None:  # (58) VACE; SAM for the object; RIFE when «Быстрее» draws fewer frames; (59) the
             # depth for the whole video drawn anew
             parts += ["depth" if draw["kind"] == "motion" else None, "replace",
@@ -908,6 +922,8 @@ class Visual:
             how["select"] = select
         if draw is not None:
             how["draw"] = draw
+        if camera is not None:
+            how["camera"] = camera
         job_id, note = uuid.uuid4().hex[:12], ""
         if lips is not None:  # (57) a file's voice: copied beside, gone with the job's end; the video has sound now -
             # (57.4) a film's scene keeps its own: the narrator is mixed in when the film is joined
@@ -1679,7 +1695,8 @@ class Visual:
                                                                                      else {})  # fmt: skip
             frames = await self.enhance.make(source, target, cancel, ffmpeg=program, fps=int(how["fps"]),
                                              size=how["size"], motion=how["motion"], select=how.get("select"),
-                                             draw=how.get("draw"), lips=lips, told=told)  # fmt: skip
+                                             draw=how.get("draw"), lips=lips, camera=how.get("camera"),
+                                             told=told)  # fmt: skip
         except (enhance.EnhanceError, VisualError) as exc:
             stopped = job_id in self._stopping or cancel.is_set()
             await self._set(job_id, status="cancelled" if stopped else "failed", error="" if stopped else str(exc),

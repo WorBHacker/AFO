@@ -32,6 +32,10 @@ The engines (`ENGINES`):
   each frame's depth, the picture VACE draws a whole video anew by (hub/torch_scripts/depth.py). The same libraries
   as «Замена и дорисовка» - only transformers of them; its own part: a weight more in that one's list would change its
   fingerprint and fetch its 7.7 GB again.
+- «Камера» (`camera`, stage 59): ReCamMaster - the same video filmed anew along one of ten camera moves
+  (hub/torch_scripts/camera.py). Its checkpoint is a whole DiT of Wan2.1-T2V-1.3B: the base's own files are not
+  fetched; the text and the frames go through the umT5 GGUF and the Wan VAE of «Замена и дорисовка» (59.1). Of its
+  code - three files by its commit, each by its sum, read by the script (not a package: their archive is 118 MB).
 - «Губы под голос» (`lips`, stage 57): MuseTalk 1.5 (TMElyralab; code MIT, weights trained on HDTF - not for
   commercial use, asked first, 62) - a face's mouth made to say a voice (hub/torch_scripts/lips.py). Its code is no
   package: the archive of its commit unpacked by AFO (`unpack`). Its libraries are of 2024 (numpy before 2 - over
@@ -98,6 +102,7 @@ VACE_PINS = ("annotated-doc==0.0.6", "annotated-types==0.8.0", "anyio==4.16.0", 
              "regex==2026.9.29", "requests==2.34.2", "rich==15.0.0", "safetensors==0.8.0", "shellingham==1.5.4",
              "tokenizers==0.23.3", "tomli==2.5.0", "tqdm==4.70.1", "typer==0.29.1", "typing-inspection==0.4.5",
              "urllib3==2.8.0", "wcwidth==0.9.4", "zipp==4.1.2")  # fmt: skip
+RECAM_COMMIT = "fcf98bc86e876bb534518cd99e8a65b282f0f16e"  # (59) ReCamMaster's code, 2025-11-28
 ENGINES: dict[str, dict[str, Any]] = {
     "select": {
         "name": N_("Выделение предмета"),
@@ -163,6 +168,34 @@ ENGINES: dict[str, dict[str, Any]] = {
             ("model.safetensors", 99173660, "3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70"),
             ("preprocessor_config.json", 775, "d41175c0d889477ca8fc67191e540faef14baf6275157b3fdecf78469e6bbf84"),
         )),
+    },
+    # (59) the same video filmed by another camera's move: ReCamMaster (KwaiVGI; code MIT, weights Apache-2.0) - its
+    # checkpoint holds its whole Wan2.1-T2V-1.3B DiT; the text and the video go through the replace engine's umT5 and
+    # Wan VAE (59.1), so that one is wanted too. Of its code only its DiT, its scheduler and its ten camera paths are
+    # fetched - by its commit, each file by its sum (its archive is 118 MB of examples)
+    "camera": {
+        "name": N_("Камера"),
+        "about": N_("ReCamMaster: тот же ролик — другим движением камеры — видеокарта NVIDIA от 12 ГБ"),
+        "licence": "Apache-2.0 / MIT", "card_gib": 12.0, "script": "camera.py", "code": None,
+        "packages": ("diffusers==0.41.0", "transformers==5.20.2", "accelerate==1.15.0", "ftfy==6.3.1",
+                     "gguf==0.19.0", "einops==0.8.1"),
+        "pins": VACE_PINS, "build": {},
+        "weights": (
+            {"hf": "KwaiVGI/ReCamMaster-Wan2.1", "revision": "4f3f7391743dfd25067ab27e0f1eb8928d11b91d",
+             "path": "step20000.ckpt", "size": 2981094906,
+             "sha256": "352ac47a24781202dee2addaafa0d2bddfaea7b1847ff45faa26f1bceec5b5d4"},
+            *({"url": f"https://raw.githubusercontent.com/KwaiVGI/ReCamMaster/{RECAM_COMMIT}/{where}",
+               "into": "code", "path": where.rsplit("/", 1)[-1], "size": size, "sha256": sha256}
+              for where, size, sha256 in (
+                ("diffsynth/models/wan_video_dit.py", 19703,
+                 "cf8e8215e1e10fde72bd74c96592f8f37d3335b3d6ba70795084725b1748e511"),
+                ("diffsynth/schedulers/flow_match.py", 3347,
+                 "4fd21df7b6bb4b98e9a19c14ae0d05e268fbe30147c774440f2f9d3dfbbbc8d7"),
+                ("example_test_data/cameras/camera_extrinsics.json", 81121,
+                 "02992636a7350e00b7024fb98ac7e88bed60a315b81cd728bb50d11d2dca815c"),
+                ("LICENSE", 1106, "7fe4712b0d5bbb743f3299b61d686fa4aa6455f5feed3f5f07bf7f32fb132c64"),
+            )),
+        ),
     },
     "lips": {
         "name": N_("Губы под голос"),
@@ -303,6 +336,11 @@ def vace_dir(models: Path) -> Path:
 def depth_dir(models: Path) -> Path:
     """(59) The depth engine's model, as transformers reads it: a folder of the repository's files."""
     return models / "depth" / ENGINES["depth"]["weights"][0]["into"]
+
+
+def camera_files(models: Path) -> dict[str, Path]:
+    """(59) The camera engine's files by their names: its checkpoint, its DiT's and scheduler's code, its paths."""
+    return {w["path"]: weight_file(models, "camera", w) for w in ENGINES["camera"]["weights"]}
 
 
 def encoder_file(models: Path) -> Path:

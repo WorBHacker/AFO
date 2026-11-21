@@ -10709,8 +10709,9 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         QMetaObject.invokeMethod(added, "close")
         wait_until(lambda: not added.property("visible"))
         app.film_view.setKind("manual")
-        (tmp_path / "voice.wav").write_bytes(b"RIFF")  # (57.3) «Губы» «Под файл…» with a voice chosen: no dialog
-        app.enhance_view.chooseVoice(QUrl.fromLocalFile(str(tmp_path / "voice.wav")).toString())
+        app.enhance_view._open({"from_job": "wide"}, "Ролик", wide=True)  # (59) a wide Studio video: «Камера» shown
+        (tmp_path / "voice.wav").write_bytes(b"RIFF")  # (57.3) «Губы» «Под файл…» with a voice chosen: no dialog -
+        app.enhance_view.chooseVoice(QUrl.fromLocalFile(str(tmp_path / "voice.wav")).toString())  # after the opening
         improve = window.findChild(QObject, "improveSheet")  # «Улучшить ролик» (54.6): the size, the motion - the
         QMetaObject.invokeMethod(improve, "open")  # Studio's sheet; the film's is the same declaration
         wait_until(lambda: improve.property("opened"))
@@ -11701,6 +11702,7 @@ def test_a_video_is_improved_from_the_studio_and_a_film_by_clicks(qapp):
         window.grabWindow()
         assert named("filmImproveTitle").property("text") == "Фильм: Лампа на столе"
         assert (improve.size, improve.motion) == ("", "")  # each time anew
+        assert not named("filmImproveCamera").property("visible")  # (59) a film has cuts: no «Камера»
         click(window, item_saying(named("filmImproveMotion"), "Медленнее ×2"))
         wait_until(lambda: improve.motion == "slow2")
         window.grabWindow()
@@ -11958,6 +11960,108 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
         spec = client.visual_calls[-1][1]
         assert spec["draw"] == {"kind": "motion", "words": "изба", "fast": True}
         assert enhance_view.improvement({"draw": spec["draw"]}) == "Перерисовка всего"
+        for _ in range(10):
+            QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_video_is_filmed_anew_by_another_cameras_move_by_clicks(qapp):
+    """59.4: «Улучшить…» → «Камера» - ten moves; one thing at a time with «Предмет» (a subject chosen takes the
+    camera off, a move takes the subject off); its parts - «Камера», «Замена и дорисовка» and, for a video not of 81
+    frames, «Плавность»; what it does and its minutes said; the job asks for the move. A tall video - said so,
+    «Улучшить» off; a film's sheet has no «Камера». Real QML, mouse clicks, no screen."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QObject
+
+    from app.ui import enhance_view
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        month = app.paths.media / "2026-11"
+        month.mkdir(parents=True, exist_ok=True)
+        for name in ("wide", "tall"):
+            clip = month / f"{name}.webp"
+            clip.write_bytes(animated_clip(COLOURS[:4]))
+            ffmpeg.to_mp4(program, clip, clip.with_suffix(".mp4"))
+        client.visual_jobs_list = [{"id": job_id, "kind": "video", "prompt": "человек на кухне", "model_id": "ltx",
+                                    "status": "done", "seconds": 64.0, "width": w, "height": h, "frames": 100,
+                                    "fps": 24, "seed": 1, "error": "", "file": f"2026-11/{job_id}.webp"}
+                                   for job_id, w, h in (("wide", 96, 64), ("tall", 64, 96))]  # fmt: skip
+        client.enhance_state["parts"] += [
+            {"id": part, "name": name, "licence": "Apache-2.0", "state": "ready", "why": "", "about": "",
+             "size": 3_000_000_000, "disk": 3_100_000_000, "got": 0, "total": 3_000_000_000, "error": ""}
+            for part, name in (("replace", "Замена и дорисовка"), ("camera", "Камера"))]  # fmt: skip
+        next(p for p in client.enhance_state["parts"] if p["id"] == "smooth")["state"] = "missing"
+        for one in client.program_list:
+            one["fresh"] = False
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, improve = app.visual_view, app.enhance_view
+        view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded and view.recent)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        view.pick("tall")
+        wait_until(lambda: view.videoFile.endswith("/tall.webp"))
+        click(window, item_named(studio, "visualImprove"))
+        sheet = window.findChild(QObject, "improveSheet")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        window.grabWindow()
+        go, need = named("improveGo"), named("improveNeed")
+        assert named("improveCamera").property("visible")
+        click(window, item_saying(named("improveCamera"), "Наезд"))
+        wait_until(lambda: improve.camera == "zoom_in")
+        window.grabWindow()
+        assert need.property("text") == "«Камера» — только для горизонтального ролика" and not go.property("enabled")
+        sheet.close()
+        wait_until(lambda: not sheet.property("opened"))
+
+        view.pick("wide")
+        wait_until(lambda: view.videoFile.endswith("/wide.webp"))
+        click(window, item_named(studio, "visualImprove"))
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        window.grabWindow()
+        assert improve.camera == ""  # each time anew
+        click(window, item_saying(named("improveSubject"), "Заменить фон"))
+        wait_until(lambda: improve.subject == "background" and not app.bg.busy)
+        click(window, item_saying(named("improveCamera"), "Облёт влево"))
+        wait_until(lambda: improve.camera == "arc_left")
+        window.grabWindow()
+        assert improve.subject == "" and not named("improvePick").property("visible")  # one thing at a time
+        assert need.property("text") == "Сначала скачайте «Плавность» — ниже"  # 100 frames: RIFE makes them back
+        assert sorted(p["id"] for p in improve.parts if p["needed"]) == ["camera", "replace", "smooth"]
+        assert "камера пойдёт по-новому" in named("improveNote").property("text")
+        assert "Около 21 мин." in named("improveNote").property("text")
+        hub_state = client.enhance()
+        for part in hub_state["parts"]:
+            if part["id"] == "smooth":
+                part["state"] = "ready"
+        app.on_event({"type": "enhance.changed", "payload": hub_state})
+        window.grabWindow()
+        assert go.property("enabled"), need.property("text")
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and client.visual_calls and client.visual_calls[-1][0] == "improve")
+        assert client.visual_calls[-1] == ("improve", {"from_job": "wide", "size": None, "motion": None,
+                                                       "camera": {"move": "arc_left"}})  # fmt: skip
+        assert enhance_view.improvement({"camera": {"move": "arc_left"}}) == "Камера: Облёт влево"
+        assert enhance_view.needed("", "", camera="pan_left", frames=81) == ["camera", "replace"]
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

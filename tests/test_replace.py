@@ -284,6 +284,99 @@ def test_the_whole_video_is_drawn_anew_by_its_depth(drawn, tmp_path, monkeypatch
     assert not [p for p in hub.app.state.visual.media.rglob("*") if p.name.startswith(".")]
 
 
+def a_wide_job(hub, frames, *, width=96, height=64, cut=False):  # noqa: F811
+    """(59) A video the Studio filmed: one shot of `frames` frames, 24 a second, a tone all along - as it lies in
+    data/media, its row in the queue's table; `cut` - its last 24 frames red, a shot of their own."""
+    import subprocess
+    import uuid
+
+    visual, job_id = hub.app.state.visual, uuid.uuid4().hex[:12]
+    (visual.media / "2026-11").mkdir(parents=True, exist_ok=True)
+    picture = f"testsrc=size={width}x{height}:rate=24:duration={(frames - (24 if cut else 0)) / 24:.4f}"
+    shots = ["-f", "lavfi", "-i", picture] + (["-f", "lavfi", "-i", f"color=c=red:size={width}x{height}:rate=24:"
+                                                "duration=1"] if cut else [])  # fmt: skip
+    joined = ["-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a"] if cut else []
+    subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *shots, "-f", "lavfi", "-i",
+                    f"sine=frequency=440:sample_rate=48000:duration={frames / 24:.4f}", *joined, "-frames:v",
+                    str(frames), "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p", "-g", "1", "-c:a", "aac", str(visual.media / f"2026-11/{job_id}.mp4")],
+                   check=True, timeout=60)  # fmt: skip
+    (visual.media / f"2026-11/{job_id}.webm").write_bytes(b"\x1a\x45\xdf\xa3 the engine's clip")
+    (visual.media / f"2026-11/{job_id}.jpg").write_bytes(b"\xff\xd8\xff poster")
+    hub.app.state.db.call(lambda conn: conn.execute(
+        "INSERT INTO visual_jobs (id, kind, prompt, model_id, width, height, seed, status, file, fps, sound, frames) "
+        "VALUES (?, 'video', 'a man talks in a kitchen', 'ltx', ?, ?, 1, 'done', ?, 24, 1, ?)",
+        (job_id, width, height, f"2026-11/{job_id}.webm", frames)))  # fmt: skip
+    return job_id
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_a_video_is_filmed_anew_by_another_cameras_move(drawn, tmp_path, monkeypatch):
+    """59.4: «Камера» - ReCamMaster is given 81 frames, the video's moments k × count / 81: of a longer video the
+    nearest frames, RIFE makes its own count back; of a shorter one RIFE's 81 first, the nearest ones back. The new
+    video is 832 × 480, its length and sound its own; its words, unless said, the video's. The camera part and
+    «Замена и дорисовка» wanted (its umT5 and VAE), «Плавность» when the video is not of 81 frames; a tall video,
+    one with cuts, a film, with «Предмет» - refused at once. «Стоп» while it films - the engine killed, nothing left."""
+    hub = drawn  # noqa: F811
+    long_id, short_id = a_wide_job(hub, 100), a_wide_job(hub, 60)
+    tall_id, cut_id = a_wide_job(hub, 48, width=64, height=96), a_wide_job(hub, 72, cut=True)
+    camera = {"move": "pan_right"}
+    missing = hub.post("/v1/visual/improve", json={"from_job": long_id, "camera": camera})
+    assert missing.status_code == 422 and "«Камера» не установлено" in missing.json()["detail"], missing.text
+    assert hub.post("/v1/enhance/parts/camera").status_code == 200
+    deadline = time.monotonic() + 60
+    while next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "camera")["state"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    files = torch_engines.camera_files(models_home())
+    assert files["wan_video_dit.py"].parent.name == "code" and files["step20000.ckpt"].is_file()
+    for spec, said in (({"from_job": tall_id, "camera": camera}, "для горизонтального ролика"),
+                       ({"from_job": cut_id, "camera": camera}, "есть склейки"),
+                       ({"film": "f1", "camera": camera}, "для ролика «Студии»"),
+                       ({"from_job": long_id, "camera": camera, "select": {"share": 0.5, "x": 0.5, "y": 0.5}},
+                        "отдельно"),
+                       ({"from_job": long_id, "camera": {"move": "spin"}}, "")):  # fmt: skip
+        refused = hub.post("/v1/visual/improve", json=spec)
+        assert refused.status_code == 422 and said in str(refused.json()["detail"]), refused.text
+
+    asked = hub.post("/v1/visual/improve", json={"from_job": long_id, "camera": camera})
+    assert asked.status_code == 200, asked.text
+    job = asked.json()["job"]
+    assert job["enhance"]["camera"] == {"move": "pan_right", "words": "a man talks in a kitchen"}
+    assert (job["width"], job["height"]) == (832, 480)
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled", timeout=60)
+    assert done["status"] == "done", done
+    (plan,) = [json.loads(p.read_text(encoding="utf-8")) for p in tmp_path.glob("camera-*.json")]
+    assert plan["move"] == 1 and plan["steps"] == 25 and plan["prompt"] == "a man talks in a kitchen"
+    assert [int(Path(f).stem) - 1 for f in plan["frames"]] == enhance.camera_moments(100)
+    assert enhance.camera_moments(100)[:4] == [0, 1, 2, 4] and enhance.camera_moments(100)[-1] == 99
+    assert Path(plan["ckpt"]) == files["step20000.ckpt"] and Path(plan["dit"]) == files["wan_video_dit.py"]
+    assert Path(plan["vace"]) == torch_engines.vace_dir(models_home())
+    assert hub.rife() == [100]  # its own count back
+    shown = described(hub.app.state.visual.media / done["file"])
+    assert shown["size"] == (832, 480) and shown["fps"] == 24 and shown["sound"]
+    assert abs(shown["seconds"] - 100 / 24) < 0.1
+    assert not [p for p in hub.app.state.visual.media.rglob("*") if p.name.startswith(".")]
+
+    arc = {"move": "arc_left", "words": "a kitchen"}
+    shorter = hub.post("/v1/visual/improve", json={"from_job": short_id, "camera": arc})
+    done = wait_job(hub, shorter.json()["job"]["id"], "done", "failed", "cancelled", timeout=60)
+    assert done["status"] == "done", done
+    plan = json.loads(sorted(tmp_path.glob("camera-*.json"))[-1].read_text(encoding="utf-8"))
+    assert plan["move"] == 9 and plan["prompt"] == "a kitchen" and Path(plan["frames"][0]).parent.name == "given"
+    assert hub.rife() == [100, 81]  # RIFE's 81 first; back - the nearest ones
+    shown = described(hub.app.state.visual.media / done["file"])
+    assert shown["size"] == (832, 480) and abs(shown["seconds"] - 60 / 24) < 0.1
+
+    monkeypatch.setenv("FAKE_ENGINE_STEP_S", "5")
+    source = hub.app.state.visual.media / f"2026-11/{long_id}.mp4"
+    began = time.monotonic()
+    with pytest.raises(enhance.EnhanceError, match="остановлено"):
+        make(hub, source, tmp_path / "stopped.mp4", fps=24, stop_after=2.0, camera=camera)
+    assert time.monotonic() - began < 20
+    assert not (tmp_path / "stopped.mp4").exists() and not list(tmp_path.glob(".*.work"))
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
 def test_the_edges_are_drawn_to_another_format_and_a_stop_leaves_nothing(drawn, tmp_path, monkeypatch):
     """58.3-58.4: «Формат 9:16» - no object to find, the source in the middle of a taller frame, the edges drawn

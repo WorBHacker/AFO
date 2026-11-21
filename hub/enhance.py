@@ -110,6 +110,7 @@ PARTS: dict[str, dict[str, Any]] = {
     "select": torch_engines.part("select"),
     "replace": torch_engines.part("replace"),
     "depth": torch_engines.part("depth"),  # (59) each frame's depth: what «Перерисовать всё» draws by
+    "camera": torch_engines.part("camera"),  # (59) the video filmed anew by another camera's move
     "lips": torch_engines.part("lips"),  # (57) a mouth to a voice: MuseTalk - asked first, its licence (62)
 }  # fmt: skip
 # (58) «Замена и дорисовка»: what VACE draws anew, the formats the edges are drawn to - VACE's frame for each (its
@@ -130,6 +131,12 @@ NEGATIVE = ("Bright tones, overexposed, static, blurred details, subtitles, styl
             "poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still "
             "picture, messy background, three legs, many people in the background, walking backwards")  # fmt: skip
 WORDS_MAX = 500
+# (59) «Камера»: ReCamMaster's ten moves (their numbers), its only frame and length; 25 steps (59.1: 20 min, the
+# person turned and the room around him drawn as it would be)
+CAMERAS = {"pan_right": 1, "pan_left": 2, "tilt_up": 3, "tilt_down": 4, "zoom_in": 5, "zoom_out": 6, "rise": 7,
+           "sink": 8, "arc_left": 9, "arc_right": 10}  # fmt: skip
+CAMERA_SIZE, CAMERA_FRAMES, CAMERA_STEPS = (832, 480), 81, 25
+CAMERA_STEP_S = 90.0  # a step at most, for the time out (59.1: 44 s)
 VOICE_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")  # (57) a voice's file, as a film's music
 VOICE_BYTES = 200 << 20
 STEP_S = 40.0  # a step at most, for the time out (58.1: 17.8-19.3 s, the VAE besides)
@@ -433,6 +440,27 @@ def drawing(raw: Any) -> dict[str, Any] | None:
     return found | subject({k: raw.get(k) for k in ("share", "x", "y")})  # type: ignore[operator]
 
 
+def camera_of(raw: Any) -> dict[str, Any] | None:
+    """(59) «Камера»: {move: one of `CAMERAS`, words: what is in the video - unless said, its own words}; None - not
+    asked. Anything else - refused."""
+    if raw is None:
+        return None
+    try:
+        move, words = str(raw["move"]), str(raw.get("words") or "").strip()
+    except TypeError, KeyError, AttributeError:
+        raise EnhanceError(tr("нет такого улучшения"), 422) from None
+    if move not in CAMERAS or len(words) > WORDS_MAX:
+        raise EnhanceError(tr("нет такого улучшения"), 422)
+    return {"move": move, "words": words}
+
+
+def camera_moments(count: int) -> list[int]:
+    """(59) The frames of a video of `count` frames ReCamMaster is given when it has more than its 81: frame k of
+    its 81 at the video's moment k × count / 81 - the nearest one (RIFE makes the video's frames back by the same
+    reckoning: `smooth_args`)."""
+    return [min(count - 1, round(k * count / CAMERA_FRAMES)) for k in range(CAMERA_FRAMES)]
+
+
 def lips_of(raw: Any) -> dict[str, Any] | None:
     """(57) «Губы под голос»: {voice: clip - the video's own sound | file, path: the voice's file; own - (57.4, the
     director's) the new video's sound stays its own, the voice is mixed in elsewhere}; None - not asked. Anything
@@ -518,6 +546,13 @@ def _copied(frames: Path, first: int, end: int, piece: Path) -> None:
     piece.mkdir(parents=True)
     for n in range(first, end):
         _link(frames / (FRAMES % (n + 1)), piece / (FRAMES % (n - first + 1)))
+
+
+def _picked(frames: Path, chosen: list[int], piece: Path) -> None:
+    """(59) The frames `chosen` (from 0, one may come twice) of a folder into `piece`, numbered from 1 - linked."""
+    piece.mkdir(parents=True)
+    for n, k in enumerate(chosen, start=1):
+        _link(frames / (FRAMES % (k + 1)), piece / (FRAMES % n))
 
 
 def _progress(path: Path) -> float | None:
@@ -738,6 +773,7 @@ class Enhance:
     async def make(self, source: Path, target: Path, cancel: asyncio.Event, *, ffmpeg: Path, fps: int,
                    size: str | None = None, motion: str | None = None, select: dict[str, Any] | None = None,
                    draw: dict[str, Any] | None = None, lips: dict[str, Any] | None = None,
+                   camera: dict[str, Any] | None = None,
                    told: Callable[[float], Awaitable[None]] | None = None) -> int:  # fmt: skip
         """A video improved into `target` (MP4); how many frames it has. Its frames taken out by ffmpeg, made by the
         parts' programs, put back together, its sound with them. `size` (54.4): «sharp» - twice as large by
@@ -751,22 +787,24 @@ class Enhance:
         `select`. `lips` (57, `lips_of`): the
         face's mouth made to say the video's own sound or a voice's file by MuseTalk - first, at the video's own
         size; not with `select` or `draw`, nor slowed (a slowed video has no sound); with a file - its voice is the new
-        video's sound. `told(share)` - how far, after each piece. The frames lie beside `target` meanwhile and are
-        gone after, whatever happened."""
+        video's sound. `camera` (59, `camera_of`): the video filmed anew by ReCamMaster along a move - first, alone
+        of those four; the new video of its 832 × 480, its length and sound its own. `told(share)` - how far, after
+        each piece. The frames lie beside `target` meanwhile and are gone after, whatever happened."""
         if (motion is not None and motion not in MOTIONS) or (size is not None and size not in SIZES):
             raise EnhanceError(tr("нет такого улучшения"), 422)
-        select, draw, lips = subject(select), drawing(draw), lips_of(lips)
-        if motion is None and size is None and select is None and draw is None and lips is None:
+        select, draw, lips, camera = subject(select), drawing(draw), lips_of(lips), camera_of(camera)
+        if motion is None and size is None and select is None and draw is None and lips is None and camera is None:
             raise EnhanceError(tr("выберите, что улучшить"), 422)
         if (select is not None and draw is not None) or (lips is not None and (
-                select is not None or draw is not None or motion in ("slow2", "slow4"))):  # fmt: skip
+                select is not None or draw is not None or motion in ("slow2", "slow4"))) or (
+                camera is not None and (select is not None or draw is not None or lips is not None)):  # fmt: skip
             raise EnhanceError(tr("нет такого улучшения"), 422)
         if motion == "fps60" and fps >= SMOOTH_FPS:
             raise EnhanceError(tr("в ролике уже {fps} кадров в секунду", fps=fps), 422)
         work = target.with_name(f".{target.stem}.work")
         await asyncio.to_thread(engines.remove_tree, work)
-        stages = [s for s in ("draw" if draw else None, "select" if select else None, "lips" if lips else None, size,
-                              motion) if s is not None]  # fmt: skip
+        stages = [s for s in ("camera" if camera else None, "draw" if draw else None, "select" if select else None,
+                              "lips" if lips else None, size, motion) if s is not None]  # fmt: skip
 
         async def stage(n: int) -> Callable[[float], Awaitable[None]] | None:
             if told is None:
@@ -781,12 +819,20 @@ class Enhance:
             frames = work / "in"
             count = await asyncio.to_thread(video.frames_out, ffmpeg, source, frames)
             width, height = await asyncio.to_thread(png_size, frames / (FRAMES % 1))
+            if camera is not None:  # (59) wide only: ReCamMaster's frame is 832 × 480 - the new video's
+                if width <= height:
+                    raise EnhanceError(tr("«Камера» — для горизонтального ролика"), 422)
+                width, height = CAMERA_SIZE
             if draw is not None and draw["kind"] == "edges":  # (58) the new frame's size
                 width, height, *_place = canvas_of(width, height, draw["canvas"])
             if size == "detail" and width * height > DETAIL_PIXELS:
                 raise EnhanceError(tr("«с дорисовкой» — для роликов обычного размера: этот {width} × {height}, "
                                       "выберите быстрое увеличение", width=width, height=height), 422)  # fmt: skip
             cut = await asyncio.to_thread(video.cuts, ffmpeg, source)
+            if camera is not None:  # (59) one shot: a camera's move across a cut is no move
+                if cut:
+                    raise EnhanceError(tr("в ролике есть склейки — «Камера» снимает одну сцену без склеек"), 422)
+                frames = await self._camera(frames, work, count, camera, cancel, await stage(0))
             if draw is not None:
                 frames = await self._draw(frames, work, count, fps, cut, draw, cancel, await stage(0))
             if select is not None:
@@ -922,6 +968,70 @@ class Enhance:
             raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
                                  wanted=count))  # fmt: skip
         for done in (frames, masks, drawn, work / "half", work / "back", work / "depth"):
+            if done is not None:
+                await asyncio.to_thread(engines.remove_tree, done)
+        if told is not None:
+            await told(1.0)
+        return out
+
+    async def _camera(self, frames: Path, work: Path, count: int, camera: dict[str, Any], cancel: asyncio.Event,
+                      told: Callable[[float], Awaitable[None]] | None) -> Path:  # fmt: skip
+        """(59) ReCamMaster films the video anew along the move. Its 81 frames are the video's moments k × count / 81:
+        the frames themselves (81 of them), the nearest ones (more), RIFE's (fewer); the video's own count comes back
+        by the same reckoning - RIFE's (more), the nearest ones (fewer). Its frame is 832 × 480, the video's covering
+        it, its middle kept (hub/torch_scripts/camera.py). The frames come back numbered as they were."""
+        given = work / "given"
+        if count == CAMERA_FRAMES:
+            pictures = [frames / (FRAMES % (j + 1)) for j in range(count)]
+        elif count > CAMERA_FRAMES:
+            pictures = [frames / (FRAMES % (j + 1)) for j in camera_moments(count)]
+        else:
+            await asyncio.to_thread(given.mkdir, parents=True)
+            await self.run("smooth", smooth_args(frames, given, CAMERA_FRAMES), cancel)
+            pictures = [given / (FRAMES % (k + 1)) for k in range(CAMERA_FRAMES)]
+        if told is not None:
+            await told(0.05)
+        files, models = torch_engines.camera_files(self.models), self.models
+        filmed, progress = work / "filmed", work / "camera.txt"
+        plan = {"dit": str(files["wan_video_dit.py"]), "flow": str(files["flow_match.py"]),
+                "paths": str(files["camera_extrinsics.json"]), "ckpt": str(files["step20000.ckpt"]),
+                "vace": str(torch_engines.vace_dir(models)), "encoder": str(torch_engines.encoder_file(models)),
+                "frames": [str(p) for p in pictures], "move": CAMERAS[camera["move"]], "prompt": camera["words"],
+                "negative": NEGATIVE, "steps": CAMERA_STEPS, "cfg": GUIDANCE, "seed": SEED, "out": str(filmed),
+                "progress": str(progress)}  # fmt: skip
+        await asyncio.to_thread((work / "camera.json").write_bytes, json.dumps(plan).encode())
+        filming = asyncio.ensure_future(self.run("camera", ["--camera", str(work / "camera.json")], cancel,
+                                                 timeout=LOAD_S + CAMERA_STEPS * CAMERA_STEP_S))  # fmt: skip
+        try:
+            while not filming.done():  # how far it is: the steps it wrote
+                await asyncio.wait({filming}, timeout=TICK_S * 4)
+                share = await asyncio.to_thread(_progress, progress)
+                if told is not None and share is not None and not filming.done():
+                    await told(0.05 + 0.85 * share)
+            await filming
+        finally:
+            if not filming.done():  # the job itself cancelled: the engine killed with it
+                filming.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await filming
+        came = len(await asyncio.to_thread(os.listdir, filmed)) if await asyncio.to_thread(filmed.is_dir) else 0
+        if came != CAMERA_FRAMES:
+            raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                 wanted=CAMERA_FRAMES))  # fmt: skip
+        out = filmed
+        if count > CAMERA_FRAMES:
+            out = work / "filmed-all"
+            await asyncio.to_thread(out.mkdir, parents=True)
+            await self.run("smooth", smooth_args(filmed, out, count), cancel)
+        elif count < CAMERA_FRAMES:
+            out = work / "filmed-all"
+            nearest = [min(CAMERA_FRAMES - 1, round(j * CAMERA_FRAMES / count)) for j in range(count)]
+            await asyncio.to_thread(_picked, filmed, nearest, out)
+        came = len(await asyncio.to_thread(os.listdir, out)) if await asyncio.to_thread(out.is_dir) else 0
+        if came != count:
+            raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                 wanted=count))  # fmt: skip
+        for done in (frames, given, filmed if out != filmed else None):
             if done is not None:
                 await asyncio.to_thread(engines.remove_tree, done)
         if told is not None:

@@ -134,10 +134,20 @@ class Lips(BaseModel):
     path: str = Field(default="", max_length=1000)
 
 
+class Camera(BaseModel):
+    """(59) «Камера»: the video filmed anew along one of ReCamMaster's moves; `words` - what is in it (unless said,
+    its own)."""
+
+    move: Literal["pan_right", "pan_left", "tilt_up", "tilt_down", "zoom_in", "zoom_out", "rise", "sink", "arc_left",
+                  "arc_right"]  # fmt: skip
+    words: str = Field(default="", max_length=500)
+
+
 class Improve(BaseModel):
     """«Улучшить ролик» (54.5): a video of the Studio's or a film's joined one; twice as large (fast or with
     details), 60 frames a second or slowed, only the object clicked (56), an object, the background or the edges
-    drawn anew (58), the mouth to a voice (57) - any of them, or several (`select`, `draw`, `lips` - one of them)."""
+    drawn anew (58), the mouth to a voice (57), another camera's move (59) - any of them, or several (`select`,
+    `draw`, `lips`, `camera` - one of them)."""
 
     from_job: str = Field(default="", max_length=64)
     film: str = Field(default="", max_length=64)
@@ -146,6 +156,7 @@ class Improve(BaseModel):
     select: Subject | None = None
     draw: Draw | None = None
     lips: Lips | None = None
+    camera: Camera | None = None
 
 
 @router.post("/improve")

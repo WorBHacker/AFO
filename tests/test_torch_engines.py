@@ -46,8 +46,9 @@ def lips_bytes(weight):
 
 
 def own_bytes(engine, weight):
-    """A file of an engine - (57) the lips', (59) the depth's: its own bytes; the others' as before."""
-    if engine in ("lips", "depth"):
+    """A file of an engine - (57) the lips', (59) the depth's and the camera's: its own bytes; the others' as
+    before."""
+    if engine in ("lips", "depth", "camera"):
         return lips_bytes(weight)
     return REPLACE.get(weight["path"], WEIGHTS)
 
@@ -136,10 +137,11 @@ def put_stand(hub, monkeypatch, logs):  # noqa: F811
                     for w in spec["weights"])  # fmt: skip
     code = spec["code"] | {"size": len(CODE_ZIP), "sha256": hashlib.sha256(CODE_ZIP).hexdigest()}
     monkeypatch.setitem(torch_engines.ENGINES, "lips", spec | {"weights": weights, "code": code})
-    spec = torch_engines.ENGINES["depth"]  # (59)
-    weights = tuple(w | {"size": len(lips_bytes(w)), "sha256": hashlib.sha256(lips_bytes(w)).hexdigest()}
-                    for w in spec["weights"])  # fmt: skip
-    monkeypatch.setitem(torch_engines.ENGINES, "depth", spec | {"weights": weights})
+    for engine in ("depth", "camera"):  # (59)
+        spec = torch_engines.ENGINES[engine]
+        weights = tuple(w | {"size": len(lips_bytes(w)), "sha256": hashlib.sha256(lips_bytes(w)).hexdigest()}
+                        for w in spec["weights"])  # fmt: skip
+        monkeypatch.setitem(torch_engines.ENGINES, engine, spec | {"weights": weights})
     monkeypatch.setattr(torch_engines, "command", lambda program: [sys.executable, str(FAKE_UV)])
     monkeypatch.setattr(torch_engines, "script_of", lambda engine: FAKE_ENGINE)
     monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)
