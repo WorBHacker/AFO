@@ -748,7 +748,14 @@ class FilmView(QObject):
     @Slot(str)
     def getSound(self, part: str) -> None:
         """«Скачать»: the part's model - and, the first time, the program of sound."""
-        self._sound_part(lambda: self.app.client.install_sound(part), N_("Не скачать: {error}"))
+        self._get_sound(part, agreed=False)
+
+    def _get_sound(self, part: str, *, agreed: bool) -> None:
+        def failed(error: Exception) -> None:  # (62) a licence that forbids commercial use: asked first
+            if not self.app.asked_licence(error, lambda: self._get_sound(part, agreed=True)):
+                self.app.show_error(tr("Не скачать: {error}", error=error))
+
+        self.app._call(lambda: self.app.client.install_sound(part, licence_ok=agreed), self._take_sound, failed)
 
     @Slot(str)
     def stopSound(self, part: str) -> None:

@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1771,6 +1772,19 @@ class Controller(QObject):
         conversation_id = self.current
         if conversation_id:
             self._call(lambda: self.client.cancel(conversation_id))
+
+    def asked_licence(self, error: Exception, again: Callable[[], None]) -> bool:
+        """(62, the user's word 2026-11-21) A download the hub refused for its licence (code «licence»: it forbids
+        commercial use): the person is told so and asked - «Понимаю, скачать» starts it again with their consent
+        (`again`), «Отмена» - nothing. False - another refusal, the caller's to show."""
+        if getattr(error, "code", None) != "licence":
+            return False
+        data = getattr(error, "data", None) or {}
+        self._ask(tr("«{name}» — не для коммерческого использования", name=data.get("name") or ""),
+                  tr("Лицензия {licence} запрещает коммерческое использование. Модель — только для проб и для себя. "
+                     "Ответственность за её использование — на вас.", licence=data.get("licence") or "?"),
+                  tr("Понимаю, скачать"), lambda yes: again() if yes else None)  # fmt: skip
+        return True
 
     def _ask(self, title: str, text: str, confirm: str, decide, *, other: str = "") -> None:
         """`decide(True)` on `confirm`, `decide(False)` on «Отмена»; `other`: a third answer between them

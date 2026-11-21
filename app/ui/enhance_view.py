@@ -400,7 +400,14 @@ class EnhanceView(QObject):
     @Slot(str)
     def getPart(self, part: str) -> None:
         """«Скачать»: the part's program and its model, in the background (enhance.changed)."""
-        self._part_call(lambda: self.app.client.install_enhance(part), N_("Не скачать: {error}"))
+        self._get(part, agreed=False)
+
+    def _get(self, part: str, *, agreed: bool) -> None:
+        def failed(error: Exception) -> None:  # (62) a licence that forbids commercial use: asked first
+            if not self.app.asked_licence(error, lambda: self._get(part, agreed=True)):
+                self.app.show_error(tr("Не скачать: {error}", error=error))
+
+        self.app._call(lambda: self.app.client.install_enhance(part, licence_ok=agreed), self._take, failed)
 
     @Slot(str)
     def stopPart(self, part: str) -> None:

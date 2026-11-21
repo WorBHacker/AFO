@@ -239,9 +239,10 @@ class HubClient:
         unavailable (why)."""
         return self._call("GET", "/v1/enhance")
 
-    def install_enhance(self, part: str) -> dict:
-        """«Скачать»: the part's program and model, in the background (enhance.changed)."""
-        return self._call("POST", f"/v1/enhance/parts/{part}")
+    def install_enhance(self, part: str, licence_ok: bool = False) -> dict:
+        """«Скачать»: the part's program and model, in the background (enhance.changed). `licence_ok` (62) - the
+        person's «Понимаю, скачать» for a licence that forbids commercial use."""
+        return self._call("POST", f"/v1/enhance/parts/{part}", {"licence_ok": True} if licence_ok else None)
 
     def stop_enhance(self, part: str) -> dict:
         return self._call("POST", f"/v1/enhance/parts/{part}/stop", timeout=60)
@@ -311,9 +312,10 @@ class HubClient:
         the narrator's voices."""
         return self._call("GET", "/v1/sound")
 
-    def install_sound(self, part: str) -> dict:
-        """«Скачать»: the engine the first time, and the part's model - in the background (sound.changed)."""
-        return self._call("POST", f"/v1/sound/parts/{part}")
+    def install_sound(self, part: str, licence_ok: bool = False) -> dict:
+        """«Скачать»: the engine the first time, and the part's model - in the background (sound.changed).
+        `licence_ok` (62) - as `install_enhance`'s."""
+        return self._call("POST", f"/v1/sound/parts/{part}", {"licence_ok": True} if licence_ok else None)
 
     def stop_sound(self, part: str) -> dict:
         """A part's download stopped; what came stays for the next time."""

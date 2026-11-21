@@ -1305,8 +1305,11 @@ class InstallView(QObject):
 
         def failed(error: Exception) -> None:
             self._busy = False
-            self.app.show_error(tr("Не начать установку: {error}", error=error))
             self.changed.emit()
+            # (62) a licence that forbids commercial use: asked first, then the same install with the person's word
+            if not self.app.asked_licence(error, lambda: self._start({**spec, "licence_ok": True}, pictures=pictures,
+                                                                     key=key)):  # fmt: skip
+                self.app.show_error(tr("Не начать установку: {error}", error=error))
 
         self._doing(key, tr("Начинаю установку…"), start, done, failed)
 

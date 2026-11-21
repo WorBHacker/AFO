@@ -386,6 +386,8 @@ class FakeClient:
         self.schedule_calls = []
         self.install_calls = []
         self.install_jobs_list = []
+        self.not_for_work = {}  # (62) a repository, picture set or part -> its licence: refused as the hub does
+        self.part_calls = []  # (62) «Скачать» of a part of «Улучшить ролик» or of sound: (kind, part, licence_ok)
         self.visual_calls = []  # «Нарисовать» (29.5)
         self.visual_jobs_list = []
         self.visual_rungs = {}  # the rung each model came out on here (29.4б)
@@ -744,7 +746,16 @@ class FakeClient:
         next(p for p in self.enhance_state["parts"] if p["id"] == part).update(fields)
         return self.enhance()
 
-    def install_enhance(self, part):
+    def _licensed(self, key, name, agreed):
+        """(62) As the hub answers a download whose licence forbids commercial use, without the person's word."""
+        if key in self.not_for_work and not agreed:
+            licence = self.not_for_work[key]
+            raise HubError(f"«{name}»: лицензия {licence} запрещает коммерческое использование", code="licence",
+                           data={"code": "licence", "name": name, "licence": licence})  # fmt: skip
+
+    def install_enhance(self, part, licence_ok=False):
+        self._licensed(part, part, licence_ok)
+        self.part_calls.append(("enhance", part, licence_ok))
         return self._enhance_part("install", part, state="loading", got=0, error="")
 
     def stop_enhance(self, part):
@@ -804,7 +815,9 @@ class FakeClient:
         next(p for p in self.sound_state["parts"] if p["id"] == part).update(fields)
         return self.sound()
 
-    def install_sound(self, part):
+    def install_sound(self, part, licence_ok=False):
+        self._licensed(part, part, licence_ok)
+        self.part_calls.append(("sound", part, licence_ok))
         return self._sound_part("install", part, state="loading", got=0, error="")
 
     def stop_sound(self, part):
@@ -840,6 +853,7 @@ class FakeClient:
         return self._film(film_id, status="joining", error="")
 
     def install_pictures_start(self, spec):
+        self._licensed(spec["id"], spec["id"], spec.get("licence_ok"))
         self.install_calls.append(("pictures", spec))
         job = {"id": "p1", "repo": "leejet/Z-Image-Turbo-GGUF", "quant": "Q4_K", "name": "Z-Image-Turbo",
                "model_id": "z-image-turbo", "status": "queued", "done_bytes": 0, "total_bytes": 6_250_000_000,
@@ -999,6 +1013,7 @@ class FakeClient:
         }
 
     def install(self, spec):
+        self._licensed(spec["repo"], f"{spec['repo'].rsplit('/', 1)[-1]} {spec['quant']}", spec.get("licence_ok"))
         self.install_calls.append(("install", spec))
         job = {
             "id": "j1",
@@ -11875,6 +11890,85 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
         assert enhance_view.improvement({"draw": {"kind": "edges", "canvas": "9:16"}}) == "Формат 9:16"
         for _ in range(10):
             QApplication.processEvents()
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_a_model_whose_licence_forbids_commercial_use_is_fetched_after_a_warning_by_clicks(qapp):
+    """62 (the user's word 2026-11-21): the hub refuses a download whose licence forbids commercial use unless the
+    person agreed (code «licence»); the window then asks - over the sheet it was asked from - what the licence is,
+    that the model is only to try and for oneself, that the use is the person's responsibility. «Отмена» - nothing;
+    «Понимаю, скачать» - the same download with the person's word. So in every place a model comes from: a picture
+    model and a chat model of the install sheet (the wizard's go the same way), a part of «Улучшить ролик», a part of
+    sound. A model with a free licence is not asked about."""
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.not_for_work = {"z-image-turbo": "flux-1-dev-non-commercial-license",
+                               "ggml-org/gemma-4-E4B-it-GGUF": "cc-by-nc-4.0", "sharp": "CC-BY-NC-4.0",
+                               "music": "CC-BY-NC-4.0"}  # fmt: skip
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view = app.install_view
+        sheet = window.findChild(QObject, "installSheet")
+        dialog = window.findChild(QObject, "confirmDialog")
+        app.openUi("install-models")
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy and view.catalog)
+
+        def asked():
+            wait_until(lambda: not app.bg.busy and dialog.property("opened"))
+            return dict(app.question)
+
+        def answer(text):
+            click(window, item_saying(dialog.property("contentItem"), text))
+            wait_until(lambda: not dialog.property("visible") and not app.bg.busy)
+            for _ in range(10):
+                QApplication.processEvents()
+
+        view.setPurpose("image")
+        wait_until(lambda: not app.bg.busy and view.catalog)
+        view.installRecommended("pictures:z-image-turbo")
+        question = asked()
+        assert question["title"] == "«z-image-turbo» — не для коммерческого использования"
+        assert question["text"] == (
+            "Лицензия flux-1-dev-non-commercial-license запрещает коммерческое использование. Модель — только для "
+            "проб и для себя. Ответственность за её использование — на вас.")  # fmt: skip
+        assert question["confirm"] == "Понимаю, скачать" and sheet.property("opened")  # over the sheet
+        answer("Отмена")
+        assert not [c for c in client.install_calls if c[0] == "pictures"] and not app.question  # nothing started
+        view.installRecommended("pictures:z-image-turbo")
+        asked()
+        answer("Понимаю, скачать")
+        wait_until(lambda: not app.bg.busy and any(c[0] == "pictures" for c in client.install_calls))
+        assert client.install_calls[-1] == ("pictures", {"id": "z-image-turbo", "licence_ok": True})
+
+        view.setPurpose("")
+        wait_until(lambda: not app.bg.busy and view.catalog)
+        view.installRecommended("ggml-org/gemma-4-E4B-it-GGUF")
+        assert asked()["title"] == "«gemma-4-E4B-it-GGUF Q8_0» — не для коммерческого использования"
+        answer("Понимаю, скачать")
+        wait_until(lambda: not app.bg.busy and client.install_calls[-1][0] == "install")
+        assert client.install_calls[-1] == ("install", {"repo": "ggml-org/gemma-4-E4B-it-GGUF", "quant": "Q8_0",
+                                                        "licence_ok": True})  # fmt: skip
+
+        app.enhance_view.getPart("sharp")  # «Улучшить ролик»
+        assert "CC-BY-NC-4.0" in asked()["text"]
+        answer("Понимаю, скачать")
+        wait_until(lambda: not app.bg.busy and client.part_calls)
+        assert client.part_calls == [("enhance", "sharp", True)]
+        app.film_view.getSound("music")  # «Звук фильма»
+        asked()
+        answer("Отмена")
+        assert client.part_calls == [("enhance", "sharp", True)]
+        app.film_view.getSound("voice")  # Apache-2.0: not asked
+        wait_until(lambda: not app.bg.busy and len(client.part_calls) == 2)
+        assert client.part_calls[-1] == ("sound", "voice", False) and not app.question
         assert quick.warnings == []
     finally:
         quick.close()
