@@ -217,6 +217,42 @@ def test_checking_a_connection(hub, monkeypatch):
     assert hub.post(f"/v1/connections/{ANTHROPIC_API_KEY}/check").status_code == 401  # locked
 
 
+def test_an_expired_openrouter_key_does_not_pass_the_check(hub):
+    """«Стабилизация» (61.9): OpenRouter's list of models answers without a key, so «Проверить» said «ключ работает»
+    of an expired one, and the first request got 401. Now its key is asked about itself (/v1/key): refused - its
+    words; working - the models, as before."""
+    from hub.gateway.cloud_openai import OpenRouterProvider
+
+    key_status = {"code": 401}
+    asked = []
+
+    def api(request):
+        asked.append((request.url.path, request.headers.get("Authorization")))
+        if request.url.path.endswith("/v1/key"):
+            if key_status["code"] != 200:
+                return httpx.Response(401, json={"error": {"message": "API key expired", "code": 401}})
+            return httpx.Response(200, json={"data": {"label": "sk-or-v1-abc...", "limit": 5, "usage": 0.1}})
+        return httpx.Response(200, json={"data": [  # the list: open, with a key or without
+            {"id": "qwen/qwen3.8-coder", "name": "Qwen3.8 Coder", "context_length": 262144,
+             "pricing": {"prompt": "0.0000002", "completion": "0.0000008"},
+             "supported_parameters": ["tools"], "architecture": {"output_modalities": ["text"]}}]})  # fmt: skip
+
+    async def chosen():
+        return ["qwen/qwen3.8-coder"]
+
+    hub.app.state.gateway.register(OpenRouterProvider(lambda: hub.store.get(conns.OPENROUTER_API_KEY), chosen,
+                                                      transport=httpx.MockTransport(api)))  # fmt: skip
+    headers = unlocked(hub)
+    hub.put(f"/v1/connections/{conns.OPENROUTER_API_KEY}", json={"value": "sk-or-v1-" + "a" * 64}, headers=headers)
+    checked = hub.post(f"/v1/connections/{conns.OPENROUTER_API_KEY}/check", headers=headers).json()
+    assert checked == {"name": conns.OPENROUTER_API_KEY, "ok": False,
+                       "detail": "openrouter: the API key was rejected (401): API key expired"}  # fmt: skip
+    assert ("/api/v1/key", "Bearer sk-or-v1-" + "a" * 64) in asked
+    key_status["code"] = 200
+    checked = hub.post(f"/v1/connections/{conns.OPENROUTER_API_KEY}/check", headers=headers).json()
+    assert checked == {"name": conns.OPENROUTER_API_KEY, "ok": True, "detail": "ключ работает: моделей — 1"}
+
+
 def test_linking_the_telegram_chat_needs_the_password(hub):
     assert hub.post("/v1/connections/telegram/link").status_code == 401
     headers = unlocked(hub)

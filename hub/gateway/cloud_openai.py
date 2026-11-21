@@ -208,6 +208,23 @@ class OpenRouterProvider(CloudOpenAIProvider):
                               **m.get("long", {})})
                 for m in await self.everything() if m["id"] in chosen]  # fmt: skip
 
+    async def check_key(self) -> None:
+        """«Проверить» in Connections («Стабилизация», 61.9): the key itself - OpenRouter's list of models is open
+        without one, so an expired or revoked key passed; /v1/key answers only a key that works. ProviderError, with
+        OpenRouter's own word («API key expired»), when it does not."""
+        async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as http:
+            try:
+                response = await http.get(f"{self.base_url}/v1/key", headers=self._headers())
+            except httpx.HTTPError as exc:
+                raise ProviderError(f"{self.name}: the key was not checked (network: {type(exc).__name__})") from exc
+        if response.status_code != 200:
+            try:
+                said = str((response.json().get("error") or {}).get("message") or "").strip()
+            except ValueError, AttributeError:
+                said = ""
+            told = self.describe(response.status_code, response.text)
+            raise ProviderError(f"{self.name}: {told}" + (f": {said[:200]}" if said and said not in told else ""))
+
     def request_body(self, model_ref, messages, effort, tools, params=None):
         body = super().request_body(model_ref, messages, effort, tools, params)
         body.pop("reasoning_effort", None)

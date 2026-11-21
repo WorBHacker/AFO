@@ -244,6 +244,8 @@ async def _try(request: Request, connection: conns.Connection) -> tuple[bool, st
         if provider is None:
             return False, tr("адаптера этого поставщика в хабе нет")
         try:
+            if hasattr(provider, "check_key"):  # a provider whose list of models is open without a key (OpenRouter)
+                await provider.check_key()
             models = await provider.list_models()
         except ProviderError as exc:
             return False, exc.detail

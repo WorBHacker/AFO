@@ -2233,6 +2233,12 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   - найдено при 61.9 (вживую): «Проверить» у ключа OpenRouter говорит «ключ работает», когда ключ просрочен —
     проверка лишь читает список моделей (`_try` → `list_models`), а он у OpenRouter открыт и без ключа; первый же
     запрос модели получает 401 («API key expired»). Проверять надо запросом, которому нужен ключ (`/api/v1/key`).
+    ✓ Порция 1, шаг 2 (2026-11-21). `OpenRouterProvider.check_key` — `GET /api/v1/key` с ключом: не 200 — отказ
+    словами `describe` и самого OpenRouter («openrouter: the API key was rejected (401): API key expired»); 200 —
+    дальше список моделей, как было. `_try` (`hub/api/connections.py`) зовёт `check_key` у поставщика, у которого он
+    есть. Файлы — `hub/gateway/cloud_openai.py`, `hub/api/connections.py`. Тест —
+    `tests/test_connections.py::test_an_expired_openrouter_key_does_not_pass_the_check` (подставной OpenRouter: список
+    открыт, ключ просрочен, потом рабочий); на прежнем коде — «ключ работает».
   - найдено при 61.9 (вживую): у моделей OpenRouter хаб не знает, видят ли они картинки — `capabilities.vision`
     из его списка не берётся (там есть `architecture.input_modalities`), — так что `page_snapshot` облачному
     архитектору через OpenRouter не дан, пока пользователь не отметит «картинки» в настройке модели. На стенде
