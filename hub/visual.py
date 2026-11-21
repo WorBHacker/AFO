@@ -907,9 +907,11 @@ class Visual:
         if draw is not None:
             how["draw"] = draw
         job_id, note = uuid.uuid4().hex[:12], ""
-        if lips is not None:  # (57) a file's voice: copied beside, gone with the job's end; the video has sound now
-            how["lips"], how["sound"] = {"voice": lips["voice"]}, True
-            sound = True
+        if lips is not None:  # (57) a file's voice: copied beside, gone with the job's end; the video has sound now -
+            # (57.4) a film's scene keeps its own: the narrator is mixed in when the film is joined
+            how["lips"] = {"voice": lips["voice"]} | ({"own": True} if lips.get("own") else {})
+            if not lips.get("own"):
+                how["sound"] = sound = True
             if lips["voice"] == "file":
                 how["lips"]["file"] = await self._keep_voice(Path(lips["path"]), job_id)
                 note = await self._voice_note(self.media / source, self.media / how["lips"]["file"])
@@ -1671,7 +1673,8 @@ class Visual:
                 raise VisualError(tr("«Улучшить ролик» не готово"), 503)
             lips = how.get("lips")  # (57) a file's voice - where it was copied
             if lips is not None and lips.get("file"):
-                lips = {"voice": "file", "path": str(self.media / lips["file"])}
+                lips = {"voice": "file", "path": str(self.media / lips["file"])} | ({"own": True} if lips.get("own")
+                                                                                     else {})  # fmt: skip
             frames = await self.enhance.make(source, target, cancel, ffmpeg=program, fps=int(how["fps"]),
                                              size=how["size"], motion=how["motion"], select=how.get("select"),
                                              draw=how.get("draw"), lips=lips, told=told)  # fmt: skip

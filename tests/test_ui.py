@@ -841,6 +841,9 @@ class FakeClient:
 
     def update_scene(self, film_id, n, fields):
         self.film_calls.append(("scene", film_id, n, fields))
+        if "speaks" in fields:  # (57.4) «Говорит в кадре», as the hub keeps it
+            film = next(f for f in self.films_list if f["id"] == film_id)
+            next(s for s in film["scenes"] if s["n"] == n)["speaks"] = fields["speaks"]
         return self._film(film_id)
 
     def shoot_film(self, film_id, scene=None):
@@ -10706,6 +10709,8 @@ def test_every_switch_in_the_window_follows_a_click(qapp, tmp_path, monkeypatch)
         QMetaObject.invokeMethod(added, "close")
         wait_until(lambda: not added.property("visible"))
         app.film_view.setKind("manual")
+        (tmp_path / "voice.wav").write_bytes(b"RIFF")  # (57.3) «Губы» «Под файл…» with a voice chosen: no dialog
+        app.enhance_view.chooseVoice(QUrl.fromLocalFile(str(tmp_path / "voice.wav")).toString())
         improve = window.findChild(QObject, "improveSheet")  # «Улучшить ролик» (54.6): the size, the motion - the
         QMetaObject.invokeMethod(improve, "open")  # Studio's sheet; the film's is the same declaration
         wait_until(lambda: improve.property("opened"))
@@ -11156,9 +11161,10 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
     """53.6: «Звук фильма…» - the sheet of the film's added sound. A part of the engine of sound is fetched by a
     click - how far it is, «Стоп», and once it is here, that it is; with «Звуки сцен» a film of a silent video model
     has «Со звуком» too. The narrator's voice from the menu, the music - by its description (kept when the sheet
-    closes) or the user's own file - go to the hub at once; a scene's sheet has the narrator's line; a film being
-    joined with added sound says so and has «Стоп». A film not begun keeps all of it for «Собрать сценарий». Real
-    QML, mouse clicks, no screen."""
+    closes) or the user's own file - go to the hub at once; a scene's sheet has the narrator's line and (57.4)
+    «Говорит в кадре» - a click, «Сохранить»: sent, the scene's card says it; a film being joined with added sound
+    says so - and that the lips are made - and has «Стоп». A film not begun keeps all of it for «Собрать
+    сценарий». Real QML, mouse clicks, no screen."""
     from PySide6.QtCore import QObject
 
     from app.ui.main import QuickApp
@@ -11175,7 +11181,8 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
                               "tokens": 0, "cost_usd": 0.0, "checks": True, "checking": 0, "sound": True,
                               "voice": "", "music": "", "music_words": "", "music_file": "",
                               "scenes": film_scenes("done", "done", "done", "done",
-                                                    s1={"say": "Тёплый свет для дома"})}]  # fmt: skip
+                                                    s1={"say": "Тёплый свет для дома"},
+                                                    s2={"say": "Включите — и светло"})}]  # fmt: skip
         for program in client.program_list:
             program["fresh"] = False  # the question about a new program would cover the Studio's top
         app.attach(client, start_events=False)
@@ -11283,12 +11290,37 @@ def test_the_directors_film_gets_a_narrator_music_and_the_parts_of_sound_by_clic
         assert client.film_calls[-1] == ("scene", "f1", 1, {"say": "Свет, который остаётся с вами"})
         wait_until(lambda: not scene.property("opened"))
 
+        title = films.scenes[1]["title"]  # (57.4) «Говорит в кадре»: the line said by the person in the frame
+        click(window, item_named(director, "filmEdit_2"))
+        wait_until(lambda: scene.property("opened"))
+        window.grabWindow()
+        speaks = window.findChild(QObject, "sceneSpeaks")
+        assert speaks.property("visible") and not speaks.property("checked")
+        assert item_saying(scene.property("contentItem"), "Диктор: что говорит за кадром") is not None
+        click(window, speaks)
+        window.grabWindow()
+        assert speaks.property("checked")
+        assert item_saying(scene.property("contentItem"), "Реплика: что говорит человек в кадре") is not None
+        click(window, window.findChild(QObject, "sceneSave"))
+        wait_until(lambda: not app.bg.busy and client.film_calls[-1][0] == "scene")
+        assert client.film_calls[-1] == ("scene", "f1", 2, {"speaks": True})
+        wait_until(lambda: not scene.property("opened"))
+        assert films.scenes[1]["title"] == f"{title} · говорит в кадре" and films.scenes[1]["speaks"]
+        assert films.scenes[0]["title"].endswith("говорит в кадре") is False
+        click(window, item_named(director, "filmEdit_2"))  # opened again: it says so; unchanged - nothing sent
+        wait_until(lambda: scene.property("opened"))
+        assert speaks.property("checked")
+        calls = len(client.film_calls)
+        click(window, window.findChild(QObject, "sceneSave"))
+        wait_until(lambda: not scene.property("opened") and not app.bg.busy)
+        assert len(client.film_calls) == calls
+
         join = item_named(director, "filmJoin")  # the film joined with its sound: it says so, and stops
         assert join.property("text") == "Собрать ролик" and join.property("enabled")
         click(window, join)
         wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("join", "f1", 0.0))
         window.grabWindow()
-        assert films.statusText == "делаю звук и склеиваю ролик…"
+        assert films.statusText == "делаю звук, губы под голос и склеиваю ролик…"  # (57.4) scene 2 speaks
         assert join.property("text") == "Стоп" and join.property("enabled")
         click(window, join)
         wait_until(lambda: not app.bg.busy and client.film_calls[-1] == ("stop", "f1"))

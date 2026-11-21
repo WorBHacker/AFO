@@ -125,6 +125,11 @@ class EnhanceView(QObject):
         """(57) The voice's file chosen - its name; "" - none."""
         return Path(self._voice).name if self._lips == "file" and self._voice else ""
 
+    @Property(bool, notify=changed)
+    def hasVoice(self) -> bool:
+        """(57) A voice's file was chosen before: «Под файл…» takes it again - no dialog («Другой файл…» changes it)."""
+        return bool(self._voice)
+
     @Property(list, notify=changed)
     def formats(self) -> list:
         return [{"id": k, "name": tr(n)} for k, n in FORMATS]
@@ -273,8 +278,10 @@ class EnhanceView(QObject):
         """What the choice does, besides the new video beside the source."""
         notes = []
         if self._lips:
-            notes.append(tr("Рот человека в кадре задвигается под голос — звук ролика.") if self._lips == "clip" else
-                         tr("Рот человека в кадре задвигается под голос из файла; он же станет звуком ролика."))  # fmt: skip
+            if self._lips == "clip":
+                notes.append(tr("Рот человека в кадре задвигается под голос — звук ролика."))
+            else:
+                notes.append(tr("Рот человека в кадре задвигается под голос из файла; он же станет звуком ролика."))
             notes.append(tr("Нужно одно лицо в кадре; кадры, где лица нет, останутся как были."))
             if self._frames:
                 notes.append(tr("Около {minutes} мин.", minutes=lips_minutes(self._frames)))

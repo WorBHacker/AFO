@@ -424,13 +424,14 @@ def drawing(raw: Any) -> dict[str, Any] | None:
     return found | subject({k: raw.get(k) for k in ("share", "x", "y")})  # type: ignore[operator]
 
 
-def lips_of(raw: Any) -> dict[str, str] | None:
-    """(57) «Губы под голос»: {voice: clip - the video's own sound | file, path: the voice's file}; None - not asked.
-    Anything else - refused."""
+def lips_of(raw: Any) -> dict[str, Any] | None:
+    """(57) «Губы под голос»: {voice: clip - the video's own sound | file, path: the voice's file; own - (57.4, the
+    director's) the new video's sound stays its own, the voice is mixed in elsewhere}; None - not asked. Anything
+    else - refused."""
     if raw is None:
         return None
     try:
-        voice, path = str(raw["voice"]), str(raw.get("path") or "").strip()
+        voice, path, own = str(raw["voice"]), str(raw.get("path") or "").strip(), raw.get("own") is True
     except TypeError, KeyError, AttributeError:
         raise EnhanceError(tr("нет такого улучшения"), 422) from None
     if voice == "clip":
@@ -439,7 +440,7 @@ def lips_of(raw: Any) -> dict[str, str] | None:
         raise EnhanceError(tr("нет такого улучшения"), 422)
     if not path:
         raise EnhanceError(tr("выберите файл с голосом"), 422)
-    return {"voice": "file", "path": path}
+    return {"voice": "file", "path": path} | ({"own": True} if own else {})
 
 
 def last_said(text: str) -> dict[str, Any]:
@@ -922,18 +923,19 @@ class Enhance:
             await told(1.0)
         return out
 
-    async def _lips(self, frames: Path, work: Path, count: int, fps: int, lips: dict[str, str], source: Path,
+    async def _lips(self, frames: Path, work: Path, count: int, fps: int, lips: dict[str, Any], source: Path,
                     ffmpeg: Path, cancel: asyncio.Event,
                     told: Callable[[float], Awaitable[None]] | None) -> tuple[Path, Path]:  # fmt: skip
         """(57) The face's mouth made to say the voice - the video's own sound or the person's file - by MuseTalk
         (hub/torch_scripts/lips.py): it hears the voice at 16 kHz, as long as the video. The frames come back by their
         names - where a face is and the voice goes on, its mouth drawn anew; the rest as they were. With the new
         frames - the new video's sound: the video's own, or the file's, padded with silence or cut to the video's
-        length. No face anywhere - said so."""
+        length (`own` - the video's own still: a film's narrator is mixed in when it is joined). No face anywhere -
+        said so."""
         seconds, heard = count / fps, Path(lips["path"]) if lips["voice"] == "file" else source
         voice, sound = work / "voice16.wav", source
         await asyncio.to_thread(video.voice_track, ffmpeg, heard, voice, seconds=seconds, rate=16000, channels=1)
-        if lips["voice"] == "file":
+        if lips["voice"] == "file" and not lips.get("own"):
             sound = work / "voice.wav"
             await asyncio.to_thread(video.voice_track, ffmpeg, heard, sound, seconds=seconds, rate=48000, channels=2)
         out = work / "lips"

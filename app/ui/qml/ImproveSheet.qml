@@ -93,7 +93,8 @@ Popup {
                 objectName: sheet.prefix + "Lips"
                 options: Improve.lipsChoices
                 value: Improve.lips
-                onPicked: (id) => id === "file" ? voiceDialog.open() : Improve.setLips(id)
+                // a voice chosen before stays («Другой файл…» changes it): the dialog only when there is none
+                onPicked: (id) => id === "file" && !Improve.hasVoice ? voiceDialog.open() : Improve.setLips(id)
             }
             Row {
                 visible: Improve.voiceName !== ""

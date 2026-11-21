@@ -266,12 +266,15 @@ def from_frames(program: Path, folder: Path, target: Path, *, fps: int, sound: P
              timeout=JOIN_TIMEOUT_S)  # fmt: skip
 
 
-def voice_track(program: Path, source: Path, target: Path, *, seconds: float, rate: int, channels: int) -> None:
+def voice_track(program: Path, source: Path, target: Path, *, seconds: float, rate: int, channels: int,
+                at: float = 0.0) -> None:  # fmt: skip
     """(57, blocking) The sound of `source` - a video's or a sound file's - as a WAV of `rate` Hz and `channels`,
     exactly `seconds` long: padded with silence, or cut. «Губы под голос» hears the voice at 16 kHz, one channel; a
-    person's file becomes the new video's sound at 48 kHz, two."""
-    _written(program, ["-i", str(source), "-vn", "-af", f"apad,atrim=duration={seconds:.4f}", "-ac", str(channels),
-                       "-ar", str(rate), "-c:a", "pcm_s16le", "-f", "wav"], target,
+    person's file becomes the new video's sound at 48 kHz, two. (57.4) `at` - the sound begins so many seconds in,
+    silence before it: a film's line where it is said in its scene."""
+    late = f"adelay=delays={round(at * 1000)}:all=1," if at > 0 else ""
+    _written(program, ["-i", str(source), "-vn", "-af", f"{late}apad,atrim=duration={seconds:.4f}", "-ac",
+                       str(channels), "-ar", str(rate), "-c:a", "pcm_s16le", "-f", "wav"], target,
              N_("ffmpeg не взял голос: {said}"))  # fmt: skip
 
 

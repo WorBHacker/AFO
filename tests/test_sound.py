@@ -812,3 +812,135 @@ def test_a_scenes_own_sound_is_heard_and_gives_way_to_a_made_one_when_it_is_not_
         assert not list(media.glob("*/*.take*")) and not list(media.glob("*/*.cut.mp4"))
     finally:
         cloud.close()
+
+
+def loudness(path, first, seconds):
+    """The mean square of a WAV's samples between `first` and `first + seconds`: 0 - silence."""
+    with wave.open(str(path), "rb") as sound:
+        rate, channels = sound.getframerate(), sound.getnchannels()
+        sound.setpos(round(first * rate))
+        raw = sound.readframes(round(seconds * rate))
+    samples = struct.unpack(f"<{len(raw) // 2}h", raw)[::channels]
+    return sum(v * v for v in samples) / max(1, len(samples))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="no ffmpeg")
+def test_a_scene_that_speaks_has_its_narrators_line_said_by_the_person_in_its_frame(stand, monkeypatch, tmp_path):
+    """57.4: a scene «говорит в кадре» - when the film is joined, its clip goes through «Губы под голос» first: a
+    job of the Studio's queue, the engine (a real process) given the scene's frames and its line - the narrator's
+    voice - where the film says it, silence before it, as long as the scene. The clip so made goes into the film in
+    the scene's place, its sound its own: the line is mixed in once, with the others. A scene that does not speak
+    is not given to it. Joined again - the lips are not made twice; another line - made anew; «Стоп» kills the
+    engine. No narrator, no line, the part not here - said before anything begins."""
+    import psutil
+
+    from app.hub_client import HubClient, HubError
+    from hub import director, ffmpeg
+    from tests.test_director import _film_of, _until
+    from tests.test_enhance import described
+    from tests.test_ffmpeg import _band, _solid, animated_webp
+    from tests.test_torch_engines import put_stand
+    from tests.test_visual import _install
+
+    hub = stand  # noqa: F811
+    program = Path(shutil.which("ffmpeg"))
+    monkeypatch.setattr(ffmpeg, "find", lambda _tools: program)
+    model = tmp_path / "film.gguf"
+    model.write_bytes(b"x")
+    _install(hub, "film", SILENT, [{"role": "diffusion-model", "repo": "test/Film-GGUF", "path": model.name,
+                                    "size": 1, "at": str(model)}])  # a video model that films no sound  # fmt: skip
+    FakeDrawSwap.filmed = animated_webp([_solid((20, 40, 30 + 3 * k)) for k in range(73)], 64, 64)  # 73 frames
+    install(hub, "voice")
+    scenes = [{"mode": "text", "words": w, "prompt": p, "frames": 73, "say": s} for w, p, s in (
+        ("Дождь", "rain falls on a street", "Дождь не страшен."), ("Прохожий", "a man walks by", ""),
+        ("Продавец", "a seller in a raincoat speaks", "Наш дождевик не промокает."))]  # fmt: skip
+    film_id = _film_of(hub, scenes, voice="serena")
+    client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
+    media, card = hub.app.state.visual.media, hub.app.state.card
+    client.shoot_film(film_id)
+    shot = _until(hub, film_id, lambda f: f["status"] == "ready" and all(s["status"] == "done" for s in f["scenes"]))
+    edited = client.update_scene(film_id, 3, {"speaks": True})["film"]
+    assert [s["speaks"] for s in edited["scenes"]] == [False, False, True] and edited["file"] == ""
+    assert [s["status"] for s in edited["scenes"]] == ["done"] * 3  # the clips stay
+    with pytest.raises(HubError, match="«Губы под голос» не установлено"):
+        client.join_film(film_id)
+    assert hub.asked() == [] and client.film(film_id)["film"]["status"] == "ready"
+
+    torch = tmp_path / "torch"
+    server = put_stand(hub, monkeypatch, torch)  # the PyTorch engines' stand-ins: MuseTalk's part put in
+    try:
+        assert hub.post("/v1/enhance/parts/lips", json={"licence_ok": True}).status_code == 200
+        deadline = time.monotonic() + 60
+        while next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "lips")["state"] != "ready":
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        joins, join = [], ffmpeg.join
+
+        def joined_from(program, clips, target, **how):
+            joins.append([clip for clip, _seconds in clips])
+            return join(program, clips, target, **how)
+
+        monkeypatch.setattr(ffmpeg, "join", joined_from)
+
+        def lipped():
+            return [r for r in hub.engine() if "--voice" in r["args"]]
+
+        client.join_film(film_id)
+        joined = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"], timeout=60)
+        assert joined["error"] == "" and card.holder == "" and card.free.is_set()
+        assert len(lipped()) == 1  # the third scene alone
+        heard = torch / "voice-0.wav"  # what the engine heard: the line 0.15 s into the scene, 16 kHz, as long
+        with wave.open(str(heard), "rb") as w:
+            assert (w.getframerate(), w.getnchannels()) == (16000, 1)
+            assert abs(w.getnframes() / 16000 - 73 / 24) < 0.01
+        assert loudness(heard, 0.0, 0.12) < 10 and loudness(heard, 0.3, 1.5) > 1e5
+        lips = joined["scenes"][2]["lips"]
+        made = hub.get(f"/v1/visual/jobs/{lips['job']}").json()["job"]
+        assert made["status"] == "done" and made["enhance"]["job"] == shot["scenes"][2]["job_id"]
+        assert made["enhance"]["lips"]["voice"] == "file" and made["enhance"]["lips"]["own"] is True
+        assert not described(media / made["file"])["sound"]  # its own sound - none: the line is not in it
+        assert joins[-1][2] == media / made["file"] and joins[-1][0] != joins[-1][2]  # in the scene's place
+        assert not list(media.rglob("voice-*"))  # the line's file copied for the job - gone after it
+        assert lips["job"] in hub.app.state.db.call(director.kept)  # the cleanup leaves it while the film is there
+        film = media / joined["file"]
+        assert _band(program, film, 220, 6.4, 1.5) > -30 and _band(program, film, 220, 3.5, 2.0) < -42  # said once
+        asked = len(hub.asked())
+
+        client.join_film(film_id)  # joined again: the lips are not made twice
+        again = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"] and f["file"] != joined["file"])
+        assert len(lipped()) == 1 and again["scenes"][2]["lips"] == lips and len(hub.asked()) == asked
+        assert joins[-1][2] == media / made["file"]
+
+        client.update_scene(film_id, 3, {"say": "Этот дождевик держит любой ливень."})
+        client.join_film(film_id)
+        other = _until(hub, film_id, lambda f: f["status"] == "ready" and f["file"], timeout=60)
+        assert len(lipped()) == 2 and other["scenes"][2]["lips"]["job"] != lips["job"] and other["error"] == ""
+
+        child = tmp_path / "child.pid"  # «Стоп» while the lips are made: the engine and its child killed
+        monkeypatch.setenv("FAKE_ENGINE_SLOW", "60")
+        monkeypatch.setenv("FAKE_ENGINE_CHILD", str(child))
+        client.update_scene(film_id, 3, {"say": "Совсем другая строка."})
+        assert client.join_film(film_id)["film"]["status"] == "joining"
+        deadline = time.monotonic() + 30
+        while not child.is_file() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        started = time.monotonic()
+        stopped = client.stop_film(film_id)["film"]
+        assert time.monotonic() - started < 15
+        assert (stopped["status"], stopped["error"], stopped["file"]) == ("ready", "", "")
+        assert not psutil.pid_exists(int(child.read_text())) and not list(media.glob("*/*.cut.mp4"))
+        deadline = time.monotonic() + 10
+        while card.holder and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert card.holder == ""
+        monkeypatch.delenv("FAKE_ENGINE_SLOW")
+
+        client.update_scene(film_id, 2, {"speaks": True})  # a scene that speaks and has no line
+        with pytest.raises(HubError, match="сцена 2 «говорит в кадре», а реплики у неё нет"):
+            client.join_film(film_id)
+        client.update_scene(film_id, 2, {"speaks": False})
+        client.update_film(film_id, {"voice": ""})  # no narrator
+        with pytest.raises(HubError, match="диктора у фильма нет"):
+            client.join_film(film_id)
+    finally:
+        server.shutdown()

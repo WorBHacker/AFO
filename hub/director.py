@@ -27,6 +27,11 @@ word) - and one that is not right is made again, three takes at most, the best k
 scene's (`heard`). (53.14, the user's word: «заменять самому») The sound the video model filmed is heard too - once
 the scene is filmed, so its card says what sounds in it, or when the film is joined; one that is not right gives
 way to a made one, when that came out better: in the film the scene's own sound is silent there.
+
+Speaks (57.4; hub/enhance.py, «Губы под голос»): a scene marked «говорит в кадре» has its narrator's line said by the
+person in its frame - when the film is joined, the scene's clip goes through MuseTalk before the joining, a job of
+the Studio's in turn with the rest, the line placed where it is said in the film; the clip keeps its own sound, the
+line is mixed in with the others. The clip so made is the scene's (`lips`) while its clip and its line stay.
 """
 
 from __future__ import annotations
@@ -50,7 +55,7 @@ from typing import Any
 from common.i18n import N_, tr
 from common.picture_sizes import SECONDS, frames_for, scene_modes
 
-from . import audio_cpp, ffmpeg, hearing, model_settings, visual
+from . import audio_cpp, enhance, ffmpeg, hearing, model_settings, visual
 from .db import Database, utc_now
 from .events import EventBus
 from .judge import Judge, JudgeError
@@ -129,7 +134,7 @@ FILM_FIELDS = ("idea", "seconds", "shape", "photo", "director", "model_id", "sta
                "tokens", "cost_usd", "checks", "checking", "sound", "voice", "music", "music_words",
                "music_file")  # fmt: skip
 SCENE_FIELDS = ("mode", "words", "prompt", "frames", "seed", "job_id", "status", "error", "cfg", "tries", "verdict",
-                "reason", "sound_words", "say", "heard")  # fmt: skip
+                "reason", "sound_words", "say", "heard", "speaks", "lips")  # fmt: skip
 UNLOOKED = {"cfg": None, "tries": 0, "verdict": "", "reason": ""}  # a scene the look has said nothing of (51.1)
 
 
@@ -151,7 +156,9 @@ def _film(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "SELECT s.*, COALESCE(j.file, '') AS clip, j.seconds AS took FROM film_scenes s "
         "LEFT JOIN visual_jobs j ON j.id = s.job_id WHERE s.film_id = ? ORDER BY s.n", (row["id"],),
     ).fetchall()  # fmt: skip
-    listed = [{k: s[k] for k in s.keys() if k != "film_id"} | {"heard": heard_of(s["heard"])} for s in scenes]  # noqa: SIM118
+    # (57.4) `lips`: {job, key} of the clip with its lips made - JSON as `heard` is
+    listed = [{k: s[k] for k in s.keys() if k != "film_id"} | {"heard": heard_of(s["heard"]),  # noqa: SIM118
+              "speaks": bool(s["speaks"]), "lips": heard_of(s["lips"])} for s in scenes]  # fmt: skip
     # (54.5) its joined video improved: the Studio's jobs, the newest first
     improved = [dict(j) | {"enhance": json.loads(j["enhance"])} for j in conn.execute(
         "SELECT id, status, error, file, width, height, fps, enhance FROM visual_jobs WHERE film_id = ? "
@@ -431,7 +438,9 @@ def kept(conn: sqlite3.Connection) -> set[str]:
     """What the cleanup of old pictures leaves in data/media (hub/retention.py): the beginnings of the names of the
     films' own files (film-<id>) and of their scenes' clips with what lies beside them (the job's id)."""
     names = {f"film-{row[0]}" for row in conn.execute("SELECT id FROM films")}
-    return names | {row[0] for row in conn.execute("SELECT job_id FROM film_scenes WHERE job_id IS NOT NULL")}
+    lipped = {str(heard_of(row[0]).get("job") or "") for row in conn.execute(
+        "SELECT lips FROM film_scenes WHERE lips != ''")} - {""}  # (57.4) the clips with their lips made  # fmt: skip
+    return names | lipped | {row[0] for row in conn.execute("SELECT job_id FROM film_scenes WHERE job_id IS NOT NULL")}
 
 
 class Director:
@@ -723,8 +732,9 @@ class Director:
 
     async def edit_scene(self, film_id: str, n: int, spec: dict[str, Any]) -> dict[str, Any]:
         """A scene changed by hand (50.8) - only what `spec` names: words, prompt, mode, seconds, seed (none or below
-        0 - a new one each time it is filmed), sound_words (52.6: what is heard), say (53.3: the narrator's line).
-        What the video model is given has changed - a clip filmed is of the
+        0 - a new one each time it is filmed), sound_words (52.6: what is heard), say (53.3: the narrator's line),
+        speaks (57.4: the person in the frame says it). What the video model is given has changed - a clip filmed is
+        of the
         scene as it was: the scene is stale, the filmed ones that go on from it too, the joined file forgotten, and
         what the look said of it (51.1) is of another scene. The words alone change nothing else; another line of
         the narrator's - the joined file alone is forgotten: the clip stays."""
@@ -757,8 +767,11 @@ class Director:
             fields["sound_words"] = " ".join(str(spec["sound_words"]).split())[: visual.SOUND_WORDS]
         if spec.get("say") is not None:
             fields["say"] = " ".join(str(spec["say"]).split())[: TEXT_CHARS["say"]]
+        if spec.get("speaks") is not None:
+            fields["speaks"] = int(bool(spec["speaks"]))
         other = any(fields[k] != scene[k] for k in ("prompt", "mode", "frames", "seed", "sound_words") if k in fields)
-        spoken = "say" in fields and fields["say"] != scene["say"]
+        spoken = ("say" in fields and fields["say"] != scene["say"]) or (
+            "speaks" in fields and bool(fields["speaks"]) != scene["speaks"])  # fmt: skip
         if other:
             fields |= UNLOOKED
         if "sound_words" in fields and fields["sound_words"] != scene["sound_words"]:
@@ -1005,6 +1018,7 @@ class Director:
                                 "music": None, "voice": found["voice"]}  # fmt: skip
         if found["voice"]:
             plan["lines"] = [(starts[k], s["say"]) for k, s in enumerate(found["scenes"]) if s["say"]]
+        plan["lips"] = await self._speaking(found, jobs, starts, lengths)
         if found["music"] == "made":
             if not found["music_words"]:
                 raise DirectorError(tr("напишите, какая музыка нужна фильму: «Звук фильма» → «Музыка»"), 422)
@@ -1026,6 +1040,78 @@ class Director:
             plan["own"] = [(starts[k], s, lengths[k], job) for k, (s, job) in enumerate(
                 zip(found["scenes"], jobs, strict=True)) if s["sound_words"] and job.get("sound")]  # fmt: skip
         return plan if plan["lines"] or plan["effects"] or plan["music"] or plan["own"] else None
+
+    async def _speaking(self, found: dict[str, Any], jobs: list[dict[str, Any]], starts: list[float],
+                        lengths: list[float]) -> list[tuple[Any, ...]]:  # fmt: skip
+        """(57.4) The scenes where the person in the frame says the narrator's line: (the scene's place among the
+        clips, its line's among the plan's lines, the scene, its job, where it begins, its length). Such a scene
+        with no narrator, no line, or «Губы под голос» not here - refused before anything begins."""
+        speaking = [k for k, s in enumerate(found["scenes"]) if s["speaks"]]
+        if not speaking:
+            return []
+        first = found["scenes"][speaking[0]]["n"]
+        if not found["voice"]:
+            raise DirectorError(tr("сцена {n} «говорит в кадре», а диктора у фильма нет: выберите голос — «Звук "
+                                   "фильма» → «Диктор»", n=first), 422)  # fmt: skip
+        if silent := [found["scenes"][k]["n"] for k in speaking if not found["scenes"][k]["say"]]:
+            raise DirectorError(tr("сцена {n} «говорит в кадре», а реплики у неё нет — напишите, что она говорит",
+                                   n=silent[0]), 422)  # fmt: skip
+        if self._studio.enhance is None or not await self._studio.enhance.ready("lips"):
+            raise DirectorError(tr("«{part}» не установлено: «Улучшить ролик» → «Скачать»",
+                                   part=tr(enhance.PARTS["lips"]["name"])), 422)  # fmt: skip
+        said = [k for k, s in enumerate(found["scenes"]) if s["say"]]  # the order of the plan's lines
+        return [(k, said.index(k), found["scenes"][k], jobs[k], starts[k], lengths[k]) for k in speaking]
+
+    async def _lips(self, found: dict[str, Any], plan: dict[str, Any], lines: list[tuple[Path, float]],
+                    clips: list[tuple[Path, float]], stop: asyncio.Event) -> None:  # fmt: skip
+        """(57.4) The speaking scenes' clips in `clips` in place of their own: each through «Губы под голос», a job
+        of the Studio's in turn with the rest - the card is the Studio's for it. Its voice is its line where the
+        film says it (`lines`: the narrator's, placed), silence around it, as long as the scene; its sound stays the
+        clip's own. One made before from the same clip and the same line is taken again."""
+        film_id = found["id"]
+        for k, line, scene, job, at, seconds in plan["lips"]:
+            if stop.is_set():
+                raise SoundError(tr("остановлено"))
+            voice, begins = lines[line]
+            offset = round(max(0.0, begins - at), 3)
+            key = hashlib.sha256(repr((job["id"], voice.name, offset, round(seconds, 3))).encode()).hexdigest()[:16]
+            kept = scene["lips"]
+            made = await self._db.acall(lambda conn, kept=kept: visual.job(conn, kept["job"])) if (
+                kept.get("key") == key and kept.get("job")) else None  # fmt: skip
+            path = self._studio.file(made) if made is not None and made["status"] == "done" else None
+            if path is None:
+                made = await self._lipped(found, scene, job, voice, offset, seconds, stop)
+                path = self._studio.file(made)
+                await self._db.acall(lambda conn, n=scene["n"], made=made, key=key: update_scene(
+                    conn, film_id, n, lips=json.dumps({"job": made["id"], "key": key})))  # fmt: skip
+            if path is None:
+                raise visual.VisualError(tr("губы сцены {n} не сделаны: {error}", n=scene["n"],
+                                            error=tr("видео не собрано")))  # fmt: skip
+            clips[k] = (path, clips[k][1])
+
+    async def _lipped(self, found: dict[str, Any], scene: dict[str, Any], job: dict[str, Any], voice: Path,
+                      offset: float, seconds: float, stop: asyncio.Event) -> dict[str, Any]:  # fmt: skip
+        """(57.4) One scene's clip with its lips made to say `voice`, begun `offset` seconds in: the Studio's job,
+        waited for - done; «Стоп» stops it."""
+        n = scene["n"]
+        with tempfile.TemporaryDirectory() as folder:
+            track = Path(folder) / "line.wav"
+            await self._studio.with_ffmpeg(track, lambda program: ffmpeg.voice_track(
+                program, voice, track, seconds=seconds, rate=48000, channels=2, at=offset))  # fmt: skip
+            try:  # the voice's file is copied beside the job: this one may go
+                began = await self._studio.improve({"from_job": job["id"], "lips": {
+                    "voice": "file", "path": str(track), "own": True}}, "film")  # fmt: skip
+            except visual.VisualError as exc:
+                raise visual.VisualError(tr("губы сцены {n} не сделаны: {error}", n=n, error=exc), exc.status) from None
+        await self._bus.publish("film.progress", {"id": found["id"], "scene": n, "job": began["id"], "lips": True},
+                                persist=False)  # fmt: skip
+        done = await self._studio.until_done(began["id"], stop)
+        if stop.is_set():
+            raise SoundError(tr("остановлено"))
+        if done is None or done["status"] != "done":
+            raise visual.VisualError(tr("губы сцены {n} не сделаны: {error}", n=n,
+                                        error=(done or {}).get("error") or tr("видео не собрано")))  # fmt: skip
+        return done
 
     def _piece(self, film_id: str, kind: str, *key: Any) -> Path:
         """Where a piece of the film's added sound lies - made before by the same words, or to be made (blocking):
@@ -1270,15 +1356,19 @@ class Director:
         name = f"{datetime.now(UTC):%Y-%m}/film-{film_id}-{uuid.uuid4().hex[:6]}.mp4"
         target, note = self.media / name, ""
         cut = target.with_name(target.stem + ".cut.mp4") if added else target  # the scenes joined, before the mix
+        clips, made = list(clips), None
         try:
             await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-            await self._studio.with_ffmpeg(cut, lambda program: ffmpeg.join(program, clips, cut, fps=fps, fade_s=fade))
-            if added:
+            if added:  # the pieces first: (57.4) a speaking scene's lips go where its line is said
                 stop = self._stops[film_id]
                 found = await self._db.acall(lambda conn: film(conn, film_id))
                 amiss = await self._own(found, added, stop)
-            if added and (added["lines"] or added["effects"] or added["music"]):
-                made = await self._pieces(found, added, stop)
+                if added["lines"] or added["effects"] or added["music"]:
+                    made = await self._pieces(found, added, stop)
+                if added["lips"] and made is not None:
+                    await self._lips(found, added, made["lines"], clips, stop)
+            await self._studio.with_ffmpeg(cut, lambda program: ffmpeg.join(program, clips, cut, fps=fps, fade_s=fade))
+            if added and made is not None:
                 note = made["note"]
                 used = {p for p, *_ in (*made["lines"], *made["effects"])} | {made["music"]}
                 mute = await self._replaced(film_id, added, made, amiss)

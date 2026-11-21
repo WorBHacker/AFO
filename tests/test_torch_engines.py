@@ -100,6 +100,15 @@ class FakeFiles(BaseHTTPRequestHandler):
 def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     """The hub with the stand-ins; the pins - the stand-ins' files'; an NVIDIA card of 16 GB; what uv and the engine
     were asked - `hub.uv()`, `hub.engine()`; uv's own settings of the person - which must not reach it."""
+    server = put_stand(hub, monkeypatch, tmp_path)
+    yield hub
+    server.shutdown()
+
+
+def put_stand(hub, monkeypatch, logs):  # noqa: F811
+    """The stand's stand-ins put in (`stand`); their logs in `logs` - (57.4) a film's test has the sound's stand
+    beside it. The stand-in of the files' sources - shut down by whoever put it."""
+    logs.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(("127.0.0.1", 0), FakeFiles)
     FakeFiles.corrupt, FakeFiles.asked = set(), []
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -125,18 +134,17 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)
     monkeypatch.setattr(enhance, "TICK_S", 0.05)
     monkeypatch.setenv("UV_INDEX_URL", "http://elsewhere.invalid/simple")  # the person's own: not for AFO's uv
-    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "someone-elses-env"))
+    monkeypatch.setenv("VIRTUAL_ENV", str(logs / "someone-elses-env"))
     for name in ("uv", "engine"):
-        monkeypatch.setenv(f"FAKE_{name.upper()}_LOG", str(tmp_path / f"{name}.jsonl"))
+        monkeypatch.setenv(f"FAKE_{name.upper()}_LOG", str(logs / f"{name}.jsonl"))
 
     def read(name):
-        log = tmp_path / f"{name}.jsonl"
+        log = logs / f"{name}.jsonl"
         return [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()] if log.is_file() else []
 
     hub.uv, hub.engine = (lambda: read("uv")), (lambda: read("engine"))
     hub.app.state.enhance.machine = lambda: {"build": "cuda12", "memory_gib": 15.9}
-    yield hub
-    server.shutdown()
+    return server
 
 
 def state(hub):  # noqa: F811

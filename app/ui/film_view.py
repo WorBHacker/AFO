@@ -364,6 +364,8 @@ class FilmView(QObject):
         if status == "writing":
             return tr("режиссёр пишет сценарий…")
         if status == "joining":
+            if self.voice and any(s.get("speaks") and s.get("say") for s in scenes):  # (57.4) MuseTalk: minutes
+                return tr("делаю звук, губы под голос и склеиваю ролик…")
             return tr("делаю звук и склеиваю ролик…") if self.addsSound else tr("склеиваю ролик…")
         if status == "filming":
             if film.get("checking"):
@@ -474,9 +476,13 @@ class FilmView(QObject):
             words = tr({"new": N_("не снята"), "filming": N_("снимается…"),
                         "stale": N_("устарела — переснимите")}[status])  # fmt: skip
         whole = round(seconds)
+        title = tr("{n} · {mode} · {length}", n=scene["n"], mode=tr(SCENE_MODES[scene["mode"]]),
+                   length=length_text(seconds))  # fmt: skip
+        speaks = bool(scene.get("speaks")) and bool(self.voice)  # (57.4) the person in the frame says the line
+        if speaks:
+            title = tr("{title} · говорит в кадре", title=title)
         return {"n": scene["n"], "mode": scene["mode"], "words": scene["words"], "prompt": scene["prompt"],
-                "title": tr("{n} · {mode} · {length}", n=scene["n"], mode=tr(SCENE_MODES[scene["mode"]]),
-                            length=length_text(seconds)),
+                "title": title, "speaks": bool(scene.get("speaks")),
                 "length": str(whole) if abs(seconds - whole) < 0.05 else "", "status": status, "statusText": words,
                 "failed": status == "failed" or rejected, "filmed": clip is not None,
                 "sound": scene.get("sound_words") or "", "say": scene.get("say") or "",
@@ -875,11 +881,12 @@ class FilmView(QObject):
         film_id, fade = self._film["id"], FADE_S if self._joint == "fade" else 0.0
         self._request(lambda: self.app.client.join_film(film_id, fade), N_("Не собрать ролик: {error}"))
 
-    @Slot(int, str, str, str, str, str, str)
-    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str, sound: str, say: str) -> None:
+    @Slot(int, str, str, str, str, str, str, bool)
+    def saveScene(self, n: int, words: str, prompt: str, mode: str, length: str, sound: str, say: str,
+                  speaks: bool = False) -> None:  # fmt: skip
         """«Изменить» → «Сохранить»: what has changed of the scene - what happens, the description for the video
         model, how it begins, its length (`length`: whole seconds, "" - as it is), what is heard in it (52.6),
-        what the narrator says over it (53.6)."""
+        what the narrator says over it (53.6), whether the person in its frame says it (57.4)."""
         scene = next((s for s in self._scenes() if s["n"] == n), None)
         if scene is None or self.busy:
             return
@@ -896,6 +903,8 @@ class FilmView(QObject):
             fields["sound_words"] = sound
         if " ".join(say.split()) != (scene.get("say") or ""):
             fields["say"] = say
+        if self.voice and bool(speaks) != bool(scene.get("speaks")):
+            fields["speaks"] = bool(speaks)
         if fields:
             film_id = self._film["id"]
             self._request(lambda: self.app.client.update_scene(film_id, n, fields), N_("Сцену не изменить: {error}"))

@@ -289,6 +289,7 @@ Item {
             scenePrompt.text = card.prompt
             sceneSound.text = card.sound
             sceneSay.text = card.say
+            sceneSpeaks.checked = card.speaks
             open()
         }
 
@@ -337,7 +338,11 @@ Item {
                 width: sceneSheet.availableWidth
                 height: 48
             }
-            Label { text: qsTr("Диктор: что говорит за кадром"); visible: sceneSay.visible }
+            Label {
+                text: sceneSpeaks.checked ? qsTr("Реплика: что говорит человек в кадре")
+                                          : qsTr("Диктор: что говорит за кадром")
+                visible: sceneSay.visible
+            }
             Area {  // 53.6: a film with a narrator
                 id: sceneSay
                 edit.objectName: "sceneSay"
@@ -345,6 +350,18 @@ Item {
                 width: sceneSheet.availableWidth
                 height: 48
                 placeholder: qsTr("Пусто — диктор в этой сцене молчит. Около 11 знаков на секунду сцены")
+            }
+            OnOff {  // 57.4: the line said by the person in the frame - «Губы под голос» when the film is joined
+                id: sceneSpeaks
+                objectName: "sceneSpeaks"
+                visible: sceneSay.visible
+                text: qsTr("Говорит в кадре")
+            }
+            Note {
+                visible: sceneSpeaks.visible && sceneSpeaks.checked
+                width: sceneSheet.availableWidth
+                text: qsTr("При сборке ролика рот человека в кадре задвигается под реплику — голосом диктора. Нужно одно лицо в кадре и часть «Губы под голос» («Улучшить ролик» → «Скачать»); это несколько минут на сцену.")
+                color: Theme.p.faint
             }
             Label { text: qsTr("Как начинается") }
             Segmented {
@@ -378,7 +395,7 @@ Item {
                     enabled: scenePrompt.text.trim() !== ""
                     onClicked: {
                         Films.saveScene(sceneSheet.n, sceneWords.text, scenePrompt.text, sceneSheet.mode,
-                                        sceneSheet.length, sceneSound.text, sceneSay.text)
+                                        sceneSheet.length, sceneSound.text, sceneSay.text, sceneSpeaks.checked)
                         sceneSheet.close()
                     }
                 }

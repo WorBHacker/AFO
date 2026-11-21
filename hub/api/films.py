@@ -11,6 +11,7 @@ begun: id, scene, job), film.deleted (id).
 (Stage 53) The added sound: `voice` - the narrator's voice (GET /v1/sound names them; '' - none), a scene's `say` -
 the line read while it goes; `music` - '' | made | file, `music_words` - what music is made, `music_path` (PATCH) -
 the user's own file. They are made and mixed in when the film is joined; POST /<id>/stop stops their making.
+(57.4) A scene's `speaks` - the person in its frame says its line: the clip goes through «Губы под голос» then.
 
 (Stage 51) `checks` - the film's switch, at its beginning and in PATCH: each scene filmed is looked at by the
 director's model, one that is not good is filmed anew. The film says the scene looked at now (`checking`), a scene -
@@ -100,6 +101,7 @@ class Scene(BaseModel):
     seed: int | None = None
     sound_words: str | None = Field(default=None, max_length=2000)  # (52.6) what is heard in the scene
     say: str | None = Field(default=None, max_length=2000)  # (53.3) the narrator's line
+    speaks: bool | None = None  # (57.4) the person in the frame says it: «Губы под голос» when the film is joined
 
 
 class Shoot(BaseModel):
