@@ -106,6 +106,7 @@ PARTS: dict[str, dict[str, Any]] = {
     # (56) an engine on PyTorch: its own environment, put in and run by hub/torch_engines.py
     "select": torch_engines.part("select"),
     "replace": torch_engines.part("replace"),
+    "lips": torch_engines.part("lips"),  # (57) a mouth to a voice: MuseTalk - asked first, its licence (62)
 }  # fmt: skip
 # (58) «Замена и дорисовка»: what VACE draws anew, the formats the edges are drawn to - VACE's frame for each (its
 # sides of 16; the new frame takes its proportions, so the source lies in both at one place)

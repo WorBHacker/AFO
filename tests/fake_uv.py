@@ -7,7 +7,8 @@ in the folder the hub gives it, with the environment the hub gives it. It fetche
   installed before - refused.
 - pip install --python <its python> ...: what it was asked, line by line, into <env>/afo-fake-uv.txt.
 
-$FAKE_UV_LOG - each call a JSON line: its arguments, folder, and the UV_*, SAM2_*, TEMP, TMP of its environment.
+$FAKE_UV_LOG - each call a JSON line: its arguments, folder, and the UV_*, SAM2_*, MMCV_* (57), TEMP, TMP of its
+environment.
 Each call leaves a file in a temporary folder of its own, as a build does.
 $FAKE_UV_SLOW=<seconds> - `pip install` waits so long, a child of its own waiting with it (its pid into
 $FAKE_UV_CHILD); $FAKE_UV_FAIL=<words> - `pip install` says them, exit 1.
@@ -47,7 +48,7 @@ def appended(path, line):
 def main():
     args = sys.argv[1:]
     if log := os.environ.get("FAKE_UV_LOG"):
-        seen = {k: v for k, v in os.environ.items() if k.startswith(("UV_", "SAM2_")) or k in ("TEMP", "TMP")}
+        seen = {k: v for k, v in os.environ.items() if k.startswith(("UV_", "SAM2_", "MMCV_")) or k in ("TEMP", "TMP")}
         appended(log, json.dumps({"args": args, "cwd": os.getcwd(), "env": seen}) + "\n")
     (Path(tempfile.mkdtemp()) / "build.txt").write_text("a build's file", encoding="utf-8")  # as a build leaves
     if args[:2] == ["python", "install"]:

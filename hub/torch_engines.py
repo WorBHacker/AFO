@@ -28,6 +28,11 @@ The engines (`ENGINES`):
   No code archive: its libraries from PyPI by their pins (the last for Python 3.10 - diffusers 0.41.0, 58). The
   text encoder is city96's umT5-xxl Q4_K_M GGUF (3.7 GB), not the repository's bf16 (11.4 GB): 58.1 saw the same
   frames; when AFO's Wan2.2 holds it already (`near`), it is linked, not fetched.
+- «Губы под голос» (`lips`, stage 57): MuseTalk 1.5 (TMElyralab; code MIT, weights trained on HDTF - not for
+  commercial use, asked first, 62) - a face's mouth made to say a voice (hub/torch_scripts/lips.py). Its code is no
+  package: the archive of its commit unpacked by AFO (`unpack`). Its libraries are of 2024 (numpy before 2 - over
+  PyTorch's pin); mmcv without its compiled ops (`MMCV_WITH_OPS=0`, no compiler) and chumpy are built here with numpy
+  and pip put in before (`tools`). Its face detector's weights are not on Hugging Face - by their author's address.
 
 Two engines put in or taken off at once (58.2): what they share - uv, its Python, PyTorch in uv's cache - is made by
 one at a time (`_SHARED`), and the last one taken off leaves the shared folder to an engine still being put in.
@@ -139,6 +144,73 @@ ENGINES: dict[str, dict[str, Any]] = {
              "sha256": "17cf97a5bbbc60a646d6105b832b6f657ce904a8a1ad970e4b59df0c67584a40"},
         ),
     },
+    "lips": {
+        "name": N_("Губы под голос"),
+        "about": N_("MuseTalk 1.5: рот человека в кадре — под голос — видеокарта NVIDIA от 10 ГБ"),
+        # (62) the code is MIT, but its weights were trained on HDTF - commercial use only by agreement with HDTF's
+        # owner (MuseTalk's NOTICE of 2026-11-19): asked before «Скачать»
+        "licence": "HDTF (веса MuseTalk)", "commercial": False, "card_gib": 10.0, "script": "lips.py",
+        # not a package: its archive unpacked into <engine>/code, its folder given to the script (`--code`)
+        "code": {"unpack": True, "size": 15984282, "disk": 850 << 20,
+                 "url": "https://github.com/TMElyralab/MuseTalk/archive/2536eaf06b85f775d8e04b7fd81bf6699155a58d.zip",
+                 "sha256": "38b7d9d86dd02425b6648cf5bdd3bb49e7be32bc2d65205d3ec763db4d8762be"},
+        # (56.1) mmcv without its compiled ops (`MMCV_WITH_OPS=0`: no compiler) and chumpy are built here, with the
+        # tools they use but do not declare - numpy and pip put in before, beside setuptools and wheel
+        "tools": ("numpy", "pip"),
+        "sources": ({"package": "mmcv-lite", "size": 469456,
+                     "url": "https://files.pythonhosted.org/packages/ab/03/6c4fb70f2c547ab96cbf66a235aa4465631f77d045e57d84d941b3e66311/mmcv-2.0.1.tar.gz",
+                     "sha256": "2b9b2c23795b3f43cf2ebcaca46552d9b4ef7e903eacdcf7c08ee15195044071"},),
+        "packages": ("diffusers==0.30.2", "accelerate==0.28.0", "transformers==4.39.2", "huggingface-hub==0.30.2",
+                     "opencv-python==4.9.0.80", "librosa==0.11.0", "soundfile==0.12.1", "einops==0.8.1",
+                     "omegaconf==2.4.0", "mmengine==0.10.7", "mmdet==3.1.0", "chumpy==0.70", "mmpose==1.1.0"),
+        # what those take, as the probe of 56 had it; numpy before 2 and setuptools before 70 - over PyTorch's
+        "pins": ("accelerate==0.28.0", "addict==2.4.0", "audioread==3.1.0", "certifi==2026.10.23", "cffi==2.1.1",
+                 "charset-normalizer==3.5.2", "chumpy==0.70", "cloudpickle==3.1.3", "colorama==0.4.6",
+                 "contourpy==1.3.2", "cycler==0.12.1", "cython==3.3.1", "decorator==4.4.2", "diffusers==0.30.2",
+                 "einops==0.8.1", "fonttools==4.65.0", "huggingface-hub==0.30.2", "idna==3.20",
+                 "importlib-metadata==9.0.1", "joblib==1.6.0", "json-tricks==3.17.3", "kiwisolver==1.5.1",
+                 "lazy-loader==0.6", "librosa==0.11.0", "llvmlite==0.50.0", "markdown-it-py==4.3.0",
+                 "matplotlib==3.10.9", "mdurl==0.1.2", "mmdet==3.1.0", "mmengine==0.10.7", "mmpose==1.1.0",
+                 "msgpack==1.2.4", "munkres==3.0.0", "numba==0.68.1", "numpy==1.23.5", "omegaconf==2.4.0",
+                 "opencv-python==4.9.0.80", "packaging==26.3", "pip==26.3", "platformdirs==4.12.4", "pooch==1.9.0",
+                 "psutil==7.2.2", "pycocotools==2.0.11", "pycparser==3.11", "pygments==2.21.0", "pyparsing==3.3.3",
+                 "python-dateutil==3.0.0", "pyyaml==6.0.3", "regex==2026.9.29", "requests==2.34.2", "rich==15.0.0",
+                 "safetensors==0.8.0", "scikit-learn==1.7.2", "scipy==1.15.3", "setuptools==69.5.1",
+                 "shapely==2.1.2", "six==1.17.0", "soundfile==0.12.1", "soxr==1.1.0", "termcolor==3.3.0",
+                 "terminaltables==3.1.10", "threadpoolctl==3.8.0", "tokenizers==0.15.2", "tomli==2.5.0",
+                 "tqdm==4.70.1", "transformers==4.39.2", "tzdata==2026.6", "urllib3==2.8.0", "xtcocotools==1.14.3",
+                 "yapf==0.43.0", "zipp==4.1.2"),
+        "build": {"MMCV_WITH_OPS": "0"},
+        "libraries": 260 << 20,  # opencv, scipy, numba, matplotlib, transformers... - more than an engine's usual
+        # <models>/lips as MuseTalk's own `models` folder has them (`into`); S3FD - from its author's site, where
+        # MuseTalk's face detector would fetch it at its first run
+        "weights": (*({"hf": repo, "revision": revision, "into": into, "path": path, "size": size,
+                       "sha256": sha256} for repo, revision, into, path, size, sha256 in (
+            ("TMElyralab/MuseTalk", "c9ac4cdcedcae22c186fbbf67261961e246c4760", "", "musetalkV15/musetalk.json", 748,
+             "5b6923aee04d71692e0e9846c471e0a4ea07a4f686d39545e472bd4ba17e1b47"),
+            ("TMElyralab/MuseTalk", "c9ac4cdcedcae22c186fbbf67261961e246c4760", "", "musetalkV15/unet.pth",
+             3400074924, "7ebf6c98c181e20838e4c0054e96e944ac60d5d692cc01db42839fe11b787007"),
+            ("stabilityai/sd-vae-ft-mse", "31f26fdeee1355a5c34592e401dd41e45d25a493", "sd-vae", "config.json", 547,
+             "92d3dfb746fca211a2c9e019e285f8597412211728dce3c5bcf4eda0f2d62e7e"),
+            ("stabilityai/sd-vae-ft-mse", "31f26fdeee1355a5c34592e401dd41e45d25a493", "sd-vae",
+             "diffusion_pytorch_model.bin", 334707217,
+             "1b4889b6b1d4ce7ae320a02dedaeff1780ad77d415ea0d744b476155c6377ddc"),
+            ("openai/whisper-tiny", "169d4a4341b33bc18d8881c4b69c2e104e1cc0af", "whisper", "config.json", 1983,
+             "ffdccec4f3211f4c63310f2b7098f309fe70f3952cedc5e4d11e43f5b2379b98"),
+            ("openai/whisper-tiny", "169d4a4341b33bc18d8881c4b69c2e104e1cc0af", "whisper", "pytorch_model.bin",
+             151095027, "9607f98a2b22d9e229ae43c52ecea79dcede9e0c5cfae67e8da6eda86d8aac1d"),
+            ("openai/whisper-tiny", "169d4a4341b33bc18d8881c4b69c2e104e1cc0af", "whisper", "preprocessor_config.json",
+             184990, "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666"),
+            ("yzd-v/DWPose", "1a7144101628d69ee7a3768d1ee3a094070dc388", "dwpose", "dw-ll_ucoco_384.pth", 406878486,
+             "0d9408b13cd863c4e95a149dd31232f88f2a12aa6cf8964ed74d7d97748c7a07"),
+            ("ManyOtherFunctions/face-parse-bisent", "0073b233a5a3c4b1377d4dbf49245017938a72b5", "face-parse-bisent",
+             "79999_iter.pth", 53289463, "468e13ca13a9b43cc0881a9f99083a430e9c0a38abd935431d1c28ee94b26567"),
+            ("ManyOtherFunctions/face-parse-bisent", "0073b233a5a3c4b1377d4dbf49245017938a72b5", "face-parse-bisent",
+             "resnet18-5c106cde.pth", 46827520, "5c106cde386e87d4033832f2996f5493238eda96ccf559d1d62760c4de0613f8"),
+        )), {"url": "https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth",
+             "path": "s3fd-619a316812.pth", "size": 89843225,
+             "sha256": "619a31681264d3f7f7fc7a16a42cbbe8b23f31a256f75a366e5a1bcd59b33543"}),
+    },
 }  # fmt: skip
 VACE = "Wan2.1-VACE-1.3B"  # the replace engine's model: its folder under <models>/replace
 UV_TIMEOUT_S = 3600.0  # PyTorch's 3.5 GB over a slow line
@@ -241,13 +313,46 @@ def script_of(engine: str) -> Path:
     return SCRIPTS / ENGINES[engine]["script"]
 
 
+def _named(pin: str) -> str:
+    return pin.split("==", 1)[0].strip().lower()
+
+
+def pins_of(engine: str) -> list[str]:
+    """PyTorch's pins and the engine's own - (57) its own of the same library over PyTorch's (MuseTalk: numpy before
+    2, setuptools before 70); an engine with none of them has [*TORCH_PINS, *its pins], as before."""
+    own = ENGINES[engine]["pins"]
+    names = {_named(p) for p in own}
+    return [p for p in TORCH_PINS if _named(p) not in names] + list(own)
+
+
+def tools_of(engine: str) -> list[str]:
+    """What is put in with PyTorch, before the engine's own: setuptools and wheel - an engine's code is built here,
+    without isolation - and (57) what else its builds use but do not declare (`tools`)."""
+    wanted = {"setuptools", "wheel", *ENGINES[engine].get("tools", ())}
+    return [p for p in pins_of(engine) if _named(p) in wanted]
+
+
+def code_dir(base: Path, engine: str) -> Path:
+    """(57) An engine's code unpacked from its archive (`unpack`) - not a package."""
+    return engine_dir(base, engine) / "code"
+
+
+def check_args(engine: str, models: Path) -> list[str]:
+    """What the look after the install is given beside `--check`: (57) an unpacked code's folder and the weights'."""
+    if not (ENGINES[engine]["code"] or {}).get("unpack"):
+        return []
+    return ["--code", str(code_dir(home(), engine)), "--models", str(models / engine)]
+
+
 def fingerprint(engine: str) -> dict[str, Any]:
     """What an engine was put in with: another one in AFO's code - it is put in anew."""
     spec = ENGINES[engine]
     found = {"python": PYTHON, "torch": [t["sha256"] for t in TORCH], "code": (spec["code"] or {}).get("sha256"),
-             "pins": [*TORCH_PINS, *spec["pins"]], "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
+             "pins": pins_of(engine), "weights": [w["sha256"] for w in spec["weights"]]}  # fmt: skip
     if spec.get("packages"):  # (58) only an engine that has them: SAM put in by 56 stays put in
         found["packages"] = list(spec["packages"])
+    if spec.get("sources"):  # (57) the same: only an engine that has them
+        found["sources"] = [s["sha256"] for s in spec["sources"]]
     return found
 
 
@@ -285,7 +390,24 @@ def size(engine: str, models: Path | None = None) -> int:
     shared = (0 if uv_exe(base).is_file() else UV["size"]) + (0 if python_here(base) else PYTHON_SIZE)
     shared += 0 if torch_here(base) else sum(t["size"] for t in TORCH)
     weights = sum(w["size"] for w in spec["weights"] if not _whole(models, engine, w) and not _linkable(models, w))
-    return shared + LIBRARIES_SIZE + (spec["code"] or {}).get("size", 0) + weights
+    code = 0 if code_here(base, engine) else (spec["code"] or {}).get("size", 0)
+    return shared + libraries_of(engine) + code + weights
+
+
+def code_here(base: Path, engine: str) -> bool:
+    """(57) An unpacked code here from its pinned archive - not fetched again."""
+    code = ENGINES[engine]["code"] or {}
+    if not code.get("unpack"):
+        return False
+    try:
+        return (code_dir(base, engine) / ".afo-sha256").read_text(encoding="utf-8").strip() == code["sha256"]
+    except OSError:
+        return False
+
+
+def libraries_of(engine: str) -> int:
+    """≈ what an engine's libraries come to from PyPI (57: MuseTalk's - several times the usual)."""
+    return ENGINES[engine].get("libraries", LIBRARIES_SIZE)
 
 
 def disk(engine: str) -> int:
@@ -297,7 +419,7 @@ def disk(engine: str) -> int:
         if ready.get("fingerprint") == fingerprint(engine) and ready.get("disk"):
             return int(ready["disk"])
     shared = (0 if python_here(base) else BASE_DISK) + (0 if torch_here(base) else TORCH_DISK)
-    return shared + (spec["code"] or {}).get("disk", LIBRARIES_SIZE * 3) + sum(w["size"] for w in spec["weights"])
+    return shared + (spec["code"] or {}).get("disk", libraries_of(engine) * 3) + sum(w["size"] for w in spec["weights"])
 
 
 def measured(base: Path, engine: str) -> int:
@@ -474,23 +596,29 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
             engines.remove_tree(place / "env")
             place.mkdir(parents=True, exist_ok=True)
             wanted = [f"{t['name']} @ {source(t['url'])}#sha256={t['sha256']}" for t in TORCH]
-            (place / "requirements.txt").write_bytes(("\n".join([*wanted, *TORCH_PINS[-2:]]) + "\n").encode())
-            (place / "pins.txt").write_bytes(("\n".join([*TORCH_PINS, *spec["pins"]]) + "\n").encode())
+            (place / "requirements.txt").write_bytes(("\n".join([*wanted, *tools_of(engine)]) + "\n").encode())
+            (place / "pins.txt").write_bytes(("\n".join(pins_of(engine)) + "\n").encode())
             _uv(base, ["venv", str(place / "env"), "--python", PYTHON, "--no-project"], cancel)
-            shared = torch_here(base)
-            bring = (0 if shared else sum(t["size"] for t in TORCH)) + LIBRARIES_SIZE // 2
+            shared, libraries = torch_here(base), libraries_of(engine)
+            bring = (0 if shared else sum(t["size"] for t in TORCH)) + libraries // 2
             _uv(base, ["pip", "install", "--python", str(py), "-r", str(place / "requirements.txt"), "-c",
                        str(place / "pins.txt")], cancel, told=lambda share: at(share * bring),
-                takes=(0 if shared else TORCH_DISK) + (LIBRARIES_SIZE // 2) * 3)  # fmt: skip
+                takes=(0 if shared else TORCH_DISK) + (libraries // 2) * 3)  # fmt: skip
             got += bring
             (base / "torch.json").write_bytes(json.dumps([t["sha256"] for t in TORCH]).encode())
             engines.remove_tree(base / "downloads")  # uv's archive: here, under the lock - another may fetch it
         code = spec["code"] or {}
-        wanted = [f"{code['package']} @ {source(code['url'])}#sha256={code['sha256']}"] if code else []
-        bring = code.get("size", 0) + LIBRARIES_SIZE - LIBRARIES_SIZE // 2
+        if code.get("unpack"):  # (57) not a package: AFO fetches and unpacks it
+            if _unpack(base, engine, code, cancel, at):
+                got += code["size"]
+            wanted = []
+        else:
+            wanted = [f"{code['package']} @ {source(code['url'])}#sha256={code['sha256']}"] if code else []
+        wanted += [f"{s['package']} @ {source(s['url'])}#sha256={s['sha256']}" for s in spec.get("sources", ())]
+        bring = (0 if code.get("unpack") else code.get("size", 0)) + libraries - libraries // 2
         _uv(base, ["pip", "install", "--python", str(py), "--no-build-isolation", "-c", str(place / "pins.txt"),
                    *wanted, *spec.get("packages", ())], cancel, add=spec["build"],
-            told=lambda share: at(share * bring), takes=code.get("disk", LIBRARIES_SIZE * 3))  # fmt: skip
+            told=lambda share: at(share * bring), takes=code.get("disk", libraries * 3))  # fmt: skip
         got += bring
         for weight in spec["weights"]:
             if _whole(models, engine, weight):  # whole - not fetched, not counted in `total`
@@ -505,11 +633,15 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
                 except OSError:
                     shutil.copyfile(near, path)
                 continue
-            hf.download(hf.file_url(weight["hf"], weight["path"], weight["revision"]), path, size=weight["size"],
-                        sha256=weight["sha256"], token=None, cancel=cancel, report=at)  # fmt: skip
+            # (57) a file not on Hugging Face (MuseTalk's face detector) - by its own address
+            url = hf.file_url(weight["hf"], weight["path"], weight["revision"]) if "hf" in weight else source(
+                weight["url"])  # fmt: skip
+            hf.download(url, path, size=weight["size"], sha256=weight["sha256"], token=None, cancel=cancel,
+                        report=at)  # fmt: skip
             got += weight["size"]
         home_of(base, engine).mkdir(parents=True, exist_ok=True)
-        looked = _started([str(py), "-I", str(script_of(engine)), "--check"], env=engine_env(base, engine),
+        looked = _started([str(py), "-I", str(script_of(engine)), "--check", *check_args(engine, models)],
+                          env=engine_env(base, engine),
                           cwd=home_of(base, engine), cancel=cancel, timeout=CHECK_TIMEOUT_S,
                           failed=N_("«{name}» не запустилось: {said}"), name=tr(spec["name"]),
                           scratch=engine_dir(base, engine) / SCRATCH)  # fmt: skip
@@ -521,6 +653,32 @@ def install(engine: str, models: Path, cancel: threading.Event, report: Callable
     finally:
         with _GUARD:
             _PUTTING.discard(engine)
+
+
+def _unpack(base: Path, engine: str, code: dict[str, Any], cancel: threading.Event,
+            report: Callable[[int], None]) -> bool:  # fmt: skip
+    """(57) An engine's code that is not a package: its archive by AFO's own download (sha256; «Стоп» goes on from
+    where it was), unpacked into <engine>/code without the archive's one top folder. Whether it was fetched now - one
+    unpacked from the same archive before is kept."""
+    place, target = engine_dir(base, engine), code_dir(base, engine)
+    if code_here(base, engine):
+        return False
+    archive = place / "downloads" / code["url"].rsplit("/", 1)[-1]
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    hf.download(source(code["url"]), archive, size=code["size"], sha256=code["sha256"], token=None, cancel=cancel,
+                report=report)  # fmt: skip
+    part = place / "code.part"
+    engines.remove_tree(part)
+    with zipfile.ZipFile(archive) as zf:
+        zf.extractall(part)  # its names: ".." and drives taken off by zipfile itself
+    found = list(part.iterdir())
+    inner = found[0] if len(found) == 1 and found[0].is_dir() else part
+    engines.remove_tree(target)
+    inner.replace(target)
+    engines.remove_tree(part)
+    (target / ".afo-sha256").write_bytes(code["sha256"].encode())
+    engines.remove_tree(place / "downloads")
+    return True
 
 
 @contextlib.contextmanager

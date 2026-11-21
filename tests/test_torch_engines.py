@@ -40,8 +40,31 @@ REPLACE = {w["path"]: (w["path"].encode() + b"|") * (40 if w["path"].endswith(("
            for w in torch_engines.ENGINES["replace"]["weights"]}  # fmt: skip
 
 
+def lips_bytes(weight):
+    """(57) A file of the lips engine - its own bytes: two of them have the same path in different repositories."""
+    return f"{weight.get('hf', 'site')}/{weight['path']}|".encode() * 3
+
+
+def code_archive():
+    """(57) MuseTalk's code as GitHub gives a commit: one top folder."""
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w") as zf:
+        zf.writestr("MuseTalk-2536eaf/musetalk/__init__.py", b"")
+        zf.writestr("MuseTalk-2536eaf/musetalk/utils/dwpose/rtmpose.py", b"# config")
+        zf.writestr("MuseTalk-2536eaf/LICENSE", b"MIT")
+    return data.getvalue()
+
+
+CODE_ZIP = code_archive()
+
+
+def address(url):
+    return "/" + url.split("://", 1)[1]
+
+
 class FakeFiles(BaseHTTPRequestHandler):
-    """uv's archive where GitHub keeps it, the engines' weights where Hugging Face does; a wrong byte when asked."""
+    """uv's archive where GitHub keeps it, the engines' weights where Hugging Face does (57: MuseTalk's code archive
+    and its face detector at their own addresses); a wrong byte when asked."""
 
     corrupt: ClassVar[set] = set()
     asked: ClassVar[list] = []
@@ -51,8 +74,12 @@ class FakeFiles(BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).asked.append(self.path)
-        served = {f"/{w['hf']}/resolve/{w['revision']}/{w['path']}": REPLACE.get(w["path"], WEIGHTS)
-                  for spec in torch_engines.ENGINES.values() for w in spec["weights"]}  # fmt: skip
+        served = {}
+        for engine, spec in torch_engines.ENGINES.items():
+            for w in spec["weights"]:
+                where = f"/{w['hf']}/resolve/{w['revision']}/{w['path']}" if "hf" in w else address(w["url"])
+                served[where] = lips_bytes(w) if engine == "lips" else REPLACE.get(w["path"], WEIGHTS)
+        served[address(torch_engines.ENGINES["lips"]["code"]["url"])] = CODE_ZIP
         if self.path == "/" + torch_engines.UV["url"].split("://", 1)[1]:
             body = UV_ZIP
         elif self.path in served:
@@ -88,6 +115,11 @@ def stand(hub, monkeypatch, tmp_path):  # noqa: F811
     weights = tuple(w | {"size": len(REPLACE[w["path"]]), "sha256": hashlib.sha256(REPLACE[w["path"]]).hexdigest()}
                     for w in spec["weights"])  # fmt: skip
     monkeypatch.setitem(torch_engines.ENGINES, "replace", spec | {"weights": weights})
+    spec = torch_engines.ENGINES["lips"]
+    weights = tuple(w | {"size": len(lips_bytes(w)), "sha256": hashlib.sha256(lips_bytes(w)).hexdigest()}
+                    for w in spec["weights"])  # fmt: skip
+    code = spec["code"] | {"size": len(CODE_ZIP), "sha256": hashlib.sha256(CODE_ZIP).hexdigest()}
+    monkeypatch.setitem(torch_engines.ENGINES, "lips", spec | {"weights": weights, "code": code})
     monkeypatch.setattr(torch_engines, "command", lambda program: [sys.executable, str(FAKE_UV)])
     monkeypatch.setattr(torch_engines, "script_of", lambda engine: FAKE_ENGINE)
     monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)
@@ -232,6 +264,77 @@ def test_an_engine_on_pytorch_is_put_in_by_uv_in_afos_folder_and_nothing_of_it_i
     assert other["state"] == "unavailable" and "NVIDIA" in other["why"]
     refused = hub.post("/v1/enhance/parts/select")
     assert refused.status_code == 422 and "NVIDIA" in refused.json()["detail"]
+
+
+def test_the_lips_engine_is_asked_first_and_put_in_with_its_own_pins_its_code_unpacked(stand, tmp_path):
+    """57.1: «Губы под голос» (MuseTalk 1.5) - its weights are not for commercial use: without the person's word -
+    409 and nothing fetched (62). With it: PyTorch put in with numpy before 2, setuptools before 70 and pip - its own
+    pins over PyTorch's, what mmcv's and chumpy's builds use; mmcv-lite from its source by address and sha256, built
+    without its compiled ops (`MMCV_WITH_OPS=0`); its code - no package - fetched by AFO and unpacked without the
+    archive's top folder; its weights where MuseTalk's `models` folder has them, the face detector's from its own
+    address; the look is given the code's and the weights' folders. Put in again - its code is not fetched again. The
+    other engines' pins are as they were: put in before, they stay put in."""
+    hub = stand  # noqa: F811
+    base, spec = torch_engines.home(), torch_engines.ENGINES["lips"]
+    models = models_home() / "lips"
+    assert torch_engines.fingerprint("select")["pins"] == [*torch_engines.TORCH_PINS,
+                                                           *torch_engines.ENGINES["select"]["pins"]]  # fmt: skip
+
+    def lips():
+        return next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "lips")
+
+    def wait(*states):
+        deadline = time.monotonic() + 60
+        while (found := lips())["state"] not in states:
+            assert time.monotonic() < deadline, found
+            time.sleep(0.05)
+        return found
+
+    before = lips()
+    weights = sum(w["size"] for w in spec["weights"])
+    assert before["state"] == "missing" and before["name"] == "Губы под голос"
+    assert before["size"] == (len(UV_ZIP) + torch_engines.PYTHON_SIZE + sum(t["size"] for t in torch_engines.TORCH)
+                              + spec["libraries"] + len(CODE_ZIP) + weights)  # fmt: skip
+    asked = hub.post("/v1/enhance/parts/lips")
+    assert asked.status_code == 409 and asked.json()["detail"]["code"] == "licence"
+    assert asked.json()["detail"]["licence"] == "HDTF (веса MuseTalk)"
+    assert lips()["state"] == "missing" and not FakeFiles.asked and not base.exists()
+
+    assert hub.post("/v1/enhance/parts/lips", json={"licence_ok": True}).status_code == 200
+    ready = wait("ready", "missing")
+    assert ready["state"] == "ready", ready["error"]
+    calls = hub.uv()
+    assert [c["args"][:2] for c in calls] == [["python", "install"], ["venv", str(base / "lips" / "env")],
+                                              ["pip", "install"], ["pip", "install"]]  # fmt: skip
+    first = (base / "lips" / "requirements.txt").read_text(encoding="utf-8").split()
+    assert {"setuptools==69.5.1", "wheel==0.48.0", "numpy==1.23.5", "pip==26.3"} <= set(first)
+    pins = (base / "lips" / "pins.txt").read_text(encoding="utf-8").split()
+    assert "numpy==1.23.5" in pins and "numpy==2.2.6" not in pins and "setuptools==84.2.1" not in pins
+    assert len({p.split("==")[0] for p in pins}) == len(pins)  # one pin a library
+    libraries = calls[3]
+    assert "--no-build-isolation" in libraries["args"] and libraries["env"]["MMCV_WITH_OPS"] == "0"
+    mmcv = spec["sources"][0]
+    assert f"mmcv-lite @ {torch_engines.source(mmcv['url'])}#sha256={mmcv['sha256']}" in libraries["args"]
+    assert {"mmpose==1.1.0", "chumpy==0.70", "diffusers==0.30.2"} <= set(libraries["args"])
+    assert not any("MuseTalk" in a for a in libraries["args"])  # its code is not a package for uv
+    code = torch_engines.code_dir(base, "lips")
+    assert (code / "musetalk" / "__init__.py").is_file() and (code / "LICENSE").read_bytes() == b"MIT"
+    assert not (base / "lips" / "code.part").exists() and not (base / "lips" / "downloads").exists()
+    for w in spec["weights"]:
+        assert torch_engines.weight_file(models_home(), "lips", w).read_bytes() == lips_bytes(w)
+    assert (models / "musetalkV15" / "unet.pth").is_file() and (models / "s3fd-619a316812.pth").is_file()
+    assert (models / "sd-vae" / "config.json").read_bytes() != (models / "whisper" / "config.json").read_bytes()
+    looked = hub.engine()[-1]
+    assert looked["args"] == ["--check", "--code", str(code), "--models", str(models)]
+
+    (base / "lips" / "ready.json").unlink()  # put in again: its code and weights are here - not fetched
+    asked = len(FakeFiles.asked)
+    assert lips()["size"] == spec["libraries"]
+    assert hub.post("/v1/enhance/parts/lips", json={"licence_ok": True}).status_code == 200
+    assert wait("ready", "missing")["state"] == "ready" and not FakeFiles.asked[asked:]
+
+    assert hub.delete("/v1/enhance/parts/lips").status_code == 200
+    assert lips()["state"] == "missing" and not base.exists() and not models.exists()
 
 
 def value(args, flag):
