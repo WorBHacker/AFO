@@ -149,7 +149,7 @@ ENGINES: dict[str, dict[str, Any]] = {
         "about": N_("MuseTalk 1.5: рот человека в кадре — под голос — видеокарта NVIDIA от 10 ГБ"),
         # (62) the code is MIT, but its weights were trained on HDTF - commercial use only by agreement with HDTF's
         # owner (MuseTalk's NOTICE of 2026-11-19): asked before «Скачать»
-        "licence": "HDTF (веса MuseTalk)", "commercial": False, "card_gib": 10.0, "script": "lips.py",
+        "licence": "MuseTalk (HDTF)", "commercial": False, "card_gib": 10.0, "script": "lips.py",
         # not a package: its archive unpacked into <engine>/code, its folder given to the script (`--code`)
         "code": {"unpack": True, "size": 15984282, "disk": 850 << 20,
                  "url": "https://github.com/TMElyralab/MuseTalk/archive/2536eaf06b85f775d8e04b7fd81bf6699155a58d.zip",

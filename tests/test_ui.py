@@ -12029,7 +12029,7 @@ def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_chosen_by_clicks(qa
     try:
         app, window = quick.controller, quick.window
         client = FakeClient()
-        client.not_for_work = {"lips": "HDTF (веса MuseTalk)"}
+        client.not_for_work = {"lips": "MuseTalk (HDTF)"}
         client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
                                  "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
         client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
@@ -12043,7 +12043,7 @@ def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_chosen_by_clicks(qa
                 "file": "2026-11/q1.webp", "sound": 1}  # fmt: skip
         client.visual_jobs_list = [said]
         client.enhance_state["parts"].append(
-            {"id": "lips", "name": "Губы под голос", "licence": "HDTF (веса MuseTalk)", "state": "missing", "why": "",
+            {"id": "lips", "name": "Губы под голос", "licence": "MuseTalk (HDTF)", "state": "missing", "why": "",
              "about": "MuseTalk 1.5: рот человека в кадре — под голос — видеокарта NVIDIA от 10 ГБ",
              "size": 4_900_000_000, "disk": 5_700_000_000, "got": 0, "total": 4_900_000_000, "error": ""})  # fmt: skip
         for one in client.program_list:
@@ -12084,7 +12084,7 @@ def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_chosen_by_clicks(qa
         click(window, named("improveGet_lips"))
         wait_until(lambda: not app.bg.busy and dialog.property("opened"))
         assert app.question["title"] == "«Губы под голос» — не для коммерческого использования"
-        assert "HDTF (веса MuseTalk)" in app.question["text"]
+        assert "MuseTalk (HDTF)" in app.question["text"]
         click(window, item_saying(dialog.property("contentItem"), "Понимаю, скачать"))
         wait_until(lambda: not app.bg.busy and client.part_calls)
         assert client.part_calls == [("enhance", "lips", True)]

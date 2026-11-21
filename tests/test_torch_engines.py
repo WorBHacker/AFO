@@ -305,7 +305,7 @@ def test_the_lips_engine_is_asked_first_and_put_in_with_its_own_pins_its_code_un
                               + spec["libraries"] + len(CODE_ZIP) + weights)  # fmt: skip
     asked = hub.post("/v1/enhance/parts/lips")
     assert asked.status_code == 409 and asked.json()["detail"]["code"] == "licence"
-    assert asked.json()["detail"]["licence"] == "HDTF (веса MuseTalk)"
+    assert asked.json()["detail"]["licence"] == "MuseTalk (HDTF)"
     assert lips()["state"] == "missing" and not FakeFiles.asked and not base.exists()
 
     assert hub.post("/v1/enhance/parts/lips", json={"licence_ok": True}).status_code == 200
