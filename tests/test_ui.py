@@ -11739,8 +11739,9 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
     a click marks the point where the mouse was; the slider - another moment of the video, its frame, the point
     gone; «Улучшить» only once the object is clicked - the job asks for the moment and the point; done, the video
     says what was done to it. (58) «Формат 9:16» - the words, the speed and what each speed costs shown; «Заменить
-    предмет» - the format gone, the point and the words wanted, the job asks for both and the speed chosen. Real
-    QML, mouse clicks, keys, no screen."""
+    предмет» - the format gone, the point and the words wanted, the job asks for both and the speed chosen. (59)
+    «Перерисовать всё» - no frame to click, «Глубина кадра» and the words wanted, the job asks for them. Real QML,
+    mouse clicks, keys, no screen."""
     from pathlib import Path
 
     from PySide6.QtCore import QBuffer, QByteArray, QEvent, QIODevice, QObject, QPoint, QPointF
@@ -11924,6 +11925,39 @@ def test_only_the_object_clicked_on_a_frame_is_kept_by_clicks(qapp):
         assert abs(draw["x"] - 0.6) < 0.01 and abs(draw["y"] - 0.5) < 0.01 and draw["share"] == 0.0
         assert enhance_view.improvement(draw and {"draw": draw}) == "Замена предмета"
         assert enhance_view.improvement({"draw": {"kind": "edges", "canvas": "9:16"}}) == "Формат 9:16"
+
+        # (59) the whole video drawn anew: no frame to click, «Глубина кадра» and the words wanted
+        click(window, item_named(studio, "visualImprove"))
+        wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+        client.enhance_state["parts"].append(
+            {"id": "depth", "name": "Глубина кадра", "licence": "Apache-2.0", "state": "missing", "why": "",
+             "about": "Depth Anything V2 Small: глубина каждого кадра — для «Перерисовать всё»",
+             "size": 140_000_000, "disk": 220_000_000, "got": 0, "total": 140_000_000, "error": ""})  # fmt: skip
+        hub_parts()
+        asked = len(client.frame_calls)
+        click(window, item_saying(named("improveSubject"), "Перерисовать всё"))
+        wait_until(lambda: improve.subject == "motion" and not app.bg.busy)
+        window.grabWindow()
+        assert not named("improvePick").property("visible") and not named("improveMoment").property("visible")
+        assert len(client.frame_calls) == asked and not improve.clicks
+        assert named("improveWords").property("visible") and named("improveSpeed").property("visible")
+        assert named("improveWords").property("placeholderText").startswith("Каким сделать ролик")
+        assert "движение и очертания останутся" in named("improveNote").property("text")
+        assert need.property("text") == "Сначала скачайте «Глубина кадра» — ниже"
+        assert sorted(p["id"] for p in improve.parts if p["needed"]) == ["depth", "replace", "smooth"]
+        hub_parts(depth={"state": "ready"})
+        assert need.property("text") == "Напишите, каким сделать ролик" and not go.property("enabled")
+        click(window, named("improveWords"))
+        for letter in "изба":
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(window, QKeyEvent(kind, 0, Qt.KeyboardModifier.NoModifier, letter))
+        wait_until(lambda: improve.words == "изба")
+        assert go.property("enabled")
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and client.visual_calls[-1][1].get("draw", {}).get("kind") == "motion")
+        spec = client.visual_calls[-1][1]
+        assert spec["draw"] == {"kind": "motion", "words": "изба", "fast": True}
+        assert enhance_view.improvement({"draw": spec["draw"]}) == "Перерисовка всего"
         for _ in range(10):
             QApplication.processEvents()
         assert quick.warnings == []

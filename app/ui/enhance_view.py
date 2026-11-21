@@ -1,6 +1,7 @@
 """«Улучшить ролик» in the window (stage 54.6): a video of the Studio's or a film's joined one - twice as large (fast
 or with details) and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark;
-(57) the mouth of the face in it made to say its own sound or a voice's file.
+(57) the mouth of the face in it made to say its own sound or a voice's file; (59) the whole video drawn anew by its
+depth and the words.
 The sheet: what to do with it, the parts that do it - each
 fetched once by a click, how far, «Стоп» -, and «Улучшить»: a job of the Studio's queue, which goes on there as a
 video does and ends as a new video beside the source. The hub improves (hub/enhance.py, hub/visual.py); this asks
@@ -21,12 +22,14 @@ if TYPE_CHECKING:
 
 SIZES = [("", N_("Как есть")), ("sharp", N_("×2 быстро")), ("detail", N_("×2 с дорисовкой"))]
 MOTIONS = [("", N_("Как есть")), ("fps60", N_("60 к/с")), ("slow2", N_("Медленнее ×2")), ("slow4", N_("Медленнее ×4"))]
-# (56) SAM 2.1: the object clicked, alone; (58) VACE: the object clicked, or all but it, drawn anew
+# (56) SAM 2.1: the object clicked, alone; (58) VACE: the object clicked, or all but it, drawn anew; (59) the whole
+# video drawn anew by its depth
 SUBJECTS = [("", N_("Весь кадр")), ("select", N_("Только предмет")), ("object", N_("Заменить предмет")),
-            ("background", N_("Заменить фон"))]  # fmt: skip
+            ("background", N_("Заменить фон")), ("motion", N_("Перерисовать всё"))]  # fmt: skip
+CLICKED = ("select", "object", "background")  # what is clicked on a frame first
 FORMATS = [("", N_("Как есть")), ("9:16", "9:16"), ("1:1", "1:1"), ("16:9", "16:9")]  # (58) the edges drawn
 SPEEDS = [("fast", N_("Быстрее")), ("careful", N_("Тщательнее"))]  # (58) the person chooses: 58.1 saw no difference
-DRAWN = {"object": N_("Замена предмета"), "background": N_("Замена фона")}
+DRAWN = {"object": N_("Замена предмета"), "background": N_("Замена фона"), "motion": N_("Перерисовка всего")}
 # (58.1) a window of VACE's 81 frames, minutes: «Быстрее» 20 steps, «Тщательнее» 25 - the load and the VAE with them
 WINDOW_MIN = {True: 7.1, False: 8.7}
 # (57) MuseTalk: the mouth to the video's own sound, or to a voice's file chosen on this computer
@@ -57,11 +60,12 @@ def subsampled(fps: int) -> bool:
 
 def needed(size: str, motion: str, subject: str = "", canvas: str = "", fast: bool = False, fps: int = 24,
            lips: str = "") -> list[str]:  # fmt: skip
-    """The parts a choice takes: «Выделение предмета» for the object (alone, or replaced), «Замена и дорисовка» to
-    draw anew, (57) «Губы под голос», the size's own, «Плавность» for any motion and for «Быстрее» drawing fewer
-    frames - in the order they work, each once."""
+    """The parts a choice takes: «Выделение предмета» for the object (alone, or replaced), (59) «Глубина кадра» for
+    the whole video drawn anew, «Замена и дорисовка» to draw anew, (57) «Губы под голос», the size's own,
+    «Плавность» for any motion and for «Быстрее» drawing fewer frames - in the order they work, each once."""
     drawing = subject in DRAWN or bool(canvas)
-    parts = ["select" if subject else "", "replace" if drawing else "", "lips" if lips else "", size,
+    parts = ["select" if subject in CLICKED else "", "depth" if subject == "motion" else "",
+             "replace" if drawing else "", "lips" if lips else "", size,
              "smooth" if motion or (drawing and fast and subsampled(fps)) else ""]  # fmt: skip
     return list(dict.fromkeys(p for p in parts if p))
 
@@ -148,8 +152,14 @@ class EnhanceView(QObject):
 
     @Property(bool, notify=changed)
     def drawing(self) -> bool:
-        """(58) VACE draws: «Заменить предмет», «Заменить фон», a format - the words, the speed shown."""
+        """(58) VACE draws: «Заменить предмет», «Заменить фон», a format, (59) «Перерисовать всё» - the words, the
+        speed shown."""
         return self._drawing()
+
+    @Property(bool, notify=changed)
+    def clicks(self) -> bool:
+        """The choice is of something on a frame: the frame shown, to click on (59: not «Перерисовать всё»)."""
+        return self._subject in CLICKED
 
     @Property(str, notify=changed)
     def words(self) -> str:
@@ -161,6 +171,8 @@ class EnhanceView(QObject):
             return tr("На что заменить — например, «красная керамическая кружка»")
         if self._subject == "background":
             return tr("Какой фон — например, «песчаный пляж с пальмами»")
+        if self._subject == "motion":
+            return tr("Каким сделать ролик — например, «медный чайник в избе при свече, ночь»")
         return tr("Что вокруг — можно не писать: возьмётся описание ролика")
 
     @Property(str, notify=changed)
@@ -263,8 +275,10 @@ class EnhanceView(QObject):
                 return tr("«{name}» скачивается…", name=name)
             if found.get("state") != "ready":
                 return tr("Сначала скачайте «{name}» — ниже", name=name)
-        if self._subject and self._point is None:
+        if self._subject in CLICKED and self._point is None:
             return tr("Щёлкните по предмету на кадре")
+        if self._subject == "motion" and not self._words.strip():
+            return tr("Напишите, каким сделать ролик")
         if self._subject in DRAWN and not self._words.strip():
             return tr("Напишите, на что заменить")
         return ""
@@ -295,6 +309,9 @@ class EnhanceView(QObject):
         if self._subject == "background":
             notes.append(tr("Всё, кроме того, по чему вы щёлкнули, нарисуется заново по вашим словам — и руки "
                             "тоже, если они не выделены."))  # fmt: skip
+        if self._subject == "motion":  # (59.1: a hand and a kettle became a copper kettle; a sample gave its colour)
+            notes.append(tr("Весь ролик нарисуется заново по вашим словам: движение и очертания останутся, всё "
+                            "остальное станет новым — лица, надписи и товар тоже."))  # fmt: skip
         if self._canvas:
             notes.append(tr("Ролик останется в середине кадра {canvas}, края вокруг дорисуются.",
                             canvas=self._canvas))  # fmt: skip
@@ -381,14 +398,14 @@ class EnhanceView(QObject):
 
     @Slot(str)
     def setSubject(self, subject: str) -> None:
-        """(56) «Весь кадр» | «Только предмет» | (58) «Заменить предмет» | «Заменить фон» - the frame to click on
-        asked of the hub the first time. An object or the background - not with a format: one drawing at a time;
-        (57) nor with «Губы»."""
+        """(56) «Весь кадр» | «Только предмет» | (58) «Заменить предмет» | «Заменить фон» | (59) «Перерисовать
+        всё» - the frame to click on asked of the hub the first time it is needed. An object, the background, the
+        whole video - not with a format: one drawing at a time; (57) nor with «Губы»."""
         self._subject = subject if subject in {k for k, _n in SUBJECTS} else ""
         if self._subject:
             self._canvas, self._lips = "", ""
         self._take(self._state)
-        if self._subject and not self._frame and self._target:
+        if self._subject in CLICKED and not self._frame and self._target:
             self._fetch_frame()
 
     @Slot(str)
@@ -512,6 +529,8 @@ class EnhanceView(QObject):
                    "y": round(self._point[1], 4)} if self._point is not None else {}  # fmt: skip
         if self._subject == "select" and clicked:
             spec["select"] = clicked
+        elif self._subject == "motion":  # (59) nothing clicked
+            spec["draw"] = {"kind": "motion", "words": self._words.strip(), "fast": self._fast}
         elif self._subject in DRAWN and clicked:  # (58)
             spec["draw"] = {"kind": self._subject, "words": self._words.strip(), "fast": self._fast, **clicked}
         elif self._canvas:

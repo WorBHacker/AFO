@@ -8,6 +8,8 @@ the hub with the engine's own Python (`python -I fake_torch_engine.py <arguments
   moment's picture copied into the plan's `out` as the moment drawn, its steps written into `progress` as it goes
   ($FAKE_ENGINE_STEP_S a step); the plan copied beside $FAKE_ENGINE_LOG as plan-<n>.json. --compose <plan.json>:
   each frame's `drawn` copied - edges: scaled to the canvas - numbered from 1.
+- (59, hub/torch_scripts/depth.py) --depth <plan.json>: each of the plan's `frames` copied into its `out` as its
+  depth, numbered from 1; the plan copied beside $FAKE_ENGINE_LOG as depth-<n>.json.
 - (57, hub/torch_scripts/lips.py) --frames <dir> --voice <wav> --out <dir> --fps <n>: each frame copied, as MuseTalk
   gives back a frame without a face; the voice copied beside $FAKE_ENGINE_LOG as voice-<n>.wav; the last line - JSON
   {"frames", "faces", "made"} ($FAKE_ENGINE_NO_FACE - no face found).
@@ -83,6 +85,18 @@ def main():
     if "--check" in args:
         print(json.dumps({"torch": "2.8.0+cu128", "cuda": not os.environ.get("FAKE_ENGINE_NO_CUDA")}))
         sys.exit(3 if os.environ.get("FAKE_ENGINE_NO_CUDA") else 0)
+    if "--depth" in args:  # (59) each picture copied as its depth, numbered from 1; the plan beside the log
+        plan = json.loads(Path(value(args, "--depth")).read_text(encoding="utf-8"))
+        if log := os.environ.get("FAKE_ENGINE_LOG"):
+            kept = Path(log).with_name(f"depth-{len(list(Path(log).parent.glob('depth-*.json')))}.json")
+            kept.write_text(json.dumps(plan), encoding="utf-8")
+        out = Path(plan["out"])
+        out.mkdir(parents=True, exist_ok=True)
+        for n, frame in enumerate(plan["frames"], start=1):
+            shutil.copyfile(frame, out / f"{n:06d}.png")
+            Path(plan["progress"]).write_text(f"{n} {len(plan['frames'])}", encoding="utf-8")
+        print(json.dumps({"frames": len(plan["frames"])}))
+        return
     if "--draw" in args or "--compose" in args:
         plan = json.loads(Path(value(args, "--draw") or value(args, "--compose")).read_text(encoding="utf-8"))
         if log := os.environ.get("FAKE_ENGINE_LOG"):

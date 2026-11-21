@@ -822,9 +822,9 @@ class Visual:
         """«Улучшить ролик» (54.5): a video of the Studio's (`from_job`) or a film's joined one (`film`) improved -
         `size` (sharp | detail: twice as large), `motion` (fps60 | slow2 | slow4), `select` (56: {share, x, y} -
         only the object clicked), `draw` (58, `enhance.drawing`: an object, the background or the edges drawn anew;
-        the edges' words, unless said, the video's own) - as a job of the queue, in turn with the rest: its result a
-        new video, the source as it was. The parts it needs not here, a size RelayVSR does not fit, 60 a second of a
-        video that has them, a format the video has - refused at once."""
+        the edges' words, unless said, the video's own; (59) the whole video by its depth) - as a job of the queue,
+        in turn with the rest: its result a new video, the source as it was. The parts it needs not here, a size
+        RelayVSR does not fit, 60 a second of a video that has them, a format the video has - refused at once."""
         size, motion = spec.get("size") or None, spec.get("motion") or None
         if size not in (None, *enhance.SIZES) or motion not in (None, *enhance.MOTIONS):
             raise VisualError(tr("нет такого улучшения"), 422)
@@ -881,8 +881,10 @@ class Visual:
         if lips is not None and lips["voice"] == "clip" and not sound:
             raise VisualError(tr("в ролике нет звука — выберите файл с голосом"), 422)
         parts = ["select" if select else None, "lips" if lips else None, size, "smooth" if motion else None]
-        if draw is not None:  # (58) VACE; SAM for the object; RIFE when «Быстрее» draws fewer frames
-            parts += ["replace", "select" if draw["kind"] != "edges" else None,
+        if draw is not None:  # (58) VACE; SAM for the object; RIFE when «Быстрее» draws fewer frames; (59) the
+            # depth for the whole video drawn anew
+            parts += ["depth" if draw["kind"] == "motion" else None, "replace",
+                      "select" if draw["kind"] in ("object", "background") else None,
                       "smooth" if enhance.stride(fps, draw["fast"]) != 1 else None]  # fmt: skip
             if draw["kind"] == "edges":
                 try:

@@ -114,9 +114,10 @@ class Subject(BaseModel):
 
 class Draw(BaseModel):
     """(58) «Заменить предмет» (`object`), «Заменить фон» (`background`) - where the object was clicked, what to
-    draw; «Формат» (`edges`) - the format the edges are drawn to. `fast` - «Быстрее», else «Тщательнее»."""
+    draw; «Формат» (`edges`) - the format the edges are drawn to; (59) «Перерисовать всё» (`motion`) - the whole
+    video by its depth and the words. `fast` - «Быстрее», else «Тщательнее»."""
 
-    kind: Literal["object", "background", "edges"]
+    kind: Literal["object", "background", "edges", "motion"]
     words: str = Field(default="", max_length=500)
     fast: bool = True
     share: float | None = Field(default=None, ge=0.0, le=1.0)

@@ -3,6 +3,7 @@ plan of hub/enhance.py, the engine on PyTorch run in its folder in a Windows job
 stand-ins of uv, of the engines' scripts (tests/fake_torch_engine.py) and of RIFE (tests/fake_enhance.py) - real
 processes."""
 
+import hashlib
 import json
 import os
 import sys
@@ -227,6 +228,60 @@ def test_an_object_is_drawn_anew_shot_by_shot_and_faster_at_16_a_second(drawn, t
     plan = hub.plans()[-2]
     assert plan["mode"] == "background" and plan["steps"] == 25 and plan["windows"] == [[0, 48, 0], [48, 72, 0]]
     assert hub.rife() == [96, 48, 99, 51]  # every frame drawn: RIFE not asked
+
+
+def test_the_engines_put_in_before_stay_put_in_beside_the_depth():
+    """59.2: «Глубина кадра» is a part of its own, on the libraries of «Замена и дорисовка»: the engines put in
+    before keep their fingerprints (taken on the code of 57.5) - not taken for missing, their gigabytes not fetched
+    again (DirectorIssues Р26)."""
+    before = {"select": "99c0259aaa8d9b2f80167ee253410f278aaf5bd49090ab059360148c0e25a350",
+              "replace": "c54edba107e9efe9abe1e57fd381a49230b71d683f1d3b90d129cf8610d2a3be",
+              "lips": "7f32cb5f5df5b1ef8e24ddde9d9dee865d6b0673ba0bda3ce6ee60357b55866b"}  # fmt: skip
+    for engine, sha in before.items():
+        assert hashlib.sha256(json.dumps(torch_engines.fingerprint(engine), sort_keys=True).encode()).hexdigest() == sha
+    depth = torch_engines.ENGINES["depth"]
+    assert depth["pins"] == torch_engines.ENGINES["replace"]["pins"] and depth["licence"] == "Apache-2.0"
+    assert sum(w["size"] for w in depth["weights"]) < 100 << 20
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")
+def test_the_whole_video_is_drawn_anew_by_its_depth(drawn, tmp_path, monkeypatch):
+    """59.2: «Перерисовать всё» - nothing clicked, SAM not asked: «Глубина кадра» gives each moment's depth (at
+    «Быстрее» on 24 a second - RIFE's half-frames' too), VACE draws all of each frame by it, shot by shot, none
+    across the cut; the new video is what it drew - the same length, size and sound. The words are wanted; the depth
+    part not here - refused at once, named."""
+    hub = drawn  # noqa: F811
+    source_id = a_video_job(hub)  # 48 frames, a cut, 24 of red - 24 a second, with sound
+    draw = {"kind": "motion", "words": "a copper kettle in a cabin by a candle", "fast": True}
+    refused = hub.post("/v1/visual/improve", json={"from_job": source_id, "draw": {**draw, "words": " "}})
+    assert refused.status_code == 422 and "каким сделать ролик" in refused.json()["detail"]
+    missing = hub.post("/v1/visual/improve", json={"from_job": source_id, "draw": draw})
+    assert missing.status_code == 422 and "«Глубина кадра» не установлено" in missing.json()["detail"]
+    assert hub.post("/v1/enhance/parts/depth").status_code == 200
+    deadline = time.monotonic() + 60
+    while next(p for p in hub.get("/v1/enhance").json()["parts"] if p["id"] == "depth")["state"] != "ready":
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    asked = hub.post("/v1/visual/improve", json={"from_job": source_id, "draw": draw})
+    assert asked.status_code == 200, asked.text
+    job = asked.json()["job"]
+    assert job["enhance"]["draw"] == draw and (job["width"], job["height"]) == (64, 64)
+    done = wait_job(hub, job["id"], "done", "failed", "cancelled", timeout=60)
+    assert done["status"] == "done", done
+    assert not [r for r in hub.engine() if "--masks" in r["args"]]
+    (depth,) = [json.loads(p.read_text(encoding="utf-8")) for p in tmp_path.glob("depth-*.json")]
+    assert Path(depth["model"]) == torch_engines.depth_dir(models_home())
+    assert len(depth["frames"]) == 50 and Path(depth["frames"][1]).parent.name == "0"  # 33 + 17; a half-frame
+    plan, composed = hub.plans()
+    assert plan["mode"] == "motion" and plan["prompt"] == draw["words"] and plan["steps"] == 20
+    assert plan["windows"] == [[0, 33, 0], [33, 50, 0]] and all(m["masks"] == [] for m in plan["moments"])
+    assert [Path(m["frame"]).parent.name for m in plan["moments"]] == ["depth"] * 50
+    assert Path(plan["moments"][49]["frame"]).name == "000050.png"
+    assert composed["mode"] == "motion" and len(composed["frames"]) == 72
+    assert composed["frames"][0]["mask"] is None and Path(composed["frames"][50]["drawn"]).parent.name == "1"
+    shown = described(hub.app.state.visual.media / done["file"])
+    assert shown["size"] == (64, 64) and shown["fps"] == 24 and shown["sound"] and abs(shown["seconds"] - 3) < 0.1
+    assert not [p for p in hub.app.state.visual.media.rglob("*") if p.name.startswith(".")]
 
 
 @pytest.mark.skipif(FFMPEG is None, reason="no ffmpeg")

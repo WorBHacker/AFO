@@ -155,8 +155,8 @@ def test_the_programs_that_improve_a_video_are_fetched_as_parts_and_keep_only_wh
         ("smooth", "missing", sizes["windows.zip"]),
         ("sharp", "missing", sizes["realesrgan-ncnn-vulkan-20220424-windows.zip"]),
         ("detail", "missing", sizes[SD_ARCHIVE] + sizes[engines.SD_RUNTIME] + weights)]  # fmt: skip
-    # (56, 58, 57) the engines on PyTorch after them
-    assert [p["id"] for p in was["parts"][3:]] == ["select", "replace", "lips"]
+    # (56, 58, 59, 57) the engines on PyTorch after them
+    assert [p["id"] for p in was["parts"][3:]] == ["select", "replace", "depth", "lips"]
     assert hub.post("/v1/enhance/parts/sparkle").status_code == 404
 
     FakeSources.corrupt = {"windows.zip"}
@@ -547,7 +547,7 @@ def test_the_windows_client_improves_a_video_through_the_hub(stand, monkeypatch)
     hub = stand  # noqa: F811
     monkeypatch.setattr(ffmpeg, "find", lambda _tools: Path(FFMPEG))
     client = HubClient("http://127.0.0.1:8765", hub.headers["Authorization"].removeprefix("Bearer "), http=hub)
-    assert [p["state"] for p in client.enhance()["parts"]] == ["missing"] * 6  # (57) «Губы под голос» too
+    assert [p["state"] for p in client.enhance()["parts"]] == ["missing"] * 7  # (57) «Губы под голос», (59) «Глубина кадра» too
     assert client.install_enhance("smooth")["parts"][0]["state"] in ("loading", "ready")
     wait_part(hub, "smooth", "ready")
     assert any(kind == "enhance.changed" for kind, _p in hub.seen) and matches("enhance.changed", tuple(TOPICS))

@@ -20,6 +20,9 @@ runs, never linked.
   frames, which masks, the windows of 81 frames - `windows_of`), drawn by hub/torch_scripts/replace.py. «Быстрее»
   (58.1): 20 steps, and a video of 24 frames a second drawn at 16 - the frames between by RIFE («Плавность»):
   a third fewer windows, the object following the hand in the probe; «Тщательнее» - 25 steps, every frame.
+- «Глубина кадра» (`depth`, stage 59): Depth Anything V2 Small - each moment's depth, by which VACE draws a whole video
+  anew («Перерисовать всё», draw kind `motion`): the motion and the shapes stay, the rest is the words' (59.1: a
+  person's hand and a kettle became a copper kettle in a cabin by a candle; a sample picture gave only its colour).
 
 What 54.1 measured (RTX 5080; a scene of LTX, 768×512, 73 frames): RIFE 2.4-3.9 s for 60 a second, +0.5 GB of the
 card; Real-ESRGAN 35 s, +2.4 GB; RelayVSR 24 s, +14 GB - its window must take the whole piece (`detail_args`): with
@@ -106,11 +109,13 @@ PARTS: dict[str, dict[str, Any]] = {
     # (56) an engine on PyTorch: its own environment, put in and run by hub/torch_engines.py
     "select": torch_engines.part("select"),
     "replace": torch_engines.part("replace"),
+    "depth": torch_engines.part("depth"),  # (59) each frame's depth: what «Перерисовать всё» draws by
     "lips": torch_engines.part("lips"),  # (57) a mouth to a voice: MuseTalk - asked first, its licence (62)
 }  # fmt: skip
 # (58) «Замена и дорисовка»: what VACE draws anew, the formats the edges are drawn to - VACE's frame for each (its
-# sides of 16; the new frame takes its proportions, so the source lies in both at one place)
-DRAWS = ("object", "background", "edges")
+# sides of 16; the new frame takes its proportions, so the source lies in both at one place); (59) motion - the whole
+# video drawn anew by its depth and the words
+DRAWS = ("object", "background", "edges", "motion")
 CANVASES = {"9:16": (480, 832), "1:1": (624, 624), "16:9": (832, 480)}
 VACE_PIXELS = 832 * 480  # 480p - VACE-1.3B's only size; a larger video is drawn smaller, put back at its own
 WINDOW, OVERLAP = 81, 9  # frames a window, the last ones of a window the next one keeps (58.1: no jump at the seam)
@@ -403,9 +408,10 @@ def subject(raw: Any) -> dict[str, float] | None:
 
 
 def drawing(raw: Any) -> dict[str, Any] | None:
-    """(58) «Заменить предмет», «Заменить фон», «Формат»: {kind: object | background | edges, words: what to draw,
-    fast: «Быстрее» (else «Тщательнее»), share, x, y: where the object was clicked (object, background), canvas: the
-    format (edges)}; None - not asked. The words are wanted for an object or background. Anything else - refused."""
+    """(58) «Заменить предмет», «Заменить фон», «Формат», (59) «Перерисовать всё»: {kind: object | background | edges
+    | motion, words: what to draw, fast: «Быстрее» (else «Тщательнее»), share, x, y: where the object was clicked
+    (object, background), canvas: the format (edges)}; None - not asked. The words are wanted for an object, the
+    background and the whole video. Anything else - refused."""
     if raw is None:
         return None
     try:
@@ -420,7 +426,10 @@ def drawing(raw: Any) -> dict[str, Any] | None:
             raise EnhanceError(tr("нет такого улучшения"), 422)
         return found | {"canvas": raw["canvas"]}
     if not words:
-        raise EnhanceError(tr("напишите, на что заменить"), 422)
+        raise EnhanceError(tr("напишите, каким сделать ролик") if kind == "motion" else tr("напишите, на что заменить"),
+                           422)  # fmt: skip
+    if kind == "motion":  # (59) the whole video: nothing to click
+        return found
     return found | subject({k: raw.get(k) for k in ("share", "x", "y")})  # type: ignore[operator]
 
 
@@ -738,7 +747,8 @@ class Enhance:
         (a sound stretched so is not the sound). `select` (56, `subject`): the object clicked kept, the rest
         darkened - first, at the video's own size. Then larger, then the motion: fewer frames are enlarged. Both go
         shot by shot: nothing is made across a cut. `draw` (58, `drawing`): an object, the background or the
-        edges drawn anew by VACE - first, at the video's own size; not with `select`. `lips` (57, `lips_of`): the
+        edges - (59) or the whole video, by its depth - drawn anew by VACE - first, at the video's own size; not with
+        `select`. `lips` (57, `lips_of`): the
         face's mouth made to say the video's own sound or a voice's file by MuseTalk - first, at the video's own
         size; not with `select` or `draw`, nor slowed (a slowed video has no sound); with a file - its voice is the new
         video's sound. `told(share)` - how far, after each piece. The frames lie beside `target` meanwhile and are
@@ -807,12 +817,13 @@ class Enhance:
         shot by shot - nothing drawn across a cut - the moments it draws: each frame, or at «Быстрее» 16 a second
         (RIFE's half-frames for those between two), in windows of 81 that keep the last moments of the one before;
         the frames between drawn ones by RIFE back at the video's rate; then each frame the source with only the
-        drawn area put in, its edge soft (edges: the source in the middle of the new frame). The frames come back
-        numbered as they were."""
+        drawn area put in, its edge soft (edges: the source in the middle of the new frame). (59) motion: no object
+        - each moment's depth by «Глубина кадра», VACE draws all of the frame by it; the frames are what it drew. The
+        frames come back numbered as they were."""
         kind, step = draw["kind"], stride(fps, draw["fast"])
         width, height = await asyncio.to_thread(png_size, frames / (FRAMES % 1))
         masks = None
-        if kind != "edges":
+        if kind in ("object", "background"):
             at = min(count - 1, max(0, round(draw["share"] * (count - 1))))
             masks = work / "masks"
             await self.run("select", torch_engines.select_args(self.models, frames, masks, at=at, x=draw["x"],
@@ -853,6 +864,18 @@ class Enhance:
                                 "masks": [str(masks / (FRAMES % (j + 1))) for j in near] if masks else []})  # fmt: skip
             windows += [(base + a, base + b, k) for a, b, k in windows_of(len(times))]
             shots_made.append((first, end, base, len(times), own))
+        if kind == "motion":  # (59) each moment's picture - its depth: what VACE draws by
+            depths = work / "depth"
+            told_depth = {"model": str(torch_engines.depth_dir(self.models)), "frames": [m["frame"] for m in moments],
+                          "out": str(depths), "progress": str(work / "depth.txt")}  # fmt: skip
+            await asyncio.to_thread((work / "depth.json").write_bytes, json.dumps(told_depth).encode())
+            await self.run("depth", ["--depth", str(work / "depth.json")], cancel)
+            came = len(await asyncio.to_thread(os.listdir, depths)) if await asyncio.to_thread(depths.is_dir) else 0
+            if came != len(moments):
+                raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
+                                     wanted=len(moments)))  # fmt: skip
+            for k, moment in enumerate(moments):
+                moment["frame"] = str(depths / (FRAMES % (k + 1)))
         drawn, progress = work / "drawn", work / "progress.txt"
         steps, models = STEPS[draw["fast"]], self.models
         plan = {"mode": kind, "prompt": draw["words"], "negative": NEGATIVE, "steps": steps, "guidance": GUIDANCE,
@@ -898,7 +921,7 @@ class Enhance:
         if came != count:
             raise EngineError(tr("программа улучшения сделала {came} кадров вместо {wanted}", came=came,
                                  wanted=count))  # fmt: skip
-        for done in (frames, masks, drawn, work / "half", work / "back"):
+        for done in (frames, masks, drawn, work / "half", work / "back", work / "depth"):
             if done is not None:
                 await asyncio.to_thread(engines.remove_tree, done)
         if told is not None:

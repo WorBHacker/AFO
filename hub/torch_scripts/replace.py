@@ -9,9 +9,10 @@ python -I replace.py --compose <plan.json>
 
 `--check`: PyTorch, diffusers, gguf and the card - a line of JSON, exit 3 when the card is not seen.
 
-`--draw`: {mode: object | background | edges, prompt, negative, steps, guidance, seed, size: [w, h] (VACE's, sides of
-16), grow (pixels at VACE's size), model (the repository's folder), encoder (umT5's GGUF), moments: [{frame, masks:
-[...]}] (a moment's picture; its masks - white the object - taken together), windows: [[first, end, keep]] (moments;
+`--draw`: {mode: object | background | edges | motion, prompt, negative, steps, guidance, seed, size: [w, h] (VACE's,
+sides of 16), grow (pixels at VACE's size), model (the repository's folder), encoder (umT5's GGUF), moments: [{frame,
+masks: [...]}] (a moment's picture - (59) motion: its depth, the whole frame drawn by it and the words; its masks -
+white the object - taken together), windows: [[first, end, keep]] (moments;
 the first `keep` of a window are the ones the window before made - kept, so the new object does not change at the
 seam: 58.1), place: [x, y, w, h] (edges: where the frame lies in VACE's), out, progress}. Each window's drawn frames
 come out into `out` numbered by moment from 1 - those the window before made are not written again. A window that has
@@ -19,7 +20,8 @@ nothing to draw (the object not seen in it) is its frames as they are. `progress
 
 `--compose`: {mode, grow, feather (pixels at the frame's size), frames: [{source, drawn, mask}], canvas: [w, h, x, y]
 (edges: the new frame's size, where the source lies in it), out}: each frame the source with only the drawn area from
-`drawn` (the object; all but it; the edges), the edge of the area soft - numbered from 1.
+`drawn` (the object; all but it; the edges), the edge of the area soft - (59) motion: `drawn` whole at the source's
+size - numbered from 1.
 
 What 58.1 measured (RTX 5080, 81 frames 832 × 480): 17.8-19.3 s a step, compute-bound; PyTorch 13.18 GiB of the
 card; umT5 on the processor, then gone. The text is encoded once for all windows.
@@ -114,6 +116,8 @@ def draw(plan: dict) -> int:
 
     def area(k: int):
         """What VACE draws of moment k, at its size: white - drawn, black - kept."""
+        if mode == "motion":  # (59) all of it, by the depth
+            return Image.new("L", (w, h), 255)
         if mode == "edges":
             x, y, iw, ih = plan["place"]
             m = Image.new("L", (w, h), 255)
@@ -123,7 +127,10 @@ def draw(plan: dict) -> int:
         return grown(m, grow) if mode == "object" else ImageChops.invert(grown(m, 2))
 
     def given(k: int):
-        """Moment k as VACE is given it: the area it draws filled with gray (edges: the frame in a gray canvas)."""
+        """Moment k as VACE is given it: the area it draws filled with gray (edges: the frame in a gray canvas;
+        motion: the moment's depth - VACE draws by it, as by its own depth annotator's)."""
+        if mode == "motion":
+            return frame(k).resize((w, h), Image.LANCZOS)
         if mode == "edges":
             x, y, iw, ih = plan["place"]
             canvas = Image.new("RGB", (w, h), (GRAY,) * 3)
@@ -177,7 +184,9 @@ def draw(plan: dict) -> int:
         return [picture.convert("RGB").resize((w, h)) for picture in result]
 
     def kept(k, drawn, mask):  # as the next window goes on from it: only the drawn area, the rest the source's
-        return drawn if mode == "edges" else Image.composite(drawn, frame(k).resize((w, h), Image.LANCZOS), mask)
+        if mode in ("edges", "motion"):  # all of it drawn (motion: the moment's own picture is its depth)
+            return drawn
+        return Image.composite(drawn, frame(k).resize((w, h), Image.LANCZOS), mask)
 
     through([window for window, _areas in busy], given=given, area=lambda k: found[k] if k in found else area(k),
             black=lambda: Image.new("L", (w, h), 0), paint=paint, kept=kept,
@@ -196,7 +205,9 @@ def compose(plan: dict) -> int:
     for n, each in enumerate(plan["frames"], start=1):
         source = Image.open(each["source"]).convert("RGB")
         drawn = Image.open(each["drawn"]).convert("RGB")
-        if mode == "edges":
+        if mode == "motion":  # (59) the whole frame drawn: at the video's size, nothing of the source in it
+            made = drawn.resize(source.size, Image.LANCZOS)
+        elif mode == "edges":
             cw, ch, x, y = plan["canvas"]
             made = drawn.resize((cw, ch), Image.LANCZOS)
             inner = Image.new("L", source.size, 0)

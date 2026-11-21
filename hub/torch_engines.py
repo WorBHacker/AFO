@@ -28,6 +28,10 @@ The engines (`ENGINES`):
   No code archive: its libraries from PyPI by their pins (the last for Python 3.10 - diffusers 0.41.0, 58). The
   text encoder is city96's umT5-xxl Q4_K_M GGUF (3.7 GB), not the repository's bf16 (11.4 GB): 58.1 saw the same
   frames; when AFO's Wan2.2 holds it already (`near`), it is linked, not fetched.
+- «Глубина кадра» (`depth`, stage 59): Depth Anything V2 Small (Apache-2.0; its Large is not for commercial use) -
+  each frame's depth, the picture VACE draws a whole video anew by (hub/torch_scripts/depth.py). The same libraries
+  as «Замена и дорисовка» - only transformers of them; its own part: a weight more in that one's list would change its
+  fingerprint and fetch its 7.7 GB again.
 - «Губы под голос» (`lips`, stage 57): MuseTalk 1.5 (TMElyralab; code MIT, weights trained on HDTF - not for
   commercial use, asked first, 62) - a face's mouth made to say a voice (hub/torch_scripts/lips.py). Its code is no
   package: the archive of its commit unpacked by AFO (`unpack`). Its libraries are of 2024 (numpy before 2 - over
@@ -84,6 +88,16 @@ LIBRARIES_SIZE = 40 << 20  # ≈ what those libraries and an engine's own come t
 TORCH_DISK = int(7.05 * 2**30)  # an environment with PyTorch on the disk (56.1: 7.01 GiB) - once, in the uv cache
 BASE_DISK = 100 << 20  # uv and its Python (56.1: 0.03 + 0.06 GiB)
 SCRIPTS = Path(__file__).with_name("torch_scripts")  # what an engine runs: AFO's own, in the engine's Python
+# (58) what diffusers and transformers take, as 58.1 had it (uv pip freeze), but PyTorch's own (TORCH_PINS) - the
+# replace engine's and (59) the depth engine's: the same libraries in the same versions
+VACE_PINS = ("annotated-doc==0.0.6", "annotated-types==0.8.0", "anyio==4.16.0", "certifi==2026.10.23",
+             "charset-normalizer==3.5.2", "click==8.5.1", "colorama==0.4.6", "exceptiongroup==1.3.2", "h11==0.16.0",
+             "hf-xet==1.8.0", "httpcore==1.0.9", "httpx==0.28.1", "huggingface-hub==1.33.0", "idna==3.20",
+             "importlib-metadata==9.0.1", "markdown-it-py==4.3.0", "mdurl==0.1.2", "packaging==26.3",
+             "psutil==7.2.2", "pydantic==2.14.4", "pydantic-core==2.50.5", "pygments==2.21.0", "pyyaml==6.0.3",
+             "regex==2026.9.29", "requests==2.34.2", "rich==15.0.0", "safetensors==0.8.0", "shellingham==1.5.4",
+             "tokenizers==0.23.3", "tomli==2.5.0", "tqdm==4.70.1", "typer==0.29.1", "typing-inspection==0.4.5",
+             "urllib3==2.8.0", "wcwidth==0.9.4", "zipp==4.1.2")  # fmt: skip
 ENGINES: dict[str, dict[str, Any]] = {
     "select": {
         "name": N_("Выделение предмета"),
@@ -105,16 +119,7 @@ ENGINES: dict[str, dict[str, Any]] = {
         "licence": "Apache-2.0", "card_gib": 15.5, "script": "replace.py", "code": None,
         "packages": ("diffusers==0.41.0", "transformers==5.20.2", "accelerate==1.15.0", "ftfy==6.3.1",
                      "gguf==0.19.0"),
-        # what those take, as 58.1 had it (uv pip freeze), but PyTorch's own (TORCH_PINS)
-        "pins": ("annotated-doc==0.0.6", "annotated-types==0.8.0", "anyio==4.16.0", "certifi==2026.10.23",
-                 "charset-normalizer==3.5.2", "click==8.5.1", "colorama==0.4.6", "exceptiongroup==1.3.2",
-                 "h11==0.16.0", "hf-xet==1.8.0", "httpcore==1.0.9", "httpx==0.28.1", "huggingface-hub==1.33.0",
-                 "idna==3.20", "importlib-metadata==9.0.1", "markdown-it-py==4.3.0", "mdurl==0.1.2",
-                 "packaging==26.3", "psutil==7.2.2", "pydantic==2.14.4", "pydantic-core==2.50.5",
-                 "pygments==2.21.0", "pyyaml==6.0.3", "regex==2026.9.29", "requests==2.34.2", "rich==15.0.0",
-                 "safetensors==0.8.0", "shellingham==1.5.4", "tokenizers==0.23.3", "tomli==2.5.0", "tqdm==4.70.1",
-                 "typer==0.29.1", "typing-inspection==0.4.5", "urllib3==2.8.0", "wcwidth==0.9.4", "zipp==4.1.2"),
-        "build": {},
+        "pins": VACE_PINS, "build": {},
         "weights": (
             *({"hf": "Wan-AI/Wan2.1-VACE-1.3B-diffusers", "revision": "ec4d2cb062b548996b179d493fdd05340de702a1",
                "into": "Wan2.1-VACE-1.3B", "path": path, "size": size, "sha256": sha256} for path, size, sha256 in (
@@ -143,6 +148,21 @@ ENGINES: dict[str, dict[str, Any]] = {
              "path": "umt5-xxl-encoder-Q4_K_M.gguf", "size": 3655145312, "near": "pictures",
              "sha256": "17cf97a5bbbc60a646d6105b832b6f657ce904a8a1ad970e4b59df0c67584a40"},
         ),
+    },
+    # (59) the depth of each frame - what VACE draws a whole video anew by («Перерисовать всё»); its own part, not a
+    # weight of «Замена и дорисовка»: a new weight there would change its fingerprint and fetch its 7.7 GB again
+    "depth": {
+        "name": N_("Глубина кадра"),
+        "about": N_("Depth Anything V2 Small: глубина каждого кадра — для «Перерисовать всё»"),
+        "licence": "Apache-2.0", "card_gib": 2.0, "script": "depth.py", "code": None,
+        "packages": ("transformers==5.20.2",), "pins": VACE_PINS, "build": {},
+        "weights": tuple({"hf": "depth-anything/Depth-Anything-V2-Small-hf",
+                          "revision": "5426e4f0f36572d16453bbda7a8389317b1bef99", "into": "Depth-Anything-V2-Small",
+                          "path": path, "size": size, "sha256": sha256} for path, size, sha256 in (
+            ("config.json", 950, "c56698d3643dde1f83ea2212759e6b31a22b8f827246a36dd007ee8a22b3ff75"),
+            ("model.safetensors", 99173660, "3152477ce0d8d6978d76b995120de97cb5b928701fd0f817769f59e249a16b70"),
+            ("preprocessor_config.json", 775, "d41175c0d889477ca8fc67191e540faef14baf6275157b3fdecf78469e6bbf84"),
+        )),
     },
     "lips": {
         "name": N_("Губы под голос"),
@@ -278,6 +298,11 @@ def part(engine: str) -> dict[str, Any]:
 def vace_dir(models: Path) -> Path:
     """The replace engine's model, as diffusers reads it: a folder of the repository's files."""
     return models / "replace" / VACE
+
+
+def depth_dir(models: Path) -> Path:
+    """(59) The depth engine's model, as transformers reads it: a folder of the repository's files."""
+    return models / "depth" / ENGINES["depth"]["weights"][0]["into"]
 
 
 def encoder_file(models: Path) -> Path:

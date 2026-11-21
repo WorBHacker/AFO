@@ -45,6 +45,13 @@ def lips_bytes(weight):
     return f"{weight.get('hf', 'site')}/{weight['path']}|".encode() * 3
 
 
+def own_bytes(engine, weight):
+    """A file of an engine - (57) the lips', (59) the depth's: its own bytes; the others' as before."""
+    if engine in ("lips", "depth"):
+        return lips_bytes(weight)
+    return REPLACE.get(weight["path"], WEIGHTS)
+
+
 def code_archive():
     """(57) MuseTalk's code as GitHub gives a commit: one top folder."""
     data = io.BytesIO()
@@ -78,7 +85,7 @@ class FakeFiles(BaseHTTPRequestHandler):
         for engine, spec in torch_engines.ENGINES.items():
             for w in spec["weights"]:
                 where = f"/{w['hf']}/resolve/{w['revision']}/{w['path']}" if "hf" in w else address(w["url"])
-                served[where] = lips_bytes(w) if engine == "lips" else REPLACE.get(w["path"], WEIGHTS)
+                served[where] = own_bytes(engine, w)
         served[address(torch_engines.ENGINES["lips"]["code"]["url"])] = CODE_ZIP
         if self.path == "/" + torch_engines.UV["url"].split("://", 1)[1]:
             body = UV_ZIP
@@ -129,6 +136,10 @@ def put_stand(hub, monkeypatch, logs):  # noqa: F811
                     for w in spec["weights"])  # fmt: skip
     code = spec["code"] | {"size": len(CODE_ZIP), "sha256": hashlib.sha256(CODE_ZIP).hexdigest()}
     monkeypatch.setitem(torch_engines.ENGINES, "lips", spec | {"weights": weights, "code": code})
+    spec = torch_engines.ENGINES["depth"]  # (59)
+    weights = tuple(w | {"size": len(lips_bytes(w)), "sha256": hashlib.sha256(lips_bytes(w)).hexdigest()}
+                    for w in spec["weights"])  # fmt: skip
+    monkeypatch.setitem(torch_engines.ENGINES, "depth", spec | {"weights": weights})
     monkeypatch.setattr(torch_engines, "command", lambda program: [sys.executable, str(FAKE_UV)])
     monkeypatch.setattr(torch_engines, "script_of", lambda engine: FAKE_ENGINE)
     monkeypatch.setattr(torch_engines, "LOOK_S", 0.05)

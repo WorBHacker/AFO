@@ -6,7 +6,8 @@ import QtQuick.Dialogs
 // and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark; (58) the object
 // clicked or the background drawn anew by the words, or the edges drawn to another format - «Быстрее» or
 // «Тщательнее», the person's choice, with what each costs; (57) «Губы» - the mouth of the face made to say the
-// video's own sound or a voice's file. What it takes -
+// video's own sound or a voice's file; (59) «Перерисовать всё» - the whole video by its depth and the words, no
+// frame to click. What it takes -
 // the parts - is fetched here, each by a click; «Улучшить» sends it to the Studio's queue, where it goes on as a
 // video does. `prefix` names its parts: one sheet in the Studio, one in «Режиссёр». Taller than the window - it
 // scrolls.
@@ -126,6 +127,7 @@ Popup {
             Label { text: qsTr("Предмет") }
             Segmented {
                 objectName: sheet.prefix + "Subject"
+                width: sheet.availableWidth  // (59) five of them: the last goes to a second row
                 options: Improve.subjects
                 value: Improve.subject
                 onPicked: (id) => Improve.setSubject(id)
@@ -133,7 +135,7 @@ Popup {
             // (56) the frame the object is clicked on: its point marked; another moment of the video by the slider
             Rectangle {
                 objectName: sheet.prefix + "Pick"
-                visible: Improve.subject !== ""
+                visible: Improve.clicks
                 width: sheet.availableWidth
                 height: 180
                 radius: 6
@@ -189,7 +191,7 @@ Popup {
             Slider {
                 id: moment
                 objectName: sheet.prefix + "Moment"
-                visible: Improve.subject !== ""
+                visible: Improve.clicks
                 width: sheet.availableWidth
                 from: 0
                 to: 1
@@ -202,7 +204,7 @@ Popup {
                 }
             }
             Note {
-                visible: Improve.subject !== ""
+                visible: Improve.clicks
                 text: Improve.pickHint
             }
             // (58) the edges drawn to another format - for the whole frame only
