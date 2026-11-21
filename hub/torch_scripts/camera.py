@@ -20,7 +20,9 @@ them; the loop is their WanVideoReCamMasterPipeline.__call__ without TeaCache. T
 30 × 52 grid: 832 × 480 only, 81 frames only.
 
 What 59.1 measured (RTX 5080): 44 s a step (two passes: the words and the negative ones), 8.7 GiB of the card; the
-text 58 s on the processor; 25 steps - 20 min.
+text 58 s on the processor; 25 steps - 20 min. The VAE goes by tiles (59.5): whole, its decode of the 81 frames at the
+end reserved 12.4 GiB - more than the steps, the card full at the last minute; tiled - 3.6 GiB, 8 s longer, the
+frames the same (PSNR 55.8 dB to the whole way's).
 """
 
 from __future__ import annotations
@@ -132,6 +134,7 @@ def camera(plan: dict) -> int:
 
     video = torch.from_numpy(np.stack([np.asarray(f) for f in frames])).permute(3, 0, 1, 2)[None].float() / 127.5 - 1
     vae = AutoencoderKLWan.from_pretrained(plan["vace"], subfolder="vae", torch_dtype=torch.float32).to("cuda").eval()
+    vae.enable_tiling()  # (59.5) by tiles: the decode reserved 12.4 GiB whole, 3.6 tiled - the frames the same
     mean = torch.tensor(vae.config.latents_mean).view(1, 16, 1, 1, 1).to("cuda")
     std = torch.tensor(vae.config.latents_std).view(1, 16, 1, 1, 1).to("cuda")
     with torch.inference_mode():
