@@ -77,7 +77,9 @@ def pages():
 def test_a_page_of_this_computer_is_drawn_and_nothing_goes_to_the_internet(pages, monkeypatch):
     """localhost, 127.0.0.1, [::1] - not AFO's own ports, not a site, not a file:// address; the page's scripts run
     before the picture; a request beyond this computer goes to the proxy that is not there - here a server of the test
-    stands in for it and sees the request come; a page that does not come in time is given up, Edge stopped."""
+    stands in for it and sees the request come; a page that does not come in time is given up, Edge stopped - the
+    process started and the ones it hands the page to (Edge 157 ends the one started at once, the picture comes
+    later); none of them is left after the picture either."""
     own = {8765, 8080}
     assert snapshot.page_url(f"http://localhost:{pages.port}/app", own) == f"http://localhost:{pages.port}/app"
     assert snapshot.page_url("http://[::1]:5173/", own) and snapshot.page_url("https://127.0.0.1:3000", own)
@@ -92,6 +94,7 @@ def test_a_page_of_this_computer_is_drawn_and_nothing_goes_to_the_internet(pages
         with pytest.raises(snapshot.SnapshotError):
             snapshot.size(wrong)
     profiles = set(Path(tempfile.gettempdir()).glob("afo-snapshot-*"))
+    drawing = {process.pid for process in snapshot._left("afo-snapshot-")}  # Edge's processes of snapshots now
     stand_in = Pages()  # the proxy beyond which the internet would be
     monkeypatch.setattr(snapshot, "NOWHERE", f"http://127.0.0.1:{stand_in.port}")
     try:
@@ -103,10 +106,12 @@ def test_a_page_of_this_computer_is_drawn_and_nothing_goes_to_the_internet(pages
     assert image.pixelColor(320, 300).name() == LATE  # the page's script ran before the picture
     assert "/app" in pages.asked
     assert "http://example.org/far.png" in stand_in.asked  # the picture from the internet went to the proxy only
+    assert {process.pid for process in snapshot._left("afo-snapshot-")} <= drawing  # Edge ended after the picture
     began = time.monotonic()
     with pytest.raises(snapshot.SnapshotError, match="not drawn in 3 s"):
         snapshot.take(f"http://127.0.0.1:{pages.port}/slow", timeout_s=3)
     assert time.monotonic() - began < 10  # Edge was stopped, not waited for
+    assert {process.pid for process in snapshot._left("afo-snapshot-")} <= drawing  # and the ones it left drawing
     assert set(Path(tempfile.gettempdir()).glob("afo-snapshot-*")) == profiles  # no profile left behind
 
 

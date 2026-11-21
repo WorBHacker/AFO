@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import psutil
+
 from .projects import ProjectError, resolve_inside, secret_file
 
 TIMEOUT_S = 30.0  # Edge took 1-2 s for a page on this computer (2026-11-20)
@@ -30,6 +32,10 @@ LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 PAGES = (".html", ".htm")
 NOWHERE = "http://127.0.0.1:9"  # the proxy every request but this computer's goes to: nothing listens there
 PNG = b"\x89PNG\r\n\x1a\n"
+IEND = b"\x00\x00\x00\x00IEND\xaeB`\x82"  # the last chunk of every PNG: the file is whole
+LOOK_S = 0.1  # how often the picture is looked for
+COUNT_S = 1.0  # how often Edge's processes are counted while the picture is not there
+QUIT_S = 3.0  # Edge's own time to end after the picture
 
 PAGE_SNAPSHOT: dict[str, Any] = {
     "name": "page_snapshot",
@@ -141,23 +147,79 @@ def take(page: str, width: int = WIDTH, height: int = HEIGHT, *, program: Path |
                f"--user-data-dir={folder / 'profile'}", f"--window-size={width},{height}",
                f"--virtual-time-budget={SCRIPTS_MS}", f"--screenshot={shot}", page]  # fmt: skip
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    began = time.monotonic()
     try:
         edge_run = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL, creationflags=flags)  # fmt: skip
     except OSError as exc:
         shutil.rmtree(folder, ignore_errors=True)
         raise SnapshotError(f"Edge did not start: {exc}") from None
+    data: bytes | None = None
     try:
-        edge_run.wait(timeout_s)
-    except subprocess.TimeoutExpired:
-        _kill(edge_run)
-        raise SnapshotError(f"the page was not drawn in {timeout_s:.0f} s") from None
+        data = _drawn(edge_run, shot, folder.name, began + timeout_s)
     finally:
-        data = shot.read_bytes() if shot.is_file() else b""
+        _stop(edge_run, folder.name, drawn=data is not None)
         _remove(folder)
+    if data is None:
+        raise SnapshotError(f"the page was not drawn in {timeout_s:.0f} s")
     if not data.startswith(PNG):
         raise SnapshotError("Edge drew no picture of the page")
     return data
+
+
+def _drawn(edge_run: subprocess.Popen, shot: Path, mark: str, deadline: float) -> bytes | None:
+    """The picture once Edge has written all of it; b"" when Edge ended without one; None when the time is out. The
+    Edge started may hand the page to a process of its own and end at once (Edge 157, 2026-11-22: it ends in 0.04 s,
+    the picture comes 0.4 s later) - the picture is waited for, not the process started."""
+    counted = 0.0
+    while True:
+        data = _whole(shot)
+        if data is not None:
+            return data
+        now = time.monotonic()
+        if now >= deadline:
+            return None
+        if edge_run.poll() is not None and now - counted >= COUNT_S:
+            if not _left(mark):  # nobody of this Edge is drawing any more
+                return _whole(shot) or b""
+            counted = time.monotonic()
+        time.sleep(LOOK_S)
+
+
+def _whole(shot: Path) -> bytes | None:
+    """The picture's bytes when the file is a whole PNG (its last chunk is there), else None."""
+    try:
+        data = shot.read_bytes()
+    except OSError:  # not there yet, or Edge is writing it
+        return None
+    return data if data.startswith(PNG) and data.endswith(IEND) else None
+
+
+def _left(mark: str) -> list[psutil.Process]:
+    """Edge's processes of this picture: its profile's folder in their command line - the person's own Edge is not
+    one of them."""
+    found = []
+    for process in psutil.process_iter(["name", "cmdline"]):
+        name = (process.info.get("name") or "").lower()
+        if name.startswith("msedge") and any(mark in arg for arg in process.info.get("cmdline") or []):
+            found.append(process)
+    return found
+
+
+def _stop(edge_run: subprocess.Popen, mark: str, *, drawn: bool) -> None:
+    """Edge ends before its profile goes: after the picture it gets a moment to end by itself; a page not drawn in
+    time - stopped at once, the process started and the ones it left drawing."""
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        edge_run.wait(QUIT_S if drawn else 0)
+    if edge_run.poll() is None:
+        _kill(edge_run)
+    family = _left(mark)
+    if drawn and family:
+        _, family = psutil.wait_procs(family, timeout=QUIT_S)
+    for member in family:
+        with contextlib.suppress(psutil.Error):
+            member.kill()
+    psutil.wait_procs(family, timeout=5)
 
 
 def _kill(edge_run: subprocess.Popen) -> None:
