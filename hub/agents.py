@@ -609,6 +609,34 @@ def _criteria(conn: sqlite3.Connection, task: dict[str, Any], profile: dict[str,
             for n, c in enumerate(checked, 1)]  # fmt: skip
 
 
+def _judge_ready(conn: sqlite3.Connection, tasks: list[dict[str, Any]], found: dict[str, dict[str, Any]]) -> None:
+    """Criteria in words need the judge (the role «Проверка цели»): with none, or one that may not see a task's
+    projects (D10), the batch would run and each such task end «needs a person» - AgentError before it starts
+    («Стабилизация», 61.9)."""
+    worded = [t for t in tasks if any(c.get("kind") == "semantic" for c in t["criteria"] or [])]
+    if not worded:
+        return
+    judge_id = judge.role_model(conn)
+    if not judge_id:
+        names = ", ".join(repr(t["task_id"]) for t in worded)
+        raise AgentError(f"nothing started: the criteria in words of {names} need a model to check them, and none is "
+                         "set for the role «Проверка цели» (the user picks it in the models' settings): give such "
+                         'tasks commands or {"checks": true} as criteria, or none and judge their answers yourself'
+                         )  # fmt: skip
+    for task in worded:
+        projects = []
+        for pid in found[task["task_id"]]["project_ids"]:
+            try:
+                projects.append(get_project(conn, pid))
+            except ProjectError:
+                continue
+        try:
+            judge.check_model(conn, judge_id, projects)
+        except judge.JudgeError as exc:
+            said = f"nothing started: task {task['task_id']!r} - its criteria in words cannot be checked: {exc}"
+            raise AgentError(said) from None
+
+
 def task_checks(task: dict[str, Any]) -> dict[str, set[str]]:
     """A task's check commands by project: allowed with its batch, its agent runs them in its copy unasked (61.4)."""
     out: dict[str, set[str]] = {}
@@ -898,6 +926,7 @@ class AgentRunner:
             for task in tasks:  # how the hub checks each (16.3): against the agent's own projects
                 if task["criteria"]:
                     task["criteria"] = _criteria(conn, task, found[task["task_id"]])
+            _judge_ready(conn, tasks, found)
             short = _short_of_money(conn, tasks, found)
             if short:
                 raise AgentError(f"nothing started: {short}")

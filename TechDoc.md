@@ -2235,6 +2235,14 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
   - найдено при 61.9 (вживую): архитектор даёт задаче критерий словами, а модели для «Проверки цели» нет —
     задача сделана, но кончается `escalated` («проверить некому»). Хаб мог бы сказать это до начала пакета
     (`check_batch` / `_criteria`) или в описании `delegate_tasks`: без судьи — только команды и `{checks: true}`.
+    ✓ Порция 1, шаг 6 (2026-11-21). `_judge_ready` (`hub/agents.py`, из `delegate_many` после `_criteria`): у задач
+    с критериями словами нет модели роли «Проверка цели» — пакет не начинается, координатору: «nothing started: the
+    criteria in words of 'w' need a model to check them, and none is set for the role «Проверка цели» … give such
+    tasks commands or {"checks": true} as criteria, or none and judge their answers yourself»; судья есть, но не
+    может видеть проекты задачи (облачный, а проект «только локально», D10; Claude Code) — так же, словами
+    `judge.check_model`. Тест — `tests/test_agents.py::test_a_task_that_never_passes_needs_a_person` (прежде ждал
+    задачу «w» с «проверить некому» в конце; теперь первый пакет отказан, второй идёт; и облачный судья); на
+    прежнем коде пакет с «w» запускается.
   - найдено при 61.9 (вживую): вызов, чьи аргументы — сломанный JSON (`{"__invalid_json__": …}`,
     `hub/gateway/openai_compat.py` 450), `delegate_tasks` отвечает «`tasks`: a list of 1 to 8 tasks» — модель не
     узнаёт, что дело в JSON. Ответ должен называть причину: аргументы вызова — не JSON.

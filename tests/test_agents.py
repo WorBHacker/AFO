@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from hub import agents, checks, store
 from hub import projects as projects_module
 from hub import sandbox as sandbox_module
@@ -845,25 +847,41 @@ def test_a_projects_own_checks_run_in_a_tasks_copy_unasked(hub, repo):  # noqa: 
 
 
 def test_a_task_that_never_passes_needs_a_person(hub, repo):  # noqa: F811
+    """A task whose check never passes needs a person after its rounds; the one that waited for it is skipped.
+    Criteria in words with no model to judge them refuse the batch before anything starts («Стабилизация», 61.9) -
+    it used to run and end «проверить некому»; so does a judge that may not see the task's projects (D10)."""
     pid = hub.post("/v1/projects", json={"path": str(repo)}).json()["id"]
-    tasks = batch(("a", "Правщик", "Не делай", [], [{"command": DONE}]), ("b", "Читатель", "Потом", ["a"]),
-                  ("w", "Правщик", "Словами", [], [{"rule": "В README есть раздел «Запуск»"}]))  # fmt: skip
-    plug(hub, ByTask("fake", "local", {"Сделай": [[tasks]]}, pause=0.02))
-    profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
+    worded = batch(("a", "Правщик", "Не делай", [], [{"command": DONE}]),
+                   ("w", "Правщик", "Словами", [], [{"rule": "В README есть раздел «Запуск»"}]),
+                   call_id="b0")  # fmt: skip
+    tasks = batch(("a", "Правщик", "Не делай", [], [{"command": DONE}]), ("b", "Читатель", "Потом", ["a"]))
+    plug(hub, ByTask("fake", "local", {"Сделай": [[worded], [tasks]]}, pause=0.02))
+    writer = profile(hub, name="Правщик", tools=["edit_file"], project_ids=[pid])
     profile(hub, name="Читатель", tools=["read_file"], project_ids=[pid], mode="read_only")
     boss = profile(hub, name="Координатор", tools=["delegate_tasks"])
     run_id = hub.post(f"/v1/agents/{boss['id']}/runs", json={"task": "Сделай"}).json()["id"]
     allow_checks(hub)
     assert ended(hub, run_id, timeout=60)["status"] == "done"
     board = {t["task_id"]: t for t in hub.get(f"/v1/runs/{run_id}/tasks").json()["tasks"]}
+    assert set(board) == {"a", "b"}  # nothing of the refused batch ran
     a = board["a"]
     assert (a["status"], a["rounds"], a["verdict"]) == ("escalated", 3, "INCOMPLETE")
     assert a["detail"].startswith("not passed after 3 rounds: criterion 1:")
     assert (board["b"]["status"], board["b"]["detail"]) == ("skipped", "a needs a person")
-    w = board["w"]  # words, and no model chosen to judge them: a person decides, at once
-    assert (w["status"], w["rounds"]) == ("escalated", 1) and "проверить некому" in w["detail"]
-    (said,) = outputs(hub, run_id)
-    assert said["output"].startswith("3 tasks: 2 escalated, 1 skipped.") and said["error"] is True
+    refused, said = outputs(hub, run_id)
+    assert refused["error"] is True, refused
+    assert refused["output"].startswith("nothing started: the criteria in words of 'w' need a model to check them")
+    assert said["output"].startswith("2 tasks: 1 escalated, 1 skipped.") and said["error"] is True
+    plug(hub, ByTask("sky", "cloud", {}))
+    roles = {"model_id": "", "settings": {"roles": {"judge": "sky/echo"}}}
+    assert hub.put("/v1/model_settings", json=roles).status_code == 200
+
+    def ready(conn):
+        task = {"task_id": "w", "criteria": [{"kind": "semantic", "rule": "готово", "n": 1}]}
+        agents._judge_ready(conn, [task], {"w": agents.get_profile(conn, writer["id"])})
+
+    with pytest.raises(agents.AgentError, match=r"its criteria in words cannot be checked: the judge «.*» is a cloud"):
+        hub.app.state.db.call(ready)
 
 
 def test_the_checks_of_a_batch_are_the_users_to_allow(hub, repo):  # noqa: F811
