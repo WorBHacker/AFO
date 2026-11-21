@@ -206,6 +206,23 @@ def test_the_programs_that_improve_a_video_are_fetched_as_parts_and_keep_only_wh
     assert refused.status_code == 422 and "NVIDIA" in refused.json()["detail"]
 
 
+def test_a_part_whose_licence_forbids_commercial_use_is_fetched_only_with_the_persons_consent(stand, monkeypatch):
+    """62 (the user's word 2026-11-21): a part that says its licence forbids commercial use (`commercial` False) - its
+    «Скачать» refused before anything is fetched, 409 with the code the window asks by; with «Понимаю, скачать»
+    (`licence_ok`) - fetched as any other; the others are not asked about."""
+    hub = stand  # noqa: F811
+    monkeypatch.setitem(enhance.PARTS, "sharp", enhance.PARTS["sharp"] | {"commercial": False})
+    refused = hub.post("/v1/enhance/parts/sharp")
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert (detail["code"], detail["name"], detail["licence"]) == ("licence", "Быстрое увеличение", "BSD-3-Clause")
+    assert not FakeSources.asked and part(hub.get("/v1/enhance").json(), "sharp")["state"] == "missing"
+    assert hub.post("/v1/enhance/parts/sharp", json={"licence_ok": False}).status_code == 409
+    assert hub.post("/v1/enhance/parts/sharp", json={"licence_ok": True}).status_code == 200
+    assert wait_part(hub, "sharp", "ready", "missing")["state"] == "ready"
+    assert install(hub, "smooth")["state"] == "ready"  # MIT: not asked
+
+
 def test_a_part_runs_its_program_in_its_folder_and_stop_kills_it(stand, tmp_path, monkeypatch):
     """54.2: a piece is made by the part's program - a real process, in the program's folder (its model lies there);
     «Стоп» kills it at once; its failure is said in its words; a card too small for RelayVSR is said plainly; a part

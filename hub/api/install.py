@@ -39,6 +39,8 @@ def _installer(request: Request) -> mi.Installer:
 
 
 def _refusal(exc: Exception) -> HTTPException:
+    if isinstance(exc, hf.NotForWork):  # (62) the window asks the person and sends it again with `licence_ok`
+        return HTTPException(status_code=409, detail=exc.detail())
     status = getattr(exc, "status", 422 if isinstance(exc, llama_config.ConfigError) else 409)
     return HTTPException(status_code=status, detail=str(exc))
 
@@ -131,13 +133,14 @@ class Install(BaseModel):
     drive: str = Field(default="", max_length=3)
     folder: str = Field(default="", max_length=400)
     name: str = Field(default="", max_length=120)
+    licence_ok: bool = False  # (62) the person's «Понимаю, скачать» for a licence that forbids commercial use
 
 
 @router.post("")
 async def install(request: Request, body: Install, client: Annotated[Client, Depends(require_app)]) -> dict:
     try:
         return {"job": await _installer(request).install(body.model_dump(), client)}
-    except (hf.HubError, mi.InstallError, llama_config.ConfigError) as exc:
+    except (hf.HubError, hf.NotForWork, mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
 
 
@@ -164,13 +167,14 @@ class Pictures(BaseModel):
     quant: str = Field(default="", max_length=40)
     drive: str = Field(default="", max_length=3)
     folder: str = Field(default="", max_length=400)
+    licence_ok: bool = False  # (62) as Install's
 
 
 @router.post("/pictures")
 async def install_pictures(request: Request, body: Pictures, client: Annotated[Client, Depends(require_app)]) -> dict:
     try:
         return {"job": await _installer(request).install_pictures(body.model_dump(), client)}
-    except (hf.HubError, mi.InstallError, llama_config.ConfigError) as exc:
+    except (hf.HubError, hf.NotForWork, mi.InstallError, llama_config.ConfigError) as exc:
         raise _refusal(exc) from exc
 
 

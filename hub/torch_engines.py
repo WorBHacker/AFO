@@ -196,6 +196,13 @@ def weight_file(models: Path, engine: str, spec: dict[str, Any]) -> Path:
     return models / engine / spec.get("into", "") / spec["path"]
 
 
+def part(engine: str) -> dict[str, Any]:
+    """An engine as a part of another list («Улучшить ролик»): its name, what it does, its licence - and (62)
+    `commercial` False when its licence forbids commercial use, so its download is asked first."""
+    spec = ENGINES[engine]
+    return {key: spec[key] for key in ("name", "about", "licence", "commercial") if key in spec} | {"torch": True}
+
+
 def vace_dir(models: Path) -> Path:
     """The replace engine's model, as diffusers reads it: a folder of the repository's files."""
     return models / "replace" / VACE

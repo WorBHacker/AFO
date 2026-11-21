@@ -171,6 +171,7 @@ class FakeHub(BaseHTTPRequestHandler):
     searches: ClassVar[list] = []  # the query of each search (32.5)
     picture_auth: ClassVar[list] = []  # the Authorization header of each picture file's request
     github_auth: ClassVar[list] = []  # and of each engine archive's (GitHub's: never Hugging Face's token)
+    licence = "mit"  # the Tiny model's (62: one that forbids commercial use)
     lock = threading.Lock()
 
     def log_message(self, *args):
@@ -215,7 +216,8 @@ class FakeHub(BaseHTTPRequestHandler):
                 self._json({"error": "gated"}, 401)
                 return
             self._json({"id": path.removeprefix("/api/models/"), "sha": "abc123", "gated": False, "downloads": 10,
-                        "cardData": {"license": "mit"}, "tags": ["license:mit"], "lastModified": "2026-10-01",
+                        "cardData": {"license": self.licence}, "tags": [f"license:{self.licence}"],
+                        "lastModified": "2026-10-01",
                         "gguf": {"total": PARAMS, "architecture": "tiny", "context_length": 16384}})  # fmt: skip
         elif path in (f"/api/models/{repo}/tree/main", "/api/models/test/Gated-GGUF/tree/main"):
             self._json([{"type": "file", "path": name, "size": len(data), "oid": "x",
@@ -321,6 +323,7 @@ def fake_hub(monkeypatch):
     FakeHub.spans, FakeHub.no_ranges, FakeHub.active, FakeHub.peak, FakeHub.overlong = [], False, 0, 0, 0
     FakeHub.slow_once, FakeHub.break_once = {}, {}
     FakeHub.picture_auth, FakeHub.github_auth, FakeHub.searches, FakeHub.github_slow = [], [], [], None
+    FakeHub.licence = "mit"
     server = QuietServer(("127.0.0.1", 0), FakeHub)
     FakeHub.port = server.server_port
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -920,6 +923,42 @@ def test_a_picture_model_installed_with_its_engine_tried_and_removed(hub, monkey
     assert not {"draw", "draw-cpu"} & set(lc.model_blocks(text))  # withdrawn, both; its files stay
     assert (folder / "draw-Q4_0.gguf").exists()
     assert hub.post("/v1/install/pictures", json={"id": "nope"}).status_code == 404
+
+
+def test_a_model_whose_licence_forbids_commercial_use_is_fetched_only_with_the_persons_consent(hub, monkeypatch):
+    """62 (the user's word 2026-11-21): a model whose licence forbids commercial use - a chat model found on Hugging
+    Face, a picture model of the list - is refused before anything starts unless the person said «Понимаю, скачать»
+    (`licence_ok`): 409 with the code the window asks by, the model's name and its licence; nothing queued, nothing
+    fetched. With it - as any other. A free one is not asked about."""
+    FakeHub.licence = "cc-by-nc-4.0"
+    refused = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M"})
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert (detail["code"], detail["name"], detail["licence"]) == ("licence", "Tiny Q4_K_M", "cc-by-nc-4.0")
+    assert "запрещает коммерческое использование" in detail["message"]
+    assert hub.get("/v1/install/jobs").json()["jobs"] == [] and not FakeHub.ranges
+    job = hub.post("/v1/install", json={"repo": "test/Tiny-GGUF", "quant": "Q4_K_M", "licence_ok": True}).json()["job"]
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+
+    monkeypatch.setenv(engines.GITHUB_ENV, f"http://127.0.0.1:{FakeHub.port}")
+    catalog = json.loads(mi.CATALOG.read_text(encoding="utf-8"))
+    catalog["pictures"] = [{**DRAW, "license": "flux-1-dev-non-commercial-license"}, {**DRAW, "id": "free"}]
+    mi.CATALOG.write_text(json.dumps(catalog), encoding="utf-8")
+    installer = hub.app.state.installer
+    monkeypatch.setattr(installer, "machine", lambda: MACHINE)
+    monkeypatch.setattr(installer, "token", lambda: "hf_good")
+    refused = hub.post("/v1/install/pictures", json={"id": "draw"})
+    detail = refused.json()["detail"]
+    assert refused.status_code == 409 and (detail["code"], detail["name"], detail["licence"]) == (
+        "licence", "Draw", "flux-1-dev-non-commercial-license")  # fmt: skip
+    assert len(hub.get("/v1/install/jobs").json()["jobs"]) == 1 and not FakeHub.github_auth  # the engine not fetched
+    job = hub.post("/v1/install/pictures", json={"id": "draw", "licence_ok": True}).json()["job"]
+    done = wait_for(hub, job["id"], "done", "failed")
+    assert done["status"] == "done", done["error"]
+    free = hub.post("/v1/install/pictures", json={"id": "free"})  # apache-2.0: not asked
+    assert free.status_code == 200, free.text
+    assert wait_for(hub, free.json()["job"]["id"], "done", "failed")["status"] == "done"
 
 
 def test_a_video_model_installed_and_tried_with_a_short_video(hub, monkeypatch):

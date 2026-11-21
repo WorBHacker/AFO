@@ -237,6 +237,22 @@ def test_a_sound_part_comes_with_the_engine_and_a_piece_is_made_holding_the_card
     assert sound.seconds_of(tmp_path / "music.wav") == pytest.approx(7.0, abs=0.01)
 
 
+def test_a_sound_part_whose_licence_forbids_commercial_use_is_fetched_only_with_consent(stand, monkeypatch):
+    """62 (the user's word 2026-11-21): a part of sound whose licence forbids commercial use (CC-BY-NC here) - its
+    «Скачать» refused before the engine or the model is fetched, 409 with the code the window asks by; with
+    «Понимаю, скачать» (`licence_ok`) - fetched as any other."""
+    hub = stand  # noqa: F811
+    monkeypatch.setitem(audio_cpp.PARTS, "listener", audio_cpp.PARTS["listener"] | {"licence": "CC-BY-NC-4.0"})
+    refused = hub.post("/v1/sound/parts/listener")
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert (detail["code"], detail["name"], detail["licence"]) == ("licence", "Слушатель", "CC-BY-NC-4.0")
+    assert not FakeSources.asked and part(hub.get("/v1/sound").json(), "listener")["state"] == "missing"
+    assert hub.post("/v1/sound/parts/listener", json={"licence_ok": True}).status_code == 200
+    assert wait_part(hub, "listener", "ready", "missing")["state"] == "ready"
+    install(hub, "voice")  # Apache-2.0: not asked
+
+
 def test_a_piece_stopped_or_failed_leaves_nothing_and_gives_the_card(stand, tmp_path, monkeypatch):
     """53.2: «Стоп» kills the program at once - no file, no half of one, the card given; a program that fails says
     why in words; a part that is not here is said so before anything is started."""

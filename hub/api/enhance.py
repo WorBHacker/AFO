@@ -10,8 +10,10 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from .. import enhance as e
+from .. import hf
 from ..auth import Client
 from .llama import require_app
 
@@ -26,15 +28,22 @@ def _refusal(exc: e.EnhanceError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=str(exc))
 
 
+class Agreed(BaseModel):
+    licence_ok: bool = False  # (62) the person's «Понимаю, скачать» for a licence that forbids commercial use
+
+
 @router.get("")
 async def state(request: Request, client: Annotated[Client, Depends(require_app)]) -> dict:
     return await _enhance(request).state()
 
 
 @router.post("/parts/{part}")
-async def install(request: Request, part: str, client: Annotated[Client, Depends(require_app)]) -> dict:
+async def install(request: Request, part: str, client: Annotated[Client, Depends(require_app)],
+                  body: Agreed | None = None) -> dict:  # fmt: skip
     try:
-        return await _enhance(request).install(part)
+        return await _enhance(request).install(part, agreed=bool(body and body.licence_ok))
+    except hf.NotForWork as exc:  # (62) the window asks the person and sends it again with `licence_ok`
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except e.EnhanceError as exc:
         raise _refusal(exc) from exc
 

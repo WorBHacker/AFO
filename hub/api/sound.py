@@ -12,8 +12,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from .. import hf
 from .. import sound as s
 from ..auth import Client
+from .enhance import Agreed
 from .llama import require_app
 
 router = APIRouter(prefix="/v1/sound")
@@ -33,9 +35,12 @@ async def state(request: Request, client: Annotated[Client, Depends(require_app)
 
 
 @router.post("/parts/{part}")
-async def install(request: Request, part: str, client: Annotated[Client, Depends(require_app)]) -> dict:
+async def install(request: Request, part: str, client: Annotated[Client, Depends(require_app)],
+                  body: Agreed | None = None) -> dict:  # fmt: skip
     try:
-        return await _sound(request).install(part)
+        return await _sound(request).install(part, agreed=bool(body and body.licence_ok))
+    except hf.NotForWork as exc:  # (62) the window asks the person and sends it again with `licence_ok`
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except s.SoundError as exc:
         raise _refusal(exc) from exc
 

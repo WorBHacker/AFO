@@ -104,8 +104,8 @@ PARTS: dict[str, dict[str, Any]] = {
         ),
     },
     # (56) an engine on PyTorch: its own environment, put in and run by hub/torch_engines.py
-    "select": {key: torch_engines.ENGINES["select"][key] for key in ("name", "about", "licence")} | {"torch": True},
-    "replace": {key: torch_engines.ENGINES["replace"][key] for key in ("name", "about", "licence")} | {"torch": True},
+    "select": torch_engines.part("select"),
+    "replace": torch_engines.part("replace"),
 }  # fmt: skip
 # (58) «Замена и дорисовка»: what VACE draws anew, the formats the edges are drawn to - VACE's frame for each (its
 # sides of 16; the new frame takes its proportions, so the source lies in both at one place)
@@ -588,13 +588,17 @@ class Enhance:
         if part not in PARTS:
             raise EnhanceError(tr("нет такой части улучшения"), 404)
 
-    async def install(self, part: str) -> dict[str, Any]:
+    async def install(self, part: str, *, agreed: bool = False) -> dict[str, Any]:
         """«Скачать»: the part's programs and weights, in the background. The state as it begins; a computer it
-        cannot work on, no room on the disk - refused at once."""
+        cannot work on, no room on the disk - refused at once. (62) A part whose licence forbids commercial use - not
+        without the person's `agreed` (hf.NotForWork); a download stopped and asked again goes on without it."""
         self._known(part)
         load = self._loads.get(part)
         if (load is not None and load["going"]) or await self.ready(part):
             return await self.state()
+        spec = PARTS[part]
+        if load is None and not agreed and hf.not_for_work(spec["licence"], spec.get("commercial")):
+            raise hf.NotForWork(tr(spec["name"]), spec["licence"])
         if why := usable(part, await asyncio.to_thread(self.machine)):
             raise EnhanceError(tr("«{part}» на этом компьютере не работает: {why}", part=tr(PARTS[part]["name"]),
                                   why=why), 422)  # fmt: skip

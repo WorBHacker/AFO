@@ -111,15 +111,19 @@ class Sound:
         if part not in audio_cpp.PARTS:
             raise SoundError(tr("нет такой части звука"), 404)
 
-    async def install(self, part: str) -> dict[str, Any]:
+    async def install(self, part: str, *, agreed: bool = False) -> dict[str, Any]:
         """«Скачать»: the engine, if it is not here, and the part's model - in the background. The state as it
-        begins; no room on the disk - refused at once."""
+        begins; no room on the disk - refused at once. (62) A part whose licence forbids commercial use - not without
+        the person's `agreed` (hf.NotForWork); a download stopped and asked again goes on without it."""
         self._known(part)
         load = self._loads.get(part)
         if load is not None and load["going"]:
             return await self.state()
         if await self.ready(part):
             return await self.state()
+        spec = audio_cpp.PARTS[part]
+        if load is None and not agreed and hf.not_for_work(spec["licence"], spec.get("commercial")):
+            raise hf.NotForWork(tr(spec["name"]), spec["licence"])
         size = audio_cpp.PARTS[part]["size"]
         await asyncio.to_thread((self.models / "audio").mkdir, parents=True, exist_ok=True)
         free = (await asyncio.to_thread(shutil.disk_usage, self.models / "audio")).free

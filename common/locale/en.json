@@ -402,6 +402,7 @@
  "«{name}»: {error}": "“{name}”: {error}",
  "«{name}»: больше {size} МБ": "“{name}”: over {size} MB",
  "«{name}»: в файле нет текста": "“{name}”: the file has no text",
+ "«{name}»: лицензия {licence} запрещает коммерческое использование — скачивание только с вашего согласия": "“{name}”: the {licence} licence forbids commercial use — downloaded only with your consent",
  "«{name}»: не текст и не картинка — такие файлы модель не прочтёт": "“{name}”: neither text nor a picture — the model cannot read files like this",
  "«{name}»: файл пришёл повреждённым": "“{name}”: the file arrived damaged",
  "«{name}»: файл пустой": "“{name}”: the file is empty",

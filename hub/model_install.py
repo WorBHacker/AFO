@@ -1536,6 +1536,8 @@ class Installer:
             raise InstallError(tr("эта модель уже установлена — «{name}»", name=same["name"]))
         if same:
             return same
+        if hf.not_for_work(found["license"]) and not spec.get("licence_ok"):  # (62) the person asked first
+            raise hf.NotForWork(f"{(entry or {}).get('name') or repo_name(repo)} {quant}", found["license"])
         lens = found["projector"] if spec.get("projector") is not False else None
         if spec.get("projector") is None and entry is not None and "vision" not in entry["purposes"]:
             lens = None  # a model the catalog does not offer for pictures: no projector unless asked
@@ -1624,6 +1626,8 @@ class Installer:
         if closed := await self._closed(files, fresh=True):  # nothing starts that would stop on it (after 0.1.16)
             raise InstallError(tr("{name}: {words}", name=f"{repo_name(repo)} {quant}" if own else entry["name"],
                                   words=closed_words(closed, bool(self.token()))), 403)  # fmt: skip
+        if hf.not_for_work(licence) and not spec.get("licence_ok"):  # (62) the person asked first
+            raise hf.NotForWork(f"{repo_name(repo)} {quant}" if own else entry["name"], licence)
         if video and own:  # a found one (48.4): by its sizes, as sd.cpp places them
             verdict = variant_fit(own, sum(f["size"] for f in files if f not in own), await asyncio.to_thread(
                 self.space))  # fmt: skip

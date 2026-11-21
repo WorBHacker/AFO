@@ -181,6 +181,26 @@ def license_kind(name: str) -> str:
     return "terms" if OWN_TERMS.search(name) else ""
 
 
+def not_for_work(licence: str, commercial: bool | None = None) -> bool:
+    """(62) Whether a licence forbids commercial use: research or non-commercial (`license_kind` «closed»), or a part
+    that says so itself (`commercial` False - MuseTalk: its code MIT, its weights not for work)."""
+    return commercial is False or license_kind(licence) == "closed"
+
+
+class NotForWork(Exception):
+    """(62, the user's word 2026-11-21) A download whose licence forbids commercial use, asked without the person's
+    «Понимаю, скачать»: refused before anything starts; the window asks them and sends it again with their consent.
+    `detail` - what the API answers with (409): `code` «licence», the model's name, its licence."""
+
+    def __init__(self, name: str, licence: str):
+        super().__init__(tr("«{name}»: лицензия {licence} запрещает коммерческое использование — скачивание только с "
+                            "вашего согласия", name=name, licence=licence))  # fmt: skip
+        self.name, self.licence = name, licence
+
+    def detail(self) -> dict[str, str]:
+        return {"code": "licence", "message": str(self), "name": self.name, "licence": self.licence}
+
+
 def named_params(repo: str) -> int:
     """The parameter count a repository's name says - the largest («7B-Instruct-1M» is 7B) - or 0."""
     found = [float(n) * (1e9 if unit.upper() == "B" else 1e6) for n, unit in NAMED_SIZE.findall(repo.split("/")[-1])]

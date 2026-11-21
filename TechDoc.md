@@ -4539,6 +4539,18 @@ MuseTalk. Модели, от которых план 2026-11-18 отказалс
   части; без `licence_ok: true` в запросе — отказ 409 до начала, со словами и именем лицензии; продолжение прерванной
   загрузки — без вопроса. Тест — настоящий хаб, подставной Hugging Face: FLUX.1 [dev] без согласия — 409 и ничего не
   качается, с согласием — как сейчас; часть с `commercial: false` — так же.
+  ✓ Сделано (2026-11-21). `hf.not_for_work(licence, commercial)` и `hf.NotForWork` (`hub/hf.py`): ответ API — 409,
+  `detail` `{"code": "licence", "message", "name", "licence"}` (окно сделает из него вопрос). Проверка — в
+  `Installer.install` после «уже установлена»/«уже идёт» (идущая установка возвращается без вопроса),
+  `install_pictures` — после проверки закрытых репозиториев, `Enhance.install` и `Sound.install` — когда загрузки
+  ещё не было (остановленная и начатая снова — без вопроса). Поле `licence_ok` — у `POST /v1/install`,
+  `/v1/install/pictures`; у `POST /v1/enhance/parts/{part}` и `/v1/sound/parts/{part}` — тело `{"licence_ok"}`, без
+  тела — как прежде. Части на PyTorch получают `commercial` из `torch_engines.ENGINES` (`torch_engines.part`) — для
+  MuseTalk этапа 57. Тесты: `tests/test_model_install.py::test_a_model_whose_licence_forbids_commercial_use_is_
+  fetched_only_with_the_persons_consent` (чат-модель с `cc-by-nc-4.0` с подставного Hugging Face и картинка с
+  `flux-1-dev-non-commercial-license`: без согласия — 409, ни задания, ни загрузки; с согласием — установлены;
+  `apache-2.0` — без вопроса), `tests/test_enhance.py::test_a_part_whose_licence_…`, `tests/test_sound.py::
+  test_a_sound_part_whose_licence_…` (часть с `commercial: false` и с `CC-BY-NC-4.0`). На прежнем коде — 200.
 - 62.2 Окно: одно окно предупреждения на все места скачивания (лист установки — чат и картинки, мастер первого
   запуска, «Улучшить ролик», «Звук фильма»): «Лицензия {имя} запрещает коммерческое использование. Модель — только для
   проб и для себя. Ответственность за использование — на вас.» — «Понимаю, скачать» и «Отмена». Тест — настоящий QML,
