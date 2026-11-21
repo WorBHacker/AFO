@@ -164,6 +164,9 @@ PROVING_ASKED = ("nobody answers on the proving ground: decide yourself from the
 OUTSIDE = (web.WEB_FETCH["name"], websearch.WEB_SEARCH["name"], *sorted(mail.READING), "http_request", "screen_look",
            "WebFetch", "WebSearch", snapshot.NAME)  # fmt: skip
 SNAPSHOTS_SHOWN = "[AFO hub] The pictures page_snapshot took just now, in the order of its calls."
+# for a model that takes no pictures («Стабилизация», 61.7): what stands in their place
+SNAPSHOTS_UNSEEN = "[AFO hub] page_snapshot took pictures just now; not shown: this model does not take pictures."
+PICTURES_UNSEEN = "(the pictures sent with this message are not shown: this model does not take pictures)"
 # a «yes» typed in answer to the hub's own question (33.2), not a button
 YES = re.compile(r"\s*(да|yes|ok|ок|разрешаю|разрешить)\b", re.IGNORECASE)  # i18n: keep
 
@@ -351,7 +354,8 @@ class ChatService:
         window = (model.get("capabilities") or {}).get("context")
         tools = compact.for_model([*CHAT_TOOLS, *(self.mcp.definitions() if self.mcp is not None else [])], window)
         prompt = [{"role": "system", "content": system},
-                  *_to_prompt(history, cloud=model.get("locality") == "cloud", blobs=self.blobs)]  # fmt: skip
+                  *_pictures_for(model, _to_prompt(history, cloud=model.get("locality") == "cloud",
+                                                   blobs=self.blobs))]  # fmt: skip
         images = sum(1 for b in adding if isinstance(b, dict) and b.get("type") == "image")
         tokens = fit.estimate(prompt, tools) + fit.tokens(adding) + fit.IMAGE_TOKENS * images
         return budgets.upper_cost(model, min(tokens, window) if window else tokens, params)
@@ -629,7 +633,7 @@ class ChatService:
             history = await self._db.acall(lambda conn: store.get_messages(conn, conversation_id))
             if self.compact is not None:  # a goal's stages done: one line each (11.5), the conversation stays whole
                 history = await self.compact(conversation_id, history)
-            prompt = _to_prompt(history, cloud=cloud, blobs=self.blobs)
+            prompt = _pictures_for(model, _to_prompt(history, cloud=cloud, blobs=self.blobs))
             if system:  # in front, the same in every request: the fixed part of the prompt (cache, D15)
                 prompt = [{"role": "system", "content": system}, *prompt]
             # the tool list never changes within a conversation (D14), and every model has it from the first message:
@@ -1929,6 +1933,24 @@ def _to_prompt(history: list[store.MessageRow], *, cloud: bool = False, blobs: P
             entry["provider_raw"] = message.provider_raw
         prompt.append(entry)
     return _answer_open_calls(prompt)
+
+
+def _pictures_for(model: dict, prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The prompt without its pictures for a model that takes none - its vision False, by its provider's word or the
+    user's mark («Стабилизация», 61.7): a model chosen later in the chat, or the spare (D39) after one that saw them,
+    is not sent the pictures already there (the user's, page_snapshot's) - a provider refuses the whole request for
+    one; a word stands in their place. A model whose vision is not known gets them, as before."""
+    if (model.get("capabilities") or {}).get("vision") is not False:
+        return prompt
+    out = []
+    for entry in prompt:
+        if entry.get("images"):
+            text = entry.get("content") or ""
+            entry = {k: v for k, v in entry.items() if k != "images"}
+            entry["content"] = SNAPSHOTS_UNSEEN if text == SNAPSHOTS_SHOWN else "\n\n".join(
+                filter(None, [text, PICTURES_UNSEEN]))  # fmt: skip
+        out.append(entry)
+    return out
 
 
 def _answer_open_calls(prompt: list[dict[str, Any]]) -> list[dict[str, Any]]:

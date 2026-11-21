@@ -11,8 +11,9 @@ import zipfile
 import pytest
 
 from hub import attachments, fit
+from hub import chat as chat_module
 from hub.gateway import anthropic_provider, gemini_provider, openai_compat, openai_responses
-from hub.gateway.base import Model
+from hub.gateway.base import Model, ProviderError
 from tests.test_autonomous import Scripted, use
 from tests.test_changes import wait
 from tests.test_tools import hub  # noqa: F401 - the hub fixture
@@ -154,6 +155,47 @@ def test_a_message_with_files_reaches_the_model(hub):  # noqa: F811
     bad = hub.post(url, json={"content": "x", "model_id": "eyes/m", "files": [{"name": "a.bin", "data": b64(b"\0\1")}]})
     assert bad.status_code == 409 and "не текст и не картинка" in bad.json()["detail"]
     assert len(hub.get(f"/v1/conversations/{conv}").json()["messages"]) == 2  # refused ones stored nothing
+
+
+class BrokenEyes(Scripted):
+    """A model that sees pictures and fails: the spare answers instead (D39)."""
+
+    def __init__(self):
+        super().__init__("broken", [])
+        self.models = [Model("broken/m", "broken", "m", "Сломанная", "local", {"vision": True}, {})]
+
+    async def stream_chat(self, model_ref, messages, effort, cancel, tools=None):
+        self.prompts.append(messages)
+        raise ProviderError("broken: 503 the server is overloaded")
+        yield  # an async generator, as a provider's
+
+
+def test_a_model_that_sees_no_pictures_is_not_sent_those_in_the_chat(hub):  # noqa: F811
+    """«Стабилизация» (61.7): the spare (D39) that sees no pictures takes over from one that saw them - the picture
+    the user sent stays out of its request, a word in its place (a provider refuses the whole request for one); so do
+    page_snapshot's pictures. A model whose vision is not known gets them, as before."""
+    broken = use(hub, BrokenEyes())
+    spare = use(hub, Blind("blind", ["Картинку не вижу, но отвечу."]))
+    roles = {"model_id": "", "settings": {"roles": {"fallback": "blind/m"}}}
+    assert hub.put("/v1/model_settings", json=roles).status_code == 200
+    conv = hub.post("/v1/conversations", json={}).json()["id"]
+    dot = [{"name": "точка.png", "data": b64(PNG)}]
+    sent = hub.post(f"/v1/conversations/{conv}/messages", json={"content": "Что на картинке?", "model_id": "broken/m",
+                                                                 "files": dot})  # fmt: skip
+    assert sent.status_code == 202, sent.text
+    wait(lambda: spare.prompts)
+    assert broken.prompts[0][-1]["images"]  # the one that sees was sent it
+    asked = spare.prompts[0][-1]
+    assert "images" not in asked
+    assert asked["content"] == "Что на картинке?\n\n[pictures attached: точка.png]\n\n" + chat_module.PICTURES_UNSEEN
+    wait(lambda: conv not in hub.get("/v1/conversations").json()["busy"])
+    assert hub.get(f"/v1/conversations/{conv}").json()["messages"][-1]["model_id"] == "blind/m"
+    shown = [{"role": "tool", "tool_call_id": "s1", "name": "page_snapshot", "content": "The picture of a.html"},
+             {"role": "user", "content": chat_module.SNAPSHOTS_SHOWN, "images": [{"media_type": "image/png",
+                                                                                 "data": b64(PNG)}]}]  # fmt: skip
+    blind = chat_module._pictures_for({"capabilities": {"vision": False}}, shown)
+    assert blind == [shown[0], {"role": "user", "content": chat_module.SNAPSHOTS_UNSEEN}]
+    assert chat_module._pictures_for({"capabilities": {}}, shown) == shown
 
 
 def test_claude_code_gets_the_files_paths(tmp_path):
