@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 
 // «Улучшить ролик» (54.6): a video of the Studio's or a film's joined one - twice as large (fast or with details)
 // and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark; (58) the object
 // clicked or the background drawn anew by the words, or the edges drawn to another format - «Быстрее» or
-// «Тщательнее», the person's choice, with what each costs. What it takes -
+// «Тщательнее», the person's choice, with what each costs; (57) «Губы» - the mouth of the face made to say the
+// video's own sound or a voice's file. What it takes -
 // the parts - is fetched here, each by a click; «Улучшить» sends it to the Studio's queue, where it goes on as a
 // video does. `prefix` names its parts: one sheet in the Studio, one in «Режиссёр». Taller than the window - it
 // scrolls.
@@ -84,6 +86,41 @@ Popup {
                 options: Improve.motions
                 value: Improve.motion
                 onPicked: (id) => Improve.setMotion(id)
+            }
+            // (57) the mouth to a voice: the video's own sound, or a file of this computer
+            Label { text: qsTr("Губы") }
+            Segmented {
+                objectName: sheet.prefix + "Lips"
+                options: Improve.lipsChoices
+                value: Improve.lips
+                onPicked: (id) => id === "file" ? voiceDialog.open() : Improve.setLips(id)
+            }
+            Row {
+                visible: Improve.voiceName !== ""
+                spacing: 8
+                Text {
+                    objectName: sheet.prefix + "VoiceName"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, sheet.availableWidth - otherVoice.width - 8)
+                    elide: Text.ElideMiddle
+                    text: qsTr("Голос: %1").arg(Improve.voiceName)
+                    color: Theme.p.text_soft
+                    font.family: Theme.uiFont
+                    font.pixelSize: 12
+                }
+                PlainButton {
+                    id: otherVoice
+                    objectName: sheet.prefix + "OtherVoice"
+                    text: qsTr("Другой файл…")
+                    onClicked: voiceDialog.open()
+                }
+            }
+            FileDialog {
+                id: voiceDialog
+                title: qsTr("Файл с голосом")
+                fileMode: FileDialog.OpenFile
+                nameFilters: [qsTr("Звук (*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.opus)")]
+                onAccepted: Improve.chooseVoice(selectedFile.toString())
             }
             Label { text: qsTr("Предмет") }
             Segmented {

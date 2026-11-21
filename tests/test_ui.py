@@ -728,10 +728,13 @@ class FakeClient:
         how = {"source": "2026-11/x.mp4", "job": spec.get("from_job", ""), "fps": 24, "size": spec["size"],
                "motion": spec["motion"], "sound": True}  # fmt: skip
         how |= {"select": spec["select"]} if "select" in spec else {}
+        how |= {"lips": {"voice": spec["lips"]["voice"]}} if "lips" in spec else {}  # (57)
         job = {"id": f"e{len(self.visual_calls)}", "kind": "video", "prompt": "дождь на улице", "model_id": "enhance",
                "status": "queued", "width": 64, "height": 64, "frames": 0, "fps": 24, "seed": 0, "error": "",
                "seconds": None, "file": "", "enhance": how, "film_id": spec.get("film") or None}  # fmt: skip
         self.visual_jobs_list.insert(0, job)
+        if (spec.get("lips") or {}).get("voice") == "file":  # (57) as the hub says a voice shorter than the video
+            return {"job": job | {"note": "голос короче ролика на 2,0 с — дальше ролик без звука, губы как были"}}
         return {"job": job}
 
     def improve_frame(self, target, share):  # (56) the frame «Только предмет» is clicked on
@@ -754,7 +757,8 @@ class FakeClient:
                            data={"code": "licence", "name": name, "licence": licence})  # fmt: skip
 
     def install_enhance(self, part, licence_ok=False):
-        self._licensed(part, part, licence_ok)
+        named = next((p["name"] for p in self.enhance_state["parts"] if p["id"] == part), part)  # as the hub names it
+        self._licensed(part, named, licence_ok)
         self.part_calls.append(("enhance", part, licence_ok))
         return self._enhance_part("install", part, state="loading", got=0, error="")
 
@@ -11969,6 +11973,133 @@ def test_a_model_whose_licence_forbids_commercial_use_is_fetched_after_a_warning
         app.film_view.getSound("voice")  # Apache-2.0: not asked
         wait_until(lambda: not app.bg.busy and len(client.part_calls) == 2)
         assert client.part_calls[-1] == ("sound", "voice", False) and not app.question
+        assert quick.warnings == []
+    finally:
+        quick.close()
+
+
+def test_the_mouth_is_made_to_say_the_videos_sound_or_a_file_chosen_by_clicks(qapp, tmp_path):
+    """57.3: «Улучшить…» → «Губы»: «Под звук ролика» - «Губы под голос» wanted; its «Скачать» asks first (62: its
+    weights are not for commercial use) and fetches with the person's word; what it does and about how long said;
+    the job asks for the video's own sound. «Под файл…» - the voice's file chosen (the system's dialog: its answer
+    given here), its name shown; the job asks for that file; what the hub says of its length - with «Улучшаю».
+    «Предмет» or a slowed video - «Губы» gone; a video without sound - its own sound not offered to start. Real QML,
+    mouse clicks, no screen."""
+    from pathlib import Path
+
+    from PySide6.QtCore import QObject
+
+    from app.ui.main import QuickApp
+    from hub import ffmpeg
+
+    program = Path(shutil.which("ffmpeg"))
+    quick = QuickApp(qapp, data_paths().ensure(), connect=False)
+    try:
+        app, window = quick.controller, quick.window
+        client = FakeClient()
+        client.not_for_work = {"lips": "HDTF (веса MuseTalk)"}
+        client.visual_videos = [{"model_id": "ltx", "name": "LTX", "tier": "video", "size": 768, "steps": 8,
+                                 "cfg": 1.0, "modes": ["text"], "clip": {"fps": 24, "step": 8}}]  # fmt: skip
+        client.visual_models = lambda: {"models": [], "default": "", "videos": client.visual_videos}
+        month = app.paths.media / "2026-11"
+        month.mkdir(parents=True, exist_ok=True)
+        clip = month / "q1.webp"
+        clip.write_bytes(animated_clip(COLOURS[:4]))
+        ffmpeg.to_mp4(program, clip, clip.with_suffix(".mp4"))
+        said = {"id": "q1", "kind": "video", "prompt": "человек говорит", "model_id": "ltx", "status": "done",
+                "seconds": 64.0, "width": 64, "height": 64, "frames": 240, "fps": 24, "seed": 1, "error": "",
+                "file": "2026-11/q1.webp", "sound": 1}  # fmt: skip
+        client.visual_jobs_list = [said]
+        client.enhance_state["parts"].append(
+            {"id": "lips", "name": "Губы под голос", "licence": "HDTF (веса MuseTalk)", "state": "missing", "why": "",
+             "about": "MuseTalk 1.5: рот человека в кадре — под голос — видеокарта NVIDIA от 10 ГБ",
+             "size": 4_900_000_000, "disk": 5_700_000_000, "got": 0, "total": 4_900_000_000, "error": ""})  # fmt: skip
+        for one in client.program_list:
+            one["fresh"] = False  # the question about a new program would cover the Studio's top
+        app.attach(client, start_events=False)
+        wait_until(lambda: not app.bg.busy)
+        view, improve = app.visual_view, app.enhance_view
+        view.open("")
+        app.openUi("draw")
+        wait_until(lambda: not app.bg.busy and view.loaded and view.recent)
+        window.resize(1400, 900)
+        window.show()
+        studio = window.findChild(QObject, "studioView")
+        view.pick("q1")
+        wait_until(lambda: view.videoFile.endswith("/q1.webp"))
+        dialog = window.findChild(QObject, "confirmDialog")
+
+        def named(name):
+            return window.findChild(QObject, name) or item_named(window.contentItem(), name)
+
+        def opened():
+            click(window, item_named(studio, "visualImprove"))
+            sheet = window.findChild(QObject, "improveSheet")
+            wait_until(lambda: sheet.property("opened") and not app.bg.busy)
+            sheet.property("contentItem").setProperty("contentY", 0)
+            window.grabWindow()
+            return sheet
+
+        sheet = opened()
+        need, go = named("improveNeed"), named("improveGo")
+        click(window, item_saying(named("improveLips"), "Под звук ролика"))
+        wait_until(lambda: improve.lips == "clip")
+        window.grabWindow()
+        assert need.property("text") == "Сначала скачайте «Губы под голос» — ниже" and not go.property("enabled")
+        note = named("improveNote").property("text")
+        assert "Рот человека в кадре задвигается под голос — звук ролика." in note
+        assert "Нужно одно лицо в кадре" in note and "Около 2 мин." in note  # 240 frames
+        click(window, named("improveGet_lips"))
+        wait_until(lambda: not app.bg.busy and dialog.property("opened"))
+        assert app.question["title"] == "«Губы под голос» — не для коммерческого использования"
+        assert "HDTF (веса MuseTalk)" in app.question["text"]
+        click(window, item_saying(dialog.property("contentItem"), "Понимаю, скачать"))
+        wait_until(lambda: not app.bg.busy and client.part_calls)
+        assert client.part_calls == [("enhance", "lips", True)]
+        for part in client.enhance_state["parts"]:
+            if part["id"] == "lips":
+                part.update(state="ready")
+        app.on_event({"type": "enhance.changed", "payload": client.enhance()})
+        window.grabWindow()
+        assert need.property("text") == "" and go.property("enabled")
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and client.visual_calls)
+        kind, spec = client.visual_calls[-1]
+        assert kind == "improve" and spec["lips"] == {"voice": "clip"} and "select" not in spec and "draw" not in spec
+
+        sheet = opened()
+        voice = tmp_path / "голос диктора.wav"
+        voice.write_bytes(b"RIFF voice")
+        improve.chooseVoice(QUrl.fromLocalFile(str(voice)).toString())  # what the system's dialog gives back
+        window.grabWindow()
+        assert improve.lips == "file" and named("improveVoiceName").property("text") == "Голос: голос диктора.wav"
+        assert named("improveVoiceName").property("visible") and go.property("enabled")
+        assert "голос из файла; он же станет звуком ролика" in named("improveNote").property("text")
+        click(window, go)
+        wait_until(lambda: not app.bg.busy and len(client.visual_calls) == 2)
+        assert client.visual_calls[-1][1]["lips"] == {"voice": "file", "path": str(voice)}
+        assert "голос короче ролика на 2,0 с" in app.flashText and app.flashText.startswith("Улучшаю")
+
+        sheet = opened()
+        click(window, item_saying(named("improveLips"), "Под звук ролика"))
+        wait_until(lambda: improve.lips == "clip")
+        click(window, item_saying(named("improveSubject"), "Только предмет"))
+        wait_until(lambda: improve.subject == "select" and not app.bg.busy)
+        assert improve.lips == ""  # one at a time
+        click(window, item_saying(named("improveSubject"), "Весь кадр"))
+        click(window, item_saying(named("improveLips"), "Под звук ролика"))
+        wait_until(lambda: improve.lips == "clip")
+        click(window, item_saying(named("improveMotion"), "Медленнее ×2"))
+        wait_until(lambda: improve.motion == "slow2")
+        assert improve.lips == ""  # a slowed video has no sound
+        sheet.close()
+
+        said["sound"] = 0  # a video without sound: its own is no voice
+        sheet = opened()
+        click(window, item_saying(named("improveLips"), "Под звук ролика"))
+        wait_until(lambda: improve.lips == "clip")
+        window.grabWindow()
+        assert need.property("text") == "В ролике нет звука — выберите файл с голосом" and not go.property("enabled")
         assert quick.warnings == []
     finally:
         quick.close()

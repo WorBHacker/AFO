@@ -1,5 +1,6 @@
 """«Улучшить ролик» in the window (stage 54.6): a video of the Studio's or a film's joined one - twice as large (fast
-or with details) and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark.
+or with details) and/or 60 frames a second or slowed; (56) only the object clicked on a frame of it, the rest dark;
+(57) the mouth of the face in it made to say its own sound or a voice's file.
 The sheet: what to do with it, the parts that do it - each
 fetched once by a click, how far, «Стоп» -, and «Улучшить»: a job of the Studio's queue, which goes on there as a
 video does and ends as a new video beside the source. The hub improves (hub/enhance.py, hub/visual.py); this asks
@@ -8,9 +9,10 @@ and shows."""
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
 
 from common.i18n import N_, tr
 
@@ -27,6 +29,11 @@ SPEEDS = [("fast", N_("Быстрее")), ("careful", N_("Тщательнее")
 DRAWN = {"object": N_("Замена предмета"), "background": N_("Замена фона")}
 # (58.1) a window of VACE's 81 frames, minutes: «Быстрее» 20 steps, «Тщательнее» 25 - the load and the VAE with them
 WINDOW_MIN = {True: 7.1, False: 8.7}
+# (57) MuseTalk: the mouth to the video's own sound, or to a voice's file chosen on this computer
+LIPS = [("", N_("Как есть")), ("clip", N_("Под звук ролика")), ("file", N_("Под файл…"))]
+VOICE_FILES = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus")  # as the hub takes them
+# (56 probe) the models loaded ≈ 20 s, then ≈ 0.23 s a frame: the face's points 0.15, the mouth and its pasting 0.08
+LIPS_LOAD_S, LIPS_FRAME_S = 20.0, 0.25
 
 
 def improvement(how: dict[str, Any] | None) -> str:
@@ -34,6 +41,8 @@ def improvement(how: dict[str, Any] | None) -> str:
     if not how:
         return ""
     words = [tr(SUBJECTS[1][1])] if how.get("select") else []
+    if how.get("lips"):
+        words.append(tr("Губы под голос"))
     if draw := how.get("draw"):
         kind = draw.get("kind")
         words.append(tr(DRAWN[kind]) if kind in DRAWN else tr("Формат {canvas}", canvas=draw.get("canvas", "")))
@@ -46,14 +55,20 @@ def subsampled(fps: int) -> bool:
     return fps > 16 and (fps * 2) % 16 == 0
 
 
-def needed(size: str, motion: str, subject: str = "", canvas: str = "", fast: bool = False, fps: int = 24) -> list[str]:
+def needed(size: str, motion: str, subject: str = "", canvas: str = "", fast: bool = False, fps: int = 24,
+           lips: str = "") -> list[str]:  # fmt: skip
     """The parts a choice takes: «Выделение предмета» for the object (alone, or replaced), «Замена и дорисовка» to
-    draw anew, the size's own, «Плавность» for any motion and for «Быстрее» drawing fewer frames - in the order
-    they work, each once."""
+    draw anew, (57) «Губы под голос», the size's own, «Плавность» for any motion and for «Быстрее» drawing fewer
+    frames - in the order they work, each once."""
     drawing = subject in DRAWN or bool(canvas)
-    parts = ["select" if subject else "", "replace" if drawing else "", size,
+    parts = ["select" if subject else "", "replace" if drawing else "", "lips" if lips else "", size,
              "smooth" if motion or (drawing and fast and subsampled(fps)) else ""]  # fmt: skip
     return list(dict.fromkeys(p for p in parts if p))
+
+
+def lips_minutes(frames: int) -> int:
+    """(57) How long MuseTalk takes at a video of `frames` frames, about, in whole minutes."""
+    return max(1, math.ceil((LIPS_LOAD_S + LIPS_FRAME_S * frames) / 60))
 
 
 def minutes(frames: int, fps: int, fast: bool) -> int:
@@ -83,14 +98,32 @@ class EnhanceView(QObject):
         # (58) the format the edges are drawn to, what to draw, «Быстрее» or not; the video's rate and length
         self._canvas, self._words, self._fast = "", "", True
         self._fps, self._frames = 24, 0
+        # (57) «Губы»: "" | clip | file, the voice's file, whether the video has sound (None - not known)
+        self._lips, self._voice, self._sound = "", "", None
 
     def _drawing(self) -> bool:
         return self._subject in DRAWN or bool(self._canvas)
 
     def _wanted(self) -> list[str]:
-        return needed(self._size, self._motion, self._subject, self._canvas, self._fast, self._fps)
+        return needed(self._size, self._motion, self._subject, self._canvas, self._fast, self._fps, self._lips)
+
+    def _chosen(self) -> bool:
+        return bool(self._size or self._motion or self._subject or self._canvas or self._lips)
 
     # ================= for QML =================
+
+    @Property(list, notify=changed)
+    def lipsChoices(self) -> list:
+        return [{"id": k, "name": tr(n)} for k, n in LIPS]
+
+    @Property(str, notify=changed)
+    def lips(self) -> str:
+        return self._lips
+
+    @Property(str, notify=changed)
+    def voiceName(self) -> str:
+        """(57) The voice's file chosen - its name; "" - none."""
+        return Path(self._voice).name if self._lips == "file" and self._voice else ""
 
     @Property(list, notify=changed)
     def formats(self) -> list:
@@ -210,8 +243,12 @@ class EnhanceView(QObject):
         """What stands between the choice and «Улучшить»; "" - nothing."""
         if not self._target:
             return ""
-        if not self._size and not self._motion and not self._subject and not self._canvas:
+        if not self._chosen():
             return tr("Выберите, что сделать с роликом")
+        if self._lips == "file" and not self._voice:
+            return tr("Выберите файл с голосом")
+        if self._lips == "clip" and self._sound is False:
+            return tr("В ролике нет звука — выберите файл с голосом")
         for part in self._wanted():
             found = self._part(part)
             name = found.get("name") or part
@@ -229,13 +266,18 @@ class EnhanceView(QObject):
 
     @Property(bool, notify=changed)
     def canStart(self) -> bool:
-        chosen = self._size or self._motion or self._subject or self._canvas
-        return bool(self._target) and bool(chosen) and not self.need
+        return bool(self._target) and self._chosen() and not self.need
 
     @Property(str, notify=changed)
     def note(self) -> str:
         """What the choice does, besides the new video beside the source."""
         notes = []
+        if self._lips:
+            notes.append(tr("Рот человека в кадре задвигается под голос — звук ролика.") if self._lips == "clip" else
+                         tr("Рот человека в кадре задвигается под голос из файла; он же станет звуком ролика."))  # fmt: skip
+            notes.append(tr("Нужно одно лицо в кадре; кадры, где лица нет, останутся как были."))
+            if self._frames:
+                notes.append(tr("Около {minutes} мин.", minutes=lips_minutes(self._frames)))
         if self._subject == "select":
             notes.append(tr("Останется только предмет, по которому вы щёлкнули, — всё вокруг станет тёмным. "
                             "Предмет найдётся на всём ролике, до и после этого кадра."))  # fmt: skip
@@ -290,10 +332,12 @@ class EnhanceView(QObject):
 
     # ================= what the person does =================
 
-    def _open(self, target: dict[str, str], title: str, *, fps: int = 24, frames: int = 0) -> None:
+    def _open(self, target: dict[str, str], title: str, *, fps: int = 24, frames: int = 0,
+              sound: bool | None = None) -> None:  # fmt: skip
         self._target, self._title, self._size, self._motion = target, title, "", ""
         self._subject, self._moment, self._point, self._frame, self._frame_note = "", 0.0, None, 0, ""
         self._canvas, self._words, self._fast, self._fps, self._frames = "", "", True, fps, frames
+        self._lips, self._voice, self._sound = "", "", sound
         self._asked += 1  # a frame of the video before is not this one's
         self._take(self._state)
         self.app._call(lambda: self.app.client.enhance(), self._take, lambda _e: None)
@@ -303,8 +347,9 @@ class EnhanceView(QObject):
         """«Улучшить…» under the Studio's video shown."""
         job = self.app.visual_view.shown_job()
         if job.get("kind") == "video" and job.get("status") == "done" and job.get("id"):
+            heard = bool(job.get("sound")) or bool((job.get("enhance") or {}).get("sound"))
             self._open({"from_job": job["id"]}, tr("Ролик: {prompt}", prompt=job.get("prompt", "")),
-                       fps=int(job.get("fps") or 24), frames=int(job.get("frames") or 0))  # fmt: skip
+                       fps=int(job.get("fps") or 24), frames=int(job.get("frames") or 0), sound=heard)  # fmt: skip
 
     @Slot()
     def openFilm(self) -> None:
@@ -321,27 +366,54 @@ class EnhanceView(QObject):
 
     @Slot(str)
     def setMotion(self, motion: str) -> None:
+        """(57) Slowed - without sound: not with «Губы»."""
         self._motion = motion if motion in {k for k, _n in MOTIONS} else ""
+        if self._motion in ("slow2", "slow4"):
+            self._lips = ""
         self._take(self._state)
 
     @Slot(str)
     def setSubject(self, subject: str) -> None:
         """(56) «Весь кадр» | «Только предмет» | (58) «Заменить предмет» | «Заменить фон» - the frame to click on
-        asked of the hub the first time. An object or the background - not with a format: one drawing at a time."""
+        asked of the hub the first time. An object or the background - not with a format: one drawing at a time;
+        (57) nor with «Губы»."""
         self._subject = subject if subject in {k for k, _n in SUBJECTS} else ""
         if self._subject:
-            self._canvas = ""
+            self._canvas, self._lips = "", ""
         self._take(self._state)
         if self._subject and not self._frame and self._target:
             self._fetch_frame()
 
     @Slot(str)
     def setFormat(self, canvas: str) -> None:
-        """(58) «Как есть» | 9:16 | 1:1 | 16:9 - the edges drawn; only for the whole frame."""
+        """(58) «Как есть» | 9:16 | 1:1 | 16:9 - the edges drawn; only for the whole frame; (57) not with «Губы»."""
         self._canvas = canvas if canvas in {k for k, _n in FORMATS} else ""
         if self._canvas:
-            self._subject = ""
+            self._subject, self._lips = "", ""
         self._take(self._state)
+
+    @Slot(str)
+    def setLips(self, lips: str) -> None:
+        """(57) «Как есть» | «Под звук ролика» | «Под файл…» (the file chosen by `chooseVoice`) - the face's mouth
+        made to say it; one thing at a time with «Предмет» and «Формат», not slowed."""
+        self._lips = lips if lips in {k for k, _n in LIPS} else ""
+        if self._lips:
+            self._subject, self._canvas = "", ""
+            if self._motion in ("slow2", "slow4"):
+                self._motion = ""
+        self._take(self._state)
+
+    @Slot(str)
+    def chooseVoice(self, url: str) -> None:
+        """(57) «Под файл…»: a voice's file of this computer - the hub copies it for the job."""
+        path = QUrl(url).toLocalFile() if url.startswith("file:") else url
+        if not path:
+            return
+        if Path(path).suffix.lower() not in VOICE_FILES:
+            self.app.show_error(tr("Это не звук: подойдут {formats}", formats=", ".join(f[1:] for f in VOICE_FILES)))
+            return
+        self._voice = str(Path(path))  # as this computer writes it
+        self.setLips("file")
 
     @Slot(str)
     def setWords(self, words: str) -> None:
@@ -437,12 +509,17 @@ class EnhanceView(QObject):
             spec["draw"] = {"kind": self._subject, "words": self._words.strip(), "fast": self._fast, **clicked}
         elif self._canvas:
             spec["draw"] = {"kind": "edges", "canvas": self._canvas, "words": self._words.strip(), "fast": self._fast}
+        if self._lips == "clip":  # (57)
+            spec["lips"] = {"voice": "clip"}
+        elif self._lips == "file":
+            spec["lips"] = {"voice": "file", "path": self._voice}
 
         def started(result: dict[str, Any]) -> None:
             job = result.get("job") or {}
             self.app.visual_view.queued(job)
-            self.app.flash(tr("Улучшаю — ход виден в очереди «Студии»") if "from_job" in spec
-                           else tr("Улучшаю — ход виден под фильмом"))  # fmt: skip
+            said = (tr("Улучшаю — ход виден в очереди «Студии»") if "from_job" in spec
+                    else tr("Улучшаю — ход виден под фильмом"))  # fmt: skip
+            self.app.flash(f"{said}. {job['note']}" if job.get("note") else said)  # (57) a voice longer or shorter
 
         self.app.call_or_fail(lambda: self.app.client.visual_improve(spec), started,
                               lambda e: self.app.show_error(tr("Не улучшить: {error}", error=e)))  # fmt: skip
