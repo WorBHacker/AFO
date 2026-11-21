@@ -876,13 +876,19 @@ def test_tuning_by_hand_waits_for_the_card_and_gives_way_to_a_chat(hub, setup, s
 
 
 def stand_ins():
-    """The stand-in llama-servers still running."""
+    """The stand-in llama-servers still running: `spec_server`'s llama.cpp/server.py in pytest's own folder - not any
+    program whose script is a server.py (the person's E:\\…\\app\\server.py was taken for one, 0.1.18.1)."""
     alive = []
     for process in psutil.process_iter(["cmdline"]):
         with contextlib.suppress(psutil.Error, TypeError):
-            if any(part.endswith("server.py") for part in process.info["cmdline"] or []):
+            if any(_stand_in(part) for part in process.info["cmdline"] or []):
                 alive.append(process.pid)
     return alive
+
+
+def _stand_in(part: str) -> bool:
+    path = Path(part.strip('"'))
+    return path.name == "server.py" and path.parent.name == "llama.cpp" and "pytest-of-" in path.as_posix()
 
 
 # --- where a Mixture-of-Experts model's experts go, measured by llama-server itself (44.2) ---
