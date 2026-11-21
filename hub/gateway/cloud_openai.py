@@ -186,11 +186,13 @@ class OpenRouterProvider(CloudOpenAIProvider):
                 continue
             efforts = (item.get("reasoning") or {}).get("supported_efforts") or []
             long = long_prompt(pricing)
+            seen = (item.get("architecture") or {}).get("input_modalities") or ["text"]
             out.append({"id": item["id"], "name": item.get("name") or item["id"],
                         "input": round(prices["input"], 4), "output": round(prices["output"], 4),
                         "cache_read": round(prices["cache_read"], 4), "context": item.get("context_length"),
                         "reasoning": "reasoning" in (item.get("supported_parameters") or []),
                         "efforts": [e for e in efforts if isinstance(e, str)],
+                        "vision": "image" in seen,  # («Стабилизация», 61.9) it takes pictures: page_snapshot, judge
                         **({"long": long} if long else {})})  # fmt: skip
             self._efforts[item["id"]] = out[-1]["efforts"] if out[-1]["reasoning"] else None
         return out
@@ -203,6 +205,7 @@ class OpenRouterProvider(CloudOpenAIProvider):
             return []
         return [Model(id=f"{self.name}/{m['id']}", provider=self.name, model_ref=m["id"], name=m["name"],
                       locality="cloud", capabilities={"context": m["context"], "reasoning": m["reasoning"],
+                                                      "vision": m["vision"],  # the user's own mark lies over it
                                                       **_efforts_of(m)},  # 0.1.13: the depths for the window
                       prices={"input": m["input"], "output": m["output"], "cache_read": m["cache_read"],
                               **m.get("long", {})})

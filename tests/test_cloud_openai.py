@@ -159,11 +159,26 @@ def test_openrouter_offers_only_the_chosen_models():
     everything = asyncio.run(router.everything())
     assert [m["id"] for m in everything] == ["qwen/qwen3.8-coder"]  # tools, text, priced per token
     assert everything[0] == {"id": "qwen/qwen3.8-coder", "name": "Qwen3.8 Coder", "input": 0.2, "output": 0.8,
-                             "cache_read": 0.05, "context": 262144, "reasoning": True, "efforts": []}  # fmt: skip
+                             "cache_read": 0.05, "context": 262144, "reasoning": True, "efforts": [],
+                             "vision": False}  # fmt: skip
     assert asyncio.run(router.list_models()) == []  # nothing chosen yet
     chosen.append("qwen/qwen3.8-coder")
     (model,) = asyncio.run(router.list_models())
     assert model.id == "openrouter/qwen/qwen3.8-coder" and model.prices["output"] == 0.8
+    assert model.capabilities["vision"] is False
+
+
+def test_an_openrouter_model_that_takes_pictures_is_known_to():
+    """«Стабилизация» (61.9): whether a model sees pictures - OpenRouter's `architecture.input_modalities` - was not
+    taken, so page_snapshot was not given to a cloud architect through OpenRouter until the user marked it. Now
+    `vision` comes with the model; one that takes text only - False."""
+    sees = {"id": "anthropic/claude-haiku-5.5", "name": "Claude Haiku 5.5", "context_length": 200000,
+            "pricing": {"prompt": "0.000001", "completion": "0.000005"}, "supported_parameters": ["tools"],
+            "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]}}  # fmt: skip
+    both, api = ["anthropic/claude-haiku-5.5", "qwen/qwen3.8-coder"], Api([*ROUTER_MODELS, sees])
+    router = OpenRouterProvider(lambda: KEY, chosen=lambda: _async(both), transport=api.transport())
+    models = {m.model_ref: m.capabilities["vision"] for m in asyncio.run(router.list_models())}
+    assert models == {"qwen/qwen3.8-coder": False, "anthropic/claude-haiku-5.5": True}
 
 
 def test_openrouter_reasoning_details_and_cost():

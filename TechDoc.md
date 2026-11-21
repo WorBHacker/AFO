@@ -2243,6 +2243,11 @@ LTX-2.3/2.5, HunyuanVideo 1.5, MiniMax-H3. Сначала без звука. Р�
     из его списка не берётся (там есть `architecture.input_modalities`), — так что `page_snapshot` облачному
     архитектору через OpenRouter не дан, пока пользователь не отметит «картинки» в настройке модели. На стенде
     отмечено так у Claude Haiku 5.5.
+    ✓ Порция 1, шаг 3 (2026-11-21). `OpenRouterProvider.everything` берёт `architecture.input_modalities`: `vision` —
+    есть ли там «image»; `list_models` кладёт его в `capabilities`. Отметка пользователя в настройке модели лежит
+    поверх (`model_settings.overlay`), как прежде. Файл — `hub/gateway/cloud_openai.py`. Тест —
+    `tests/test_cloud_openai.py::test_an_openrouter_model_that_takes_pictures_is_known_to`; на прежнем коде `vision`
+    нет.
   - найдено при 61.8: ход «Цели», который ждёт очереди видеокарты (`Goals._turn_later`), окно не показывает — цель
     «работает», а в чате тишина, пока задача агента не кончится. И работа без человека не уступает чату человека
     посреди своего хода: между её запросами и его llama-swap меняет модели, если они разные.
